@@ -360,11 +360,6 @@
       "unit": "px",
       "purpose": "Retained terminal_dock width threshold 650px, owned by slice4-terminal"
     },
-    "legacy_chatPrefetch.width760": {
-      "value": 760,
-      "unit": "px",
-      "purpose": "Retained chatPrefetch width threshold 760px, owned by slice1-contract"
-    },
     "legacy_style.width640": {
       "value": 640,
       "unit": "px",
@@ -525,56 +520,6 @@
       "unit": "layer",
       "purpose": "Main src/components/conversation/conversation-chrome.css layer: z-index: 2"
     },
-    "legacy_main_components_conversation_empty_chat_settings.query8f4fa78f": {
-      "value": 60,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 60em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.querya4e09282": {
-      "value": 45,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 45em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.query99ff479c": {
-      "value": 32,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 32em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.query62cf757f": {
-      "value": 25,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 25em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.query736651e9": {
-      "value": 56.25,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 56.25em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.query7269dc35": {
-      "value": 20,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.queryd3296c98": {
-      "value": 30,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 30em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.queryeafc0baa": {
-      "value": 22,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 22em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.query038ea2d3": {
-      "value": 18,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 18em) {"
-    },
-    "legacy_main_components_conversation_empty_chat_settings.query7a8a99ac": {
-      "value": 35,
-      "unit": "em",
-      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 35em) {"
-    },
     "legacy_main_components_message_queue.query452cba01": {
       "value": 37.5,
       "unit": "rem",
@@ -724,6 +669,31 @@
       "value": 47.5,
       "unit": "rem",
       "purpose": "Main src/components/conversation-warnings.css query: @media (max-width: 47.5rem) {"
+    },
+    "legacy_main_components_conversation_empty_chat_settings.query0bb6bc05": {
+      "value": 30,
+      "unit": "em",
+      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 30em) {"
+    },
+    "legacy_main_components_conversation_empty_chat_settings.querybb18e0cc": {
+      "value": 50,
+      "unit": "em",
+      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 50em) {"
+    },
+    "legacy_main_components_conversation_empty_chat_settings.query7a8a99ac": {
+      "value": 35,
+      "unit": "em",
+      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 35em) {"
+    },
+    "legacy_main_components_conversation_empty_chat_settings.query62cf757f": {
+      "value": 25,
+      "unit": "em",
+      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 25em) {"
+    },
+    "legacy_main_components_conversation_empty_chat_settings.query7269dc35": {
+      "value": 20,
+      "unit": "em",
+      "purpose": "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {"
     }
   },
   "queries": {
@@ -1281,15 +1251,6 @@
       "scope": "local"
     },
     {
-      "path": "src/hooks/chatPrefetch.ts",
-      "kind": "query",
-      "signature": "matchMedia(\"(max-width: 760px)\"",
-      "key": "legacy_chatPrefetch.width760",
-      "count": 1,
-      "purpose": "Retained query consumer in chatPrefetch",
-      "plannedOwner": "slice1-contract"
-    },
-    {
       "path": "src/native/close.ts",
       "kind": "layer",
       "signature": "z-index:2147483647",
@@ -1682,96 +1643,6 @@
       "purpose": "Retain the main component's exact layer contract during responsive integration"
     },
     {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 60em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.query8f4fa78f",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 45em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.querya4e09282",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 32em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.query99ff479c",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 25em) {",
-      "count": 2,
-      "key": "legacy_main_components_conversation_empty_chat_settings.query62cf757f",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (min-width: 56.25em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.query736651e9",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 20em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.query7269dc35",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 30em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.queryd3296c98",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 22em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.queryeafc0baa",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (max-width: 18em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.query038ea2d3",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
-      "path": "src/components/conversation/empty-chat-settings.css",
-      "kind": "query",
-      "signature": "@container composer (min-width: 35em) {",
-      "count": 1,
-      "key": "legacy_main_components_conversation_empty_chat_settings.query7a8a99ac",
-      "plannedOwner": "main visual component",
-      "purpose": "Retain the main component's exact query contract during responsive integration"
-    },
-    {
       "path": "src/components/message-queue.css",
       "kind": "query",
       "signature": "@media (max-width: 37.5rem) {",
@@ -2038,6 +1909,51 @@
       "signature": "@media (max-width: 47.5rem) {",
       "count": 1,
       "key": "legacy_main_components_conversation_warnings.query0bafbd4a",
+      "plannedOwner": "main visual component",
+      "purpose": "Retain the main component's exact query contract during responsive integration"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "query",
+      "signature": "@container composer (min-width: 30em) {",
+      "count": 1,
+      "key": "legacy_main_components_conversation_empty_chat_settings.query0bb6bc05",
+      "plannedOwner": "main visual component",
+      "purpose": "Retain the main component's exact query contract during responsive integration"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "query",
+      "signature": "@container composer (min-width: 50em) {",
+      "count": 1,
+      "key": "legacy_main_components_conversation_empty_chat_settings.querybb18e0cc",
+      "plannedOwner": "main visual component",
+      "purpose": "Retain the main component's exact query contract during responsive integration"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "query",
+      "signature": "@container composer (min-width: 35em) {",
+      "count": 1,
+      "key": "legacy_main_components_conversation_empty_chat_settings.query7a8a99ac",
+      "plannedOwner": "main visual component",
+      "purpose": "Retain the main component's exact query contract during responsive integration"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "query",
+      "signature": "@container composer (max-width: 25em) {",
+      "count": 2,
+      "key": "legacy_main_components_conversation_empty_chat_settings.query62cf757f",
+      "plannedOwner": "main visual component",
+      "purpose": "Retain the main component's exact query contract during responsive integration"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "query",
+      "signature": "@container composer (max-width: 20em) {",
+      "count": 1,
+      "key": "legacy_main_components_conversation_empty_chat_settings.query7269dc35",
       "plannedOwner": "main visual component",
       "purpose": "Retain the main component's exact query contract during responsive integration"
     }

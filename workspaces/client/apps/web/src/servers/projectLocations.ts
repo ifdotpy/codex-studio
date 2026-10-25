@@ -1,6 +1,6 @@
 import { get, post, refreshSession } from "../api";
 import { serverLocalStorage } from "./storage";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import { readServers, type StudioServer } from "./registry";
 
 export type ProjectLocation = {

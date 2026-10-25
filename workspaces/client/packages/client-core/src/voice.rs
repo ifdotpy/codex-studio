@@ -602,7 +602,6 @@ fn rand_ssrc() -> Result<u32, String> {
 mod tests {
     use super::*;
     use bytes::BytesMut;
-    use std::sync::Mutex;
     use webrtc::data_channel::DataChannel;
     use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 
@@ -686,18 +685,17 @@ mod tests {
     }
 
     /// A local peer plays the realtime service: it reflects audio and starts the session.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test]
     async fn loopback_peer_exchanges_audio_and_events() {
         let (events, mut event_receiver) = mpsc::channel(256);
         let (microphone, microphone_receiver) = mpsc::channel(64);
-        let heard = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let sink = heard.clone();
+        let (audio, mut reflected) = mpsc::unbounded_channel();
         let muted = Arc::new(AtomicBool::new(false));
         let (peer, offer) = Peer::create(
             "127.0.0.1:0",
             events,
             microphone_receiver,
-            Arc::new(move |samples: &[f32]| sink.lock().unwrap().extend_from_slice(samples)),
+            Arc::new(move |samples: &[f32]| audio.send(samples.to_vec()).unwrap()),
             muted.clone(),
         )
         .await
@@ -763,24 +761,28 @@ mod tests {
             .unwrap();
         assert!(peer.answer("bad".into()).await.is_err());
 
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let (mut connected, mut started) = (false, false);
-        let mut position = 0;
-        while Instant::now() < deadline
-            && !(connected && started && heard.lock().unwrap().len() >= RATE)
-        {
-            let _ = microphone.try_send(tone(440.0, FRAME, position));
-            position += FRAME;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            while let Ok(event) = event_receiver.try_recv() {
+        let audio = tokio::time::timeout(Duration::from_secs(20), async {
+            let (mut connected, mut started) = (false, false);
+            while !(connected && started) {
+                let event = event_receiver
+                    .recv()
+                    .await
+                    .expect("peer events remain open");
                 connected |= event == json!({"type":"state","state":"connected"});
                 started |=
                     event["type"] == "message" && event["data"] == r#"{"type":"session.started"}"#;
             }
-        }
-        assert!(connected, "peer connected");
-        assert!(started, "data channel delivered the service event");
-        let audio = heard.lock().unwrap().clone();
+            // The returned samples acknowledge each real RTP exchange. Microphone
+            // capture owns production pacing; transport tests need no wall-clock delay.
+            let mut audio = Vec::new();
+            for position in (0..RATE).step_by(FRAME) {
+                microphone.send(tone(440.0, FRAME, position)).await.unwrap();
+                audio.extend(reflected.recv().await.expect("the peer reflects audio"));
+            }
+            audio
+        })
+        .await
+        .expect("negotiation and reflected audio complete");
         assert!(audio.len() >= RATE, "heard {} samples", audio.len());
         let tail = &audio[audio.len() - RATE / 2..];
         let crossings = tail
@@ -792,15 +794,23 @@ mod tests {
             "reflected tone crossings {crossings}"
         );
 
-        // Muted frames keep timing and carry silence.
+        // The same acknowledged exchanges carry silence after muting.
         muted.store(true, Ordering::Relaxed);
-        heard.lock().unwrap().clear();
-        for _ in 0..60 {
-            let _ = microphone.try_send(tone(440.0, FRAME, position));
-            position += FRAME;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let quiet = heard.lock().unwrap().clone();
+        let quiet = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut quiet = Vec::new();
+            for position in (RATE..RATE + 60 * FRAME).step_by(FRAME) {
+                microphone.send(tone(440.0, FRAME, position)).await.unwrap();
+                quiet.extend(
+                    reflected
+                        .recv()
+                        .await
+                        .expect("the peer reflects muted audio"),
+                );
+            }
+            quiet
+        })
+        .await
+        .expect("muted audio completes");
         let tail = &quiet[quiet.len().saturating_sub(RATE / 4)..];
         assert!(
             !tail.is_empty() && tail.iter().all(|s| s.abs() < 0.02),

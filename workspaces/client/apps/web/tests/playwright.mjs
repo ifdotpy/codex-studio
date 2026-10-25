@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { SYNC_PROTOCOL_VERSION } from "../src/generated/api.ts";
+import { SUBSCRIPTION_ENTITY_SCOPES } from "../src/generated/subscriptionEntities.ts";
 import {
   SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
   SYNC_STREAM_EVENT_MAX_BYTES,
@@ -24,6 +25,7 @@ import {
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.mjs";
+import { readResourceBaselines } from "./fixtures/resource-baselines.mjs";
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
 import { waitForFixturePort } from "./fixture-readiness.mjs";
@@ -74,6 +76,15 @@ process.once("exit", () => {
   for (const cacheDir of fixtureViteCaches)
     rmSync(cacheDir, { recursive: true, force: true });
 });
+const fixtureEntitySchemas = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../runtime/packages/runtime-http/openapi.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).components.schemas;
 const generatedApiSchema = readFileSync(
   new URL("../src/generated/apiSchema.ts", import.meta.url),
   "utf8",
@@ -454,11 +465,13 @@ async function stopFixtureChild(child) {
  * apiSchemaFixtureHeaders: boolean;
  * apiSchemaFixtureHeaderSetup: void;
  * fixtureChildCleanup: void;
+ * readOnlyRust: { origin: string; open: (page: import("playwright").Page) => Promise<void> };
  * }} ClientTestFixtures
  */
 /** @typedef {import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions & {
  * apiSchemaFixtureBrowserSetup: void;
  * browserStageTiming: void;
+ * readOnlyRustOrigin: string;
  * }} ClientWorkerFixtures
  */
 /** @type {import("@playwright/test").Fixtures<
@@ -599,6 +612,108 @@ const sharedFixtures = {
     },
     { scope: "worker", auto: true },
   ],
+  // Opt in only for layout/navigation witnesses. Mutating integration tests keep
+  // their own backend, while these tests reuse one minimal seed per worker.
+  readOnlyRustOrigin: [
+    // oxlint-disable-next-line no-empty-pattern
+    async ({}, use, workerInfo) => {
+      const scope = { children: new Set(), scratchDirs: new Map(), errors: [] };
+      const root = mkdtempSync(join(playwrightScratch.root, "readonly-rust-"));
+      const child = spawnScopedFixture(
+        scope,
+        {
+          ...workerInfo,
+          titlePath: ["read-only Rust fixture"],
+          file: "",
+        },
+        process.execPath,
+        [rustUiFixture, root, "--workers", "0"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let diagnostics = "";
+      child.stderr.on("data", (chunk) => {
+        diagnostics += chunk;
+      });
+      try {
+        const port = await waitForFixturePort(child, {
+          diagnostics: () => diagnostics,
+        });
+        await use(`http://127.0.0.1:${port}`);
+      } finally {
+        await stopFixtureChild(child);
+        rmSync(root, { recursive: true, force: true });
+        rmSync(rustFixtureStateDirectory(root), {
+          recursive: true,
+          force: true,
+        });
+      }
+      if (scope.errors.length)
+        throw new AggregateError(
+          scope.errors,
+          "Read-only fixture cleanup failed",
+        );
+    },
+    { scope: "worker", timeout: 60_000 },
+  ],
+  readOnlyRust: async ({ readOnlyRustOrigin }, use) => {
+    const writes = [];
+    await use({
+      origin: readOnlyRustOrigin,
+      async open(page) {
+        // Browser storage and preference replies remain private to each context.
+        // Any other persistent mutation means this test needs an isolated server.
+        await page.context().route("**/api/**", (route) => {
+          const request = route.request();
+          const path = new URL(request.url()).pathname;
+          if (
+            request.method() === "GET" ||
+            request.method() === "HEAD" ||
+            path === "/api/sync/subscriptions"
+          )
+            return route.fallback();
+          if (path === "/api/sync/preferences")
+            return route.fulfill({
+              json: { fields: request.postDataJSON().fields },
+            });
+          if (path === "/api/organization") {
+            const body = request.postDataJSON();
+            if (
+              body.read_state &&
+              Object.keys(body).every(
+                (key) => key === "id" || key === "read_state",
+              )
+            ) {
+              const { thread_id, turn_id, read, expected_revision } =
+                body.read_state;
+              return route.fulfill({
+                json: {
+                  id: body.id,
+                  readState: {
+                    threadId: thread_id,
+                    turnId: turn_id,
+                    read,
+                    revision: expected_revision + 1,
+                  },
+                },
+              });
+            }
+          }
+          writes.push(`${request.method()} ${path}`);
+          return route.fulfill({
+            status: 405,
+            json: { error: "Read-only fixture" },
+          });
+        });
+        await page.goto(readOnlyRustOrigin);
+      },
+    });
+    expect(
+      writes,
+      "Read-only witnesses must not mutate the shared backend",
+    ).toEqual([]);
+  },
   fixtureChildCleanup: [
     // oxlint-disable-next-line no-empty-pattern
     async ({}, use, testInfo) => {
@@ -696,6 +811,10 @@ export function spawnFixture(command, args, options) {
       "spawnFixture is only available before test cleanup begins",
     );
 
+  return spawnScopedFixture(scope, testInfo, command, args, options);
+}
+
+function spawnScopedFixture(scope, testInfo, command, args, options) {
   const fixtureScratch = mkdtempSync(join(playwrightScratch.root, "fixture-"));
   const home = join(fixtureScratch, "home");
   const inheritedCodexHome = options?.env?.CODEX_HOME;
@@ -946,7 +1065,7 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
 /** @typedef {Pick<ProjectEntityDto, "homeServerId" | "locations" | "locationsRevision" | "projectAliases" | "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: AccountRateLimitsDto | null, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], viewScopedAgents?: boolean, workDetails?: import("../src/generated/api").components["schemas"]["WorkItem"][], agentDetails?: import("../src/generated/api").components["schemas"]["AgentDetailEntityDto"][], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], accountsSummary?: import("../src/generated/api").components["schemas"]["AccountsSummaryDto"], desktop?: import("../src/generated/api").components["schemas"]["DesktopEntityDto"], accountCostsByAccount?: Record<string, import("../src/generated/api").components["schemas"]["AccountCostEntityDto"]>, sessionCostsByAgent?: Record<string, import("../src/generated/api").components["schemas"]["SessionCostEntityDto"]>, terminals?: import("../src/generated/api").components["schemas"]["TerminalEntityDto"][], studioErrors?: import("../src/generated/api").components["schemas"]["StudioError"][], rateLimits: AccountRateLimitsDto | null, queuesByAgent?: Record<string, import("../src/generated/api").components["schemas"]["QueueView"]>, rateLimitsByAccount: Record<string, AccountRateLimitsDto>, stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 /** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
@@ -962,7 +1081,9 @@ const RESOURCE_STREAM_PROTOCOL = SYNC_PROTOCOL_VERSION;
 
 async function readJson(response, path) {
   if (!response.ok)
-    throw new Error(`GET ${path} failed with HTTP ${response.status}`);
+    throw new Error(
+      `GET ${path} failed with HTTP ${response.status}: ${(await response.text()).slice(0, 1000)}`,
+    );
   return response.json();
 }
 
@@ -975,9 +1096,10 @@ function isJsonObject(value) {
  * Read the session token and current entity rows used by browser specs.
  * The returned API is deliberately collection based; it is not a snapshot copy.
  * @param {string} origin
+ * @param {{ agentDetails?: boolean }} [options]
  * @returns {Promise<TestStateView>}
  */
-export async function readTestState(origin) {
+export async function readTestState(origin, options = {}) {
   const sessionUrl = new URL("/api/session", origin);
   const firstPullUrl = new URL("/api/sync/pull", origin);
   firstPullUrl.searchParams.set("scope", "state:entities:v1");
@@ -1051,7 +1173,26 @@ export async function readTestState(origin) {
 
   // Materialize only the collections used by browser specs. Keeping these as
   // ordinary arrays also lets fixture specs adjust the data they serve.
-  const agents = /** @type {TestAgent[]} */ (list("agent"));
+  if (options.agentDetails) {
+    const baselines = await readResourceBaselines(
+      origin,
+      list("agentSummary").map((agent) => ({
+        kind: "agentDetail",
+        agentId: String(agent.id),
+      })),
+    );
+    const details = new Map();
+    for (const entry of baselines)
+      for (const document of entry.entityChanges?.documents || [])
+        if (document.op === "upsert") details.set(document.id, document.value);
+    entities.set("agentDetail", details);
+  }
+  const agents = /** @type {TestAgent[]} */ (
+    list("agentSummary").map((summary) => ({
+      ...get("agentDetail", String(summary.id)),
+      ...summary,
+    }))
+  );
   const rooms = /** @type {TestRoom[]} */ (list("room"));
   const tasks = /** @type {TestTask[]} */ (list("task"));
   const monitors = /** @type {MonitorEntityDto[]} */ (list("monitor"));
@@ -1264,65 +1405,74 @@ function entityValuesFromSnapshot(snapshot) {
       "localMembers",
     ]),
   );
-  append("agent", runtime.agents, (row) => {
-    const entity = /** @type {Record<string, JsonValue>} */ ({ ...row });
-    for (const key of snapshotOnlyAgentKeys) delete entity[key];
-    const agentNestedAllowLists = {
-      activity: ["phase", "at", "tools"],
-      nativeStatus: ["phase", "error", "message", "turnId", "at"],
-      nativeSafetyBuffering: [
-        "turnId",
-        "threadId",
-        "accountKey",
-        "connectionId",
-        "at",
-        "dismissed",
-        "responseStarted",
-        "showBufferingUi",
-        "fasterModel",
-      ],
-      nativeSafetyRetry: [
-        "id",
-        "stage",
-        "model",
-        "turnId",
-        "created",
-        "updated",
-        "epoch",
-        "accountKey",
-        "error",
-        "newThreadId",
-        "acceptedTurnId",
-        "requestId",
-        "rpcMethod",
-      ],
-      nativeTurnError: ["turnId", "error"],
-      nativeThreadBlock: ["threadId", "error"],
-      connectionCheck: [
-        "epoch",
-        "accountKey",
-        "threadId",
-        "turnId",
-        "at",
-        "previousError",
-        "nativeState",
-        "restartTurnStatus",
-        "readError",
-      ],
-      readState: ["threadId", "turnId", "read", "revision"],
-      startAttempt: ["prepareError", "responseError", "retiredEvents"],
-    };
-    for (const [key, allowed] of Object.entries(agentNestedAllowLists)) {
-      if (isJsonObject(entity[key]))
-        entity[key] = pickJsonKeys(entity[key], allowed);
-    }
-    if (isJsonObject(entity.nativeRelease))
-      entity.nativeRelease = pickJsonKeys(entity.nativeRelease, [
-        "phase",
-        "resetPending",
-      ]);
-    return entity;
-  });
+  append(
+    runtime.viewScopedAgents ? "agentSummary" : "agent",
+    runtime.agents,
+    (row) => {
+      if (runtime.viewScopedAgents) {
+        const properties =
+          fixtureEntitySchemas.AgentSummaryEntityDto.properties;
+        return pickJsonKeys(row, Object.keys(properties));
+      }
+      const entity = /** @type {Record<string, JsonValue>} */ ({ ...row });
+      for (const key of snapshotOnlyAgentKeys) delete entity[key];
+      const agentNestedAllowLists = {
+        activity: ["phase", "at", "tools"],
+        nativeStatus: ["phase", "error", "message", "turnId", "at"],
+        nativeSafetyBuffering: [
+          "turnId",
+          "threadId",
+          "accountKey",
+          "connectionId",
+          "at",
+          "dismissed",
+          "responseStarted",
+          "showBufferingUi",
+          "fasterModel",
+        ],
+        nativeSafetyRetry: [
+          "id",
+          "stage",
+          "model",
+          "turnId",
+          "created",
+          "updated",
+          "epoch",
+          "accountKey",
+          "error",
+          "newThreadId",
+          "acceptedTurnId",
+          "requestId",
+          "rpcMethod",
+        ],
+        nativeTurnError: ["turnId", "error"],
+        nativeThreadBlock: ["threadId", "error"],
+        connectionCheck: [
+          "epoch",
+          "accountKey",
+          "threadId",
+          "turnId",
+          "at",
+          "previousError",
+          "nativeState",
+          "restartTurnStatus",
+          "readError",
+        ],
+        readState: ["threadId", "turnId", "read", "revision"],
+        startAttempt: ["prepareError", "responseError", "retiredEvents"],
+      };
+      for (const [key, allowed] of Object.entries(agentNestedAllowLists)) {
+        if (isJsonObject(entity[key]))
+          entity[key] = pickJsonKeys(entity[key], allowed);
+      }
+      if (isJsonObject(entity.nativeRelease))
+        entity.nativeRelease = pickJsonKeys(entity.nativeRelease, [
+          "phase",
+          "resetPending",
+        ]);
+      return entity;
+    },
+  );
   append("task", runtime.tasks);
   append("monitor", runtime.monitors);
   append("complaint", runtime.complaints, (row) => {
@@ -1333,8 +1483,59 @@ function entityValuesFromSnapshot(snapshot) {
   append("peerTeam", runtime.peerTeams);
   append("rule", runtime.rules);
   append("work", runtime.work);
+  append("workDetail", runtime.workDetails, (row) => ({
+    ...row,
+    results: [],
+    decisions: [],
+    releases: [],
+  }));
+  for (const task of runtime.workDetails ?? []) {
+    for (const [field, collection] of [
+      ["results", "workResult"],
+      ["decisions", "workDecision"],
+      ["releases", "workRelease"],
+    ]) {
+      const history = task[field];
+      if (!Array.isArray(history)) continue;
+      for (const [index, value] of history.entries()) {
+        const id = `${task.id}:${index}`;
+        values.push({
+          collection,
+          id,
+          value: { id, taskId: task.id, rootId: task.rootId, index, value },
+        });
+      }
+    }
+  }
+  append("agentDetail", runtime.agentDetails, (row) =>
+    pickJsonKeys(
+      row,
+      Object.keys(fixtureEntitySchemas.AgentDetailEntityDto.properties),
+    ),
+  );
+  append("studioError", runtime.studioErrors);
   append("chat", snapshot.chats);
   append("edge", snapshot.edges);
+  for (const [field, collection] of [
+    ["accountsSummary", "accounts"],
+    ["desktop", "desktop"],
+  ]) {
+    if (isJsonObject(runtime[field]))
+      values.push({ collection, id: "current", value: runtime[field] });
+  }
+  for (const [field, collection] of [
+    ["accountCostsByAccount", "accountCost"],
+    ["sessionCostsByAgent", "sessionCost"],
+  ]) {
+    if (isJsonObject(runtime[field]))
+      for (const [id, value] of Object.entries(runtime[field]))
+        if (isJsonObject(value)) values.push({ collection, id, value });
+  }
+  append("terminal", runtime.terminals);
+  if (isJsonObject(runtime.queuesByAgent)) {
+    for (const [id, value] of Object.entries(runtime.queuesByAgent))
+      if (isJsonObject(value)) values.push({ collection: "queue", id, value });
+  }
   const limits = isJsonObject(runtime.rateLimitsByAccount)
     ? runtime.rateLimitsByAccount
     : isJsonObject(runtime.rateLimits)
@@ -1600,7 +1801,16 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       reconcileMutableEntityPullState(pullState, fixture.snapshot);
       pullOptions = {
         ...validation.params,
-        documents: [...pullState.documents.values()],
+        documents: [...pullState.documents.values()].filter(
+          (document) =>
+            ![
+              "workDetail",
+              "workResult",
+              "workDecision",
+              "workRelease",
+              "agentDetail",
+            ].includes(document.collection),
+        ),
         maxSeq: pullState.maxSeq,
       };
     }
@@ -1619,13 +1829,90 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     let revision = 0;
     let eventId = 0;
     const resourceRevisions = new Map();
-    const withResourceVersions = (resources, advance = false) =>
-      resources.map((resource) => {
+    const withResourceVersions = (resources, advance = false) => {
+      const changed = updateEntitySyncFixture(fixture.snapshot);
+      const current = nodeEntityPullStates.get(fixture.snapshot);
+      return resources.map((resource) => {
         const key = JSON.stringify(resource);
         const next = (resourceRevisions.get(key) || 0) + (advance ? 1 : 0);
         resourceRevisions.set(key, next || 1);
+        if (
+          resource.kind === "state" &&
+          fixture.snapshot.runtime.viewScopedAgents &&
+          current
+        ) {
+          return {
+            resource,
+            revision: current.maxSeq,
+            cursor: { workspaceId: identity.workspaceId, seq: current.maxSeq },
+            replyKind: "snapshot",
+            entityChanges: {
+              after: 0,
+              through: current.maxSeq,
+              documents: [...current.documents.values()].filter(
+                (document) =>
+                  document.op === "upsert" &&
+                  ![
+                    "workDetail",
+                    "workResult",
+                    "workDecision",
+                    "workRelease",
+                    "agentDetail",
+                  ].includes(document.collection),
+              ),
+            },
+          };
+        }
+        if (resource.kind === "state") {
+          const documents = changed.filter(
+            (document) =>
+              ![
+                "workDetail",
+                "workResult",
+                "workDecision",
+                "workRelease",
+                "agentDetail",
+              ].includes(document.collection),
+          );
+          if (documents.length)
+            return {
+              resource,
+              revision: documents.at(-1).seq,
+              entities: {
+                after: documents[0].seq - 1,
+                through: documents.at(-1).seq,
+                documents,
+              },
+            };
+        }
+        const scope =
+          /** @type {{ collections: readonly string[], idField?: string | null, agentField?: string | null } | undefined} */ (
+            SUBSCRIPTION_ENTITY_SCOPES[resource.kind]
+          );
+        const selector = /** @type {Record<string, unknown>} */ (resource);
+        if (resource.kind !== "state" && scope && current) {
+          const documents = [...current.documents.values()].filter(
+            (document) =>
+              document.op === "upsert" &&
+              scope.collections.includes(document.collection) &&
+              (!scope.idField || document.id === selector[scope.idField]) &&
+              (!scope.agentField ||
+                ("rootId" in document.value &&
+                  document.value.rootId === selector[scope.agentField]) ||
+                ("agent" in document.value &&
+                  document.value.agent === selector[scope.agentField])),
+          );
+          return {
+            resource,
+            revision: current.maxSeq,
+            cursor: { workspaceId: identity.workspaceId, seq: current.maxSeq },
+            replyKind: "snapshot",
+            entityChanges: { after: 0, through: current.maxSeq, documents },
+          };
+        }
         return { resource, revision: next || 1 };
       });
+    };
     response.writeHead(200, {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
@@ -1714,7 +2001,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         (resource) => !removed.has(JSON.stringify(resource)),
       );
       const keys = new Set(next.map((resource) => JSON.stringify(resource)));
-      for (const resource of update.add) {
+      const addedResources = update.add.map(({ resource }) => resource);
+      for (const resource of addedResources) {
         if (!keys.has(JSON.stringify(resource))) next.push(resource);
         keys.add(JSON.stringify(resource));
       }
@@ -1724,13 +2012,13 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       if (update.add.length)
         writeFrame("resources", {
           ...initial,
-          resources: update.add,
+          resources: addedResources,
           resourceVersions: fixture.versionedResources
-            ? withResourceVersions(update.add)
+            ? withResourceVersions(addedResources)
             : [],
           revision: ++revision,
         });
-      writeProgress(update.add);
+      writeProgress(addedResources);
     });
     response.once("close", () => sessions.delete(sessionId));
     const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {

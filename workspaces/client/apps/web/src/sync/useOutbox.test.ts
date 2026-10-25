@@ -64,6 +64,9 @@ function databaseFixture(
   synchronousSubscriptionErrors = 0,
 ) {
   const listeners = new Set<(docs: OutboxDocument[]) => void>();
+  const projectionListeners = new Set<
+    (event: { documentData: unknown }) => void
+  >();
   let findExecutions = 0;
   let subscriptions = 0;
   const docs: OutboxDocument[] = [];
@@ -101,10 +104,18 @@ function databaseFixture(
     verifyWorkspace: async () => {},
     db: {
       projections: {
-        $: { subscribe: () => ({ unsubscribe: () => {} }) },
+        $: {
+          subscribe: (listener: (event: { documentData: unknown }) => void) => {
+            projectionListeners.add(listener);
+            return { unsubscribe: () => projectionListeners.delete(listener) };
+          },
+        },
         storageInstance: { findDocumentsById: async () => [] },
       },
       outbox: {
+        findOne: (id: string) => ({
+          exec: async () => docs.find((doc) => doc.id === id),
+        }),
         find: () => ({
           exec: async () => {
             findExecutions++;
@@ -138,6 +149,17 @@ function databaseFixture(
     add,
     findExecutions: () => findExecutions,
     subscriptions: () => subscriptions,
+    publishReceipt: (value: unknown) => {
+      for (const listener of projectionListeners)
+        listener({
+          documentData: {
+            id: "entity:messageReceipt:hidden",
+            entity: { collection: "messageReceipt", id: "hidden", value },
+            seq: 3,
+            _deleted: false,
+          },
+        });
+    },
   };
 }
 
@@ -266,5 +288,33 @@ it("retries a real queued network failure once after the backoff deadline", asyn
   expect(
     mocks.syncPost.mock.calls.map(([, body]) => (body as { id: string }).id),
   ).toEqual(["stable-message-id", "stable-message-id"]);
+  unmount();
+});
+
+it("streams delivery into a hidden accepted outbox row without another receipt GET", async () => {
+  const fixture = databaseFixture([
+    {
+      id: "hidden",
+      body: { id: "hidden", room: "chat", text: "input" },
+      status: "accepted",
+      displayPending: false,
+      created: 1,
+      receipt: { id: "hidden", status: "dispatching", materialized: true },
+    },
+  ]);
+  mocks.syncDatabase.mockResolvedValue(fixture.database);
+  const unmount = mount();
+  await flushMicrotasks();
+  const initialReads = mocks.syncGet.mock.calls.length;
+  fixture.publishReceipt({
+    id: "hidden",
+    agent: "chat",
+    status: "delivered",
+    materialized: true,
+  });
+  await flushMicrotasks();
+  expect(JSON.parse(fixture.docs[0]!.payload).receipt.status).toBe("delivered");
+  expect(mocks.syncGet).toHaveBeenCalledTimes(initialReads);
+  expect(mocks.syncPost).not.toHaveBeenCalled();
   unmount();
 });

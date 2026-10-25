@@ -1,5 +1,5 @@
-import { afterEach, expect, it, vi } from "vitest";
-import type { ResourceVersion } from "../sync/resourceEvents";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ResourceVersion } from "../sync/subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
@@ -39,7 +39,7 @@ vi.mock("../servers/ServerServicesContext", async () => {
     useServerResourceReads: () => watchResourceReads,
   };
 });
-vi.mock("../sync/resourceEvents", () => ({
+vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (resource: unknown, callback: typeof mocks.changes) => {
     expect(resource).toEqual({ kind: "voice", agentId: "owner-chat" });
     mocks.changes = callback;
@@ -55,6 +55,7 @@ vi.mock("../sync/client", () => ({
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
 import RealtimeVoice from "./RealtimeVoice";
 
+beforeEach(() => vi.useFakeTimers());
 let cleanups: (() => void)[] = [];
 afterEach(() => {
   cleanups.forEach((cleanup) => cleanup());
@@ -64,6 +65,7 @@ afterEach(() => {
   mocks.post.mockReset();
   mocks.connection.mockClear();
   expect(mocks.changes).toBeUndefined();
+  vi.useRealTimers();
 });
 
 it("consumes owner voice batches, recovering gaps and changed epochs through the same owner", async () => {
@@ -94,10 +96,12 @@ it("consumes owner voice batches, recovering gaps and changed epochs through the
   await Promise.resolve();
   await Promise.resolve();
   expect(mocks.post).not.toHaveBeenCalled();
-  await vi.waitFor(() => expect(mocks.states[6]).toEqual([first]));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.states[6]).toEqual([first]);
   expect(mocks.connection).toHaveBeenCalledOnce();
   emit(2, 1, 2, [second]);
-  await vi.waitFor(() => expect(mocks.states[6]).toEqual([first, second]));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.states[6]).toEqual([first, second]);
   expect(mocks.post).not.toHaveBeenCalled();
   mocks.post.mockResolvedValue({
     cursor: 4,
@@ -105,14 +109,14 @@ it("consumes owner voice batches, recovering gaps and changed epochs through the
     session: null,
   });
   emit(3, 3, 4, []);
-  await vi.waitFor(() =>
-    expect(mocks.post).toHaveBeenCalledWith(
-      "/api/voice/records",
-      { agent: "owner-chat", after: 2 },
-      { timeoutMs: 15000 },
-    ),
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.post).toHaveBeenCalledWith(
+    "/api/voice/records",
+    { agent: "owner-chat", after: 2 },
+    { timeoutMs: 15000 },
   );
   emit(1, 0, 1, [second], "restarted");
-  await vi.waitFor(() => expect(mocks.states[6]).toEqual([second]));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.states[6]).toEqual([second]);
   expect(mocks.post).toHaveBeenCalledTimes(1);
 });

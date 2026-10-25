@@ -42,12 +42,14 @@ export default function VaultSetup({
 }: {
   entry: VaultEntry;
   name: string;
-  backend: Pick<SidebarBackend, "post">;
+  backend: Pick<SidebarBackend, "post" | "resources">;
   onClose: () => void;
   onDone: (text: string) => void;
 }) {
   const { showVaultKeys, canShowVaultKeys } = useServerFileDialogs();
-  const resources = useServerResources();
+  const scopedResources = useServerResources();
+  const resources = backend.resources ?? scopedResources;
+  const controller = useRef(new AbortController());
   const projectId = entry.vault.projectId;
   const [facts, setFacts] = useState<VaultSetupFacts | null>(null);
   const [prefix, setPrefix] = useState("");
@@ -58,12 +60,14 @@ export default function VaultSetup({
   const [login, setLogin] = useState<VaultLogin | null>(null);
   const [job, setJob] = useState<VaultSetupJob | null>(null);
   const open = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    open.current = true;
+    controller.current = new AbortController();
+    return () => {
       open.current = false;
-    },
-    [],
-  );
+      controller.current.abort();
+    };
+  }, []);
 
   const load = useCallback(
     async (name?: string) => {
@@ -135,7 +139,11 @@ export default function VaultSetup({
         backend,
         "/api/vault/aws-login",
         { profile, requestId: crypto.randomUUID() },
-        { onUpdate: (update) => open.current && setLogin(update) },
+        {
+          resources,
+          signal: controller.current.signal,
+          onUpdate: (update) => open.current && setLogin(update),
+        },
       );
       if (!open.current) return;
       if (done.state === "failed") setError(done.error ?? "The sign-in failed");
@@ -156,7 +164,11 @@ export default function VaultSetup({
         backend,
         "/api/vault/setup",
         { projectId, requestId: crypto.randomUUID(), prefix, profile, region },
-        { onUpdate: (update) => open.current && setJob(update) },
+        {
+          resources,
+          signal: controller.current.signal,
+          onUpdate: (update) => open.current && setJob(update),
+        },
       );
       if (!open.current) return;
       if (done.state === "done")

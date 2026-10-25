@@ -50,6 +50,17 @@ const transcriptUnavailableIsNull: Assert<
 > = true;
 void transcriptUnavailableIsNull;
 
+const transcriptDeltaHasNoItemRevisions: Assert<
+  Equal<
+    Extract<
+      keyof components["schemas"]["TranscriptStreamDelta"],
+      "itemRevisions"
+    >,
+    never
+  >
+> = true;
+void transcriptDeltaHasNoItemRevisions;
+
 type NumericSuccess = ApiSuccessBodyFor<{
   responses: { 200: { content: { "application/json": { value: number } } } };
 }>;
@@ -358,7 +369,7 @@ type LocalContractAssertions = [
   Assert<Equal<LocalSyncRow, ProjectionSyncRow>>,
   Assert<
     Equal<
-      Required<Omit<LocalSyncRow, "entity">>,
+      Required<Omit<LocalSyncRow, "entity" | "evicted">>,
       components["schemas"]["SyncDocument"]
     >
   >,

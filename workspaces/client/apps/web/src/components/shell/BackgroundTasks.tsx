@@ -1,3 +1,4 @@
+import { useSubscription } from "../../sync/subscriptions";
 import {
   useServerApi,
   useServerServices,
@@ -49,7 +50,6 @@ import {
   type ChatIndicatorKind,
 } from "../chat-status/chatStatusModel";
 import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
-import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
@@ -230,6 +230,9 @@ export default function BackgroundTasks({
 }) {
   const { get, post } = useServerApi();
   const services = useServerServices();
+  const taskRecords = useSubscription(
+    opened && leadId ? { kind: "tasks", agentId: leadId } : null,
+  );
   const controlStorageKey = `process-control:${services?.owner.id || "local"}:${leadId}`;
   const controlScope = useRef(controlStorageKey);
   controlScope.current = controlStorageKey;
@@ -242,13 +245,12 @@ export default function BackgroundTasks({
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
-  const [processRecords, setProcessRecords] = useState<ManagedProcess[]>([]);
-  const [responseTargetState, setResponseTargetState] = useState<{
-    ownerKey: string;
-    target: ProcessResponseTarget | null;
-  } | null>(null);
-  const [processLoadError, setProcessLoadError] = useState("");
-  const [processLoading, setProcessLoading] = useState(false);
+  const processes = useSubscription(
+    opened && leadId ? { kind: "processes", agentId: leadId } : null,
+  );
+  const processRecords = processes.data?.processes ?? [];
+  const processLoadError = processes.error ? errorText(processes.error) : "";
+  const processLoading = processes.status === "loading";
   const [controlPending, setControlPending] = useState(false);
   const [includeWorkers, setIncludeWorkers] = useState(false);
   const [pendingControl, setPendingControl] =
@@ -259,49 +261,22 @@ export default function BackgroundTasks({
   const agents = data.threads,
     owner = (id: string) => agents.find((a) => a.id === id),
     scopeOwner = owner(leadId || ""),
-    responseOwnerKey = responseOwnerIdentityKey(scopeOwner),
+    streamedTarget = processes.data?.responseTarget,
     responseTarget =
-      responseTargetState?.ownerKey === responseOwnerKey
-        ? responseTargetState.target
+      scopeOwner?.inFlight &&
+      streamedTarget &&
+      streamedTarget.agent === scopeOwner.id &&
+      streamedTarget.epoch === scopeOwner.epoch &&
+      streamedTarget.threadId === scopeOwner.threadId &&
+      streamedTarget.turnId === scopeOwner.turnId &&
+      streamedTarget.accountKey === (scopeOwner.accountKey || "default")
+        ? streamedTarget
         : null;
   useEffect(() => {
     if (!opened) return;
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [opened]);
-  useEffect(() => {
-    if (!opened || !leadId) return;
-    let cancelled = false;
-    setResponseTargetState(null);
-    setProcessRecords([]);
-    setProcessLoading(true);
-    get("/api/processes", { query: { agent: leadId } })
-      .then((result) => {
-        if (cancelled) return;
-        setProcessRecords(result.processes);
-        setResponseTargetState({
-          ownerKey: responseOwnerKey,
-          target: result.responseTarget || null,
-        });
-        setProcessLoadError("");
-      })
-      .catch((error) => {
-        if (!cancelled) setProcessLoadError(errorText(error));
-      })
-      .finally(() => {
-        if (!cancelled) setProcessLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    opened,
-    leadId,
-    controlStorageKey,
-    data.runtime.monitors,
-    data.runtime.tasks,
-    responseOwnerKey,
-  ]);
   useEffect(() => {
     if (!leadId) return;
     setControlResult(null);
@@ -319,7 +294,9 @@ export default function BackgroundTasks({
   const processIds = new Set(processRecords.map((process) => process.id));
   const tasks = [
     ...processRecords.map(displayProcess),
-    ...data.runtime.tasks
+    // The task stream also carries tools and commands without a process handle.
+    // Process records own the output and controls for overlapping task ids.
+    ...(taskRecords.data ?? [])
       .map((task) => projectTaskForRenderer(task))
       .filter(
         (task): task is DisplayBackgroundTask =>
@@ -646,6 +623,12 @@ export default function BackgroundTasks({
         </p>
       )}
       {processLoading && <p role="status">Loading processes…</p>}
+      {taskRecords.error && (
+        <p role="alert" className="task-error">
+          Task list unavailable: {errorText(taskRecords.error)}
+        </p>
+      )}
+      {taskRecords.status === "loading" && <p role="status">Loading tasks…</p>}
       {controlResult?.response && (
         <p role={controlResult.status === "uncertain" ? "alert" : "status"}>
           Response stop: {String(controlResult.response.status)}
@@ -749,7 +732,6 @@ export default function BackgroundTasks({
           <TaskDetail
             key={selectedTask.id}
             task={selectedTask}
-            opened={opened}
             owner={owner(selectedTask.agent)}
             now={now}
             requests={data.runtime.requests}
@@ -832,7 +814,6 @@ export function BackgroundTaskStrip({
 
 function TaskDetail({
   task: summary,
-  opened,
   owner,
   now,
   requests,
@@ -845,7 +826,6 @@ function TaskDetail({
   controlPending,
 }: {
   task: DisplayBackgroundTask;
-  opened: boolean;
   owner?: Agent;
   now: number;
   requests: PendingRequest[];
@@ -857,7 +837,6 @@ function TaskDetail({
   onStop: () => void;
   controlPending: boolean;
 }) {
-  const watchResourceReads = useServerResourceReads();
   const { get, post } = useServerApi();
 
   const [fileOutput, setFileOutput] = useState<{
@@ -868,32 +847,15 @@ function TaskDetail({
   const [fileError, setFileError] = useState("");
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
-  useEffect(() => {
-    if (
-      !opened ||
-      summary.kind === "monitor" ||
-      summary.capabilities?.readOutput === false
-    )
-      return;
-    let stopped = false;
-    const stop = watchResourceReads(
-      { kind: "task", taskId: summary.id },
-      async () => {
-        const value = await get("/api/task", { query: { id: summary.id } });
-        if (!stopped) {
-          setDetail(value);
-          setLoadError("");
-        }
-      },
-      (error) => {
-        if (!stopped) setLoadError(errorText(error));
-      },
-    );
-    return () => {
-      stopped = true;
-      stop();
-    };
-  }, [opened, summary.id, summary.kind, watchResourceReads]);
+  const loadDetail = async () => {
+    try {
+      const value = await get("/api/task", { query: { id: summary.id } });
+      setDetail(value);
+      setLoadError("");
+    } catch (error) {
+      setLoadError(errorText(error));
+    }
+  };
   const resolvedDetail = detail?.id === summary.id ? detail : null;
   const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;
@@ -903,7 +865,7 @@ function TaskDetail({
       resolvedDetail?.tail ??
       ("tail" in task ? task.tail : undefined))
     : undefined;
-  const outputError = resolvedDetail?.error ?? monitor?.error;
+  const outputError = task.error ?? resolvedDetail?.error ?? monitor?.error;
   const [pending, setPending] = useState(false),
     [follow, setFollow] = useState(true),
     [copied, setCopied] = useState(false);
@@ -1059,6 +1021,15 @@ function TaskDetail({
               </p>
             )}
           </div>
+        )}
+        {task.kind !== "monitor" && !resolvedDetail && (
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            onClick={() => void loadDetail()}
+          >
+            Read tool input
+          </Button>
         )}
         {resolvedDetail?.arguments && (
           <details className="task-input">

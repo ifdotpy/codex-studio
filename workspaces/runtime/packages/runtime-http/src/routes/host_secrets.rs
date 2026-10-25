@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
+use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_services::project_secrets::{self, GuestRpc, ProjectSecretsError};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -21,11 +22,13 @@ const VAULT_JOB_MESSAGE_CAPACITY: usize = 256;
 const INVALID_LOGIN_JSON: &str = "layr-desk aws-login returned invalid JSON";
 const OVERSIZED_PROGRESS_LINE: &str = "layr-desk emitted an oversized progress line";
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum VaultJobKind {
-    Setup,
-    Login,
-    Pull,
+// The OpenAPI resource owns the shared job-kind contract.
+use crate::generated::VaultJobProgressResourceJob as VaultJobKind;
+impl Copy for VaultJobKind {}
+impl std::hash::Hash for VaultJobKind {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(self.as_str(), state);
+    }
 }
 
 struct VaultJobs {
@@ -74,9 +77,9 @@ pub struct VaultJobOwner {
 
 impl VaultJobOwner {
     /// Start the vault job owner on the current Tokio runtime.
-    pub fn start() -> Self {
+    pub fn start(changes: Arc<ChangeNotificationHub>) -> Self {
         let (sender, receiver) = mpsc::channel(VAULT_JOB_MESSAGE_CAPACITY);
-        let task = tokio::spawn(run_vault_job_owner(receiver));
+        let task = tokio::spawn(run_vault_job_owner(receiver, changes));
         Self {
             client: VaultJobClient { sender },
             task,
@@ -106,7 +109,10 @@ impl VaultJobOwner {
     }
 }
 
-async fn run_vault_job_owner(mut receiver: mpsc::Receiver<VaultJobMessage>) {
+async fn run_vault_job_owner(
+    mut receiver: mpsc::Receiver<VaultJobMessage>,
+    changes: Arc<ChangeNotificationHub>,
+) {
     let mut jobs = VaultJobs {
         jobs: HashMap::new(),
         order: HashMap::new(),
@@ -146,6 +152,7 @@ async fn run_vault_job_owner(mut receiver: mpsc::Receiver<VaultJobMessage>) {
                         };
                         jobs.jobs.remove(&(kind, expired));
                     }
+                    changes.notify_one();
                     drop(reply.send((initial, true)));
                 }
             }
@@ -159,11 +166,15 @@ async fn run_vault_job_owner(mut receiver: mpsc::Receiver<VaultJobMessage>) {
                 if let Some(job) = jobs.jobs.get_mut(&(kind, request_id))
                     && let Some(job) = job.as_object_mut()
                 {
+                    let previous = job.clone();
                     if clear_progress {
                         job.remove("progress");
                     }
                     if let Some(fields) = fields.as_object_mut() {
                         job.extend(std::mem::take(fields));
+                    }
+                    if *job != previous {
+                        changes.notify_one();
                     }
                 }
                 if let Some(reply) = reply
@@ -504,6 +515,18 @@ fn vault_job_client(state: &HttpState) -> Result<VaultJobClient, ApiError> {
         .vault_job_client
         .clone()
         .ok_or_else(ApiError::internal)
+}
+
+/// Read a receipt from the process-local owner; no sign-in details reach durable storage.
+pub(super) async fn job_progress(
+    state: &HttpState,
+    kind: VaultJobKind,
+    request_id: &str,
+) -> Option<Value> {
+    find_job(state.vault_job_client.as_ref()?, kind, request_id)
+        .await
+        .ok()
+        .flatten()
 }
 
 async fn find_job(
@@ -1263,8 +1286,93 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use studio_runtime_schema::shared_values::PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS;
+    use studio_runtime_services::change_notifications::ChangeNotificationHub;
     use studio_runtime_services::project_secrets::{GuestCallError, ProjectSecretsError};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn vault_job_progress_publishes_every_changed_receipt_without_persistence() {
+        use axum::response::IntoResponse;
+        use studio_runtime_services::resource_notify::ResourceChanges;
+        let folder = tempfile::tempdir().expect("owned pull folder");
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            "/unused".into(),
+            0,
+            None,
+            None,
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("validators");
+        let owner = VaultJobOwner::start(Arc::clone(&state.sync_changes));
+        let client = owner.client();
+        state.vault_job_client = Some(client.clone());
+        for (kind, job) in [
+            (VaultJobKind::Setup, "setup"),
+            (VaultJobKind::Login, "login"),
+            (VaultJobKind::Pull, "pull"),
+        ] {
+            let resource = json!({"kind":"vault-job-progress", "requestId":"one", "job":job});
+            let mut initial = json!({"requestId":"one", "state":"running"});
+            if kind == VaultJobKind::Setup {
+                initial["prefix"] = json!("demo");
+            }
+            if kind == VaultJobKind::Pull {
+                initial["folder"] = json!(folder.path().join("demo"));
+            }
+            let before = state.sync_changes.snapshot().revision;
+            reserve_job(&client, kind, "one", initial)
+                .await
+                .expect("reserve");
+            assert!(state.sync_changes.snapshot().revision > before);
+            for fields in [
+                match kind {
+                    VaultJobKind::Setup => json!({"state":"running", "progress":"creating"}),
+                    VaultJobKind::Login => {
+                        json!({"state":"running", "code":"TEMP", "page":"https://device.example/transient"})
+                    }
+                    VaultJobKind::Pull => json!({"state":"running", "files":1}),
+                },
+                json!({"state":"done"}),
+            ] {
+                let before = state.sync_changes.snapshot().revision;
+                super::finish_job(&client, kind, "one", fields.clone()).await;
+                assert!(
+                    state.sync_changes.snapshot().revision > before,
+                    "every receipt change wakes the stream"
+                );
+                let view = ResourceChanges {
+                    cursor: state.sync_changes.snapshot(),
+                    resources: vec![resource.clone()],
+                    versions: vec![state.sync_changes.snapshot().revision],
+                    entity_reset: false,
+                    overflow: false,
+                };
+                let mut frames = std::collections::VecDeque::new();
+                crate::routes::sync_stream::append_progress_frames(&state, &view, &mut frames)
+                    .await;
+                assert_eq!(frames.len(), 1);
+                let response = axum::response::Sse::new(futures_util::stream::iter([Ok::<
+                    _,
+                    std::convert::Infallible,
+                >(
+                    frames.pop_front().expect("frame"),
+                )]))
+                .into_response();
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("SSE body");
+                let text = std::str::from_utf8(&bytes).expect("UTF8");
+                assert!(text.starts_with("event: resource-progress\n"));
+                assert!(text.contains(fields["state"].as_str().expect("state")));
+                if kind == VaultJobKind::Login {
+                    assert!(text.contains("https://device.example/transient"));
+                }
+            }
+        }
+        owner.shutdown().await.expect("shutdown");
+    }
 
     const TEST_HTTP_PORT: u16 = 49_171;
     const TEST_HTTP_HOST: &str = "127.0.0.1:49171";
@@ -1343,7 +1451,7 @@ mod tests {
     }
 
     async fn test_job_client() -> (VaultJobOwner, VaultJobClient) {
-        let owner = VaultJobOwner::start();
+        let owner = VaultJobOwner::start(Arc::new(ChangeNotificationHub::new()));
         let client = owner.client();
         (owner, client)
     }
@@ -1742,9 +1850,9 @@ mod tests {
         vault_project(state.path());
         let host_command = fake_host_command(
             state.path(),
-            "[ \"$1\" = pull ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --to ] && [ \"$8\" = --json ] || exit 91\nprintf '%s\\n' '{\"seq\":7,\"files\":3,\"bytes\":1024}'",
+            "[ \"$1\" = pull ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --to ] && [ \"$8\" = --json ] || exit 91\nprintf pull >> \"$0.calls\"\nprintf '%s\\n' '{\"seq\":7,\"files\":3,\"bytes\":1024}'",
         );
-        let owner = VaultJobOwner::start();
+        let owner = VaultJobOwner::start(Arc::new(ChangeNotificationHub::new()));
         let client = owner.client();
         let mut state_http = HttpState::new(
             "test-token".to_owned(),
@@ -1758,9 +1866,12 @@ mod tests {
         state_http = state_http.with_vm_state_dir(state.path().join("linux-vm"));
         state_http.vault_host_command = Some(host_command);
         state_http.vault_job_client = Some(client.clone());
+        let mut without_command = state_http.clone();
+        without_command.vault_host_command = None;
         let app = crate::router::router(state_http).expect("runtime HTTP router starts");
         let request = json!({"projectId":"p1","requestId":"pull-fixture","to":state.path().to_string_lossy()});
         let response = app
+            .clone()
             .oneshot(authorized_request_at("/api/vault/pull", request.clone()))
             .await
             .unwrap();
@@ -1785,23 +1896,8 @@ mod tests {
         .expect("fake pull job completes");
         assert_eq!(result["state"], "done");
         assert_eq!(result["seq"], 7);
-        let replay_app = crate::router::router({
-            let mut state_http = HttpState::new(
-                "test-token".to_owned(),
-                "test-workspace".to_owned(),
-                state.path().to_string_lossy().into_owned(),
-                TEST_HTTP_PORT,
-                None,
-                None,
-                None,
-            );
-            state_http = state_http.with_vm_state_dir(state.path().join("linux-vm"));
-            state_http.vault_job_client = Some(client.clone());
-            state_http
-        })
-        .expect("replay router starts");
-        let replay = replay_app
-            .oneshot(authorized_request_at("/api/vault/pull", request))
+        let replay = app
+            .oneshot(authorized_request_at("/api/vault/pull", request.clone()))
             .await
             .unwrap();
         let replay_body = axum::body::to_bytes(replay.into_body(), usize::MAX)
@@ -1810,6 +1906,21 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&replay_body).unwrap(),
             result
+        );
+        let replay = super::pull(
+            axum::extract::State(without_command),
+            super::ApiJson(request),
+        )
+        .await
+        .expect("completed receipt replays without a host command");
+        assert_eq!(
+            replay.0, result,
+            "receipt replay precedes host dependency checks"
+        );
+        assert_eq!(
+            std::fs::read_to_string(state.path().join("layr-desk.calls"))
+                .expect("desk invocation count"),
+            "pull"
         );
         owner.shutdown().await.unwrap();
     }
@@ -1864,6 +1975,12 @@ mod tests {
     async fn project_secret_route_refuses_without_guest_and_writes_nothing() {
         let state = tempfile::tempdir().unwrap();
         let app = app(state.path(), None, None);
+        assert_eq!(
+            std::fs::read_dir(state.path())
+                .expect("isolated state tree")
+                .count(),
+            0
+        );
         let request = authorized_request(
             json!({"projectId":"p1","name":"TOKEN","value":"generated-test-value","requestId":"req-1"}),
         );
@@ -1882,7 +1999,12 @@ mod tests {
         let body = String::from_utf8_lossy(&body);
         assert!(body.contains("Linux VM guest RPC is unavailable"));
         assert!(!body.contains("generated-test-value"));
-        assert!(!state.path().join("layr-projects").exists());
+        assert_eq!(
+            std::fs::read_dir(state.path())
+                .expect("isolated state tree")
+                .count(),
+            0
+        );
     }
 
     #[cfg(unix)]

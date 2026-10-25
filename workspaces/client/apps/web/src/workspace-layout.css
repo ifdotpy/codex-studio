@@ -21,7 +21,6 @@
   .workspace-shortcuts {
     flex-wrap: nowrap;
     overflow-x: auto;
-    scrollbar-width: thin;
     gap: 0;
     min-height: 36px;
     padding: 2px calc(var(--chat-gutter) - 8px);

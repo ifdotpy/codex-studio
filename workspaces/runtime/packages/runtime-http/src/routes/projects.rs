@@ -372,15 +372,7 @@ async fn write_project(
         super::generated_json::<crate::generated::ProjectMutationRecord>(value)
             .map(|value| ProjectWriteResponse::Mutation(Box::new(value)))?
     };
-    let mut response = Json(value).into_response();
-    if is_sidebar {
-        // Python preserves the durable sidebar receipt on both first apply and
-        // exact retry; request-specific sync decoration would alter its shape.
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
-    }
-    Ok(response)
+    Ok(Json(value).into_response())
 }
 
 async fn local_project_registration(

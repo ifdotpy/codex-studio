@@ -100,6 +100,7 @@ pub(super) struct Faults {
     pub(super) startup_recovery: tokio::sync::Notify,
     pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
     pub(super) shutdown_phase: std::sync::Mutex<&'static str>,
+    pub(super) shutdown_phase_changed: tokio::sync::Notify,
     pub(super) callback_phase: std::sync::Mutex<&'static str>,
     /// A test holding the write side blocks every account-worker store
     /// operation at its start, before any SQL is submitted.
@@ -138,6 +139,7 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink for Rejecti
 impl Faults {
     pub(super) fn mark_shutdown_phase(&self, phase: &'static str) {
         *self.shutdown_phase.lock().unwrap() = phase;
+        self.shutdown_phase_changed.notify_one();
     }
 
     pub(super) fn current_shutdown_phase(&self) -> &'static str {
@@ -316,8 +318,8 @@ fn test_root() -> PathBuf {
 const FIXTURE_AGENT_ID: &str = "fixture-agent";
 const FIXTURE_AGENT_EPOCH: i64 = 0;
 
-/// Create a fresh store at `root` holding the fixture agent, then close it.
-async fn seed_fixture_root(root: &std::path::Path) {
+/// Create a fresh store at `root` holding the fixture agent.
+async fn seed_fixture_root(root: &std::path::Path) -> RuntimeStore {
     std::fs::create_dir_all(root).unwrap();
     let store = RuntimeStore::open(Some(root)).await.unwrap();
     let mut record = json!({
@@ -352,6 +354,7 @@ async fn seed_fixture_root(root: &std::path::Path) {
         })
         .await
         .unwrap();
+    store
 }
 
 struct Factory(std::sync::Mutex<Option<ProviderAttachment>>);
@@ -763,23 +766,10 @@ impl State {
     }
     /// The fixture state in a new folder under `base`.
     async fn new_at(base: PathBuf) -> Self {
-        let root = base.join(format!(
-            "worker-{}",
-            uuid::Uuid::new_v5(
-                &uuid::Uuid::NAMESPACE_OID,
-                format!(
-                    "{}-{:?}-{:?}",
-                    std::process::id(),
-                    SystemTime::now(),
-                    std::thread::current().id()
-                )
-                .as_bytes()
-            )
-        ));
-        seed_fixture_root(&root).await;
+        let root = base.join(format!("worker-{}", uuid::Uuid::new_v4()));
         let agent = FIXTURE_AGENT_ID.to_owned();
         let epoch = FIXTURE_AGENT_EPOCH;
-        let store = Arc::new(RuntimeStore::open(Some(&root)).await.unwrap());
+        let store = Arc::new(seed_fixture_root(&root).await);
         let mut bridge = test_bridge(store).await;
         let retained = MATRIX
             .try_with(|context| {
@@ -873,6 +863,31 @@ impl State {
             .await
             .unwrap();
     }
+    /// Subscribe before reading durable state, so a commit between the read and
+    /// the wait remains observable without polling SQLite.
+    fn commits(&self) -> watch::Receiver<u64> {
+        let (sender, receiver) = watch::channel(0_u64);
+        self.bridge.store.add_commit_observer(move || {
+            sender.send_modify(|revision| *revision = revision.wrapping_add(1));
+        });
+        receiver
+    }
+
+    async fn wait_record(&self, done: impl Fn(&Value) -> bool) -> Value {
+        let mut changes = self.bridge.agent_changes();
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            loop {
+                let record = self.record().await;
+                if done(&record) {
+                    return record;
+                }
+                changes.changed().await.expect("agent commit notification");
+            }
+        })
+        .await
+        .expect("agent reaches the expected state")
+    }
+
     async fn record(&self) -> Value {
         let agent = self.agent.clone();
         self.bridge

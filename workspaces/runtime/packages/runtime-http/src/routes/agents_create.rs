@@ -256,7 +256,7 @@ mod workspace_admission_tests {
             "workspaceMode":"worktree","cwd":"/fake/project"
         }))
         .expect("native parent");
-        assert_eq!(parent_workspace_mode(&native), "worktree");
+        assert!(prepare_parent_workspace(&native).is_ok());
 
         let image_lead = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
             "id":"image-parent","rootId":"image-parent","epoch":2,"status":"queued",
@@ -265,7 +265,10 @@ mod workspace_admission_tests {
             "cwd":"/fake/mount/repo"
         }))
         .expect("image lead");
-        assert_eq!(parent_workspace_mode(&image_lead), "image");
+        assert!(prepare_parent_workspace(&image_lead).is_ok());
+        let mut unready = image_lead;
+        unready.extra.remove("imageWorkspaceRepo");
+        assert!(prepare_parent_workspace(&unready).is_err());
     }
 
     /// Live 128-worker run: a second spawn batch was refused while the first
@@ -2110,20 +2113,32 @@ async fn rename(
             let driver = state.account_driver.clone();
             let catalog = state.model_catalog.clone();
             let event_wake = state.event_wake.clone();
+            let notifications = state.resource_notifications.clone();
             let agent_id = agent_id.clone();
             let request_id = request_id.clone();
             drop(tokio::spawn(async move {
                 finish_title_request(
-                    store, provider, driver, catalog, event_wake, agent_id, request_id,
+                    store,
+                    provider,
+                    driver,
+                    catalog,
+                    event_wake,
+                    agent_id.clone(),
+                    request_id.clone(),
                 )
                 .await;
+                // Receipt-only commits deliberately do not wake entity readers.
+                // Publish this exact selector after every finisher exit, including failure.
+                if let Err(error) = notifications.publish_once(&serde_json::json!({
+                    "requestId":format!("rename-result:{request_id}"),
+                    "resources":[{"kind":"rename-progress", "agentId":agent_id, "requestId":request_id}]
+                })) {
+                    eprintln!("Could not publish rename completion: {error}");
+                }
             }));
         }
-        let mut response =
+        let response =
             Json(super::generated_json::<generated::RenameResponse>(receipt)?).into_response();
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
         return Ok(response);
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -2149,15 +2164,10 @@ async fn rename(
     if !result.replayed {
         state.event_wake.notify_one();
     }
-    let mut response = super::generated_json::<generated::RenameResponse>(result.response)
+    let response = super::generated_json::<generated::RenameResponse>(result.response)
         .map(Json)
         .map_err(|_| ApiError::internal())?
         .into_response();
-    if result.replayed {
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
-    }
     Ok(response)
 }
 fn operation_error(error: OperationError) -> ApiError {

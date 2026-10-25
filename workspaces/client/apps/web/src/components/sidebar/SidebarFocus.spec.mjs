@@ -128,8 +128,7 @@ test("sidebar keyboard focus is consistent, unclipped and visible without state 
 }) => {
   test.setTimeout(90000);
   const root = await mkdtemp(join(tmpdir(), "studio-sidebar-focus-"));
-  const evidence =
-    process.env.SIDEBAR_FOCUS_EVIDENCE || join(root, "screenshots");
+  const evidence = test.info().outputPath("screenshots");
   await mkdir(evidence, { recursive: true });
   const proc = spawn(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -152,7 +151,7 @@ test("sidebar keyboard focus is consistent, unclipped and visible without state 
       proc.once("exit", () => reject(new Error(errors)));
     });
     for (const scheme of ["light", "dark"])
-      for (const width of [1440, 390]) {
+      for (const width of [1440, 390, 320]) {
         const context = await browser.newContext({
           colorScheme: scheme,
           viewport: { width, height: 960 },
@@ -261,7 +260,7 @@ test("sidebar keyboard focus is consistent, unclipped and visible without state 
           await page.keyboard.press("Escape");
           await expect(page.getByRole("menu")).toBeHidden();
           // Escape also dismisses the phone drawer; reopen it for the next menu.
-          if (width === 390) {
+          if (width < 760) {
             await expect(page.locator("#sidebar")).toBeHidden();
             await page.locator("#sidebar-toggle").click();
             await expect(page.locator("#sidebar")).toBeInViewport({ ratio: 1 });

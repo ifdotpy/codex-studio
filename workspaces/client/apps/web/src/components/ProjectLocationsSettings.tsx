@@ -50,7 +50,11 @@ export default function ProjectLocationsSettings({
     action: "add_location" | "remove_location";
   } | null>(null);
   const [heads, setHeads] = useState<Record<string, string>>({});
+  const headKey = (server: string, path: string) =>
+    JSON.stringify([project.id, server, path]);
+  // Opening settings permits the baseline read; location events do not.
   useEffect(() => {
+    let active = true;
     for (const location of project.locations || []) {
       void get("/api/project-locations", {
         query: {
@@ -59,15 +63,19 @@ export default function ProjectLocationsSettings({
           action: "info",
         },
       })
-        .then((row) =>
-          setHeads((old) => ({
-            ...old,
-            [location.serverId]: row.gitHead || "",
-          })),
-        )
+        .then((row) => {
+          if (active)
+            setHeads((old) => ({
+              ...old,
+              [headKey(location.serverId, location.path)]: row.gitHead || "",
+            }));
+        })
         .catch(() => {});
     }
-  }, [project.id, project.locations]);
+    return () => {
+      active = false;
+    };
+  }, [project.id]);
   const change = async (
     action: "add_location" | "remove_location",
     server: string,
@@ -97,6 +105,17 @@ export default function ProjectLocationsSettings({
     });
     request.current = null;
     await saved();
+    if (action === "add_location" && path) {
+      // Read only the folder added by this explicit user action.
+      const row = await get("/api/project-locations", {
+        query: { project: project.id, server, action: "info" },
+      }).catch(() => null);
+      if (row)
+        setHeads((old) => ({
+          ...old,
+          [headKey(server, path)]: row.gitHead || "",
+        }));
+    }
   };
   return (
     <div className="project-locations" aria-label="Project folders">
@@ -115,8 +134,10 @@ export default function ProjectLocationsSettings({
               {location.requestedPath && (
                 <small>Selected folder: {location.requestedPath}</small>
               )}
-              {heads[location.serverId] && (
-                <small>HEAD {heads[location.serverId]}</small>
+              {heads[headKey(location.serverId, location.path)] && (
+                <small>
+                  HEAD {heads[headKey(location.serverId, location.path)]}
+                </small>
               )}
             </div>
           }

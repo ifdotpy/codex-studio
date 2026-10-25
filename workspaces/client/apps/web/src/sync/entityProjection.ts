@@ -18,6 +18,7 @@ import type {
 } from "../generated/api";
 import type { components } from "../generated/api";
 type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
+type StudioError = components["schemas"]["StudioError"];
 export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
 
@@ -37,11 +38,15 @@ export type EntityRow = Omit<
 > & {
   _deleted?: components["schemas"]["SyncDocument"]["_deleted"];
   entity?: SyncEntityPayload;
+  /** Local selection eviction; seq remains the last authoritative source version. */
+  evicted?: boolean;
 };
 
 type EntityCollection = SyncEntityPayload["collection"];
 const ENTITY_COLLECTIONS = [
   "agent",
+  "agentSummary",
+  "agentDetail",
   "room",
   "task",
   "monitor",
@@ -54,10 +59,26 @@ const ENTITY_COLLECTIONS = [
   "edge",
   "event",
   "work",
+  "workDetail",
+  "workResult",
+  "workDecision",
+  "workRelease",
   "workspace",
   "rateLimit",
   "model",
+  "studioError",
+  "accounts",
+  "accountCost",
+  "sessionCost",
+  "desktop",
+  "terminal",
+  "queue",
   "uiPreferences",
+  "retainedWorktree",
+  "questionHistory",
+  "messageReceipt",
+  "plan",
+  "annotation",
 ] as const satisfies readonly EntityCollection[];
 type Assert<T extends true> = T;
 type EntityCollectionsAreComplete = Assert<
@@ -75,11 +96,19 @@ type EntityFor<C extends EntityCollection> = Extract<
   { collection: C }
 >["value"];
 type EntityValues = { [C in EntityCollection]: Map<string, EntityFor<C>> };
+type MergedAgentCache = WeakMap<
+  EntityFor<"agentSummary">,
+  {
+    detail: EntityFor<"agentDetail"> | undefined;
+    value: Snapshot["threads"][number];
+  }
+>;
 type EntityRowState = {
   seq: number;
   collection?: EntityCollection;
   entityId?: string;
   deleted?: boolean;
+  evicted?: boolean;
 };
 
 export type EntityProjection = {
@@ -89,11 +118,20 @@ export type EntityProjection = {
   changed: Set<EntityCollection>;
   values: EntityValues;
   snapshot: Snapshot | null;
+  agentSummarySeen: boolean;
+  mergedAgents: MergedAgentCache;
 };
 
 function emptyEntityValues(): EntityValues {
   return {
+    retainedWorktree: new Map(),
+    questionHistory: new Map(),
+    messageReceipt: new Map(),
+    plan: new Map(),
+    annotation: new Map(),
     agent: new Map<string, AgentEntityDto>(),
+    agentSummary: new Map(),
+    agentDetail: new Map(),
     room: new Map<string, RoomEntityDto>(),
     task: new Map<string, TaskEntityDto>(),
     monitor: new Map<string, MonitorEntityDto>(),
@@ -106,9 +144,26 @@ function emptyEntityValues(): EntityValues {
     edge: new Map<string, EdgeEntityDto>(),
     event: new Map<string, EventEntityDto>(),
     work: new Map<string, WorkEntityDto>(),
+    workDetail: new Map(),
+    workResult: new Map(),
+    workDecision: new Map(),
+    workRelease: new Map(),
     workspace: new Map<string, WorkspaceEntityDto>(),
+    accounts: new Map<string, components["schemas"]["AccountsSummaryDto"]>(),
+    accountCost: new Map<
+      string,
+      components["schemas"]["AccountCostResponse"]
+    >(),
+    sessionCost: new Map<
+      string,
+      components["schemas"]["SessionCostResponse"]
+    >(),
+    desktop: new Map<string, components["schemas"]["DesktopResponse"]>(),
+    terminal: new Map<string, components["schemas"]["TerminalRecord"]>(),
+    queue: new Map<string, components["schemas"]["QueueView"]>(),
     rateLimit: new Map<string, AccountRateLimitsDto>(),
     model: new Map<string, ModelEntityDto>(),
+    studioError: new Map<string, StudioError>(),
     uiPreferences: new Map<string, UiPreferencesDto>(),
   };
 }
@@ -145,11 +200,25 @@ function projectSnapshotCollections(
   prior: Snapshot | null,
   changed: ReadonlySet<EntityCollection>,
   values: EntityValues,
+  agentSummarySeen: boolean,
+  mergedAgents: MergedAgentCache,
 ): Snapshot {
   const agents =
-    prior && !changed.has("agent")
+    prior &&
+    !changed.has("agent") &&
+    !changed.has("agentSummary") &&
+    !changed.has("agentDetail")
       ? prior.runtime.agents
-      : entityValues(values, "agent");
+      : agentSummarySeen
+        ? entityValues(values, "agentSummary").map((summary) => {
+            const detail = values.agentDetail.get(summary.id);
+            const cached = mergedAgents.get(summary);
+            if (cached && cached.detail === detail) return cached.value;
+            const value = { ...detail, ...summary };
+            mergedAgents.set(summary, { detail, value });
+            return value;
+          })
+        : entityValues(values, "agent");
   const chats =
     prior && !changed.has("chat") ? prior.chats : entityValues(values, "chat");
   const edges =
@@ -212,11 +281,62 @@ function projectSnapshotCollections(
         (left, right) => left.catalogPosition - right.catalogPosition,
       );
   }
+  const studioErrors =
+    prior && !changed.has("studioError")
+      ? prior.runtime.studioErrors
+      : entityValues(values, "studioError").sort(
+          (a, b) => b.at - a.at || a.id.localeCompare(b.id),
+        );
   const runtime = {
     ...workspace,
     modelsByAccount,
+    retainedWorktrees:
+      prior && !changed.has("retainedWorktree")
+        ? prior.runtime.retainedWorktrees
+        : entityValues(values, "retainedWorktree"),
+    questionHistory:
+      prior && !changed.has("questionHistory")
+        ? prior.runtime.questionHistory
+        : entityValues(values, "questionHistory"),
+    messageReceipts:
+      prior && !changed.has("messageReceipt")
+        ? prior.runtime.messageReceipts
+        : entityValues(values, "messageReceipt"),
+    plans:
+      prior && !changed.has("plan")
+        ? prior.runtime.plans
+        : entityValues(values, "plan"),
+    annotations:
+      prior && !changed.has("annotation")
+        ? prior.runtime.annotations
+        : entityValues(values, "annotation"),
+    queuesByAgent:
+      prior && !changed.has("queue")
+        ? prior.runtime.queuesByAgent
+        : Object.fromEntries(values.queue),
+    accountsSummary:
+      prior && !changed.has("accounts")
+        ? prior.runtime.accountsSummary
+        : values.accounts.get("current"),
+    accountCostsByAccount:
+      prior && !changed.has("accountCost")
+        ? prior.runtime.accountCostsByAccount
+        : Object.fromEntries(values.accountCost),
+    sessionCostsByAgent:
+      prior && !changed.has("sessionCost")
+        ? prior.runtime.sessionCostsByAgent
+        : Object.fromEntries(values.sessionCost),
+    desktop:
+      prior && !changed.has("desktop")
+        ? prior.runtime.desktop
+        : values.desktop.get("current"),
+    terminals:
+      prior && !changed.has("terminal")
+        ? prior.runtime.terminals
+        : entityValues(values, "terminal"),
     rateLimitsByAccount,
     rateLimits: rateLimitsByAccount?.default ?? null,
+    studioErrors,
     agents,
     rooms,
     tasks,
@@ -237,7 +357,11 @@ function projectSnapshotCollections(
     threads: agents,
     chats,
     nodes:
-      prior && !changed.has("agent") && !changed.has("chat")
+      prior &&
+      !changed.has("agent") &&
+      !changed.has("agentSummary") &&
+      !changed.has("agentDetail") &&
+      !changed.has("chat")
         ? prior.nodes
         : [...agents, ...chats],
     edges,
@@ -253,6 +377,10 @@ export function emptyEntityProjection(): EntityProjection {
     changed: new Set(),
     values: emptyEntityValues(),
     snapshot: null,
+    agentSummarySeen: false,
+    // Unchanged agents keep their identity when another agent streams a change.
+    // Weak keys release entries once their summary leaves the projection.
+    mergedAgents: new WeakMap(),
   };
 }
 
@@ -277,7 +405,7 @@ function retainTombstone(
 export function applyEntityChanges(
   state: EntityProjection,
   rows: Iterable<
-    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted">> & {
+    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted" | "evicted">> & {
       readonly entity?: unknown;
     }
   >,
@@ -290,7 +418,10 @@ export function applyEntityChanges(
     if (
       previous &&
       (previous.seq > row.seq ||
-        (previous.seq === row.seq && (!row._deleted || previous.deleted)))
+        (previous.seq === row.seq &&
+          (row.evicted
+            ? previous.deleted
+            : !previous.evicted && (!row._deleted || previous.deleted))))
     )
       continue;
     const oldCollection = previous?.collection;
@@ -306,6 +437,7 @@ export function applyEntityChanges(
         ...(oldCollection ? { collection: oldCollection } : {}),
         ...(oldEntityId === undefined ? {} : { entityId: oldEntityId }),
         deleted: true,
+        ...(row.evicted ? { evicted: true } : {}),
       });
       continue;
     }
@@ -330,6 +462,28 @@ export function applyEntityChanges(
       changed.add(oldCollection);
     }
     switch (payload.collection) {
+      case "retainedWorktree":
+        state.values.retainedWorktree.set(payload.id, payload.value);
+        break;
+      case "questionHistory":
+        state.values.questionHistory.set(payload.id, payload.value);
+        break;
+      case "messageReceipt":
+        state.values.messageReceipt.set(payload.id, payload.value);
+        break;
+      case "plan":
+        state.values.plan.set(payload.id, payload.value);
+        break;
+      case "annotation":
+        state.values.annotation.set(payload.id, payload.value);
+        break;
+      case "agentSummary":
+        state.agentSummarySeen = true;
+        state.values.agentSummary.set(payload.id, payload.value);
+        break;
+      case "agentDetail":
+        state.values.agentDetail.set(payload.id, payload.value);
+        break;
       case "agent":
         state.values.agent.set(payload.id, payload.value);
         break;
@@ -369,14 +523,47 @@ export function applyEntityChanges(
       case "work":
         state.values.work.set(payload.id, payload.value);
         break;
+      case "workDetail":
+        state.values.workDetail.set(payload.id, payload.value);
+        break;
+      case "workResult":
+        state.values.workResult.set(payload.id, payload.value);
+        break;
+      case "workDecision":
+        state.values.workDecision.set(payload.id, payload.value);
+        break;
+      case "workRelease":
+        state.values.workRelease.set(payload.id, payload.value);
+        break;
       case "uiPreferences":
         state.values.uiPreferences.set(payload.id, payload.value);
+        break;
+      case "accounts":
+        state.values.accounts.set(payload.id, payload.value);
+        break;
+      case "accountCost":
+        state.values.accountCost.set(payload.id, payload.value);
+        break;
+      case "sessionCost":
+        state.values.sessionCost.set(payload.id, payload.value);
+        break;
+      case "desktop":
+        state.values.desktop.set(payload.id, payload.value);
+        break;
+      case "terminal":
+        state.values.terminal.set(payload.id, payload.value);
+        break;
+      case "queue":
+        state.values.queue.set(payload.id, payload.value);
         break;
       case "rateLimit":
         state.values.rateLimit.set(payload.id, payload.value);
         break;
       case "model":
         state.values.model.set(payload.id, payload.value);
+        break;
+      case "studioError":
+        state.values.studioError.set(payload.id, payload.value);
         break;
       case "workspace":
         state.values.workspace.set(payload.id, payload.value);
@@ -398,7 +585,13 @@ export function applyEntityChanges(
   if (!ready) return null;
   const prior = state.snapshot;
   if (prior && !changed.size) return prior;
-  const next = projectSnapshotCollections(prior, changed, state.values);
+  const next = projectSnapshotCollections(
+    prior,
+    changed,
+    state.values,
+    state.agentSummarySeen,
+    state.mergedAgents,
+  );
   changed.clear();
   state.snapshot = next;
   return next;

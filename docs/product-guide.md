@@ -75,6 +75,15 @@ Chat creation selects `workspaceMode`.
 | `image`    | macOS           | Native agents in ASIF images                        |
 | `worktree` | macOS and Linux | Native agents in Git worktrees                      |
 
+A `worktree` worker gets its Git worktree at `<root>/codex-agents/<agent id>`.
+By default `<root>` is `.worktrees` in the worker's repository. To place the
+worktrees of every repository on another disk, write `worktree-root.json` in the
+server state directory, for example
+`{"root": "/mnt/data/studio-worktrees"}`. The root must be an existing
+absolute directory; an invalid file or missing directory refuses new worktrees
+instead of falling back. Each new worktree reads the file, so a change needs no
+restart. Archive and cleanup still manage worktrees under the previous root.
+
 The first layr chat imports the project once. Later chats reuse the VM main line.
 The Mac folder stays separate. Export a copy only on request.
 See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
@@ -478,6 +487,17 @@ The sidebar and Team panel can collapse at any window width.
 the same account manager as the chat menu: add accounts, view saved accounts,
 remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
 text size, transcript width, message author icons, and sidebar shortcut preferences.
+
+The **Models** tab controls which models appear in this server's pickers. Its
+compact grid fills the available width and wraps to fewer columns on phones.
+**Select all models** includes models added in the future; **Clear selection**
+disables new model choices. Existing chats and saved defaults keep their selected
+model, shown as a disabled current choice if it is hidden. The selection is saved
+on this server and survives reloads and server restarts. Each paired server has
+its own selection. Saving and unsaved errors appear beside the controls; use
+**Retry saving** after a failure. Reconnection also retries pending edits. See the
+[preference write contract](ui-preferences-sync.md#server-model-whitelist-write-contract).
+
 Author icons are hidden by default. Use the composer picker to select the conversation account and model. Chat settings manages its team, project, and permissions.
 
 Prompt history is in the chat header; open **Conversation tools** when space is
@@ -494,7 +514,9 @@ On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
 mode switch is inside Chat settings on mobile. Mobile input text stays at least
 16px; larger selected text sizes apply normally.
 **Chat actions** contains agent tasks, your tasks, changes, plan, rules, search, and background tasks.
-**Search chats** searches full history. **Filter projects and chats** filters the sidebar list.
+The **Search chats** icon beside Studio settings searches full history; Ctrl+K / ⌘K also opens it.
+**New chat** and **New shared chat** sit beside **Add project** in the Projects heading.
+**Filter projects and chats** filters the sidebar list.
 The search control above the transcript searches the current chat.
 **Edit** and **Another answer** prepare a draft in a new branch. They do not send it automatically.
 

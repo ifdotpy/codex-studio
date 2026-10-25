@@ -130,7 +130,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     } else {
       await page.goto(url);
     }
-    const state = async () => (await readTestState(url)).runtime.agents;
+    const state = async () =>
+      (await readTestState(url, { agentDetails: true })).runtime.agents;
     const settingsResponse = (id, matches) =>
       page.waitForResponse((response) => {
         const request = response.request();
@@ -601,6 +602,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await highReasoningOption.click();
     assert.ok((await higherWorkerReasoningSaved).ok());
     await waitFor(() => defaultReasoning.isEnabled());
+    await expect(defaultReasoning.locator('input[value="high"]')).toBeChecked();
     const lowReasoningSaved = settingsResponse(
       lead.id,
       (body) =>

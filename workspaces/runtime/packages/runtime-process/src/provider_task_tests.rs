@@ -928,53 +928,8 @@ fn closed_pump_classification_preserves_sticky_shutdown_and_terminal_state() {
     assert!(pump_channel_closed(true, true).is_none());
 }
 
-/// The deleted supervisor v2 stdout path, kept as this parity test's oracle:
-/// raw payload to `Value`, reply ID rewritten on the value, value encoded
-/// again and decoded by the wire decoder.
-fn value_detour_oracle(
-    payload: &str,
-    response_ids: &mut BTreeMap<u64, Value>,
-) -> DecodedJournalPayload {
-    let mut value: Value = serde_json::from_str(payload).unwrap();
-    if value.get("method").is_none()
-        && let Some(remote) = value.get("id").and_then(Value::as_u64)
-    {
-        let local = response_ids
-            .remove(&remote)
-            .unwrap_or_else(|| Value::String(format!("supervisor-orphan-{remote}")));
-        value.as_object_mut().unwrap().insert("id".into(), local);
-    }
-    let bytes = match value.get("supervisorRaw").and_then(Value::as_str) {
-        Some(raw) => raw.as_bytes().to_vec(),
-        None => serde_json::to_vec(&value).unwrap(),
-    };
-    studio_runtime_providers::decode_journal_entry(0, 0, bytes).payload
-}
-
 #[tokio::test]
-async fn single_typed_decode_matches_the_value_detour_for_codex_and_claude_lines() {
-    let corpus = [
-        // Codex notifications, one with the supervisor's receipt extension.
-        r#"{"method":"item/agentMessage/delta","params":{"threadId":"t","turnId":"u","itemId":"i","delta":"x"},"_studioSupervisorReceivedAt":1760000000123}"#,
-        r#"{"method":"item/completed","params":{"threadId":"t","turnId":"u","item":{"id":"call_1","type":"commandExecution","exitCode":0}}}"#,
-        // Codex replies: mapped, unmapped (orphan), error, null result, extension.
-        r#"{"id":42,"result":{"turn":{"id":"u","status":"inProgress","items":[]}}}"#,
-        r#"{"id":43,"result":{}}"#,
-        r#"{"id":44,"error":{"code":-32600,"message":"bad"},"result":{"ignored":true}}"#,
-        r#"{"id":45,"result":null,"future":{"opaque":[1,"two",null]}}"#,
-        // Codex server request keeps the provider's own integer ID.
-        r#"{"id":5,"method":"item/commandExecution/requestApproval","params":{"threadId":"t"}}"#,
-        r#"{"id":6,"method":"future/serverRequest","params":{"a":1},"extension":true}"#,
-        // Claude bridge lines carry string IDs and need no mapping.
-        r#"{"id":"claude:0000000000000000000000000000002a","result":{"ok":true}}"#,
-        r#"{"method":"claude/state","params":{"sessionId":"s","state":"idle"},"_studioSupervisorReceivedAt":1760000000456}"#,
-        r#"{"id":"claude:1","method":"item/tool/requestUserInput","params":{"questions":[]}}"#,
-        // A non-JSON stdout line and a malformed frame stay raw stdout. The
-        // malformed one is key-sorted: the oracle re-encoded it sorted, while
-        // the single decode keeps the journal's original bytes.
-        r#"{"supervisorRaw":"provider diagnostic, not JSON\n"}"#,
-        r#"{"extension":[1,2],"method":17}"#,
-    ];
+async fn stdout_journal_remaps_only_numeric_replies_and_preserves_raw_bytes() {
     let shutdown = Shutdown::default();
     let (mut actor, _commands, _journal) = actor(&shutdown);
     actor.info = Some(AttachmentInfo {
@@ -984,39 +939,77 @@ async fn single_typed_decode_matches_the_value_detour_for_codex_and_claude_lines
         acknowledged: EventCursor(0),
         resumed: false,
     });
-    actor.response_ids = BTreeMap::from([
-        (42, RequestId::Number(7)),
-        (44, RequestId::String("local:44".into())),
-        (45, RequestId::Number(9)),
-    ]);
-    let mut oracle_ids = BTreeMap::from([
-        (42, Value::from(7)),
-        (44, Value::String("local:44".into())),
-        (45, Value::from(9)),
-    ]);
-    for (sequence, line) in (1..).zip(corpus) {
-        let expected = value_detour_oracle(line, &mut oracle_ids);
+    actor.response_ids = BTreeMap::from([(42, RequestId::String("local:42".into()))]);
+    // Codec shape/extension matrices belong to runtime-providers. This caller
+    // owns numeric reply correlation and preserves every other ID and raw byte.
+    for (payload, expected) in [
+        (
+            r#"{"id":42,"result":{"ok":true}}"#,
+            r#"{"id":"local:42","result":{"ok":true}}"#,
+        ),
+        (
+            r#"{"id":43,"result":{}}"#,
+            r#"{"id":"supervisor-orphan-43","result":{}}"#,
+        ),
+        (
+            r#"{"id":5,"method":"item/commandExecution/requestApproval","params":{"threadId":"t"}}"#,
+            r#"{"id":5,"method":"item/commandExecution/requestApproval","params":{"threadId":"t"}}"#,
+        ),
+        (
+            r#"{"id":"claude:42","result":{"ok":true}}"#,
+            r#"{"id":"claude:42","result":{"ok":true}}"#,
+        ),
+        (
+            r#"{"method":"claude/state","params":{"sessionId":"s","state":"idle"},"_studioSupervisorReceivedAt":1760000000456}"#,
+            r#"{"method":"claude/state","params":{"sessionId":"s","state":"idle"},"_studioSupervisorReceivedAt":1760000000456}"#,
+        ),
+    ] {
         let entry = actor
             .journal_entry_v2(
                 SupervisorEventV2 {
-                    sequence: EventCursor(sequence),
+                    sequence: EventCursor(1),
                     generation: Generation(1),
                     kind: EventKind::Stdout,
-                    payload: serde_json::value::RawValue::from_string(line.into()).unwrap(),
+                    payload: serde_json::value::RawValue::from_string(payload.into()).unwrap(),
                 },
                 0,
             )
             .unwrap();
-        let actual = match entry.payload {
-            JournalPayload::Frame(frame) => DecodedJournalPayload::Frame(frame),
-            JournalPayload::RawStdout { bytes, error } => {
-                DecodedJournalPayload::RawStdout { bytes, error }
-            }
-            _ => panic!("stdout decodes to a frame or raw stdout"),
+        let JournalPayload::Frame(frame) = entry.payload else {
+            panic!("protocol frame")
         };
-        assert_eq!(actual, expected, "{line}");
+        let actual: Value =
+            serde_json::from_slice(&studio_runtime_providers::encode_line(&frame).unwrap())
+                .unwrap();
+        assert_eq!(actual, serde_json::from_str::<Value>(expected).unwrap());
     }
     assert!(actor.response_ids.is_empty());
+    for (payload, expected) in [
+        (
+            r#"{"supervisorRaw":"provider diagnostic, not JSON\n"}"#,
+            b"provider diagnostic, not JSON\n".as_slice(),
+        ),
+        (
+            r#"{"extension":[1,2],"method":17}"#,
+            br#"{"extension":[1,2],"method":17}"#.as_slice(),
+        ),
+    ] {
+        let entry = actor
+            .journal_entry_v2(
+                SupervisorEventV2 {
+                    sequence: EventCursor(2),
+                    generation: Generation(1),
+                    kind: EventKind::Stdout,
+                    payload: serde_json::value::RawValue::from_string(payload.into()).unwrap(),
+                },
+                0,
+            )
+            .unwrap();
+        let JournalPayload::RawStdout { bytes, .. } = entry.payload else {
+            panic!("raw stdout")
+        };
+        assert_eq!(bytes, expected);
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

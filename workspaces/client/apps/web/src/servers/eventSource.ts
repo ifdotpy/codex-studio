@@ -6,7 +6,9 @@ export type ServerEventSource = Pick<
   EventSource,
   "close" | "onopen" | "onerror"
 > &
-  Pick<EventTarget, "addEventListener">;
+  Pick<EventTarget, "addEventListener"> & {
+    holdUntil?(ready: Promise<unknown>): void;
+  };
 export class EventStreamParser {
   private buffer = "";
   private data: string[] = [];
@@ -56,6 +58,26 @@ export class SignedEventSource
   onerror: EventSource["onerror"] = null;
   private controller = new AbortController();
   private stopped = false;
+  private hold: Promise<void> = Promise.resolve();
+  private releaseHold: (() => void) | undefined;
+  private reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  holdUntil(ready: Promise<unknown>) {
+    this.hold = Promise.all([this.hold, ready]).then(() => undefined);
+  }
+  private waitForHold() {
+    if (this.stopped) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const finish = () => {
+        if (this.releaseHold === finish) this.releaseHold = undefined;
+        resolve();
+      };
+      this.releaseHold = finish;
+      void this.hold.then(finish, (error) => {
+        if (this.releaseHold === finish) this.releaseHold = undefined;
+        reject(error);
+      });
+    });
+  }
   constructor(url: string, fetchRequest = serverFetch) {
     super();
     void (async () => {
@@ -81,6 +103,7 @@ export class SignedEventSource
       }
       this.onopen?.call(this as unknown as EventSource, new Event("open"));
       const reader = response.body.getReader();
+      this.reader = reader;
       const decoder = new TextDecoder();
       const parser = new EventStreamParser((type, data) => {
         if (!this.stopped) this.dispatchEvent(new MessageEvent(type, { data }));
@@ -90,10 +113,12 @@ export class SignedEventSource
           const chunk = await reader.read();
           if (chunk.done) break;
           parser.push(decoder.decode(chunk.value, { stream: true }));
+          await this.waitForHold();
         }
       } finally {
         await reader.cancel().catch(() => {});
         reader.releaseLock();
+        if (this.reader === reader) this.reader = undefined;
       }
       if (!this.stopped) throw new Error("The server event stream closed.");
     })().catch(() => {
@@ -103,11 +128,18 @@ export class SignedEventSource
   }
   close() {
     this.stopped = true;
+    this.releaseHold?.();
+    this.releaseHold = undefined;
+    void this.reader?.cancel().catch(() => {});
     this.controller.abort();
   }
 }
-export function openServerEvents(url: string): ServerEventSource {
-  return hasNativeClient() ||
+export function openServerEvents(
+  url: string,
+  options?: { backpressure?: boolean },
+): ServerEventSource {
+  return options?.backpressure ||
+    hasNativeClient() ||
     (serverViewId && (serverViewId !== "local" || isolatedServerView))
     ? new SignedEventSource(url)
     : new EventSource(url);

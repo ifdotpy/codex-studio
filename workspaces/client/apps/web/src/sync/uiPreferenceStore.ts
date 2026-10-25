@@ -1,3 +1,4 @@
+import { setPreferenceWriteStatus } from "./uiPreferenceStatus";
 import { serverStoragePrefix } from "../servers/storage";
 import {
   defaultStudioPreferences,
@@ -115,6 +116,7 @@ export function capturePreferenceWrite(
   }
   if (!changed) return;
   persist(target, scope, fields);
+  setPreferenceWriteStatus(storage, scope, { state: "saving" });
   listeners.forEach((listener) => listener());
   window.dispatchEvent(new CustomEvent(preferenceEvent, { detail: key }));
 }
@@ -334,4 +336,31 @@ export function acknowledgePreferenceFields(
   }
   persist(target, scope, fields);
   receivePreferenceFields(scope, accepted, storage, true);
+}
+
+/** Write one scalar field, including an explicit null, without replacing siblings. */
+export function writePreferenceValue(
+  key: string,
+  value: PreferenceFields[string]["value"],
+  storage = serverLocalStorage,
+) {
+  const scope = preferenceScope(key);
+  if (!scope) throw new Error("Unsupported preference");
+  const target = scope === "user" ? userStorage() : storage;
+  const fields = cache(target, scope);
+  const name = JSON.stringify([key]);
+  if (
+    fields[name] &&
+    JSON.stringify(fields[name].value) === JSON.stringify(value)
+  )
+    return;
+  const timestamp = Object.values(fields).reduce(
+    (latest, field) => Math.max(latest, field.timestamp + 1),
+    Date.now(),
+  );
+  fields[name] = { value, timestamp, writer: writer() };
+  persist(target, scope, fields);
+  setPreferenceWriteStatus(storage, scope, { state: "saving" });
+  listeners.forEach((listener) => listener());
+  window.dispatchEvent(new CustomEvent(preferenceEvent, { detail: key }));
 }

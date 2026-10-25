@@ -29,6 +29,7 @@ export default function SidebarWarnings({
   accountKey,
   syncWorkspaceId,
   open,
+  visible = true,
 }: {
   data: Snapshot;
   agent?: Agent;
@@ -36,6 +37,7 @@ export default function SidebarWarnings({
   accountKey: string;
   syncWorkspaceId: string;
   open: (id: string) => void;
+  visible?: boolean;
 }) {
   const target = useContext(Target);
   // Reuse the transcript projection so existing chat warnings remain available in the sidebar.
@@ -45,6 +47,7 @@ export default function SidebarWarnings({
     agent?.source === "managed",
     data.stateDir,
     syncWorkspaceId,
+    visible,
   );
   return target
     ? createPortal(

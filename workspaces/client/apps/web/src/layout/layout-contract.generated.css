@@ -72,7 +72,6 @@
   --layout-legacy_tasks-width480: 480px;
   --layout-legacy_workspace-width760: 760px;
   --layout-legacy_terminal_dock-width650: 650px;
-  --layout-legacy_chat-prefetch-width760: 760px;
   --layout-legacy_style-width640: 640px;
   --layout-legacy_style-width480: 480px;
   --layout-legacy_style-width1050: 1050px;
@@ -105,16 +104,6 @@
   --layout-legacy_main_components_conversation_conversation_chrome-query7269dc35: 20em;
   --layout-legacy_main_components_conversation_conversation_chrome-query77d11aa9: 24em;
   --layout-legacy_main_components_conversation_conversation_chrome-layerfb8580ce: 2;
-  --layout-legacy_main_components_conversation_empty_chat_settings-query8f4fa78f: 60em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-querya4e09282: 45em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-query99ff479c: 32em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-query62cf757f: 25em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-query736651e9: 56.25em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-query7269dc35: 20em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-queryd3296c98: 30em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-queryeafc0baa: 22em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-query038ea2d3: 18em;
-  --layout-legacy_main_components_conversation_empty_chat_settings-query7a8a99ac: 35em;
   --layout-legacy_main_components_message_queue-query452cba01: 37.5rem;
   --layout-legacy_main_components_project_settings-query0bafbd4a: 47.5rem;
   --layout-legacy_main_components_shell_background_controls-query452cba01: 37.5rem;
@@ -145,4 +134,9 @@
   --layout-legacy_main_workspace_layout-query4348d9ef: 60rem;
   --layout-legacy_main_workspace_layout-layer653d125a: 300;
   --layout-legacy_main_components_conversation_warnings-query0bafbd4a: 47.5rem;
+  --layout-legacy_main_components_conversation_empty_chat_settings-query0bb6bc05: 30em;
+  --layout-legacy_main_components_conversation_empty_chat_settings-querybb18e0cc: 50em;
+  --layout-legacy_main_components_conversation_empty_chat_settings-query7a8a99ac: 35em;
+  --layout-legacy_main_components_conversation_empty_chat_settings-query62cf757f: 25em;
+  --layout-legacy_main_components_conversation_empty_chat_settings-query7269dc35: 20em;
 }

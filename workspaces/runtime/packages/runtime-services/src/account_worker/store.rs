@@ -781,8 +781,12 @@ pub(super) fn hold_invalid_agent_record_in(
             id: agent_id.to_owned(),
         }
     })?;
-    studio_runtime_store::SyncDocumentsRepository::put_entity(
-        tx, "agent", agent_id, projection, false,
+    crate::sync_policy::publish_agent_projection(
+        tx,
+        agent_id,
+        projection,
+        false,
+        &|_, _, _, _| true,
     )?;
     Ok(())
 }
@@ -2057,7 +2061,31 @@ fn journal_one(
                             if let Some(turn) = turn {
                                 next.settle_turn(journal_scope, thread, turn);
                             }
-                            effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
+                            effect = Some(
+                                if params["turn"]["status"] == "failed"
+                                    && matches!(
+                                        crate::continuation_runtime::classify_usage_failure(
+                                            &params["turn"]["error"],
+                                            None
+                                        ),
+                                        Some(
+                                            crate::usage_resume::Cause::UsageLimit
+                                                | crate::usage_resume::Cause::RateLimit
+                                        )
+                                    )
+                                {
+                                    Effect::LimitFailure {
+                                        agent: identity.agent_id,
+                                        epoch: identity.epoch,
+                                        turn: params["turn"]["id"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .into(),
+                                    }
+                                } else {
+                                    Effect::Wake(identity.agent_id, identity.epoch)
+                                },
+                            );
                         }
                     }
                     _ => {

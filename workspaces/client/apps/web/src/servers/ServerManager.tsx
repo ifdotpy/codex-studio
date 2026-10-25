@@ -5,7 +5,7 @@ import DiscoveryPanel from "./DiscoveryPanel";
 import ServerAccessSettings from "./ServerAccessSettings";
 import { setServerExcluded } from "./automaticAccessStore";
 import type { useServerDiscovery } from "./useServerDiscovery";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import { parseInvitation } from "./pairing";
 import {
   Badge,

@@ -171,8 +171,7 @@ fn root() -> PathBuf {
 
 async fn test_store() -> (PathBuf, Arc<RuntimeStore>) {
     let root = root();
-    seed_fixture_root(&root).await;
-    let store = RuntimeStore::open(Some(&root)).await.expect("open store");
+    let store = seed_fixture_root(&root).await;
     (root, Arc::new(store))
 }
 
@@ -621,7 +620,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
                         "last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}}))
                 .await;
             peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            worker_barrier(&worker).await;
         }
     })
     .await

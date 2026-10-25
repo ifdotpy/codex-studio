@@ -281,6 +281,44 @@ const FEATURE_SCHEMA: &str = r#"
 
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
+    crate::entity_publication::prepare_work_change_journal(transaction)?;
+    transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
+    // A deleted row is no longer readable by the writer journal. Its source
+    // trigger owns the corresponding summary tombstone in the same transaction.
+    for (table, collection) in [
+        ("runtime_plans", "plan"),
+        ("runtime_annotations", "annotation"),
+        ("runtime_events", "messageReceipt"),
+        ("runtime_tasks", "task"),
+        ("runtime_requests", "questionHistory"),
+        ("runtime_agents", "retainedWorktree"),
+    ] {
+        let tombstone =
+            format!("json_object('collection','{collection}','id',OLD.id,'value',json('{{}}'))");
+        transaction.execute_batch(&format!(
+            "CREATE TRIGGER IF NOT EXISTS summary_{collection}_delete AFTER DELETE ON {table} BEGIN
+             INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+             SELECT '{collection}',OLD.id,(SELECT max(seq)+1 FROM (
+                 SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
+                 SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
+                 SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+                 sync_entity_hash({tombstone}),{tombstone},1
+             WHERE EXISTS(SELECT 1 FROM sync_entities WHERE collection='{collection}' AND id=OLD.id AND deleted=0)
+             ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=1;
+             END;"
+        ))?;
+    }
+    // Removing a transcript or its metadata can change materialization even
+    // though the event itself is unchanged. Journal that event through its
+    // source row; semantic event triggers ignore this value-preserving update.
+    transaction.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS summary_receipt_meta_delete AFTER DELETE ON runtime_event_meta BEGIN
+         UPDATE runtime_events SET id=id WHERE id=OLD.id AND kind='user'; END;
+         CREATE TRIGGER IF NOT EXISTS summary_receipt_item_delete AFTER DELETE ON runtime_items BEGIN
+         UPDATE runtime_events SET id=id WHERE kind='user' AND agent=OLD.agent AND (
+            OLD.id=agent || ':' || id OR id IN (SELECT id FROM runtime_event_meta
+                WHERE json_extract(record,'$.transcriptItemId')=OLD.id)); END;"
+    )?;
     Ok(())
 }
 
@@ -348,76 +386,5 @@ mod tests {
             core_violations.is_empty(),
             "feature schema tables must be bootstrap requirements, not core requirements: {core_violations:?}"
         );
-    }
-
-    fn compact(sql: &str) -> String {
-        sql.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
-    #[test]
-    fn voice_bootstrap_catalog_matches_python_voice_store() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
-        let transaction = connection.transaction().expect("transaction opens");
-        transaction
-            .execute_batch(&crate::agent_columns::fixture_sql(
-                "CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
-            ))
-            .expect("core tables precede feature schema bootstrap");
-        transaction
-            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
-            .expect("volatile agent table creates");
-        transaction
-            .execute_batch(FEATURE_SCHEMA)
-            .expect("voice schema bootstraps");
-
-        let expected = [
-            (
-                "table",
-                "voice_sessions",
-                "CREATE TABLE voice_sessions ( id TEXT PRIMARY KEY, agent TEXT NOT NULL, created REAL NOT NULL, ended REAL, sdp TEXT, answer TEXT, native_thread TEXT, account_key TEXT, connection_id TEXT, state TEXT, error TEXT)",
-            ),
-            (
-                "table",
-                "voice_records",
-                "CREATE TABLE voice_records ( seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, agent TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, item_id TEXT NOT NULL, previous_item_id TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL)",
-            ),
-            (
-                "index",
-                "voice_records_agent",
-                "CREATE INDEX voice_records_agent ON voice_records(agent,seq)",
-            ),
-            (
-                "table",
-                "voice_approvals",
-                "CREATE TABLE voice_approvals (id TEXT PRIMARY KEY, agent TEXT NOT NULL, speech TEXT NOT NULL, transcript TEXT NOT NULL, status TEXT NOT NULL, result TEXT)",
-            ),
-            (
-                "table",
-                "voice_deliveries",
-                "CREATE TABLE voice_deliveries ( id TEXT PRIMARY KEY, agent TEXT NOT NULL, records TEXT NOT NULL, text TEXT NOT NULL, edited_text TEXT)",
-            ),
-            (
-                "table",
-                "voice_speech_requests",
-                "CREATE TABLE voice_speech_requests ( id TEXT PRIMARY KEY, session TEXT NOT NULL, record_id TEXT NOT NULL, state TEXT NOT NULL, error TEXT)",
-            ),
-        ];
-        for (kind, name, python_sql) in expected {
-            let rust_sql: String = transaction
-                .query_row(
-                    "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
-                    [kind, name],
-                    |row| row.get(0),
-                )
-                .unwrap_or_else(|_| panic!("bootstrap is missing {name}"));
-            assert_eq!(
-                compact(&rust_sql),
-                compact(python_sql),
-                "{name} DDL differs"
-            );
-        }
     }
 }

@@ -208,7 +208,7 @@ export function useChatReadState(
         current.uncertain.delete(proof.id);
         changedMetadata((value) => value + 1);
         redraw((value) => value + 1);
-        await latest.current.refresh();
+        // The mutation response confirms the CAS; the agent stream carries it to other views.
       } catch (error) {
         if (valid()) {
           current.attempted.delete(attempt);

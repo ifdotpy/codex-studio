@@ -1,5 +1,5 @@
 import { useScreenEnvironment } from "../servers/ScreenContext";
-import { useServerApi } from "../servers/ServerServicesContext";
+import { useServerApi, useServerSync } from "../servers/ServerServicesContext";
 import { Button, TextInput } from "@mantine/core";
 import {
   ChevronDown,
@@ -24,7 +24,7 @@ import { errorText, type GetResult, type PostBody } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
+import { useSubscription } from "../sync/subscriptions";
 import { serverParentOrigin } from "../servers/environment";
 
 import { layoutValues } from "../layout/layout-contract.generated";
@@ -66,7 +66,7 @@ export default function TerminalDock({
     serverViewId,
   } = useScreenEnvironment();
   const shellTerminal = isServerView && !isClassicServerView && hasShell;
-  const watchResourceReads = useServerResourceReads();
+  const { subscribeStateProjection } = useServerSync();
   const { get, post, save, saved } = useServerApi();
 
   const [opened, setOpened] = useState(() =>
@@ -130,26 +130,21 @@ export default function TerminalDock({
       if (current()) throw error;
     }
   }, []);
-  useEffect(() => {
-    let active = true;
-    const stop = watchResourceReads(
-      { kind: "terminals" },
-      async () => {
-        try {
-          await load(() => active);
-        } catch (failure) {
-          if (active) setError(errorText(failure));
-        }
-      },
-      (failure) => {
-        if (active) setError(errorText(failure));
-      },
-    );
-    return () => {
-      active = false;
-      stop();
-    };
-  }, [load, watchResourceReads]);
+  useEffect(
+    () =>
+      subscribeStateProjection(
+        (snapshot) => {
+          if (snapshot?.runtime.terminals) {
+            setShells(snapshot.runtime.terminals);
+            setError("");
+          }
+        },
+        (failure) => {
+          if (failure) setError(errorText(failure));
+        },
+      ),
+    [subscribeStateProjection],
+  );
   // Page layout rules read this flag instead of #root:has(.terminal-dock).
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -631,14 +626,24 @@ export default function TerminalDock({
   );
 }
 
-function ShellView({
+export function ShellView({
   shell,
   notify,
 }: {
   shell: Shell;
   notify: (message: string) => void;
 }) {
-  const watchResourceReads = useServerResourceReads();
+  const output = useSubscription({
+    kind: "terminal-output",
+    terminalId: shell.id,
+  });
+  const [manualOutput, setManualOutput] =
+    useState<GetResult<"/api/terminals/output">>();
+  useEffect(() => setManualOutput(undefined), [output.data]);
+  const outputRef = useRef(output.data);
+  outputRef.current = manualOutput ?? output.data;
+  const offsetRef = useRef(0);
+  const applyOutputRef = useRef<() => void>(() => {});
   const { get, post, syncPost } = useServerApi();
 
   const host = useRef<HTMLDivElement>(null);
@@ -787,10 +792,9 @@ function ShellView({
   useEffect(() => {
     const generation = ++inputGeneration.current;
     let disposed = false;
-    let cleanupOutput: (() => void) | undefined;
     let observer: ResizeObserver | undefined;
     let resizeTimer: ReturnType<typeof setTimeout>;
-    let offset = 0;
+    offsetRef.current = 0;
     inputChain.current = Promise.resolve();
     inputBlocked.current = false;
     setInputFailure("");
@@ -849,29 +853,27 @@ function ShellView({
         observer = new ResizeObserver(resize);
         observer.observe(host.current);
         resize();
-        const stopOutput = watchResourceReads(
-          { kind: "terminal", terminalId: shell.id },
-          async () => {
-            const output = await get("/api/terminals/output", {
-              query: { id: shell.id, offset },
-            });
-            if (disposed) return;
-            if (output.truncated) {
-              instance!.reset();
-              setTruncated(true);
-            }
-            if (output.text) instance!.write(output.text);
-            offset = output.offset;
-            setStatus(output.status);
-            instance!.options.disableStdin =
-              inputBlocked.current || !running(output.status);
-            setFailure(output.error || "");
-          },
-          (failure) => {
-            if (!disposed) setFailure(errorText(failure));
-          },
-        );
-        cleanupOutput = stopOutput;
+        applyOutputRef.current = () => {
+          const value = outputRef.current;
+          if (!value || disposed) return;
+          const chars = Array.from(value.text);
+          const start = value.offset - chars.length;
+          if (offsetRef.current < start || offsetRef.current > value.offset) {
+            instance!.reset();
+            offsetRef.current = start;
+            setTruncated(start > 0);
+          }
+          const append = chars
+            .slice(Math.max(0, offsetRef.current - start))
+            .join("");
+          if (append) instance!.write(append);
+          offsetRef.current = value.offset;
+          setStatus(value.status);
+          instance!.options.disableStdin =
+            inputBlocked.current || !running(value.status);
+          setFailure(value.error || "");
+        };
+        applyOutputRef.current();
       })
       .catch((e) => {
         if (!disposed) setFailure(errorText(e));
@@ -879,13 +881,17 @@ function ShellView({
     return () => {
       disposed = true;
       fenceInput();
-      cleanupOutput?.();
+      applyOutputRef.current = () => {};
       clearTimeout(resizeTimer);
       observer?.disconnect();
       instance?.dispose();
       terminal.current = null;
     };
-  }, [shell.id, retry, watchResourceReads]);
+  }, [shell.id, retry]);
+  useEffect(() => {
+    applyOutputRef.current();
+    if (output.error) setFailure(errorText(output.error));
+  }, [output.data, output.error]);
   return (
     <div className="terminal-shell-view">
       {truncated && (
@@ -900,7 +906,13 @@ function ShellView({
           <button
             onClick={() => {
               fenceInput();
-              setRetry((value) => value + 1);
+              void get("/api/terminals/output", { query: { id: shell.id } })
+                .then((value) => {
+                  setManualOutput(value);
+                  setFailure("");
+                  setRetry((attempt) => attempt + 1);
+                })
+                .catch((error) => setFailure(errorText(error)));
             }}
           >
             Reconnect

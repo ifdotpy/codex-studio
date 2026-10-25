@@ -1,5 +1,7 @@
 //! HTTP adapter for the versioned sync event stream.
 
+use super::entity_transfer;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
 use std::io::{self, Write};
@@ -8,8 +10,8 @@ use std::time::Duration;
 
 use crate::generated::{
     DraftChangeBatch, EntityChangeBatch, ResourceChangeEvent, ResourceChangeEventReason,
-    ResourceRef, ResourceRevisionEntry, TranscriptChangeBatch, TranscriptStreamDelta,
-    TranscriptSyncPage,
+    ResourceRef, ResourceRevisionEntry, SubscriptionCursor, TranscriptChangeBatch,
+    TranscriptPageResponse, TranscriptStreamDelta, TranscriptSyncPage,
 };
 use axum::Json;
 use axum::body::{Body, Bytes};
@@ -88,6 +90,7 @@ struct SubscriptionChange {
     resources: Vec<Value>,
     added: Vec<Value>,
     token_rates: Option<bool>,
+    since: BTreeMap<String, SubscriptionCursor>,
 }
 
 struct LiveSubscription {
@@ -125,7 +128,12 @@ async fn sync_subscriptions(
     State(state): State<HttpState>,
     ApiJson(request): ApiJson<crate::generated::SyncSubscriptionRequest>,
 ) -> Result<Json<crate::generated::SyncSubscriptionAck>, ApiError> {
-    for resources in [&request.add, &request.remove] {
+    for resources in [
+        serde_json::to_value(&request.add),
+        serde_json::to_value(&request.remove),
+    ] {
+        let resources = resources.map_err(|_| ApiError::internal())?;
+        let resources = resources.as_array().ok_or_else(ApiError::internal)?;
         if resources.len() > MAX_SYNC_RESOURCE_COUNT
             || serde_json::to_vec(resources)
                 .map_err(|_| ApiError::internal())?
@@ -168,9 +176,13 @@ async fn sync_subscriptions(
         .cloned()
         .collect::<Vec<_>>();
     let mut added = Vec::new();
-    for resource in request.add {
-        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
+    let mut since = BTreeMap::new();
+    for addition in request.add {
+        let value = serde_json::to_value(addition.resource).map_err(|_| ApiError::internal())?;
         if !resources.contains(&value) {
+            if let Some(cursor) = addition.since {
+                since.insert(value.to_string(), cursor);
+            }
             added.push(value.clone());
             resources.push(value);
         }
@@ -190,6 +202,7 @@ async fn sync_subscriptions(
             resources: resources.clone(),
             added,
             token_rates: request.token_rates,
+            since,
         })
         .map_err(|_| {
             ApiError::new(
@@ -251,6 +264,10 @@ async fn sync_stream(
         Ok(resources) => resources,
         Err(error) => return error.into_response(),
     };
+    let since = match parse_since(&query, &state, &resources) {
+        Ok(since) => since,
+        Err(error) => return error.into_response(),
+    };
     let vault_readiness = match readiness_source(&state, &resources).await {
         Ok(source) => source,
         Err(error) => return error.into_response(),
@@ -262,11 +279,11 @@ async fn sync_stream(
     let change_hub = Arc::clone(&state.sync_changes);
     let mut changes = change_hub.subscribe();
     changes.borrow_and_update();
-    let initial_entity_sequence = match read_entity_sequence(Some(store.clone()), &resources).await
-    {
-        Ok(sequence) => sequence,
-        Err(error) => return error.into_response(),
-    };
+    let mut initial_entity_sequence =
+        match read_entity_sequence(Some(store.clone()), &resources).await {
+            Ok(sequence) => sequence,
+            Err(error) => return error.into_response(),
+        };
     let initial_draft_sequence =
         match read_draft_changes(Some(store.clone()), &resources, None).await {
             Ok((sequence, _)) => sequence,
@@ -318,6 +335,39 @@ async fn sync_stream(
         Err(error) => return error.into_response(),
     };
     attach_transcript_changes(&mut initial_event, transcript_updates);
+    if let Err(error) = attach_initial_entries(&state, &mut initial_event, &since).await {
+        return error.into_response();
+    }
+    let mut scoped_sequences = BTreeMap::new();
+    let entity_transfers =
+        match entity_transfer::attach(&state, &mut initial_event, &since, &mut scoped_sequences)
+            .await
+        {
+            Ok(transfers) => transfers,
+            Err(error) => return error.into_response(),
+        };
+    for (resource, entry) in initial_event
+        .resources
+        .iter()
+        .zip(&initial_event.resource_versions)
+    {
+        match resource {
+            ResourceRef::TranscriptResource(transcript) if entry.cursor.is_some() => {
+                transcript_sequences.insert(transcript.agent_id.clone(), entry.revision);
+            }
+            ResourceRef::StateResource(_) if entry.cursor.is_some() => {
+                initial_entity_sequence = entry.revision
+            }
+            _ => {}
+        }
+    }
+    let mut terminal_cursors = BTreeMap::new();
+    super::subscriptions::attach_terminal_output_cursors(
+        Some(&state),
+        &mut initial_event,
+        &mut terminal_cursors,
+    )
+    .await;
     attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
     let mut initial = VecDeque::new();
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -348,7 +398,7 @@ async fn sync_stream(
     if renderer_hash.is_some() {
         initial.push_back(sse_event("api-schema", None, json!({"hash": server_hash})));
     }
-    initial.push_back(resource_sse_event(
+    initial.extend(initial_resource_sse_events(
         subscription_snapshot.revision,
         initial_event,
     ));
@@ -376,12 +426,15 @@ async fn sync_stream(
         vault_readiness,
         subscription: Some(subscription),
         initial,
+        entity_transfers: entity_transfers.into(),
+        scoped_sequences,
         workspace_id: state.workspace_id,
         epoch: subscription_snapshot.epoch,
         last_revision: subscription_snapshot.revision,
         resources,
         entity_sequence: initial_entity_sequence,
         transcript_sequences,
+        terminal_cursors,
         voice_sequences,
         draft_sequence: initial_draft_sequence,
         store: Some(store),
@@ -404,158 +457,7 @@ async fn sync_stream(
 /// and failed reads retain broad invalidation; this path never starts providers,
 /// local-cost scanners, terminal processes, or projection maintenance writes.
 async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {
-    use crate::generated::ResourceRef;
-    let resource: ResourceRef = serde_json::from_value(resource).ok()?;
-    match resource {
-        ResourceRef::DraftsResource(_) => state
-            .store?
-            .read_async(
-                "runtime-http/routes/sync_stream/draft-revision",
-                |connection| {
-                    let sequence = SyncDocumentsRepository::draft_sequence(connection)?;
-                    serde_json::to_vec(&sequence).map_err(studio_runtime_store::StoreError::from)
-                },
-            )
-            .await
-            .ok(),
-        ResourceRef::TranscriptResource(resource) => {
-            // A scoped stream hint may precede the next stored transcript flush.
-            let publication = state
-                .resource_notifications
-                .published_revision(&serde_json::to_value(&resource).ok()?)
-                .ok()?;
-            let store = state.store?;
-            store
-                .read_async(
-                    "runtime-http/routes/sync_stream/transcript-revision",
-                    move |connection| {
-                        let revision = studio_runtime_store::TranscriptRepository::revision(
-                            connection,
-                            &resource.agent_id,
-                        )?;
-                        serde_json::to_vec(&(revision, publication))
-                            .map_err(studio_runtime_store::StoreError::from)
-                    },
-                )
-                .await
-                .ok()
-        }
-        ResourceRef::AuthProgressResource(resource) => serde_json::to_vec(
-            &state
-                .claude_login?
-                .progress(&resource.request_id)
-                .await
-                .ok()?,
-        )
-        .ok(),
-        ResourceRef::VaultReadinessResource(resource) => {
-            let settings = super::host_secrets::settings_dir(&state.state_dir);
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/vault-readiness",
-                move || studio_runtime_services::vault::keys_ready(&settings, &resource.prefix),
-            )
-            .await
-            .ok()?
-            .ok()
-            .and_then(|ready| serde_json::to_vec(&ready).ok())
-        }
-        ResourceRef::MultiServerResource(_) if cfg!(unix) => {
-            serde_json::to_vec(&super::multi_server::read_snapshot(&state).await.ok()?).ok()
-        }
-        ResourceRef::VoiceResource(resource) => state
-            .store?
-            .read_async("runtime-http/voice-resource-revision", move |connection| {
-                let cursor = studio_runtime_store::VoiceRepository::record_sequence(
-                    connection,
-                    &resource.agent_id,
-                )?;
-                let session = studio_runtime_store::VoiceRepository::latest_session(
-                    connection,
-                    &resource.agent_id,
-                )?;
-                serde_json::to_vec(&(cursor, session))
-                    .map_err(studio_runtime_store::StoreError::from)
-            })
-            .await
-            .ok(),
-        ResourceRef::AccountsResource(_) => {
-            serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
-        }
-        ResourceRef::LimitsResource(resource) => {
-            let mut snapshot = if let Some(port) = &state.account_session {
-                port.limits_snapshot(&resource.account_key).ok()?
-            } else {
-                state.account_policy.as_ref()?.limits(&resource.account_key)
-            };
-            // Observation receipts advance privately without changing rateLimit entities.
-            // Fingerprint the same semantic content so unrelated commits cannot
-            // turn a timestamp refresh into another provider read by the client.
-            if let Some(fields) = snapshot.as_object_mut() {
-                for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
-                    fields.remove(*field);
-                }
-            }
-            let snapshot: crate::generated::UsageLimitsResponse =
-                serde_json::from_value(snapshot).ok()?;
-            serde_json::to_vec(&snapshot).ok()
-        }
-        ResourceRef::DesktopResource(_) => {
-            serde_json::to_vec(&super::desktop::get(State(state)).await.ok()?.0).ok()
-        }
-        ResourceRef::TerminalsResource(_) => {
-            serde_json::to_vec(&super::terminals::listing(State(state)).await.ok()?.0).ok()
-        }
-        ResourceRef::QueueResource(resource) => serde_json::to_vec(
-            &super::work_items::queue_for_agent(state, resource.agent_id)
-                .await
-                .ok()?,
-        )
-        .ok(),
-        ResourceRef::SessionCostResource(resource) => serde_json::to_vec(
-            &super::insights::session_cost_for_agent(state, resource.agent_id)
-                .await
-                .ok()?
-                .0,
-        )
-        .ok(),
-        ResourceRef::CostsResource(_) => {
-            let policy = state.account_policy.clone()?;
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/resource-cost-content",
-                move || {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .ok()?
-                        .as_secs_f64();
-                    let mut costs = policy
-                        .accounts()
-                        .accounts
-                        .into_iter()
-                        .map(|account| {
-                            let account: crate::generated::Account =
-                                serde_json::from_value(account).ok()?;
-                            let value = studio_runtime_services::usage::account_cost_snapshot(
-                                std::path::Path::new(&state.state_dir),
-                                &account.id,
-                                &serde_json::to_value(&account).ok()?,
-                                now,
-                            )
-                            .ok()?;
-                            // The generated response drops the scanner-only refresh hint.
-                            serde_json::from_value::<crate::generated::AccountCostResponse>(value)
-                                .ok()
-                        })
-                        .collect::<Option<Vec<_>>>()?;
-                    costs.sort_by(|left, right| left.account_key.cmp(&right.account_key));
-                    serde_json::to_vec(&costs).ok()
-                },
-            )
-            .await
-            .ok()
-            .flatten()
-        }
-        _ => None,
-    }
+    super::subscriptions::resource_content(state, resource).await
 }
 
 /// Only sessions with a live readiness selector own a filesystem source. Dropping
@@ -589,7 +491,7 @@ async fn readiness_source(
 
 /// Progress is deliberately separate from resources/entityChanges: OAuth links
 /// must never enter SQLite, RxDB, entity replay, or durable checkpoints.
-async fn append_progress_frames(
+pub(super) async fn append_progress_frames(
     state: &HttpState,
     view: &ResourceChanges,
     frames: &mut VecDeque<Event>,
@@ -600,7 +502,7 @@ async fn append_progress_frames(
                 (Some(login), Some(id)) => login.progress(id).await.unwrap_or(Value::Null),
                 _ => Value::Null,
             },
-            Some("vault-readiness") => {
+            Some("rename-progress") | Some("vault-job-progress") | Some("vault-readiness") => {
                 let Some(bytes) = resource_content(state.clone(), resource.clone()).await else {
                     continue;
                 };
@@ -628,6 +530,130 @@ async fn append_progress_frames(
     }
 }
 
+/// Reuse the durable transcript projection; the returned payload and checkpoint
+/// are produced by one serialized projection transaction, independent of SSE epochs.
+pub(super) async fn transcript_initial_snapshot(
+    state: HttpState,
+    resource: ResourceRef,
+    since: Option<SubscriptionCursor>,
+) -> Result<ResourceRevisionEntry, ApiError> {
+    let ResourceRef::TranscriptResource(transcript) = &resource else {
+        return Err(ApiError::internal());
+    };
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let scope = format!("transcript:{}", transcript.agent_id);
+    let after = since
+        .as_ref()
+        .filter(|cursor| cursor.workspace_id == state.workspace_id)
+        .map(|cursor| cursor.seq);
+    let read = |after| {
+        studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            &scope,
+            &transcript.agent_id,
+            after,
+        )
+    };
+    let mut response: TranscriptSyncPage = serde_json::from_value(
+        read(after.unwrap_or(0))
+            .await
+            .map_err(|_| ApiError::internal())?,
+    )
+    .map_err(|_| ApiError::internal())?;
+    if after.is_some_and(|after| after > response.checkpoint.seq) {
+        response = serde_json::from_value(read(0).await.map_err(|_| ApiError::internal())?)
+            .map_err(|_| ApiError::internal())?;
+    }
+    let through = response.checkpoint.seq;
+    let mut entry: ResourceRevisionEntry =
+        super::generated_json(json!({"resource": resource,"revision":through}))?;
+    let is_delta = after == Some(through) && response.documents.is_empty();
+    let batch = after.and_then(|after| transcript_change_batch(response.clone(), &scope, after));
+    if is_delta || batch.is_some() {
+        entry.reply_kind = Some(crate::generated::SubscriptionReplyKind::Delta);
+        entry.transcript_changes = batch.map(Some);
+    } else {
+        let document = response.documents.first().ok_or_else(ApiError::internal)?;
+        if document.deleted {
+            return Ok(entry);
+        }
+        let page = serde_json::from_str::<TranscriptPageResponse>(&document.payload)
+            .map_err(|_| ApiError::internal())?;
+        entry.transcript_snapshot = Some(Some(page));
+        entry.reply_kind = Some(crate::generated::SubscriptionReplyKind::Snapshot);
+    }
+    entry.cursor = Some(SubscriptionCursor {
+        workspace_id: state.workspace_id,
+        seq: through,
+    });
+    Ok(entry)
+}
+
+fn parse_since(
+    query: &QueryParams,
+    state: &HttpState,
+    resources: &[Value],
+) -> Result<BTreeMap<String, SubscriptionCursor>, ApiError> {
+    let mut since = BTreeMap::new();
+    let invalid = || ApiError::validation(vec![json!("query"), json!("since")]);
+    let Some(raw) = query.typed_value("since").and_then(Value::as_str) else {
+        return Ok(since);
+    };
+    if raw.len() > MAX_SYNC_RESOURCE_QUERY_BYTES {
+        return Err(invalid());
+    }
+    let values: Vec<Value> = serde_json::from_str(raw).map_err(|_| invalid())?;
+    if values.len() > MAX_SYNC_RESOURCE_COUNT {
+        return Err(invalid());
+    }
+    for value in values {
+        if !state
+            .validators
+            .validate_component("SubscriptionAdd", &value)
+        {
+            return Err(invalid());
+        }
+        let addition: crate::generated::SubscriptionAdd =
+            serde_json::from_value(value).map_err(|_| invalid())?;
+        let resource = serde_json::to_value(addition.resource).map_err(|_| invalid())?;
+        if !resources.contains(&resource) {
+            return Err(invalid());
+        }
+        if let Some(cursor) = addition.since
+            && since.insert(resource.to_string(), cursor).is_some()
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(since)
+}
+
+async fn attach_initial_entries(
+    state: &HttpState,
+    event: &mut ResourceChangeEvent,
+    since: &BTreeMap<String, SubscriptionCursor>,
+) -> Result<(), ApiError> {
+    for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
+        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
+        if entity_transfer::owns(resource) {
+            continue;
+        }
+        let cursor = since.get(&value.to_string()).cloned();
+        let mut initial =
+            super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
+        if matches!(resource, ResourceRef::TerminalOutputResource(_)) {
+            // Notification revisions belong to the hub; output offsets belong to cursor.seq.
+            initial.revision = entry.revision;
+        }
+        // Passive handlers leave transient and legacy inline fields with their
+        // existing owner. A failed durable interval still supplies its revision.
+        if initial.cursor.is_some() || initial.resource.is_some() {
+            *entry = initial;
+        }
+    }
+    Ok(())
+}
+
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
     let invalid = || {
         ApiError::validation(vec![
@@ -652,11 +678,15 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
         return Err(invalid());
     }
     let mut seen = BTreeSet::new();
-    Ok(values
-        .iter()
-        .filter(|value| seen.insert(value.to_string()))
-        .cloned()
-        .collect())
+    let mut resources = Vec::new();
+    for value in values {
+        let resource: ResourceRef = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+        let key = super::subscriptions::handler(&resource)?.debug_key(&resource);
+        if seen.insert(key) {
+            resources.push(value.clone());
+        }
+    }
+    Ok(resources)
 }
 
 async fn read_entity_sequence(
@@ -696,49 +726,49 @@ async fn read_entity_changes(
             if !(0..=MAX_SAFE_REVISION).contains(&sequence) {
                 return Err(ApiError::internal());
             }
-            let batch = entity_change_batch(connection, after, floor, sequence);
+            let batch = match after {
+                Some(after) if after >= floor && after < sequence => {
+                    SyncDocumentsRepository::resume_entity_scope(
+                        connection,
+                        Some(after),
+                        Some(
+                            studio_runtime_schema::sync_protocol::global_entity_collections_json(),
+                        ),
+                        None,
+                        None,
+                        true,
+                        SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+                    )
+                    .ok()
+                    .and_then(|page| {
+                        if page.checkpoint < page.max_sequence {
+                            return None;
+                        }
+                        let documents = page
+                            .rows
+                            .iter()
+                            .map(super::sync_documents::entity_document)
+                            .collect::<Option<Vec<_>>>()?;
+                        Some(EntityChangeBatch {
+                            after,
+                            through: sequence,
+                            documents,
+                        })
+                    })
+                }
+                _ => None,
+            };
             Ok((sequence, batch))
         })
         .await
 }
 
-/// Convert the complete record interval; final SSE serialization owns the byte limit.
-fn entity_change_batch(
-    connection: &Connection,
-    after: Option<i64>,
-    floor: i64,
-    through: i64,
-) -> Option<EntityChangeBatch> {
-    let after = after?;
-    if after < floor || after >= through {
-        return None;
-    }
-    let rows = SyncDocumentsRepository::entities_after(
-        connection,
-        after,
-        SYNC_ENTITY_STREAM_MAX_DOCUMENTS + 1,
-    )
-    .ok()?;
-    if rows.len() as i64 > SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
-        return None;
-    }
-    let mut documents = Vec::with_capacity(rows.len());
-    for row in &rows {
-        documents.push(super::sync_documents::entity_document(row)?);
-    }
-    if documents.last()?.seq != through {
-        return None;
-    }
-    let batch = EntityChangeBatch {
-        after,
-        through,
-        documents,
-    };
-    Some(batch)
-}
-
 enum TranscriptStreamUpdate {
     Unchanged,
+    Snapshot {
+        revision: i64,
+        snapshot: Option<Box<TranscriptPageResponse>>,
+    },
     Changed {
         revision: i64,
         batch: Option<Box<TranscriptChangeBatch>>,
@@ -766,7 +796,11 @@ async fn read_transcript_changes(
         };
         let agent = resource.agent_id;
         let scope = format!("transcript:{agent}");
-        let after = sequences.get(&agent).copied();
+        let after = if complete {
+            sequences.get(&agent).copied()
+        } else {
+            None
+        };
         let result = studio_runtime_services::transcript::pull_scope(
             store.clone(),
             &scope,
@@ -791,6 +825,32 @@ async fn read_transcript_changes(
         }
         if complete && after == Some(through) && response.documents.is_empty() {
             updates.insert(agent, TranscriptStreamUpdate::Unchanged);
+            continue;
+        }
+        if !complete {
+            let snapshot = response
+                .documents
+                .first()
+                .filter(|document| {
+                    response.documents.len() == 1
+                        && document.id == scope
+                        && !document.deleted
+                        && document.seq == through
+                })
+                .and_then(|document| {
+                    serde_json::from_str::<TranscriptPageResponse>(&document.payload)
+                        .ok()
+                        .map(|page| super::transcript::window_snapshot(page, resource.tail))
+                })
+                .map(Box::new);
+            sequences.insert(agent.clone(), through);
+            updates.insert(
+                agent,
+                TranscriptStreamUpdate::Snapshot {
+                    revision: through,
+                    snapshot,
+                },
+            );
             continue;
         }
         let batch = after
@@ -938,12 +998,35 @@ fn attach_transcript_changes(
         if let ResourceRef::TranscriptResource(transcript) = &resource {
             match updates.remove(&transcript.agent_id) {
                 Some(TranscriptStreamUpdate::Unchanged) => continue,
+                Some(TranscriptStreamUpdate::Snapshot { revision, snapshot }) => {
+                    entry.revision = revision;
+                    entry.transcript_snapshot = snapshot.map(|snapshot| Some(*snapshot));
+                }
                 Some(TranscriptStreamUpdate::Changed { revision, batch }) => {
                     entry.revision = revision;
                     entry.transcript_changes = batch.map(|batch| Some(*batch));
                 }
                 None => {}
             }
+        }
+        if entry
+            .transcript_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.is_some())
+            || entry
+                .transcript_changes
+                .as_ref()
+                .is_some_and(|batch| batch.is_some())
+        {
+            entry.cursor = Some(SubscriptionCursor {
+                workspace_id: event.workspace_id.clone(),
+                seq: entry.revision,
+            });
+            entry.reply_kind = Some(if entry.transcript_snapshot.is_some() {
+                crate::generated::SubscriptionReplyKind::Snapshot
+            } else {
+                crate::generated::SubscriptionReplyKind::Delta
+            });
         }
         event.resources.push(resource);
         event.resource_versions.push(entry);
@@ -957,6 +1040,7 @@ async fn attach_transient_snapshots(
     event: &mut ResourceChangeEvent,
     voice_sequences: &mut BTreeMap<String, i64>,
 ) {
+    super::subscriptions::attach_view_snapshots(state, event).await;
     let Some(state) = state else { return };
     for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
         match resource {
@@ -993,12 +1077,15 @@ struct ResourceStream {
     http_state: Option<HttpState>,
     vault_readiness: Option<studio_runtime_services::vault::VaultReadinessWatcher>,
     initial: VecDeque<Event>,
+    entity_transfers: VecDeque<entity_transfer::TransferReader>,
+    scoped_sequences: BTreeMap<String, SubscriptionCursor>,
     workspace_id: String,
     epoch: String,
     last_revision: i64,
     resources: Vec<Value>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
+    terminal_cursors: BTreeMap<String, SubscriptionCursor>,
     voice_sequences: BTreeMap<String, i64>,
     draft_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
@@ -1026,6 +1113,14 @@ async fn next_subscription_change(
 
 async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChange) -> Option<()> {
     state.resources = update.resources;
+    let retained_scopes = state
+        .resources
+        .iter()
+        .map(Value::to_string)
+        .collect::<BTreeSet<_>>();
+    state
+        .scoped_sequences
+        .retain(|key, _| retained_scopes.contains(key));
     let readiness_interest = state
         .resources
         .iter()
@@ -1035,6 +1130,12 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     {
         state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
     }
+    state.terminal_cursors.retain(|id, _| {
+        state
+            .resources
+            .iter()
+            .any(|resource| resource["kind"] == "terminal-output" && resource["terminalId"] == *id)
+    });
     state.voice_sequences.retain(|id, _| {
         state
             .resources
@@ -1103,15 +1204,44 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         )
         .ok()?;
         attach_transcript_changes(&mut event, updates);
+        attach_initial_entries(http_state, &mut event, &update.since)
+            .await
+            .ok()?;
+        super::subscriptions::attach_terminal_output_cursors(
+            state.http_state.as_ref(),
+            &mut event,
+            &mut state.terminal_cursors,
+        )
+        .await;
         attach_transient_snapshots(
             state.http_state.as_ref(),
             &mut event,
             &mut state.voice_sequences,
         )
         .await;
+        state.entity_transfers.extend(
+            entity_transfer::attach(
+                http_state,
+                &mut event,
+                &update.since,
+                &mut state.scoped_sequences,
+            )
+            .await
+            .ok()?,
+        );
+        for (resource, entry) in event.resources.iter().zip(&event.resource_versions) {
+            if matches!(resource, ResourceRef::StateResource(_)) && entry.cursor.is_some() {
+                state.entity_sequence = entry.revision;
+            }
+            if let ResourceRef::TranscriptResource(transcript) = resource {
+                state
+                    .transcript_sequences
+                    .insert(transcript.agent_id.clone(), entry.revision);
+            }
+        }
         state
             .initial
-            .push_back(resource_sse_event(view.cursor.revision, event));
+            .extend(initial_resource_sse_events(view.cursor.revision, event));
         append_progress_frames(http_state, &view, &mut state.initial).await;
     }
     if let Some(interest) = update.token_rates {
@@ -1134,6 +1264,18 @@ async fn next_frame(
 ) -> Option<(Result<Event, Infallible>, ResourceStream)> {
     if let Some(event) = state.initial.pop_front() {
         return Some((Ok(event), state));
+    }
+    while let Some(transfer) = state.entity_transfers.front_mut() {
+        match transfer.next() {
+            Ok(Some(event)) => return Some((Ok(event), state)),
+            Ok(None) => {
+                state.entity_transfers.pop_front();
+            }
+            Err(error) => {
+                eprintln!("entity transfer read failed: {error:?}");
+                return None;
+            }
+        }
     }
 
     loop {
@@ -1197,17 +1339,22 @@ async fn next_frame(
         state.last_revision = view.cursor.revision;
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;
-            let (sequence, batch) = match read_entity_changes(
-                state.store.clone(),
-                &view.resources,
-                (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
-            )
-            .await
-            {
-                Ok(update) => update,
-                Err(_) => {
-                    view.entity_reset = true;
-                    (state.entity_sequence, None)
+            let (sequence, batch) = if state.http_state.is_some() {
+                // Scoped delivery below owns the one source read, including state.
+                (state.entity_sequence, None)
+            } else {
+                match read_entity_changes(
+                    state.store.clone(),
+                    &view.resources,
+                    (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
+                )
+                .await
+                {
+                    Ok(update) => update,
+                    Err(_) => {
+                        view.entity_reset = true;
+                        (state.entity_sequence, None)
+                    }
                 }
             };
             state.entity_sequence = sequence;
@@ -1245,20 +1392,46 @@ async fn next_frame(
             )
             .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
+            if let Some(http) = &state.http_state {
+                state.entity_transfers.extend(
+                    entity_transfer::attach(
+                        http,
+                        &mut event,
+                        &BTreeMap::new(),
+                        &mut state.scoped_sequences,
+                    )
+                    .await
+                    .ok()?,
+                );
+                if let Some(cursor) = state.scoped_sequences.get(r#"{"kind":"state"}"#) {
+                    state.entity_sequence = cursor.seq;
+                }
+            }
+            super::subscriptions::attach_terminal_output_cursors(
+                state.http_state.as_ref(),
+                &mut event,
+                &mut state.terminal_cursors,
+            )
+            .await;
             attach_transient_snapshots(
                 state.http_state.as_ref(),
                 &mut event,
                 &mut state.voice_sequences,
             )
             .await;
-            if event.resources.is_empty() {
+            if event.resources.is_empty() && state.entity_transfers.is_empty() {
                 continue;
             }
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
             if let Some(http) = &state.http_state {
                 append_progress_frames(http, &view, &mut state.initial).await;
             }
-            return Some((Ok(resource_sse_event(view.cursor.revision, event)), state));
+            state
+                .initial
+                .extend(initial_resource_sse_events(view.cursor.revision, event));
+            if let Some(event) = state.initial.pop_front() {
+                return Some((Ok(event), state));
+            }
         }
         if heartbeat {
             let event = json!({
@@ -1362,9 +1535,17 @@ fn resource_changes_event(
         .map(|(resource, revision)| {
             let state = matches!(resource, ResourceRef::StateResource(_));
             let drafts = matches!(resource, ResourceRef::DraftsResource(_));
+            let entity_changes = state.then(|| changes.take()).flatten();
+            let complete = entity_changes.is_some() && !view.entity_reset;
             ResourceRevisionEntry {
+                cursor: complete.then(|| SubscriptionCursor {
+                    workspace_id: workspace.into(),
+                    seq: sequence,
+                }),
+                reply_kind: complete.then_some(crate::generated::SubscriptionReplyKind::Delta),
                 discovery_snapshot: None,
                 voice_records: None,
+                view_snapshot: None,
                 revision: if state {
                     sequence
                 } else if drafts {
@@ -1373,10 +1554,11 @@ fn resource_changes_event(
                     *revision
                 },
                 draft_changes: drafts.then(|| draft_changes.take()).flatten().map(Some),
-                entity_changes: state.then(|| changes.take()).flatten().map(Some),
+                entity_changes: entity_changes.map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
                 transcript_changes: None,
+                transcript_snapshot: None,
                 resource: None,
             }
         })
@@ -1447,7 +1629,7 @@ fn resource_event(
     .expect("event serializes")
 }
 
-fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Event {
+pub(super) fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Event {
     // These stream DTOs contain only JSON-compatible fields and string map keys.
     let event = Event::default()
         .event(name)
@@ -1459,6 +1641,47 @@ fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Even
     }
 }
 
+/// Baselines for independent transcript refs get independent byte budgets. A
+/// crowded subscription set must not force normal windows into pull recovery.
+fn initial_resource_sse_events(revision: i64, payload: ResourceChangeEvent) -> Vec<Event> {
+    if payload.resources.len() <= 1
+        || !payload.resource_versions.iter().any(|entry| {
+            entry.transcript_snapshot.is_some()
+                || entry.view_snapshot.is_some()
+                || entry.entity_changes.is_some()
+        })
+    {
+        return vec![resource_sse_event(revision, payload)];
+    }
+    let ResourceChangeEvent {
+        protocol,
+        workspace_id,
+        epoch,
+        revision: event_revision,
+        reason,
+        resources,
+        resource_versions,
+    } = payload;
+    resources
+        .into_iter()
+        .zip(resource_versions)
+        .map(|(resource, entry)| {
+            resource_sse_event(
+                revision,
+                ResourceChangeEvent {
+                    protocol,
+                    workspace_id: workspace_id.clone(),
+                    epoch: epoch.clone(),
+                    revision: event_revision,
+                    reason: reason.clone(),
+                    resources: vec![resource],
+                    resource_versions: vec![entry],
+                },
+            )
+        })
+        .collect()
+}
+
 /// Write JSON once into Axum's event buffer, counting the complete UTF-8 envelope.
 /// Only an oversized interval is serialized again, after dropping its inline data.
 fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event {
@@ -1466,30 +1689,50 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
     // Axum adds a space after each colon and a final blank line. The byte-boundary
     // witness compares this accounting with the actual HTTP body at T-1/T/T+1.
     let envelope_bytes = b"event: resources\nid: \ndata: \n\n".len() + id.len();
-    let mut writer = Event::default()
-        .event("resources")
-        .id(&id)
-        .into_data_writer();
-    let mut bounded = BoundedEventWriter {
-        writer: &mut writer,
-        remaining: SYNC_STREAM_EVENT_MAX_BYTES - envelope_bytes,
-        exceeded: false,
-    };
-    let result = serde_json::to_writer(&mut bounded, &payload);
-    if !bounded.exceeded {
-        // The generated DTO has only JSON-compatible fields and string map keys.
-        result.expect("resource stream DTO serializes");
-        return writer.into_event();
+    loop {
+        let mut writer = Event::default()
+            .event("resources")
+            .id(&id)
+            .into_data_writer();
+        let mut bounded = BoundedEventWriter {
+            writer: &mut writer,
+            remaining: SYNC_STREAM_EVENT_MAX_BYTES - envelope_bytes,
+            exceeded: false,
+        };
+        let result = serde_json::to_writer(&mut bounded, &payload);
+        if !bounded.exceeded {
+            // The generated DTO has only JSON-compatible fields and string map keys.
+            result.expect("resource stream DTO serializes");
+            return writer.into_event();
+        }
+        // Measure the complete UTF-8 envelope, including metadata and cursors.
+        // Keep the newest item; a larger individual item retains scoped recovery.
+        let largest = payload
+            .resource_versions
+            .iter_mut()
+            .filter_map(|entry| entry.transcript_snapshot.as_mut().and_then(Option::as_mut))
+            .filter(|page| page.items.len() > 1)
+            .max_by_key(|page| page.items.len());
+        let Some(page) = largest else {
+            break;
+        };
+        let keep = page.items.len().div_ceil(2);
+        let replacement = super::transcript::window_snapshot(page.clone(), Some(keep as i64));
+        *page = replacement;
     }
     studio_runtime_services::diagnostics::record_sync_recovery(
         studio_runtime_services::diagnostics::SyncRecoveryKind::Oversize,
     );
     for entry in &mut payload.resource_versions {
+        entry.cursor = None;
+        entry.reply_kind = None;
         entry.entity_changes = None;
         entry.transcript_changes = None;
+        entry.transcript_snapshot = None;
         entry.draft_changes = None;
         entry.discovery_snapshot = None;
         entry.voice_records = None;
+        entry.view_snapshot = None;
     }
     sse_event("resources", Some(revision), payload)
 }
@@ -1617,6 +1860,303 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_terminal_live_cursors_keep_independent_frame_budgets() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated terminal state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            for id in ["one", "two"] {
+                tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,?2,'a',0)", rusqlite::params![id,json!({"id":id,"agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("terminals");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http.clone()).expect("router");
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+            .append_pair("tokenRates", "false")
+            .append_pair("resources", &json!([{"kind":"terminal-output","terminalId":"one"},{"kind":"terminal-output","terminalId":"two"}]).to_string()).finish();
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/sync/stream?{query}"))
+            .header("host", "127.0.0.1:4321")
+            .header("x-canvas-token", "token")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::empty())
+            .expect("request");
+        let mut body = app
+            .oneshot(request)
+            .await
+            .expect("SSE")
+            .into_body()
+            .into_data_stream();
+        for _ in 0..3 {
+            let _initial = body
+                .next()
+                .await
+                .expect("session and two initial snapshots")
+                .expect("bytes");
+        }
+        let count = studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS;
+        store
+            .transaction_with(move |tx| {
+                tx.execute(
+                    "UPDATE user_terminals SET output=?1",
+                    [format!("a{}", "\u{0001}".repeat(count))],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("both outputs");
+        for _ in 0..2 {
+            let bytes = body
+                .next()
+                .await
+                .expect("independent live interval")
+                .expect("bytes");
+            assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+            let frame: Value = serde_json::from_str(
+                std::str::from_utf8(&bytes)
+                    .expect("UTF8")
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON");
+            assert_eq!(frame["resources"].as_array().expect("refs").len(), 1);
+            let entry = &frame["resourceVersions"][0];
+            assert_eq!(
+                entry["replyKind"], "delta",
+                "combined terminal data must not drop its cursor for recovery"
+            );
+            assert_eq!(entry["cursor"]["seq"], count + 1);
+            assert_eq!(
+                entry["viewSnapshot"]["terminalOutput"]["text"]
+                    .as_str()
+                    .expect("inline output")
+                    .chars()
+                    .count(),
+                count
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_terminal_live_cursor_uses_intervals_and_resets_lost_buffers() {
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated terminal state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES('shell',?1,'a🙂',0)", [json!({"id":"shell","agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("terminal baseline");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http.clone()).expect("router");
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22terminal-output%22%2C%22terminalId%22%3A%22shell%22%7D%5D&tokenRates=false"))
+            .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+            .body(Body::empty()).expect("request");
+        let response = app.oneshot(request).await.expect("SSE response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let document = |bytes: &[u8]| -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8 SSE");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        };
+        let _session = body.next().await.expect("session").expect("bytes");
+        let initial = document(&body.next().await.expect("snapshot").expect("bytes"));
+        assert_eq!(initial["resourceVersions"][0]["replyKind"], "snapshot");
+        assert_eq!(
+            initial["resourceVersions"][0]["revision"], initial["revision"],
+            "terminal notification revision must keep the hub revision domain"
+        );
+        assert_eq!(
+            initial["resourceVersions"][0]["viewSnapshot"]["terminalOutput"]["text"],
+            "a🙂"
+        );
+        for (text, offset, expected, kind, seq) in [
+            ("a🙂中", 0, "中", "delta", 3),
+            ("tail", 20, "tail", "snapshot", 24),
+            ("tail!", 20, "!", "delta", 25),
+            ("new", 0, "new", "snapshot", 3),
+        ] {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute(
+                        "UPDATE user_terminals SET output=?1,offset=?2 WHERE id='shell'",
+                        rusqlite::params![text, offset],
+                    )?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("output commit");
+            http.sync_changes.notify_one();
+            let frame = document(&body.next().await.expect("live frame").expect("bytes"));
+            let entry = &frame["resourceVersions"][0];
+            assert_eq!(
+                entry["viewSnapshot"]["terminalOutput"]["text"], expected,
+                "live append must not replay retained history"
+            );
+            assert_eq!(entry["replyKind"], kind);
+            assert_eq!(entry["cursor"]["seq"], seq);
+        }
+        drop(body);
+        assert!(
+            http.sync_sessions.0.lock().expect("sessions").is_empty(),
+            "closed stream releases cursor owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_stream_rename_failure_carries_the_exact_receipt_without_entity_changes() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({
+                "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "name":"Original",
+                "provider":"codex", "model":"gpt-6", "prompt":"Title fixture", "cwd":"/fixture",
+                "accountKey":"default", "isLead":false, "needsTitle":true, "manualName":false, "autoWake":false
+            }))?;
+            studio_runtime_store::AgentRepository::put(tx, &agent)
+        }).await.expect("seed agent");
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("validators");
+        let app = crate::router::router(state.clone()).expect("routes");
+        let mut changes = state.sync_changes.subscribe();
+        changes.borrow_and_update();
+        let resource =
+            json!({"kind":"rename-progress", "agentId":"agent", "requestId":"rename-one"});
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/rename")
+            .header("x-canvas-token", "token")
+            .header("host", "127.0.0.1:4620")
+            .header("content-type", "application/json")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::from(
+                json!({"id":"agent", "request_id":"rename-one"}).to_string(),
+            ))
+            .expect("request");
+        let response = tower::ServiceExt::oneshot(app, request)
+            .await
+            .expect("rename response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .expect("receipt");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("JSON")["status"],
+            "pending"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state
+                .resource_notifications
+                .published_revision(&resource)
+                .expect("revision")
+                == 0
+            {
+                changes.changed().await.expect("change source stays open");
+                changes.borrow_and_update();
+            }
+        })
+        .await
+        .expect("failure wakes its exact stream selector");
+        let receipt = json!({"id":"agent", "request_id":"rename-one", "status":"failed", "error":"The title could not be generated. Try /rename again."});
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: vec![resource.clone()],
+            versions: vec![1],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        assert_eq!(frames.len(), 1, "rename failure must arrive in the stream");
+        let frame = event_document(Ok(frames.pop_front().expect("progress frame"))).await;
+        assert_eq!(frame["resource"], resource);
+        assert_eq!(frame["value"], receipt);
+        assert!(frame.get("entityChanges").is_none());
+        let wrong =
+            json!({"kind":"rename-progress", "agentId":"another-agent", "requestId":"rename-one"});
+        let bytes = resource_content(state, wrong)
+            .await
+            .expect("missing scoped receipt");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).expect("JSON"),
+            Value::Null
+        );
+    }
+
+    #[tokio::test]
+    async fn state_stream_vault_job_progress_includes_missing_receipt() {
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            "/unused".into(),
+            0,
+            None,
+            None,
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("validators");
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: vec![json!({"kind":"vault-job-progress","requestId":"one","job":"setup"})],
+            versions: vec![1],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        assert_eq!(
+            frames.len(),
+            1,
+            "missing receipts must have an explicit transient baseline"
+        );
+    }
 
     #[tokio::test]
     async fn state_stream_progress_frames_are_transient_and_scoped() {
@@ -1902,7 +2442,7 @@ mod tests {
         for entry in value["resourceVersions"].as_array_mut().expect("versions") {
             entry["transcriptChanges"] = json!({"after":1,"through":99999,"delta":{
                 "delta":true,"items":[{"id":"answer","role":"assistant","text":""}],
-                "removed":[],"itemRevisions":{},"truncated":false
+                "removed":[],"truncated":false
             }});
         }
         serde_json::from_value(value).expect("combined fixture")
@@ -2136,6 +2676,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_resume_query_accepts_valid_typed_cursors_and_rejects_invalid_ones() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        let resources = json!([{"kind":"state"},{"kind":"agentDetail","agentId":"agent"}]);
+        for (seq, expected) in [(0, StatusCode::OK), (-1, StatusCode::BAD_REQUEST)] {
+            let since = json!([
+                {"resource":{"kind":"state"},"since":{"workspaceId":"workspace","seq":seq}},
+                {"resource":{"kind":"agentDetail","agentId":"agent"},"since":{"workspaceId":"workspace","seq":seq}}
+            ]);
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+                .append_pair("resources", &resources.to_string())
+                .append_pair("since", &since.to_string())
+                .finish();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/sync/stream?{query}"))
+                        .header("host", "127.0.0.1:4321")
+                        .header("x-canvas-token", "token")
+                        .extension(ConnectInfo(std::net::SocketAddr::from((
+                            [127, 0, 0, 1],
+                            12345,
+                        ))))
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("stream response");
+            assert_eq!(response.status(), expected, "typed since cursor {seq}");
+        }
+    }
+
+    #[tokio::test]
     async fn state_stream_live_subscriptions_ack_before_initial_and_expire_on_drop() {
         use axum::body::{Body, to_bytes};
         use axum::extract::ConnectInfo;
@@ -2205,7 +2793,7 @@ mod tests {
         assert_eq!(session["sessionId"].as_str().expect("id").len(), 36);
         let initial = stream.next().await.expect("initial").expect("bytes");
         assert!(String::from_utf8_lossy(&initial).contains("event: resources"));
-        let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"kind":"queue","agentId":"chat"}],"remove":[{"kind":"drafts"}]});
+        let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"resource":{"kind":"queue","agentId":"chat"}}],"remove":[{"kind":"drafts"}]});
         let response = app
             .clone()
             .oneshot(request(
@@ -2228,7 +2816,7 @@ mod tests {
         assert_eq!(replay.status(), StatusCode::CONFLICT);
         let mut invalid = update.clone();
         invalid["gen"] = json!(2);
-        invalid["add"] = json!([{"kind":"transcript","agentId":""}]);
+        invalid["add"] = json!([{"resource":{"kind":"transcript","agentId":""}}]);
         let response = app
             .clone()
             .oneshot(request(
@@ -2243,7 +2831,7 @@ mod tests {
         oversized["gen"] = json!(2);
         oversized["add"] = json!(
             (0..=MAX_SYNC_RESOURCE_COUNT)
-                .map(|index| json!({"kind":"queue","agentId":index.to_string()}))
+                .map(|index| json!({"resource":{"kind":"queue","agentId":index.to_string()}}))
                 .collect::<Vec<_>>()
         );
         let response = app
@@ -2535,6 +3123,320 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_resume_current_old_and_expired_transcript_cursor() {
+        let root = tempfile::tempdir().expect("isolated resume state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('recent',?1)", [json!({"id":"recent","rootId":"recent","epoch":0,"status":"running","threadId":"recent","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            for index in 0..20 {
+                let id = format!("recent:{index}");
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'recent',?2,?3)", rusqlite::params![id,json!({"id":id,"role":"assistant","text":"message ".repeat(64)}).to_string(),index])?;
+            }
+            Ok(())
+        }).await.expect("transcript fixture");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resource: ResourceRef =
+            serde_json::from_value(json!({"kind":"transcript","agentId":"recent"})).expect("ref");
+        let snapshot =
+            super::super::subscriptions::initial_snapshot(http.clone(), resource.clone(), None)
+                .await
+                .expect("snapshot");
+        assert!(matches!(
+            snapshot.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Snapshot)
+        ));
+        let cursor = snapshot.cursor.clone().expect("snapshot cursor");
+        let current = super::super::subscriptions::initial_snapshot(
+            http.clone(),
+            resource.clone(),
+            Some(cursor.clone()),
+        )
+        .await
+        .expect("current cursor");
+        assert!(matches!(
+            current.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Delta)
+        ));
+        assert!(current.transcript_snapshot.is_none() && current.transcript_changes.is_none());
+        assert_eq!(
+            current.cursor.as_ref().map(|cursor| cursor.seq),
+            Some(cursor.seq)
+        );
+        let snapshot_bytes = serde_json::to_vec(&snapshot).expect("snapshot bytes").len();
+        let current_bytes = serde_json::to_vec(&current).expect("resume bytes").len();
+        assert!(current_bytes * 10 < snapshot_bytes);
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','changed recent message') WHERE id='recent:19'", [])?;
+            Ok(())
+        }).await.expect("new message revision");
+        let old = super::super::subscriptions::initial_snapshot(
+            http.clone(),
+            resource.clone(),
+            Some(cursor.clone()),
+        )
+        .await
+        .expect("old cursor");
+        let batch = old
+            .transcript_changes
+            .as_ref()
+            .and_then(Option::as_ref)
+            .expect("only newer records");
+        assert_eq!(batch.after, cursor.seq);
+        assert_eq!(batch.delta.items.len(), 1);
+        assert_eq!(batch.delta.items[0].id, "recent:19");
+        let through = old.revision;
+        store.transaction(move |tx| {
+            tx.execute("UPDATE sync_entities SET seq=?1 WHERE collection='transcript:recent' AND id='@floor'", [through])?;
+            Ok(())
+        }).await.expect("expire retained history");
+        let expired = super::super::subscriptions::initial_snapshot(
+            http.clone(),
+            resource.clone(),
+            Some(cursor),
+        )
+        .await
+        .expect("expired cursor");
+        assert!(matches!(
+            expired.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Snapshot)
+        ));
+        assert!(expired.transcript_changes.is_none());
+        assert!(expired.transcript_snapshot.is_some());
+        let replacement = super::super::subscriptions::initial_snapshot(
+            http,
+            resource,
+            Some(SubscriptionCursor {
+                workspace_id: "replaced-database".into(),
+                seq: through,
+            }),
+        )
+        .await
+        .expect("foreign cursor");
+        assert!(matches!(
+            replacement.reply_kind,
+            Some(crate::generated::SubscriptionReplyKind::Snapshot)
+        ));
+        eprintln!(
+            "V4 recent-chat JSON bytes: snapshot={snapshot_bytes}, current-cursor={current_bytes}, old-cursor={}",
+            serde_json::to_vec(&old).expect("delta bytes").len()
+        );
+    }
+
+    #[tokio::test]
+    async fn subscription_add_streams_bounded_transcript_snapshot_after_ack() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('small',?1)", [json!({"id":"small","rootId":"small","epoch":0,"status":"running","threadId":"small","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            for index in 0..120 {
+                let id = format!("small:{index:03}");
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'small',?2,?3)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":"Current answer".repeat(200),"created":index}).to_string(), index])?;
+            }
+            Ok(())
+        }).await.expect("transcript");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            vec![],
+        );
+        let app = crate::router(http.clone()).expect("router");
+        let full = studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            "transcript:small",
+            "small",
+            0,
+        )
+        .await
+        .expect("full baseline");
+        state.http_state = Some(http);
+        state.store = Some(store);
+        let resource = json!({"kind":"transcript","agentId":"small","tail":40});
+        for generation in [1, 2] {
+            subscription_frame(
+                &mut state,
+                SubscriptionChange {
+                    generation,
+                    resources: vec![resource.clone()],
+                    added: vec![resource.clone()],
+                    token_rates: None,
+                    since: BTreeMap::new(),
+                },
+            )
+            .await
+            .expect("subscription");
+            let ack = event_document(Ok(state.initial.pop_front().expect("ack"))).await;
+            assert_eq!(ack["gen"], generation);
+            let frame = event_document(Ok(state.initial.pop_front().expect("initial data"))).await;
+            assert_eq!(frame["reason"], "initial");
+            let snapshot = &frame["resourceVersions"][0]["transcriptSnapshot"];
+            assert_eq!(
+                snapshot["items"].as_array().map(Vec::len),
+                Some(40),
+                "120-item history must stream its newest window without pull recovery"
+            );
+            assert_eq!(snapshot["items"][0]["id"], "small:080");
+            assert_eq!(snapshot["items"][39]["id"], "small:119");
+            assert_eq!(snapshot["nextCursor"], "small:080");
+            assert_eq!(snapshot["truncated"], true);
+            assert!(frame.to_string().len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+            if generation == 1 {
+                fn compressed_after_ack(raw: &[u8]) -> usize {
+                    let mut encoder = brotli::CompressorWriter::new(
+                        Vec::new(),
+                        STREAM_BROTLI_BUFFER_BYTES,
+                        STREAM_BROTLI_QUALITY,
+                        STREAM_BROTLI_LGWIN,
+                    );
+                    encoder
+                        .write_all(b"event: subscriptions\ndata: {\"gen\":1}\n\n")
+                        .expect("ack");
+                    encoder.flush().expect("flush ack");
+                    encoder.get_mut().clear();
+                    encoder.write_all(raw).expect("snapshot");
+                    encoder.flush().expect("snapshot flush");
+                    encoder.get_ref().len()
+                }
+                let before = full["documents"][0]["payload"]
+                    .as_str()
+                    .expect("full payload");
+                let after = serde_json::to_vec(snapshot).expect("window JSON");
+                println!(
+                    "transcript window fixture bytes: full120_json={}, window40_json={}, full120_brotli_shared={}, window40_brotli_shared={}",
+                    before.len(),
+                    after.len(),
+                    compressed_after_ack(before.as_bytes()),
+                    compressed_after_ack(&after)
+                );
+                use axum::{body::Body, extract::ConnectInfo, http::Request};
+                use tower::ServiceExt;
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/api/transcript/page?id=small&before=%40transcript-before-inclusive%3Asmall%3A079&limit=40")
+                            .header("host", "127.0.0.1:4321")
+                            .header("x-canvas-token", "token")
+                            .extension(ConnectInfo(std::net::SocketAddr::from((
+                                [127, 0, 0, 1],
+                                12345,
+                            ))))
+                            .body(Body::empty())
+                            .expect("page request"),
+                    )
+                    .await
+                    .expect("older page");
+                assert_eq!(response.status(), StatusCode::OK);
+                let page: Value = serde_json::from_slice(
+                    &axum::body::to_bytes(response.into_body(), SYNC_STREAM_EVENT_MAX_BYTES)
+                        .await
+                        .expect("bounded page"),
+                )
+                .expect("page JSON");
+                let mut ids = page["items"]
+                    .as_array()
+                    .expect("older items")
+                    .iter()
+                    .chain(snapshot["items"].as_array().expect("window"))
+                    .map(|item| item["id"].as_str().expect("id"))
+                    .collect::<Vec<_>>();
+                assert_eq!(ids.len(), 80);
+                ids.dedup();
+                assert_eq!(
+                    ids,
+                    (40..120)
+                        .map(|index| format!("small:{index:03}"))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn state_stream_oversized_view_snapshot_releases_cursor_for_scoped_recovery() {
+        let mut event: ResourceChangeEvent = serde_json::from_value(resource_event(
+            "workspace",
+            "epoch",
+            1,
+            "change",
+            &[json!({"kind":"complaint","complaintId":"message"})],
+            0,
+            false,
+        ))
+        .expect("event");
+        event.resource_versions[0].view_snapshot = Some(serde_json::from_value(json!({"complaint":{"id":"message","version":1,"text":"x".repeat(SYNC_STREAM_EVENT_MAX_BYTES),"responses":[]}})).expect("snapshot"));
+        event.resource_versions[0].cursor = Some(SubscriptionCursor {
+            workspace_id: "workspace".into(),
+            seq: 1,
+        });
+        let bytes = frame_bytes(resource_sse_event(1, event)).await;
+        assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let text = std::str::from_utf8(&bytes).expect("UTF8");
+        let value: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        assert!(value["resourceVersions"][0].get("viewSnapshot").is_none());
+        assert!(value["resourceVersions"][0].get("cursor").is_none());
+    }
+
+    #[tokio::test]
+    async fn state_stream_subscription_transcript_window_shrinks_by_complete_utf8_event_bytes() {
+        let page: TranscriptPageResponse = serde_json::from_value(json!({
+            "items": (0..40).map(|index| json!({"id":format!("item-{index:03}"),"role":"assistant","text":"🧑‍💻".repeat(2000)})).collect::<Vec<_>>(),
+            "truncated":false
+        })).expect("page");
+        let mut event: ResourceChangeEvent = serde_json::from_value(resource_event(
+            "workspace",
+            "epoch",
+            1,
+            "initial",
+            &[json!({"kind":"transcript","agentId":"open","tail":40})],
+            0,
+            false,
+        ))
+        .expect("event");
+        event.resource_versions[0].transcript_snapshot = Some(Some(page));
+        let bytes = frame_bytes(resource_sse_event(1, event)).await;
+        assert!(bytes.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let frame = std::str::from_utf8(&bytes).expect("UTF8");
+        let value: Value = serde_json::from_str(
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        let snapshot = &value["resourceVersions"][0]["transcriptSnapshot"];
+        let items = snapshot["items"]
+            .as_array()
+            .expect("inline window, no pull hint");
+        assert!(!items.is_empty() && items.len() < 40);
+        assert_eq!(items.last().expect("latest")["id"], "item-039");
+        assert_eq!(snapshot["nextCursor"], items[0]["id"]);
+        assert_eq!(snapshot["truncated"], true);
+    }
+
+    #[tokio::test]
     async fn state_stream_subscription_added_oversized_initial_data_stays_revisions_only() {
         fn document_bytes(bytes: &[u8]) -> Value {
             let text = std::str::from_utf8(bytes).expect("UTF8");
@@ -2552,7 +3454,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
-            for (id, text) in [("large:large", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
+            for (id, text) in [("large:zlarge", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'large',?2,1)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":text}).to_string()])?;
             }
             Ok(())
@@ -2605,8 +3507,7 @@ mod tests {
         // Removing and adding in one POST requires a new baseline even when the
         // final resource set retains the selector and its previous stream cursor.
         let resource = json!({"kind":"transcript","agentId":"large"});
-        let update =
-            json!({"sessionId":session["sessionId"],"gen":1,"add":[resource],"remove":[resource]});
+        let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"resource":resource}],"remove":[resource]});
         let response = app
             .oneshot(request(
                 "POST",
@@ -2715,22 +3616,32 @@ mod tests {
             "stream carries the entire pull interval"
         );
         assert_eq!(batch["delta"]["items"][0]["text"], "before streamed text");
+        assert!(batch["delta"].get("itemRevisions").is_none());
         assert_eq!(batch["through"], event["resourceVersions"][0]["revision"]);
         state.next_resources_frame_at = None;
         http.resource_notifications.publish_once(&json!({"requestId":"preflush-empty","resources":[{"kind":"transcript","agentId":"open"}]})).expect("scoped preflush hint");
-        let mut pending = Box::pin(next_frame(state));
+        let updates = read_transcript_changes(
+            Some(store.clone()),
+            &state.resources,
+            &mut state.transcript_sequences,
+            true,
+        )
+        .await;
+        assert!(matches!(updates["open"], TranscriptStreamUpdate::Unchanged));
+        let mut unchanged_event: ResourceChangeEvent =
+            serde_json::from_value(event).expect("event DTO");
+        attach_transcript_changes(&mut unchanged_event, updates);
         assert!(
-            tokio::time::timeout(Duration::from_millis(50), pending.as_mut())
-                .await
-                .is_err(),
-            "a proven unchanged transcript must emit no pull hint"
+            unchanged_event.resources.is_empty(),
+            "an unchanged transcript emits no pull hint"
         );
+        assert!(unchanged_event.resource_versions.is_empty());
         store.transaction(|tx| {
             tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','flushed after hint') WHERE id='open:answer'", [])?;
             Ok(())
         }).await.expect("later stored flush");
         http.sync_changes.notify_one();
-        let (event, _) = pending.await.expect("later changed transcript");
+        let (event, _) = next_frame(state).await.expect("later changed transcript");
         assert_eq!(
             event_document(event).await["resourceVersions"][0]["transcriptChanges"]["delta"]["items"]
                 [0]["text"],
@@ -2809,11 +3720,17 @@ mod tests {
         assert_eq!(first, second);
         assert!(matches!(
             left["open"],
-            TranscriptStreamUpdate::Changed { batch: None, .. }
+            TranscriptStreamUpdate::Snapshot {
+                snapshot: Some(_),
+                ..
+            }
         ));
         assert!(matches!(
             right["open"],
-            TranscriptStreamUpdate::Changed { batch: None, .. }
+            TranscriptStreamUpdate::Snapshot {
+                snapshot: Some(_),
+                ..
+            }
         ));
         store.transaction(|tx| {
             tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='answer'", [])?;
@@ -2874,7 +3791,7 @@ mod tests {
         let validator = studio_runtime_schema::compiled_validator("TranscriptStreamDelta")
             .expect("stream delta validator");
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"text"}],
-            "order":["answer"],"removed":[],"itemRevisions":{"answer":"0".repeat(64)},"truncated":false,
+            "order":["answer"],"removed":[],"truncated":false,
             "nextCursor":"answer","nextAfterCursor":"answer","historyVersion":"thread:checkpoint","tail":"","unavailable":null});
         assert!(validator.is_valid(&delta));
         for scenario in [
@@ -2882,8 +3799,7 @@ mod tests {
             "order_count",
             "removed_id",
             "order_id",
-            "revision_key",
-            "revision_value",
+            "retired_revisions",
             "cursor_empty",
             "cursor_long",
             "version_long",
@@ -2897,10 +3813,7 @@ mod tests {
                 }
                 "removed_id" => payload["removed"] = json!([""]),
                 "order_id" => payload["order"] = json!([""]),
-                "revision_key" => payload["itemRevisions"] = json!({"":"0".repeat(64)}),
-                "revision_value" => {
-                    payload["itemRevisions"]["answer"] = json!("not-a-sha256-digest")
-                }
+                "retired_revisions" => payload["itemRevisions"] = json!({"answer":"0".repeat(64)}),
                 "cursor_empty" => payload["nextCursor"] = json!(""),
                 "cursor_long" => payload["nextAfterCursor"] = json!("x".repeat(4097)),
                 "version_long" => payload["historyVersion"] = json!("x".repeat(8194)),
@@ -2922,7 +3835,7 @@ mod tests {
     #[test]
     fn state_stream_transcript_caps_and_incomplete_snapshots_stay_hint_only() {
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"after"}],
-            "removed":[],"itemRevisions":{"answer":studio_runtime_store::sha256_hex(b"after")},"truncated":false});
+            "removed":[],"truncated":false});
         for scenario in [
             "complete", "items", "snapshot", "deleted", "cursor", "unknown",
         ] {
@@ -3155,19 +4068,25 @@ mod tests {
             .transaction(|tx| {
                 SyncDocumentsRepository::put_entity(
                     tx,
-                    "agent",
+                    "agentSummary",
                     "first",
                     json!({"id":"first","name":"superseded","status":"idle","source":"managed"}),
                     false,
                 )?;
                 SyncDocumentsRepository::put_entity(
                     tx,
-                    "agent",
+                    "agentSummary",
                     "first",
                     json!({"id":"first","name":"First","status":"idle","source":"managed"}),
                     false,
                 )?;
-                SyncDocumentsRepository::put_entity(tx, "agent", "removed", json!({}), true)?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agentSummary",
+                    "removed",
+                    json!({}),
+                    true,
+                )?;
                 Ok(())
             })
             .await
@@ -3205,7 +4124,7 @@ mod tests {
                 for index in 0..SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
                     SyncDocumentsRepository::put_entity(
                         tx,
-                        "agent",
+                        "agentSummary",
                         &format!("deleted-{index}"),
                         json!({}),
                         true,
@@ -3228,7 +4147,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_stream_falls_back_for_oversize_pruned_or_unreadable_intervals() {
-        for scenario in ["documents", "bytes", "pruned", "payload"] {
+        for scenario in ["documents", "bytes", "pruned", "payload", "envelope"] {
             let root = tempfile::tempdir().expect("isolated state");
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             let hub = Arc::new(ChangeNotificationHub::new());
@@ -3242,16 +4161,37 @@ mod tests {
                 for index in 0..count {
                     let id = format!("agent-{index}");
                     let name = if scenario == "bytes" { "é".repeat(262144) } else { "Agent".into() };
-                    SyncDocumentsRepository::put_entity(tx, "agent", &id, json!({"id":id,"name":name,"status":"idle","source":"managed"}), false)?;
+                    SyncDocumentsRepository::put_entity(tx, "agentSummary", &id, json!({"id":id,"name":name,"status":"idle","source":"managed"}), false)?;
                 }
                 if scenario == "pruned" {
                     tx.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor','1')", [])?;
                 }
-                if scenario == "payload" {
-                    tx.execute("UPDATE sync_entities SET payload='broken'", [])?;
+                if scenario == "payload" || scenario == "envelope" {
+                    // Movement triggers reject a malformed agentSummary UPDATE.
+                    // Model an already corrupt/imported non-membership record
+                    // instead, with all production triggers still installed.
+                    tx.execute("UPDATE sync_generation SET value=value+1 WHERE id=1", [])?;
+                    let payload=if scenario=="payload" {"broken"} else {"{}"};
+                    tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) SELECT 'workspace','corrupt-import',value,'corrupt-fixture',?1,0 FROM sync_generation WHERE id=1", [payload])?;
                 }
                 Ok(())
             }).await.expect("interval");
+            if scenario == "payload" || scenario == "envelope" {
+                store.test_read_transaction(|tx| {
+                    let collections:Vec<String>=serde_json::from_str(studio_runtime_schema::sync_protocol::global_entity_collections_json()).expect("global collection owner");
+                    assert!(collections.iter().any(|collection|collection=="workspace"));
+                    let rows=SyncDocumentsRepository::entities_after(tx,0,SYNC_ENTITY_STREAM_MAX_DOCUMENTS)?;
+                    let corrupt=rows.iter().find(|row|row.collection=="workspace" && row.id=="corrupt-import").expect("stored corruption in the selected collection and sequence interval");
+                    assert!(corrupt.sequence>0 && corrupt.sequence<=SyncDocumentsRepository::entity_sequence(tx)?);
+                    assert_eq!(corrupt.payload.as_deref(),Some(if scenario=="payload" {"broken"} else {"{}"}));
+                    assert!(crate::routes::sync_documents::entity_document(corrupt).is_none(),"canonical decoder rejects the corrupt record");
+                    if scenario=="envelope" {
+                        let page=SyncDocumentsRepository::resume_entity_scope(tx,Some(0),Some(studio_runtime_schema::sync_protocol::global_entity_collections_json()),None,None,true,SYNC_ENTITY_STREAM_MAX_DOCUMENTS)?;
+                        assert!(page.rows.iter().any(|row|row.id=="corrupt-import"),"valid JSON reaches the decoder through the actual scoped reader");
+                    }
+                    Ok(())
+                }).expect("selected corruption witness");
+            }
             hub.notify_one();
             let (event, _) = next_frame(state).await.expect("revision fallback");
             let event = event_document(event).await;
@@ -3607,151 +4547,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cost_content_ignores_account_listing_order() {
-        use studio_runtime_services::account_policy::AccountPolicyState;
-        fn policy(order: [&str; 2], root: &std::path::Path) -> AccountPolicyState {
-            let entries = order
-                .map(|id| {
-                    format!(
-                        "\"{id}\":{}",
-                        json!({
-                            "id":id, "home":root, "provider":"codex", "label":id,
-                            "source":"Fixture", "status":"ready"
-                        })
-                    )
-                })
-                .join(",");
-            let registry = format!(
-                r#"{{"version":1,"defaultAccountKey":"first","accounts":{{{entries}}},"logins":{{}}}}"#
-            );
-            AccountPolicyState::from_startup(Some(registry.as_bytes()), []).expect("policy")
-        }
+    async fn bounded_entities_never_reconstruct_resource_content() {
         let root = tempfile::tempdir().expect("isolated state");
-        let mut state = HttpState::new(
+        let state = HttpState::new(
             "token".into(),
             "workspace".into(),
             root.path().display().to_string(),
             4321,
             None,
             None,
-            Some(Arc::new(policy(["first", "second"], root.path()))),
-        );
-        let before = resource_content(state.clone(), json!({"kind":"costs"}))
-            .await
-            .expect("cost content");
-        state.account_policy = Some(Arc::new(policy(["second", "first"], root.path())));
-        let after = resource_content(state, json!({"kind":"costs"}))
-            .await
-            .expect("cost content");
-        assert_eq!(
-            before, after,
-            "account order does not change either account's served costs"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn unrelated_commits_do_not_emit_frames_for_five_unchanged_resources() {
-        use axum::body::Body;
-        use axum::extract::ConnectInfo;
-        use axum::http::Request;
-        use futures_util::StreamExt;
-        use studio_runtime_services::account_policy::AccountPolicyState;
-        use tower::ServiceExt;
-
-        let root = tempfile::tempdir().expect("isolated state");
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES('agent-1',?1)",
-                    [
-                        json!({"id":"agent-1","rootId":"agent-1","epoch":1,"status":"idle"})
-                            .to_string(),
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("agent");
-        let policy = AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
-            [],
-        )
-        .expect("account policy");
-        let state = HttpState::new(
-            "token".into(),
-            "workspace".into(),
-            root.path()
-                .join("unavailable-desktop-volume")
-                .display()
-                .to_string(),
-            4321,
             None,
-            Some(store.clone()),
-            Some(Arc::new(policy)),
         );
-        let resources = json!([
-            {"kind":"accounts"}, {"kind":"desktop"}, {"kind":"terminals"},
-            {"kind":"queue","agentId":"agent-1"}
-        ]);
-        let query = form_urlencoded::Serializer::new(String::new())
-            .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
-            .append_pair("resources", &resources.to_string())
-            .finish();
-        let request = Request::builder()
-            .uri(format!("/api/sync/stream?{query}"))
-            .header("host", "127.0.0.1:4321")
-            .header("x-canvas-token", "token")
-            .extension(ConnectInfo(std::net::SocketAddr::from((
-                [127, 0, 0, 1],
-                12345,
-            ))))
-            .body(Body::empty())
-            .expect("request");
-        let response = crate::router(state.clone())
-            .expect("router")
-            .oneshot(request)
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::OK);
-        let mut body = response.into_body().into_data_stream();
-        body.next().await.expect("session").expect("bytes");
-        assert!(
-            String::from_utf8_lossy(&body.next().await.expect("initial").expect("bytes"))
-                .contains("event: resources")
-        );
-        assert!(
-            String::from_utf8_lossy(&body.next().await.expect("rates").expect("bytes"))
-                .contains("event: token-rates")
-        );
-        for index in 0..2 {
-            store.transaction(move |tx| {
-                tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES(?1,'other',1,'{}')", [format!("item-{index}")])?;
-                Ok(())
-            }).await.expect("unrelated commit");
+        for resource in [
+            json!({"kind":"accounts"}),
+            json!({"kind":"costs"}),
+            json!({"kind":"desktop"}),
+            json!({"kind":"terminals"}),
+            json!({"kind":"queue","agentId":"agent"}),
+            json!({"kind":"session-cost","agentId":"agent"}),
+        ] {
+            assert!(resource_content(state.clone(), resource).await.is_none());
         }
-        let frame = body.next().await.expect("heartbeat").expect("bytes");
-        assert!(
-            String::from_utf8_lossy(&frame).contains("event: heartbeat"),
-            "unrelated commits must emit no resource frames: {}",
-            String::from_utf8_lossy(&frame)
-        );
-        store.transaction(|tx| {
-            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.queueMutationRevision',1) WHERE id='agent-1'", [])?;
-            Ok(())
-        }).await.expect("queue content changes");
-        let frame = body.next().await.expect("queue refresh").expect("bytes");
-        let text = String::from_utf8_lossy(&frame);
-        let document: Value = serde_json::from_str(
-            text.lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .expect("data"),
-        )
-        .expect("JSON");
-        assert_eq!(
-            document["resources"],
-            json!([{"kind":"queue","agentId":"agent-1"}])
-        );
     }
 
     #[tokio::test]
@@ -3824,12 +4640,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -3873,12 +4692,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources: vec![json!({"kind":"accounts"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4015,6 +4837,7 @@ mod tests {
                 resources: vec![resource.clone()],
                 added: vec![resource.clone()],
                 token_rates: None,
+                since: BTreeMap::new(),
             },
         )
         .await
@@ -4159,12 +4982,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".into(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources,
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,
@@ -4377,12 +5203,15 @@ mod tests {
             vault_readiness: None,
             subscription: None,
             initial: VecDeque::new(),
+            entity_transfers: VecDeque::new(),
+            scoped_sequences: BTreeMap::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
             last_revision: baseline.revision,
             resources: Vec::new(),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
             store: None,

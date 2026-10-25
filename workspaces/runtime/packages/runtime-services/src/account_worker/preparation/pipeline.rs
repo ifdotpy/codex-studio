@@ -2391,19 +2391,6 @@ mod daybreak_tests {
     }
 
     #[test]
-    fn enabled_daybreak_uses_grant_for_selected_fallback_model() {
-        let catalog = json!({"data":[
-            {"model":"requested-model","hidden":true,"availableAccessPrograms":{"cyber":["daybreakBlue"]}},
-            {"model":"fallback-model","availableAccessPrograms":{"cyber":["daybreakRed"]}}
-        ]});
-        assert_eq!(
-            resolve_daybreak_program(&catalog, Some("fallback-model"), true)
-                .expect("fallback model has a Daybreak grant"),
-            "daybreakRed"
-        );
-    }
-
-    #[test]
     fn native_action_turn_params_resolve_enabled_and_disabled_daybreak_for_fallback_model() {
         let catalog = json!({"data":[
             {"model":"requested-model","hidden":true,"availableAccessPrograms":{"cyber":["daybreakBlue"]}},

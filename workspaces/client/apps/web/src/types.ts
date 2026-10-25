@@ -38,11 +38,29 @@ export type Edge = EdgeEntityDto;
 
 type SnapshotRuntime = WorkspaceEntityDto & {
   modelsByAccount?: Record<string, components["schemas"]["ModelEntityDto"][]>;
+  terminals?: components["schemas"]["TerminalRecord"][];
+  desktop?: components["schemas"]["DesktopResponse"];
+  sessionCostsByAgent?: Record<
+    string,
+    components["schemas"]["SessionCostResponse"]
+  >;
+  accountCostsByAccount?: Record<
+    string,
+    components["schemas"]["AccountCostResponse"]
+  >;
+  accountsSummary?: components["schemas"]["AccountsSummaryDto"];
+  queuesByAgent?: Record<string, components["schemas"]["QueueView"]>;
   rateLimitsByAccount?: Record<
     string,
     components["schemas"]["AccountRateLimitsDto"]
   >;
   rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
+  retainedWorktrees?: components["schemas"]["RetainedWorktreeEntityDto"][];
+  questionHistory?: components["schemas"]["AgentRequest"][];
+  messageReceipts?: components["schemas"]["MessageReceiptEntityDto"][];
+  plans?: components["schemas"]["PlanSummaryEntityDto"][];
+  annotations?: components["schemas"]["AnnotationEntityDto"][];
+  studioErrors: components["schemas"]["StudioError"][];
   agents: Agent[];
   rooms: Room[];
   tasks: BackgroundTask[];

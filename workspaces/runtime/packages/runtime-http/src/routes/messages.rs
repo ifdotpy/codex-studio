@@ -251,8 +251,20 @@ async fn agent_chat(
             serde_json::json!("before"),
         ]));
     }
+    room_snapshot(state, room, before, after, limit)
+        .await
+        .map(Json)
+}
+
+pub(super) async fn room_snapshot(
+    state: HttpState,
+    room: String,
+    before: Option<i64>,
+    after: Option<i64>,
+    limit: i64,
+) -> Result<crate::generated::ChatRead, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = store
+    store
         .read_async("runtime-http/routes/messages", move |tx| {
             let value = studio_runtime_services::coordination_reads::chat_read(
                 tx, &room, before, after, limit,
@@ -260,9 +272,9 @@ async fn agent_chat(
             .map_err(coordination_error)?;
             super::generated_json::<crate::generated::ChatRead>(value)
         })
-        .await?;
-    Ok(Json(value))
+        .await
 }
+
 async fn receipts(
     State(state): State<HttpState>,
     query: QueryParams,

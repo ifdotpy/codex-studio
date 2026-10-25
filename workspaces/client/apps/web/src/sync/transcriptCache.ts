@@ -103,7 +103,7 @@ export function createTranscriptCache() {
     notify(key, value);
   }
 
-  /** Apply a sparse server delta to retained item objects in place. */
+  /** Apply a sparse server delta while preserving previously published snapshots. */
   function patchTranscriptValue(
     workspaceId: string,
     id: string,
@@ -117,7 +117,10 @@ export function createTranscriptCache() {
     const entry = entries.get(key);
     if (!entry || entry.value.seq >= seq || !entry.value.payload) return false;
     const oldSize = entry.size;
-    const oldItems = entry.value.payload.items as any[];
+    // Hooks retain published payloads between frame-batched notifications and
+    // for history navigation. Patch a private array so removals cannot expose
+    // null tombstones there; unchanged message objects keep their identities.
+    const oldItems = [...entry.value.payload.items] as any[];
     const indexes = entry.itemIndexes;
     for (const item of changed) {
       if (typeof item?.id !== "string") continue;

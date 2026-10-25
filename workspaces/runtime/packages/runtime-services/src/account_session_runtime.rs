@@ -1316,7 +1316,8 @@ impl AccountSessionPort for AccountSessionRuntime {
             let pending = Arc::clone(&self.pending_limit_refreshes);
             let handle = runtime.runtime.clone();
             handle.spawn(async move {
-                match AccountSessionPort::read_limits_if_stale(&runtime, &account).await {
+                // A newly recorded limit failure can invalidate a fresh cached result.
+                match AccountSessionPort::read_limits(&runtime, &account).await {
                     Ok(_) => {}
                     Err(_) => {
                         // A refresh is best-effort; this request keeps its existing
@@ -2276,6 +2277,45 @@ mod limits_runtime_tests {
             entered_rx,
             release,
         )
+    }
+
+    #[tokio::test]
+    async fn limit_failure_refresh_replaces_fresh_cached_limits_and_publishes_entity() {
+        let (f, _entered, _release) = fixture(
+            [
+                Reply::Data(json!({"rateLimits":{"primary":{"usedPercent":0.0}}})),
+                Reply::Data(json!({"rateLimits":{"primary":{"usedPercent":100.0}}})),
+            ],
+            false,
+        )
+        .await;
+        f.runtime.read_limits("default").await.unwrap();
+        let store = f.runtime.store.as_ref().unwrap();
+        let changes = Arc::new(tokio::sync::Notify::new());
+        let committed = Arc::clone(&changes);
+        store.add_commit_observer(move || committed.notify_one());
+        f.runtime.refresh_limits("default").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if f.runtime.limits_snapshot("default").unwrap()["data"]["rateLimits"]["primary"]["usedPercent"] == 100.0 { break; }
+                changes.notified().await;
+            }
+        }).await.expect("the failure refresh publishes current limits");
+        assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+        let raw: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["value"]["data"]["rateLimits"]["primary"]
+                ["usedPercent"],
+            100.0
+        );
     }
 
     #[tokio::test]

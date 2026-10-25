@@ -172,8 +172,6 @@ pub(crate) async fn pull(
                         .map_err(|_| ApiError::internal())?;
                     let checkpoint = documents.last().map_or(after, |document| document.sequence);
                     let response = crate::generated::SyncPullResponse {
-                        sync_entities: None,
-                        sync_entities_after: None,
                         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
                         documents: documents
                             .into_iter()
@@ -708,7 +706,7 @@ fn pull_entities(
             },
         )?;
     }
-    let mut page = SyncDocumentsRepository::pull_entities(
+    let mut page = SyncDocumentsRepository::pull_global_entities(
         transaction,
         after,
         limit,
@@ -728,8 +726,6 @@ fn pull_entities(
             );
         }
         let response = crate::generated::SyncPullResetResponse {
-            sync_entities: None,
-            sync_entities_after: None,
             floor: page.tombstone_floor,
             generation,
             max_seq: page.max_sequence,
@@ -783,7 +779,7 @@ fn pull_entities(
             break;
         }
         scan_after = next_after;
-        page = SyncDocumentsRepository::pull_entities(
+        page = SyncDocumentsRepository::pull_global_entities(
             transaction,
             next_after,
             limit,
@@ -799,8 +795,6 @@ fn pull_entities(
         checkpoint = next_after;
     }
     let response = crate::generated::SyncPullResponse {
-        sync_entities: None,
-        sync_entities_after: None,
         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
         documents,
         floor: None,
@@ -1132,10 +1126,8 @@ mod vault_maintenance_tests {
             "initialHigh":9
         });
         let page: crate::generated::SyncPullResponse =
-            serde_json::from_value(page_json).expect("legacy page projects to DTO");
+            serde_json::from_value(page_json.clone()).expect("legacy page projects to DTO");
         let direct_page = crate::generated::SyncPullResponse {
-            sync_entities: None,
-            sync_entities_after: None,
             checkpoint: crate::generated::SyncCheckpoint { seq: 8 },
             documents: vec![
                 crate::generated::SyncPullResponseDocumentsItemUnion::SyncDocument(
@@ -1154,30 +1146,32 @@ mod vault_maintenance_tests {
             reset: None,
             workspace_id: "workspace-1".to_owned(),
         };
-        assert_eq!(
-            serde_json::to_vec(&direct_page).expect("direct page serializes"),
-            serde_json::to_vec(&page).expect("legacy page serializes")
-        );
+        for value in [&page, &direct_page] {
+            assert_eq!(
+                serde_json::to_value(value).expect("page serializes"),
+                page_json
+            );
+        }
 
         let reset_json = json!({
             "workspaceId":"workspace-1", "generation":7,
             "reset":true, "floor":3, "maxSeq":10
         });
         let reset: crate::generated::SyncPullResetResponse =
-            serde_json::from_value(reset_json).expect("legacy reset projects to DTO");
+            serde_json::from_value(reset_json.clone()).expect("legacy reset projects to DTO");
         let direct_reset = crate::generated::SyncPullResetResponse {
-            sync_entities: None,
-            sync_entities_after: None,
             floor: 3,
             generation: 7,
             max_seq: 10,
             reset: true,
             workspace_id: "workspace-1".to_owned(),
         };
-        assert_eq!(
-            serde_json::to_vec(&direct_reset).expect("direct reset serializes"),
-            serde_json::to_vec(&reset).expect("legacy reset serializes")
-        );
+        for value in [&reset, &direct_reset] {
+            assert_eq!(
+                serde_json::to_value(value).expect("reset serializes"),
+                reset_json
+            );
+        }
     }
 
     async fn maintenance_fixture() -> (
@@ -1350,6 +1344,7 @@ mod vault_maintenance_tests {
 
     #[tokio::test]
     async fn canceled_maintenance_response_keeps_the_projection_lock_until_commit_and_mark() {
+        use futures_util::FutureExt;
         let (_directory, store, _project, validators, state_dir) = maintenance_fixture().await;
         let state = Arc::new(crate::router::HttpState::new(
             "token".to_owned(),
@@ -1423,55 +1418,38 @@ mod vault_maintenance_tests {
             Err(error) if error.is_cancelled()
         ));
 
-        let (second_started_tx, second_started_rx) = tokio::sync::oneshot::channel();
-        let (second_reached_tx, second_reached_rx) = tokio::sync::oneshot::channel();
-        let second_store = store.clone();
-        let second_validators = validators.clone();
-        let second_state_dir = state_dir.clone();
-        let second = tokio::spawn(async move {
-            second_started_tx
-                .send(())
-                .expect("test waits for second maintenance start");
-            let mut second_reached_tx = Some(second_reached_tx);
-            pull_with_maintenance(
-                second_store,
-                second_state_dir,
-                second_validators,
-                0,
-                100,
-                false,
-                0,
-                false,
-                None,
-                0,
-                move || -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-                    let reached = second_reached_tx.take();
-                    Box::pin(async move {
-                        if let Some(reached) = reached {
-                            reached
-                                .send(())
-                                .expect("test waits for the second preparation gate");
-                        }
-                    })
-                },
-            )
-            .await
-        });
-        second_started_rx
-            .await
-            .expect("second maintenance starts while the first is retained");
+        // The first tracked operation is held inside maintenance. Poll the
+        // actual mutex, so Pending proves retention at that boundary.
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), second_reached_rx)
-                .await
-                .is_err(),
-            "second preparation must not pass the lock while the first commit is pending"
+            store
+                .lock_entity_projection_maintenance()
+                .now_or_never()
+                .is_none(),
+            "cancelling the response must retain the projection lock"
+        );
+        let second = pull_with_maintenance(
+            store.clone(),
+            state_dir,
+            validators,
+            0,
+            100,
+            false,
+            0,
+            false,
+            None,
+            0,
+            || Box::pin(async {}),
+        );
+        tokio::pin!(second);
+        assert!(
+            second.as_mut().now_or_never().is_none(),
+            "second preparation waits for the retained lock"
         );
         release_first_tx
             .send(())
             .expect("first maintenance is still waiting");
         second
             .await
-            .expect("second maintenance task completes")
             .expect("second pull succeeds after the first maintenance commits");
         state.shutdown_mutations().await;
     }
@@ -1615,13 +1593,17 @@ mod vault_maintenance_tests {
                 .await
                 .expect("runtime store opens"),
         );
+        studio_runtime_services::entity_publication::install(&store)
+            .await
+            .expect("source publisher initialized");
         store
             .transaction(|transaction| {
                 transaction.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "agent-1",
-                        json!({"id":"agent-1","status":"idle"}).to_string()
+                        json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                            .to_string()
                     ],
                 )?;
                 Ok(())
@@ -1670,13 +1652,19 @@ mod vault_maintenance_tests {
                 .await
                 .expect("runtime store opens"),
         );
+        studio_runtime_services::entity_publication::install(&store)
+            .await
+            .expect("source publisher initialized");
         store
             .transaction(|transaction| {
                 for index in 0..ENTITY_COUNT {
                     let id = format!("agent-{index:04}");
                     transaction.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                        rusqlite::params![id, json!({"id":id,"status":"idle"}).to_string()],
+                        rusqlite::params![
+                            id,
+                            json!({"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
+                        ],
                     )?;
                     transaction.execute(
                         "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",

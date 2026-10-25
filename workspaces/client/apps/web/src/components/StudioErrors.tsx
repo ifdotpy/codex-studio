@@ -13,8 +13,7 @@ import { errorText, type GetResult } from "../api";
 import { STUDIO_ERRORS_DISMISS_MAX_IDS } from "../generated/sharedValues";
 
 export type StudioErrorItem = GetResult<"/api/studio-errors">["items"][number];
-/** How often the sidebar count is read again while the app is open. Unit: ms. */
-const REFRESH_MS = 120_000;
+const EMPTY_ERRORS: StudioErrorItem[] = [];
 
 export function actionLabel(item: StudioErrorItem) {
   return item.action === "resume" ? "Resume" : "Open";
@@ -127,9 +126,11 @@ export function StudioErrorList({
 }
 
 /** Reads and mutations stay on the active server, including when the trigger is portalled. */
-export function useStudioErrorsState(enabled = true) {
+export function useStudioErrorsState(
+  sourceItems: StudioErrorItem[] = EMPTY_ERRORS,
+) {
   const { get, post } = useServerApi();
-  const [items, setItems] = useState<StudioErrorItem[]>([]);
+  const [items, setItems] = useState<StudioErrorItem[]>(sourceItems);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -142,18 +143,10 @@ export function useStudioErrorsState(enabled = true) {
     if (read === generation.current) setItems(value.items);
   }, [get]);
   useEffect(() => {
-    if (!enabled) return;
-    const read = () => {
-      if (!pending.current)
-        void refresh().catch((failure) => setError(errorText(failure)));
-    };
-    read();
-    const timer = window.setInterval(read, REFRESH_MS);
-    return () => {
-      window.clearInterval(timer);
-      generation.current++;
-    };
-  }, [refresh, enabled]);
+    // Complete entity batches own membership; HTTP readback is only for explicit actions.
+    generation.current++;
+    setItems(sourceItems);
+  }, [sourceItems]);
   const select = (id: string, checked: boolean) => {
     if (pending.current) return;
     setSelected((previous) => {
@@ -245,8 +238,14 @@ const StudioErrorsContext = createContext<ReturnType<
 export const StudioErrorsScope = StudioErrorsContext.Provider;
 
 /** One owner per server, above chat keys and sidebar portals, retains pending mutations. */
-export function StudioErrorsProvider({ children }: { children: ReactNode }) {
-  const state = useStudioErrorsState();
+export function StudioErrorsProvider({
+  children,
+  items = EMPTY_ERRORS,
+}: {
+  children?: ReactNode;
+  items?: StudioErrorItem[];
+}) {
+  const state = useStudioErrorsState(items);
   return (
     <StudioErrorsContext.Provider value={state}>
       {children}

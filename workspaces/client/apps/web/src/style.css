@@ -1,7 +1,40 @@
 @import "./studio-theme.css";
 
+/* Scrollbar palette owner: retain the main transcript's light/dark thumb.
+   Apply to every native scroll container, including portaled overlays.
+   Keep Mantine's more-specific viewport hiding and scrolling behavior. */
+:root {
+  --studio-scrollbar-thumb: light-dark(#18244718, #ffffff18);
+  /* Visible Mantine thumb width in CSS pixels; native thin remains platform-owned. */
+  --studio-scrollbar-thumb-size: 6px;
+}
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--studio-scrollbar-thumb) transparent;
+}
+
+/* Keep Mantine's full track hit target while matching the thin native thumb. */
+.mantine-ScrollArea-scrollbar {
+  padding: max(
+    0px,
+    calc(
+      (var(--scrollarea-scrollbar-size) - var(--studio-scrollbar-thumb-size)) /
+        2
+    )
+  );
+}
+/* Mantine owns track geometry, hit targets, visibility and dragging. */
+.mantine-ScrollArea-scrollbar,
+.mantine-ScrollArea-scrollbar:hover,
+.mantine-ScrollArea-scrollbar:active,
+.mantine-ScrollArea-corner {
+  background-color: transparent;
+}
+.mantine-ScrollArea-thumb,
+.mantine-ScrollArea-scrollbar:hover > .mantine-ScrollArea-thumb,
+.mantine-ScrollArea-scrollbar:active > .mantine-ScrollArea-thumb {
+  background-color: var(--studio-scrollbar-thumb);
 }
 body {
   margin: 0;
@@ -199,8 +232,6 @@ p {
   overflow: auto;
   min-height: 0;
   padding: 36px max(32px, calc((100% - 736px) / 2)) 24px;
-  scrollbar-width: thin;
-  scrollbar-color: light-dark(#18244718, #ffffff18) transparent;
   scroll-padding-bottom: 30px;
 }
 .message {
@@ -558,8 +589,6 @@ p {
   flex: 1 0 auto;
   min-height: 0;
   overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: light-dark(#18244718, #ffffff18) transparent;
 }
 .worker {
   display: flex;

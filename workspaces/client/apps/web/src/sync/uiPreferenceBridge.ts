@@ -1,3 +1,8 @@
+import { errorText } from "../api";
+import {
+  registerPreferenceRetry,
+  setPreferenceWriteStatus,
+} from "./uiPreferenceStatus";
 import type { syncPost } from "../api";
 import { onResume } from "./resume";
 import {
@@ -23,50 +28,89 @@ export function createUiPreferenceBridge(
   let ready = false;
   let sending = false;
   let sendAgain = false;
+  let retryGeneration = 0;
   const confirmed: Partial<Record<PreferenceScope, string>> = {};
 
-  const send = async () => {
+  const send = async (explicitRetry = false) => {
+    if (explicitRetry) retryGeneration++;
     if (!active || !ready) return;
     if (sending) {
       sendAgain = true;
       return;
     }
     sending = true;
+    // Acknowledgements alone cannot repeat a rejected payload. New field
+    // versions or explicit retry intent can advance the same active drain.
+    const failedAttempts = new Map<
+      PreferenceScope,
+      {
+        serialized: string;
+        retryGeneration: number;
+      }
+    >();
     try {
       do {
         sendAgain = false;
         for (const scope of ["user", "server"] as const) {
           const fields = readPreferenceFields(scope, storage);
           const serialized = canonicalPreferenceJson(fields);
-          if (!Object.keys(fields).length || confirmed[scope] === serialized)
+          if (!Object.keys(fields).length || confirmed[scope] === serialized) {
+            setPreferenceWriteStatus(storage, scope, { state: "saved" });
             continue;
-          const body = { scope, fields };
-          const digest = await crypto.subtle.digest(
-            "SHA-256",
-            new TextEncoder().encode(canonicalPreferenceJson(body)),
-          );
-          if (!active) return;
-          const requestId =
-            "ui-preferences:" +
-            Array.from(new Uint8Array(digest), (byte) =>
-              byte.toString(16).padStart(2, "0"),
-            ).join("");
-          const result = await post("/api/sync/preferences", body, {
-            requestId,
-          });
-          if (!active) return;
-          confirmed[scope] = canonicalPreferenceJson(result.fields);
-          acknowledgePreferenceFields(
-            scope,
-            fields,
-            result.fields as PreferenceFields,
-            storage,
-          );
+          }
+          const attemptGeneration = retryGeneration;
+          const failed = failedAttempts.get(scope);
+          if (
+            failed?.serialized === serialized &&
+            failed.retryGeneration === attemptGeneration
+          )
+            continue;
+          try {
+            setPreferenceWriteStatus(storage, scope, { state: "saving" });
+            const body = { scope, fields };
+            const digest = await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(canonicalPreferenceJson(body)),
+            );
+            if (!active) return;
+            const requestId =
+              "ui-preferences:" +
+              Array.from(new Uint8Array(digest), (byte) =>
+                byte.toString(16).padStart(2, "0"),
+              ).join("");
+            const result = await post("/api/sync/preferences", body, {
+              requestId,
+            });
+            if (!active) return;
+            confirmed[scope] = canonicalPreferenceJson(result.fields);
+            acknowledgePreferenceFields(
+              scope,
+              fields,
+              result.fields as PreferenceFields,
+              storage,
+            );
+            const pending =
+              canonicalPreferenceJson(readPreferenceFields(scope, storage)) !==
+              confirmed[scope];
+            setPreferenceWriteStatus(storage, scope, {
+              state: pending ? "saving" : "saved",
+            });
+            if (pending) sendAgain = true;
+          } catch (error) {
+            if (!active) return;
+            failedAttempts.set(scope, {
+              serialized,
+              retryGeneration: attemptGeneration,
+            });
+            setPreferenceWriteStatus(storage, scope, {
+              state: "error",
+              error:
+                errorText(error) ||
+                "Could not save preferences. Check the server connection and retry.",
+            });
+          }
         }
       } while (sendAgain && active);
-    } catch {
-      // The API client owns schema gating and transport failures. A later
-      // preference edit, resume or connection recovery retries pending fields.
     } finally {
       sending = false;
     }
@@ -88,18 +132,24 @@ export function createUiPreferenceBridge(
 
   return {
     receiveProjection,
-    retryPendingWrites: () => void send(),
+    retryPendingWrites: () => void send(true),
     start() {
       if (active) return () => {};
       active = true;
       initializePreferenceMigration("user", storage);
       initializePreferenceMigration("server", storage);
+      for (const scope of ["user", "server"] as const) {
+        if (Object.keys(readPreferenceFields(scope, storage)).length)
+          setPreferenceWriteStatus(storage, scope, { state: "saving" });
+      }
+      const stopRetry = registerPreferenceRetry(storage, () => void send(true));
       const stopWrites = watchPreferenceWrites(() => void send());
-      const stopResume = onResume(() => void send());
+      const stopResume = onResume(() => void send(true));
       return () => {
         active = false;
         stopResume();
         stopWrites();
+        stopRetry();
       };
     },
   };

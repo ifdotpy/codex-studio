@@ -1,11 +1,11 @@
 //! Axum HTTP edge for the Studio runtime.
 
+mod bounded_entities;
 pub mod error;
 mod http_body_limits;
 mod json_body;
 pub mod middleware;
 mod model_entities;
-mod mutation_sync;
 mod mutation_tasks;
 pub mod router;
 pub mod routes;

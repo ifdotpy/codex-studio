@@ -90,14 +90,9 @@ fn merge_transcript_delta(previous: &Value, incoming: &Value) -> Result<String, 
         .iter()
         .filter_map(|v| v["id"].as_str().map(|id| (id.into(), v.clone())))
         .collect();
-    let mut revisions = base["itemRevisions"]
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
     if let Some(removed) = incoming["removed"].as_array() {
         for id in removed.iter().filter_map(Value::as_str) {
             items.remove(id);
-            revisions.remove(id);
         }
     }
     if let Some(changed) = incoming["items"].as_array() {
@@ -109,14 +104,6 @@ fn merge_transcript_delta(previous: &Value, incoming: &Value) -> Result<String, 
                 )
             })?;
             items.insert(id.into(), item.clone());
-        }
-    }
-    if let Some(changed) = incoming["itemRevisions"].as_object() {
-        revisions.extend(changed.clone());
-    }
-    if let Some(removed) = incoming["removed"].as_array() {
-        for id in removed.iter().filter_map(Value::as_str) {
-            revisions.remove(id);
         }
     }
     let order: Vec<String> = incoming["order"]
@@ -142,7 +129,8 @@ fn merge_transcript_delta(previous: &Value, incoming: &Value) -> Result<String, 
     if let Some(fields) = incoming.as_object() {
         merged.extend(fields.clone());
     }
-    for key in ["delta", "removed", "order"] {
+    // Legacy persisted snapshots may still carry the retired wire map.
+    for key in ["delta", "removed", "order", "itemRevisions"] {
         merged.remove(key);
     }
     merged.insert(
@@ -154,7 +142,6 @@ fn merge_transcript_delta(previous: &Value, incoming: &Value) -> Result<String, 
                 .collect(),
         ),
     );
-    merged.insert("itemRevisions".into(), Value::Object(revisions));
     serde_json::to_string(&Value::Object(merged)).map_err(|e| error("invalid_projection", e))
 }
 
@@ -384,8 +371,17 @@ async fn pull_entities(
 /// message. Refuse a payload that cannot fit, with the envelope reserve, so the
 /// UI gets one actionable error instead of a transport response_size error.
 pub fn projection_error(payload: &str) -> Option<CommandError> {
+    // Bytes reserved for the response envelope around the escaped projection payload.
+    const PROJECTION_ENVELOPE_RESERVE_BYTES: usize = 4096;
+    projection_error_with_limit(
+        payload,
+        crate::protocol::MAX_MESSAGE.saturating_sub(PROJECTION_ENVELOPE_RESERVE_BYTES),
+    )
+}
+
+fn projection_error_with_limit(payload: &str, limit: usize) -> Option<CommandError> {
     let encoded = serde_json::to_string(payload).map_or(usize::MAX, |text| text.len());
-    (encoded > crate::protocol::MAX_MESSAGE.saturating_sub(4096)).then(|| {
+    (encoded > limit).then(|| {
         error(
             "projection_too_large",
             "The workspace state is too large to open. Update the Studio server; it removes old background tasks from sync.",
@@ -467,14 +463,14 @@ mod tests {
     };
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
     #[test]
-    fn transcript_delta_merges_items_revisions_metadata_and_order() {
+    fn transcript_delta_merges_legacy_cache_without_retaining_item_revisions() {
         let base = json!({"payload":json!({"items":[{"id":"a","v":1},{"id":"b","v":2}],"itemRevisions":{"a":1,"b":1},"title":"old"}).to_string()});
-        let delta = json!({"items":[{"id":"a","v":3},{"id":"c","v":4}],"itemRevisions":{"a":2,"c":1},"removed":["b"],"order":["c","a"],"delta":true,"title":"new"});
+        let delta = json!({"items":[{"id":"a","v":3},{"id":"c","v":4}],"removed":["b"],"order":["c","a"],"delta":true,"title":"new"});
         let actual: Value =
             serde_json::from_str(&merge_transcript_delta(&base, &delta).unwrap()).unwrap();
         assert_eq!(
             actual,
-            json!({"items":[{"id":"c","v":4},{"id":"a","v":3}],"itemRevisions":{"a":2,"c":1},"title":"new"})
+            json!({"items":[{"id":"c","v":4},{"id":"a","v":3}],"title":"new"})
         );
     }
 
@@ -488,13 +484,15 @@ mod tests {
 
     #[test]
     fn projection_limit_counts_json_escaping() {
-        // 17 MiB of quotes becomes 34 MiB after escaping in the UI message.
-        let payload = "\"".repeat(17 * 1024 * 1024);
+        // Quotes occupy two JSON bytes; plain text occupies one, plus delimiters.
         assert_eq!(
-            projection_error(&payload).unwrap().code,
+            projection_error_with_limit(&"\"".repeat(32), 63)
+                .unwrap()
+                .code,
             "projection_too_large"
         );
-        assert!(projection_error(&"x".repeat(17 * 1024 * 1024)).is_none());
+        assert!(projection_error_with_limit(&"x".repeat(61), 63).is_none());
+        assert!(projection_error_with_limit(&"x".repeat(62), 63).is_some());
     }
 
     #[tokio::test]

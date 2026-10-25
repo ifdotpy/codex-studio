@@ -56,11 +56,7 @@ import {
 import { errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
-import {
-  isCyberPolicyRefusal,
-  nativeErrorKind,
-  nativeThreadError,
-} from "../nativeErrors";
+import { isCyberPolicyRefusal, nativeThreadError } from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -78,7 +74,10 @@ import {
 import { useRemovedMessages } from "./removedMessages";
 import { isSendingMessage } from "./removeSendingMessages";
 
-import { useConversationScroll } from "./useConversationScroll";
+import {
+  useConversationScroll,
+  TRANSCRIPT_HISTORY_START_PX,
+} from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
 import { useServerUploads } from "../servers/ServerServicesContext";
@@ -120,7 +119,7 @@ import { LiveAgentPhase } from "./agents/AgentPhase";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
-import type { useAccounts } from "./Accounts";
+import { AccountTransferChip, type useAccounts } from "./Accounts";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -220,6 +219,7 @@ function useCompactHeaderTools() {
 
 export default function Conversation(p: {
   id: string | null;
+  visible?: boolean;
   projectName?: string;
   railMode?: boolean;
   onRailToolsChange?: (tools: ReactNode) => void;
@@ -392,6 +392,7 @@ export default function Conversation(p: {
     p.agent?.source === "managed",
     p.data.stateDir,
     p.syncWorkspaceId,
+    p.visible ?? true,
   );
   const outgoing = (p.outgoing || []).filter(
     (entry) => entry.body.room === p.id,
@@ -514,10 +515,24 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     hasRecentScrollInput,
+    consumeHistoryScrollInput,
     remember,
     revealRequest,
     getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  const loadOlderAtStart = () => {
+    if (
+      !before ||
+      pageLoading ||
+      !scroll.current ||
+      scroll.current.scrollTop > TRANSCRIPT_HISTORY_START_PX ||
+      !consumeHistoryScrollInput()
+    )
+      return;
+    setFollow(false);
+    setPageAnchor(getAnchorId());
+    void older().catch((error) => p.notify(errorText(error)));
+  };
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
   const handledJump = useRef("");
@@ -607,7 +622,6 @@ export default function Conversation(p: {
   const uploading = addingFiles || pendingFiles.length > 0;
   useServerActivity(addingFiles || uploadRecovery.pending.length > 0);
   const [limitsOpen, setLimitsOpen] = useState(false);
-  const refreshedFailure = useRef("");
   const sendLock = useRef<symbol | null>(null);
   const latestSend = useRef<Record<string, symbol>>({});
   const branchLock = useRef(false);
@@ -649,19 +663,6 @@ export default function Conversation(p: {
   );
   const threadBlock = nativeThreadError(agent);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
-  const errorKind = nativeErrorKind(agent?.error);
-  const failureKey = [
-    p.id,
-    agent?.nativeTurnError?.turnId || agent?.turnId || agent?.lastCompletedTurn,
-    errorKind,
-  ].join(":");
-  useEffect(() => {
-    if (!["usageLimitExceeded", "rateLimitExceeded"].includes(errorKind))
-      return;
-    if (refreshedFailure.current === failureKey) return;
-    refreshedFailure.current = failureKey;
-    p.reloadLimits();
-  }, [errorKind, failureKey, p.reloadLimits]);
   const displayPhase = useDisplayPhase(
     p.id,
     agent?.activity?.phase || "thinking",
@@ -712,6 +713,7 @@ export default function Conversation(p: {
       >
         <UnifiedAgentSettings
           key={p.agent.id}
+          showTransferStatus={false}
           state={p.accountsState}
           notify={p.notify}
           agent={p.agent}
@@ -722,10 +724,10 @@ export default function Conversation(p: {
           openRequest={
             modelCommandRequest.id === p.id ? modelCommandRequest.serial : 0
           }
-          renderTrigger={({ opened, ref, onClick }) => (
+          renderTrigger={({ agent, opened, ref, onClick }) => (
             <ExecutionSummaryTrigger
               ref={ref}
-              agent={p.agent!}
+              agent={agent}
               lead={p.lead}
               team={p.data.runtime?.agents || []}
               aria-expanded={opened}
@@ -1648,6 +1650,10 @@ export default function Conversation(p: {
         onScroll={() => {
           onScroll();
           if (!getFollow()) setPageAnchor(getAnchorId());
+          loadOlderAtStart();
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) loadOlderAtStart();
         }}
       >
         <div ref={content} className="message-content">
@@ -1940,6 +1946,13 @@ export default function Conversation(p: {
                 );
               return (
                 <>
+                  {managed &&
+                    p.agent?.isLead &&
+                    p.agent.accountTransfer?.scope !== "subagents" && (
+                      <AccountTransferChip
+                        transfer={p.agent.accountTransfer ?? undefined}
+                      />
+                    )}
                   <PromptInput
                     value={draft}
                     session={p.id || "new"}
@@ -2017,18 +2030,20 @@ export default function Conversation(p: {
                     </div>
                   )}
                   <div className="composer-bar">
-                    <DraftVersions
-                      key={`drafts:${p.id || "new"}`}
-                      versions={p.draftConflicts || []}
-                      useVersion={(version, mode) =>
-                        p.setDraft((current) =>
-                          mode === "append" && current
-                            ? `${current}\n\n${version.text}`
-                            : version.text,
-                        )
-                      }
-                      dismiss={(version) => p.dismissDraft?.(version)}
-                    />
+                    <div className="composer-draft-control">
+                      <DraftVersions
+                        key={`drafts:${p.id || "new"}`}
+                        versions={p.draftConflicts || []}
+                        useVersion={(version, mode) =>
+                          p.setDraft((current) =>
+                            mode === "append" && current
+                              ? `${current}\n\n${version.text}`
+                              : version.text,
+                          )
+                        }
+                        dismiss={(version) => p.dismissDraft?.(version)}
+                      />
+                    </div>
                     <div className="composer-tools">
                       {attachTool}
                       <div className="composer-tools-inline">{voiceTool}</div>
@@ -2205,6 +2220,7 @@ export default function Conversation(p: {
             {agent?.source === "managed" && (
               <Usage
                 key={p.agent?.accountKey || "default"}
+                visible={p.visible ?? true}
                 agent={{
                   ...agent,
                   accountKey: p.agent?.accountKey || "default",

@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
+import * as resources from "../../sync/subscriptions/events";
 import { post, saved, save } from "../../api";
 import { serverViewId } from "../../servers/environment";
 import { serverLocalStorage } from "../../servers/storage";
@@ -29,6 +30,10 @@ export type SidebarTarget =
 export type SidebarBackend = {
   ownerId: string;
   post: typeof post;
+  resources?: Pick<
+    typeof resources,
+    "watchResourceChanges" | "watchResourceConnection"
+  >;
   saved: typeof saved;
   save: typeof save;
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -68,6 +73,7 @@ export function sidebarIdentity(ownerId: string, id: string): string {
 export const localSidebarBackend: SidebarBackend = {
   ownerId: serverViewId || "local",
   post,
+  resources,
   saved,
   save,
   storage: serverLocalStorage,

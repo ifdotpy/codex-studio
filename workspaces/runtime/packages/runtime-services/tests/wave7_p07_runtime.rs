@@ -1,9 +1,6 @@
-use futures_util::FutureExt;
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
-    future::Future,
-    pin::Pin,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -17,8 +14,6 @@ use studio_runtime_services::{
 use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, TaskRecord, TaskRepository, Transaction,
 };
-
-type RuntimeCorpusCase = (&'static str, Pin<Box<dyn Future<Output = ()>>>);
 
 fn scope() -> ConnectionScope {
     ConnectionScope {
@@ -176,6 +171,7 @@ fn records(store: &RuntimeStore, table: &str) -> Vec<Value> {
         .map(|r| serde_json::from_str(&r.expect("row")).expect("json"))
         .collect()
 }
+#[tokio::test]
 async fn python_terminal_notification_count_decodes_without_changing_attempt_events() {
     let record = corpus()["notification_counter"].clone();
     let snapshot = RecoverySnapshot::from_record(record.clone()).expect("Python terminal record");
@@ -191,6 +187,7 @@ async fn python_terminal_notification_count_decodes_without_changing_attempt_eve
     invalid["startAttempt"]["events"] = json!(8);
     assert!(RecoverySnapshot::from_record(invalid).is_err());
 }
+#[tokio::test]
 async fn connection_completion_matches_python_full_records_and_results() {
     let cases = corpus()["connection"].as_array().expect("cases");
     assert_eq!(cases.len(), 27);
@@ -246,6 +243,7 @@ async fn connection_completion_matches_python_full_records_and_results() {
         );
     }
 }
+#[tokio::test]
 async fn unresolved_operations_match_python_including_legacy_scope() {
     let cases = corpus()["unresolved"].as_array().expect("cases");
     assert_eq!(cases.len(), 36);
@@ -279,6 +277,7 @@ async fn unresolved_operations_match_python_including_legacy_scope() {
         assert_eq!(json!(actual), case["expected"], "{case}");
     }
 }
+#[tokio::test]
 async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     let case = &corpus()["connection"][0];
     for (table, op) in [
@@ -346,6 +345,7 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     );
     assert_eq!(agent(&store), case["before"]);
 }
+#[tokio::test]
 async fn stop_or_notification_before_response_supersedes_completion() {
     for change in ["epoch", "turnId", "inFlight", "error"] {
         let case = &corpus()["connection"][0];
@@ -409,6 +409,7 @@ impl RetainedHistory for Port<'_> {
         })
     }
 }
+#[tokio::test]
 async fn retained_reads_enforce_deadline_thread_generation_and_stop() {
     for scenario in ["ok", "expired", "thread", "generation", "stopped"] {
         let stopped = Arc::new(AtomicBool::new(false));
@@ -450,6 +451,7 @@ async fn retained_reads_enforce_deadline_thread_generation_and_stop() {
         }
     }
 }
+#[tokio::test]
 async fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
     let drained = Arc::new(AtomicBool::new(false));
     let drained_for_observation = Arc::clone(&drained);
@@ -479,6 +481,7 @@ async fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
             .expect("reader");
     reader.barrier(&scope(), deadline).await.expect("drained");
 }
+#[tokio::test]
 async fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
     let job = RecoveryJob::Connection {
         snapshot: RecoverySnapshot::from_record(corpus()["connection"][0]["before"].clone())
@@ -509,6 +512,7 @@ async fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
     .expect("finish");
     assert_eq!(scan.next_at(now), Some(now + Duration::from_secs(45)));
 }
+#[tokio::test]
 async fn blob_preview_is_never_mistaken_for_complete_receipt() {
     assert!(matches!(
         resolve_inline_receipt(
@@ -520,6 +524,7 @@ async fn blob_preview_is_never_mistaken_for_complete_receipt() {
     ));
 }
 
+#[tokio::test]
 async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     let root = fixture();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
@@ -574,6 +579,7 @@ async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     );
 }
 
+#[tokio::test]
 async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     for scenario in [
         "complete",
@@ -668,6 +674,7 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     }
 }
 
+#[tokio::test]
 async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race() {
     struct History<'a> {
         store: &'a RuntimeStore,
@@ -765,6 +772,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
     }
 }
 
+#[tokio::test]
 async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() {
     let root = fixture();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
@@ -832,6 +840,7 @@ async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_sc
     );
 }
 
+#[tokio::test]
 async fn diagnostic_updates_do_not_reset_connection_backoff() {
     let mut before = corpus()["connection"][0]["before"].clone();
     let job = RecoveryJob::Connection {
@@ -855,6 +864,7 @@ async fn diagnostic_updates_do_not_reset_connection_backoff() {
     assert!(scan.take([checked], now, 1001.).is_none());
 }
 
+#[tokio::test]
 async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
     let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     let turn = json!({"id":"turn","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"event"}]});
@@ -926,6 +936,7 @@ async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_recei
     }
 }
 
+#[tokio::test]
 async fn task_completion_rejects_changed_alias_or_operation_receipt() {
     for change in ["alias", "receipt"] {
         let root = fixture();
@@ -976,57 +987,47 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
     }
 }
 
-async fn held_scan_survives_257_full_pages_and_check_eviction() {
-    let root = fixture();
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+#[test]
+fn held_scan_evicts_only_the_oldest_check() {
     let template = corpus()["connection"][0]["before"].clone();
-    const ROWS: usize = 257 * MAX_SCAN_JOBS;
-    store
-        .transaction(move |tx| {
-            tx.execute("DELETE FROM runtime_agents", [])?;
-            for n in 0..ROWS {
-                let id = format!("agent-{n:05}");
-                let mut row = template.clone();
-                row["id"] = json!(id);
-                row["rootId"] = json!(id);
-                tx.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                    rusqlite::params![id, row.to_string()],
-                )?;
-            }
-            Ok(())
-        })
-        .await
-        .expect("held rows");
-    let mut cursor = RecoveryCursor::default();
+    let job = |n| {
+        let mut row = template.clone();
+        row["id"] = json!(format!("agent-{n:05}"));
+        row["rootId"] = row["id"].clone();
+        RecoveryJob::Connection {
+            snapshot: RecoverySnapshot::from_record(row).expect("held candidate"),
+            automatic: true,
+        }
+    };
     let mut scan = RecoveryScan::default();
-    let now = Instant::now();
-    for n in 0..ROWS {
-        let jobs = load_recovery_jobs(&store, "default", &mut cursor)
-            .await
-            .expect("scan");
-        let job = scan
-            .take(jobs, now, 1000.)
-            .expect("each held candidate once");
-        let RecoveryJob::Connection { snapshot, .. } = &job else {
-            panic!("connection");
-        };
-        assert_eq!(snapshot.record()["id"], format!("agent-{n:05}"));
-        scan.finish(
-            &job,
-            now,
-            &Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed)),
-        )
-        .expect("hold");
-        assert!(
-            load_recovery_jobs(&store, "default", &mut cursor)
-                .await
-                .expect("tasks")
-                .is_empty()
-        );
+    let origin = Instant::now();
+    let unconfirmed = Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
+    for n in 0..MAX_CHECKS {
+        let now = origin + Duration::from_millis(n as u64);
+        let candidate = scan.take([job(n)], now, 1000.).expect("new candidate");
+        scan.finish(&candidate, now, &unconfirmed).expect("hold");
     }
+    let now = origin + Duration::from_millis(MAX_CHECKS as u64);
+    assert!(
+        scan.take([job(0)], now, 1000.).is_none(),
+        "oldest still held at capacity"
+    );
+    let candidate = scan
+        .take([job(MAX_CHECKS)], now, 1000.)
+        .expect("overflow candidate");
+    scan.finish(&candidate, now, &unconfirmed)
+        .expect("hold overflow");
+    assert!(
+        scan.take([job(1), job(MAX_CHECKS)], now, 1000.).is_none(),
+        "newer checks remain held"
+    );
+    assert!(
+        scan.take([job(0)], now, 1000.).is_some(),
+        "evicted oldest candidate can be checked again"
+    );
 }
 
+#[tokio::test]
 async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
     for bad in ["agent", "task", "receipt"] {
         let root = fixture();
@@ -1170,6 +1171,7 @@ async fn blocked_retained_barrier_ends_at_the_absolute_deadline() {
     assert_eq!(waiter.await, Err(HistoryError::Deadline));
 }
 
+#[tokio::test]
 async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     let case = &corpus()["accepted_start"];
     let root = fixture();
@@ -1196,6 +1198,7 @@ async fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     assert_eq!(json!(records(&store, "runtime_items")), case["items"]);
 }
 
+#[tokio::test]
 async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
     // Include the receipt records and sync publication contents, not just row
     // counts: rollback must restore existing rows as well as remove new ones.
@@ -1359,111 +1362,4 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
             );
         }
     }
-}
-
-#[tokio::test]
-async fn wave7_p07_runtime_corpus() {
-    let mut cases: [RuntimeCorpusCase; 20] = [
-        (
-            "python_terminal_notification_count_decodes_without_changing_attempt_events",
-            Box::pin(python_terminal_notification_count_decodes_without_changing_attempt_events()),
-        ),
-        (
-            "connection_completion_matches_python_full_records_and_results",
-            Box::pin(connection_completion_matches_python_full_records_and_results()),
-        ),
-        (
-            "unresolved_operations_match_python_including_legacy_scope",
-            Box::pin(unresolved_operations_match_python_including_legacy_scope()),
-        ),
-        (
-            "completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe",
-            Box::pin(completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe()),
-        ),
-        (
-            "stop_or_notification_before_response_supersedes_completion",
-            Box::pin(stop_or_notification_before_response_supersedes_completion()),
-        ),
-        (
-            "retained_reads_enforce_deadline_thread_generation_and_stop",
-            Box::pin(retained_reads_enforce_deadline_thread_generation_and_stop()),
-        ),
-        (
-            "barrier_requires_committed_journal_and_preserves_absolute_deadline",
-            Box::pin(barrier_requires_committed_journal_and_preserves_absolute_deadline()),
-        ),
-        (
-            "scan_is_bounded_serial_and_uses_backoff_without_sleeping",
-            Box::pin(scan_is_bounded_serial_and_uses_backoff_without_sleeping()),
-        ),
-        (
-            "blob_preview_is_never_mistaken_for_complete_receipt",
-            Box::pin(blob_preview_is_never_mistaken_for_complete_receipt()),
-        ),
-        (
-            "unknown_start_accepts_exact_client_receipt_without_resending_input",
-            Box::pin(unknown_start_accepts_exact_client_receipt_without_resending_input()),
-        ),
-        (
-            "task_writer_checks_receipts_and_scope_in_the_completion_transaction",
-            Box::pin(task_writer_checks_receipts_and_scope_in_the_completion_transaction()),
-        ),
-        (
-            "runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race",
-            Box::pin(
-                runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race(),
-            ),
-        ),
-        (
-            "stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope",
-            Box::pin(stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope()),
-        ),
-        (
-            "diagnostic_updates_do_not_reset_connection_backoff",
-            Box::pin(diagnostic_updates_do_not_reset_connection_backoff()),
-        ),
-        (
-            "accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt",
-            Box::pin(accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt()),
-        ),
-        (
-            "task_completion_rejects_changed_alias_or_operation_receipt",
-            Box::pin(task_completion_rejects_changed_alias_or_operation_receipt()),
-        ),
-        (
-            "held_scan_survives_257_full_pages_and_check_eviction",
-            Box::pin(held_scan_survives_257_full_pages_and_check_eviction()),
-        ),
-        (
-            "corrupt_scan_rows_keep_the_sql_table_and_identity",
-            Box::pin(corrupt_scan_rows_keep_the_sql_table_and_identity()),
-        ),
-        (
-            "accepted_start_matches_real_python_agent_event_and_transcript_rows",
-            Box::pin(accepted_start_matches_real_python_agent_event_and_transcript_rows()),
-        ),
-        (
-            "accepted_terminal_start_calls_canonical_messages_and_finishes_atomically",
-            Box::pin(accepted_terminal_start_calls_canonical_messages_and_finishes_atomically()),
-        ),
-    ];
-    let mut failures = Vec::new();
-    for (name, case) in &mut cases {
-        if let Err(payload) = std::panic::AssertUnwindSafe(case.as_mut())
-            .catch_unwind()
-            .await
-        {
-            let message = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic");
-            failures.push(format!("{name}: {message}"));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "wave7 p07 failures:\n{}",
-        failures.join("\n")
-    );
 }

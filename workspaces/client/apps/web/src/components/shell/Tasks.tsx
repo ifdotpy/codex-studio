@@ -6,13 +6,13 @@ import {
   TextInput,
 } from "@mantine/core";
 import { useRef, useState } from "react";
-import { errorText, type PostBody } from "../../api";
+import { errorText, type GetResult, type PostBody } from "../../api";
 import {
   useServerApi,
   useServerStorage,
 } from "../../servers/ServerServicesContext";
 import { createMutationJournal } from "../../servers/mutationIdentity";
-import { useWorkspaceResource } from "../useWorkspaceResource";
+import { useSubscription } from "../../sync/subscriptions";
 import {
   gateFields,
   parseGate,
@@ -519,17 +519,36 @@ function TaskDetail({
 
 export default function Tasks({
   agentId,
-  revision = 0,
+  rootId = agentId,
 }: {
   agentId: string;
-  revision?: number;
+  rootId?: string;
 }) {
-  const { post } = useServerApi();
+  const { get, post } = useServerApi();
   const storage = useServerStorage();
-  const [reload, setReload] = useState(0);
-  const resource = useWorkspaceResource("/api/work", `${revision}:${reload}`, {
-    query: { agent: agentId },
-  });
+  const assignments = useSubscription({ kind: "work", agentId: rootId });
+  const root = useSubscription({ kind: "agentDetail", agentId: rootId });
+  const [manual, setManual] = useState<{
+    rootId: string;
+    baseline: typeof assignments.data;
+    data: GetResult<"/api/work">;
+  } | null>(null);
+  const current =
+    manual?.rootId === rootId && manual.baseline === assignments.data
+      ? manual.data
+      : assignments.data;
+  const resource = {
+    data:
+      current === undefined || !root.data
+        ? null
+        : {
+            ...current,
+            rootId,
+            taskDefaultGate: root.data.taskDefaultGate ?? null,
+          },
+    error: assignments.error?.message || root.error?.message || "",
+    loading: assignments.data === undefined || !root.data,
+  };
   const [selectedId, setSelectedId] = useState("");
   const [status, setStatus] = useState("");
   const [owner, setOwner] = useState("");
@@ -538,7 +557,7 @@ export default function Tasks({
   const busyRef = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const tasks = resource.data?.items || [];
+  const tasks = resource.data?.items ?? [];
   const selected = tasks.find((task) => task.id === selectedId);
   const visibleTasks = tasks.filter(
     (task) =>
@@ -559,7 +578,6 @@ export default function Tasks({
       );
       await post("/api/work", { ...payload, id: identity!.requestId });
       identity!.finish();
-      setReload((value) => value + 1);
       setNotice("The task action completed.");
       return true;
     } catch (failure) {
@@ -585,7 +603,12 @@ export default function Tasks({
         <Button
           variant="default"
           disabled={busy}
-          onClick={() => setReload((value) => value + 1)}
+          onClick={() => {
+            const baseline = assignments.data;
+            void get("/api/work", { query: { agent: agentId } })
+              .then((data) => setManual({ rootId, baseline, data }))
+              .catch((error) => setError(errorText(error)));
+          }}
         >
           Refresh tasks
         </Button>

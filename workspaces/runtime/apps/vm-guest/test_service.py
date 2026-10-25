@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError, MAX_LINE, process_identity
 from service import CLIENT_IDLE_SECONDS, Service
 from native_identity import process_start_time
-from guest_test_worker import worker_command
+from guest_test_worker import worker_command, wait_native_event
 
 
 def encoded(data):
@@ -165,26 +165,42 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             await self.call("exec", self.command("print('wrong')"), "exec-1")
 
     async def test_exec_timeout(self):
-        result = await self.call("exec", {**self.command("import time; time.sleep(60)"), "timeoutSeconds": 0.1})
-        self.assertEqual(result["reason"], "timeout")
-        self.assertIsNotNone(result["exitCode"])
+        from supervisor import Supervisor
+        from unittest.mock import AsyncMock
+        directory = self.home / "timeout"
+        directory.mkdir()
+        owner = Supervisor(directory, {**self.command("import signal; signal.pause()"),
+                                       "env": dict(os.environ), "timeoutSeconds": 300})
+        actual_wait = asyncio.wait_for
+
+        async def expire(operation, timeout):
+            if timeout == owner.config["timeoutSeconds"]:
+                operation.close()
+                raise asyncio.TimeoutError
+            return await actual_wait(operation, timeout)
+
+        try:
+            with patch("supervisor.asyncio.wait_for", side_effect=expire), patch("supervisor.asyncio.sleep", new=AsyncMock()):
+                await owner.run()
+            self.assertEqual(owner.meta["reason"], "timeout")
+            self.assertIsNotNone(owner.meta["exitCode"])
+        finally:
+            owner.db.close()
 
     async def test_stdio_write_restart_and_cursor(self):
-        result = await self.call("provider.start", self.command("import sys,time; print('ready'); s=sys.stdin.readline(); print(s.strip()); time.sleep(60)"))
+        result = await self.call("provider.start", self.command("import sys; print('ready'); s=sys.stdin.readline(); print(s.strip()); sys.stdin.read()"))
+        owner = next(iter(self.service.processes))
         handle = result["handle"]
         await self.call("provider.write", {"handle": handle, "data": encoded(b"once\n")}, "input-1")
-        again = await self.call("provider.write", {"handle": handle, "data": encoded(b"once\n")}, "input-1")
-        self.assertEqual(again["written"], 5)
         self.service.close()
         self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home, worker_command=worker_command)
         self.instances.append(self.service)
         self.assertEqual(self.service.status(handle)["state"], "running")
-        deadline = asyncio.get_running_loop().time() + 5
-        cursor = 0
-        while sum(len(base64.b64decode(data["data"])) for event, data in self.events if event == "output") < 11:
-            result = await self.call("provider.attach", {"handle": handle, "afterSeq": cursor, "waitMs": 200, "maxEvents": 100})
-            cursor = result["nextSeq"]
-            self.assertLess(asyncio.get_running_loop().time(), deadline)
+        again = await self.call("provider.write", {"handle": handle, "data": encoded(b"once\n")}, "input-1")
+        self.assertEqual(again["written"], 5)
+        await self.call("provider.write", {"handle": handle, "data": "", "close": True})
+        await asyncio.to_thread(owner.wait, 5)
+        await self.call("provider.attach", {"handle": handle, "afterSeq": 0, "waitMs": 0, "maxEvents": 100})
         output = b"".join(base64.b64decode(data["data"]) for event, data in self.events if event == "output")
         self.assertEqual(output, b"ready\nonce\n")
         cursor = self.events[-1][1]["seq"]
@@ -205,13 +221,20 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             "with open(temporary, 'w') as output: output.write('one')\n"
             "os.replace(temporary, marker)"
         )
-        writer.write(json.dumps({"id": "lost-exec", "method": "exec", "params": params}).encode() + b"\n")
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-        deadline = asyncio.get_running_loop().time() + 5
-        while not marker.exists() and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.025)
+        completed = asyncio.Event()
+        request = self.service.request
+
+        async def observe(*args):
+            result = await request(*args)
+            completed.set()
+            return result
+
+        with patch.object(self.service, "request", observe):
+            writer.write(json.dumps({"id": "lost-exec", "method": "exec", "params": params}).encode() + b"\n")
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            await asyncio.wait_for(completed.wait(), 5)
         self.assertEqual(marker.read_text(), "one")
         await asyncio.gather(*self.service.operations)
         result = await self.call("exec", params, "lost-exec")
@@ -461,7 +484,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         executable.mkdir()
         marker = self.home / "rsync-pid"
         fixture = executable / "rsync"
-        fixture.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,time\np=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--temp-dir=')))\n(p/'partial').write_bytes(b'partial')\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n")
+        fixture.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,signal\np=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--temp-dir=')))\n(p/'partial').write_bytes(b'partial')\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\nsignal.pause()\n")
         fixture.chmod(0o700)
 
         def floor(path, required=0):
@@ -760,10 +783,7 @@ for line in sys.stdin:
         self.assertEqual(written["remoteId"], 1)
         again = await self.call("provider.rpc", {**rpc, "nativeId": 19, "message": {**rpc["message"], "id": 19}})
         self.assertTrue(again["duplicate"])
-        # The real supervisor has a nonblocking poll API; await its observable result.
-        async with asyncio.timeout(5):
-            while (await self.call("provider.rpc", {"handle": handle, "action": "next", "cursor": 0}))["event"] is None:
-                pass
+        await wait_native_event(self.service.native, opened)
         events = await self.call("provider.rpc", {"handle": handle, "action": "replay", "cursor": 0, "limit": 128})
         self.assertEqual(len(events["events"]), 1)
         self.assertEqual(json.loads(events["events"][0]["payload"])["id"], 1)
@@ -790,13 +810,11 @@ for line in sys.stdin:
     @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_large_native_event_chunks_survive_reattach_and_ack(self):
         text = "é🙂" + "x" * 2_200_000
-        source = "import json,time; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); time.sleep(60)"
+        source = "import json,signal; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); signal.pause()"
         params = {**self.command(source), "transport": "native", "handle": "linux-worker:large"}
         opened = await self.call("provider.start", params)
         handle = opened["handle"]
-        async with asyncio.timeout(5):
-            while (await self.call("provider.rpc", {"handle": handle, "action": "next", "cursor": 0}))["event"] is None:
-                pass
+        await wait_native_event(self.service.native, opened, text)
         socket_path = self.root / "guest.sock"
 
         async def listen():
@@ -909,41 +927,113 @@ for line in sys.stdin:
         started = asyncio.create_task(self.service.request(request, first))
         await asyncio.wait_for(emitting.wait(), 5)
         attached = asyncio.create_task(self.service.request(request, second))
-        # The second request enters the active operation before its output is released.
-        await asyncio.sleep(0)
+        # Observe the actual join before releasing output, without a scheduling sleep.
+        joined = asyncio.Event()
+        shield = asyncio.shield
+
+        def observe(task):
+            joined.set()
+            return shield(task)
+
+        with patch("service.asyncio.shield", side_effect=observe):
+            await asyncio.wait_for(joined.wait(), 5)
         resume.set()
         self.assertEqual(await started, await attached)
         self.assertEqual(first_events, second_events)
 
     async def test_helper_deadline_terminates_process_group(self):
-        marker = self.home / "deadline-child"
         helper = str(Path(__file__).with_name("deadline.py"))
-        source = (f"import subprocess,sys,signal,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); "
-                  "from common import process_identity; "
-                  "p=subprocess.Popen([sys.executable,'-c','import signal; signal.pause()']); "
-                  f"open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); "
-                  "print('ready',flush=True); signal.pause()")
-        # Advance the helper's monotonic clock only after a real descendant exists. This
-        # checks deadline/group cleanup without racing interpreter startup against 100 ms.
-        wrapper = f"""import pathlib,runpy,subprocess,sys
-from unittest.mock import Mock,patch
-marker=pathlib.Path({str(marker)!r})
-clock=Mock(side_effect=lambda: int(clock.call_count > 1 and marker.exists()))
+        owner, control = socket.socketpair()
+        owner.setblocking(False)
+        self.addCleanup(owner.close)
+        self.addCleanup(control.close)
+        # The descendant signals readiness itself, so neither interpreter startup nor
+        # fixture setup consumes the deadline/group-kill assertion's watchdog.
+        source = ("import subprocess,sys,signal; "
+                  "p=subprocess.Popen([sys.executable,'-c',"
+                  "'import signal; print(\"ready\",flush=True); signal.pause()'],stdout=subprocess.PIPE); "
+                  "assert p.stdout.readline()==b'ready\\n'; "
+                  "print(p.pid,flush=True); signal.pause()")
+        wrapper = f"""import json,os,runpy,signal,socket,subprocess,sys
+sys.path.insert(0,{str(Path(__file__).parent)!r})
+from common import process_identity
+from unittest.mock import patch
+control=socket.socket(fileno={control.fileno()})
+spawn=subprocess.Popen
+owned=[]
+def stop(signum,frame):
+    raise SystemExit(125)
+signal.signal(signal.SIGTERM,stop)
+def start(*args,**kwargs):
+    # Defer termination until the newly created process has an ownership record.
+    previous=signal.pthread_sigmask(signal.SIG_BLOCK,{{signal.SIGTERM}})
+    try:
+        process=spawn(*args,**kwargs)
+        owned.append(process)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK,previous)
+    child=int(process.stdout.readline())
+    control.sendall(json.dumps({{'group':process.pid,'child':child,
+        'start':process_identity(child)}}).encode()+b'\\n')
+    assert control.recv(1)==b'x'
+    return process
+clock=iter([0,1])
 sys.argv=[{helper!r}, '0.1', sys.executable, '-c', {source!r}]
-with patch('time.monotonic',clock):
-    runpy.run_path({helper!r},run_name='__main__')
+completed=False
+try:
+    with patch('subprocess.Popen',start), patch('time.monotonic',lambda: next(clock,1)):
+        runpy.run_path({helper!r},run_name='__main__')
+except SystemExit as error:
+    completed=error.code==124
+    raise
+finally:
+    # A normal deadline exit must prove its own group kill before test cleanup.
+    for process in ([] if completed else owned):
+        try:
+            os.killpg(process.pid,signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
 """
         process = await asyncio.create_subprocess_exec(sys.executable, "-c", wrapper,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
-        await asyncio.wait_for(process.communicate(b"{}"), 5)
-        self.assertEqual(process.returncode, 124)
-        child = json.loads(marker.read_text())
-        self.assertIsNotNone(child["start"])
+            pass_fds=(control.fileno(),), stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        control.close()
+        communication = asyncio.create_task(process.communicate(b"{}"))
+        child = None
+        async def child_stopped():
+            while process_identity(child["child"]) == child["start"]:
+                await asyncio.sleep(0.01)
         try:
-            self.assertIsNone(process_identity(child["pid"]))
+            loop = asyncio.get_running_loop()
+            readiness = bytearray()
+            async def ready():
+                while not readiness.endswith(b"\n"):
+                    block = await loop.sock_recv(owner, 4096)
+                    self.assertTrue(block, "deadline fixture exited before readiness")
+                    readiness.extend(block)
+                return json.loads(readiness)
+            child = await asyncio.wait_for(ready(), 5)
+            self.assertIsNotNone(child["start"])
+            self.assertEqual(process_identity(child["child"]), child["start"])
+            await loop.sock_sendall(owner, b"x")
+            stdout, stderr = await asyncio.wait_for(asyncio.shield(communication), 5)
+            self.assertEqual(process.returncode, 124, stderr.decode())
+            self.assertEqual(stdout, b"")
+            self.assertIsNone(process_identity(child["group"]))
+            await asyncio.wait_for(child_stopped(), 5)
+            self.assertIsNone(process_identity(child["child"]))
         finally:
-            if process_identity(child["pid"]) == child["start"]:
-                os.kill(child["pid"], signal.SIGKILL)
+            # The wrapper owns and reaps the helper group on every failure path, even
+            # before readiness. Let its finally block run, then drain and reap it here.
+            if process.returncode is None:
+                process.terminate()
+            try:
+                if child is not None and process_identity(child["child"]) == child["start"]:
+                    os.kill(child["child"], signal.SIGKILL)
+                    await asyncio.wait_for(child_stopped(), 5)
+            finally:
+                await asyncio.wait_for(communication, 5)
 
     async def test_helper_keeps_the_error_output_of_a_failed_command(self):
         # A failed layr command reports its reason on stderr; without it the guest error is empty.
@@ -959,7 +1049,19 @@ with patch('time.monotonic',clock):
 
     async def test_failed_helper_terminates_its_descendants(self):
         marker = self.home / "helper-child"
-        source = f"import subprocess,sys,os,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); from common import process_identity; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); os._exit(3)"
+        endpoint = self.home / "child.sock"
+        stopped = asyncio.Event()
+
+        async def observe(reader, writer):
+            await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            stopped.set()
+
+        server = await asyncio.start_unix_server(observe, path=str(endpoint))
+        self.servers.append(server)
+        child_source = f"import socket; s=socket.socket(socket.AF_UNIX); s.connect({str(endpoint)!r}); print('r',flush=True); s.recv(1)"
+        source = f"import subprocess,sys,os,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); from common import process_identity; p=subprocess.Popen([sys.executable,'-c',{child_source!r}],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL); p.stdout.read(1); open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); os._exit(3)"
         process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
             "2", sys.executable, "-c", source, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
         await asyncio.wait_for(process.communicate(b"{}"), 5)
@@ -968,10 +1070,7 @@ with patch('time.monotonic',clock):
         pid = child["pid"]
         self.assertIsNotNone(child["start"])
         try:
-            deadline = asyncio.get_running_loop().time() + 3
-            while process_identity(pid) is not None and asyncio.get_running_loop().time() < deadline:
-                await asyncio.sleep(0.025)
-            self.assertIsNone(process_identity(pid))
+            await asyncio.wait_for(stopped.wait(), 5)
         finally:
             # Clean up the child even when this regression fails on the prior code.
             if process_identity(pid) == child["start"]:

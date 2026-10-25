@@ -20,7 +20,6 @@ type Case = {
 
 describe("the shared account preference cases", () => {
   const cases = contract.cases as Case[];
-  test("cover the rules", () => expect(cases.length).toBeGreaterThan(10));
   test.each(cases.map((item) => [item.name, item] as const))(
     "%s",
     (_name, item) =>

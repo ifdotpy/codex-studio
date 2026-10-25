@@ -6,7 +6,6 @@ const timer = setTimeout(() => {
   console.error("Renderer recovery timed out.");
   app.exit(1);
 }, 110000);
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const loaded = (contents, action) =>
   new Promise((resolve) => {
     contents.once("did-finish-load", resolve);
@@ -82,28 +81,7 @@ app.once("browser-window-created", (_event, win) => {
           .at(-1).failures,
         1,
       );
-      // Exercise the actual production healthy interval with the same live renderer.
-      const deadline = Date.now() + 65000;
-      while (
-        !records().some(
-          (record) =>
-            record.event === "renderer-healthy" &&
-            record.previousFailures === 1,
-        )
-      ) {
-        assert.ok(
-          Date.now() < deadline,
-          "The healthy renderer did not reset its retry budget",
-        );
-        await pause(200);
-      }
-      await loaded(contents, () => contents.forcefullyCrashRenderer());
-      assert.equal(
-        records()
-          .filter((record) => record.event === "renderer-crash")
-          .at(-1).failures,
-        1,
-      );
+      // Healthy-interval boundaries use fake time in renderer-recovery.test.mjs.
       const restored = await (await fetch(`${origin}/api/desktop`)).json();
       assert.equal(restored.pid, original.pid);
       assert.equal(win.isVisible(), false);
@@ -119,7 +97,6 @@ app.once("browser-window-created", (_event, win) => {
           exhaustedRetries: true,
           nativeReloadWhileCrashed: true,
           fallbackBridgeDenied: true,
-          healthyBudgetReset: true,
           backendPid: restored.pid,
           evidence: filename,
         }),

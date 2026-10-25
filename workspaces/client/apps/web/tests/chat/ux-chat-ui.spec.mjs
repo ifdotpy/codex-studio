@@ -1,6 +1,6 @@
 // Isolated component fixture. All API requests use local test responses.
 import { createServer } from "node:http";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import assert from "node:assert/strict";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,6 @@ import {
   syncIdentityFixture,
   syncProtocolFixture,
   test,
-  expect,
 } from "../playwright.mjs";
 
 test("Ux Chat Ui", async ({
@@ -22,35 +21,14 @@ test("Ux Chat Ui", async ({
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const require = createRequire(
     join(repo, "workspaces/client/apps/web/package.json"),
   );
   const createViteServer = createFixtureViteServer;
   const webRoot = join(repo, "workspaces/client/apps/web");
-  const temporary = await mkdtemp(join(webRoot, "studio-chat-ux-"));
-  const temporaryName = temporary.slice(webRoot.length + 1);
   const syncIdentity = syncIdentityFixture();
   const workspaceId = syncIdentity.workspaceId;
-  const entry = join(temporary, "entry.tsx");
-  await writeFile(entry, `import "../tests/fixtures/ux-chat.tsx";`);
   let server;
   let vite;
   const syncStreams = new Set();
@@ -186,7 +164,7 @@ test("Ux Chat Ui", async ({
         if (path === "/") {
           response.setHeader("Content-Type", "text/html");
           response.end(
-            `<html><script>window.__uxChatSyncIdentity=${JSON.stringify(syncIdentity)}</script><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="/${temporaryName}/entry.tsx"></script></html>`,
+            `<html><script>window.__uxChatSyncIdentity=${JSON.stringify(syncIdentity)}</script><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="/tests/fixtures/ux-chat.tsx"></script></html>`,
           );
           return;
         }
@@ -690,12 +668,11 @@ test("Ux Chat Ui", async ({
     assert.ok(pageRequests.some((query) => query.includes("around=item-3")));
     assert.deepEqual(errors, []);
     console.log(
-      `PASS: chat send, Tab navigation, long draft, complete history, exact search, branch draft and restore boundaries. ${temporary}`,
+      `PASS: chat send, Tab navigation, long draft, complete history, exact search, branch draft and restore boundaries.`,
     );
   } finally {
     for (const stream of syncStreams) stream.destroy();
     if (server) await new Promise((resolve) => server.close(resolve));
     await vite?.close();
-    await rm(temporary, { recursive: true, force: true });
   }
 });

@@ -1,15 +1,23 @@
-import { useServerServices } from "../../servers/ServerServicesContext";
+import {
+  useServerStorage,
+  useServerServices,
+} from "../../servers/ServerServicesContext";
 import { useServerSettings } from "../../servers/ServerSettingsContext";
 import { Button, Checkbox, Group, Stack, Text } from "@mantine/core";
-import { useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import {
-  useModelCatalogReader,
-  useWorkerModels,
-} from "../agents/WorkerModelPicker";
+  readPreferenceWriteStatus,
+  subscribePreferenceWriteStatus,
+  retryPreferenceWrites,
+} from "../../sync/uiPreferenceStatus";
+import "./model-whitelist-settings.css";
+import { useWorkerModels } from "../agents/WorkerModelPicker";
 import { toModelOptions } from "./modelOption";
 import {
   isModelWhitelisted,
   modelWhitelistKey,
+  modelWhitelistReadError,
+  readModelWhitelist,
   useModelWhitelist,
   writeModelWhitelist,
   type ModelWhitelist,
@@ -21,8 +29,18 @@ export function ModelWhitelistSettings() {
   const owner = services?.owner || settings?.server;
   const catalog = useWorkerModels("default", true, true);
   const allowed = useModelWhitelist();
-  const { scope } = useModelCatalogReader();
+  const storage = useServerStorage();
+  const readStatus = useCallback(
+    () => readPreferenceWriteStatus(storage, "server"),
+    [storage],
+  );
+  const status = useSyncExternalStore(
+    subscribePreferenceWriteStatus,
+    readStatus,
+    readStatus,
+  );
   const [error, setError] = useState("");
+  const savedError = modelWhitelistReadError(storage);
   const models = [
     ...new Map(
       toModelOptions(catalog.models.filter((row) => !row.hidden)).map(
@@ -32,23 +50,43 @@ export function ModelWhitelistSettings() {
   ];
   const save = (value: ModelWhitelist) => {
     try {
-      writeModelWhitelist(value, scope);
+      writeModelWhitelist(value, storage);
       setError("");
     } catch (failure) {
       setError(String(failure));
     }
   };
   return (
-    <Stack gap="md" aria-label="Models whitelist">
+    <Stack
+      gap="sm"
+      className="model-whitelist-settings"
+      aria-label="Models whitelist"
+    >
       <Text fw={600}>Models on {owner?.label || "Local"}</Text>
       <Text size="sm">
         Choose the models shown in this server’s model pickers. Existing chats
         keep their model.
       </Text>
-      <Text size="xs" c="dimmed">
-        For this session only. This experimental preference resets when Studio
-        reloads.
+      <Text size="xs" c="dimmed" role="status" aria-live="polite">
+        {status.state === "saving"
+          ? "Saving model selection…"
+          : status.state === "error"
+            ? "Model selection is not saved."
+            : "Model selection saved on this server."}
       </Text>
+      {status.state === "error" && (
+        <>
+          <Text role="alert" c="red">
+            {status.error}
+          </Text>
+          <Button
+            variant="default"
+            onClick={() => retryPreferenceWrites(storage)}
+          >
+            Retry saving
+          </Button>
+        </>
+      )}
       <Group gap="sm">
         <Button variant="default" onClick={() => save(null)}>
           Select all models
@@ -70,9 +108,9 @@ export function ModelWhitelistSettings() {
         <Text size="sm">Select a model to start new chats.</Text>
       )}
       {catalog.loading && <Text role="status">Loading models…</Text>}
-      {(error || catalog.error) && (
+      {(error || savedError || catalog.error) && (
         <Text role="alert" c="red">
-          {error || catalog.error}
+          {error || savedError || catalog.error}
         </Text>
       )}
       {catalog.error && (
@@ -81,7 +119,7 @@ export function ModelWhitelistSettings() {
         </Button>
       )}
       {[...new Set(models.map((model) => model.provider))].map((provider) => (
-        <Stack key={provider} gap="xs">
+        <Stack key={provider} gap="xs" className="model-whitelist-provider">
           <Text fw={600}>
             {provider === "claude"
               ? "Claude"
@@ -89,26 +127,30 @@ export function ModelWhitelistSettings() {
                 ? "Codex"
                 : provider}
           </Text>
-          {models
-            .filter((model) => model.provider === provider)
-            .map((model) => {
-              const key = modelWhitelistKey(model);
-              return (
-                <Checkbox
-                  key={key}
-                  label={model.label}
-                  checked={isModelWhitelisted(model, allowed)}
-                  onChange={(event) => {
-                    const current = allowed ?? models.map(modelWhitelistKey);
-                    save(
-                      event.currentTarget.checked
-                        ? [...current, key]
-                        : current.filter((value) => value !== key),
-                    );
-                  }}
-                />
-              );
-            })}
+          <div className="model-whitelist-grid">
+            {models
+              .filter((model) => model.provider === provider)
+              .map((model) => {
+                const key = modelWhitelistKey(model);
+                return (
+                  <Checkbox
+                    key={key}
+                    label={model.label}
+                    checked={isModelWhitelisted(model, allowed)}
+                    onChange={(event) => {
+                      const current =
+                        readModelWhitelist(storage) ??
+                        models.map(modelWhitelistKey);
+                      save(
+                        event.currentTarget.checked
+                          ? [...current, key]
+                          : current.filter((value) => value !== key),
+                      );
+                    }}
+                  />
+                );
+              })}
+          </div>
         </Stack>
       ))}
     </Stack>

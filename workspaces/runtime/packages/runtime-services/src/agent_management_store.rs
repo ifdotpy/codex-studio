@@ -206,9 +206,10 @@ pub async fn archive_finished(
         .await?;
     let mut result = ArchiveFinishedResult::default();
     for (id, record) in candidates {
+        let state_dir = store.state_dir().to_path_buf();
         let checked = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/archive_finished/preflight",
-            move || crate::workspace_cleanup_runtime::check_archive_worktree(&record),
+            move || crate::workspace_cleanup_runtime::check_archive_worktree(&record, &state_dir),
         )
         .await;
         if !matches!(checked, Ok(Ok(()))) {
@@ -542,6 +543,7 @@ fn execute_decision(
         requests: written_ids(&decision.writes, "runtime_requests"),
         work: changed_work,
         checked_agents: Vec::new(),
+        ..Default::default()
     };
     let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
     crate::sync_policy::publish_entity_changes(

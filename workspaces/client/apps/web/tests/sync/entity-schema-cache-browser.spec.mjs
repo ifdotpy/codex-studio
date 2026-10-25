@@ -6,6 +6,8 @@ import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
+import { readResourceBaselines } from "../fixtures/resource-baselines.mjs";
 
 import {
   API_SCHEMA_HASH_HEADER,
@@ -62,6 +64,7 @@ test.describe("legacy schema mismatch", () => {
     const variantPages = new WeakSet();
     const oldBuildPages = new WeakSet([page]);
     let appOrigin = "";
+    let backendOrigin = "";
     const pageSession = await context.newCDPSession(page);
     await pageSession.send("Network.enable");
     await pageSession.send("Network.setCacheDisabled", { cacheDisabled: true });
@@ -79,17 +82,62 @@ test.describe("legacy schema mismatch", () => {
     let newPage;
     let allowPendingChangeEventResolve;
     let allowPendingChangeEventPromise;
-    let allowPendingChangeEvent = false;
+    const pendingChangeStreamOpened = Promise.withResolvers();
     let firstPullFails = false;
     let pullFailureCount = 0;
+    const resetPullResponseHeld = Promise.withResolvers();
+    const allowResetPullResponse = Promise.withResolvers();
     const rendererHashes = [];
     const apiRequests = [];
+    const streamDiagnostics = [];
+    page.on("console", (message) => {
+      if (message.type() === "error")
+        streamDiagnostics.push({ error: message.text() });
+    });
     const statePulls = [];
     let validProjectionDatabaseNames = [];
     const entityChangePages = new WeakSet();
     const confirmedResources = new Set();
     const transcriptRows = [];
     const errors = [];
+    const streamFrames = new Map();
+    const openStreams = new Set();
+    // Inline baselines are persisted asynchronously. A fulfilled finite body
+    // immediately disconnects and cancels those writes, unlike a real stream.
+    const streamServer = createServer((request, response) => {
+      const frame = streamFrames.get(request.url);
+      streamFrames.delete(request.url);
+      if (!frame) {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        [API_SCHEMA_HASH_HEADER]: frame.hash,
+      });
+      response.write(frame.body);
+      openStreams.add(response);
+      response.on("close", () => openStreams.delete(response));
+      if (frame.pendingChange) {
+        const { body, sequence, page, release } = frame.pendingChange;
+        pendingChangeStreamOpened.resolve(frame.pendingChange.cursor);
+        void release.then(() => {
+          if (
+            !response.destroyed &&
+            !response.writableEnded &&
+            pendingEntitySequence === sequence
+          ) {
+            response.write(body);
+            entityChangePages.add(page);
+          }
+        });
+      }
+    });
+    await new Promise((resolve) =>
+      streamServer.listen(0, "127.0.0.1", resolve),
+    );
+    const streamOrigin = `http://127.0.0.1:${streamServer.address().port}`;
     await context.route("**/api/**", async (route) => {
       const requestUrl = new URL(route.request().url());
       apiRequests.push(
@@ -113,6 +161,12 @@ test.describe("legacy schema mismatch", () => {
         requestUrl.pathname === "/api/sync/pull" &&
         requestUrl.searchParams.get("scope") === "state:entities:v1"
       ) {
+        streamDiagnostics.push({
+          pull: requestUrl.search,
+          page: oldBuildPages.has(route.request().frame().page())
+            ? "old"
+            : "new",
+        });
         statePulls.push({
           page: route.request().frame().page(),
           after: requestUrl.searchParams.get("after"),
@@ -125,7 +179,22 @@ test.describe("legacy schema mismatch", () => {
         const resources = JSON.parse(
           requestUrl.searchParams.get("resources") || "[]",
         );
+        const since = JSON.parse(requestUrl.searchParams.get("since") || "[]");
+        const stateCursor = since.find(
+          ({ resource }) => resource.kind === "state",
+        )?.since;
+        streamDiagnostics.push({
+          resources,
+          since: requestUrl.searchParams.get("since"),
+        });
         const initialResources = resources.filter((resource) => {
+          // Detail can be cancelled when selection changes before its first
+          // frame is persisted; every reconnect must replay that view's baseline.
+          if (resource.kind === "agentDetail") return true;
+          // Every connection needs a state baseline. A cached cursor proves
+          // an empty applied delta for either build; only a new-hash tab
+          // without a cursor intentionally receives a recovery hint.
+          if (resource.kind === "state") return true;
           const key = `${streamHash}:${JSON.stringify(resource)}`;
           if (confirmedResources.has(key)) return false;
           confirmedResources.add(key);
@@ -134,10 +203,53 @@ test.describe("legacy schema mismatch", () => {
         let body = "";
         let workspaceId;
         if (initialResources.length > 0) {
-          const identity = await fetch(
-            new URL("/api/sync/identity", requestUrl),
+          if (stateCursor) workspaceId = stateCursor.workspaceId;
+          else {
+            const identity = await fetch(
+              new URL("/api/sync/identity", backendOrigin),
+            );
+            ({ workspaceId } = await identity.json());
+          }
+          const details = initialResources.filter(
+            (resource) =>
+              resource.kind === "agentDetail" ||
+              (resource.kind === "state" &&
+                streamHash === oldHash &&
+                !stateCursor),
           );
-          ({ workspaceId } = await identity.json());
+          const detailVersions = await readResourceBaselines(
+            backendOrigin,
+            details,
+          );
+          const resourceVersions = initialResources.map(
+            (resource) =>
+              // This phase models an unchanged source across a same-build
+              // reload. Echo its durable cursor as an empty applied delta;
+              // later phases explicitly inject source changes and recovery.
+              (resource.kind === "state" && stateCursor
+                ? {
+                    resource,
+                    revision: stateCursor.seq,
+                    cursor: stateCursor,
+                    replyKind: "delta",
+                  }
+                : undefined) ||
+              detailVersions.find(
+                (entry) =>
+                  entry.resource?.kind === resource.kind &&
+                  entry.resource?.agentId === resource.agentId,
+              ) || { resource, revision: 1 },
+          );
+          streamDiagnostics.push({
+            baselines: resourceVersions.map(
+              ({ resource, revision, cursor, replyKind }) => ({
+                resource,
+                revision,
+                cursor,
+                replyKind,
+              }),
+            ),
+          });
           body = protocol3SseEvent("resources", {
             protocol: 4,
             workspaceId,
@@ -145,8 +257,10 @@ test.describe("legacy schema mismatch", () => {
             revision: 1,
             reason: "initial",
             resources: initialResources,
+            resourceVersions,
           });
         }
+        let pendingChange;
         if (
           streamHash === nextHash &&
           newPage &&
@@ -157,37 +271,38 @@ test.describe("legacy schema mismatch", () => {
         ) {
           const entityChanges = pendingEntityChanges;
           const entitySequence = pendingEntitySequence;
-          if (!allowPendingChangeEvent) await allowPendingChangeEventPromise;
-          if (pendingEntitySequence === entitySequence) {
-            if (!workspaceId) {
-              const identity = await fetch(
-                new URL("/api/sync/identity", requestUrl),
-              );
-              ({ workspaceId } = await identity.json());
-            }
-            body += protocol3SseEvent("resources", {
-              protocol: 4,
-              workspaceId,
-              epoch: "schema-cache-test",
-              revision: 2,
-              reason: "change",
-              resources: [{ kind: "state" }],
-              resourceVersions: [
-                {
-                  resource: { kind: "state" },
-                  revision: entityChanges.through,
-                  entityChanges,
-                },
-              ],
-            });
-            entityChangePages.add(newPage);
-          }
+          const changeBody = protocol3SseEvent("resources", {
+            protocol: 4,
+            workspaceId,
+            epoch: "schema-cache-test",
+            revision: 2,
+            reason: "change",
+            resources: [{ kind: "state" }],
+            resourceVersions: [
+              {
+                resource: { kind: "state" },
+                revision: entityChanges.through,
+                cursor: { workspaceId, seq: entityChanges.through },
+                replyKind: "delta",
+                entityChanges,
+              },
+            ],
+          });
+          pendingChange = {
+            body: changeBody,
+            sequence: entitySequence,
+            page: newPage,
+            cursor: stateCursor,
+            release: allowPendingChangeEventPromise,
+          };
         }
-        return route.fulfill({
-          status: 200,
-          headers: { "content-type": "text/event-stream" },
+        const streamPath = `/stream/${randomUUID()}`;
+        streamFrames.set(streamPath, {
+          hash: activeHash,
           body: apiSchemaHandshakeSse(body, { hash: activeHash }),
+          pendingChange,
         });
+        return route.continue({ url: `${streamOrigin}${streamPath}` });
       }
       if (
         requestUrl.pathname === "/api/sync/pull" &&
@@ -207,7 +322,23 @@ test.describe("legacy schema mismatch", () => {
       try {
         const requestHeaders = { ...route.request().headers() };
         requestHeaders[API_SCHEMA_HASH_HEADER.toLowerCase()] = oldHash;
-        const response = await route.fetch({ headers: requestHeaders });
+        if (requestHeaders.origin) requestHeaders.origin = backendOrigin;
+        requestHeaders.referer = backendOrigin + "/";
+        const response = await route.fetch({
+          url: backendOrigin + requestUrl.pathname + requestUrl.search,
+          headers: requestHeaders,
+        });
+        if (
+          route.request().frame().page() === newPage &&
+          requestUrl.pathname === "/api/sync/pull" &&
+          requestUrl.searchParams.get("scope") === "state:entities:v1" &&
+          requestUrl.searchParams.get("reset") === "1" &&
+          requestUrl.searchParams.get("after") === "0" &&
+          response.status() === 200
+        ) {
+          resetPullResponseHeld.resolve();
+          await allowResetPullResponse.promise;
+        }
         if (
           requestUrl.pathname === "/api/sync/pull" &&
           requestUrl.searchParams.get("scope")?.startsWith("transcript:")
@@ -279,8 +410,9 @@ test.describe("legacy schema mismatch", () => {
         fixture.once("exit", () => reject(new Error(fixtureLog)));
       });
       const origin = `http://127.0.0.1:${port}`;
-      appOrigin = origin;
-      await page.goto(origin);
+      backendOrigin = origin;
+      appOrigin = streamOrigin;
+      await page.goto(appOrigin);
       await expect(page.locator(".startup")).toBeVisible({ timeout: 10_000 });
       await expect(leadChat(page)).toBeVisible({ timeout: 60_000 });
       await leadChat(page).click();
@@ -307,6 +439,11 @@ test.describe("legacy schema mismatch", () => {
             request.includes("scope=state%3Aentities%3Av1"),
         ).length;
       const initialStatePullCount = statePullCount();
+      assert.equal(
+        initialStatePullCount,
+        0,
+        "the applied SSE baseline needs no entity pull",
+      );
       await page.reload();
       await expect(leadChat(page)).toBeVisible({ timeout: 30_000 });
       await leadChat(page).click();
@@ -386,6 +523,8 @@ test.describe("legacy schema mismatch", () => {
       );
 
       activeHash = nextHash;
+      for (const stream of openStreams)
+        stream.write(apiSchemaHandshakeSse("", { hash: activeHash }));
       await expect(
         page.locator('[data-modal-content="true"]').filter({
           hasText: "Studio has been updated. Update this tab",
@@ -409,6 +548,13 @@ test.describe("legacy schema mismatch", () => {
       await newPageSession.send("Network.setCacheDisabled", {
         cacheDisabled: true,
       });
+      await newPage.goto(appOrigin);
+      await resetPullResponseHeld.promise;
+      // Prove startup while the successful retry is held, before its reset
+      // baseline can commit and remove this transient screen.
+      await expect(newPage.locator(".startup")).toBeVisible({
+        timeout: 10_000,
+      });
       const newPageResetPull = newPage.waitForResponse((response) => {
         const url = new URL(response.url());
         return (
@@ -419,11 +565,8 @@ test.describe("legacy schema mismatch", () => {
           response.status() === 200
         );
       });
-      await newPage.goto(origin);
+      allowResetPullResponse.resolve();
       await newPageResetPull;
-      await expect(newPage.locator(".startup")).toBeVisible({
-        timeout: 10_000,
-      });
       await expect(leadChat(newPage)).toBeVisible({ timeout: 60_000 });
       await leadChat(newPage).click();
       await expect(newPage.locator("#message")).toBeVisible({
@@ -569,6 +712,7 @@ test.describe("legacy schema mismatch", () => {
         .poll(readNewPageStateCheckpoint)
         .toMatchObject({ ready: "ready", complete: true });
       const newPageStateCheckpoint = await readNewPageStateCheckpoint();
+      const beforeMutationPullCount = statePullCount();
       assert.ok(
         Number.isSafeInteger(newPageStateCheckpoint.checkpoint) &&
           newPageStateCheckpoint.checkpoint > 0,
@@ -590,26 +734,10 @@ test.describe("legacy schema mismatch", () => {
         body: JSON.stringify({ id: createdId, cwd: "/" }),
       });
       assert.equal(mutation.status, 200);
-      const mutationBody = await mutation.json();
-      const mutationEntity = mutationBody._syncEntities?.find(
-        (row) =>
-          row.op === "upsert" &&
-          row.collection === "agent" &&
-          row.id === createdId,
-      );
-      assert.ok(mutationEntity, "fixture mutation returns a sequenced entity");
-      assert.ok(
-        Number(mutationEntity.seq) > 0,
-        "fixture entity has a sequence",
-      );
-      assert.ok(
-        mutationEntity.seq > newPageStateCheckpoint.checkpoint,
-        `the fixture change is beyond the applied checkpoint: event=${mutationEntity.seq}, checkpoint=${newPageStateCheckpoint.checkpoint}`,
-      );
-      pendingEntitySequence = mutationEntity.seq;
       const entityChangeDocuments = [];
       let entityChangeCursor = newPageStateCheckpoint.checkpoint;
-      while (entityChangeCursor < mutationEntity.seq) {
+      let mutationEntity;
+      while (!mutationEntity) {
         const pageResponse = await fetch(
           `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityChangeCursor}&limit=500`,
           {
@@ -622,45 +750,61 @@ test.describe("legacy schema mismatch", () => {
         assert.equal(pageResponse.status, 200);
         const entityPage = await pageResponse.json();
         assert.notEqual(entityPage.reset, true);
-        entityChangeDocuments.push(
-          ...entityPage.documents.filter(
-            (document) => Number(document.seq) <= Number(mutationEntity.seq),
-          ),
-        );
+        entityChangeDocuments.push(...entityPage.documents);
         assert.ok(entityPage.checkpoint.seq > entityChangeCursor);
-        entityChangeCursor = Math.min(
-          entityPage.checkpoint.seq,
-          Number(mutationEntity.seq),
+        entityChangeCursor = entityPage.checkpoint.seq;
+        mutationEntity = entityChangeDocuments.find(
+          (document) =>
+            document.op === "upsert" &&
+            document.collection === "agentSummary" &&
+            document.id === createdId,
         );
       }
-      assert.equal(entityChangeCursor, mutationEntity.seq);
+      assert.ok(Number.isSafeInteger(Number(mutationEntity.seq)));
+      assert.ok(Number(mutationEntity.seq) > newPageStateCheckpoint.checkpoint);
+      pendingEntitySequence = Number(mutationEntity.seq);
+      const orderedEntityChangeDocuments = entityChangeDocuments.filter(
+        (document) => Number(document.seq) <= pendingEntitySequence,
+      );
       pendingEntityChanges = {
         after: newPageStateCheckpoint.checkpoint,
-        through: entityChangeCursor,
-        documents: entityChangeDocuments,
+        through: pendingEntitySequence,
+        documents: orderedEntityChangeDocuments,
       };
-      allowPendingChangeEvent = false;
       allowPendingChangeEventPromise = new Promise((resolve) => {
         allowPendingChangeEventResolve = resolve;
       });
       await newPage.reload();
+      const mutationReconnectCursor = await pendingChangeStreamOpened.promise;
+      assert.deepEqual(mutationReconnectCursor, {
+        workspaceId,
+        seq: newPageStateCheckpoint.checkpoint,
+      });
       await expect(leadChat(newPage)).toBeVisible();
       await expect(newPage.locator("#message")).toBeVisible();
       await expect
         .poll(readNewPageStateCheckpoint)
         .toMatchObject({ ready: "ready", complete: true });
-      // Prove the reload kept the checkpoint while its entity-change stream
-      // response is still held. Once released, the client may apply it before
-      // the next Playwright poll runs.
+      // The handshake and applied baseline are live; hold only the mutation
+      // payload so no alternate recovery pull can stand in for its delivery.
       await expect
         .poll(readNewPageStateCheckpoint)
         .toMatchObject(newPageStateCheckpoint);
-      allowPendingChangeEvent = true;
+      assert.equal(
+        statePullCount(),
+        beforeMutationPullCount,
+        "the cached reconnect receives its applied baseline without an entity pull while the mutation is held",
+      );
+      await expect(newPage.locator(`[data-chat="${createdId}"]`)).toHaveCount(
+        0,
+      );
       allowPendingChangeEventResolve?.();
       allowPendingChangeEventResolve = undefined;
+      // Other source owners may publish summaries after the mutation's agent
+      // row. The applied checkpoint must cover that row and may advance further.
       await expect
-        .poll(readNewPageStateCheckpoint)
-        .toMatchObject({ checkpoint: Number(mutationEntity.seq) });
+        .poll(async () => (await readNewPageStateCheckpoint()).checkpoint)
+        .toBeGreaterThanOrEqual(Number(mutationEntity.seq));
       pendingEntitySequence = undefined;
       pendingEntityChanges = undefined;
       assert.ok(
@@ -675,6 +819,11 @@ test.describe("legacy schema mismatch", () => {
       await expect(newPage.locator(`[data-chat="${createdId}"]`)).toBeVisible({
         timeout: 30_000,
       });
+      assert.equal(
+        statePullCount(),
+        beforeMutationPullCount,
+        "the released SSE mutation advances the cache without an entity pull",
+      );
 
       const resetBootstrapPull = statePulls.find(
         (pull) => pull.page === newPage && pull.query.reset === "1",
@@ -683,6 +832,9 @@ test.describe("legacy schema mismatch", () => {
         sameHashCachedReloadMs: Math.round(cachedReloadMs),
         rendererHashes: [...new Set(rendererHashes)],
         resetBootstrapQuery: resetBootstrapPull?.query,
+        mutationReconnectCursor,
+        mutationSequence: Number(mutationEntity.seq),
+        mutationPhasePulls: statePullCount() - beforeMutationPullCount,
         distAssetsSha256: distAssetsDigest(),
       });
       assert.ok(resetBootstrapPull, "the new schema starts a reset bootstrap");
@@ -691,9 +843,20 @@ test.describe("legacy schema mismatch", () => {
         "0",
         "the new schema cache's main-client bootstrap starts at zero",
       );
+    } catch (error) {
+      console.log(
+        "Schema cache stream diagnostics:",
+        JSON.stringify(streamDiagnostics),
+      );
+      throw error;
     } finally {
-      fixture.kill();
+      allowResetPullResponse.resolve();
+      allowPendingChangeEventResolve?.();
+      await context.unrouteAll({ behavior: "wait" });
       await context.close();
+      fixture.kill();
+      streamServer.closeAllConnections();
+      await new Promise((resolve) => streamServer.close(resolve));
       const distAssetsAfter = await hashAssets();
       assert.deepEqual(
         distAssetsAfter,
@@ -711,62 +874,24 @@ test.describe("legacy schema mismatch", () => {
 test("different build collection sets share only drafts and outbox", async ({
   browser,
 }) => {
-  const state = await mkdtemp(join(tmpdir(), "studio-legacy-projection-size-"));
-  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
-  });
-  let fixtureLog = "";
-  fixture.stderr.on("data", (chunk) => {
-    fixtureLog += chunk;
-  });
-  const fixturePort = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) =>
-      resolve(Number(String(chunk).trim())),
-    );
-    fixture.once("exit", () => reject(new Error(fixtureLog)));
-  });
-  const fixtureOrigin = `http://127.0.0.1:${fixturePort}`;
-  const { workspaceId } = await fetch(
-    `${fixtureOrigin}/api/sync/identity`,
-  ).then((response) => response.json());
-  const stateUrl = new URL("/api/sync/pull", fixtureOrigin);
-  stateUrl.searchParams.set("scope", "state:entities:v1");
-  stateUrl.searchParams.set("after", "0");
-  stateUrl.searchParams.set("limit", "500");
-  stateUrl.searchParams.set("fresh", "1");
-  const statePull = await fetch(stateUrl).then((response) => response.json());
-  const lead = statePull.documents.find(
-    (row) => row.collection === "agent" && row.value.name === "Release lead",
-  );
-  const legacyRows = statePull.documents
-    .filter(({ op }) => op === "upsert")
-    .map(({ collection, id, value, seq }) => ({
-      id: `entity:${collection}:${id}`,
-      seq,
-      payload: JSON.stringify({ collection, id, value }),
-      _deleted: false,
-    }));
-  let legacyTranscriptRows = 0;
-  if (lead) {
-    const transcriptUrl = new URL("/api/sync/pull", fixtureOrigin);
-    transcriptUrl.searchParams.set("scope", `transcript:${lead.id}`);
-    transcriptUrl.searchParams.set("after", "0");
-    transcriptUrl.searchParams.set("limit", "100");
-    transcriptUrl.searchParams.set("fresh", "1");
-    const transcript = await fetch(transcriptUrl).then((response) =>
-      response.json(),
-    );
-    const liveTranscriptRows = (transcript.documents || []).filter(
-      ({ _deleted }) => !_deleted,
-    );
-    legacyTranscriptRows = liveTranscriptRows.length;
-    legacyRows.push(...liveTranscriptRows);
-  }
-  assert.ok(
-    legacyRows.length > 200,
-    "fixture has a representative legacy cache",
-  );
+  // This cache belongs to the retired build, whose broad agent projection
+  // included answers. Keep its size independent of today's narrowed server view.
+  const legacyCacheRows = 256;
+  const workspaceId = randomUUID().replaceAll("-", "");
+  const legacyRows = Array.from({ length: legacyCacheRows }, (_, index) => ({
+    id: `entity:agent:legacy-${index}`,
+    seq: index + 1,
+    payload: JSON.stringify({
+      collection: "agent",
+      id: `legacy-${index}`,
+      value: {
+        id: `legacy-${index}`,
+        name: `Cached chat ${index}`,
+        lastAnswer: "Saved report from the previous build. ".repeat(32),
+      },
+    }),
+    _deleted: false,
+  }));
   const { createServer } = await import(
     new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
@@ -901,12 +1026,10 @@ test("different build collection sets share only drafts and outbox", async ({
     assert.ok(legacyProjectionStats.rows > 200);
     console.log("Legacy projections fixture:", {
       ...legacyProjectionStats,
-      entityRows: legacyRows.length - legacyTranscriptRows,
-      transcriptRows: legacyTranscriptRows,
+      entityRows: legacyRows.length,
     });
   } finally {
     await context.close();
     await server.close();
-    fixture.kill();
   }
 });

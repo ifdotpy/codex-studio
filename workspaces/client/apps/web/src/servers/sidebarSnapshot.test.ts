@@ -23,6 +23,7 @@ function snapshot(): Snapshot {
       peerTeams: [],
       events: [],
       work: [],
+      studioErrors: [],
     },
   };
 }
@@ -165,6 +166,7 @@ describe("server sidebar projection", () => {
     expect(Object.keys(projected).sort()).toEqual(
       [
         "stateDir",
+        "studioErrors",
         "threads",
         "projects",
         "rooms",
@@ -312,6 +314,23 @@ describe("server sidebar projection", () => {
       collapsed: {},
       savedOrder: {},
     });
+  });
+
+  it("forwards streamed Studio errors without changing their action ids", () => {
+    const data = snapshot();
+    const item: Snapshot["runtime"]["studioErrors"][number] = {
+      id: "agent:worker:turn",
+      kind: "turn_disconnected",
+      action: "resume",
+      agentId: "worker",
+      agentName: "Worker",
+      reason: "Connection ended",
+      at: 100,
+      detail: "",
+      subject: "",
+    };
+    data.runtime.studioErrors = [item];
+    expect(sidebarSnapshot(data).studioErrors).toBe(data.runtime.studioErrors);
   });
 
   it("adds the real sidebar snapshot to navigation only after data is available", () => {

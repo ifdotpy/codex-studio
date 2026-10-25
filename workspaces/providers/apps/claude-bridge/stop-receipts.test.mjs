@@ -1,15 +1,16 @@
+import { waitForFile } from "./testing/file-signals.mjs";
 // Preserve the Stop receipt contracts after removal of the Python bridge tests.
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { startBridge, HANG_GUARD_MS } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.mjs";
 
 const SDK = String.raw`
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-const wait=async(file)=>{while(!fs.existsSync(file))await new Promise(r=>setTimeout(r,5));};
+const wait=waitForFile;
 const append=fsp.appendFile;
 fsp.appendFile=async(file,data,...args)=>{
  const result=await append(file,data,...args);
@@ -78,14 +79,7 @@ const completed = async (bridge, id) =>
       (n) => n.method === "turn/completed" && n.params.turn.id === id,
     )
   ).params.turn;
-async function marker(bridge, name) {
-  const file = path.join(bridge.root, name);
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!existsSync(file)) {
-    assert.ok(Date.now() < deadline, `Missing ${name}`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
+const marker = (bridge, name) => waitForFile(path.join(bridge.root, name));
 const admissions = async (bridge) =>
   existsSync(path.join(bridge.root, ".admitted"))
     ? (await fs.readFile(path.join(bridge.root, ".admitted"), "utf8"))

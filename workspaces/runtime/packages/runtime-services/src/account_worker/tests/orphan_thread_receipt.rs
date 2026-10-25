@@ -69,7 +69,7 @@ async fn shutdown_settles_a_committed_thread_request_it_never_wrote() {
     let faults = state.bridge.faults.clone();
     let release = tokio::spawn(async move {
         while faults.current_shutdown_phase() == "serving" {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            faults.shutdown_phase_changed.notified().await;
         }
         faults.release_after.notify_one();
     });

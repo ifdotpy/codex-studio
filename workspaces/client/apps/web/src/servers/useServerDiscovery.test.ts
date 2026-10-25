@@ -100,14 +100,17 @@ it("applies a discovery stream snapshot without HTTP and retains explicit recove
   await mocks.read?.();
   expect(mocks.access).toHaveBeenCalledWith("GET");
   let finishRecovery!: (snapshot: ServerAccessState) => void;
+  const entered = Promise.withResolvers<void>();
   mocks.access.mockImplementation(
     () =>
       new Promise<ServerAccessState>((resolve) => {
         finishRecovery = resolve;
+        entered.resolve();
       }),
   );
   const recovering = mocks.read?.();
-  await vi.waitFor(() => expect(mocks.access).toHaveBeenCalledTimes(2));
+  await entered.promise;
+  expect(mocks.access).toHaveBeenCalledTimes(2);
   const newer = {
     ...snapshot,
     identity: { ...snapshot.identity, label: "New name" },

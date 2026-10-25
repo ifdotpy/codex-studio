@@ -13,7 +13,7 @@ use thiserror::Error;
 
 // This module owns cost-cache refresh intervals (seconds), history windows
 // (days), and the scan timeout (seconds).
-const COST_REFRESH_SECONDS: f64 = 120.0;
+pub const COST_REFRESH_SECONDS: f64 = 120.0;
 const CLAUDE_COST_REFRESH_SECONDS: f64 = 300.0;
 const CLAUDE_COST_HISTORY_DAYS: i64 = 30;
 const COST_REPORT_HISTORY_DAYS: i64 = 30;
@@ -161,7 +161,7 @@ pub fn refresh_account_costs_report(
     account: &Value,
     cancelled: &AtomicBool,
 ) -> (bool, Result<(), UsageError>) {
-    refresh_account_costs_with(
+    let result = refresh_account_costs_with(
         state_dir,
         account_key,
         account,
@@ -170,7 +170,13 @@ pub fn refresh_account_costs_report(
         |home, state_dir, cancelled| {
             scan_codex_sessions(home, state_dir, unix_time_seconds(), cancelled)
         },
-    )
+    );
+    if result.0 {
+        crate::resource_notify::publish_bounded_source(
+            crate::resource_notify::BoundedSource::Costs,
+        );
+    }
+    result
 }
 
 fn refresh_account_costs_with<C, S>(
