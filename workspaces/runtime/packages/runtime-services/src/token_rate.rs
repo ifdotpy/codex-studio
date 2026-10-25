@@ -764,6 +764,13 @@ fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation
                     .actual
                     .max((output - state.baseline.unwrap_or(0.0)).max(0.0));
                 state.pending = 0.0;
+                // The cumulative total includes output estimated before tool starts.
+                // Keep durations for delayed response records, without counting their
+                // provisional tokens again in the snapshot.
+                for (_, pending) in &mut state.response_durations {
+                    *pending = 0.0;
+                }
+                state.response_duration_pending_tokens = 0.0;
                 state.estimated = false;
             }
         }
@@ -1234,6 +1241,66 @@ mod tests {
         let current = projector.snapshot();
         usage_at(&mut projector, 6, 13.0, cumulative("old-turn", 2000));
         assert_eq!(projector.snapshot(), current);
+    }
+
+    #[test]
+    fn cumulative_fallback_reconciles_queued_stream_estimates() {
+        let mut projector = RateProjector::default();
+        for (effect, bit) in provider_turn("provider", "agent", 0).into_iter().take(4) {
+            assert!(projector.observe(&effect, bit));
+        }
+        assert!(projector.agents["agent"].response_duration_pending_tokens > 0.0);
+        usage_at(
+            &mut projector,
+            7,
+            7.0,
+            typed_usage(studio_runtime_schema::usage::UsageObservation::Cumulative {
+                scope: studio_runtime_schema::usage::UsageScope::CodexThread,
+                turn_id: Some("turn".into()),
+                total: studio_runtime_schema::usage::UsageTokens {
+                    output: 30,
+                    ..Default::default()
+                },
+                last: Some(studio_runtime_schema::usage::UsageTokens {
+                    output: 30,
+                    ..Default::default()
+                }),
+                model_context_window: None,
+                models: None,
+            }),
+        );
+        assert_eq!(projector.snapshot().records[0].output_tokens.0, 30.0);
+        assert_eq!(
+            projector.agents["agent"].response_duration_pending_tokens,
+            0.0
+        );
+    }
+
+    #[test]
+    fn legacy_total_only_aggregate_cannot_change_the_live_projection() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.0,
+            typed_response("turn", "response", 100),
+        );
+        let current = projector.snapshot();
+        usage_at(
+            &mut projector,
+            3,
+            12.0,
+            json!({
+                "turnId":"turn", "turnOutputTokens":999, "responseOutputTokens":100,
+                "tokenUsage":{"total":{"totalTokens":5000}, "last":{"inputTokens":10,"outputTokens":100}}
+            }),
+        );
+        assert_eq!(projector.snapshot(), current);
+        assert_eq!(projector.agents["agent"].generation_started, Some(11.0));
     }
 
     #[test]
