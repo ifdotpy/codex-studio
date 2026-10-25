@@ -408,6 +408,7 @@ fn claude_worker_cache_scope_follows_agent_authority_on_start_and_resume() {
             value["account"]["provider"] = json!("claude");
             value["settings"]["is_lead"] = json!(lead);
             value["actor"]["thread_id"] = json!(thread);
+            value["actor"]["native_tool_source"] = json!("current");
             value["settings"]["claude_options"] = json!({"mcpAutoBackground":false});
             let prepared = attempt(plan(&snapshot(&value), "attempt", "ticket"));
             assert_eq!(prepared.params["managedWorker"], json!(!lead));
