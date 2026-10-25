@@ -9,6 +9,7 @@ struct ExistingGuest {
     info_override: std::sync::Mutex<Option<Value>>,
     info_change: std::sync::Mutex<Option<(Arc<RuntimeStore>, String, String, Value)>>,
     credential_copies_at_turn_start: std::sync::Mutex<Vec<usize>>,
+    new_turns: AtomicUsize,
 }
 impl GuestRpc for ExistingGuest {
     fn stream(
@@ -27,6 +28,30 @@ impl GuestRpc for ExistingGuest {
                 .lock()
                 .unwrap()
                 .push(self.inner.state.lock().unwrap().credential_documents.len());
+            // A new native turn cannot reuse the saved terminal turn's identity.
+            let next = self
+                .new_turns
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            let turn = format!("vm-restored-next-turn-{next}");
+            let message = &params["message"];
+            let handle = params["handle"].as_str().unwrap();
+            let mut native = self.inner.state.lock().unwrap();
+            native.writes.push(message.clone());
+            native.turn_start_handles.push(handle.into());
+            VmTurnGuest::enqueue_frame(
+                &mut native,
+                handle,
+                json!({"id":message["id"],"result":{"turn":{"id":turn}}}),
+            );
+            VmTurnGuest::enqueue_frame(
+                &mut native,
+                handle,
+                json!({"method":"turn/completed","params":{"threadId":"fake-thread-0",
+                    "turn":{"id":turn,"status":"completed"}}}),
+            );
+            self.inner.changed.notify_one();
+            return Ok(json!({"accepted":true,"remoteId":message["id"]}));
         }
         if method == "provider.rpc" && params["action"] == "info" {
             self.infos.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -268,6 +293,7 @@ struct AuthRecoveryCredentials {
     guest: Arc<ExistingGuest>,
     attempts: AtomicUsize,
     refuse: bool,
+    observed_attempt: std::sync::Mutex<Option<Value>>,
 }
 
 impl preparation::VmProviderLaunchResolver for AuthRecoveryCredentials {
@@ -283,6 +309,20 @@ impl preparation::VmProviderLaunchResolver for AuthRecoveryCredentials {
         actors: Vec<preparation::VmProviderLaunchRequest>,
     ) -> preparation::VmProviderRefreshFuture<'_> {
         Box::pin(async move {
+            assert_eq!(actors.len(), 1);
+            let actor = actors[0].agent_id.clone();
+            let attempt = self
+                .store
+                .read_async("test/auth-refresh-attempt", move |db| {
+                    Ok::<_, WorkerError>(
+                        AgentRepository::get(db, &AgentId::from(actor.as_str()))?
+                            .unwrap()
+                            .extra["startAttempt"]
+                            .clone(),
+                    )
+                })
+                .await?;
+            *self.observed_attempt.lock().unwrap() = Some(attempt);
             self.attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.guest.inner.changed.notify_one();
@@ -324,7 +364,7 @@ async fn vm_existing_auth_recovery_copies_rotated_credentials_before_native_subm
 }
 
 #[tokio::test]
-async fn vm_existing_auth_recovery_copy_failure_keeps_original_input_pending() {
+async fn vm_existing_auth_recovery_copy_failure_keeps_exact_input_reserved() {
     auth_recovery_turn(true).await;
 }
 
@@ -335,6 +375,7 @@ async fn auth_recovery_turn(refuse: bool) {
         guest: guest.clone(),
         attempts: AtomicUsize::new(0),
         refuse,
+        observed_attempt: std::sync::Mutex::new(None),
     });
     let mut resources = claude_preparation::claude_resources(&state);
     resources.guest_rpc = Some(guest.clone());
@@ -469,8 +510,27 @@ async fn auth_recovery_turn(refuse: bool) {
         );
         assert_eq!(
             state.event_status("auth-recovery-original").await,
-            "pending"
+            "reserved"
         );
+        let held = state.record().await;
+        let observed = resolver.observed_attempt.lock().unwrap().clone().unwrap();
+        assert_eq!(held["status"], "starting");
+        assert_eq!(held["startWait"]["reason"], "dependency");
+        assert_eq!(
+            held["startAttempt"]["prepareError"],
+            "test/auth-recovery-copy-refused"
+        );
+        assert_eq!(held["startAttempt"]["id"], observed["id"]);
+        assert_eq!(held["startAttempt"]["events"], observed["events"]);
+        assert!(
+            observed["events"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("annotation:auth-recovery-original"))
+        );
+        assert_eq!(held["startAttempt"]["epoch"], state.epoch);
+        assert_eq!(held["startAttempt"]["accountKey"], "default");
+        assert_eq!(held["startAttempt"]["submitted"], false);
         assert!(
             guest
                 .inner
@@ -481,13 +541,53 @@ async fn auth_recovery_turn(refuse: bool) {
                 .is_empty()
         );
     } else {
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while state.event_status("auth-recovery-original").await != "delivered" {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("the exact original pending input is delivered after the copy");
+        .await;
+        if delivered.is_err() {
+            let actor = state.record().await;
+            let native = guest.inner.state.lock().unwrap();
+            panic!(
+                "auth input not delivered: status={}, error={}, attempt={}, wait={}, methods={:?}, sequence={}, ack={}",
+                actor["status"],
+                actor["error"],
+                actor["startAttempt"],
+                actor["usageResume"],
+                native
+                    .writes
+                    .iter()
+                    .map(|write| write["method"].clone())
+                    .collect::<Vec<_>>(),
+                native.sequence,
+                native.acknowledged
+            );
+        }
+        state
+            .bridge
+            .run(|store| async move {
+                store
+                    .read_async("test/auth-delivery-identity", |db| {
+                        let turn = |id: &str| {
+                            db.query_row(
+                                "SELECT turn_id FROM runtime_events WHERE id=?1",
+                                [id],
+                                |row| row.get::<_, String>(0),
+                            )
+                        };
+                        assert_eq!(turn("annotation:input")?, "vm-turn");
+                        assert_eq!(
+                            turn("annotation:auth-recovery-original")?,
+                            "vm-restored-next-turn-1"
+                        );
+                        Ok::<_, WorkerError>(())
+                    })
+                    .await
+            })
+            .await
+            .unwrap();
         assert_eq!(
             *guest.credential_copies_at_turn_start.lock().unwrap(),
             vec![1]
