@@ -390,12 +390,13 @@ it("does not use HTTP recovery to bypass a schema-mismatched stream", async () =
 });
 
 it.each([
-  { follower: false, staged: false },
-  { follower: true, staged: false },
-  { follower: false, staged: true },
+  { follower: false, staged: false, cancelled: false },
+  { follower: true, staged: false, cancelled: false },
+  { follower: false, staged: true, cancelled: false },
+  { follower: false, staged: true, cancelled: true },
 ])(
-  "transport follower=$follower staged=$staged publishes readiness only after the actual RxDB receipt",
-  async ({ follower, staged }) => {
+  "transport follower=$follower staged=$staged cancelled=$cancelled publishes readiness only after the actual RxDB receipt",
+  async ({ follower, staged, cancelled }) => {
     const f = await setup();
     vi.stubGlobal("location", { origin: "http://studio.test" });
     let peer!: (value: unknown) => void;
@@ -486,7 +487,7 @@ it.each([
     });
     mocks.watch.mockImplementation(transport.watchResourceChanges);
     mocks.watchConnection.mockImplementation(transport.watchResourceConnection);
-    f.subscribe();
+    const stopProjection = f.subscribe();
     const store = createSubscriptionStore(transport);
     store.watchResourceChanges({ kind: "state" }, () => {});
     stops.push(finish, store.dispose, transport.dispose);
@@ -551,6 +552,21 @@ it.each([
     expect(f.snapshots).toEqual([]);
     expect(f.pulls()).toEqual([]);
     if (staged) expect(persist).not.toHaveBeenCalled();
+    if (cancelled) {
+      // The screen releases its watcher before the server module closes.
+      // A still-active cold watcher intentionally recovers a stopped stream.
+      stopProjection();
+      transport.dispose();
+      finish();
+      await persistStaged.mock.results[0].value;
+      expect(
+        await f.client.readSubscriptionCursor({ kind: "state" }),
+      ).toBeUndefined();
+      expect(store.getSnapshot({ kind: "state" }).status).not.toBe("live");
+      expect(f.snapshots).toEqual([]);
+      expect(f.pulls()).toEqual([]);
+      return;
+    }
     finish();
     await vi.waitFor(() =>
       expect(store.getSnapshot({ kind: "state" }).status).toBe("live"),
