@@ -78,7 +78,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let profile = root.path().join("profile");
         let project = profile.join("projects/project");
-        std::fs::create_dir_all(&project).expect("project");
+        tokio::fs::create_dir_all(&project).await.expect("project");
         let journal = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
             "message":{"id":"response-1","model":"claude-sonnet-4-5",
                 "usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":5,"output_tokens":10}}});
@@ -90,16 +90,17 @@ mod tests {
         unknown_null["message"]["id"] = json!("response-unknown-null");
         let mut unknown_missing = journal.clone();
         unknown_missing["message"]["id"] = json!("response-unknown-missing");
-        std::fs::write(
+        tokio::fs::write(
             project.join("thread.jsonl"),
             format!("{journal}\n{conflict}\n{missing}\n{unknown_null}\n{unknown_missing}\n"),
         )
+        .await
         .expect("journal");
-        std::fs::create_dir_all(root.path().join("model-pricing")).expect("pricing directory");
-        std::fs::write(root.path().join("model-pricing/models-dev-v1.json"), json!({"version":1,"catalog":{"providers":{
+        tokio::fs::create_dir_all(root.path().join("model-pricing")).await.expect("pricing directory");
+        tokio::fs::write(root.path().join("model-pricing/models-dev-v1.json"), json!({"version":1,"catalog":{"providers":{
             "anthropic":{"models":{"claude-sonnet-4-5":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1}}}},
             "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":1}}}}
-        }}}).to_string()).expect("pricing");
+        }}}).to_string()).await.expect("pricing");
         store.analytics_transaction::<_,StoreError>(|tx,_| {
             AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"archived","rootId":"archived",
                 "provider":"claude","accountKey":"claude","threadId":"thread","archived":true}))?;
@@ -219,14 +220,14 @@ mod tests {
         // A malformed or oversized native state file is a file-local coverage
         // failure; the direct journal remains useful and the route stays 200.
         let sessions = root.path().join("account-servers/claude/sessions");
-        std::fs::create_dir_all(&sessions).expect("native states");
+        tokio::fs::create_dir_all(&sessions).await.expect("native states");
         let state_path = sessions.join("thread.json");
         for size in [
             4,
             studio_runtime_services::costs::MAX_RECONCILIATION_NATIVE_BYTES + 1,
         ] {
-            let file = std::fs::File::create(&state_path).expect("state file");
-            file.set_len(size).expect("sparse state boundary");
+            let file = tokio::fs::File::create(&state_path).await.expect("state file");
+            file.set_len(size).await.expect("sparse state boundary");
             let request = Request::builder()
                 .uri("/api/diagnostics/usage-reconciliation?agent=archived")
                 .header("host", "127.0.0.1:49172")
