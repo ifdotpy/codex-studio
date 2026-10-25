@@ -183,6 +183,10 @@ async def supervised(directory: Path, config, association, wait):
         if status and status["state"] == "exited":
             break
         if process.poll() is not None or asyncio.get_running_loop().time() > deadline:
+            # The supervisor can commit its final result between the earlier read and its exit.
+            status = json.loads(status_path.read_text()) if status_path.exists() else None
+            if status and status["state"] == "exited":
+                break
             raise GuestError("outcome_unknown", "The command has no proven exit result")
         await asyncio.sleep(0.05)
     stdout, stderr = bytearray(), bytearray()
