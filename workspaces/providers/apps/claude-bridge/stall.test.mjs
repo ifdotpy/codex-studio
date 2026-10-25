@@ -68,7 +68,7 @@ export function query({prompt,options}){
     const input=await read();
     if(input.done)return;
     const text=input.value.message.content[0].text;
-    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,sessionId:session,cwd,isSidechain:false})+'\n');
+    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:null,sessionId:session,cwd,isSidechain:false})+'\n');
     if(text==='stall')fs.appendFileSync(history,'broken native row\n');
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
     yield {type:'system',subtype:'init'};

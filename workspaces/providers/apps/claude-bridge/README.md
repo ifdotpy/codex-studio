@@ -22,7 +22,8 @@ with such input, the bridge closes the CLI and reconciles its final native
 history. A split input is delivered only if every part is recorded; no recorded
 parts proves it unapplied, while partial or unavailable evidence stays unknown.
 Malformed, torn, or changed native history and a bounded tail without the
-opening input anchor or a continuous parent chain remain uncertain. The bridge shows an uncertainty notice
+opening input anchor, unique record UUIDs, or ancestry to the session root
+remain uncertain. The bridge shows an uncertainty notice
 and never authorizes redelivery from that evidence.
 The next start resumes a fresh CLI, and retries reuse recorded user-message
 identities even for auto-steered input. Query-closing controls refuse unsettled

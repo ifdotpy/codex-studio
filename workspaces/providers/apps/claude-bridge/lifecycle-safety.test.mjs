@@ -138,6 +138,7 @@ test.each([
   const row = (uuid) => ({
     type: "user",
     uuid,
+    parentUuid: null,
     sessionId,
     cwd: root,
     isSidechain: false,
@@ -699,3 +700,91 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
     await bridge.close();
   }
 });
+
+test.each([
+  "self cycle",
+  "two-node cycle",
+  "preceding duplicate",
+  "sidechain duplicate",
+  "non-conversation duplicate",
+])("corrupt anchor ancestry stays unknown: %s", (kind) => {
+  const row = (type, uuid, parentUuid, extra = {}) => ({
+    type,
+    uuid,
+    parentUuid,
+    sessionId,
+    cwd: "/project",
+    isSidechain: false,
+    ...extra,
+  });
+  const anchor = row("user", inputId, null);
+  const reply = row("assistant", replyId, inputId);
+  const rows =
+    kind === "self cycle"
+      ? [{ ...anchor, parentUuid: inputId }]
+      : kind === "two-node cycle"
+        ? [{ ...anchor, parentUuid: replyId }, reply]
+        : kind === "preceding duplicate"
+          ? [row("assistant", replyId, null), anchor, reply]
+          : kind === "sidechain duplicate"
+            ? [anchor, reply, { ...reply, isSidechain: true }]
+            : [
+                anchor,
+                row("progress", replyId, inputId),
+                row("progress", replyId, inputId),
+              ];
+  expect(
+    inputHistoryOutcome(rows, {
+      sessionId,
+      cwd: "/project",
+      anchorIds: [inputId],
+      inputIds: [steerId],
+    }),
+  ).toBe("unknown");
+});
+
+test.each(
+  ["fork", "rollback"].flatMap((operation) =>
+    ["delivered", "submitted"].map((status) => [operation, status]),
+  ),
+)(
+  "%s refuses retained %s steer without native provenance before mutation",
+  async (operation, status) => {
+    const source = {
+      id: "source",
+      cwd: "/project",
+      started: true,
+      turns: turns(),
+    };
+    source.turns[0].items = [
+      { type: "userMessage", nativeId: "u1" },
+      {
+        id: "unmapped",
+        type: "userMessage",
+        delivery: "steer",
+        deliveryStatus: status,
+      },
+    ];
+    const forkSession = vi.fn(async () => ({ sessionId: "target" }));
+    const deps = {
+      persist: vi.fn(),
+      forkSession,
+      getSessionMessages: async (id) =>
+        id === "source"
+          ? messages()
+          : messages()
+              .slice(0, 2)
+              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+    };
+    await expect(
+      operation === "fork"
+        ? forkAtTurn(source, { lastTurnId: "u1" }, deps)
+        : rollbackSession(
+            source,
+            { requestId: "rollback", turnId: "final2" },
+            deps,
+          ),
+    ).rejects.toThrow(/mapping.*unavailable/);
+    expect(forkSession).not.toHaveBeenCalled();
+  },
+);

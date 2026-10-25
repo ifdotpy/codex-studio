@@ -203,7 +203,21 @@ export function inputHistoryOutcome(
 ) {
   anchorIds = nativeInputIds({ nativeIds: anchorIds });
   inputIds = nativeInputIds({ nativeIds: inputIds });
-  if (!rows || !anchorIds || !inputIds) return "unknown";
+  if (!Array.isArray(rows) || !anchorIds || !inputIds) return "unknown";
+  // UUIDs identify records across the whole retained file, including rows
+  // preceding the anchor and auxiliary or sidechain records.
+  const uuidPositions = new Map();
+  for (const [index, row] of rows.entries()) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return "unknown";
+    if (row.uuid == null) continue;
+    if (
+      typeof row.uuid !== "string" ||
+      !row.uuid ||
+      uuidPositions.has(row.uuid)
+    )
+      return "unknown";
+    uuidPositions.set(row.uuid, index);
+  }
   const main = (row) =>
     row.sessionId === sessionId && row.cwd === cwd && row.isSidechain === false;
   const ordered = (positions) =>
@@ -235,10 +249,30 @@ export function inputHistoryOutcome(
     )
   )
     return "unknown";
+  // The opening input is not a free-standing trust root. Its ancestry must
+  // resolve to the session root in transcript order; a missing parent, cycle,
+  // or future parent makes absence unprovable even when the tail is stable.
+  let ancestorIndex = anchors[0];
+  const ancestry = new Set();
+  for (;;) {
+    const row = rows[ancestorIndex];
+    if (
+      !main(row) ||
+      !["user", "assistant"].includes(row.type) ||
+      ancestry.has(row.uuid)
+    )
+      return "unknown";
+    ancestry.add(row.uuid);
+    if (row.parentUuid === null) break;
+    const parentIndex = uuidPositions.get(row.parentUuid);
+    if (parentIndex === undefined || parentIndex >= ancestorIndex)
+      return "unknown";
+    ancestorIndex = parentIndex;
+  }
   // Syntax and a pinned file do not prove that no middle row was removed.
   // Every covered parent must resolve, and the main conversation must be one
   // continuous chain from the opening input through the final transcript row.
-  const seen = new Set([rows[anchors[0]].uuid]);
+  const seen = new Set(ancestry);
   let previous = rows[anchors[0]].uuid;
   for (const row of rows.slice(anchors[0] + 1)) {
     if (row.isSidechain === true) continue;

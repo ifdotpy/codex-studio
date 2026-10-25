@@ -94,7 +94,10 @@ function remapTurn(turn, source, forkMessages) {
       ["not_applied", "cancelled"].includes(item.deliveryStatus)
     )
       continue;
-    if (!item.nativeId && item !== initial) continue;
+    // Every retained non-initial user input needs a native identity, even
+    // legacy items without a delivery marker. Withdrawals were exempted above.
+    if (!item.nativeId && item !== initial)
+      throw new Error("Claude retained input mapping is unavailable");
     const ids = item === initial ? initialIds : nativeInputIds(item);
     if (!ids) throw new Error("Claude fork lost a retained input boundary");
     const remapped = ids.map((id) => {
