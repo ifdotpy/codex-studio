@@ -844,33 +844,56 @@ describe("scale verifier readiness markers", () => {
     const root = await newRoot();
     const directory = await createReadinessMarkerDirectory(join(root, "m"));
     const tokens = [randomUUID(), randomUUID()];
-    const unknown = await watchReadinessMarkers(directory, tokens);
+    const unknownEvents = controlledWatch();
+    const unknown = await watchReadinessMarkers(
+      directory,
+      tokens,
+      null,
+      unknownEvents,
+    );
     try {
       await publish(directory, 7, `${tokens[0]}\n`);
+      unknownEvents.notify("worker-7.ready");
       await expect(unknown.next(soon())).rejects.toThrow(/Unknown readiness/);
     } finally {
       unknown.close();
     }
+    expect(unknownEvents.closeCount).toBe(1);
     // An event for the directory's own name is ignored only when no entry inside
     // has that name; such an entry is still an unknown marker.
     const named = await createReadinessMarkerDirectory(join(root, "named"));
-    const sameName = await watchReadinessMarkers(named, tokens);
+    const namedEvents = controlledWatch();
+    const sameName = await watchReadinessMarkers(
+      named,
+      tokens,
+      null,
+      namedEvents,
+    );
     try {
       await writeFile(join(named, "named"), "x", { mode: 0o600 });
+      namedEvents.notify("named");
       await expect(sameName.next(soon())).rejects.toThrow(/Unknown readiness/);
     } finally {
       sameName.close();
     }
+    expect(namedEvents.closeCount).toBe(1);
     const linked = await createReadinessMarkerDirectory(join(root, "linked"));
     const target = join(root, "target");
     await writeFile(target, `${tokens[0]}\n`, { mode: 0o600 });
     await symlink(target, join(linked, "worker-0.ready"));
-    const watch = await watchReadinessMarkers(linked, tokens);
+    const linkedEvents = controlledWatch();
+    const watch = await watchReadinessMarkers(
+      linked,
+      tokens,
+      null,
+      linkedEvents,
+    );
     try {
       await expect(watch.next(soon())).rejects.toThrow(/symbolic link/);
     } finally {
       watch.close();
     }
+    expect(linkedEvents.closeCount).toBe(1);
   });
 
   it("times out, closes, and aborts pending waits without leaking the watcher", async () => {
