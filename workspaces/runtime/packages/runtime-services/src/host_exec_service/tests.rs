@@ -962,14 +962,16 @@ fn a_service_without_a_build_identity_is_never_stopped() {
 #[tokio::test]
 async fn the_socket_serves_one_request_per_connection() {
     let fixture = Fixture::new();
-    let server = tokio::spawn(serve(Arc::clone(&fixture.service)));
-    let socket = fixture.state.join(SOCKET_FILE);
-    for _ in 0..200 {
-        if socket.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let listener = bind_listener(&fixture.service).unwrap();
+    let server = tokio::spawn(serve_listener(Arc::clone(&fixture.service), listener));
+    let state = fixture.state.clone();
+    let rejected = studio_runtime_store::blocking_pool::spawn_blocking("test", move || {
+        lifecycle::service_call(&state, "wrong-token", "health", None)
+    })
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(rejected.code, "forbidden");
     let state = fixture.state.clone();
     let health = studio_runtime_store::blocking_pool::spawn_blocking("test", move || {
         lifecycle::service_call(&state, TOKEN, "health", None)

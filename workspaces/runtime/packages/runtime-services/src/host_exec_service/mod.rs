@@ -905,6 +905,11 @@ impl HostService {
 
 /// Serve `host-exec.sock` of the VM state folder `state` until a retire request.
 pub(crate) async fn serve(service: Arc<HostService>) -> std::io::Result<()> {
+    let listener = bind_listener(&service)?;
+    serve_listener(service, listener).await
+}
+
+fn bind_listener(service: &HostService) -> std::io::Result<tokio::net::UnixListener> {
     use std::os::unix::fs::PermissionsExt;
     let path = service.state.join(SOCKET_FILE);
     match fs::remove_file(&path) {
@@ -913,6 +918,13 @@ pub(crate) async fn serve(service: Arc<HostService>) -> std::io::Result<()> {
     }
     let listener = tokio::net::UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+async fn serve_listener(
+    service: Arc<HostService>,
+    listener: tokio::net::UnixListener,
+) -> std::io::Result<()> {
     let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {

@@ -51,29 +51,37 @@ The guest service and desktop Python helpers are retained and remain independent
 of the backend. Historical verification reports describe their recorded revision;
 their removed Python commands are not current instructions.
 
-| Purpose                                              | Command                                  |
-| ---------------------------------------------------- | ---------------------------------------- |
-| Short safety gate                                    | `just test-fast`                         |
-| Publication gate                                     | `just test-comprehensive`                |
-| Generated contracts                                  | `just contracts-check`                   |
-| Workspace boundaries                                 | `just boundaries-check`                  |
-| Browser smoke                                        | `just test-browser-smoke`                |
-| Full browser project, manual heavy                   | `just test-browser` or `just test-heavy` |
-| Multi-server browser recovery, manual heavy          | `just test-browser-multi-server`         |
-| Full deterministic Rust corpora, manual heavy        | `just test-rust-runtime-corpora`         |
-| Full account-worker crash matrix, manual heavy       | `just test-crash-matrix-full`            |
-| Provider-session scheduling diagnostic, manual heavy | `just test-rust-session-fairness`        |
-| Guest module worker aggregation and crash, manual    | `just test-guest-runner-processes`       |
-| Many-agent scenario, manual heavy                    | `just test-rust-many-agents`             |
-| Continuation corpus and store faults, manual heavy   | `just test-rust-usage-resume-corpora`    |
-| Hidden Electron profile migration, manual heavy      | `just test-native-profile-migration`     |
-| Hidden Rust native WebView scenarios, manual heavy   | `just test-native-webview`               |
-| Hidden Rust native WebView scenarios, manual heavy   | `just test-native-webview`               |
+| Purpose                                               | Command                                  |
+| ----------------------------------------------------- | ---------------------------------------- |
+| Short safety gate                                     | `just test-fast`                         |
+| Publication gate                                      | `just test-comprehensive`                |
+| Generated contracts                                   | `just contracts-check`                   |
+| Workspace boundaries                                  | `just boundaries-check`                  |
+| Browser smoke                                         | `just test-browser-smoke`                |
+| Full browser project, manual heavy                    | `just test-browser` or `just test-heavy` |
+| Multi-server browser recovery, manual heavy           | `just test-browser-multi-server`         |
+| Full deterministic Rust corpora, manual heavy         | `just test-rust-runtime-corpora`         |
+| Full account-worker crash matrix, manual heavy        | `just test-crash-matrix-full`            |
+| Provider-session scheduling diagnostic, manual heavy  | `just test-rust-session-fairness`        |
+| Guest module worker aggregation and crash, manual     | `just test-guest-runner-processes`       |
+| Detached host_exec lifecycle and guest broker, manual | `just test-host-exec-processes`          |
+| Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
+| Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
+| Hidden Electron profile migration, manual heavy       | `just test-native-profile-migration`     |
+| Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
+| Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
 
 The fast guest wrapper tests use an injected executor for ordered results,
 failure counts, and broken-pool cleanup. The actual guest suite remains in the
 fast tier with the default spawn-based process pool. The manual guest runner
 check keeps the two real worker-process scenarios outside the fast tier.
+
+The fast host_exec witnesses check private token creation, the actual Unix socket,
+authentication, retirement, and startup outcomes without a process-start deadline.
+The manual host_exec check retains the detached CLI startup, build replacement,
+busy-command preservation, and unchanged guest broker scenarios. Its fixture owns
+each service child through a private close channel and keeps failure logs in the
+test output. Production startup deadlines do not change.
 
 Set `STUDIO_STORE_COMPRESS_EVERY_WRITE=1` to run any Rust selection in the
 compress-every-write mode of [`stored_text.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text.rs):

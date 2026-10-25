@@ -34,6 +34,40 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+test("host_exec process scenarios have a named manual owner and fast boundary coverage", () => {
+  const profiles = readFileSync(".config/nextest.toml", "utf8");
+  assert.doesNotMatch(profiles, /test\(\/\^host_exec_service::\//);
+  assert.equal(profiles.split("host_exec(_service)?|layr_read").length - 1, 2);
+  const recipe = readFileSync("justfile", "utf8");
+  assert.match(
+    recipe,
+    /test-host-exec-processes:\n[^\n]*--run-ignored only[^\n]*--test-threads 1[^\n]*host_exec_service::/,
+  );
+  const processes = readFileSync(
+    "workspaces/runtime/apps/runtime-server/tests/host_exec_service.rs",
+    "utf8",
+  );
+  assert.equal(
+    (
+      processes.match(
+        /#\[ignore = "manual process tier: just test-host-exec-processes"\]/g,
+      ) ?? []
+    ).length,
+    5,
+  );
+  const lifecycle = readFileSync(
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/lifecycle.rs",
+    "utf8",
+  );
+  for (const name of [
+    "a_fresh_token_is_private_durable_and_never_overwrites_an_existing_token",
+    "startup_wait_requires_ready_proof_and_preserves_the_poll_order",
+    "startup_wait_retains_unknown_deadline_and_process_probe_errors",
+  ]) {
+    assert.match(lifecycle, new RegExp(`fn ${name}\\(`));
+  }
+});
+
 // Suppress facade text, but preserve Node's binary test result frames.
 function silenceFacadeOutput() {
   const originalWrite = process.stdout.write;
