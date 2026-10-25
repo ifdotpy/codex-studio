@@ -10,6 +10,7 @@ export default {
       // Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.
       "backend.test.mjs",
       "backend-selection.test.mjs",
+      "renderer-recovery.test.mjs",
     ],
   },
 };

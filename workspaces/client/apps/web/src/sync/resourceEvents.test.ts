@@ -200,7 +200,8 @@ describe("shared resource event transport", () => {
       requestId: "rename-one",
     };
     transport.watchResourceChanges(resource, accept);
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Source.instances).toHaveLength(1);
     const value = {
       id: "agent",
       request_id: "rename-one",
@@ -215,7 +216,7 @@ describe("shared resource event transport", () => {
       resource,
       value,
     });
-    await vi.waitFor(() => expect(accept).toHaveBeenCalledOnce());
+    expect(accept).toHaveBeenCalledOnce();
     expect(accept.mock.calls[0][0].progress).toEqual({ resource, value });
   });
 
