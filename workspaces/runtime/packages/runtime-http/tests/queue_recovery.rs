@@ -18,6 +18,7 @@ const ACTOR: &str = "failed-worker";
 const USER: &str = "original-user";
 const FIRST: &str = "held-preparation";
 const REASON: &str = "Provider thread resume failed (invalid transport); input remains pending.";
+const RETRY_REFUSAL: &str = "This failed agent has no current unsent batch that can be retried";
 
 async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router) {
     let directory = tempfile::tempdir().unwrap();
@@ -145,7 +146,12 @@ async fn send_now_recovers_proven_unsent_failed_batch_and_replays_lost_http_succ
     assert_eq!(snapshot(&store), state);
     let mut conflicting = body;
     conflicting["message_id"] = json!("original-0");
-    assert_eq!(call(&app, Some(conflicting)).await.0, 409);
+    let (status, result) = call(&app, Some(conflicting)).await;
+    assert_eq!(status, 400, "{result}");
+    assert_eq!(
+        result,
+        json!({"error":"This request id has different content"})
+    );
     assert_eq!(snapshot(&store), state);
     assert!(
         store
@@ -202,7 +208,8 @@ async fn send_now_refuses_unproven_failed_batches_without_any_write() {
         let body = promotion(&app).await;
         let before = snapshot(&store);
         let (status, result) = call(&app, Some(body)).await;
-        assert_eq!(status, 409, "{case}: {result}");
+        assert_eq!(status, 400, "{case}: {result}");
+        assert_eq!(result, json!({"error":RETRY_REFUSAL}), "{case}");
         assert_eq!(snapshot(&store), before, "{case}");
     }
 }
@@ -237,7 +244,8 @@ async fn send_now_keeps_explicit_stop_and_other_start_owners_held() {
         let body = promotion(&app).await;
         let before = snapshot(&store);
         let (status, result) = call(&app, Some(body)).await;
-        assert_eq!(status, 409, "{key}: {result}");
+        assert_eq!(status, 400, "{key}: {result}");
+        assert_eq!(result, json!({"error":RETRY_REFUSAL}), "{key}");
         assert_eq!(snapshot(&store), before, "{key}");
     }
 }
@@ -260,7 +268,8 @@ async fn send_now_does_not_release_owned_account_auth_holds() {
         let body = promotion(&app).await;
         let before = snapshot(&store);
         let (status, result) = call(&app, Some(body)).await;
-        assert_eq!(status, 409, "{reason}: {result}");
+        assert_eq!(status, 400, "{reason}: {result}");
+        assert_eq!(result, json!({"error":RETRY_REFUSAL}), "{reason}");
         assert_eq!(snapshot(&store), before);
     }
 }

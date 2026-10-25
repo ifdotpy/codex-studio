@@ -365,16 +365,17 @@ async fn held_callback_does_not_stop_other_agents_or_a_new_thread() {
 }
 
 #[tokio::test]
-async fn held_callback_is_answered_and_stop_applied_behind_an_active_journal_barrier() {
+async fn held_callback_is_answered_and_another_agent_stops_behind_an_active_journal_barrier() {
     let Stall {
         state: _state,
         mut peer,
         mut worker,
         release,
-        a,
+        a: _,
     } = stalled().await;
     let release = release.expect("held handler");
-    let frames: Vec<Value> = b_flood().chain(std::iter::once(b_completed())).collect();
+    // Keep B's turn active so its interrupt and A's answer both need the lane.
+    let frames: Vec<Value> = b_flood().collect();
     let sent = Arc::new(AtomicU64::new(0));
     let sender = send_frames(&mut peer, frames, sent.clone());
     let last_cursor = peer.cursor;
@@ -386,7 +387,7 @@ async fn held_callback_is_answered_and_stop_applied_behind_an_active_journal_bar
     let rest = async {
         worker
             .send(AccountCommand::Stop {
-                agent_id: a.clone(),
+                agent_id: "agent-b".into(),
             })
             .await
             .unwrap();
@@ -405,8 +406,11 @@ async fn held_callback_is_answered_and_stop_applied_behind_an_active_journal_bar
                     )
                 });
             methods.push(if wire.value["id"] == HELD_CALLBACK {
+                assert_eq!(wire.value["result"]["success"], true);
                 "callback answer".to_owned()
             } else {
+                assert_eq!(wire.value["method"], "turn/interrupt");
+                assert_eq!(wire.value["params"]["threadId"], "fake-thread-1");
                 wire.value["method"].as_str().unwrap_or("?").to_owned()
             });
             let _ignored = wire.receipt.send(CommandReceipt::Written {
@@ -418,7 +422,7 @@ async fn held_callback_is_answered_and_stop_applied_behind_an_active_journal_bar
         assert_eq!(
             methods,
             ["callback answer", "turn/interrupt"],
-            "the answer of the held callback and the stop of agent A are both written"
+            "the answer of agent A's held callback and the stop of agent B are both written"
         );
     };
     let (barrier, ()) = tokio::join!(barrier, rest);

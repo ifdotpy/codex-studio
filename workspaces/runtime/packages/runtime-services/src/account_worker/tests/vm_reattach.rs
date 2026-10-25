@@ -318,12 +318,20 @@ async fn existing_actor(paused: bool) -> (State, Arc<ExistingGuest>) {
                 ("provider",json!("claude")),("accountKey",json!("default")),("executionSettingsAccountKey",json!("default")),
                 ("cwd",json!("/home/studio/project")),("threadId",json!("fake-thread-0")),("turnId",json!("vm-turn")),
                 ("inFlight",json!(true)),("autoWake",json!(!paused)),
-                ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
+                ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["annotation:input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
             ]{record.extra.insert(key.into(),value);}
             AgentRepository::put(tx,&record)?;
             studio_runtime_store::ExecutionHistoryRepository::record(tx,&record)?;
-            studio_runtime_store::ExecutionHistoryRepository::save_claim(tx,"existing-vm-attempt",&json!([]),&json!({"agent":record}))?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='vm-turn' WHERE agent=?1",[&actor])?;
+            let members:usize = tx.query_row(
+                "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 \
+                 AND id IN (SELECT value FROM json_each(?3)) \
+                 AND status='delivered' AND turn_id='vm-turn'",
+                rusqlite::params![actor,epoch,record.extra["startAttempt"]["events"].to_string()],
+                |row|row.get(0),
+            )?;
+            assert_eq!(members,1,"the saved attempt owns its exact delivered input and turn");
+            studio_runtime_store::ExecutionHistoryRepository::save_claim(tx,"existing-vm-attempt",&json!([]),&json!({"agent":record}))?;
             Ok::<_,WorkerError>(())
         }).await
     }).await.unwrap();

@@ -493,7 +493,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         executable.mkdir()
         marker = self.home / "rsync-pid"
         fixture = executable / "rsync"
-        fixture.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,time\np=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--temp-dir=')))\n(p/'partial').write_bytes(b'partial')\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n")
+        fixture.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,time\np=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--temp-dir=')))\n(p/'partial').write_bytes(b'partial')\nmarker=pathlib.Path({str(marker)!r})\npending=marker.with_suffix('.pending')\npending.write_text(str(os.getpid()))\npending.replace(marker)\ntime.sleep(60)\n")
         fixture.chmod(0o700)
 
         def floor(path, required=0):

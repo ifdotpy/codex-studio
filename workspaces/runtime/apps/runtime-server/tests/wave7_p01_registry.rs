@@ -390,10 +390,16 @@ impl ProviderTaskFactory for WireFactory {
                             let mut observed_message = None;
                             let receipt = match write.message()["method"].as_str() {
                                 Some("initialize") => CommandReceipt::CachedInitialize(json!({})),
-                                Some("initialized") => CommandReceipt::Written {
-                                    remote_id: None,
-                                    duplicate: false,
-                                },
+                                Some("initialized") => {
+                                    // The real supervisor publishes readiness before its write receipt.
+                                    status.send_modify(|current| {
+                                        current.initialization = InitializationStatus::Ready;
+                                    });
+                                    CommandReceipt::Written {
+                                        remote_id: None,
+                                        duplicate: false,
+                                    }
+                                }
                                 Some("thread/resume" | "thread/start") => {
                                     if record_resumes {
                                         writes
@@ -471,9 +477,6 @@ impl ProviderTaskFactory for WireFactory {
                             };
                             if observed {
                                 if write.message()["method"] == "initialized" {
-                                    status.send_modify(|status| {
-                                        status.initialization = InitializationStatus::Ready
-                                    });
                                     ready_notice.notify_one();
                                 }
                                 if let Some(message) = observed_message {
@@ -1564,7 +1567,18 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
     registry.reconcile(None).await.unwrap();
     let (handle, delivered) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
-        .unwrap()
+        .unwrap_or_else(|_| {
+            let db = store.test_reader().unwrap();
+            let phases: Vec<(String, String)> = db
+                .prepare("SELECT signature,result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:default:7:1:%' ORDER BY id")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let actor: String = db.query_row("SELECT record FROM runtime_agents WHERE id='managed-actor'", [], |row| row.get(0)).unwrap();
+            panic!("the saved callback reply is missing; phases={phases:?}, actor={actor}")
+        })
         .unwrap();
     assert_eq!(handle, "account:default");
     assert_eq!(
