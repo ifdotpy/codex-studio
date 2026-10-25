@@ -762,7 +762,8 @@ pub fn dispatch_notification_with_effects(
                     if let TokenUsageObservation::Typed(usage) = &observation {
                         normalized["studioUsage"] = serde_json::to_value(usage)?;
                     }
-                    effects.capture_usage(transaction, &mut agent, &normalized, observed_at)?;
+                    let acceptance =
+                        effects.capture_usage(transaction, &mut agent, &normalized, observed_at)?;
                     if crate::event_write::truthy(agent.get("movedFrom")) {
                         effects.capture_move_cache(
                             transaction,
@@ -771,7 +772,7 @@ pub fn dispatch_notification_with_effects(
                             observed_at,
                         )?;
                     }
-                    apply_token_usage(&mut agent, &observation, observed_at)?
+                    apply_token_usage(&mut agent, &observation, acceptance, observed_at)?
                 }
                 _ => return Err(NotificationDispatchError::InvalidNotification),
             };
@@ -1973,9 +1974,13 @@ enum TokenUsageObservation {
 fn apply_token_usage(
     agent: &mut Value,
     observation: &TokenUsageObservation,
+    acceptance: crate::budget::UsageAcceptance,
     observed_at: f64,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
     use studio_runtime_schema::usage::UsageObservation;
+    if acceptance == crate::budget::UsageAcceptance::RejectedReplayConflict {
+        return Ok(DispatchOutcome::Written);
+    }
     let observation = match observation {
         TokenUsageObservation::Typed(usage) => usage,
         TokenUsageObservation::Legacy(usage) => {
@@ -2480,7 +2485,8 @@ mod tests {
                 assert_eq!(result.outcome,DispatchOutcome::Written);
                 let agent = studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?;
                 assert_eq!(agent["tokensUsed"],12,"one immutable response charge");
-                assert_eq!(agent["contextUsage"]["tokens"],10 + output,"context dispatch completes even on conflict");
+                assert_eq!(agent["contextUsage"]["tokens"],12,"a rejected replay preserves the accepted context usage");
+                assert_eq!(agent["contextUsage"]["at"], if index == 2 {101.} else {100. + index as f64}, "a rejected replay cannot refresh the gauge timestamp");
                 assert_eq!(agent["tokenUsageAccounting"],if index == 2 {"provisional"} else {"responseRecords"});
                 let state: String = tx.query_row("SELECT record FROM runtime_budget WHERE id='agent'",[],|row|row.get(0)).map_err(StoreError::from)?;
                 let state: Value = serde_json::from_str(&state)?;

@@ -740,9 +740,16 @@ fn project_usage(state: &mut ProjectedAgent, observation: &NotificationObservati
 
 fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation, at: f64) {
     match usage {
-        UsageObservation::Gap { .. } => {}
+        UsageObservation::Gap { .. }
+        | UsageObservation::Cumulative {
+            scope: UsageScope::ClaudeQuery,
+            ..
+        } => {}
         UsageObservation::Cumulative {
-            scope, total, last, ..
+            scope: UsageScope::CodexThread,
+            total,
+            last,
+            ..
         } => {
             let output = total.output as f64;
             if state.baseline.is_none()
@@ -751,12 +758,8 @@ fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation
                     .as_ref()
                     .is_some_and(|previous| total.decreased_from(previous))
             {
-                state.baseline = Some(match scope {
-                    UsageScope::CodexThread => {
-                        (output - last.map_or(0.0, |tokens| tokens.output as f64)).max(0.0)
-                    }
-                    UsageScope::ClaudeQuery => 0.0,
-                });
+                state.baseline =
+                    Some((output - last.map_or(0.0, |tokens| tokens.output as f64)).max(0.0));
             }
             state.lifetime = Some(total);
             if state.response_outputs.is_empty() {
@@ -1241,6 +1244,49 @@ mod tests {
         let current = projector.snapshot();
         usage_at(&mut projector, 6, 13.0, cumulative("old-turn", 2000));
         assert_eq!(projector.snapshot(), current);
+    }
+
+    #[test]
+    fn restored_claude_query_total_keeps_the_pending_estimate_until_response() {
+        use studio_runtime_schema::usage::{UsageObservation, UsageScope, UsageTokens};
+        let mut projector = RateProjector::default();
+        for (effect, bit) in provider_turn("provider", "agent", 0).into_iter().take(4) {
+            assert!(projector.observe(&effect, bit));
+        }
+        let before = projector.snapshot();
+        assert!(before.records[0].estimated);
+        assert!(projector.agents["agent"].response_duration_pending_tokens > 0.0);
+        usage_at(
+            &mut projector,
+            7,
+            7.0,
+            typed_usage(UsageObservation::Cumulative {
+                scope: UsageScope::ClaudeQuery,
+                turn_id: Some("turn".into()),
+                total: UsageTokens {
+                    output: 50_000,
+                    ..Default::default()
+                },
+                last: None,
+                model_context_window: None,
+                models: None,
+            }),
+        );
+        assert_eq!(projector.agents["agent"].actual, 0.0);
+        let after = projector.snapshot();
+        assert_eq!(
+            after.records[0].output_tokens,
+            before.records[0].output_tokens
+        );
+        assert_eq!(after.records[0].rate, before.records[0].rate);
+        assert!(after.records[0].estimated);
+        usage_at(
+            &mut projector,
+            8,
+            8.0,
+            typed_response("turn", "response", 100),
+        );
+        assert_eq!(projector.agents["agent"].actual, 100.0);
     }
 
     #[test]

@@ -445,8 +445,15 @@ impl UsageObservation {
 }
 
 pub use studio_runtime_store::budget::BudgetUsageRow as UsageRow;
+/// Whether downstream projections may use this observation's content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum UsageAcceptance {
+    Accepted,
+    RejectedReplayConflict,
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct CaptureDecision {
+    pub acceptance: UsageAcceptance,
     pub state: BudgetState,
     pub usage: Option<UsageRow>,
     pub changed: bool,
@@ -461,6 +468,7 @@ pub fn capture(
     let p = observation;
     if p.informational {
         return Ok(CaptureDecision {
+            acceptance: UsageAcceptance::Accepted,
             state,
             usage: None,
             changed: false,
@@ -487,12 +495,14 @@ pub fn capture(
                 {
                     state.fault("responseReplayConflict");
                     return Ok(CaptureDecision {
+                        acceptance: UsageAcceptance::RejectedReplayConflict,
                         state,
                         usage: None,
                         changed: true,
                     });
                 }
                 return Ok(CaptureDecision {
+                    acceptance: UsageAcceptance::Accepted,
                     state: snapshot.state.clone(),
                     usage: None,
                     changed: false,
@@ -565,6 +575,7 @@ pub fn capture(
     }
     state.settle()?;
     Ok(CaptureDecision {
+        acceptance: UsageAcceptance::Accepted,
         state,
         usage: inserted,
         changed: true,
