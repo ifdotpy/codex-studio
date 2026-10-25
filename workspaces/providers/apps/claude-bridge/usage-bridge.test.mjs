@@ -52,6 +52,9 @@ export function query({prompt,options}){
     for(const event of events)yield stream(event,'background-tool');
     yield result();continue;
    }
+   if(text==='windows-alias'){
+    yield {...sdkResult,modelUsage:{'claude-opus-5-5':modelUsage,'claude-opus-5-5[1m]':{...modelUsage,contextWindow:1000000,canonicalModel:'claude-opus-5-5'}}};continue;
+   }
    if(text==='windows'){
     yield {...sdkResult,modelUsage:{'claude-opus-5-5':modelUsage,'other-model':{...modelUsage,contextWindow:1000000}}};continue;
    }
@@ -406,5 +409,15 @@ test("restart never seeds a response from a persisted query-wide maximum window"
   await done(b, await start(b, "normal"));
   expect(observations(b).find((o) => o.kind === "response")).not.toHaveProperty(
     "modelContextWindow",
+  );
+});
+
+test("an exact model window wins over a later pricing alias with a larger context", async () => {
+  const b = await setup();
+  await done(b, await start(b, "windows-alias"));
+  await done(b, await start(b, "normal"));
+  expect(observations(b).find((o) => o.kind === "response")).toHaveProperty(
+    "modelContextWindow",
+    200000,
   );
 });

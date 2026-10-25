@@ -195,3 +195,36 @@ test("query-close accounting is final and late SDK frames cannot repeat it", () 
   for (const event of events)
     expect(usage.observe(frame(event, "parent"), "later")).toEqual([]);
 });
+
+test("pricing aliases never overwrite exact model context windows", () => {
+  const usage = new ResponseUsage();
+  usage.recordModels({
+    "claude-opus-5-5": modelUsage,
+    "claude-opus-5-5[1m]": {
+      ...modelUsage,
+      contextWindow: 1000000,
+      canonicalModel: "claude-opus-5-5",
+    },
+  });
+  for (const event of events) {
+    const observations = usage.observe(frame(event), "turn");
+    if (event.type === "message_stop")
+      expect(observations).toMatchObject([{ modelContextWindow: 200000 }]);
+  }
+});
+test("a pricing alias with conflicting candidate windows remains unknown", () => {
+  const usage = new ResponseUsage();
+  usage.recordModels({
+    "variant-200k": { ...modelUsage, canonicalModel: "claude-opus-5-5" },
+    "variant-1m": {
+      ...modelUsage,
+      contextWindow: 1000000,
+      canonicalModel: "claude-opus-5-5",
+    },
+  });
+  for (const event of events) {
+    const observations = usage.observe(frame(event), "turn");
+    if (event.type === "message_stop")
+      expect(observations[0]).not.toHaveProperty("modelContextWindow");
+  }
+});

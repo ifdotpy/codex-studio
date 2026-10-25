@@ -65,6 +65,9 @@ export class ResponseUsage {
   parentTurns = new Map();
   /** @type {Map<string, number>} */
   modelWindows = new Map();
+  // Pricing aliases are candidates, never identities for exact model windows.
+  /** @type {Map<string, Map<string, number>>} */
+  aliasWindows = new Map();
   closed = false;
 
   /** @param {string | null | undefined} parent @param {string | undefined} turnId */
@@ -83,10 +86,24 @@ export class ResponseUsage {
     for (const [model, usage] of Object.entries(models ?? {})) {
       if (usage.contextWindow > 0) {
         this.modelWindows.set(model, usage.contextWindow);
-        if (usage.canonicalModel)
-          this.modelWindows.set(usage.canonicalModel, usage.contextWindow);
+        if (usage.canonicalModel) {
+          let candidates = this.aliasWindows.get(usage.canonicalModel);
+          if (!candidates) {
+            candidates = new Map();
+            this.aliasWindows.set(usage.canonicalModel, candidates);
+          }
+          candidates.set(model, usage.contextWindow);
+        }
       }
     }
+  }
+
+  /** @param {Message['model']} model */
+  contextWindowFor(model) {
+    const exact = this.modelWindows.get(model);
+    if (exact !== undefined) return exact;
+    const candidates = new Set(this.aliasWindows.get(model)?.values());
+    return candidates.size === 1 ? candidates.values().next().value : undefined;
   }
 
   /** @param {StreamMessage} frame @param {string | undefined} turnId
@@ -113,7 +130,7 @@ export class ResponseUsage {
         current.message.usage = mergeUsage(current.message.usage, event.usage);
       if (event.type === "message_stop") {
         this.pending.delete(parent);
-        const modelContextWindow = this.modelWindows.get(current.message.model);
+        const modelContextWindow = this.contextWindowFor(current.message.model);
         observations.push({
           kind: "response",
           responseId: current.message.id,
