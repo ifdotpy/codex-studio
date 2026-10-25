@@ -38,6 +38,9 @@ const RETAINED_LAUNCHER_ENVIRONMENT: &[&str] = &[
     "MallocNanoZone",
     "XPC_SERVICE_NAME",
     "__CFBundleIdentifier",
+    // Activation and login-session metadata do not identify the provider account.
+    "LaunchInstanceID",
+    "SECURITYSESSIONID",
 ];
 
 /// Launch variables added after a release. A retained child started before a
