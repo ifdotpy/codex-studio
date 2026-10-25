@@ -614,5 +614,6 @@ budget, because continuity across query restarts is unknown.
 Pre-contract Claude bridges and their journal replay remain readable through the
 usage owner's transitional `parse_legacy_totals` projection. This old-total path
 retains its existing budget treatment for migration compatibility. It preserves unknown
-token categories as unknown; remove this path after those bridges and their replay
-window have retired. Codex live notifications use its generated native schema.
+token categories as unknown. Analytics also persists these sparse notifications
+without inventing category counts or canonical observations; remove this path after
+those bridges and their replay window have retired. Codex live notifications use its generated native schema.

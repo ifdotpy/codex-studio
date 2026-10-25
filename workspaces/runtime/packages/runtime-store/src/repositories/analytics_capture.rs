@@ -7,6 +7,11 @@ use rusqlite::{
 };
 use serde_json::Value;
 
+/// Indexed capture record lookup template; the table name comes only from CaptureTable.
+pub const CAPTURE_RECORD_BY_ID_SQL: &str = "SELECT record FROM {table} WHERE id=?";
+/// Indexed pre-contract response lookup within its original agent/thread scope.
+pub const USAGE_RESPONSE_SQL: &str = "SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1";
+
 /// One existing analytics table; identifiers are never supplied by a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureTable {
@@ -128,7 +133,7 @@ impl AnalyticsCaptureRepository {
     }
     pub fn read(db: &Connection, table: CaptureTable, id: &str) -> StoreResult<Option<Value>> {
         let raw: Option<String> = db
-            .prepare_cached(&format!("SELECT record FROM {} WHERE id=?", table.name()))?
+            .prepare_cached(&CAPTURE_RECORD_BY_ID_SQL.replace("{table}", table.name()))?
             .query_row([id], |r| r.get(0))
             .optional()?;
         raw.map(|raw| {
@@ -147,7 +152,13 @@ impl AnalyticsCaptureRepository {
         thread: &Value,
         response: &Value,
     ) -> StoreResult<Option<Value>> {
-        let raw: Option<String> = db.query_row_cached("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1",params![agent,thread.as_str(),response.as_str()],|r|r.get(0)).optional()?;
+        let raw: Option<String> = db
+            .query_row_cached(
+                USAGE_RESPONSE_SQL,
+                params![agent, thread.as_str(), response.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
         Self::usage_raw(raw)
     }
     pub fn usage_prior(
