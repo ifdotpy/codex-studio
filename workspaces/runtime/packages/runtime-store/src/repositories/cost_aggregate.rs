@@ -115,16 +115,11 @@ impl From<&UsageTokens> for CostTokens {
 }
 
 fn cost_observation(record: &serde_json::Value) -> StoreResult<Option<UsageObservation>> {
-    studio_runtime_schema::usage::persisted::validate_legacy_analytics_cost_fields(record)
-        .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
-    match parse_analytics_usage_row(UsageProvider::Codex, record) {
-        Ok(observation) => Ok(Some(observation)),
-        Err(error) if record.get("studioUsage").is_some() => {
-            Err(StoreError::SchemaValidation(error.to_string()))
-        }
-        // Historical rows with absent counts remain readable and unpriced.
-        Err(_) => Ok(None),
-    }
+    studio_runtime_schema::usage::persisted::parse_analytics_cost_usage_row(
+        UsageProvider::Codex,
+        record,
+    )
+    .map_err(|error| StoreError::SchemaValidation(error.to_string()))
 }
 
 /// The members of an agent record that decide how its usage is priced and
@@ -219,9 +214,9 @@ pub fn recorded_responses_bounded(
         inspected += 1;
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
         let fields = UsageCostFields::deserialize(&value)?;
-        let parsed = parse_analytics_usage_row(UsageProvider::Codex, &value);
+        let parsed = cost_observation(&value)?;
         let (response_id, model, tokens, evidence) = match parsed {
-            Ok(UsageObservation::Response {
+            Some(UsageObservation::Response {
                 response_id,
                 model,
                 tokens,
@@ -233,11 +228,8 @@ pub fn recorded_responses_bounded(
                 Some(tokens),
                 evidence,
             ),
-            Ok(UsageObservation::Cumulative { .. } | UsageObservation::Gap { .. }) => continue,
-            Err(error) if value.get("studioUsage").is_some() => {
-                return Err(StoreError::SchemaValidation(error.to_string()));
-            }
-            _ => {
+            Some(UsageObservation::Cumulative { .. } | UsageObservation::Gap { .. }) => continue,
+            None => {
                 let Some(response) =
                     studio_runtime_schema::usage::persisted::legacy_response_id(&value)
                 else {
@@ -410,6 +402,17 @@ fn contributions(
             *candidate = row;
         }
     }
+    let responded_turns = rows
+        .iter()
+        .filter(|row| included(row) && row.eligible != Some(false) && row.response.is_some())
+        .map(|row| {
+            (
+                row.agent.as_str(),
+                row.thread.as_deref(),
+                row.turn.as_deref(),
+            )
+        })
+        .collect::<HashSet<_>>();
     let suppressed = |row: &CostRow| {
         match row.eligible {
             Some(false) => true,
@@ -422,14 +425,11 @@ fn contributions(
             // until new response evidence supersedes it.
             None => match row.response.as_deref() {
                 Some(response) => winners.contains_key(&(row.agent.as_str(), response)),
-                None => rows.iter().any(|other| {
-                    included(other)
-                        && other.eligible != Some(false)
-                        && other.response.is_some()
-                        && other.agent == row.agent
-                        && other.thread == row.thread
-                        && other.turn == row.turn
-                }),
+                None => responded_turns.contains(&(
+                    row.agent.as_str(),
+                    row.thread.as_deref(),
+                    row.turn.as_deref(),
+                )),
             },
         }
     };
@@ -939,6 +939,79 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
+    #[test]
+    fn typed_usage_migrated_suppression_uses_linear_predicate_work() {
+        use serde::Deserialize;
+        use std::cell::Cell;
+        let facts = json!({"last":{}});
+        let fields = super::UsageCostFields::deserialize(&facts).expect("metadata");
+        let mut measured = Vec::new();
+        for size in [4, 8, 16] {
+            let rows = (0..size)
+                .map(|index| {
+                    let mut row = super::cost_row(
+                        index.to_string(),
+                        "agent".into(),
+                        Some("thread".into()),
+                        Some(index.to_string()),
+                        index,
+                        1.0,
+                        &fields,
+                        None,
+                    );
+                    row.eligible = None;
+                    row
+                })
+                .collect::<Vec<_>>();
+            let calls = Cell::new(0);
+            let kept = super::contributions(&rows, |_| {
+                calls.set(calls.get() + 1);
+                true
+            });
+            assert!(
+                kept.iter().all(Option::is_some),
+                "keep the prior migrated-row interpretation"
+            );
+            measured.push((size, calls.get()));
+        }
+        assert!(
+            measured.iter().all(|(size, calls)| *calls <= 5 * size),
+            "suppression must do linear predicate work: {measured:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_unknown_legacy_cache_categories_are_not_priced() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_,StoreError>(|tx,_| {
+            for (index, (category, unknown)) in [
+                ("cachedInputTokens",None), ("cachedInputTokens",Some(serde_json::Value::Null)),
+                ("cacheWriteInputTokens",None), ("cacheWriteInputTokens",Some(serde_json::Value::Null)),
+            ].into_iter().enumerate() {
+                let mut last = json!({"inputTokens":10,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":2});
+                match unknown {
+                    Some(value) => {last[category]=value;}
+                    None => {last.as_object_mut().expect("tokens").remove(category);}
+                }
+                AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({
+                    "id":format!("unknown{index}"),"agentId":"agent","rootId":"root","threadId":"thread",
+                    "turnId":format!("turn{index}"),"at":1,"model":"m","responseId":format!("r{index}"),
+                    "last":last,"total":{}}))?;
+            }
+            assert!(super::cost_groups(tx,"root",&Default::default())?.is_empty(),
+                "unknown cache categories must not become zero-valued priced responses");
+            assert!(super::recorded_responses(tx,&["agent".to_owned()])?.iter().all(|row| row.tokens.is_none()),
+                "diagnostic response evidence must also retain unknown categories");
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&json!({
+                "id":"known","agentId":"agent","rootId":"root","threadId":"thread","turnId":"known","at":1,
+                "model":"m","responseId":"known","last":{"inputTokens":10,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":2},"total":{}}))?;
+            assert_eq!(super::cost_groups(tx,"root",&Default::default())?.iter().map(|group|group.count).sum::<u64>(),1,
+                "explicitly reported zero cache categories remain priceable");
+            Ok(())
+        }).await.expect("cost eligibility");
+    }
+
     #[tokio::test]
     async fn typed_usage_receipt_lookup_uses_existing_response_index() {
         let temp = tempfile::tempdir().expect("temporary state");
@@ -1178,7 +1251,7 @@ mod tests {
                 json!(format!("r{}", next(6)))
             };
             let tokens = json!({"inputTokens":next(3) * 10,"cachedInputTokens":next(2),
-                "outputTokens":next(3),"totalTokens":5});
+                "cacheWriteInputTokens":0,"outputTokens":next(3),"totalTokens":5});
             let root = if next(5) == 0 { "root-b" } else { "root-a" };
             writes.push(json!({
                 "id": format!("u{}", next(60)),

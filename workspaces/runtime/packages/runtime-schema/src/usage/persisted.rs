@@ -71,6 +71,41 @@ pub fn validate_legacy_analytics_cost_fields(row: &Value) -> Result<(), UsagePar
     Ok(())
 }
 
+/// Decode priceable analytics evidence without inventing unknown legacy token categories.
+/// Sparse legacy rows remain readable, but have no complete token tuple for pricing.
+pub fn parse_analytics_cost_usage_row(
+    provider: UsageProvider,
+    row: &Value,
+) -> Result<Option<UsageObservation>, UsageParseError> {
+    validate_legacy_analytics_cost_fields(row)?;
+    if row.get("studioUsage").is_none() && legacy_response_id(row).is_some() {
+        let selected = legacy_response_tokens(row);
+        if [
+            "inputTokens",
+            "cachedInputTokens",
+            "cacheWriteInputTokens",
+            "outputTokens",
+        ]
+        .iter()
+        .any(|field| !known(selected, field))
+        {
+            return Ok(None);
+        }
+    }
+    match parse_analytics_usage_row(provider, row) {
+        Ok(observation) => Ok(Some(observation)),
+        Err(error) if row.get("studioUsage").is_some() => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
+fn legacy_response_tokens(row: &Value) -> &Value {
+    row.get("delta")
+        .filter(|value| known(value, "inputTokens") && known(value, "outputTokens"))
+        .or_else(|| row.get("requestUsage").filter(|value| value.is_object()))
+        .unwrap_or(&row["last"])
+}
+
 /// Decode canonical observations first, retaining legacy rows without rewriting them.
 /// Legacy response evidence remains provisional until native journal recovery replaces it.
 pub fn parse_analytics_usage_row(
@@ -96,11 +131,7 @@ pub fn parse_analytics_usage_row(
     };
     if let Some(response_id) = legacy_response_id(row) {
         let response_id = response_id.to_owned();
-        let selected = row
-            .get("delta")
-            .filter(|v| known(v, "inputTokens") && known(v, "outputTokens"))
-            .or_else(|| row.get("requestUsage").filter(|v| v.is_object()))
-            .unwrap_or(&row["last"]);
+        let selected = legacy_response_tokens(row);
         return Ok(UsageObservation::Response {
             response_id,
             turn_id,
@@ -272,6 +303,39 @@ mod tests {
             }
         ));
     }
+    #[test]
+    fn legacy_cost_projection_preserves_unknown_categories_in_every_token_source() {
+        let complete = json!({"inputTokens":10,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":2});
+        for source in ["last", "delta", "requestUsage"] {
+            for field in ["cachedInputTokens", "cacheWriteInputTokens"] {
+                for value in [None, Some(Value::Null)] {
+                    let mut row = json!({"responseId":"response","last":complete});
+                    row[source] = complete.clone();
+                    if let Some(value) = value {
+                        row[source][field] = value;
+                    } else {
+                        row[source]
+                            .as_object_mut()
+                            .expect("token source")
+                            .remove(field);
+                    }
+                    assert!(
+                        parse_analytics_cost_usage_row(UsageProvider::Codex, &row)
+                            .expect("legacy row")
+                            .is_none(),
+                        "unknown {source}.{field} is not a zero count"
+                    );
+                    row[source][field] = json!(0);
+                    assert!(matches!(
+                        parse_analytics_cost_usage_row(UsageProvider::Codex, &row)
+                            .expect("complete legacy row"),
+                        Some(UsageObservation::Response { .. })
+                    ));
+                }
+            }
+        }
+    }
+
     #[test]
     fn canonical_rows_remain_strict_and_take_precedence() {
         let mut row = json!({"last":{},"studioUsage":{"kind":"response","responseId":"r","model":"m","evidence":"live","tokens":{"uncachedInput":1,"cacheReadInput":2,"cacheWriteInput":3,"output":4}}});
