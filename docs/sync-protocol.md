@@ -324,10 +324,13 @@ the resulting tombstones. A successful reply does not trigger a refresh.
 An identical request recovers the committed reply even after re-registration;
 changed content or a stale project precondition requires a new confirmation.
 Membership follows parent links; a root identifier alone does not assign an
-orphan to a project. Project deletion scopes failed-work release to its selected
-owners. Sidebar-only removal keeps its separate registration semantics. Outbound
+orphan to a project. An associated orphan without explicit ownership, or an
+associated malformed ancestry, refuses the whole deletion. Project deletion
+scopes failed-work release to its selected owners. Sidebar-only removal keeps its separate registration semantics. Outbound
 location changes capture their checked project/workspace version and managed
-actor epoch; the outbox reservation rechecks those values before transport.
+actor epoch; both outbox reservation writers recheck those values before transport.
+Fresh location reservations require that admission; only an exact existing
+reservation can retain the legacy marker-less format and replay its saved outcome.
 External stops and disposable-workspace cleanup follow commit through existing
 durable owners. Project deletion retains transcripts, accounting, native history,
 and source folders. It revokes archive restoration while preserving cleanup
