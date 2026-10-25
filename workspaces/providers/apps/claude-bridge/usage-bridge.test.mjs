@@ -15,23 +15,56 @@ afterEach(async () => {
   for (const b of bridges.splice(0)) await b.close();
 });
 const sdk = `
+import fs from "node:fs/promises";
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
 const events=${JSON.stringify(events)}, modelUsage=${JSON.stringify(modelUsage)},sdkResult=${JSON.stringify(sdkResult)},zeroResult=${JSON.stringify(zeroResult)};
 export function query({prompt,options}){
- const abort=new AbortController();let delayedClose=false,stuckClose=false,reportCloseTiming=false,closeAt;
+ const abort=new AbortController();let delayedClose=false,stuckClose=false,reportCloseTiming=false,closeAt,restoreAppend;
  process.once('exit',()=>{if(reportCloseTiming)process.stdout.write(JSON.stringify({method:'fixture/shutdownTiming',params:{durationMs:Date.now()-closeAt}})+'\\n');});
  const result=(zero=false)=>zero?zeroResult:{...sdkResult,modelUsage:{'claude-opus-5-5':modelUsage}};
  const stream=(event,parent=null)=>({type:'stream_event',event,parent_tool_use_id:parent});
- return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){closeAt??=Date.now();if(stuckClose)return;if(delayedClose)setTimeout(()=>abort.abort(),20);else abort.abort();},interrupt:async()=>abort.abort(),
+ return {mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),initializationResult:async()=>({commands:[]}),setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),close(){restoreAppend?.();closeAt??=Date.now();if(stuckClose)return;if(delayedClose)setTimeout(()=>abort.abort(),20);else abort.abort();},interrupt:async()=>abort.abort(),
  async *[Symbol.asyncIterator](){
   while(!abort.signal.aborted){
    const input=await prompt.next();if(input.done)return;
    const text=input.value.message.content[0].text;
    yield {type:'user',isReplay:true,uuid:input.value.uuid};
    yield {type:'system',subtype:'init'};
+   if(text==='background-stuck'){
+    stuckClose=true;
+    yield stream(events[0],'background-tool');
+    yield result();
+    await new Promise(()=>{});
+   }
+   if(text==='shutdown-deferred'){
+    stuckClose=true;
+    yield stream(events[0]);
+    await waitForFile(options.cwd+'/.finish',{signal:abort.signal});
+    yield result();
+    await new Promise(()=>{});
+   }
+   if(text==='shutdown-error'||text==='shutdown-persist'){
+    yield stream(events[0]);
+    if(text==='shutdown-persist'){
+     const append=fs.appendFile;
+     restoreAppend=()=>{fs.appendFile=append;};
+     fs.appendFile=async(...args)=>{
+      if(String(args[0]).includes('/state/sessions/')){
+       process.stdout.write(JSON.stringify({method:'fixture/persistFailed',params:{}})+'\\n');
+       throw new Error('injected persist failure');
+      }
+      return append(...args);
+     };
+     yield {type:'assistant',uuid:'persist-trigger',message:{id:'persist-trigger',content:[{type:'text',text:'trigger save'}]}};
+    }
+    await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
+    if(text==='shutdown-persist')throw new Error('closed after persist failure');
+    yield zeroResult;
+    return;
+   }
    if(text==='discard-stuck'){
     stuckClose=true;
     yield stream({...events[0],message:{...events[0].message,id:'main-response'}});
@@ -470,3 +503,96 @@ test("intentional shutdown preserves an unfinished turn for reconciliation inste
     { kind: "gap", reason: "queryClosed" },
   ]);
 });
+
+for (const scenario of [
+  "shutdown-error",
+  "shutdown-persist",
+  "shutdown-deferred",
+])
+  test(
+    scenario + " cannot finalize an intentionally closing turn",
+    async () => {
+      const b = await startBridge(sdk, "claude-usage-finalization-admission-", {
+        clock: true,
+      });
+      bridges.push(b);
+      const turn = await start(b, scenario);
+      await b.note((n) => n.method === "provider/generationStarted");
+      if (scenario === "shutdown-persist")
+        await b.note((n) => n.method === "fixture/persistFailed");
+      if (scenario === "shutdown-deferred") {
+        await b.call("turn/steer", {
+          threadId: b.thread,
+          expectedTurnId: turn,
+          clientUserMessageId: "unread-steer",
+          input: [{ type: "text", text: "continue" }],
+        });
+        await fs.writeFile(path.join(b.root, ".finish"), "");
+        await b.note((n) => n.params?.studioUsage?.kind === "cumulative");
+        await b.advanceTime(2000);
+      }
+      await b.close();
+      expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toEqual([
+        {
+          kind: "gap",
+          responseId: "response-1",
+          model: "claude-opus-5-5",
+          turnId: turn,
+          reason: "queryClosed",
+        },
+      ]);
+    },
+  );
+
+test("unexpected SDK end still publishes one failed completion", async () => {
+  const b = await setup();
+  const turn = await start(b, "query-close");
+  await done(b, turn);
+  expect(b.notes.filter((n) => n.method === "turn/completed")).toMatchObject([
+    {
+      params: {
+        turn: {
+          id: turn,
+          status: "failed",
+          error: { message: "Claude ended without a completed turn" },
+        },
+      },
+    },
+  ]);
+});
+
+for (const method of ["thread/resume", "claude/settings", "thread/unsubscribe"])
+  test(
+    method +
+      " drains unfinished background usage before removing a stuck query",
+    async () => {
+      const b = await startBridge(sdk, "claude-usage-removal-", {
+        clock: true,
+      });
+      bridges.push(b);
+      const turn = await start(b, "background-stuck");
+      await done(b, turn);
+      expect(observations(b).some((o) => o.kind === "gap")).toBe(false);
+      await b.call(method, { threadId: b.thread, settings: {} });
+      expect((await b.call("thread/loaded/list", {})).data).toEqual([]);
+      const expected = [
+        {
+          kind: "gap",
+          responseId: "response-1",
+          model: "claude-opus-5-5",
+          turnId: turn,
+          reason: "queryClosed",
+        },
+      ];
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toEqual(expected);
+      await b.close();
+      expect(
+        observations(b).filter((o) => o.responseId === "response-1"),
+      ).toEqual(expected);
+    },
+  );
