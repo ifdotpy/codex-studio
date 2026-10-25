@@ -37374,6 +37374,7 @@
         "description": "Delete one registered project lifetime and all owned chats atomically. Obtain expected_project_seq from the project SyncEntity seq (not the stream revision or global checkpoint), and expected_workspace_id from the same SSE entity baseline workspaceId. Retain this request_id and complete body across uncertain responses.",
         "properties": {
           "expected_project_seq": {
+            "maximum": 9007199254740991,
             "minimum": 1,
             "type": "integer"
           },
