@@ -150,6 +150,13 @@ enum PersistedStart {
     },
 }
 
+enum StartDisposition {
+    Dispatch,
+    Reconcile,
+    /// The original successful start metadata, never replaced by a later info read.
+    Retained(Value),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderInfo {
     pub handle: String,
@@ -525,7 +532,7 @@ impl GuestProviderSession {
         let profile = profile.into();
         let params = start_params(&agent_id, &provider, &profile, &launch)?;
         let fingerprint = fingerprint(&params)?;
-        let (identity, dispatch) = reserve_start(
+        let (identity, disposition) = reserve_start(
             Arc::clone(&store),
             agent_id.clone(),
             epoch,
@@ -535,7 +542,7 @@ impl GuestProviderSession {
         )
         .await?;
 
-        let started = if dispatch {
+        let started = if matches!(&disposition, StartDisposition::Dispatch) {
             match call_guest(
                 guest.clone(),
                 "provider.start",
@@ -572,10 +579,16 @@ impl GuestProviderSession {
             })?;
             info
         };
-        // A stale or terminal handle does not prove this start succeeded. Keep
-        // its existing receipt unchanged until running metadata is verified.
-        let info = parse_info(&identity.handle, started.clone())?;
-        persist_started(store, identity.clone(), started).await?;
+        // A known start can retain stdout and exit events after its process ends.
+        // An uncertain start still needs running proof before it becomes Started.
+        let retained = match &disposition {
+            StartDisposition::Retained(info) => Some(info),
+            _ => None,
+        };
+        let info = parse_info(&identity.handle, &started, retained)?;
+        if retained.is_none() {
+            persist_started(store, identity.clone(), started).await?;
+        }
         let cursor = info.acknowledged;
         Ok(Self {
             guest,
@@ -1035,14 +1048,14 @@ async fn reserve_start(
     account_key: String,
     provider: String,
     fingerprint: String,
-) -> Result<(StartIdentity, bool)> {
+) -> Result<(StartIdentity, StartDisposition)> {
     if epoch < 0 || agent_id.is_empty() || fingerprint.len() != 64 {
         return Err(GuestProviderError::Invalid);
     }
     let receipt_id = format!("{START_RECEIPT_PREFIX}{agent_id}:{epoch}");
     let signature = format!("agent={agent_id};epoch={epoch};launch={fingerprint}");
     store
-        .transaction_with(move |tx| -> Result<(StartIdentity, bool)> {
+        .transaction_with(move |tx| -> Result<(StartIdentity, StartDisposition)> {
             if !vm_actor_matches(tx, &agent_id, epoch, &account_key, Some(&provider))? {
                 return Err(GuestProviderError::Refused);
             }
@@ -1055,12 +1068,27 @@ async fn reserve_start(
                     .into());
                 }
                 let saved: PersistedStart = serde_json::from_str(&saved.result)?;
-                let (identity, dispatch) = match saved {
-                    PersistedStart::Reserved { identity } => (identity, false),
-                    PersistedStart::NotSent { identity } => (identity, true),
-                    PersistedStart::Started { identity, .. } => (identity, false),
+                let (identity, disposition) = match saved {
+                    PersistedStart::Reserved { identity } => {
+                        (identity, StartDisposition::Reconcile)
+                    }
+                    PersistedStart::NotSent { identity } => {
+                        // Commit uncertainty before another transport attempt can begin.
+                        let result = serde_json::to_string(&PersistedStart::Reserved {
+                            identity: identity.clone(),
+                        })?;
+                        tx.execute(
+                            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
+                            rusqlite::params![result, receipt_id, signature],
+                        )
+                        .map_err(StoreError::from)?;
+                        (identity, StartDisposition::Dispatch)
+                    }
+                    PersistedStart::Started { identity, info } => {
+                        (identity, StartDisposition::Retained(info))
+                    }
                 };
-                return Ok((identity, dispatch));
+                return Ok((identity, disposition));
             }
             let request_id = uuid::Uuid::new_v4().to_string();
             if request_id.len() > START_REQUEST_ID_MAX_BYTES {
@@ -1081,7 +1109,7 @@ async fn reserve_start(
                     identity: identity.clone(),
                 })?,
             )?;
-            Ok((identity, true))
+            Ok((identity, StartDisposition::Dispatch))
         })
         .await
 }
@@ -1204,10 +1232,31 @@ async fn read_guest_journal(
     }
 }
 
-fn parse_info(handle: &str, value: Value) -> Result<ProviderInfo> {
-    if value.get("state").and_then(Value::as_str) != Some("running") {
+fn parse_info(handle: &str, value: &Value, retained: Option<&Value>) -> Result<ProviderInfo> {
+    let state = value.get("state").and_then(Value::as_str);
+    if state != Some("running") && !(state == Some("exited") && retained.is_some()) {
         return Err(GuestProviderError::Unknown);
     }
+    let parsed = parse_info_fields(handle, value)?;
+    if let Some(original) = retained {
+        // Old versions could persist terminal metadata before validating it.
+        // Only a valid running receipt proves the original native identity.
+        if original.get("state").and_then(Value::as_str) != Some("running") {
+            return Err(GuestProviderError::Unknown);
+        }
+        let original =
+            parse_info_fields(handle, original).map_err(|_| GuestProviderError::Unknown)?;
+        if original.generation != parsed.generation
+            || original.pid.is_none_or(|pid| pid == 0)
+            || original.pid != parsed.pid
+        {
+            return Err(GuestProviderError::Unknown);
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_info_fields(handle: &str, value: &Value) -> Result<ProviderInfo> {
     let parsed = ProviderInfo {
         handle: value
             .get("handle")
@@ -1521,6 +1570,66 @@ mod tests {
         state: &'static str,
     }
 
+    struct RetainedJournalGuest {
+        inner: FakeGuest,
+        info: Mutex<Value>,
+        events: Vec<Value>,
+    }
+
+    impl RetainedJournalGuest {
+        fn new() -> Self {
+            let mut info = FakeGuest::info();
+            info["sequence"] = json!(0);
+            info["lastSeq"] = json!(0);
+            info["initResult"] = json!({"capabilities": {}});
+            Self {
+                inner: FakeGuest::new(false),
+                info: Mutex::new(info),
+                events: vec![
+                    json!({"sequence":1,"generation":3,"kind":"stdout",
+                        "payload":json!({"id":7,"result":{"tail":"saved reply"}}).to_string()}),
+                    json!({"sequence":2,"generation":3,"kind":"exit",
+                        "payload":json!({"returnCode":0}).to_string()}),
+                ],
+            }
+        }
+
+        fn exit(&self) {
+            let mut info = self.info.lock().unwrap();
+            info["state"] = json!("exited");
+            info["exitCode"] = json!(0);
+            info["sequence"] = json!(self.events.len());
+            info["lastSeq"] = json!(self.events.len());
+        }
+    }
+
+    impl GuestRpc for RetainedJournalGuest {
+        fn stream(
+            &self,
+            method: &str,
+            params: &Value,
+            request_id: Option<&str>,
+            timeout: Duration,
+            on_frame: &mut dyn FnMut(Value) -> std::result::Result<(), GuestError>,
+        ) -> std::result::Result<Value, GuestError> {
+            if method == "provider.rpc" && params["action"] == "info" {
+                return Ok(self.info.lock().unwrap().clone());
+            }
+            if method == "provider.rpc" && params["action"] == "next" {
+                let cursor = params["cursor"].as_u64().unwrap() as usize;
+                return Ok(json!({"event":self.events.get(cursor),"returnCode":0}));
+            }
+            let result = self
+                .inner
+                .stream(method, params, request_id, timeout, on_frame)?;
+            if method == "provider.start" {
+                Ok(self.info.lock().unwrap().clone())
+            } else {
+                Ok(result)
+            }
+        }
+    }
+
     impl GuestRpc for TerminalInfoGuest {
         fn stream(
             &self,
@@ -1553,6 +1662,89 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_proven_started_provider_drains_its_exit_tail_without_relaunch() {
+        let (_directory, store) = open_store().await;
+        let guest = Arc::new(RetainedJournalGuest::new());
+        let first = open_session(store.clone(), guest.clone()).await.unwrap();
+        let identity = first.identity().clone();
+        let started = saved_start(&store).await;
+        drop(first);
+        guest.exit();
+        let reopened = open_session(store.clone(), guest.clone())
+            .await
+            .expect("the proven generation keeps its retained journal after exit");
+        assert_eq!(reopened.identity(), &identity);
+        assert_eq!(
+            reopened.info().init_result,
+            Some(json!({"capabilities":{}}))
+        );
+        let reply = reopened.next().await.unwrap().expect("retained stdout");
+        assert_eq!(reply.kind, "stdout");
+        assert_eq!(
+            reply.payload,
+            json!({"id":7,"result":{"tail":"saved reply"}})
+        );
+        reopened.settle_then_ack(&reply, || Ok(())).await.unwrap();
+        let exit = reopened.next().await.unwrap().expect("retained exit");
+        assert_eq!(exit.kind, "exit");
+        assert_eq!(exit.payload, json!({"returnCode":0}));
+        reopened.settle_then_ack(&exit, || Ok(())).await.unwrap();
+        assert!(reopened.next().await.unwrap().is_none());
+        assert_eq!(*guest.inner.starts.lock().unwrap(), 1);
+        assert_eq!(*guest.inner.writes.lock().unwrap(), 0);
+        assert_eq!(*guest.inner.acks.lock().unwrap(), vec![1, 2]);
+        assert_eq!(
+            saved_start(&store).await,
+            started,
+            "retain the original running proof"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_terminal_reconciliation_requires_the_original_running_identity() {
+        for refusal in [
+            "lost",
+            "generation",
+            "pid",
+            "legacy lost proof",
+            "legacy exited proof",
+        ] {
+            let (_directory, store) = open_store().await;
+            let guest = Arc::new(RetainedJournalGuest::new());
+            drop(open_session(store.clone(), guest.clone()).await.unwrap());
+            guest.exit();
+            match refusal {
+                "lost" => guest.info.lock().unwrap()["state"] = json!("lost"),
+                "generation" => guest.info.lock().unwrap()["generation"] = json!(4),
+                "pid" => guest.info.lock().unwrap()["pid"] = json!(43),
+                _ => {
+                    let mut saved: Value =
+                        serde_json::from_str(&saved_start(&store).await).unwrap();
+                    saved["info"]["state"] = json!(if refusal == "legacy lost proof" {
+                        "lost"
+                    } else {
+                        "exited"
+                    });
+                    store.transaction(move |tx| {
+                        tx.execute("UPDATE runtime_operation_receipts SET result=?1 WHERE id='linux-vm-provider-start:agent-1:9'", [saved.to_string()])?;
+                        Ok(())
+                    }).await.unwrap();
+                }
+            }
+            let saved = saved_start(&store).await;
+            assert!(
+                matches!(
+                    open_session(store.clone(), guest.clone()).await,
+                    Err(GuestProviderError::Unknown)
+                ),
+                "refuse {refusal}"
+            );
+            assert_eq!(saved_start(&store).await, saved);
+            assert_eq!(*guest.inner.starts.lock().unwrap(), 1);
+        }
     }
 
     #[tokio::test]
@@ -1884,6 +2076,85 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0], ids[1]);
         assert_eq!(*guest.starts.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn proven_unsent_retry_reserves_before_transport_and_never_repeats_unknown() {
+        struct ReceiptObservingGuest {
+            inner: FakeGuest,
+            store: Arc<RuntimeStore>,
+            dispatch_receipts: Mutex<Vec<Value>>,
+        }
+
+        impl GuestRpc for ReceiptObservingGuest {
+            fn stream(
+                &self,
+                method: &str,
+                params: &Value,
+                request_id: Option<&str>,
+                timeout: Duration,
+                on_frame: &mut dyn FnMut(Value) -> std::result::Result<(), GuestError>,
+            ) -> std::result::Result<Value, GuestError> {
+                if method == "provider.start" {
+                    let result: String = self
+                        .store
+                        .test_reader()
+                        .unwrap()
+                        .query_row(
+                            "SELECT result FROM runtime_operation_receipts WHERE id='linux-vm-provider-start:agent-1:9'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    self.dispatch_receipts
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_str(&result).unwrap());
+                }
+                self.inner
+                    .stream(method, params, request_id, timeout, on_frame)
+            }
+        }
+
+        let (_directory, store) = open_store().await;
+        let guest = Arc::new(ReceiptObservingGuest {
+            inner: FakeGuest::new(true),
+            store: store.clone(),
+            dispatch_receipts: Mutex::new(Vec::new()),
+        });
+        *guest.inner.definite_start_failure_once.lock().unwrap() = true;
+        assert!(matches!(
+            open_session(store.clone(), guest.clone()).await,
+            Err(GuestProviderError::Guest(_))
+        ));
+        let not_sent: Value = serde_json::from_str(&saved_start(&store).await).unwrap();
+        assert_eq!(not_sent["phase"], "not_sent");
+        assert!(matches!(
+            open_session(store.clone(), guest.clone()).await,
+            Err(GuestProviderError::Unknown)
+        ));
+        let after_unknown: Value = serde_json::from_str(&saved_start(&store).await).unwrap();
+        let reopened = open_session(store, guest.clone()).await.unwrap();
+
+        assert_eq!(*guest.inner.starts.lock().unwrap(), 2);
+        let dispatched = guest.dispatch_receipts.lock().unwrap();
+        assert_eq!(dispatched.len(), 2);
+        for receipt in dispatched.iter() {
+            assert_eq!(receipt["phase"], "reserved");
+            assert_eq!(receipt["identity"], not_sent["identity"]);
+        }
+        assert_eq!(after_unknown["phase"], "reserved");
+        assert_eq!(after_unknown["identity"], not_sent["identity"]);
+        assert_eq!(
+            serde_json::to_value(reopened.identity()).unwrap(),
+            not_sent["identity"]
+        );
+        let ids = guest.inner.start_ids.lock().unwrap();
+        assert_eq!(ids[0], ids[1]);
+        assert_eq!(
+            ids[0].as_deref(),
+            not_sent["identity"]["requestId"].as_str()
+        );
     }
 
     #[tokio::test]

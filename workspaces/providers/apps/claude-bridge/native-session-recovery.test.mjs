@@ -322,6 +322,108 @@ test("an exclusive publication race cannot overwrite a competing base", async ()
     assert.equal(await fs.readFile(base, "utf8"), "another owner's base");
   }));
 
+function durabilityFilesystem(request, actions, failure) {
+  const directory = path.join(request.target.bridgeRoot, "sessions");
+  return {
+    ...fs,
+    open: async (file, flags) => {
+      const handle = await fs.open(file, flags);
+      const kind =
+        file === directory
+          ? "directory"
+          : file.includes(".native-session-recovery-") &&
+              file.endsWith(nativeId + ".json")
+            ? "file"
+            : null;
+      if (!kind) return handle;
+      return new Proxy(handle, {
+        get(target, key) {
+          if (key === "sync")
+            return async () => {
+              actions.push(kind + "-sync");
+              if (failure === kind)
+                throw new Error("injected " + kind + " sync failure");
+              await target.sync();
+            };
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+    link: async (from, to) => {
+      actions.push("link");
+      return fs.link(from, to);
+    },
+    rm: async (...args) => {
+      actions.push("cleanup");
+      if (failure === "cleanup") throw new Error("injected cleanup failure");
+      return fs.rm(...args);
+    },
+  };
+}
+
+test("syncs descriptor bytes before the link and the destination directory before success", async () =>
+  fixture(async ({ request, evidence, base }) => {
+    const actions = [];
+    const result = await recover(request, {
+      inspect: async () => evidence(),
+      filesystem: durabilityFilesystem(request, actions),
+    });
+    actions.push("success");
+    assert.deepEqual(actions, [
+      "file-sync",
+      "link",
+      "directory-sync",
+      "cleanup",
+      "success",
+    ]);
+    assert.equal(result.createdDescriptor, true);
+    assert.equal(
+      JSON.parse(await fs.readFile(base, "utf8")).session
+        .nativeDescriptorRecovery.requestId,
+      request.approval.requestId,
+    );
+  }));
+
+test("a descriptor sync failure refuses publication", async () =>
+  fixture(async ({ request, evidence, base }) => {
+    const actions = [];
+    await assert.rejects(
+      recover(request, {
+        inspect: async () => evidence(),
+        filesystem: durabilityFilesystem(request, actions, "file"),
+      }),
+      /file sync failure/,
+    );
+    assert.deepEqual(actions, ["file-sync", "cleanup"]);
+    await assert.rejects(fs.stat(base), { code: "ENOENT" });
+  }));
+
+for (const failure of ["directory", "cleanup"]) {
+  test(`a post-link ${failure} failure retains the base and refuses overwrite on retry`, async () =>
+    fixture(async ({ request, evidence, base }) => {
+      const actions = [];
+      await assert.rejects(
+        recover(request, {
+          inspect: async () => evidence(),
+          filesystem: durabilityFilesystem(request, actions, failure),
+        }),
+        new RegExp(failure + ".*failure"),
+      );
+      assert(actions.includes("link"));
+      const before = await fs.readFile(base);
+      assert.equal(
+        JSON.parse(before).session.nativeDescriptorRecovery.requestId,
+        request.approval.requestId,
+      );
+      await assert.rejects(
+        recover(request, { inspect: async () => evidence() }),
+        /exists/,
+      );
+      assert.deepEqual(await fs.readFile(base), before);
+    }));
+}
+
 test("refuses changed ownership on the second inspection", async () =>
   fixture(async ({ request, evidence, base }) => {
     let inspections = 0;

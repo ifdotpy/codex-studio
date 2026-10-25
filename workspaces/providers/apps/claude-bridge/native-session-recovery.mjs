@@ -305,7 +305,8 @@ async function inspectNative(filesystem, file, request) {
  * registry ownership, agent epoch, native query/tasks, and rejected-resume input
  * evidence. A caller assertion is not a provider delivery receipt. This operation
  * creates no historical turns, input receipts, file checkpoints, or model query.
- * The exclusive base link is the commit point. A retry refuses an existing base;
+ * The exclusive base link publishes the descriptor. Success requires synced
+ * descriptor bytes and a synced destination directory. A retry refuses an existing base;
  * an operator can inspect its recovery requestId after a lost success response.
  */
 export async function recoverNativeSession(
@@ -367,6 +368,21 @@ export async function recoverNativeSession(
     const store = createSessionStore(staging);
     await store.persist(descriptor);
     await store.drain();
+    // The session writer drains its rename, not a durable file sync.
+    const stagedFile = path.join(
+      staging,
+      "sessions",
+      target.nativeId + ".json",
+    );
+    const staged = await filesystem.open(
+      stagedFile,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      await staged.sync();
+    } finally {
+      await staged.close();
+    }
     await verifyInspection(request, inspect);
     const checked = await inspectNative(filesystem, nativeFile, request);
     requireProof(
@@ -382,10 +398,21 @@ export async function recoverNativeSession(
     ])
       await canonicalDirectory(filesystem, location);
     await absentSidecars(filesystem, directory, target.nativeId);
-    await filesystem.link(
-      path.join(staging, "sessions", target.nativeId + ".json"),
-      path.join(directory, target.nativeId + ".json"),
+    const destination = await filesystem.open(
+      directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
     );
+    try {
+      await filesystem.link(
+        stagedFile,
+        path.join(directory, target.nativeId + ".json"),
+      );
+      // After the link, any failure preserves the base. Never remove it or
+      // report success before its request identity has a durable directory entry.
+      await destination.sync();
+    } finally {
+      await destination.close();
+    }
     return {
       createdDescriptor: true,
       requestId: approval.requestId,
