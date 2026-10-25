@@ -7,6 +7,7 @@ export default {
     ...base.test,
     name: "fast",
     include: [
+      "src/precompressedAssets.test.mjs",
       // Preserve newly landed safety witnesses, including the real Rust draft-route fixture.
       "src/sync/entityProjection.test.mjs",
       "src/sync/resourceEvents.live.test.ts",

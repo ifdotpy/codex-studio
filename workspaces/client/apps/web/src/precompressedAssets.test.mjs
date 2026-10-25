@@ -10,8 +10,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
-import { test } from "node:test";
+import { test } from "vitest";
+import { build } from "vite";
 import {
   brotliCompressSync,
   brotliDecompressSync,
@@ -20,9 +20,7 @@ import {
   gzipSync,
 } from "node:zlib";
 
-const web = new URL("../../../../client/apps/web/", import.meta.url);
-const require = createRequire(new URL("package.json", web));
-const { build } = await import(require.resolve("vite"));
+const web = new URL("../", import.meta.url);
 
 test("the production Vite build compresses final outputs without changing shell URLs", async () => {
   const root = await mkdtemp(join(tmpdir(), "studio-precompression-"));
