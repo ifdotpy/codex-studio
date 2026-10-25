@@ -114,7 +114,12 @@ async fn legacy_claude_keeps_original_input_pending_until_the_next_turn() {
             .collect::<Vec<_>>(),
         [INPUT]
     );
-    assert_eq!(input(&state).await.0, "dispatching");
+    assert_eq!(input(&state).await.0, "reserved");
+    assert_eq!(state.record().await["startAttempt"]["submitted"], false);
+    assert!(matches!(
+        peer.writes.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
     worker.cancel();
     *state.bridge.faults.pause_operation.lock().unwrap() = None;
     state.bridge.faults.release.notify_one();
