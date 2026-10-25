@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -721,6 +722,7 @@ test("supervisor account identity admits a retained bridge across backend replac
     {
       pid: 40,
       ppid: 5,
+      startTime: "identity",
       command: `/usr/bin/node ${bridge} /state/account-servers/c`,
     },
   ];
@@ -870,7 +872,9 @@ test("usage chat stays idle until returned permissions have been verified", asyn
         model: {},
         usage: true,
       });
-      smoke.root = path.join(os.tmpdir(), "owned-smoke-folder");
+      smoke.makeRoot();
+      let permissionRecord;
+      smoke.permissionRecord = () => permissionRecord;
       smoke.accountsByProvider = new Map([["codex", "default"]]);
       smoke.chooseModel = async () => ({ model: "small", efforts: [] });
       smoke.saveUsage = () => {};
@@ -899,6 +903,7 @@ test("usage chat stays idle until returned permissions have been verified", asyn
             cwd: smoke.root,
             provider: "codex",
           };
+          permissionRecord = record;
           controller.enqueue(
             new TextEncoder().encode(
               `event: resources\ndata: ${JSON.stringify({ resourceVersions: [{ entityChanges: { documents: [{ collection: "agentDetail", id: body.id, value: record }] } }] })}\n\n`,
@@ -922,6 +927,7 @@ test("usage chat stays idle until returned permissions have been verified", asyn
         );
       } finally {
         await smoke.live?.close();
+        removeRunRoot(smoke.root, smoke.runId, smoke.temporaryRoot);
       }
     }
   } finally {
@@ -930,44 +936,247 @@ test("usage chat stays idle until returned permissions have been verified", asyn
 });
 
 test("permission evidence rejects outside writable roots and accepts the read-only note result", async () => {
-  const { verifiedPermissions, scenarioEvidence, NOTES_FILE, NOTES_MARKER } =
+  const {
+    verifiedPermissions,
+    directoryIdentity,
+    scenarioEvidence,
+    NOTES_FILE,
+    NOTES_MARKER,
+  } = await import("../usage.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "owned-note-fixture-"));
+  try {
+    const identity = directoryIdentity(root);
+    const record = { yoloMode: false, cwd: root, role: "orchestrator" };
+    assert.equal(
+      verifiedPermissions(record, "claude", root, identity).permissionMode,
+      "default",
+    );
+    assert.throws(
+      () =>
+        verifiedPermissions(
+          {
+            ...record,
+            sandboxPolicy: {
+              type: "workspaceWrite",
+              writableRoots: [root, os.homedir()],
+            },
+          },
+          "codex",
+          root,
+          identity,
+        ),
+      /outside/,
+    );
+    const transcript = [
+      {
+        role: "user",
+        text: `This is turn 2 of a usage check. Read ${NOTES_FILE}.`,
+      },
+      { role: "assistant", text: "Before the read" },
+      {
+        role: "output",
+        toolStatus: "completed",
+        turnId: "long",
+        text: JSON.stringify({
+          type: "commandExecution",
+          command: `cat ${path.join(root, NOTES_FILE)}`,
+          cwd: root,
+          exitCode: 0,
+          aggregatedOutput: NOTES_MARKER,
+        }),
+      },
+      { role: "assistant", text: "After the read" },
+      { role: "user", text: "Turn 3: reply with exactly FINAL" },
+    ];
+    assert.equal(
+      scenarioEvidence(transcript, "codex", root).assistantResponses,
+      2,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("permission verification rejects object bypass policies, unknown policies and directory substitution", async () => {
+  const { verifiedPermissions, directoryIdentity } =
     await import("../usage.mjs");
-  const root = path.join(os.tmpdir(), "owned-note-fixture");
+  const parent = fs.mkdtempSync(
+    path.join(os.tmpdir(), "smoke-permission-test-"),
+  );
+  const root = path.join(parent, "run");
+  fs.mkdirSync(root);
   const record = { yoloMode: false, cwd: root, role: "orchestrator" };
+  try {
+    const identity = directoryIdentity(root);
+    assert.throws(
+      () =>
+        verifiedPermissions(
+          { ...record, sandbox: { type: "dangerFullAccess" } },
+          "codex",
+          root,
+          identity,
+        ),
+      /policy|permission/i,
+    );
+    assert.throws(
+      () =>
+        verifiedPermissions(
+          {
+            ...record,
+            sandbox: { type: "workspaceWrite", writableRoots: [parent] },
+          },
+          "codex",
+          root,
+          identity,
+        ),
+      /outside/,
+    );
+    assert.throws(
+      () =>
+        verifiedPermissions(
+          { ...record, sandbox: { type: "unknown" } },
+          "codex",
+          root,
+          identity,
+        ),
+      /policy/,
+    );
+    fs.renameSync(root, path.join(parent, "previous"));
+    fs.symlinkSync(path.join(parent, "previous"), root);
+    assert.throws(
+      () => verifiedPermissions(record, "codex", root, identity),
+      /identity/,
+    );
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("supervisor ownership rejects unregistered backend descendants and reused PIDs", async () => {
+  const { bridgeProcessMatches } = await import("../usage.mjs");
+  const bridge = "/release/workspaces/providers/apps/claude-bridge/bridge.mjs";
+  const row = {
+    pid: 40,
+    ppid: 10,
+    startTime: "new-start",
+    command: `/usr/bin/node ${bridge} /state/account-servers/c`,
+  };
+  const supervisor = {
+    enabled: true,
+    accountKey: "c",
+    stateDir: "/state",
+    health: { stateDir: "/state", handles: [] },
+  };
   assert.equal(
-    verifiedPermissions(record, "claude", root).permissionMode,
-    "default",
+    bridgeProcessMatches(
+      [row],
+      [bridge],
+      "/state/account-servers/c",
+      10,
+      supervisor,
+    ).length,
+    0,
   );
-  assert.throws(
-    () =>
-      verifiedPermissions(
-        { ...record, sandboxPolicy: { writableRoots: [root, os.homedir()] } },
-        "codex",
-        root,
-      ),
-    /outside/,
+  supervisor.health.handles = [
+    {
+      id: "account:c",
+      pid: 40,
+      signature: "launch",
+      startTime: "old-start",
+      stdoutReaderAlive: true,
+    },
+  ];
+  assert.equal(
+    bridgeProcessMatches(
+      [row],
+      [bridge],
+      "/state/account-servers/c",
+      10,
+      supervisor,
+    ).length,
+    0,
   );
-  const transcript = [
+});
+
+test("note proof refuses combined shell operations and wrong file arguments", async () => {
+  const { scenarioEvidence, NOTES_FILE, NOTES_MARKER } =
+    await import("../usage.mjs");
+  const root = path.join(os.tmpdir(), "note-proof-fixture");
+  const make = (tool) => [
     {
       role: "user",
       text: `This is turn 2 of a usage check. Read ${NOTES_FILE}.`,
     },
-    { role: "assistant", text: "Before the read" },
+    { role: "assistant", text: "Before" },
     {
       role: "output",
       toolStatus: "completed",
       turnId: "long",
-      text: JSON.stringify({
-        tool: "Read",
-        arguments: { file_path: path.join(root, NOTES_FILE) },
-        result: NOTES_MARKER,
-      }),
+      text: JSON.stringify(tool),
     },
-    { role: "assistant", text: "After the read" },
+    { role: "assistant", text: "After" },
     { role: "user", text: "Turn 3: reply with exactly FINAL" },
   ];
-  assert.equal(
-    scenarioEvidence(transcript, "codex", root).assistantResponses,
-    2,
+  assert.throws(
+    () =>
+      scenarioEvidence(
+        make({
+          type: "commandExecution",
+          command: `touch changed.txt; cat ${root}/${NOTES_FILE}`,
+          cwd: root,
+          exitCode: 0,
+          aggregatedOutput: NOTES_MARKER,
+        }),
+        "codex",
+        root,
+      ),
+    /note read/,
   );
+  assert.throws(
+    () =>
+      scenarioEvidence(
+        make({
+          tool: "Read",
+          arguments: { file_path: root + "/other.txt" },
+          result: NOTES_MARKER,
+          description: NOTES_FILE,
+        }),
+        "codex",
+        root,
+      ),
+    /note read/,
+  );
+});
+
+test("sqlite-ro recovery reads only the exact owned Claude run", async () => {
+  const { sqliteEvidence } = await import("../usage.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-sqlite-test-"));
+  const create = `import sqlite3,json,sys,pathlib
+root=pathlib.Path(sys.argv[1]); c=sqlite3.connect(root/'canvas.sqlite3')
+c.execute('CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT)')
+for id,name in [('owned','Studio smoke abcdef12 claude'),('owner','Owner chat')]:
+ c.execute('INSERT INTO runtime_agents VALUES(?,?)',(id,json.dumps({'id':id,'rootId':id,'name':name,'provider':'claude','yoloMode':False,'role':'orchestrator','cwd':str(root),'sandbox':{'type':'workspaceWrite','writableRoots':[str(root)]}})))
+c.commit();c.close()
+c=sqlite3.connect(root/'analytics.sqlite3')
+c.execute('CREATE TABLE analytics_usage(agent TEXT,at REAL,seq INTEGER,record TEXT)')
+c.execute('CREATE TABLE analytics_history(agent TEXT,record TEXT)')
+c.execute('CREATE TABLE analytics_usage_roots(root TEXT,generation INTEGER)')
+for id in ['owned','owner']: c.execute('INSERT INTO analytics_usage VALUES(?,?,?,?)',(id,1,1,json.dumps({'responseId':id+'-response','agentId':id})))
+c.execute('INSERT INTO analytics_usage_roots VALUES(?,?)',('owned',1));c.commit()`;
+  try {
+    execFileSync("python3", ["-c", create, root]);
+    const evidence = sqliteEvidence(root, "owned", "abcdef12", true);
+    assert.equal(evidence.analytics.source, "sqlite-ro");
+    assert.deepEqual(
+      evidence.analytics.timeline.map((row) => row.responseId),
+      ["owned-response"],
+    );
+    assert.equal(evidence.permissions.sandbox.type, "workspaceWrite");
+    assert.throws(
+      () => sqliteEvidence(root, "owner", "abcdef12", true),
+      /outside the evidence run/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

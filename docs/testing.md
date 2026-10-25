@@ -233,7 +233,9 @@ It uses both providers' cheapest offered models, with three turns each: short,
 about 300 words with one read of a script-created `notes.txt`, then short.
 The chats are first created idle with YOLO disabled; the script verifies their
 returned settings before sending a model message. Codex uses workspace-write
-restricted to the disposable run folder with approvals enabled; Claude uses
+restricted to the disposable run folder with approvals enabled. The verifier
+normalizes stored policy objects, rejects unknown/bypass policies, and checks the
+folder's captured realpath/device/inode identity. Claude uses
 default permission mode. Read-only Codex leads require a server API change and
 are outside this verifier. Claude also receives a steer during the second turn.
 Older evidence retains its original harmless `pwd` step. Usage waits follow SSE invalidations. The evidence
@@ -252,7 +254,8 @@ cancel model waits and prohibit further model submissions; cleanup continues und
 the same signal handlers. SSE connection establishment has a deadline. Server and
 bridge provenance captured before model submission stays immutable; recovery-time
 observations are recorded separately. Direct-child ancestry or the backend's
-authoritative supervisor account handle identifies a bridge. Recovery retains
+authoritative supervisor account handle and matching native process-start
+identity identify a bridge. Recovery retains
 saved serving provenance when a current bridge is unavailable. Evidence
 checkpoints use an atomic rename, and recovery resumes completed snapshots.
 
@@ -268,6 +271,12 @@ If collection fails after the model turns, `--collect <run.json>` recovers the
 same run's evidence without another paid request or mutation of its chats; it
 requires the original server build and state directory. It preserves the failed
 checks in the artifact rather than turning the original run into a passing run.
+Explicitly approved recovery can add `--sqlite-ro-agent <owned-Claude-id>` when
+that run's analytics endpoint is unavailable. This reads only bounded rows for
+that exact run with SQLite read-only mode, query-only transactions and a short
+busy timeout; costs remain SSE entities and receipts remain API reads. The
+artifact marks the analytics source `sqlite-ro`. Normal runs measure analytics
+request latency so OLD/NEW comparison also shows successful or timed-out reads.
 
 ## Add or move a test
 

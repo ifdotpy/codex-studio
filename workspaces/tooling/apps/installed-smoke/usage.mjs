@@ -208,6 +208,13 @@ export function usageTable(evidence, label) {
     accounting: row.budget.tokenUsageAccounting,
     "truth priced USD": row.truth.costUsd ?? null,
     "displayed USD": row.displayedCost?.totalUSD ?? null,
+    "analytics latency":
+      row.analyticsLatency
+        ?.map(
+          (timing) =>
+            `${timing.outcome}:${timing.elapsedMs ?? timing.timeoutMs}ms`,
+        )
+        .join(", ") ?? null,
     "reconciled recorded USD":
       row.reconciliation?.totals?.recordedCostUsd ?? null,
     "reconciled evidence USD":
@@ -310,19 +317,39 @@ export function scenarioEvidence(items, provider, root) {
   if (answers.length < 2)
     throw new Error("Long turn has fewer than two assistant responses");
   const readOnlyNote = items[second].text.includes(NOTES_FILE);
-  const toolText = JSON.stringify(tools[0] ?? {});
+  const tool = tools[0];
+  const file = path.join(root, NOTES_FILE);
+  const bareCat = /^[A-Za-z0-9_./-]+$/.test(file) ? `cat ${file}` : null;
+  const plainCat =
+    (bareCat && tool?.command === bareCat) ||
+    tool?.command === `cat '${file.replaceAll("'", "'\\''")}'` ||
+    (!/[\\$`"]/.test(file) && tool?.command === `cat "${file}"`);
+  const shellWrapper = /^\/[^ ]+\/(?:ba|z)?sh -[lc]+ (.+)$/.exec(
+    tool?.command ?? "",
+  );
+  const codexCat =
+    provider === "codex" &&
+    tool?.type === "commandExecution" &&
+    tool.cwd === root &&
+    (plainCat || (bareCat && shellWrapper?.[1] === bareCat)) &&
+    tool.exitCode === 0 &&
+    tool.aggregatedOutput?.trim() === NOTES_MARKER;
+  const claudeRead =
+    provider === "claude" &&
+    tool?.tool === "Read" &&
+    tool.arguments?.file_path === file &&
+    Object.keys(tool.arguments).every((key) =>
+      ["file_path", "offset", "limit"].includes(key),
+    ) &&
+    JSON.stringify(tool.result ?? tool.output ?? "").includes(NOTES_MARKER);
   const validTool =
     tools.length === 1 &&
     (readOnlyNote
-      ? toolText.includes(NOTES_FILE) &&
-        toolText.includes(NOTES_MARKER) &&
-        toolText.includes(root) &&
-        tools[0].toolStatus === "completed" &&
-        (tools[0].exitCode == null || tools[0].exitCode === 0)
-      : tools[0].exitCode === 0 &&
-        /\bpwd$/.test(tools[0].command ?? "") &&
-        tools[0].cwd === root &&
-        tools[0].aggregatedOutput?.includes(root));
+      ? tool.toolStatus === "completed" && (codexCat || claudeRead)
+      : tool.exitCode === 0 &&
+        /\bpwd$/.test(tool.command ?? "") &&
+        tool.cwd === root &&
+        tool.aggregatedOutput?.includes(root));
   if (!validTool)
     throw new Error(
       `Long turn did not complete exactly one ${readOnlyNote ? "note read" : "pwd call"} in the run folder`,
@@ -360,7 +387,9 @@ export function publicationReady(displayed, current, analytics, finalTurnId) {
     displayed.generation === current.generation &&
     displayed.totalUSD === current.totalUSD &&
     displayed.pricedSamples === current.pricedSamples &&
-    analytics.timeline?.some((row) => row.turnId === finalTurnId),
+    analytics.timeline?.some((row) => row.turnId === finalTurnId) &&
+    (analytics.usageGeneration == null ||
+      analytics.usageGeneration === current.generation),
   );
 }
 
@@ -391,11 +420,12 @@ export function bridgeProcessMatches(
               handle.id === `account:${supervisor.accountKey}` &&
               handle.pid === row.pid &&
               handle.signature &&
+              handle.startTime === row.startTime &&
               handle.startTime &&
               handle.stdoutReaderAlive !== false,
           )
         : null;
-    if (!owned(row) && !handle) return [];
+    if (supervisor?.enabled ? !handle : !owned(row)) return [];
     for (const bridge of bridges) {
       const suffix = ` ${bridge} ${root}`;
       if (
@@ -470,39 +500,148 @@ export function preserveProvenance(evidence, server, recovery = false) {
   } else evidence.server ??= server;
 }
 
-/** Verify server-returned settings before the idle chat receives its first message. */
-export function verifiedPermissions(record, provider, root) {
+/** Canonical identity of the exact directory created by this smoke. */
+export function directoryIdentity(folder) {
+  const realpath = fs.realpathSync(folder);
+  const stat = fs.statSync(realpath);
+  if (!stat.isDirectory())
+    throw new Error("Run folder identity is not a directory");
+  return { realpath, dev: String(stat.dev), ino: String(stat.ino) };
+}
+
+export function verifiedPermissions(record, provider, root, expected) {
+  const same = (left, right) =>
+    left &&
+    right &&
+    left.realpath === right.realpath &&
+    left.dev === right.dev &&
+    left.ino === right.ino;
+  const identity = directoryIdentity(root);
   if (
-    record.yoloMode !== false ||
-    record.cwd !== root ||
-    record.role !== "orchestrator"
+    !same(identity, expected) ||
+    !same(directoryIdentity(record.cwd), expected)
   )
-    throw new Error(
-      "Unsafe usage permissions: expected an idle non-YOLO lead in the run folder",
-    );
-  const sandbox = record.sandboxPolicy?.type ?? record.sandbox;
+    throw new Error("Run folder identity changed");
+  if (record.yoloMode !== false || record.role !== "orchestrator")
+    throw new Error("Unsafe usage permissions: expected a non-YOLO lead");
+  if (record.approvalPolicy != null && record.approvalPolicy !== "on-request")
+    throw new Error("Unsafe usage approval policy");
+  const supplied = [record.sandboxPolicy, record.sandbox].filter(
+    (policy) => policy != null,
+  );
+  const roots = [record.cwd];
+  for (const policy of supplied) {
+    if (typeof policy === "string") {
+      if (policy !== "workspace-write")
+        throw new Error("Unsafe or unknown sandbox policy");
+    } else if (
+      typeof policy === "object" &&
+      !Array.isArray(policy) &&
+      policy.type === "workspaceWrite" &&
+      (policy.networkAccess == null || policy.networkAccess === false)
+    ) {
+      if (policy.writableRoots != null && !Array.isArray(policy.writableRoots))
+        throw new Error("Invalid writable roots policy");
+      roots.push(...(policy.writableRoots ?? []));
+    } else throw new Error("Unsafe or unknown sandbox policy");
+  }
   if (
-    record.approvalPolicy === "never" ||
-    sandbox === "dangerFullAccess" ||
-    sandbox === "danger-full-access"
+    roots.some(
+      (folder) =>
+        typeof folder !== "string" ||
+        !same(directoryIdentity(folder), expected),
+    )
   )
-    throw new Error("Unsafe usage permissions bypass approvals");
-  const roots = record.sandboxPolicy?.writableRoots ?? [record.cwd];
-  if (roots.length !== 1 || roots[0] !== root)
     throw new Error("Unsafe usage permissions write outside the run folder");
   const permissionMode = record.claudeOptions?.permissionMode ?? "default";
   if (provider === "claude" && permissionMode !== "default")
     throw new Error("Claude usage permissions must use default mode");
   return {
+    verified: true,
     verifiedAt: new Date().toISOString(),
+    source: "backend agent record; hidden policy fields via sqlite-ro",
     yoloMode: false,
-    cwd: root,
+    directoryIdentity: identity,
+    cwd: identity.realpath,
     role: record.role,
     approvalPolicy: "on-request",
-    sandbox: "workspace-write",
-    writableRoots: roots,
+    sandbox: {
+      type: "workspaceWrite",
+      writableRoots: [identity.realpath],
+      networkAccess: false,
+    },
+    rawSandbox: record.sandbox ?? null,
+    rawSandboxPolicy: record.sandboxPolicy ?? null,
+    policyDerivedForIdleThread: supplied.length === 0,
     ...(provider === "claude" ? { permissionMode } : {}),
     policyOwner:
       "runtime-services/src/thread_prepare.rs and claude-bridge/bridge.mjs permissionMode",
   };
+}
+
+/** Same native start identity as runtime-process/src/supervisor_identity.rs. */
+export function processStartIdentity(pid) {
+  if (process.platform === "linux") {
+    const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = raw
+      .slice(raw.lastIndexOf(")") + 1)
+      .trim()
+      .split(/\s+/);
+    const boot = fs
+      .readFileSync("/proc/sys/kernel/random/boot_id", "utf8")
+      .trim();
+    if (!/^\d+$/.test(fields[19] ?? "") || fields[0] === "Z")
+      throw new Error("Cannot verify process start identity");
+    return `linux:${boot}:${fields[19]}`;
+  }
+  if (process.platform !== "darwin")
+    throw new Error("Native process identity unsupported");
+  const code = `import ctypes,subprocess,sys
+class BsdInfo(ctypes.Structure):
+ _fields_=[('prefix',ctypes.c_uint32*12),('comm',ctypes.c_char*16),('name',ctypes.c_char*32),('rest',ctypes.c_uint32*6),('seconds',ctypes.c_uint64),('micros',ctypes.c_uint64)]
+pid=int(sys.argv[1]); info=BsdInfo(); lib=ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True)
+# PROC_PIDTBSDINFO from the macOS proc_info.h ABI.
+flavor=3
+lib.proc_pidinfo.argtypes=[ctypes.c_int,ctypes.c_int,ctypes.c_uint64,ctypes.c_void_p,ctypes.c_int]
+lib.proc_pidinfo.restype=ctypes.c_int
+read=lib.proc_pidinfo(pid,flavor,0,ctypes.byref(info),ctypes.sizeof(info))
+if read!=ctypes.sizeof(info) or info.prefix[3]!=pid: raise RuntimeError('Cannot verify native process identity')
+boot=subprocess.check_output(['/usr/sbin/sysctl','-n','kern.bootsessionuuid'],text=True,timeout=2).strip()
+print(f'macos:{boot}:{info.seconds}.{info.micros:06d}')`;
+  return execFileSync("python3", ["-c", code, String(pid)], {
+    encoding: "utf8",
+    timeout: 5000,
+  }).trim();
+}
+
+/** Exact owned rows only; analytics fallback requires an explicit recovery flag. */
+export function sqliteEvidence(state, agent, runId, includeAnalytics = false) {
+  const code = `import sqlite3,json,pathlib,sys
+root,agent,run,analytics=sys.argv[1:]
+def db(name):
+ c=sqlite3.connect(pathlib.Path(root,name+'.sqlite3').as_uri()+'?mode=ro',uri=True,timeout=0.25)
+ c.execute('PRAGMA query_only=ON'); c.execute('BEGIN'); return c
+c=db('canvas')
+r=c.execute('SELECT record FROM runtime_agents WHERE id=? LIMIT 1',(agent,)).fetchone()
+if not r: raise RuntimeError('Missing owned agent')
+a=json.loads(r[0])
+if not a.get('name','').startswith('Studio smoke '+run+' '): raise RuntimeError('Agent is outside the evidence run')
+permissions={k:a.get(k) for k in ['yoloMode','cwd','role','sandbox','sandboxPolicy','approvalPolicy','claudeOptions']}
+result={'permissions':permissions}
+if analytics=='1':
+ if a.get('provider')!='claude' or a.get('rootId',agent)!=agent: raise RuntimeError('SQLite analytics fallback is limited to the owned Claude lead')
+ d=db('analytics')
+ rows=d.execute("SELECT record FROM analytics_usage WHERE agent=? AND NULLIF(json_extract(record,'$.responseId'),'') IS NOT NULL ORDER BY at DESC,seq DESC LIMIT 129",(agent,)).fetchall()
+ history=d.execute('SELECT record FROM analytics_history WHERE agent=? LIMIT 9',(agent,)).fetchall()
+ if len(rows)>128 or len(history)>8: raise RuntimeError('Owned evidence exceeds the bounded snapshot')
+ generation=d.execute('SELECT generation FROM analytics_usage_roots WHERE root=? LIMIT 1',(a.get('rootId',agent),)).fetchone()
+ result['analytics']={'source':'sqlite-ro','agents':[a],'timeline':[json.loads(r[0]) for r in rows],'history':[json.loads(r[0]) for r in history],'usageGeneration':generation[0] if generation else 0}
+print(json.dumps(result))`;
+  return JSON.parse(
+    execFileSync(
+      "python3",
+      ["-c", code, state, agent, runId, includeAnalytics ? "1" : "0"],
+      { encoding: "utf8", timeout: 10000, maxBuffer: 2097152 },
+    ),
+  );
 }

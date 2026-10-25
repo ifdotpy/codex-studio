@@ -36,6 +36,9 @@ import {
   verifiedPermissions,
   NOTES_FILE,
   NOTES_MARKER,
+  directoryIdentity,
+  processStartIdentity,
+  sqliteEvidence,
 } from "./usage.mjs";
 
 const DEFAULT_APP =
@@ -348,6 +351,7 @@ class Backend {
   constructor(url) {
     this.url = url.replace(/\/$/, "");
     this.token = "";
+    this.analyticsTimings = [];
   }
 
   async request(method, route, body, ms = REQUEST_MS) {
@@ -392,8 +396,24 @@ class Backend {
     return text ? JSON.parse(text) : null;
   }
 
-  get(route, ms) {
-    return this.request("GET", route, undefined, ms);
+  async get(route, ms) {
+    if (!route.startsWith("/api/analytics?"))
+      return this.request("GET", route, undefined, ms);
+    const timing = { route, startedAt: new Date().toISOString() };
+    const start = Date.now();
+    try {
+      const value = await this.request("GET", route, undefined, ms);
+      timing.outcome = "success";
+      return value;
+    } catch (error) {
+      timing.outcome = /timeout|timed out/i.test(error.message)
+        ? "timeout"
+        : "error";
+      throw error;
+    } finally {
+      timing.elapsedMs = Date.now() - start;
+      this.analyticsTimings.push(timing);
+    }
   }
 
   post(route, body, ms) {
@@ -524,6 +544,7 @@ export class Smoke {
     this.cancel = new AbortController();
     this.app = options.app;
     this.usage = options.usage;
+    this.sqliteRoAgent = options["sqlite-ro-agent"];
     this.usageEvidence = {
       format: "studio-live-usage-v1",
       runId: null,
@@ -555,6 +576,14 @@ export class Smoke {
   async submitModel(route, body) {
     this.checkActive();
     if (this.usage && this.root) {
+      if (
+        this.rootIdentity &&
+        JSON.stringify(directoryIdentity(this.root)) !==
+          JSON.stringify(this.rootIdentity)
+      )
+        throw new CheckFailed(
+          "Run folder identity changed before model submission",
+        );
       this.usageEvidence.submissions ??= [];
       this.usageEvidence.submissions.push({
         route,
@@ -604,6 +633,19 @@ export class Smoke {
             ]
           : [];
       });
+    if (desktop.supervisorMode) {
+      for (const row of processes)
+        if (
+          row.command.includes("bridge.mjs") &&
+          row.command.endsWith(` ${accountRoot}`)
+        ) {
+          try {
+            row.startTime = processStartIdentity(row.pid);
+          } catch {
+            row.startTime = null;
+          }
+        }
+    }
     const matches = bridgeProcessMatches(
       processes,
       bridges,
@@ -805,6 +847,7 @@ export class Smoke {
 
   makeRoot() {
     this.root = fs.mkdtempSync(path.join(this.temporaryRoot, RUN_PREFIX));
+    this.rootIdentity = directoryIdentity(this.root);
     fs.writeFileSync(
       path.join(this.root, RUN_MARKER),
       JSON.stringify({
@@ -878,6 +921,18 @@ export class Smoke {
     );
   }
 
+  permissionRecord(id) {
+    return sqliteEvidence(this.state, id, this.runId).permissions;
+  }
+
+  analyticsSnapshot(id, ms) {
+    return this.sqliteRoAgent === id
+      ? Promise.resolve(
+          sqliteEvidence(this.state, id, this.runId, true).analytics,
+        )
+      : this.backend.get(analyticsRoute(id), ms);
+  }
+
   async turn(provider) {
     const account = this.accountsByProvider.get(provider);
     const { model, efforts } = await this.chooseModel(provider, account);
@@ -929,9 +984,10 @@ export class Smoke {
             done: Boolean(detail),
             value: detail
               ? verifiedPermissions(
-                  { ...created, ...detail },
+                  { ...created, ...detail, ...this.permissionRecord(id) },
                   provider,
                   this.root,
+                  this.rootIdentity,
                 )
               : null,
           };
@@ -1131,6 +1187,13 @@ export class Smoke {
     }
     const row = {
       publication: entities.publication,
+      analyticsSource: analytics.source ?? "api",
+      analyticsLatency: this.backend.analyticsTimings
+        .filter(
+          (timing) =>
+            new URLSearchParams(timing.route.split("?")[1]).get("agent") === id,
+        )
+        .concat(previous?.analyticsLatency ?? []),
       scenario: proof,
       provider,
       agentId: id,
@@ -1188,7 +1251,9 @@ export class Smoke {
       await stream.ready;
       const deadline = Date.now() + USAGE_SNAPSHOT_MS;
       const read = (route) =>
-        this.backend.get(route, Math.max(1, deadline - Date.now()));
+        route === analyticsRoute(id)
+          ? this.analyticsSnapshot(id, Math.max(1, deadline - Date.now()))
+          : this.backend.get(route, Math.max(1, deadline - Date.now()));
       return await until(
         "final-turn usage publication",
         USAGE_SNAPSHOT_MS,
@@ -1249,6 +1314,10 @@ export class Smoke {
     this.usageEvidence = evidence;
     this.runId = evidence.runId;
     this.chats = evidence.chatIds;
+    if (this.sqliteRoAgent && !this.chats.includes(this.sqliteRoAgent))
+      throw new CheckFailed(
+        "SQLite analytics recovery must name a chat of this exact run",
+      );
     this.root = evidence.runFolder;
     this.desktop = await this.backend.get("/api/desktop");
     this.state = this.desktop.stateDir;
@@ -1348,6 +1417,7 @@ export class Smoke {
     if (this.report.rows.length) this.usageEvidence.checks = this.report.rows;
     this.usageEvidence.chatIds = this.chats;
     this.usageEvidence.runFolder = this.root;
+    this.usageEvidence.rootIdentity ??= this.rootIdentity;
     this.usageEvidence.updatedAt = new Date().toISOString();
     atomicWriteJson(this.evidencePath, this.usageEvidence);
   }
@@ -1794,6 +1864,7 @@ function options(argv) {
       "no-model": { type: "boolean", default: false },
       usage: { type: "boolean", default: false },
       collect: { type: "string" },
+      "sqlite-ro-agent": { type: "string" },
       compare: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -1840,6 +1911,10 @@ async function cli() {
   process.stdout.write(
     `Studio scenario smoke ${smoke.runId}: ${parsed.app} at ${parsed.url}\n`,
   );
+  if (parsed["sqlite-ro-agent"] && !parsed.collect)
+    throw new CheckFailed(
+      "--sqlite-ro-agent is only for explicitly approved archived-run recovery",
+    );
   if (parsed.collect) {
     await smoke.recover(parsed.collect);
     return 0;
