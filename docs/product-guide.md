@@ -447,6 +447,10 @@ Use **New folder** and **New subfolder** to add folders for chats.
 Use **Move to folder** in the chat menu. These folders exist only in Studio.
 A chat keeps its directory and account.
 
+The active sidebar hides unregistered directory groups that contain only archived
+chats. Use **Show archived chats** to find those chats and their directory groups.
+Registered projects remain visible even when empty.
+
 Use **Delete project…** in either project sidebar menu to delete a registered
 project, including all its chats, archived chats, workers and shared rooms.
 Confirmation stops running agents. History, cost accounting, the project folder
