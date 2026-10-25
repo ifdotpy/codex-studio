@@ -51,14 +51,6 @@ impl MessageAdmission for AllowAdmission {
     ) -> Result<Vec<Value>, coordination::CoordinationError> {
         Ok(Vec::new())
     }
-    fn budget(
-        &self,
-        _tx: &Transaction<'_>,
-        _agent: &studio_runtime_store::AgentRecord,
-        _root: &studio_runtime_store::AgentRecord,
-    ) -> Result<(), coordination::CoordinationError> {
-        Ok(())
-    }
 }
 
 fn seed(root: &Path) {

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useServerApi, useServerResourceReads } from "./ServerServicesContext";
 import {
   capturePreferenceWrite,
@@ -350,44 +351,44 @@ export function useServerDiscovery(
     excluded,
     actions: {
       find: () => {
-        void run({ action: "discover", requestId: crypto.randomUUID() });
+        void run({ action: "discover", requestId: randomUUID() });
       },
       setAutoPair: (autoPair: boolean) => {
         void run({
           action: "settings",
           autoPair,
-          requestId: crypto.randomUUID(),
+          requestId: randomUUID(),
         });
       },
       setAutoUpdate: (autoUpdate: boolean) => {
         void run({
           action: "settings",
           autoUpdate,
-          requestId: crypto.randomUUID(),
+          requestId: randomUUID(),
         });
       },
     },
     setName: (serverId: string, label: string) =>
-      run({ action: "name", serverId, label, requestId: crypto.randomUUID() }),
+      run({ action: "name", serverId, label, requestId: randomUUID() }),
     setAlias: (serverId: string, alias: string) =>
       run({
         action: "alias",
         serverId,
         alias,
-        requestId: crypto.randomUUID(),
+        requestId: randomUUID(),
       }),
     revoke: (id: string) => {
       void run({
         action: "revoke",
         clientId: id,
-        requestId: crypto.randomUUID(),
+        requestId: randomUUID(),
       });
     },
     allowAgain: (id: string) => {
       void run({
         action: "unrevoke",
         clientId: id,
-        requestId: crypto.randomUUID(),
+        requestId: randomUUID(),
       });
     },
     retry: pending

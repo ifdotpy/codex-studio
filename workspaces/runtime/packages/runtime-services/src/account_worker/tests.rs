@@ -19,8 +19,10 @@ mod journal_publication;
 mod late_thread_reply;
 mod limits_updates;
 mod login_completion;
+mod manual_release_closure;
 #[cfg(unix)]
 mod many_agents;
+mod missing_session;
 mod native_requests;
 mod native_review;
 mod orphan_thread_receipt;
@@ -38,7 +40,12 @@ mod steer;
 mod stop_after_reattach;
 mod submission;
 mod tool_reply_retirement;
+mod transport_reattach;
+mod unknown_thread_retry;
 mod unsent_start;
+mod vm_attachments;
+mod vm_notifications;
+mod vm_reattach;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{
@@ -397,25 +404,50 @@ impl Peer {
         gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
     ) -> Self {
-        Self::identity_with_options(account, generation, gate, cleanup_error, false, false)
+        Self::identity_with_initialize_result(
+            account,
+            generation,
+            gate,
+            cleanup_error,
+            false,
+            false,
+            json!({"capabilities":{"steerCompletionReceipts":true}}),
+        )
     }
     /// A supervised provider: its process outlives the worker's attachment,
     /// and only `stop` ends it.
     fn supervised() -> Self {
-        Self::identity_with_options("default", 1, None, None, false, true)
+        Self::identity_with_initialize_result(
+            "default",
+            1,
+            None,
+            None,
+            false,
+            true,
+            json!({"capabilities":{"steerCompletionReceipts":true}}),
+        )
     }
     /// A peer whose `initialize` reaches the test as an ordinary write, so its
     /// reply arrives as a journal frame behind any earlier provider frames.
     fn initialized_by_journal(account: &str, generation: u64) -> Self {
-        Self::identity_with_options(account, generation, None, None, true, false)
+        Self::identity_with_initialize_result(
+            account,
+            generation,
+            None,
+            None,
+            true,
+            false,
+            json!({}),
+        )
     }
-    fn identity_with_options(
+    fn identity_with_initialize_result(
         account: &str,
         generation: u64,
         mut gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
         journal_initialize: bool,
         supervised: bool,
+        initialize_result: Value,
     ) -> Self {
         let generation = Generation(generation);
         MATRIX
@@ -483,7 +515,7 @@ impl Peer {
                                 if let Some(gate) = gate.take() {
                                     gate.await.unwrap();
                                 }
-                                CommandReceipt::CachedInitialize(json!({}))
+                                CommandReceipt::CachedInitialize(initialize_result.clone())
                             }
                             Some("initialized") => CommandReceipt::Written {
                                 remote_id: None,
@@ -505,6 +537,9 @@ impl Peer {
                         let _ignored = reply.send(result);
                         tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, _=observed=>{}}
                         if initialized {
+                            _status.send_modify(|status| {
+                                status.initialization = InitializationStatus::Ready
+                            });
                             ready_tx.send_replace(true);
                         }
                     }
@@ -526,9 +561,12 @@ impl Peer {
                 provider_retained: supervised && !*provider_stopped.borrow(),
             }
         });
-        let factory = Arc::new(Factory(std::sync::Mutex::new(Some(
-            ProviderAttachment::from_task(commands, journal, observed, attachment, task),
-        ))));
+        let mut provider =
+            ProviderAttachment::from_task(commands, journal, observed, attachment, task);
+        if supervised {
+            provider = provider.with_supervisor_write_deduplication();
+        }
+        let factory = Arc::new(Factory(std::sync::Mutex::new(Some(provider))));
         Self {
             wire: studio_runtime_providers::ProviderKind::Codex.wire(),
             account: account.into(),
@@ -2523,6 +2561,19 @@ fn injected() -> bool {
 
 /// Waits until the worker has processed every earlier command, or returns at
 /// once when an injected crash killed it before it could answer.
+/// Answer the one native history read that a worker makes on a new connection
+/// for a turn adopted on the same provider generation after a disconnect
+/// (`transport_reattach.rs`). The thread is still active, so the adopted turn
+/// keeps running and the read only records the check.
+async fn answer_adopted_turn_check(peer: &mut Peer) {
+    let read = peer.write("thread/read").await;
+    let thread = read["params"]["threadId"].clone();
+    peer.reply(
+        &read,
+        json!({"thread":{"id":thread,"status":{"type":"active","activeFlags":[]}}}),
+    )
+    .await;
+}
 async fn worker_barrier(worker: &AccountHandle) {
     let barrier = async {
         while !worker
@@ -4476,7 +4527,21 @@ impl preparation::VmProviderLaunchResolver for VmClaudeRefreshResolver {
 
 #[tokio::test]
 async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
-    let state = State::new().await;
+    vm_actor_turn_with_host_mcp(false).await;
+}
+
+#[tokio::test]
+async fn vm_codex_child_turn_does_not_send_host_mcp_overrides_to_guest() {
+    vm_actor_turn_with_host_mcp(true).await;
+}
+
+async fn vm_actor_turn_with_host_mcp(child: bool) {
+    let mut state = State::new().await;
+    // The synthetic guest cwd is not on the host test filesystem.
+    state.bridge.disk_gate = Some(Arc::new(crate::disk_space::DiskGate::with_sampler(
+        state.root.clone(),
+        Arc::new(|_| Some(crate::disk_space::WORKER_STORAGE_MIN_FREE_BYTES)),
+    )));
     let agent_id = state.agent.clone();
     state
         .bridge
@@ -4485,6 +4550,18 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
                 .transaction(move |tx| {
                     let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("fixture agent");
+                    if child {
+                        let mut parent = record.clone();
+                        parent.id = AgentId::from("vm-parent");
+                        parent.root_id = parent.id.clone();
+                        parent.status = studio_runtime_store::AgentStatus::Completed;
+                        parent.extra.insert("autoWake".into(), json!(false));
+                        AgentRepository::put(tx, &parent)?;
+                        record.root_id = parent.id.clone();
+                        record.extra.insert("parentId".into(), json!(parent.id.0));
+                        record.extra.insert("isLead".into(), json!(false));
+                        record.extra.insert("role".into(), json!("implementer"));
+                    }
                     record.extra.insert("executionMode".into(), json!("vm"));
                     record.extra.insert("layrReady".into(), json!(true));
                     record
@@ -4501,7 +4578,15 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
         .unwrap();
 
     let guest = Arc::new(VmTurnGuest::default());
+    let crate::browser::BrowserHomes {
+        root: _host_home,
+        shared,
+        account,
+        ..
+    } = crate::browser::browser_homes();
     let mut resources = test_resources().unwrap();
+    resources.account_home = account.to_string_lossy().into_owned();
+    resources.shared_home = shared.to_string_lossy().into_owned();
     resources.guest_rpc = Some(guest.clone());
     resources.vm_provider_launch = Some(Arc::new(VmTurnResolver::default()));
     let peer = Peer::new();
@@ -4514,7 +4599,7 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     }
     state.wake(&worker).await;
 
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
             let (has_turn, completed) = {
@@ -4533,12 +4618,31 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
             changed.await;
         }
     })
-    .await
-    .expect("guest turn starts and completion evidence is acknowledged");
+    .await;
+    assert!(
+        settled.is_ok(),
+        "guest turn did not settle: record={}, writes={:?}",
+        state.record().await,
+        guest.state.lock().unwrap().writes
+    );
 
     {
         let guest_state = guest.state.lock().unwrap();
         assert_eq!(guest_state.starts, 1);
+        let thread = guest_state
+            .writes
+            .iter()
+            .find(|write| write["method"] == "thread/start")
+            .expect("actual guest thread start");
+        let config = thread["params"]["config"]
+            .as_object()
+            .expect("native config");
+        assert!(
+            !config
+                .keys()
+                .any(|key| key == "mcp_servers" || key.starts_with("mcp_servers.")),
+            "the isolated guest must not receive host MCP transports: {config:?}"
+        );
         assert!(
             guest_state
                 .writes

@@ -625,6 +625,86 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
     }
 }
 
+/// GuestProviderTaskFactory exposes the host account generation on its tickets.
+/// The guest process can survive a host provider replacement, so that generation
+/// cannot prove that a missing VM input will never arrive.
+#[tokio::test]
+async fn a_replaced_host_provider_does_not_restore_an_uncertain_vm_input() {
+    for execution_mode in ["native", "vm"] {
+        let case = frozen_cases(Corpus::Start)
+            .into_iter()
+            .find(|case| case["name"] == "waiting")
+            .expect("absent input case");
+        let root = fixture();
+        let store = open_store(root.path()).await;
+        let mut agent = case["agent"].clone();
+        agent["executionMode"] = json!(execution_mode);
+        agent["startAttempt"]["connectionGeneration"] = json!(1);
+        agent["restartRecovery"] = json!({"stage":"held"});
+        agent["contextRepairWait"] = json!({"error":"Input receipt remains unknown"});
+        seed_agent(&store, &agent).await;
+        let before = snapshot(&store);
+        let mut observation: studio_runtime_services::recovery_absence::RecoveryObservation =
+            serde_json::from_value(case["observation"].clone()).expect("observation");
+        observation.scope.connection = "replacement-host".into();
+        observation.scope.generation = 2;
+        observation.supervisor = None;
+        observation.quiet = false;
+        observation.journal_drained = false;
+        observation.account_reserved = true;
+        let mut reader = StartReader {
+            replies: case["replies"].as_array().expect("pages").clone().into(),
+            state: case["state"].clone(),
+            observation: observation.clone(),
+        };
+        let current_observation = observation.clone();
+        let mut effects = RecoveryStore {
+            store: Arc::clone(&store),
+            connection_current: Arc::new(|_| true),
+            completion: Arc::new(Mutex::new(Box::new(HoldWriter::default()))),
+            at: observation.at,
+            observation_current: Arc::new(move |_| Some(current_observation.clone())),
+        };
+        let outcome = studio_runtime_services::recovery::recover_turn(
+            &before,
+            observation.scope,
+            &mut reader,
+            &mut effects,
+        )
+        .await
+        .expect("native history reconciliation")
+        .outcome;
+        let after = snapshot(&store);
+        if execution_mode == "vm" {
+            assert_eq!(
+                events(&store),
+                vec![("event".into(), "uncertain".into())],
+                "a host generation does not identify the retained guest process"
+            );
+            assert_eq!(
+                outcome,
+                RecoveryOutcome::Applied(json!({"status":"unconfirmed"}))
+            );
+            assert_eq!(
+                after.record()["startAttempt"],
+                before.record()["startAttempt"]
+            );
+            assert_eq!(
+                after.record()["contextRepairWait"],
+                agent["contextRepairWait"]
+            );
+            assert_eq!(after.record()["restartRecovery"]["stage"], "held");
+        } else {
+            assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
+            assert_eq!(
+                outcome,
+                RecoveryOutcome::Applied(json!({"status":"input_restored"}))
+            );
+            assert_eq!(after.record()["restartRecovery"]["stage"], "finished");
+        }
+    }
+}
+
 #[tokio::test]
 async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
     let cases = frozen_cases(Corpus::Start);

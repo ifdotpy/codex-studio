@@ -69,6 +69,9 @@ def archive(entries):
 # (native_identity.py). On another host the test cannot prove or stop that owner.
 LINUX_IDENTITY = "the native supervisor lease uses the Linux process identity of the guest"
 
+# Bounds only a hang of a wait for an exact condition (`GuestTests.until`). Unit: seconds.
+HANG_SECONDS = 60
+
 
 class GuestTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -149,6 +152,13 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
     def command(self, source):
         return {"argv": [sys.executable, "-u", "-c", source], "cwd": str(self.home)}
 
+    async def until(self, condition, message):
+        """Wait until the condition is true; the deadline bounds only a hang."""
+        deadline = asyncio.get_running_loop().time() + HANG_SECONDS
+        while not condition():
+            self.assertLess(asyncio.get_running_loop().time(), deadline, message)
+            await asyncio.sleep(0.01)
+
     async def test_exec_stream_and_exact_retry(self):
         params = self.command("import sys; print('out'); print('err',file=sys.stderr)")
         result = await self.call("exec", params, "exec-1")
@@ -216,21 +226,21 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.servers.append(server)
         reader, writer = await asyncio.open_unix_connection(str(socket_path))
         marker = self.home / "proof"
-        params = self.command(f"open({str(marker)!r},'w').write('one')")
-        completed = asyncio.Event()
-        request = self.service.request
-
-        async def observe(*args):
-            result = await request(*args)
-            completed.set()
-            return result
-
-        with patch.object(self.service, "request", observe):
-            writer.write(json.dumps({"id": "lost-exec", "method": "exec", "params": params}).encode() + b"\n")
-            await writer.drain()
-            writer.close()
-            await writer.wait_closed()
-            await asyncio.wait_for(completed.wait(), 5)
+        release = self.home / "release"
+        # The command runs until the release, so the client always disconnects during the exec.
+        params = self.command(f"import os,time\nwhile not os.path.exists({str(release)!r}): time.sleep(.01)\n"
+                              f"open({str(marker)!r},'w').write('one')")
+        writer.write(json.dumps({"id": "lost-exec", "method": "exec", "params": params}).encode() + b"\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+        try:
+            await self.until(lambda: "lost-exec" in self.service.active and self.service.clients == 0,
+                             "the guest did not start the exec and see the disconnect")
+        finally:
+            release.touch()
+        # The operation ends after its command exits and after it saves its receipt.
+        await self.until(lambda: "lost-exec" not in self.service.active, "the exec did not end after the disconnect")
         self.assertEqual(marker.read_text(), "one")
         await asyncio.gather(*self.service.operations)
         result = await self.call("exec", params, "lost-exec")
@@ -367,6 +377,25 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.code, "outcome_unknown")
         self.assertEqual(self.service.list_providers(), [])
 
+    async def test_an_unfinished_mac_sync_apply_is_asked_of_the_broker_again(self):
+        # The broker keeps the receipt of a Mac sync round and runs an interrupted round
+        # again; a service stop during the round must not answer outcome_unknown forever.
+        from common import digest
+        params = {"projectId": "app", "operationId": "mac-2", "since": [], "entries": []}
+        self.service.db.execute("INSERT INTO receipts VALUES (?,?,NULL)", ("mac-2", digest("sync.mac.apply", params)))
+        self.service.db.commit()
+        forwarded = []
+
+        async def admin_request(request_id, method, params, emit=None):
+            forwarded.append((request_id, method))
+            return {"mainStateId": "abcdef0"}
+
+        with patch("layr_admin_client.admin_request", admin_request):
+            result = await self.call("sync.mac.apply", params, "mac-2")
+            self.assertEqual(await self.call("sync.mac.apply", params, "mac-2"), result)
+        self.assertEqual(result, {"mainStateId": "abcdef0"})
+        self.assertEqual(forwarded, [("mac-2", "sync.mac.apply")])
+
     async def test_credentials_private_and_confined(self):
         await self.call("credentials.put", {"files": [{"path": ".codex/auth.json", "data": encoded(b"private")}]})
         path = self.home / ".codex/auth.json"
@@ -480,7 +509,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         executable.mkdir()
         marker = self.home / "rsync-pid"
         fixture = executable / "rsync"
-        fixture.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,signal\np=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--temp-dir=')))\n(p/'partial').write_bytes(b'partial')\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\nsignal.pause()\n")
+        fixture.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,signal\np=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--temp-dir=')))\n(p/'partial').write_bytes(b'partial')\nmarker=pathlib.Path({str(marker)!r})\npending=marker.with_suffix('.pending')\npending.write_text(str(os.getpid()))\npending.replace(marker)\nsignal.pause()\n")
         fixture.chmod(0o700)
 
         def floor(path, required=0):

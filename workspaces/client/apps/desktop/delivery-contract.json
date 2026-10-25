@@ -1,0 +1,8 @@
+{
+  "receiptFile": "delivery.json",
+  "phases": {
+    "publishing": "publishing",
+    "submitted": "submitted",
+    "installed": "installed"
+  }
+}

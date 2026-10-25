@@ -1043,7 +1043,7 @@ export { browserExecutablePath, waitForFixturePort };
  *   "isLead" | "role" | "sharedRoomId" | "model" | "provider" | "effort" |
  *   "fastMode" | "concurrency" | "accountKey" | "cwd" | "worktree" |
  *   "created" | "updated" | "turnId" | "turnStatus" | "inFlight" | "compactions" |
- *   "tokensUsed" | "contextUsage" | "error" | "tail" | "canSend" | "launcherAlive" |
+ *   "contextUsage" | "error" | "tail" | "canSend" | "launcherAlive" |
  *   "empty" | "yoloMode" | "agentMode" | "agentModeRevision" | "agentModeSupported" |
  *   "subagentConcurrencyVersion" | "workerDefaults" | "reviewDefaults" | "parkedEvent" |
  *   "pendingSettings" | "pendingSettingsAccountKey" | "queuedSettings" | "quickCreate" |
@@ -1294,7 +1294,6 @@ const snapshotOnlyAgentKeys = new Set([
   "preparedContext",
   "profileId",
   "profileInstructions",
-  "tokenBudget",
   "turnEpoch",
   "usageResumeEnabled",
   "wave",

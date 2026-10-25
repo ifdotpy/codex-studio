@@ -44,6 +44,10 @@ pub struct RecoveryStore {
     pub at: f64,
     pub observation_current: Arc<ObservationSource>,
 }
+pub(crate) enum RecoveryAdmission {
+    ExistingPolicy,
+    ManualSettleOnly(crate::agent_management_recovery::AuthorizedRecoveryRequest),
+}
 impl From<rusqlite::Error> for RecoveryError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Store(StoreError::from(error))
@@ -55,6 +59,17 @@ impl RecoveryEffects for RecoveryStore {
         expected: &'a RecoverySnapshot,
         scope: &'a ConnectionScope,
         action: RecoveryAction,
+    ) -> futures_util::future::BoxFuture<'a, Result<RecoveryEffectResult, RecoveryError>> {
+        self.apply_authorized(expected, scope, action, RecoveryAdmission::ExistingPolicy)
+    }
+}
+impl RecoveryStore {
+    pub(crate) fn apply_authorized<'a>(
+        &'a mut self,
+        expected: &'a RecoverySnapshot,
+        scope: &'a ConnectionScope,
+        action: RecoveryAction,
+        admission: RecoveryAdmission,
     ) -> futures_util::future::BoxFuture<'a, Result<RecoveryEffectResult, RecoveryError>> {
         if !self.at.is_finite() || self.at < 0.0 {
             return Box::pin(async { Err(RecoveryError::CommitFailed) });
@@ -68,6 +83,22 @@ impl RecoveryEffects for RecoveryStore {
         let scope = scope.clone();
         Box::pin(async move {
             lifecycle_transaction_with(&store, move |tx| {
+            let manual = match admission {
+                RecoveryAdmission::ExistingPolicy => false,
+                RecoveryAdmission::ManualSettleOnly(authorization) => {
+                    if !authorization.current(tx).map_err(|_| RecoveryError::CommitFailed)? {
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
+                    }
+                    true
+                }
+            };
+            // A manual check may settle observed delivery or completion. It
+            // cannot restore input or grant the scheduler delivery permission.
+            if manual && matches!(action, RecoveryAction::StartAbsent { .. } | RecoveryAction::RestorePreparation { .. }) {
+                return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
+            }
+            let may_enable_delivery = matches!(action, RecoveryAction::OrphanIdle { .. } | RecoveryAction::Terminal { .. } | RecoveryAction::AcceptStart { .. } | RecoveryAction::AdoptQueuedWait { .. });
+            let mut applied = (|| {
             let a = expected.record();
             let id = a["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
             if !(connection_current)(&scope)
@@ -159,6 +190,16 @@ impl RecoveryEffects for RecoveryStore {
                                     updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
                                 object.remove("startAttempt");
                                 object.remove("startOutcomeHold");
+                                // A restart-held input waited for this check;
+                                // the check closes its marker and the wait.
+                                if a["restartRecovery"]["stage"] == "held"
+                                    && !a["contextRepairWait"].is_null()
+                                {
+                                    object.remove("contextRepairWait");
+                                    updated["autoWake"] = json!(true);
+                                    updated["restartRecovery"]["stage"] = json!("finished");
+                                    updated["restartRecovery"]["reconciledAt"] = json!(current.at);
+                                }
                                 updated["status"] = json!("queued");
                                 updated["turnRecovery"] = json!({"at":current.at,"turnId":null,"outcome":"input_absent","source":"replaced_native_child","attemptId":attempt["id"]});
                             }
@@ -326,6 +367,16 @@ impl RecoveryEffects for RecoveryStore {
                 serde_json::from_value(updated).map_err(|_| RecoveryError::CommitFailed)?;
             AgentRepository::put(tx, &record)?;
             Ok(RecoveryEffectResult::plain(RecoveryOutcome::Applied(result)))
+            })()?;
+            if manual && may_enable_delivery && let RecoveryOutcome::Applied(value) = &mut applied.outcome {
+                let id = expected.record()["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
+                let mut agent = AgentRepository::get(tx, &AgentId::from(id))?.ok_or(RecoveryError::CommitFailed)?;
+                studio_runtime_store::SchedulerRepository::hold_recovered_delivery(&mut agent)?;
+                AgentRepository::put(tx, &agent)?;
+                value["manualDeliveryHeld"] = json!(true);
+                value["next"] = json!("The exact native result is recorded. Send a new instruction to enable further input delivery.");
+            }
+            Ok(applied)
         }).await
         })
     }

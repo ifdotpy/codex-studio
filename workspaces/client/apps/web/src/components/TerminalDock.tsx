@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useScreenEnvironment } from "../servers/ScreenContext";
 import { useServerApi, useServerSync } from "../servers/ServerServicesContext";
 import { Button, TextInput } from "@mantine/core";
@@ -170,7 +171,7 @@ export default function TerminalDock({
     setOpened(true);
     try {
       const shell = await post("/api/terminals/create", {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         agent: agent.id,
         cols: 100,
         rows: 24,
@@ -671,7 +672,7 @@ export function ShellView({
   const send = (text: string) => {
     if (inputBlocked.current) return;
     const generation = inputGeneration.current;
-    const request_id = crypto.randomUUID();
+    const request_id = randomUUID();
     inputChain.current = inputChain.current
       .then(async () => {
         if (generation !== inputGeneration.current || inputBlocked.current)

@@ -18,6 +18,8 @@ const errors: StudioErrorItem[] = ["one", "two", "three"].map((id) => ({
   eventId: null,
   detail: "The command may have run. Studio does not run it again.",
   subject: "cargo test",
+  count: 1,
+  firstAt: 1792700000,
   at: 1792700000,
 }));
 let items = [...errors];

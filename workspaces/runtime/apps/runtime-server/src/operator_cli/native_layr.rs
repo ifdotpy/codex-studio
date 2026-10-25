@@ -64,9 +64,11 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
             for project in projects {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&studio_runtime_services::layr_native::migration::migrate(
-                        &state, &project, dry_run
-                    )?)?
+                    serde_json::to_string_pretty(
+                        &studio_runtime_services::layr_native::migration::migrate(
+                            &state, &project, dry_run
+                        )?
+                    )?
                 );
             }
         }

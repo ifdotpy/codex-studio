@@ -50,6 +50,10 @@ const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
 const LINUX_VM_HELPER_RELATIVE: &str =
     "workspaces/client/apps/desktop/native/linux-vm/studio-linux-vm";
 
+/// Where a source checkout keeps a local build of the file event helper.
+#[cfg(target_os = "macos")]
+const FS_EVENTS_HELPER_RELATIVE: &str = "workspaces/client/apps/desktop/native/studio-fs-events";
+
 /// Installed root shared by host-side runtime components.
 #[derive(Clone, Debug)]
 pub struct InstallRoot(PathBuf);
@@ -73,6 +77,20 @@ impl InstallRoot {
         match packaged {
             Some(packaged) if packaged.is_file() => packaged,
             _ => self.0.join(LINUX_VM_HELPER_RELATIVE),
+        }
+    }
+    /// The file event helper of Mac folder sync (docs/vm-mac-sync.md, "Watcher"): the
+    /// packaged `Resources/studio-fs-events`, or a build in a source checkout. Without
+    /// it, rounds scan every 10 seconds.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn fs_events_helper(&self) -> PathBuf {
+        let packaged = self
+            .0
+            .parent()
+            .map(|resources| resources.join("studio-fs-events"));
+        match packaged {
+            Some(packaged) if packaged.is_file() => packaged,
+            _ => self.0.join(FS_EVENTS_HELPER_RELATIVE),
         }
     }
     pub fn claude_bridge_dir(&self) -> PathBuf {
@@ -350,6 +368,23 @@ impl HostRuntime {
                     }
                 }
             });
+        }
+        // Mac folder sync of VM projects (docs/vm-mac-sync.md): rounds wait while the VM
+        // does not run.
+        #[cfg(target_os = "macos")]
+        if let Some(vm) = vm_runtime.clone() {
+            let vm_running: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+                vm.status().is_ok_and(|status| {
+                    status.get("state").and_then(Value::as_str) == Some("running")
+                })
+            });
+            tokio::spawn(studio_runtime_services::mac_sync::schedule::run(
+                vm_state_dir.clone(),
+                Arc::clone(&vm_guest),
+                vm_running,
+                install_root.fs_events_helper(),
+                state.sync_changes_handle(),
+            ));
         }
         resources.vm_provider_launch = Some(Arc::new(ServerVmProviderLaunchResolver {
             accounts: accounts.clone(),
@@ -1670,8 +1705,8 @@ fn unix_time_ms() -> Result<f64, WorkerError> {
     Ok(now_ms)
 }
 
-fn verify_vm_claude_account(
-    accounts: &AccountDriver,
+fn verify_vm_claude_account<R: studio_runtime_services::account_driver::ProviderAuthReader>(
+    accounts: &AccountDriver<R>,
     account_key: &str,
     original_account: &Value,
     expected_pin: &Value,
@@ -1696,10 +1731,9 @@ fn verify_vm_claude_account(
         .iter()
         .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/account-identity".into()))?;
-    if accounts
-        .auth_pin(account_key)
+    if !accounts
+        .auth_pin_matches(account_key, expected_pin)
         .map_err(|_| WorkerError::PreparationPending("vm-credentials/account-status".into()))?
-        != *expected_pin
     {
         return Err(WorkerError::PreparationRefused(
             "vm-credentials/account-changed".into(),
@@ -3124,6 +3158,64 @@ IFS= read -r release
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn vm_claude_account_refresh_accepts_a_verified_identity_refinement() {
+        use studio_runtime_services::account_driver::{
+            AccountDriver, AuthMetadata, AuthProfile, ProviderAuthReader,
+        };
+        struct VerifiedReader;
+        impl ProviderAuthReader for VerifiedReader {
+            fn read(&self, _profile: &AuthProfile) -> AuthMetadata {
+                studio_runtime_services::account_driver::claude::auth_metadata_from_output(
+                    br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.invalid","orgId":"org-a"}"#,
+                    true,
+                )
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let registry = root.path().join("registry.json");
+        fs::write(
+            &registry,
+            json!({
+                "version":1,"defaultAccountKey":"claude-test",
+                "accounts":{"claude-test":{
+                    "id":"claude-test","provider":"claude","home":root.path().join("home"),
+                    "label":"fixture","source":"test","status":"ready",
+                    "email":"fixture@example.invalid","accountId":"claude:fixture@example.invalid",
+                    "_credentialIdentity":"claude:fixture@example.invalid","claudeOptions":{}
+                }},"logins":{},"deleteReceipts":{}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let accounts = AccountDriver::open_with_reader(registry, VerifiedReader).unwrap();
+        let original = accounts.snapshot().unwrap().accounts[0].clone();
+        let expected_pin = accounts.auth_pin("claude-test").unwrap();
+        verify_vm_claude_account(
+            &accounts,
+            "claude-test",
+            &original,
+            &expected_pin,
+            "fixture@example.invalid",
+            true,
+        )
+        .unwrap();
+        assert_ne!(accounts.auth_pin("claude-test").unwrap(), expected_pin);
+        let mut changed_original = original;
+        changed_original["email"] = json!("other@example.invalid");
+        assert!(matches!(
+            verify_vm_claude_account(
+                &accounts,
+                "claude-test",
+                &changed_original,
+                &expected_pin,
+                "fixture@example.invalid",
+                false,
+            ),
+            Err(WorkerError::PreparationRefused(code)) if code == "vm-credentials/account-changed"
+        ));
     }
 
     #[test]

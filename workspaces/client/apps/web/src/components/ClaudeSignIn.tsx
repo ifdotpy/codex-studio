@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Group, Modal, Stack } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
@@ -173,7 +174,7 @@ export default function ClaudeSignIn({
     try {
       const id =
         action === "start" && (!requestId || !active(receipt))
-          ? crypto.randomUUID()
+          ? randomUUID()
           : requestId;
       if (action === "start") {
         if (id !== requestId) {

@@ -64,24 +64,85 @@ fn provider(state: &HttpState, owner: &Value) -> Result<Arc<dyn AccountSessionPo
     )?
     .0)
 }
-fn connections(state: &HttpState, owners: &[Value]) -> controls::Connections {
-    owners
-        .iter()
-        .filter_map(|owner| {
-            let account = owner["accountKey"].as_str().unwrap_or("default");
-            let scope = provider(state, owner).ok()?.current_scope(account)?;
-            Some((text(owner, "id").to_owned(), scope.connection))
-        })
-        .collect()
+fn connections(
+    state: &HttpState,
+    tx: &studio_runtime_store::Transaction<'_>,
+    owners: &[Value],
+) -> Result<controls::Connections, controls::Error> {
+    let mut connections = controls::Connections::default();
+    for owner in owners {
+        let account = owner["accountKey"].as_str().unwrap_or("default");
+        if let Some(scope) = provider(state, owner)
+            .ok()
+            .and_then(|port| port.current_scope(account))
+        {
+            connections.observe_owner(text(owner, "id").to_owned(), scope);
+        }
+    }
+    if let Some(source) = &state.account_session {
+        for original in controls::monitor_sources(tx, owners)? {
+            if let Some(scope) = source.current_scope(&original.account) {
+                connections.observe_source(scope);
+            }
+        }
+    }
+    Ok(connections)
 }
 pub(super) async fn read_listing(state: HttpState, scope: String) -> Result<Value, ApiError> {
     let store = store(&state)?;
+    let proof = held_response_proof(&state, &scope).await;
     store
         .read_async("runtime-http/routes/process_controls", move |tx| {
             let owners = controls::owners(tx, &scope).map_err(error)?;
-            controls::listing(tx, &scope, &connections(&state, &owners)).map_err(error)
+            let mut connections = connections(&state, tx, &owners).map_err(error)?;
+            if let Some(proof) = proof {
+                connections.observe_response(proof);
+            }
+            controls::listing(tx, &scope, &connections).map_err(error)
         })
         .await
+}
+/// Observe only the root held response. An unavailable observation suppresses
+/// Stop without hiding process rows. No lifecycle state changes here.
+async fn held_response_proof(
+    state: &HttpState,
+    agent: &str,
+) -> Option<controls::HeldResponseProof> {
+    let agent = agent.to_owned();
+    let owner = store(state)
+        .ok()?
+        .read_async("runtime-http/routes/process_controls", move |tx| {
+            controls::owner(tx, &agent).map_err(error)
+        })
+        .await
+        .ok()?;
+    if !controls::held_response_candidate(&owner) {
+        return None;
+    }
+    let port = provider(state, &owner).ok()?;
+    let scope = port.current_scope(owner["accountKey"].as_str().unwrap_or("default"))?;
+    let operation = format!("process-response-observation:{}", uuid::Uuid::new_v4());
+    let ticket = ProviderTicket {
+        operation: operation.clone(),
+        request: operation.clone(),
+        agent: text(&owner, "id").to_owned(),
+        epoch: owner["epoch"].as_u64()?,
+        account: scope.account.clone(),
+        thread: Some(text(&owner, "threadId").to_owned()),
+        connection: scope.connection.clone(),
+        generation: scope.generation,
+    };
+    let reply = super::catalog_agent::provider_call(
+        &port,
+        &scope,
+        &ticket,
+        &operation,
+        "thread/read",
+        json!({"threadId":owner["threadId"],"includeTurns":false}),
+    )
+    .await
+    .ok()?;
+    controls::HeldResponseProof::observe(owner, scope, &reply)
 }
 async fn listing(
     State(state): State<HttpState>,
@@ -199,14 +260,34 @@ async fn execute(
     request: Value,
 ) -> Result<Value, ApiError> {
     let store = store(&state)?;
+    // A lost response must reuse its saved action without another native read.
+    let replay_request = request.clone();
+    if let Some(result) = store
+        .read_async("runtime-http/routes/process_controls", move |tx| {
+            controls::replay(tx, &replay_request).map_err(error)
+        })
+        .await?
+    {
+        return Ok(result);
+    }
+    let proof = if request["action"] == "stop_response" {
+        held_response_proof(&state, text(&request, "agent")).await
+    } else {
+        None
+    };
     let claim_state = state.clone();
     let claim_request = request.clone();
+    let claim_proof = proof.clone();
     let now =
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
     let claim = store
         .transaction_with(move |tx| {
             let owners = controls::owners(tx, text(&claim_request, "agent"))?;
-            controls::claim(tx, &claim_request, &connections(&claim_state, &owners), now)
+            let mut connections = connections(&claim_state, tx, &owners)?;
+            if let Some(proof) = claim_proof {
+                connections.observe_response(proof);
+            }
+            controls::claim(tx, &claim_request, &connections, now)
         })
         .await
         .map_err(error)?;
@@ -242,6 +323,7 @@ async fn execute(
             &state,
             &record["responseTarget"],
             text(&request, "requestId"),
+            proof.as_ref(),
         )
         .await
         {
@@ -330,8 +412,10 @@ async fn bind(
                     &agent,
                     &connections(
                         &state,
+                        connection,
                         &controls::owners(connection, &agent).map_err(error)?,
-                    ),
+                    )
+                    .map_err(error)?,
                 )
                 .map_err(error)
             })
@@ -510,6 +594,7 @@ async fn stop_response(
     state: &HttpState,
     target: &Value,
     request_id: &str,
+    proof: Option<&controls::HeldResponseProof>,
 ) -> Result<Value, ApiError> {
     let expected = target.clone();
     let request_id = request_id.to_owned();
@@ -525,7 +610,7 @@ async fn stop_response(
         let scope = port
             .current_scope(text(&expected, "accountKey"))
             .ok_or_else(|| invalid("The response connection is unavailable"))?;
-        if !controls::validate_response(owner, &expected, Some(&scope.connection)) {
+        if !controls::validate_stop_response(owner, &expected, &scope, proof) {
             return Err(invalid("The response changed. Refresh the process list"));
         }
         let ticket = ProviderTicket {

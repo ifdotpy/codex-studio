@@ -18,9 +18,48 @@ const MIN_COMMAND_MILLISECONDS: u64 = 1000;
 const MAX_COMMAND_MILLISECONDS: u64 = 86_400_000;
 const STOPPED: &str = "The agent was stopped. Resume this rule explicitly.";
 const RESTARTED: &str = "Server restarted during a check. Outcome unknown; check was not repeated.";
+/// Why a rule is paused while its owner cannot act on a wake. The code is the
+/// rule's `ownerHold`; the reason is its `error`. The tick resumes the rule
+/// when the owner can run again; a manual pause or resume removes the code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnerHold {
+    /// The owner's last start failed and kept its input pending.
+    FailedInput,
+    /// The owner is held after a native failure; no wake starts it.
+    NativeFailure,
+    /// The owner's conversation is archived.
+    Archived,
+}
+impl OwnerHold {
+    const ALL: [Self; 3] = [Self::FailedInput, Self::NativeFailure, Self::Archived];
+    fn code(self) -> &'static str {
+        match self {
+            Self::FailedInput => "failed_input_held",
+            Self::NativeFailure => "native_failure_hold",
+            Self::Archived => "archived",
+        }
+    }
+    fn reason(self) -> &'static str {
+        match self {
+            Self::FailedInput => {
+                "Paused: the agent failed and its input waits, so it cannot act on a wake. The rule resumes when the agent can run again."
+            }
+            Self::NativeFailure => {
+                "Paused: the agent is held after a failure, so it cannot act on a wake. The rule resumes when the agent can run again."
+            }
+            Self::Archived => {
+                "Paused: the conversation of the agent is archived. The rule resumes when the conversation is restored."
+            }
+        }
+    }
+    fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|hold| hold.code() == code)
+    }
+}
 const OWNER_FIELDS: &[&str] = &[
     "epoch",
     "status",
+    "archived",
     "accountKey",
     "threadId",
     "autoWake",
@@ -114,11 +153,18 @@ struct Rule {
     last_event: Option<String>,
     #[serde(default)]
     event_text: String,
+    #[serde(default)]
+    owner_hold: Option<String>,
 }
 impl Rule {
     /// Only an active rule without a check in flight can change in a tick.
     fn can_tick(&self) -> bool {
         self.status == Status::Active && !self.in_flight
+    }
+    /// A rule that the tick paused while its owner cannot run; the tick
+    /// resumes it when the owner can.
+    fn owner_paused(&self) -> bool {
+        self.status == Status::Paused && !self.in_flight && self.owner_hold.is_some()
     }
 }
 
@@ -127,7 +173,7 @@ impl Rule {
 /// any other rule, so its owner record need not be read.
 pub fn tick_can_change(rule: &Value) -> Result<bool, RuleError> {
     let parsed: Rule = checked("rules", "PersistedRuleRecord", rule)?;
-    Ok(parsed.can_tick())
+    Ok(parsed.can_tick() || parsed.owner_paused())
 }
 
 fn minus_one() -> i64 {
@@ -171,10 +217,25 @@ struct Owner {
     disconnect_recovery: Option<Recovery>,
     #[serde(default)]
     native_failure_hold: Value,
+    #[serde(default)]
+    archived: Value,
 }
 impl Owner {
     fn deleted(&self) -> bool {
         self.deleted_at.is_some_and(|value| value != 0.0)
+    }
+    /// Why the owner cannot act on a wake now, while it can run again later.
+    /// `held_input` says whether a failed start kept its input pending.
+    fn hold(&self, held_input: bool) -> Option<OwnerHold> {
+        if truthy(Some(&self.archived)) {
+            Some(OwnerHold::Archived)
+        } else if truthy(Some(&self.native_failure_hold)) {
+            Some(OwnerHold::NativeFailure)
+        } else if self.status == "failed" && held_input {
+            Some(OwnerHold::FailedInput)
+        } else {
+            None
+        }
     }
     fn matching_recovery(&self, receipt: &Recovery, epoch: u64) -> bool {
         receipt.auto_wake
@@ -253,6 +314,9 @@ pub struct CheckResult<'a> {
 pub struct TickObservation {
     pub fingerprint: Option<Option<(i64, u64, u64)>>,
     pub active_workers: Option<u64>,
+    /// Whether the owner has input that a failed start kept pending at its
+    /// epoch. Read only when [`RuleSnapshot::held_input_owner`] asks for it.
+    pub held_input: bool,
 }
 
 impl RuleSnapshot {
@@ -289,6 +353,12 @@ impl RuleSnapshot {
     }
     pub fn is_low_workers(&self) -> bool {
         self.rule.kind == Kind::LowWorkers
+    }
+    /// The owner id and epoch whose held input a tick must observe: only a
+    /// failed owner can hold its input, and only a rule that can change.
+    pub fn held_input_owner(&self) -> Option<(&str, u64)> {
+        (self.owner.status == "failed" && (self.rule.can_tick() || self.rule.owner_paused()))
+            .then_some((self.owner.id.as_str(), self.owner.epoch))
     }
     pub fn current(&self, rule: &Value, owner: &Value) -> bool {
         rule == &self.raw
@@ -367,6 +437,9 @@ impl RuleSnapshot {
     pub fn tick(&self, now: f64, observation: TickObservation) -> Result<RuleDecision, RuleError> {
         finite_time(now)?;
         let r = &self.rule;
+        if r.owner_paused() {
+            return Ok(self.resume_after_owner_hold(observation.held_input));
+        }
         if !r.can_tick() {
             return Ok(RuleDecision::default());
         }
@@ -380,6 +453,14 @@ impl RuleSnapshot {
         if self.owner.deleted() || !self.owner.auto_wake || self.owner.epoch != r.epoch {
             next["status"] = json!("paused");
             next["error"] = json!(STOPPED);
+            return Ok(self.change(next));
+        }
+        // An owner that cannot act on a wake gets no new check or wake; each
+        // one would only start a command and leave its result unread.
+        if let Some(hold) = self.owner.hold(observation.held_input) {
+            next["status"] = json!("paused");
+            next["ownerHold"] = json!(hold.code());
+            next["error"] = json!(hold.reason());
             return Ok(self.change(next));
         }
         if r.kind == Kind::LowWorkers {
@@ -458,6 +539,36 @@ impl RuleSnapshot {
         next["lastAt"] = json!(now);
         next["checks"] = json!(r.checks + 1);
         self.launch(next, now)
+    }
+
+    /// Resume a rule that the tick paused for its owner once the owner can
+    /// run again. A stopped or deleted owner turns it into an explicit pause.
+    fn resume_after_owner_hold(&self, held_input: bool) -> RuleDecision {
+        let r = &self.rule;
+        let mut next = self.raw.clone();
+        let stopped = self.owner.deleted() || !self.owner.auto_wake || self.owner.epoch != r.epoch;
+        if !stopped && let Some(hold) = self.owner.hold(held_input) {
+            if r.owner_hold.as_deref().and_then(OwnerHold::from_code) == Some(hold) {
+                return RuleDecision::default();
+            }
+            next["ownerHold"] = json!(hold.code());
+            next["error"] = json!(hold.reason());
+            return self.change(next);
+        }
+        if let Some(object) = next.as_object_mut() {
+            object.remove("ownerHold");
+        }
+        if stopped {
+            next["error"] = json!(STOPPED);
+            return self.change(next);
+        }
+        next["status"] = json!("active");
+        next["error"] = Value::Null;
+        if r.kind == Kind::LowWorkers {
+            next["lowSince"] = Value::Null;
+            next["alerted"] = json!(false);
+        }
+        self.change(next)
     }
 
     // No-command checks finish in the same durable decision; a crash cannot strand their wake.
@@ -552,6 +663,8 @@ impl RuleSnapshot {
             || r.in_flight
             || r.epoch != self.owner.epoch
             || r.last_event.as_deref() == Some(key)
+            // The tick pauses this rule; until then an event starts nothing.
+            || self.owner.hold(false).is_some()
         {
             return Ok(RuleDecision::default());
         }
@@ -801,4 +914,54 @@ pub fn active_workers(agents: &[Value], monitors: &[Value]) -> Result<u64, RuleE
         }
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The persisted rule schema owns the stored `ownerHold` codes; each code
+    /// of [`OwnerHold`] is one of them, and no other code is stored.
+    #[test]
+    fn owner_hold_codes_match_the_persisted_rule_schema() {
+        let seed: Value = serde_json::from_str(include_str!("../tests/rules_engine/seed.json"))
+            .expect("frozen rule seed");
+        let mut rule = seed["rule"].clone();
+        rule["status"] = json!("paused");
+        for hold in OwnerHold::ALL {
+            rule["ownerHold"] = json!(hold.code());
+            let parsed: Rule = checked("rules", "PersistedRuleRecord", &rule)
+                .unwrap_or_else(|error| panic!("{hold:?}: {error}"));
+            assert!(parsed.owner_paused(), "{hold:?}");
+            assert_eq!(OwnerHold::from_code(hold.code()), Some(hold));
+        }
+        rule["ownerHold"] = json!("unknown");
+        assert!(checked::<Rule>("rules", "PersistedRuleRecord", &rule).is_err());
+    }
+
+    /// An event rule of an owner that cannot run starts no check before the
+    /// tick pauses it; an idle owner's event rule still does.
+    #[test]
+    fn an_event_of_a_held_owner_starts_no_check() {
+        let seed: Value = serde_json::from_str(include_str!("../tests/rules_engine/seed.json"))
+            .expect("frozen rule seed");
+        let mut rule = seed["rule"].clone();
+        rule["kind"] = json!("event");
+        rule["command"] = json!("check.sh");
+        for (owner_change, fires) in [
+            (json!({}), true),
+            (json!({"archived":true}), false),
+            (json!({"nativeFailureHold":true}), false),
+        ] {
+            let mut owner = seed["owner"].clone();
+            for (field, value) in owner_change.as_object().expect("owner change") {
+                owner[field] = value.clone();
+            }
+            let decision = RuleSnapshot::from_records(rule.clone(), owner)
+                .expect("snapshot")
+                .event("worker_completed", "done", "event-1", 1_800_000_000.0)
+                .expect("event decision");
+            assert_eq!(decision.check.is_some(), fires, "{owner_change}");
+        }
+    }
 }

@@ -2155,6 +2155,10 @@ describe("shared resource event transport", () => {
     const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
     vi.stubGlobal("fetch", fetch);
     syncDatabase.mockResolvedValue({ workspaceId });
+    const api = await import("../api");
+    const identityProbe = vi
+      .spyOn(api, "get")
+      .mockRejectedValue(new Error("Unexpected identity probe"));
     vi.stubGlobal("navigator", {
       onLine: true,
       locks: {
@@ -2174,6 +2178,8 @@ describe("shared resource event transport", () => {
     const stop = transport.watchResourceChanges(local, onChange);
     await vi.advanceTimersByTimeAsync(20);
     expect(Source.instances).toHaveLength(1);
+    // A warm reconnect follows an open stream, not a pre-open rejection.
+    Source.instances[0]!.open();
     const initial = {
       protocol: 4,
       workspaceId,
@@ -2217,6 +2223,7 @@ describe("shared resource event transport", () => {
     } as MessageEvent);
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(2);
+    expect(identityProbe).not.toHaveBeenCalled();
     stop();
   });
 
@@ -2225,6 +2232,10 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("fetch", fetch);
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     syncDatabase.mockResolvedValue({ workspaceId });
+    const api = await import("../api");
+    const identityProbe = vi
+      .spyOn(api, "get")
+      .mockRejectedValue(new Error("Unexpected identity probe"));
 
     const transport = await loadTransport();
     const resource = { kind: "state" } as const;
@@ -2270,6 +2281,7 @@ describe("shared resource event transport", () => {
       expect(onChange).toHaveBeenLastCalledWith(
         expect.objectContaining({ epoch: "server-after-restart", revision: 1 }),
       );
+      expect(identityProbe).not.toHaveBeenCalled();
     } finally {
       stopChanges();
       stopStatus();
@@ -2364,6 +2376,10 @@ describe("shared resource event transport", () => {
     const fetch = vi.fn().mockRejectedValue(new TypeError("Unexpected fetch"));
     vi.stubGlobal("fetch", fetch);
     syncDatabase.mockResolvedValue({ workspaceId });
+    const api = await import("../api");
+    const identityProbe = vi
+      .spyOn(api, "get")
+      .mockRejectedValue(new Error("Unexpected identity probe"));
     vi.stubGlobal("navigator", {
       onLine: true,
       locks: {
@@ -2386,6 +2402,7 @@ describe("shared resource event transport", () => {
     const stopB = transport.watchResourceChanges(b, onB);
     await vi.advanceTimersByTimeAsync(20);
     expect(Source.instances).toHaveLength(1);
+    Source.instances[0]!.open();
 
     const baseline = {
       protocol: 4,
@@ -2426,6 +2443,7 @@ describe("shared resource event transport", () => {
     Source.instances[1]!.emit("resources", baseline);
     await vi.advanceTimersByTimeAsync(20);
     expect(resumedA).toHaveBeenCalledTimes(1);
+    expect(identityProbe).not.toHaveBeenCalled();
     stopA();
     stopB();
   });

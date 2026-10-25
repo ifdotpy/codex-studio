@@ -19,6 +19,10 @@ use studio_runtime_store::{
 struct Session {
     calls: Mutex<Vec<Value>>,
     finished: tokio::sync::Notify,
+    /// The account worker exited after its idle deadline: no live scope until a
+    /// caller starts it again with `ensure_session`.
+    dormant: std::sync::atomic::AtomicBool,
+    ensured: std::sync::atomic::AtomicUsize,
 }
 impl Session {
     fn scope() -> ConnectionScope {
@@ -38,7 +42,14 @@ impl AccountSessionPort for Session {
         Box::pin(async { Ok(limits(idle::wall_now())) })
     }
     fn current_scope(&self, _: &str) -> Option<ConnectionScope> {
-        Some(Self::scope())
+        (!self.dormant.load(std::sync::atomic::Ordering::SeqCst)).then(Self::scope)
+    }
+    fn ensure_session<'a>(&'a self, _: &'a str) -> AccountSessionFuture<'a, ConnectionScope> {
+        self.ensured
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.dormant
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(Self::scope()) })
     }
     fn provider_request<'a>(
         &'a self,
@@ -114,6 +125,24 @@ impl Host for HostPort {
 fn limits(now: f64) -> Value {
     json!({"accountKey":"default","at":now,"data":{"rateLimits":{"limitId":"claude","primary":{"usedPercent":10.0,"resetsAt":now+1000.0}},"claudeRateLimit":{"status":"allowed"}}})
 }
+/// Bounds only a hang of a wait in this file; each wait ends at its own condition.
+const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+/// Open the state again as a restarted server does. Stopping the timer can cancel a fire
+/// job after it submitted its last writer job. That job keeps the state lease until the
+/// writer thread has run it (`SqliteActor::call_admitted_with_completion`), so the new
+/// owner waits for the lease, as a new server process waits for the old one to exit.
+async fn reopen(path: &std::path::Path) -> Arc<RuntimeStore> {
+    let deadline = tokio::time::Instant::now() + HANG_BOUND;
+    loop {
+        match RuntimeStore::open(Some(path)).await {
+            Ok(store) => return Arc::new(store),
+            Err(StoreError::AlreadyOwned) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("the state did not open again: {error}"),
+        }
+    }
+}
 async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Episode) {
     let store = Arc::new(RuntimeStore::open(Some(path)).await.unwrap());
     let episode=store.transaction(move|tx| {
@@ -146,12 +175,9 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
         }),
         stopped,
     ));
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        session.finished.notified(),
-    )
-    .await
-    .unwrap();
+    tokio::time::timeout(HANG_BOUND, session.finished.notified())
+        .await
+        .unwrap();
     stop.send(true).unwrap();
     timer.await.unwrap();
     // Shutdown can cancel the final fire write after the provider notification.
@@ -169,7 +195,7 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     assert!(idle::next(&store).await.unwrap().is_none());
     drop(host);
     drop(store);
-    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+    let store = reopen(root.path()).await;
     let host = HostPort {
         store: store.clone(),
         session: session.clone(),
@@ -198,6 +224,43 @@ async fn idle_claude_dispatches_once_and_restart_does_not_repeat() {
     assert_eq!(
         serde_json::from_str::<Value>(&receipt).unwrap()["status"],
         "acknowledged"
+    );
+}
+
+#[tokio::test]
+async fn a_dormant_account_worker_is_started_before_the_native_action() {
+    // The account worker exits after its idle deadline. A native action (idle
+    // compaction here, Compact or Review from /api/action through the same owner)
+    // must start it again instead of answering "Not implemented".
+    let root = tempfile::tempdir().unwrap();
+    let (store, episode) = fixture(root.path(), Mode::Compact).await;
+    let session = Arc::new(Session::default());
+    session
+        .dormant
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let host = HostPort {
+        store: store.clone(),
+        session: session.clone(),
+    };
+    idle::fire(
+        store.clone(),
+        "claude".into(),
+        episode,
+        limits(idle::wall_now()),
+        idle::wall_now(),
+        &host,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        session.ensured.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the worker is started once"
+    );
+    assert_eq!(
+        session.calls.lock().unwrap().len(),
+        1,
+        "the compaction is sent"
     );
 }
 

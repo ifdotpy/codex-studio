@@ -171,6 +171,57 @@ pub struct InputRequest<'a> {
     pub input: &'a Input,
 }
 
+pub(crate) async fn input_http(
+    store: &RuntimeStore,
+    port: &(impl MonitorNative + ?Sized),
+    id: &str,
+    request_id: &str,
+    input: &Input,
+    now: f64,
+) -> Result<Option<(Operation, String, Submission)>, MonitorError> {
+    let _sequence = match native_sequence(store, id) {
+        Ok(sequence) => sequence,
+        Err(_) => {
+            let (id, request_id, input) = (id.to_owned(), request_id.to_owned(), input.clone());
+            let outcome = store
+                .transaction_with(move |tx| {
+                    crate::monitor_http_input::refuse_busy(tx, &id, &request_id, &input)
+                })
+                .await?;
+            // The terminal refusal is durable before an HTTP error escapes.
+            outcome.replay()?;
+            return Ok(None);
+        }
+    };
+    let (owned_id, owned_request, owned_input) =
+        (id.to_owned(), request_id.to_owned(), input.clone());
+    let admission = store
+        .transaction_with(move |tx| {
+            crate::monitor_http_input::reserve(tx, &owned_id, &owned_request, &owned_input, now)
+        })
+        .await?;
+    let Some(crate::monitor_http_input::Reservation {
+        operation,
+        ticket,
+        effect,
+    }) = admission
+    else {
+        return Ok(None);
+    };
+    let submitted = port.submit(&operation, &effect).await;
+    let outcome = match &submitted {
+        Submission::Written => None,
+        Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
+        Submission::Unknown => Some(InputOutcome::Unknown(
+            "Input outcome unknown; do not repeat it".into(),
+        )),
+    };
+    if let Some(outcome) = outcome {
+        monitor_runtime::settle_input(store, id, &operation, &ticket, outcome, now).await?;
+    }
+    Ok(Some((operation, ticket, submitted)))
+}
+
 pub async fn input(
     store: &RuntimeStore,
     port: &(impl MonitorNative + ?Sized),
@@ -238,12 +289,32 @@ pub async fn cancel_checked(
                 let (snapshot, owner) = monitor_runtime::snapshot(tx, &id_for_reservation)?;
                 let owner =
                     serde_json::to_value(owner).map_err(studio_runtime_store::StoreError::from)?;
-                let process = crate::process_controls::project(
-                    "monitor",
+                let source = expected["_sourceGeneration"].as_u64().map(|generation| {
+                    crate::account_session_runtime::ConnectionScope {
+                        account: expected["_sourceAccountKey"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        connection: expected["_sourceConnectionId"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                        generation,
+                    }
+                });
+                let process = crate::process_controls::project_monitor(
+                    tx,
                     snapshot.record(),
                     &owner,
                     expected["_sourceConnectionId"].as_str(),
-                );
+                    source.as_ref(),
+                )
+                .map_err(|error| match error {
+                    crate::process_controls::Error::Store(error) => MonitorError::Store(error),
+                    crate::process_controls::Error::Invalid(message) => {
+                        MonitorError::Refused(message)
+                    }
+                })?;
                 if !crate::process_controls::matches(&process, expected)
                     || process["capabilities"]["stop"] != true
                     || snapshot.record()["status"] != expected["_raw"]["status"]

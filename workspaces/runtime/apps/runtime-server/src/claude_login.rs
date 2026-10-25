@@ -23,8 +23,7 @@ pub async fn attach(
     let environment = std::env::vars_os().collect();
     let program = studio_runtime_services::account_driver::claude::login_binary(&environment)
         .unwrap_or_else(|| PathBuf::from("claude"));
-    let changes = state.sync_changes_handle();
-    let wake = state.event_wake_handle();
+    let on_change = state.claude_login_change_callback();
     state.claude_login = Some(
         LoginService::open(
             LoginConfig {
@@ -37,10 +36,7 @@ pub async fn attach(
             Arc::new(StreamLauncher),
             receipts,
             Arc::new(StoredChats(store)),
-            Arc::new(move || {
-                changes.notify_one();
-                wake.notify_one();
-            }),
+            on_change,
         )
         .await?,
     );

@@ -5823,19 +5823,6 @@
             ],
             "title": "Threadid"
           },
-          "tokensUsed": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tokensused"
-          },
           "turnId": {
             "anyOf": [
               {
@@ -6575,11 +6562,6 @@
           "budgetActionWait": {
             "$ref": "#/components/schemas/BudgetWaitRecordResponse",
             "default": null
-          },
-          "budgetBlocked": {
-            "default": null,
-            "title": "Budgetblocked",
-            "type": "string"
           },
           "budgetStartWait": {
             "$ref": "#/components/schemas/BudgetWaitRecordResponse",
@@ -7674,32 +7656,6 @@
             ],
             "default": null,
             "title": "Threadid"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
-          },
-          "tokenUsageAccounting": {
-            "default": null,
-            "title": "Tokenusageaccounting",
-            "type": "string"
-          },
-          "tokensUsed": {
-            "default": null,
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Tokensused",
-            "type": "integer"
           },
           "turnEpoch": {
             "default": null,
@@ -9345,20 +9301,6 @@
             ],
             "default": null,
             "title": "Threadid"
-          },
-          "tokensUsed": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokensused"
           },
           "turnId": {
             "anyOf": [
@@ -17255,20 +17197,6 @@
             "default": null,
             "title": "Threadid"
           },
-          "tokensUsed": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokensused"
-          },
           "turnId": {
             "anyOf": [
               {
@@ -21480,21 +21408,6 @@
             ],
             "default": null,
             "title": "Request Id"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
           }
         },
         "required": [
@@ -21530,20 +21443,6 @@
             "minimum": 0,
             "title": "Maxagents",
             "type": "integer"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
           }
         },
         "required": [
@@ -22870,21 +22769,6 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole-Input",
             "default": "orchestrator"
-          },
-          "tokenBudget": {
-            "anyOf": [
-              {
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tokenbudget"
           },
           "worker_defaults": {
             "anyOf": [
@@ -47997,10 +47881,16 @@
             "type": "string"
           },
           "at": {
-            "description": "Unix seconds of the failure.",
+            "description": "Unix seconds of the latest failure in this row.",
             "minimum": 0,
             "title": "At",
             "type": "number"
+          },
+          "count": {
+            "description": "Failures in this row: the failed runs of one rule or command of one kind are one row.",
+            "minimum": 1,
+            "title": "Count",
+            "type": "integer"
           },
           "detail": {
             "description": "The stored error.",
@@ -48019,8 +47909,14 @@
             "default": null,
             "title": "Eventid"
           },
+          "firstAt": {
+            "description": "Unix seconds of the first failure in this row.",
+            "minimum": 0,
+            "title": "Firstat",
+            "type": "number"
+          },
           "id": {
-            "description": "Row identity; dismissing it hides this row only.",
+            "description": "Row identity. Dismissing it hides this row; for a rule or a command it hides the failures so far, and a later failure returns.",
             "title": "Id",
             "type": "string"
           },
@@ -48033,7 +47929,11 @@
               "input_uncertain",
               "input_stuck",
               "turn_disconnected",
-              "workspace_failed"
+              "workspace_failed",
+              "turn_stalled",
+              "input_not_started",
+              "session_not_started",
+              "schedule_stalled"
             ],
             "title": "Kind",
             "type": "string"
@@ -48055,6 +47955,19 @@
             "title": "Reason",
             "type": "string"
           },
+          "ruleId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The rule whose runs failed, if a rule ran them.",
+            "title": "Ruleid"
+          },
           "subject": {
             "description": "The command or the start of the message.",
             "title": "Subject",
@@ -48070,6 +47983,8 @@
           "agentName",
           "detail",
           "subject",
+          "count",
+          "firstAt",
           "at"
         ],
         "title": "StudioError",

@@ -181,6 +181,34 @@ fn read_token(path: &Path) -> Result<String, String> {
         .map_err(|error| format!("The host_exec channel token is unreadable: {error}"))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum StartOutcome {
+    Ready,
+    Exited,
+    Deadline,
+}
+
+/// Startup proof order is shared by the real child and deterministic witnesses.
+fn wait_for_start(
+    mut exited: impl FnMut() -> std::io::Result<bool>,
+    mut ready: impl FnMut() -> bool,
+    mut expired: impl FnMut() -> bool,
+    mut pause: impl FnMut(),
+) -> std::io::Result<StartOutcome> {
+    loop {
+        if exited()? {
+            return Ok(StartOutcome::Exited);
+        }
+        if ready() {
+            return Ok(StartOutcome::Ready);
+        }
+        if expired() {
+            return Ok(StartOutcome::Deadline);
+        }
+        pause();
+    }
+}
+
 /// Make sure a healthy service of `build` serves the VM state folder `state`, and
 /// return the channel token. `program` is the `studio-runtime-server` executable.
 /// An error proves that no guest request was sent.
@@ -244,25 +272,26 @@ pub fn ensure_service(
         .spawn()
         .map_err(failed)?;
     let deadline = Instant::now() + Duration::from_secs(START_SECONDS);
-    let result = loop {
-        if child.try_wait().map_err(failed)?.is_some() {
-            break Err(format!(
-                "The host_exec service exited. Log: {}",
-                state.join(LOG_FILE).display()
-            ));
-        }
-        if probe(&token)
-            .is_some_and(|health| health.get("buildId").and_then(Value::as_str) == Some(build))
-        {
-            break Ok(token.clone());
-        }
-        if Instant::now() >= deadline {
-            break Err(format!(
-                "The host_exec service has no proven start result. Inspect {}",
-                state.join(LOG_FILE).display()
-            ));
-        }
-        pause();
+    let outcome = wait_for_start(
+        || child.try_wait().map(|status| status.is_some()),
+        || {
+            probe(&token)
+                .is_some_and(|health| health.get("buildId").and_then(Value::as_str) == Some(build))
+        },
+        || Instant::now() >= deadline,
+        pause,
+    )
+    .map_err(failed)?;
+    let result = match outcome {
+        StartOutcome::Exited => Err(format!(
+            "The host_exec service exited. Log: {}",
+            state.join(LOG_FILE).display()
+        )),
+        StartOutcome::Ready => Ok(token.clone()),
+        StartOutcome::Deadline => Err(format!(
+            "The host_exec service has no proven start result. Inspect {}",
+            state.join(LOG_FILE).display()
+        )),
     };
     // The service leaves this process's session; a thread collects its exit.
     let reaped = std::thread::Builder::new()
@@ -285,4 +314,97 @@ fn write_token(path: &PathBuf) -> std::io::Result<()> {
         .open(path)?;
     file.write_all(protocol::hex(&random).as_bytes())?;
     file.sync_all()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_fresh_token_is_private_durable_and_never_overwrites_an_existing_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(TOKEN_FILE);
+        write_token(&path).unwrap();
+        let token = read_token(&path).unwrap();
+        assert_eq!(token.len(), TOKEN_BYTES * 2);
+        assert!(
+            token
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            write_token(&path).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(read_token(&path).unwrap(), token);
+    }
+
+    #[test]
+    fn startup_wait_requires_ready_proof_and_preserves_the_poll_order() {
+        let pauses = Cell::new(0);
+        let probes = Cell::new(0);
+        let result = wait_for_start(
+            || Ok(false),
+            || {
+                let round = probes.get();
+                probes.set(round + 1);
+                round == 1
+            },
+            || false,
+            || pauses.set(pauses.get() + 1),
+        )
+        .unwrap();
+        assert_eq!(result, StartOutcome::Ready);
+        assert_eq!(probes.get(), 2);
+        assert_eq!(pauses.get(), 1);
+        assert_eq!(
+            wait_for_start(
+                || Ok(true),
+                || panic!("exit precedes health"),
+                || panic!("exit precedes deadline"),
+                || panic!("no pause")
+            )
+            .unwrap(),
+            StartOutcome::Exited
+        );
+        assert_eq!(
+            wait_for_start(
+                || Ok(false),
+                || true,
+                || panic!("ready precedes deadline"),
+                || panic!("no pause")
+            )
+            .unwrap(),
+            StartOutcome::Ready
+        );
+    }
+
+    #[test]
+    fn startup_wait_retains_unknown_deadline_and_process_probe_errors() {
+        assert_eq!(
+            wait_for_start(
+                || Ok(false),
+                || false,
+                || true,
+                || panic!("deadline cannot extend")
+            )
+            .unwrap(),
+            StartOutcome::Deadline
+        );
+        let error = wait_for_start(
+            || Err(std::io::Error::other("owned child probe failed")),
+            || panic!("no health after failed child probe"),
+            || panic!("no deadline after failed child probe"),
+            || panic!("no pause"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "owned child probe failed");
+    }
 }

@@ -34,17 +34,35 @@ pub struct SessionRequest {
 /// provider query whose result is not worth a durable record.
 pub const DIAGNOSTICS_OPERATION_PREFIX: &str = "diagnostics:";
 
+/// Any retained transport evidence prevents a transfer from changing an old
+/// read intent. This includes an unknown result and a prepared submission.
+pub(crate) fn has_transport_evidence(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    operation: &str,
+) -> Result<bool, WorkerError> {
+    let key = Call::operation_key(account, operation);
+    for phase in ["submitted", "written", "result"] {
+        if store::receipt(tx, &key, phase)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl SessionRequest {
-    /// A diagnostics probe (actorless loaded-state read) leaves no receipt: it is
-    /// idempotent and never retried, so there is no outcome to recover after a crash.
+    /// Configuration reads have no side effects and can be repeated after a lost
+    /// reply. Diagnostics probes are also read-only. Neither needs a durable
+    /// receipt or a wait for an unrelated journal checkpoint.
     pub(super) fn is_volatile_read(&self) -> bool {
-        self.operation.starts_with(DIAGNOSTICS_OPERATION_PREFIX)
-            && self.actor.is_none()
-            && self.transfer.is_none()
-            && matches!(
-                self.method,
-                Method::ClaudeDiagnostics | Method::ThreadLoadedList
-            )
+        self.method == Method::ConfigRead
+            || (self.operation.starts_with(DIAGNOSTICS_OPERATION_PREFIX)
+                && self.actor.is_none()
+                && self.transfer.is_none()
+                && matches!(
+                    self.method,
+                    Method::ClaudeDiagnostics | Method::ThreadLoadedList
+                ))
     }
 }
 
@@ -119,6 +137,23 @@ impl RetainedSessionPort {
         !*self.stop.subscribe().borrow() && !self.commands.is_closed()
     }
     pub async fn recover_connection(&self, agent_id: String) -> Result<Value, PortError> {
+        self.recover_authorized(agent_id, None).await
+    }
+    pub async fn recover_managed_agent(
+        &self,
+        authorization: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> Result<Value, PortError> {
+        let agent = authorization.target["id"]
+            .as_str()
+            .ok_or(PortError::Invalid)?
+            .to_owned();
+        self.recover_authorized(agent, Some(authorization)).await
+    }
+    async fn recover_authorized(
+        &self,
+        agent_id: String,
+        authorization: Option<crate::agent_management_recovery::AuthorizedRecoveryRequest>,
+    ) -> Result<Value, PortError> {
         if agent_id.is_empty() || !self.is_live() {
             return Err(PortError::Identity);
         }
@@ -126,8 +161,11 @@ impl RetainedSessionPort {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
         tokio::time::timeout_at(
             deadline,
-            self.commands
-                .send(AccountCommand::ConnectionRecovery { agent_id, reply }),
+            self.commands.send(AccountCommand::ConnectionRecovery {
+                agent_id,
+                authorization,
+                reply,
+            }),
         )
         .await
         .map_err(|_| PortError::NotSent)?
@@ -241,7 +279,7 @@ impl RetainedSessionPort {
             .map_err(|_| PortError::Unknown)?
     }
 }
-fn validate(request: &SessionRequest) -> Result<(), PortError> {
+pub(crate) fn validate(request: &SessionRequest) -> Result<(), PortError> {
     let turn_view = request.params.get("itemsView").and_then(Value::as_str);
     let turn_limit = request.params.get("limit").and_then(Value::as_u64);
     let valid_turn_view = turn_view == Some("full")
@@ -325,24 +363,37 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::CommandExecTerminate
         )
         || voice_request
-        || deleted_voice_stop;
+        || deleted_voice_stop
+        || (request.transfer.is_none()
+            && request.deleted_actor_session.is_none()
+            && request.actor.is_some()
+            && request.expected_scope.as_ref() == Some(&request.scope)
+            && request.method == Method::ThreadUnsubscribe
+            && request
+                .operation
+                .starts_with(crate::agent_management_recovery::MANUAL_RELEASE_PREFIX)
+            && request.operation.ends_with(":unsubscribe")
+            && request.params.as_object().is_some_and(|params| {
+                params.len() == 1
+                    && params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.is_empty())
+            }));
     let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
-        matches!(
-            request.method,
-            Method::ThreadQueueList
-                | Method::ThreadBackgroundTerminalsList
-                | Method::ThreadUnsubscribe
-        ) && !transfer.transfer_id.is_empty()
+        request.actor.is_none()
+            && request.deleted_actor_session.is_none()
+            && request.expected_scope.as_ref() == Some(&request.scope)
+            && !transfer.transfer_id.is_empty()
             && !transfer.member.is_empty()
             && !transfer.source_account.is_empty()
             && !transfer.thread_id.is_empty()
             && request.scope.account == transfer.source_account
-            && request
-                .params
-                .as_object()
-                .is_some_and(|params| params.len() == 1 && params.contains_key("threadId"))
-            && request.params.get("threadId").and_then(Value::as_str)
-                == Some(transfer.thread_id.as_str())
+            && crate::account_transfer::valid_source_preflight_params(
+                request.method.as_str(),
+                &transfer.thread_id,
+                &request.params,
+            )
             && request.operation.starts_with(&format!(
                 "transfer:{}:{}:",
                 transfer.transfer_id, transfer.member
@@ -430,7 +481,10 @@ fn valid_background_terminals_list(params: &Value) -> bool {
         .get("threadId")
         .and_then(Value::as_str)
         .is_some_and(|id| !id.is_empty())
-        && params.get("limit") == Some(&json!(100))
+        && params.get("limit")
+            == Some(&json!(
+                studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE
+            ))
         && params
             .keys()
             .all(|key| matches!(key.as_str(), "threadId" | "limit" | "cursor"))
@@ -538,7 +592,7 @@ fn valid_settings_update(request: &SessionRequest) -> bool {
     })
 }
 
-pub(super) fn valid_actorless_request_shape(
+pub(crate) fn valid_actorless_request_shape(
     method: Method,
     params: &Value,
     operation: &str,
@@ -592,7 +646,12 @@ pub(super) fn valid_actorless_request_shape(
                 && params.get("includeTurns") == Some(&json!(false))
         }
         Method::ThreadTurnsList => {
-            only(&["threadId", "limit", "sortDirection", "itemsView"], &[])
+            only(
+                &["threadId", "limit", "sortDirection", "itemsView"],
+                &["cursor"],
+            ) && params
+                .get("cursor")
+                .is_none_or(|value| value.as_str().is_some_and(|cursor| !cursor.is_empty()))
                 && params
                     .get("threadId")
                     .and_then(Value::as_str)
@@ -786,7 +845,10 @@ fn monitor_call(
     let submitted: Submitted = serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
     let call = submitted.call;
     if call.operation != identity
+        || call.scope.account != operation.account_key
+        || call.scope.connection != operation.connection_id
         || call.method != Method::CommandExec.as_str()
+        || call.params.get("processId").and_then(Value::as_str) != Some(id)
         || call
             .actor
             .as_ref()
@@ -797,6 +859,74 @@ fn monitor_call(
         ));
     }
     Ok(Some(call))
+}
+
+/// The original host command's durable scope. Account transfer never changes
+/// this owner or grants a new command start on the source account.
+pub(crate) fn monitor_command_scope(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    operation: &crate::monitor_policy::Operation,
+) -> Result<Option<ConnectionScope>, WorkerError> {
+    let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
+        return Ok(None);
+    };
+    if record.value().get("operation") != Some(&json!(operation)) {
+        return Ok(None);
+    }
+    let Some(call) = monitor_call(tx, id, operation)? else {
+        return Ok(None);
+    };
+    // `submitted` precedes I/O and is not proof that a process exists. The
+    // provider task writes this record only for CommandReceipt::Written.
+    let Some(written) = store::receipt(tx, &call.key(), "written")? else {
+        return Ok(None);
+    };
+    let written = store::decode(&written)?;
+    if written.ticket.id != studio_runtime_providers::RequestId::String(call.key())
+        || written.ticket.generation != call.scope.generation
+        || written.ticket.method != Method::CommandExec
+        || written.operation_id.0 != call.key()
+    {
+        return Ok(None);
+    }
+    Ok(match storage::replay_recorded(tx, &call)? {
+        Ok(storage::Replay::Return(receipt)) => Some(receipt.scope),
+        _ => None,
+    })
+}
+
+/// Whether a host monitor can keep its original process through an account move.
+/// Missing command identity and VM process ownership remain explicit blockers.
+pub(crate) fn monitor_survives_account_transfer(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    agent: &str,
+) -> Result<bool, WorkerError> {
+    let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
+        return Ok(false);
+    };
+    let record = record.value();
+    let Some(actor) = AgentRepository::get(tx, &AgentId::from(agent))? else {
+        return Ok(false);
+    };
+    let Some(operation) = record
+        .get("operation")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<crate::monitor_policy::Operation>(value).ok())
+    else {
+        return Ok(false);
+    };
+    if record["status"] != "running"
+        || record["agent"] != agent
+        || record["epoch"].as_i64() != Some(actor.epoch)
+        || operation.agent != agent
+        || operation.epoch != actor.epoch
+        || vm_actor(tx, agent)?
+    {
+        return Ok(false);
+    }
+    Ok(monitor_command_scope(tx, id, &operation)?.is_some())
 }
 /// Read a monitor's checkpoint-verified retained terminal receipt. This never
 /// creates a provider request; recovered pending requests publish into this ledger.
@@ -812,7 +942,12 @@ pub async fn monitor_result(
             let Some(call) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let receipt = match storage::replay_in_transaction(tx, &call)? {
+            if studio_runtime_store::MonitorsRepository::get(tx, &id)?
+                .is_none_or(|record| record.value().get("operation") != Some(&json!(operation)))
+            {
+                return Ok(None);
+            }
+            let receipt = match storage::replay_recorded(tx, &call)? {
                 Ok(storage::Replay::Return(receipt)) => receipt,
                 Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
                 Err(_) => {
@@ -820,6 +955,49 @@ pub async fn monitor_result(
                         "monitor retained receipt authorization changed".into(),
                     ));
                 }
+            };
+            Ok(match receipt.result {
+                RequestResult::Reply(value) => Some(
+                    crate::account_session_runtime::ProviderResponse::Reply(value),
+                ),
+                RequestResult::Rejected(value) => Some(
+                    crate::account_session_runtime::ProviderResponse::Rejected(value),
+                ),
+                RequestResult::Unknown | RequestResult::NotSent => None,
+            })
+        })
+        .await
+}
+/// The recorded answer of monitor `id`'s command after its loss was decided at
+/// the command deadline. The live monitor authorization ends with that loss;
+/// the monitor's stored operation and its submitted receipt still name the
+/// request. This only reads receipts and never creates a provider request.
+/// `None` while no answer is recorded, or when the monitor is no longer that
+/// deadline loss of `operation`.
+pub async fn monitor_late_result(
+    store: &RuntimeStore,
+    id: &str,
+    operation: &crate::monitor_policy::Operation,
+) -> Result<Option<crate::account_session_runtime::ProviderResponse>, WorkerError> {
+    let id = id.to_owned();
+    let operation = operation.clone();
+    store
+        .read_async("runtime-services/retained_monitor_late_result", move |tx| {
+            let snapshot = match crate::monitor_runtime::snapshot(tx, &id) {
+                Ok((snapshot, _)) => snapshot,
+                Err(crate::monitor_policy::MonitorError::Store(error)) => {
+                    return Err(WorkerError::Store(error));
+                }
+                Err(_) => return Ok(None),
+            };
+            if !snapshot.deadline_lost() || snapshot.operation() != Some(&operation) {
+                return Ok(None);
+            }
+            let Some(call) = monitor_call(tx, &id, &operation)? else {
+                return Ok(None);
+            };
+            let Ok(storage::Replay::Return(receipt)) = storage::replay_recorded(tx, &call)? else {
+                return Ok(None);
             };
             Ok(match receipt.result {
                 RequestResult::Reply(value) => Some(
@@ -846,16 +1024,7 @@ pub async fn monitor_request_generation(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_generation", move |tx| {
-            let Some(call) = monitor_call(tx, &id, &operation)? else {
-                return Ok(None);
-            };
-            if matches!(
-                storage::replay_in_transaction(tx, &call)?,
-                Ok(storage::Replay::Retry(_))
-            ) {
-                return Ok(None);
-            }
-            Ok(Some(call.scope.generation))
+            Ok(monitor_command_scope(tx, &id, &operation)?.map(|scope| scope.generation))
         })
         .await
 }
@@ -950,6 +1119,26 @@ mod validation_tests {
     }
 
     #[test]
+    fn manual_unsubscribe_requires_the_exact_actor_scope_and_narrow_shape() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::ThreadUnsubscribe;
+        request.params = json!({"threadId":"fixture-thread"});
+        request.operation = "manual-release:receipt-hash:unsubscribe".into();
+        request.expected_scope = Some(request.scope.clone());
+        assert!(validate(&request).is_ok());
+        for field in ["actor", "scope", "operation", "params"] {
+            let mut invalid = request.clone();
+            match field {
+                "actor" => invalid.actor = None,
+                "scope" => invalid.expected_scope = None,
+                "operation" => invalid.operation = "generic-unsubscribe".into(),
+                _ => invalid.params["extra"] = json!(true),
+            }
+            assert_eq!(validate(&invalid), Err(PortError::Invalid), "{field}");
+        }
+    }
+
+    #[test]
     fn mcp_reconnect_requires_actor_scope_and_exact_server_shape() {
         let mut request = turns_request("full", 1, true);
         request.method = Method::McpServerReconnect;
@@ -1039,6 +1228,32 @@ mod validation_tests {
             validate(&turns_request("full", 21, false)),
             Err(PortError::Invalid)
         );
+    }
+
+    #[test]
+    fn actorless_transfer_turn_pages_accept_only_a_nonempty_cursor() {
+        let mut request = turns_request("full", 20, false);
+        request.operation = "account-transfer:transfer:member:turns:1".into();
+        request.params["cursor"] = json!("20");
+        assert!(
+            validate(&request).is_ok(),
+            "the next bounded source page must reach native admission"
+        );
+        for cursor in [Value::Null, json!(""), json!(20), json!([]), json!({})] {
+            request.params["cursor"] = cursor;
+            assert_eq!(validate(&request), Err(PortError::Invalid));
+        }
+        request.params["cursor"] = json!("20");
+        for (field, value) in [
+            ("limit", json!(21)),
+            ("sortDirection", json!("asc")),
+            ("itemsView", json!("notLoaded")),
+            ("extra", json!(true)),
+        ] {
+            let mut invalid = request.clone();
+            invalid.params[field] = value;
+            assert_eq!(validate(&invalid), Err(PortError::Invalid), "{field}");
+        }
     }
 
     #[test]
@@ -1377,5 +1592,67 @@ mod validation_tests {
         assert!(validate(&request).is_ok());
         request.method = Method::ThreadFork;
         assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn transfer_background_preflight_accepts_only_the_exact_bounded_source_shape() {
+        let mut request = turns_request("full", 1, false);
+        request.scope.account = "source-account".into();
+        request.expected_scope = Some(request.scope.clone());
+        request.operation = "transfer:transfer-a:agent-a:background-before".into();
+        request.method = Method::ThreadBackgroundTerminalsList;
+        request.params = json!({"threadId":"source-thread","limit":100});
+        request.transfer = Some(TransferAuthorization {
+            transfer_id: "transfer-a".into(),
+            member: "agent-a".into(),
+            source_account: "source-account".into(),
+            thread_id: "source-thread".into(),
+        });
+        assert!(
+            validate(&request).is_ok(),
+            "the bounded source read must reach its owner"
+        );
+        for params in [
+            json!({"threadId":"source-thread"}),
+            json!({"threadId":"source-thread","limit":1}),
+            json!({"threadId":"source-thread","limit":99}),
+            json!({"threadId":"source-thread","limit":101}),
+            json!({"threadId":"source-thread","limit":100,"cursor":"page"}),
+            json!({"threadId":"source-thread","limit":100,"extra":true}),
+            json!({"threadId":"other-thread","limit":100}),
+        ] {
+            let mut invalid = request.clone();
+            invalid.params = params;
+            assert_eq!(validate(&invalid), Err(PortError::Invalid));
+        }
+        for field in ["account", "scope", "missing-scope", "operation"] {
+            let mut invalid = request.clone();
+            match field {
+                "account" => invalid.scope.account = "other-account".into(),
+                "scope" => {
+                    invalid
+                        .expected_scope
+                        .as_mut()
+                        .expect("request has an expected scope")
+                        .generation += 1;
+                }
+                "missing-scope" => invalid.expected_scope = None,
+                _ => invalid.operation = "other:background-before".into(),
+            }
+            let expected = if matches!(field, "account" | "scope") {
+                PortError::ScopeMismatch
+            } else {
+                PortError::Invalid
+            };
+            assert_eq!(validate(&invalid), Err(expected), "{field}");
+        }
+        for method in [Method::ThreadQueueList, Method::ThreadUnsubscribe] {
+            let mut exact = request.clone();
+            exact.method = method;
+            exact.params = json!({"threadId":"source-thread"});
+            assert!(validate(&exact).is_ok());
+            exact.params["limit"] = json!(100);
+            assert_eq!(validate(&exact), Err(PortError::Invalid));
+        }
     }
 }

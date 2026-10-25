@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use studio_runtime_store::{StoreError, Transaction};
 
+use crate::account_session_runtime::ConnectionScope;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{0}")]
@@ -13,7 +15,184 @@ pub enum Error {
     #[error(transparent)]
     Store(#[from] StoreError),
 }
-pub type Connections = BTreeMap<String, String>;
+/// Separate the current model connection from live source-process scopes.
+/// These are cached observations, not permission to start or replay a command.
+#[derive(Clone, Default)]
+pub struct Connections {
+    owners: BTreeMap<String, String>,
+    sources: BTreeMap<String, ConnectionScope>,
+    scopes: BTreeMap<String, ConnectionScope>,
+    responses: BTreeMap<String, HeldResponseProof>,
+}
+impl FromIterator<(String, String)> for Connections {
+    fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
+        Self {
+            owners: iter.into_iter().collect(),
+            sources: BTreeMap::new(),
+            scopes: BTreeMap::new(),
+            responses: BTreeMap::new(),
+        }
+    }
+}
+impl<const N: usize> From<[(String, String); N]> for Connections {
+    fn from(value: [(String, String); N]) -> Self {
+        value.into_iter().collect()
+    }
+}
+impl Connections {
+    pub fn get(&self, owner: &str) -> Option<&String> {
+        self.owners.get(owner)
+    }
+    pub fn observe_source(&mut self, scope: ConnectionScope) {
+        self.sources.insert(scope.account.clone(), scope);
+    }
+    pub fn observe_owner(&mut self, owner: String, scope: ConnectionScope) {
+        self.owners.insert(owner.clone(), scope.connection.clone());
+        self.scopes.insert(owner, scope);
+    }
+    pub fn observe_response(&mut self, proof: HeldResponseProof) {
+        self.responses
+            .insert(text(&proof.owner, "id", "").into(), proof);
+    }
+}
+
+/// Candidate metadata is not native proof. Only a fresh, exact-scope compact
+/// thread read can authorize Stop, and its turn remains conditional at native dispatch.
+pub fn held_response_candidate(owner: &Value) -> bool {
+    owner["provider"] == "claude"
+        && owner["executionMode"] != "vm"
+        && owner["status"] == "interrupted"
+        && owner["inFlight"] == false
+        && owner["autoWake"] == false
+        && owner["deleted"] != true
+        && !studio_runtime_store::truthy(owner.get("deletedAt"))
+        && owner["archived"] != true
+        && !studio_runtime_store::truthy(owner.get("archivedAt"))
+        && owner["accountTransferId"].is_null()
+        && owner["executionMove"].is_null()
+        && owner["epoch"].as_u64().is_some()
+        && !text(owner, "id", "").is_empty()
+        && !text(owner, "threadId", "").is_empty()
+        && !text(owner, "turnId", "").is_empty()
+        && owner["nativeResponseTurn"] == owner["turnId"]
+        && owner["restartRecovery"]["stage"] == "held"
+        && owner["disconnectRecovery"]["source"] == "restart"
+        && ["restartRecovery", "disconnectRecovery"].iter().all(|key| {
+            owner[key]["epoch"] == owner["epoch"]
+                && owner[key]["accountKey"] == text(owner, "accountKey", "default")
+                && owner[key]["threadId"] == owner["threadId"]
+        })
+}
+
+/// Ephemeral observation, never a stored lifecycle transition or delivery permit.
+/// Revalidation binds the unchanged actor and complete current native scope.
+#[derive(Clone)]
+pub struct HeldResponseProof {
+    owner: Value,
+    scope: ConnectionScope,
+}
+impl HeldResponseProof {
+    pub fn observe(owner: Value, scope: ConnectionScope, reply: &Value) -> Option<Self> {
+        (held_response_candidate(&owner)
+            && scope.account == text(&owner, "accountKey", "default")
+            && !scope.connection.is_empty()
+            && reply["thread"]["id"] == owner["threadId"]
+            && reply["thread"]["status"]["type"] == "active")
+            .then_some(Self { owner, scope })
+    }
+    fn matches(&self, owner: &Value, scope: &ConnectionScope) -> bool {
+        self.owner == *owner && self.scope == *scope && held_response_candidate(owner)
+    }
+}
+
+fn retained_monitor_scope(
+    tx: &Transaction<'_>,
+    monitor: &Value,
+    owner: &Value,
+) -> Result<Option<ConnectionScope>, Error> {
+    if monitor["status"] != "running"
+        || monitor["agent"] != owner["id"]
+        || monitor["epoch"] != owner["epoch"]
+        || owner["deleted"] == true
+        || studio_runtime_store::truthy(owner.get("deletedAt"))
+    {
+        return Ok(None);
+    }
+    let Ok(operation) =
+        serde_json::from_value::<crate::monitor_policy::Operation>(monitor["operation"].clone())
+    else {
+        return Ok(None);
+    };
+    if operation.agent != text(owner, "id", "") || Some(operation.epoch) != owner["epoch"].as_i64()
+    {
+        return Ok(None);
+    }
+    match crate::account_worker::retained::vm_actor(tx, &operation.agent) {
+        Ok(false) => {}
+        Err(crate::account_worker::WorkerError::Store(error)) => return Err(Error::Store(error)),
+        _ => return Ok(None),
+    }
+    match crate::account_worker::retained::monitor_command_scope(
+        tx,
+        text(monitor, "id", ""),
+        &operation,
+    ) {
+        Ok(scope) => Ok(scope),
+        Err(crate::account_worker::WorkerError::Store(error)) => Err(Error::Store(error)),
+        _ => Ok(None),
+    }
+}
+
+/// The source accounts of proven running host monitors. The HTTP caller only
+/// observes those accounts' existing sessions; it never starts another session.
+pub fn monitor_sources(
+    tx: &Transaction<'_>,
+    owners: &[Value],
+) -> Result<Vec<ConnectionScope>, Error> {
+    let mut scopes = BTreeMap::new();
+    for (_, raw) in studio_runtime_store::StartupRecoveryRepository::active_monitors(tx)? {
+        let monitor: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+        if let Some(owner) = owners.iter().find(|owner| owner["id"] == monitor["agent"])
+            && let Some(scope) = retained_monitor_scope(tx, &monitor, owner)?
+        {
+            scopes.insert(scope.account.clone(), scope);
+        }
+    }
+    Ok(scopes.into_values().collect())
+}
+
+/// Projection of an existing command, authorized by its original command ledger
+/// and an observed live source scope, never by the actor's new model thread.
+pub fn project_monitor(
+    tx: &Transaction<'_>,
+    raw: &Value,
+    owner: &Value,
+    owner_connection: Option<&str>,
+    source: Option<&ConnectionScope>,
+) -> Result<Value, Error> {
+    let proven = match (retained_monitor_scope(tx, raw, owner)?, source) {
+        (Some(original), Some(live))
+            if live.account == original.account
+                && live.generation == original.generation
+                && !live.connection.is_empty()
+                && (live.connection == original.connection
+                    || raw["reattachedConnectionId"].as_str()
+                        == Some(live.connection.as_str())) =>
+        {
+            Some(live)
+        }
+        _ => None,
+    };
+    Ok(project_bound(
+        "monitor",
+        raw,
+        owner,
+        proven
+            .map(|scope| scope.connection.as_str())
+            .or(owner_connection),
+        proven.map(|scope| scope.generation),
+    ))
+}
 fn raw(connection: &Connection, table: &str, id: &str) -> Result<Option<Value>, Error> {
     let text: Option<String> = connection
         .query_row(
@@ -30,12 +209,16 @@ fn raw(connection: &Connection, table: &str, id: &str) -> Result<Option<Value>, 
     })
     .transpose()
 }
-pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error> {
+pub fn owner(connection: &Connection, scope: &str) -> Result<Value, Error> {
     let root =
         raw(connection, "runtime_agents", scope)?.ok_or(Error::Invalid("Unknown process owner"))?;
     if studio_runtime_store::truthy(root.get("deletedAt")) {
         return Err(Error::Invalid("This process owner was deleted"));
     }
+    Ok(root)
+}
+pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error> {
+    let root = owner(connection, scope)?;
     let mut statement = connection
         .prepare(
             "SELECT record FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL",
@@ -105,6 +288,15 @@ pub fn digest(value: &Value) -> String {
     studio_runtime_store::sha256_hex(canonical(value).as_bytes())
 }
 pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str>) -> Value {
+    project_bound(source, raw, owner, connection, None)
+}
+fn project_bound(
+    source: &str,
+    raw: &Value,
+    owner: &Value,
+    connection: Option<&str>,
+    retained_generation: Option<u64>,
+) -> Value {
     let agent = text(raw, "agent", text(owner, "id", ""));
     let account = text(owner, "accountKey", "default");
     let mut source_account = string(raw, "sourceAccountKey");
@@ -112,12 +304,11 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
     let mut source_thread = string(raw, "sourceThreadId");
     let epoch;
     let opaque;
-    let native;
     let pending =
         source == "monitor" && matches!(raw["status"].as_str(), Some("starting" | "approval"));
     let is_monitor = source == "monitor";
     let is_claude = source == "claude_task";
-    if is_monitor {
+    let native = if is_monitor {
         epoch = raw["epoch"].clone();
         let operation = &raw["operation"];
         source_account = operation
@@ -127,26 +318,36 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
             .unwrap_or(if pending { json!(account) } else { Value::Null });
         source_connection = string(operation, "connectionId");
         source_thread = string(operation, "threadId");
-        if raw["status"] == "running"
+        if retained_generation.is_some() {
+            source_connection = json!(connection);
+        } else if raw["status"] == "running"
             && connection.is_some()
             && raw["reattachedConnectionId"].as_str() == connection
         {
             source_connection = json!(connection);
             source_thread = owner["threadId"].clone();
         }
-        if source_thread.as_str().is_none_or(str::is_empty)
+        if retained_generation.is_none()
+            && source_thread.as_str().is_none_or(str::is_empty)
             && operation["connectionId"].as_str() == connection
         {
             source_thread = owner["threadId"].clone();
         }
         opaque = text(raw, "id", "").to_owned();
-        native = json!([
+        let mut identity = json!([
             raw["id"],
             epoch,
             source_account,
             source_connection,
             source_thread
         ]);
+        if let Some(generation) = retained_generation {
+            identity
+                .as_array_mut()
+                .expect("monitor identity")
+                .push(json!(generation));
+        }
+        identity
     } else {
         epoch = raw["ownerEpoch"].clone();
         let item = text(raw, "itemId", "");
@@ -155,7 +356,7 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
         } else {
             text(raw, "processId", item).to_owned()
         };
-        native = if is_claude {
+        if is_claude {
             json!([
                 opaque,
                 epoch,
@@ -174,14 +375,15 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
                 source_thread,
                 raw["turnId"]
             ])
-        };
-    }
-    let same = source_account == account
+        }
+    };
+    let same = (retained_generation.is_some() || source_account == account)
         && epoch == owner["epoch"]
         && connection.is_some_and(|c| !c.is_empty())
         && source_connection.as_str() == connection
-        && source_thread.as_str().is_some_and(|v| !v.is_empty())
-        && source_thread == owner["threadId"];
+        && (retained_generation.is_some()
+            || (source_thread.as_str().is_some_and(|v| !v.is_empty())
+                && source_thread == owner["threadId"]));
     let can_input = same
         && owner["autoWake"] == true
         && if is_monitor {
@@ -211,6 +413,9 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
         "stdinCloseRequested":raw["stdinCloseRequested"]==true,"bytes":bytes,"outputTruncated":raw["outputTruncated"].as_bool().unwrap_or(bytes>output.len() as u64),
         "capabilities":{"readOutput":!is_claude,"sendInput":can_input,"resize":is_monitor&&can_input,"stop":same||(pending&&epoch==owner["epoch"]&&source_account==account)},
         "_raw":raw,"_sourceAccountKey":source_account,"_sourceConnectionId":source_connection,"_sourceThreadId":source_thread,"_sourceEpoch":epoch});
+    if let Some(generation) = retained_generation {
+        result["_sourceGeneration"] = json!(generation);
+    }
     if is_monitor {
         if let Some(budget) = raw.get("outputWakeBudget") {
             result["outputWakeBudget"] = json!({"totalSuppressedMatches":budget["totalSuppressedMatches"],"paused":budget["paused"],"tokens":budget["tokens"]});
@@ -226,25 +431,28 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
     result
 }
 pub fn processes(
-    connection: &Connection,
+    connection: &Transaction<'_>,
     scope: &str,
     connections: &Connections,
 ) -> Result<(Vec<Value>, Vec<Value>), Error> {
     let owners = owners(connection, scope)?;
     let mut output = Vec::new();
     for table in ["runtime_monitors", "runtime_tasks"] {
-        let sql = if table == "runtime_monitors" {
-            "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('approval','starting','running')"
+        let rows = if table == "runtime_monitors" {
+            studio_runtime_store::StartupRecoveryRepository::active_monitors(connection)?
+                .into_iter()
+                .map(|(_, raw)| raw)
+                .collect::<Vec<_>>()
         } else {
-            "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status')='running'"
+            let mut statement=connection.prepare("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status')='running'").map_err(StoreError::from)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(StoreError::from)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StoreError::from)?
         };
-        let mut statement = connection.prepare(sql).map_err(StoreError::from)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(StoreError::from)?;
         for row in rows {
-            let mut raw: Value =
-                serde_json::from_str(&row.map_err(StoreError::from)?).map_err(StoreError::from)?;
+            let mut raw: Value = serde_json::from_str(&row).map_err(StoreError::from)?;
             let Some(owner) = owners.iter().find(|o| o["id"] == raw["agent"]) else {
                 continue;
             };
@@ -268,12 +476,20 @@ pub fn processes(
             if source != "monitor" {
                 raw["sourceProvider"] = json!(provider);
             }
-            output.push(project(
-                source,
-                &raw,
-                owner,
-                connections.get(text(owner, "id", "")).map(String::as_str),
-            ));
+            let owner_connection = connections.get(text(owner, "id", "")).map(String::as_str);
+            output.push(if source == "monitor" {
+                project_monitor(
+                    connection,
+                    &raw,
+                    owner,
+                    owner_connection,
+                    connections
+                        .sources
+                        .get(text(&raw["operation"], "accountKey", "default")),
+                )?
+            } else {
+                project(source, &raw, owner, owner_connection)
+            });
         }
     }
     output.sort_by(|a, b| {
@@ -291,13 +507,29 @@ pub fn response_target(owner: &Value, connection: Option<&str>) -> Value {
         && !text(owner, "threadId", "").is_empty()
         && !text(owner, "turnId", "").is_empty()
     {
-        json!({"agent":owner["id"],"accountKey":text(owner,"accountKey","default"),"epoch":owner["epoch"],"connectionId":connection,"threadId":owner["threadId"],"turnId":owner["turnId"]})
+        response_identity(owner, connection.unwrap_or_default())
     } else {
         Value::Null
     }
 }
+fn stop_target(owner: &Value, connections: &Connections) -> Value {
+    let id = text(owner, "id", "");
+    let active = response_target(owner, connections.get(id).map(String::as_str));
+    if !active.is_null() {
+        return active;
+    }
+    match (connections.responses.get(id), connections.scopes.get(id)) {
+        (Some(proof), Some(scope)) if proof.matches(owner, scope) => {
+            response_identity(owner, &scope.connection)
+        }
+        _ => Value::Null,
+    }
+}
+fn response_identity(owner: &Value, connection: &str) -> Value {
+    json!({"agent":owner["id"],"accountKey":text(owner,"accountKey","default"),"epoch":owner["epoch"],"connectionId":connection,"threadId":owner["threadId"],"turnId":owner["turnId"]})
+}
 pub fn listing(
-    connection: &Connection,
+    connection: &Transaction<'_>,
     scope: &str,
     connections: &Connections,
 ) -> Result<Value, Error> {
@@ -307,9 +539,7 @@ pub fn listing(
             .expect("process object")
             .retain(|k, _| !k.starts_with('_'));
     }
-    Ok(
-        json!({"responseTarget":response_target(&owners[0],connections.get(scope).map(String::as_str)),"processes":processes}),
-    )
+    Ok(json!({"responseTarget":stop_target(&owners[0],connections),"processes":processes}))
 }
 pub fn matches(process: &Value, identity: &Value) -> bool {
     ["key", "generation", "agent", "accountKey", "epoch"]
@@ -318,6 +548,17 @@ pub fn matches(process: &Value, identity: &Value) -> bool {
 }
 pub fn validate_response(owner: &Value, target: &Value, connection: Option<&str>) -> bool {
     !target.is_null() && response_target(owner, connection) == *target
+}
+pub fn validate_stop_response(
+    owner: &Value,
+    target: &Value,
+    scope: &ConnectionScope,
+    proof: Option<&HeldResponseProof>,
+) -> bool {
+    validate_response(owner, target, Some(&scope.connection))
+        || proof.is_some_and(|proof| {
+            proof.matches(owner, scope) && response_identity(owner, &scope.connection) == *target
+        })
 }
 
 pub enum Claim {
@@ -330,25 +571,11 @@ pub fn claim(
     connections: &Connections,
     now: f64,
 ) -> Result<Claim, Error> {
+    if let Some(result) = replay(tx, request)? {
+        return Ok(Claim::Replay(result));
+    }
     let id = text(request, "requestId", "");
     let signature = digest(request);
-    let prior: Option<(String, String)> = tx
-        .query_row(
-            "SELECT signature,record FROM runtime_process_actions WHERE id=?",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(StoreError::from)?;
-    if let Some((old, raw)) = prior {
-        if old != signature {
-            return Err(Error::Invalid(
-                "This process action ID has different content",
-            ));
-        }
-        let record: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-        return Ok(Claim::Replay(record["result"].clone()));
-    }
     let scope = text(request, "agent", "");
     let (owners, processes) = processes(tx, scope, connections)?;
     let owner = &owners[0];
@@ -363,11 +590,17 @@ pub fn claim(
     let mut targets = Vec::new();
     let mut entries = Vec::new();
     let response = if matches!(action, "stop_response" | "background_command") {
-        if !validate_response(
-            owner,
-            &request["responseTarget"],
-            connections.get(scope).map(String::as_str),
-        ) {
+        let valid = if action == "stop_response" {
+            !request["responseTarget"].is_null()
+                && stop_target(owner, connections) == request["responseTarget"]
+        } else {
+            validate_response(
+                owner,
+                &request["responseTarget"],
+                connections.get(scope).map(String::as_str),
+            )
+        };
+        if !valid {
             return Err(Error::Invalid(
                 "The response changed. Refresh the process list",
             ));
@@ -411,6 +644,28 @@ pub fn claim(
     .map_err(StoreError::from)?;
     Ok(Claim::New { record, targets })
 }
+/// Reuse a durable action before any fresh native observation. Changed content
+/// under the same request ID remains an error, including after a lost response.
+pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<Value>, Error> {
+    let prior: Option<(String, String)> = tx
+        .query_row(
+            "SELECT signature,record FROM runtime_process_actions WHERE id=?",
+            [text(request, "requestId", "")],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(StoreError::from)?;
+    let Some((signature, raw)) = prior else {
+        return Ok(None);
+    };
+    if signature != digest(request) {
+        return Err(Error::Invalid(
+            "This process action ID has different content",
+        ));
+    }
+    let record: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+    Ok(Some(record["result"].clone()))
+}
 pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
     tx.execute(
         "UPDATE runtime_process_actions SET record=? WHERE id=?",
@@ -422,7 +677,7 @@ pub fn save(tx: &Transaction<'_>, record: &Value) -> Result<(), Error> {
 pub fn receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
     let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_process_actions')",[],|r|r.get(0)).map_err(StoreError::from)?;
     if !exists {
-        return Ok(json!({"found":false,"result":null}));
+        return input_receipt(connection, query);
     }
     let record = raw(
         connection,
@@ -436,5 +691,11 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
     {
         return Ok(json!({"found":true,"result":record["result"]}));
     }
-    Ok(json!({"found":false,"result":null}))
+    input_receipt(connection, query)
+}
+fn input_receipt(connection: &Connection, query: &Value) -> Result<Value, Error> {
+    crate::monitor_http_input::read(connection, query).map_err(|error| match error {
+        crate::monitor_policy::MonitorError::Store(error) => Error::Store(error),
+        _ => Error::Invalid("Invalid monitor input receipt"),
+    })
 }

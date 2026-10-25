@@ -58,7 +58,12 @@ async function interpreterRuns(checkInterpreter, python, script) {
   }
 }
 // Never save or register an interpreter that cannot run the recovery script.
-async function supportedPython({ env, saved, script, checkInterpreter }) {
+async function supportedPython({
+  env,
+  saved,
+  script,
+  checkInterpreter = checkRecoveryInterpreter,
+}) {
   const refused = [];
   for (const candidate of interpreterCandidates(env, saved)) {
     if (await interpreterRuns(checkInterpreter, candidate, script))
@@ -552,6 +557,7 @@ async function configureRecovery({
   return { enabled: true, ...files };
 }
 module.exports = {
+  supportedPython,
   atomicJSON,
   configureRecovery,
   recoveryPreference,

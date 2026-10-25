@@ -1,4 +1,5 @@
 import { useSubscription } from "../../sync/subscriptions";
+import { randomUUID } from "../../uuid";
 import {
   useServerApi,
   useServerServices,
@@ -79,6 +80,10 @@ export const backgroundProcessGroups = [
 export const responseStopIdentity = (
   target: ProcessResponseTarget | null | undefined,
 ) => (target ? { responseTarget: target } : {});
+export const responseStopDisabled = (
+  target: ProcessResponseTarget | null | undefined,
+  pending: boolean,
+) => !target || pending;
 export const responseOwnerIdentityKey = (
   owner:
     | {
@@ -458,7 +463,7 @@ export default function BackgroundTasks({
     });
     const body: PostBody<"/api/processes/action"> = {
       action,
-      requestId: crypto.randomUUID(),
+      requestId: randomUUID(),
       agent: leadId,
       accountKey: scopeOwner.accountKey || "default",
       epoch: scopeOwner.epoch,
@@ -578,9 +583,7 @@ export default function BackgroundTasks({
             color="red"
             leftSection={<Square size={12} />}
             loading={controlPending}
-            disabled={
-              !scopeOwner?.inFlight || !responseTarget || !!pendingControl
-            }
+            disabled={responseStopDisabled(responseTarget, !!pendingControl)}
             onClick={() => runProcessControl("stop_response")}
           >
             Stop response
@@ -1130,8 +1133,17 @@ function TaskDetail({
             </p>
           )}
         </div>
-        {task.status === "running" && task.capabilities?.sendInput && (
-          <ProcessInput task={task} pending={pending} act={act} />
+        {(task.kind === "monitor" ||
+          (task.status === "running" && task.capabilities?.sendInput)) && (
+          <ProcessInput
+            task={task}
+            owner={owner}
+            pending={pending}
+            act={act}
+            receiptOnly={
+              task.status !== "running" || !task.capabilities?.sendInput
+            }
+          />
         )}
         <dl className="task-record">
           <div>
@@ -1182,24 +1194,56 @@ function TaskDetail({
   );
 }
 
-function ProcessInput({
+export function ProcessInput({
   task,
+  owner,
   pending,
   act,
+  receiptOnly = false,
 }: {
   task: DisplayBackgroundTask;
+  owner?: Agent;
   pending: boolean;
   act: BackgroundAction;
+  receiptOnly?: boolean;
 }) {
+  const api = useServerApi();
   const [input, setInput] = useState("");
   const [rows, setRows] = useState<string | number>(24);
   const [cols, setCols] = useState<string | number>(80);
   const [inputClosed, setStdinClosed] = useState(false);
+  const [receiptState, setReceiptState] = useState("");
+  const [checkingReceipt, setCheckingReceipt] = useState(false);
   const stdinClosed = inputClosed || !!task.stdinClosed;
   const stdinUnavailable =
     stdinClosed || !!task.stdinCloseRequested || !!task.cancelRequested;
   const native = task.kind === "command";
+  const checkReceipt = async () => {
+    if (!owner || owner.epoch == null || checkingReceipt || pending) return;
+    setCheckingReceipt(true);
+    try {
+      const status = await api.checkMonitorInputReceipt(task.id, {
+        agent: owner.id,
+        accountKey: owner.accountKey || "default",
+        epoch: owner.epoch,
+      });
+      setReceiptState(
+        status === "acknowledged"
+          ? "The process acknowledged the input."
+          : status === "rejected"
+            ? "The process rejected the input."
+            : status === "none"
+              ? "No input request needs a receipt check."
+              : "The input result is unknown. Do not send different input.",
+      );
+    } catch (error) {
+      setReceiptState(displayError(error));
+    } finally {
+      setCheckingReceipt(false);
+    }
+  };
   const send = async () => {
+    if (pending || checkingReceipt || receiptOnly || stdinUnavailable) return;
     const sent = input;
     const ok = native
       ? await act("/api/native-command", {
@@ -1215,31 +1259,46 @@ function ProcessInput({
   };
   return (
     <section className="process-input" aria-label="Command controls">
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void send();
-        }}
-        className="process-input-line"
-      >
-        <TextInput
-          aria-label="Terminal input"
-          placeholder="Type terminal input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={pending || stdinUnavailable}
-          maxLength={16000}
-        />
-        <Button size="sm" type="submit" disabled={pending || stdinUnavailable}>
-          {native ? "Send via agent" : "Send line"}
-        </Button>
-      </form>
+      {!receiptOnly && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void send();
+          }}
+          className="process-input-line"
+        >
+          <TextInput
+            aria-label="Terminal input"
+            placeholder="Type terminal input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            disabled={pending || checkingReceipt || stdinUnavailable}
+            maxLength={16000}
+          />
+          <Button
+            size="sm"
+            type="submit"
+            disabled={pending || checkingReceipt || stdinUnavailable}
+          >
+            {native ? "Send via agent" : "Send line"}
+          </Button>
+        </form>
+      )}
       <div className="process-input-actions">
         {!native && (
+          <Button
+            size="compact-xs"
+            disabled={pending || checkingReceipt || !owner}
+            onClick={() => void checkReceipt()}
+          >
+            Check input receipt
+          </Button>
+        )}
+        {!native && !receiptOnly && (
           <>
             <Button
               size="compact-xs"
-              disabled={pending || stdinUnavailable}
+              disabled={pending || checkingReceipt || stdinUnavailable}
               onClick={() =>
                 void act("/api/monitor/input", { id: task.id, text: "\u0003" })
               }
@@ -1248,7 +1307,7 @@ function ProcessInput({
             </Button>
             <Button
               size="compact-xs"
-              disabled={pending || stdinUnavailable}
+              disabled={pending || checkingReceipt || stdinUnavailable}
               onClick={() => {
                 void act("/api/monitor/input", {
                   id: task.id,
@@ -1289,6 +1348,7 @@ function ProcessInput({
                   size="xs"
                   disabled={
                     pending ||
+                    checkingReceipt ||
                     !!task.cancelRequested ||
                     !Number(rows) ||
                     !Number(cols)
@@ -1308,6 +1368,11 @@ function ProcessInput({
           </>
         )}
       </div>
+      {receiptState && (
+        <Text size="xs" role="status">
+          {receiptState}
+        </Text>
+      )}
     </section>
   );
 }

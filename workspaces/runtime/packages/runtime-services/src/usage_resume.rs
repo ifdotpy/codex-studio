@@ -282,6 +282,41 @@ fn allowed(data: &Value, agent: &Value, now: f64) -> bool {
     }
     measured
 }
+/// A limits read that fails or is not current cannot show that the provider
+/// reset the limit. Once the reset time that the wait holds has passed, with
+/// the grace and the anti-loop floor, the wait resumes without a current read.
+/// Only a reset later than the failure counts: a reset that had passed when
+/// the turn failed is no evidence that the limit ends. The follow-up id is
+/// fixed and the resumed wait is `started`, so it resumes once; a new limit
+/// failure of the resumed turn starts a new wait.
+fn reset_passed(r: &Value, now: f64) -> bool {
+    let failed = number(r, "failedAt").unwrap_or(0.0);
+    now >= failed + RESUME_MIN
+        && number(r, "resetAt").is_some_and(|reset| reset > failed && now >= reset + RESET_GRACE)
+}
+/// Start the wait's continuation: one follow-up with the wait's fixed id.
+fn resume(s: &Snapshot, mut r: Value, auth: bool, now: f64) -> Decision {
+    let id = format!("usage-resume:{}", text(&r, "id"));
+    patch(
+        &mut r,
+        json!({"status":"started","dueAt":null,"startedAt":now,"reason":null}),
+    );
+    let mut d = Decision::save(s, r, "usageResume", now);
+    d.effects.push(Effect::Followup {
+        id,
+        text: if auth {
+            AUTH_CONTINUATION
+        } else {
+            CONTINUATION
+        }
+        .into(),
+    });
+    if let Some(a) = &mut d.agent {
+        remove(a, "nativeFailureHold");
+        patch(a, json!({"status":"queued","error":null}));
+    }
+    d
+}
 fn cancel(s: &Snapshot, r: &Value, reason: &str, now: f64) -> Decision {
     let mut r = r.clone();
     patch(
@@ -329,12 +364,18 @@ pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decisi
                         .and_then(Value::as_str)
                         .is_some_and(|old| old != marker)
                 }))
+    } else if fresh {
+        limits.allowed(&s.agent, now)
     } else {
-        fresh && limits.allowed(&s.agent, now)
+        reset_passed(r, now)
     };
     let mut r = r.clone();
     if !recovered {
-        let reset = limits.reset_at(&s.agent);
+        // Only a current read replaces the reset that the wait holds.
+        let reset = fresh
+            .then(|| limits.reset_at(&s.agent))
+            .flatten()
+            .or_else(|| number(&r, "resetAt"));
         let due = if auth {
             now + auth_backoff(&r)
         } else {
@@ -346,26 +387,7 @@ pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decisi
         );
         return Ok(Decision::save(s, r, "usageResume", now));
     }
-    let id = format!("usage-resume:{}", text(&r, "id"));
-    patch(
-        &mut r,
-        json!({"status":"started","dueAt":null,"startedAt":now,"reason":null}),
-    );
-    let mut d = Decision::save(s, r, "usageResume", now);
-    d.effects.push(Effect::Followup {
-        id,
-        text: if auth {
-            AUTH_CONTINUATION
-        } else {
-            CONTINUATION
-        }
-        .into(),
-    });
-    if let Some(a) = &mut d.agent {
-        remove(a, "nativeFailureHold");
-        patch(a, json!({"status":"queued","error":null}));
-    }
-    Ok(d)
+    Ok(resume(s, r, auth, now))
 }
 
 /// Preserve identity checks and reschedule when no current observation is available.
@@ -378,6 +400,9 @@ pub fn tick_without_observation(s: &Snapshot, now: f64) -> Result<Decision> {
         .clone()
         .ok_or_else(|| ContinuationError::Invalid("/record".into()))?;
     let auth = text(&record, "cause") == "auth";
+    if !auth && reset_passed(&record, now) {
+        return Ok(resume(s, record, auth, now));
+    }
     let due = if auth {
         now + auth_backoff(&record)
     } else {
@@ -461,7 +486,8 @@ pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Res
             "usage-policy/limits-account-mismatch",
         ));
     }
-    let reset = limits.reset_at(&s.agent);
+    // Telemetry without a blocked window keeps the reset that the wait holds.
+    let reset = limits.reset_at(&s.agent).or_else(|| number(r, "resetAt"));
     let mut r = r.clone();
     patch(
         &mut r,

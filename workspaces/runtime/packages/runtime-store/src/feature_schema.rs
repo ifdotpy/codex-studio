@@ -4,6 +4,8 @@ use crate::StoreResult;
 
 // These tables are installed by Runtime and feature constructors, or on first
 // feature use, in canvas.sqlite3. The Rust feature schema owns their current DDL.
+// `runtime_budget` and `runtime_budget_usage` keep the rows of the removed team
+// token budget that older builds wrote; current builds neither read nor write them.
 const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_work_root_status
@@ -29,7 +31,6 @@ const FEATURE_SCHEMA: &str = r#"
                 id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,
                 cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL);
             CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61');
-            CREATE TABLE IF NOT EXISTS runtime_payload_migrations (name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT);
             CREATE TABLE IF NOT EXISTS runtime_assets (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -279,17 +280,26 @@ const FEATURE_SCHEMA: &str = r#"
             ON runtime_server_exec_input(handle);
 "#;
 
+/// Progress records of resumable passes, in Canvas and, for compacted
+/// analytics columns, in analytics.
+pub(crate) const PAYLOAD_MIGRATIONS_SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS runtime_payload_migrations (name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT);
+";
+
+/// Every statement that [`prepare`] runs, in order.
+fn feature_statements() -> [&'static str; 3] {
+    [
+        FEATURE_SCHEMA,
+        PAYLOAD_MIGRATIONS_SCHEMA,
+        crate::stored_text_compaction::BATCHES_SCHEMA,
+    ]
+}
+
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
-    transaction.execute_batch(FEATURE_SCHEMA)?;
-    crate::entity_publication::prepare_work_change_journal(transaction)?;
-    let has_breakdown: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='breakdown')",
-        [], |row| row.get(0),
-    )?;
-    if !has_breakdown {
-        // NULL preserves total-only replay comparison for every existing response.
-        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN breakdown TEXT")?;
+    for schema in feature_statements() {
+        transaction.execute_batch(schema)?;
     }
+    crate::entity_publication::prepare_work_change_journal(transaction)?;
     transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
     // A deleted row is no longer readable by the writer journal. Its source
     // trigger owns the corresponding summary tombstone in the same transaction.
@@ -332,89 +342,19 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::FEATURE_SCHEMA;
+    use super::feature_statements;
     use crate::repositories::schema_registrations;
     use rusqlite::Connection;
     use std::collections::BTreeSet;
-
-    #[tokio::test]
-    async fn budget_usage_schema_refuses_a_missing_tokens_column() {
-        let root = tempfile::tempdir().expect("isolated state");
-        let store = crate::RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("store");
-        store
-            .transaction(|tx| {
-                tx.execute_batch("ALTER TABLE runtime_budget_usage DROP COLUMN tokens")?;
-                Ok(())
-            })
-            .await
-            .expect("missing-column fixture");
-        let error = store
-            .verify_schema()
-            .expect_err("all mandatory usage columns must be checked");
-        assert!(
-            error.to_string().contains("tokens"),
-            "report the missing column: {error}"
-        );
-    }
-
-    #[test]
-    fn budget_usage_breakdown_upgrade_preserves_legacy_rows_and_is_idempotent() {
-        let mut db = crate::fresh_state::test_canvas();
-        db.execute_batch("DROP TABLE runtime_budget_usage;
-            CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,tokens INTEGER NOT NULL,at REAL NOT NULL);
-            CREATE INDEX runtime_budget_usage_agent ON runtime_budget_usage(agent,kind);
-            INSERT INTO runtime_budget_usage VALUES('legacy','agent','response',12,101);").expect("legacy usage table");
-        let root_page: i64 = db
-            .query_row(
-                "SELECT rootpage FROM sqlite_master WHERE name='runtime_budget_usage'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("root page");
-        let tx = db.transaction().expect("upgrade transaction");
-        super::prepare(&tx).expect("additive upgrade");
-        tx.commit().expect("commit upgrade");
-        let legacy: (i64, String, i64, Option<String>) = db
-            .query_row(
-                "SELECT rowid,kind,tokens,breakdown FROM runtime_budget_usage WHERE id='legacy'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .expect("new nullable column");
-        assert_eq!(
-            legacy,
-            (1, "response".into(), 12, None),
-            "no backfill or row rewrite"
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT rootpage FROM sqlite_master WHERE name='runtime_budget_usage'",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .expect("same table"),
-            root_page
-        );
-        let cookie: i64 = db
-            .pragma_query_value(None, "schema_version", |row| row.get(0))
-            .expect("schema cookie");
-        let tx = db.transaction().expect("second prepare");
-        super::prepare(&tx).expect("idempotent upgrade");
-        tx.commit().expect("second commit");
-        assert_eq!(
-            db.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))
-                .expect("same cookie"),
-            cookie
-        );
-    }
 
     #[test]
     fn feature_tables_are_not_core_repository_requirements() {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
         let mut table_statements = 0;
-        for statement in FEATURE_SCHEMA.split(';') {
+        for statement in feature_statements()
+            .iter()
+            .flat_map(|schema| schema.split(';'))
+        {
             let statement = statement.trim();
             let uppercase = statement.to_ascii_uppercase();
             if uppercase.starts_with("CREATE TABLE")

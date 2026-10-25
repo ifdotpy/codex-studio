@@ -1,3 +1,4 @@
+import { randomUUID } from "../../../uuid";
 import {
   ApiError,
   errorText,
@@ -90,7 +91,7 @@ export async function requestCommandBackground(
     };
   return submit(api, {
     action: "background_command",
-    requestId: crypto.randomUUID(),
+    requestId: randomUUID(),
     agent: agentId,
     accountKey: target.accountKey,
     epoch: target.epoch,

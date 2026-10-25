@@ -8,8 +8,12 @@ use crate::notification_dispatch::{
     ProviderDeliveryIdentity, dispatch_notification_with_effects, flush_notification_streams,
 };
 use rusqlite::{OptionalExtension, params};
+use studio_runtime_schema::shared_values::{
+    PROVIDER_RESUME_UNKNOWN_ERROR, PROVIDER_SESSION_MISSING_ERROR,
+    PROVIDER_THREAD_START_UNKNOWN_ERROR,
+};
 use studio_runtime_store::CachedSql;
-use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository};
+use studio_runtime_store::{AgentRecord, EventWriteRepository, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
 /// Pending publication receipts above which token-rate observations are
@@ -1171,12 +1175,24 @@ fn settle_outcome(
             true
         }
         SessionOutcome::Write { ticket, .. } => {
-            uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
+            if let Some((agent, epoch)) = retry_unknown_resume(tx, &context, session_closed)? {
+                effect = Some(Effect::Wake(agent, epoch));
+                true
+            } else {
+                uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
+            }
         }
         SessionOutcome::Resolved {
             outcome: RequestOutcome::Unknown,
             ticket,
-        } => uncertain(tx, &context, Some(&ticket), false, session_closed)?,
+        } => {
+            if let Some((agent, epoch)) = retry_unknown_resume(tx, &context, session_closed)? {
+                effect = Some(Effect::Wake(agent, epoch));
+                true
+            } else {
+                uncertain(tx, &context, Some(&ticket), false, session_closed)?
+            }
+        }
         SessionOutcome::Resolved {
             ticket,
             outcome: RequestOutcome::Reply { body, .. },
@@ -1188,6 +1204,17 @@ fn settle_outcome(
                     // attempt, as in Python, which drops a reply whose
                     // preparation already finished. It neither prepares nor
                     // settles the attempt a second time.
+                }
+                Method::ThreadResume | Method::ThreadStart if matches!(&body, ResponseBody::Error(error) if session_missing(error)) =>
+                {
+                    // The saved session is gone, so no retry can resume it. The input
+                    // was never sent: it settles as not sent, and the transcript stays.
+                    SchedulerRepository::settle_start_outcome(
+                        tx,
+                        &i.identity(),
+                        "failed",
+                        Some(PROVIDER_SESSION_MISSING_ERROR),
+                    )?;
                 }
                 Method::ThreadResume | Method::ThreadStart => {
                     // Name the provider's own error; a rejected reply names
@@ -1447,6 +1474,57 @@ fn not_sent_reason(
     )
 }
 
+/// The error data flag of a missing saved session. The Claude bridge owns the
+/// name, so it is read from the bridge source instead of being copied here.
+fn session_missing_flag() -> &'static str {
+    static FLAG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
+        include_str!("../../../../../providers/apps/claude-bridge/session-store.mjs")
+            .split_once("export const SESSION_MISSING = \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(flag, _)| flag)
+            .expect("Claude bridge session missing flag")
+    });
+    *FLAG
+}
+
+/// Whether a provider error reply says that the thread's saved session is gone.
+fn session_missing(error: &Value) -> bool {
+    error
+        .get("data")
+        .and_then(|data| data.get(session_missing_flag()))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+/// The stored reason of a thread/resume whose input went back to the queue.
+const UNKNOWN_THREAD_RESUME_RETRY: &str =
+    "Provider thread resume outcome is unknown; the input returned to the queue once.";
+
+/// Return the input of a thread/resume whose outcome is unknown while its
+/// provider session stays open, for example after its reply deadline. A thread
+/// request carries no input (only turn/start does), and resuming a thread again
+/// creates nothing, so the retry cannot repeat a message. It happens once per
+/// run; a second unknown outcome holds the input. Returns the agent to wake.
+fn retry_unknown_resume(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+    session_closed: bool,
+) -> Result<Option<(String, i64)>, WorkerError> {
+    if session_closed || context.method()? != Method::ThreadResume {
+        return Ok(None);
+    }
+    let identity = context.intent.identity();
+    if studio_runtime_store::ExecutionHistoryRepository::start_returns(tx, &identity.attempt_id)?
+        > 0
+    {
+        return Ok(None);
+    }
+    if SchedulerRepository::return_unstarted_input(tx, &identity, UNKNOWN_THREAD_RESUME_RETRY)? {
+        return Ok(Some((identity.agent_id, identity.epoch)));
+    }
+    Ok(None)
+}
+
 /// Settle a request whose provider outcome is unknown. Returns true when the
 /// request is retired because its attempt went back to the queue.
 fn uncertain(
@@ -1480,7 +1558,12 @@ fn uncertain(
             TurnStart::Unknown
         } else {
             TurnStart::Blocked {
-                reason: studio_runtime_schema::shared_values::PROVIDER_RESUME_UNKNOWN_ERROR.into(),
+                reason: if context.method()? == Method::ThreadStart {
+                    PROVIDER_THREAD_START_UNKNOWN_ERROR
+                } else {
+                    PROVIDER_RESUME_UNKNOWN_ERROR
+                }
+                .into(),
             }
         };
         SchedulerRepository::settle_start_outcome(
@@ -1557,8 +1640,13 @@ pub(super) async fn journal_batch(
     let account_for_read = account.to_owned();
     let (publication, limits_observation) =
         crate::diagnostics::measure_runtime_stage_async("journal.snapshot", async {
-            let publication = crate::notification_dispatch::PublicationContext::default()
+            let mut publication = crate::notification_dispatch::PublicationContext::default()
                 .with_native_source(native_source);
+            if let Some((actor, epoch)) = expected_vm_actor {
+                publication = publication.with_vm_journal(account, actor, epoch, journal_scope)?;
+            } else if journal_scope != account {
+                return Err(invalid(journal_scope));
+            }
             let limits_observation = if needs_limits {
                 Some(
                     store
@@ -1767,6 +1855,88 @@ fn journal_stage(entry: &JournalEntry) -> &'static str {
     }
 }
 
+/// Consume only manual release closure, including a completed worker with no
+/// current turn attempt. Other notifications retain their attempt fence.
+fn record_manual_release_closure(
+    tx: &rusqlite::Transaction<'_>,
+    identity: &JournalIdentity<'_>,
+    publication: &crate::notification_dispatch::PublicationContext,
+    entry: &JournalEntry,
+    method: &str,
+    params: &Value,
+) -> Result<bool, WorkerError> {
+    if method != "thread/closed"
+        && !(method == "thread/status/changed" && params["status"]["type"] == "notLoaded")
+    {
+        return Ok(false);
+    }
+    let Some(thread) = params["threadId"]
+        .as_str()
+        .filter(|thread| !thread.is_empty())
+    else {
+        return Ok(false);
+    };
+    let mut statement = tx.prepare_cached(
+        "SELECT record FROM runtime_agents WHERE thread_id=?1 AND account_key=?2 ORDER BY rowid LIMIT 2",
+    )?;
+    let rows = statement
+        .query_map(params![thread, identity.account], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let [raw] = rows.as_slice() else {
+        return Ok(false);
+    };
+    let mut agent: AgentRecord = serde_json::from_str(raw).map_err(|_| invalid(thread))?;
+    let record = agent.value();
+    let release = &record["nativeRelease"];
+    if !release["id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with(crate::agent_management_recovery::MANUAL_RELEASE_PREFIX))
+    {
+        return Ok(false);
+    }
+    // Never let the legacy turn route accept weaker closure evidence for a
+    // manual release, even when this notification fails the exact scope check.
+    let Some(source) = publication.native_source.as_ref() else {
+        return Ok(true);
+    };
+    let scope = crate::account_session_runtime::ConnectionScope {
+        account: identity.account.to_owned(),
+        connection: source.connection.clone(),
+        generation: entry.generation.0,
+    };
+    if identity.expected_vm_actor.is_some()
+        || source.provider != "codex"
+        || source.account != identity.account
+        || source.connection.is_empty()
+        || source.generation != Some(entry.generation.0)
+        || release["scope"] != json!(scope)
+        || release["connectionId"] != source.connection
+        || release["accountKey"] != identity.account
+        || release["threadId"] != thread
+        || release["targetEpoch"] != record["epoch"]
+        || release["targetRootId"] != record["rootId"]
+        || release["targetParentId"] != record["parentId"]
+        || release["resetPending"] != true
+        || release["submittedAt"].as_f64().is_none()
+        || !matches!(
+            release["phase"].as_str(),
+            Some("unsubscribing" | "released" | "unknown")
+        )
+    {
+        return Ok(true);
+    }
+    let mut release = release.clone();
+    release["closedAt"] = json!(now());
+    release["resetPending"] = json!(false);
+    // Closure does not replace the exact unsubscribe receipt. In particular,
+    // an unknown unsubscribe keeps its phase and cannot enable preparation.
+    agent.extra.insert("nativeRelease".into(), release);
+    AgentRepository::put(tx, &agent)?;
+    Ok(true)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn journal_one(
     tx: &rusqlite::Transaction<'_>,
@@ -1870,6 +2040,21 @@ fn journal_one(
                 .map_err(|_| invalid(&operation))?;
                 effect = Some(Effect::LimitsUpdated(update));
             }
+        } else if let Some((method, params)) = notice
+            && record_manual_release_closure(
+                tx,
+                &JournalIdentity {
+                    account,
+                    journal_scope,
+                    expected_vm_actor,
+                },
+                publication,
+                entry,
+                method,
+                params,
+            )?
+        {
+            // The manual release is independent of a live model turn.
         } else if let Some((method, params)) = notice
             && let Some((agent, epoch)) = steer::acknowledge(tx, account, method, params)?
         {
@@ -2059,7 +2244,7 @@ fn journal_one(
                                 false,
                             )?;
                             if let Some(turn) = turn {
-                                next.settle_turn(journal_scope, thread, turn);
+                                next.settle_turn(account, thread, turn);
                             }
                             effect = Some(
                                 if params["turn"]["status"] == "failed"
@@ -2095,7 +2280,7 @@ fn journal_one(
                             publication,
                             streams,
                             &ProviderDeliveryIdentity {
-                                provider_handle: ProviderHandle::for_account(journal_scope)
+                                provider_handle: ProviderHandle::for_account(account)
                                     .as_str()
                                     .into(),
                                 generation: entry.generation.0,

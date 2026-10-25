@@ -19,6 +19,9 @@ pub struct Port {
     pub fail_ack: Mutex<bool>,
     pub acknowledged: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub unknown: Mutex<bool>,
+    pub input_reply: Mutex<Option<InputReply>>,
+    pub input_submit_gate:
+        Mutex<Option<(Arc<tokio::sync::Notify>, tokio::sync::oneshot::Receiver<()>)>>,
     pub not_sent: Mutex<bool>,
     pub not_sent_reason: Mutex<NotSentReason>,
     pub rule_available: Mutex<bool>,
@@ -34,6 +37,17 @@ impl MonitorNative for Port {
     ) -> futures_util::future::BoxFuture<'a, Submission> {
         Box::pin(async move {
             self.submitted.lock().expect("submit").push(effect.clone());
+            let gate = self
+                .input_submit_gate
+                .lock()
+                .expect("input submit gate")
+                .take();
+            if let Some((entered, release)) = gate {
+                entered.notify_one();
+                release
+                    .await
+                    .expect("the test releases the held input submission");
+            }
             if *self.unknown.lock().expect("unknown") {
                 Submission::Unknown
             } else if *self.not_sent.lock().expect("not sent") {
@@ -158,6 +172,12 @@ impl MonitorPort for Port {
         _: &'a Operation,
         _: &'a str,
     ) -> futures_util::future::BoxFuture<'a, InputReply> {
-        Box::pin(async { InputReply::Acknowledged(json!({})) })
+        Box::pin(async {
+            self.input_reply
+                .lock()
+                .expect("input reply")
+                .take()
+                .unwrap_or_else(|| InputReply::Acknowledged(json!({})))
+        })
     }
 }

@@ -21,6 +21,7 @@
 use super::*;
 use crate::provider_session_task::SessionStatus;
 use std::time::Duration;
+use studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE as TERMINAL_PAGE_LIMIT;
 use studio_runtime_store::OrchestrationSettingsRepository;
 use tokio::time::Instant;
 
@@ -55,8 +56,6 @@ const IDLE_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 const LOADED_PAGE_LIMIT: u64 = 100;
 /// Pages read before a sweep gives up; a longer list is left for later.
 const MAX_LOADED_PAGES: usize = 16;
-/// Background terminals requested per `thread/backgroundTerminals/list` page.
-const TERMINAL_PAGE_LIMIT: u64 = 100;
 /// `thread/read` statuses of a thread with no running turn. A turn that ended
 /// with a provider error leaves the thread in `systemError` until its next
 /// turn; Codex unloads and resumes such a thread like an idle one (measured on
@@ -1000,8 +999,10 @@ mod tests {
         let generation = Generation(7);
         let handle = ProviderHandle::for_account("default");
         let mut status = SessionStatus {
+            supervisor_write_deduplication: false,
             generation,
             initialization: InitializationStatus::Ready,
+            initialize_result: None,
             attachment: AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: true,

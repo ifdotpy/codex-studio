@@ -470,13 +470,30 @@ impl ProviderAdapter for ClaudeAdapter {
         ".credentials.json"
     }
 
+    /// A turn that Claude starts itself, for example for a background task
+    /// notification, can fail at a subscription limit with only the notice
+    /// that Claude Code shows as its error: "You've hit your session limit ·
+    /// resets 3:40am (UTC)". The names are Claude Code's limit names.
     fn classify_error(&self, error: &Value) -> Option<UsageCause> {
         static AUTH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        static LIMIT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         let auth = AUTH.get_or_init(|| {
             regex::Regex::new(r"(?i)oauth session expired|failed to authenticate")
                 .expect("static Claude auth pattern")
         });
-        classify_usage_failure(error, Some(auth))
+        let limit = LIMIT.get_or_init(|| {
+            regex::Regex::new(
+                r"^You've hit your (?:session|weekly|Opus|Sonnet|Fable|usage credit) limit\b",
+            )
+            .expect("static Claude limit notice pattern")
+        });
+        classify_usage_failure(error, Some(auth)).or_else(|| {
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| limit.is_match(message))
+                .then_some(UsageCause::RateLimit)
+        })
     }
 
     fn is_busy_error(&self, error: &Value) -> bool {
@@ -765,9 +782,9 @@ mod tests {
 
     /// A supervised provider outlives a backend install, so every earlier host
     /// launch that a running provider may still have must reattach under the
-    /// current launch: its command is the current command or one of the
-    /// `reattach_commands`, its environment passes the retained check, and its
-    /// working directory is unchanged. The last entry of each launch in
+    /// current launch: the supervisor accepts its command (see
+    /// `retained_command_accepted`), its environment passes the retained check,
+    /// and its working directory is unchanged. The last entry of each launch in
     /// `provider-launch-history.json` is the current launch, so any change to
     /// a Codex or Claude launch command, environment or working directory fails
     /// here until it is recorded with a matching reattach entry.
@@ -833,25 +850,29 @@ mod tests {
             .join("node_modules/@anthropic-ai/claude-agent-sdk");
         std::fs::create_dir_all(&sdk).expect("sdk dir");
         std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
-        let profile = json!({
-            "id": "account", "provider": "claude", "status": "ready", "home": dir.path(),
-            "email": "a@example.test", "accountId": "claude:a@example.test",
-            "_credentialIdentity": "claude:a@example.test",
-            "claudeOptions": {"binaryPath": binary, "configDir": dir.path().join("config"),
-                "customModels": [], "launchArgs": ""}
-        });
-        let mut claude_input = input.clone();
-        claude_input.insert(
-            "STUDIO_NODE_BIN".to_owned(),
-            binary.to_string_lossy().into_owned(),
-        );
-        let (claude, _) = super::claude_launch(
-            &profile,
-            dir.path(),
-            dir.path().join("account-servers/account"),
-            claude_input,
-        )
-        .expect("Claude launch");
+        let claude_with = |pin: &str| {
+            let profile = json!({
+                "id": "account", "provider": "claude", "status": "ready", "home": dir.path(),
+                "email": "a@example.test", "accountId": "claude:a@example.test",
+                "_credentialIdentity": pin,
+                "claudeOptions": {"binaryPath": binary, "configDir": dir.path().join("config"),
+                    "customModels": [], "launchArgs": ""}
+            });
+            let mut claude_input = input.clone();
+            claude_input.insert(
+                "STUDIO_NODE_BIN".to_owned(),
+                binary.to_string_lossy().into_owned(),
+            );
+            super::claude_launch(
+                &profile,
+                dir.path(),
+                dir.path().join("account-servers/account"),
+                claude_input,
+            )
+            .expect("Claude launch")
+            .0
+        };
+        let claude = claude_with("claude:a@example.test");
         let history: BTreeMap<String, Vec<Recorded>> =
             serde_json::from_str(include_str!("provider-launch-history.json"))
                 .expect("launch history");
@@ -884,16 +905,21 @@ mod tests {
                 .iter()
                 .map(|command| command.iter().map(|part| normalize(part)).collect())
                 .collect();
+            let mut normalized = spec.clone();
+            normalized.command = current.command.clone();
+            normalized.reattach_commands = reattach;
+            normalized.environment = current.environment.clone();
             for earlier in earlier {
                 let release = &earlier.release;
-                if earlier.command != current.command && !reattach.contains(&earlier.command) {
+                if !studio_runtime_process::retained_command_accepted(&earlier.command, &normalized)
+                {
                     failures.push(format!(
                         "{name} {release}: its command has no reattach command"
                     ));
                 }
                 if !studio_runtime_process::retained_environment_accepted(
                     &earlier.environment,
-                    &current.environment,
+                    &normalized,
                 ) {
                     failures.push(format!(
                         "{name} {release}: its environment fails the retained check"
@@ -904,6 +930,280 @@ mod tests {
                 }
             }
         }
+        // State that changes between launches of the same code: the credential
+        // identity pin learns organization and account UUIDs after a bridge
+        // starts, Homebrew upgrades node, and the Claude CLI updates itself.
+        // Both executables are found through links and launched by their
+        // canonical paths. A bridge launched in each earlier state must
+        // reattach under the launch of each later state.
+        let identity = crate::account_driver::claude_identity::identity;
+        let states = [
+            (
+                "legacy pin",
+                identity("a@example.test", None, None),
+                "24.1",
+                "2.1.1",
+            ),
+            (
+                "organization learned",
+                identity("a@example.test", Some("org"), None),
+                "24.1",
+                "2.1.1",
+            ),
+            (
+                "account learned",
+                identity("a@example.test", Some("org"), Some("acct")),
+                "24.1",
+                "2.1.1",
+            ),
+            (
+                "node upgraded",
+                identity("a@example.test", Some("org"), Some("acct")),
+                "24.2",
+                "2.1.1",
+            ),
+            (
+                "Claude CLI updated",
+                identity("a@example.test", Some("org"), Some("acct")),
+                "24.2",
+                "2.1.2",
+            ),
+        ];
+        let state_dir = dir.path().join("states");
+        let launches: Vec<_> = states
+            .iter()
+            .map(|(_, pin, node, cli)| claude_in_state(&state_dir, pin, node, cli))
+            .collect();
+        for (index, later) in launches.iter().enumerate() {
+            for (earlier_state, earlier) in states.iter().zip(&launches).take(index) {
+                if !bridge_reattaches(earlier, later) {
+                    failures.push(format!(
+                        "claude: a bridge launched in the state \"{}\" does not reattach \
+                         in the state \"{}\"",
+                        earlier_state.0, states[index].0
+                    ));
+                }
+            }
+        }
         assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+    }
+
+    /// Whether a bridge started by the launch `started` reattaches under the
+    /// launch `current`: the supervisor accepts its command and working
+    /// directory, and the backend accepts its environment.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn bridge_reattaches(
+        started: &studio_runtime_process::ProviderLaunchSpec,
+        current: &studio_runtime_process::ProviderLaunchSpec,
+    ) -> bool {
+        studio_runtime_process::retained_command_accepted(&started.command, current)
+            && started.cwd == current.cwd
+            && studio_runtime_process::retained_environment_accepted(&started.environment, current)
+    }
+
+    /// A Claude launch of account a@example.test in `dir` whose node and Claude
+    /// CLI are found through links in `<dir>/bin`, as Homebrew links node and
+    /// the Claude installer links its CLI. Each launch points the links at the
+    /// executables of `node` and `cli`; the launch has their canonical paths.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn claude_in_state(
+        dir: &std::path::Path,
+        pin: &str,
+        node: &str,
+        cli: &str,
+    ) -> studio_runtime_process::ProviderLaunchSpec {
+        claude_launch_with(dir, "a@example.test", pin, node, cli, "config", "")
+    }
+
+    /// See `claude_in_state`; also sets the account email, the configuration
+    /// directory below `dir` and the launch arguments.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn claude_launch_with(
+        dir: &std::path::Path,
+        email: &str,
+        pin: &str,
+        node: &str,
+        cli: &str,
+        config: &str,
+        launch_args: &str,
+    ) -> studio_runtime_process::ProviderLaunchSpec {
+        use std::os::unix::fs::PermissionsExt;
+        let install = |target: std::path::PathBuf, link: &str| {
+            std::fs::create_dir_all(target.parent().expect("parent")).expect("install dir");
+            std::fs::write(&target, "#!/bin/sh\n").expect("fake executable");
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
+                .expect("make executable");
+            let link = dir.join("bin").join(link);
+            std::fs::create_dir_all(dir.join("bin")).expect("link dir");
+            let _absent = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&target, &link).expect("link");
+        };
+        install(dir.join("Cellar/node").join(node).join("bin/node"), "node");
+        install(dir.join("claude/versions").join(cli), "claude");
+        let sdk = dir.join("node_modules/@anthropic-ai/claude-agent-sdk");
+        std::fs::create_dir_all(&sdk).expect("sdk dir");
+        std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
+        let profile = json!({
+            "id": "account", "provider": "claude", "status": "ready", "home": dir,
+            "email": email, "accountId": format!("claude:{email}"),
+            "_credentialIdentity": pin,
+            "claudeOptions": {"configDir": dir.join(config), "customModels": [],
+                "launchArgs": launch_args}
+        });
+        let environment = std::collections::BTreeMap::from([
+            (
+                "HOME".to_owned(),
+                dir.join("home").to_string_lossy().into_owned(),
+            ),
+            (
+                "PATH".to_owned(),
+                format!("{}:/usr/bin:/bin", dir.join("bin").display()),
+            ),
+        ]);
+        super::claude_launch(
+            &profile,
+            dir,
+            dir.join("account-servers/account"),
+            environment,
+        )
+        .expect("Claude launch")
+        .0
+    }
+
+    /// The bridge's node and Claude CLI are launched by their canonical paths,
+    /// so a Homebrew upgrade of node or a Claude CLI that updates itself gives
+    /// the next launch of the same code another program or `STUDIO_CLAUDE_BIN`.
+    /// A running bridge is still the provider of the same account and must
+    /// reattach. A bridge of another account, configuration directory or
+    /// options must not.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_bridge_whose_node_or_claude_cli_was_replaced_reattaches() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = dir.path();
+        let pin = "claude:a@example.test";
+        let launch = |email: &str, node: &str, cli: &str, config: &str, launch_args: &str| {
+            let pin = if email == "a@example.test" {
+                pin.to_owned()
+            } else {
+                format!("claude:{email}")
+            };
+            claude_launch_with(dir, email, &pin, node, cli, config, launch_args)
+        };
+        let started = [
+            (
+                "node upgrade",
+                launch("a@example.test", "24.1", "2.1.2", "config", ""),
+            ),
+            (
+                "Claude CLI update",
+                launch("a@example.test", "24.2", "2.1.1", "config", ""),
+            ),
+            (
+                "node upgrade and Claude CLI update",
+                launch("a@example.test", "24.1", "2.1.1", "config", ""),
+            ),
+        ];
+        let refused = [
+            (
+                "another account",
+                launch("b@example.test", "24.1", "2.1.1", "config", ""),
+            ),
+            (
+                "another configuration directory",
+                launch("a@example.test", "24.1", "2.1.1", "other", ""),
+            ),
+            (
+                "other options",
+                launch("a@example.test", "24.1", "2.1.1", "config", "--debug"),
+            ),
+        ];
+        let current = launch("a@example.test", "24.2", "2.1.2", "config", "");
+        for (change, started) in &started {
+            assert_ne!(
+                (&started.command, &started.environment),
+                (&current.command, &current.environment),
+                "the {change} changes the launch"
+            );
+            assert!(
+                bridge_reattaches(started, &current),
+                "a bridge started before the {change} reattaches"
+            );
+        }
+        for (change, started) in &refused {
+            assert!(
+                !bridge_reattaches(started, &current),
+                "a bridge of {change} is refused"
+            );
+        }
+    }
+
+    /// The credential identity pin learns the organization and account UUIDs
+    /// after a bridge starts, so the next launch of the same code computes
+    /// another `STUDIO_CLAUDE_CREDENTIAL_IDENTITY`. A bridge launched with the
+    /// pin before it learned them is the same credential and must reattach.
+    /// A bridge of another email must not.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_bridge_launched_before_its_identity_pin_learned_more_fields_reattaches() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let binary = dir.path().join("claude");
+        std::fs::write(&binary, "#!/bin/sh\n").expect("fake executable");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
+            .expect("make executable");
+        let sdk = dir
+            .path()
+            .join("node_modules/@anthropic-ai/claude-agent-sdk");
+        std::fs::create_dir_all(&sdk).expect("sdk dir");
+        std::fs::write(sdk.join("package.json"), "{}").expect("sdk package");
+        let launch = |email: &str, pin: String| {
+            let profile = json!({
+                "id": "account", "provider": "claude", "status": "ready", "home": dir.path(),
+                "email": email, "accountId": format!("claude:{email}"),
+                "_credentialIdentity": pin,
+                "claudeOptions": {"binaryPath": binary, "configDir": dir.path(), "customModels": []}
+            });
+            let environment = std::collections::BTreeMap::from([(
+                "STUDIO_NODE_BIN".to_owned(),
+                binary.to_string_lossy().into_owned(),
+            )]);
+            super::claude_launch(
+                &profile,
+                dir.path(),
+                dir.path().join("account-servers/account"),
+                environment,
+            )
+            .expect("Claude launch")
+            .0
+        };
+        let learned = |email: &str, organization: Option<&str>, account: Option<&str>| {
+            crate::account_driver::claude_identity::identity(email, organization, account)
+        };
+        let full = launch(
+            "a@example.test",
+            learned("a@example.test", Some("org"), Some("acct")),
+        );
+        for earlier in [
+            learned("a@example.test", None, None),
+            learned("a@example.test", Some("org"), None),
+            learned("a@example.test", None, Some("acct")),
+        ] {
+            let started = launch("a@example.test", earlier.clone());
+            assert!(
+                studio_runtime_process::retained_environment_accepted(&started.environment, &full),
+                "a bridge launched with {earlier} reattaches"
+            );
+        }
+        let other = launch("b@example.test", learned("b@example.test", None, None));
+        let mut foreign = full.environment.clone();
+        foreign.insert(
+            "STUDIO_CLAUDE_CREDENTIAL_IDENTITY".to_owned(),
+            other.environment["STUDIO_CLAUDE_CREDENTIAL_IDENTITY"].clone(),
+        );
+        assert!(
+            !studio_runtime_process::retained_environment_accepted(&foreign, &full),
+            "a bridge of another credential is refused"
+        );
     }
 }

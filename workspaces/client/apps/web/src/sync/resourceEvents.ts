@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import {
   openServerEvents,
   type ServerEventSource,
@@ -1894,8 +1895,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       const storage = await syncDatabase();
       if (!coordinatorActive || generation !== coordinatorGeneration) return;
       workspaceId = storage.workspaceId;
-      tabId ||=
-        globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+      tabId ||= randomUUID();
       coordinatorReady = true;
       try {
         if (typeof BroadcastChannel !== "undefined") {

@@ -690,6 +690,24 @@ describe("scale verifier helpers", () => {
 });
 
 describe("scale verifier readiness markers", () => {
+  const controlledWatch = () => {
+    const watcher = new EventEmitter();
+    let notify;
+    let closeCount = 0;
+    watcher.close = () => {
+      closeCount += 1;
+    };
+    return {
+      watchDirectory: (_directory, listener) => {
+        notify = listener;
+        return watcher;
+      },
+      notify: (filename) => notify("rename", filename),
+      get closeCount() {
+        return closeCount;
+      },
+    };
+  };
   const newRoot = async () => {
     const root = await mkdtemp(join(tmpdir(), "scale-markers-"));
     temporaryPaths.push(root);
@@ -791,37 +809,110 @@ describe("scale verifier readiness markers", () => {
     }
   });
 
+  it.each(["worker-7.ready", "named"])(
+    "rejects unknown markers present before arming: %s",
+    async (name) => {
+      const root = await newRoot();
+      const directory = await createReadinessMarkerDirectory(
+        join(root, "named"),
+      );
+      await writeFile(join(directory, name), "unknown", { mode: 0o600 });
+      const events = controlledWatch();
+      const watch = await watchReadinessMarkers(
+        directory,
+        [randomUUID()],
+        null,
+        events,
+      );
+      try {
+        await expect(watch.next(soon())).rejects.toThrow(/Unknown readiness/);
+      } finally {
+        watch.close();
+      }
+      expect(events.closeCount).toBe(1);
+    },
+  );
+
+  it.each([null, "m", "worker-0.ready", "worker-7.ready.tmp"])(
+    "rejects unknown markers after a coalesced event: %s",
+    async (filename) => {
+      const root = await newRoot();
+      const directory = await createReadinessMarkerDirectory(join(root, "m"));
+      const tokens = [randomUUID()];
+      await publish(directory, 0, `${tokens[0]}\n`);
+      const events = controlledWatch();
+      const watch = await watchReadinessMarkers(
+        directory,
+        tokens,
+        null,
+        events,
+      );
+      try {
+        expect(await watch.next(soon())).toBe(0);
+        await publish(directory, 7, `${tokens[0]}\n`);
+        events.notify(filename);
+        await expect(watch.next(soon())).rejects.toThrow(/Unknown readiness/);
+      } finally {
+        watch.close();
+      }
+      expect(events.closeCount).toBe(1);
+    },
+  );
+
   it("rejects unknown marker names and symbolic-link markers", async () => {
     const root = await newRoot();
     const directory = await createReadinessMarkerDirectory(join(root, "m"));
     const tokens = [randomUUID(), randomUUID()];
-    const unknown = await watchReadinessMarkers(directory, tokens);
+    const unknownEvents = controlledWatch();
+    const unknown = await watchReadinessMarkers(
+      directory,
+      tokens,
+      null,
+      unknownEvents,
+    );
     try {
       await publish(directory, 7, `${tokens[0]}\n`);
+      unknownEvents.notify("worker-7.ready");
       await expect(unknown.next(soon())).rejects.toThrow(/Unknown readiness/);
     } finally {
       unknown.close();
     }
+    expect(unknownEvents.closeCount).toBe(1);
     // An event for the directory's own name is ignored only when no entry inside
     // has that name; such an entry is still an unknown marker.
     const named = await createReadinessMarkerDirectory(join(root, "named"));
-    const sameName = await watchReadinessMarkers(named, tokens);
+    const namedEvents = controlledWatch();
+    const sameName = await watchReadinessMarkers(
+      named,
+      tokens,
+      null,
+      namedEvents,
+    );
     try {
       await writeFile(join(named, "named"), "x", { mode: 0o600 });
+      namedEvents.notify("named");
       await expect(sameName.next(soon())).rejects.toThrow(/Unknown readiness/);
     } finally {
       sameName.close();
     }
+    expect(namedEvents.closeCount).toBe(1);
     const linked = await createReadinessMarkerDirectory(join(root, "linked"));
     const target = join(root, "target");
     await writeFile(target, `${tokens[0]}\n`, { mode: 0o600 });
     await symlink(target, join(linked, "worker-0.ready"));
-    const watch = await watchReadinessMarkers(linked, tokens);
+    const linkedEvents = controlledWatch();
+    const watch = await watchReadinessMarkers(
+      linked,
+      tokens,
+      null,
+      linkedEvents,
+    );
     try {
       await expect(watch.next(soon())).rejects.toThrow(/symbolic link/);
     } finally {
       watch.close();
     }
+    expect(linkedEvents.closeCount).toBe(1);
   });
 
   it("times out, closes, and aborts pending waits without leaking the watcher", async () => {

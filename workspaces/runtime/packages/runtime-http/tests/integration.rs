@@ -9,9 +9,11 @@ mod multi_server_incoming;
 mod orchestration_settings;
 mod process_controls;
 mod project_preparation;
+mod queue_recovery;
 mod recovery_http;
 mod remote_access_origin;
 mod retained_worktrees;
+mod rules_owner_hold;
 mod studio_errors;
 mod task_output;
 mod task_review;
@@ -23,6 +25,8 @@ mod wave7_p15_http;
 mod wave7_p18_account_session;
 // Register every integration test module here; the tooling witness checks coverage.
 
+#[path = "../../runtime-services/tests/removed_budget_fields.rs"]
+pub(crate) mod removed_budget_fields;
 // The shared callback fixture prepares files before any HTTP handler runs; the
 // HTTP-only blocking filesystem ban does not apply to that test setup.
 #[allow(clippy::disallowed_methods)]

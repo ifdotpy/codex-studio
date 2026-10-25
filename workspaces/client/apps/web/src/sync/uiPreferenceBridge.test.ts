@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PreferenceFields } from "./uiPreferenceMerge";
 import type { syncPost } from "../api";
+import { createHash, webcrypto } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { canonicalPreferenceJson } from "./uiPreferenceMerge";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn(),
@@ -57,6 +60,48 @@ afterEach(() => {
 });
 
 describe("UI preference projection bridge", () => {
+  it("syncs HTTP preference edits without subtle and retains the exact retry identity", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
+    });
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          readFileSync(
+            new URL("../wasm/generated/client_bg.wasm", import.meta.url),
+          ),
+          { headers: { "Content-Type": "application/wasm" } },
+        ),
+    );
+    const fields = { local: { value: "Привет 🦀", timestamp: 2, writer: "w" } };
+    mocks.read.mockImplementation((scope) => (scope === "user" ? fields : {}));
+    mocks.syncPost.mockRejectedValueOnce(new TypeError("Lost response"));
+    const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
+    const stop = bridge.start();
+    try {
+      bridge.receiveProjection({});
+      await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
+      expect(mocks.acknowledge).not.toHaveBeenCalled();
+      bridge.retryPendingWrites();
+      await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledTimes(2));
+      const digest = createHash("sha256")
+        .update(canonicalPreferenceJson({ scope: "user", fields }))
+        .digest("hex");
+      expect(mocks.syncPost.mock.calls[0]).toEqual([
+        "/api/sync/preferences",
+        { scope: "user", fields },
+        { requestId: `ui-preferences:${digest}` },
+      ]);
+      expect(mocks.syncPost.mock.calls[1]).toEqual(
+        mocks.syncPost.mock.calls[0],
+      );
+      expect(mocks.acknowledge).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+    }
+  });
+
   it("applies each projected remote row once", () => {
     const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
     const stop = bridge.start();

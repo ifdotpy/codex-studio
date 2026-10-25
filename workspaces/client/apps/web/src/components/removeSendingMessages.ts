@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import { get, syncPost, ApiError } from "../api";
@@ -82,7 +83,7 @@ export function createSendingMessageRemoval(
             id: clientId,
             expectedText: row.text,
             expected_revision: queue.revision,
-            request_id: crypto.randomUUID(),
+            request_id: randomUUID(),
           } satisfies QueueMutation;
           localStorage.setItem(key, JSON.stringify(request));
         }

@@ -14,6 +14,9 @@ import path from "node:path";
 // ack: read the steer and echo it inside the turn.
 // pulled: read the steer without an echo (outcome unknown).
 // late: read the steer, end the turn with an error, then echo the steer.
+// dequeue: read the steer without an echo, finish the reply, then answer the
+// steer as its own prompt; each result names the input it answered, as the
+// Claude CLI does when it dequeues a steer instead of folding it in.
 // anything else: never read further input until `.end` exists.
 const FAKE_SDK = String.raw`
 export const resolveSettings=async()=>({effective:{}});
@@ -59,14 +62,28 @@ export function query({prompt,options}){
      queueMode=true;survive=text.endsWith('survivor');
      const stopped=new Promise(r=>stopTurn=r);
      for(;;){const next=await read();nativeQueue.push(next.value);if(text!=='native-split-all'||next.value.shouldQuery!==false)break;}
+     const submitted=nativeQueue.map(message=>message.uuid);
      mark(cwd+'/.native-queued');
      await stopped;
      yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['interrupted']};
+     if(text==='native-split-all')yield {type:'result',subtype:'success',usage,user_message_uuids:submitted};
      for(const held of nativeQueue.splice(0)){
       fs.writeFileSync(cwd+'/.survived','');
       yield {type:'user',isReplay:true,uuid:held.uuid};
      }
      queueMode=false;continue;
+    }
+    if(text.startsWith('dequeue')){
+     let next=await read();
+     yield {type:'result',subtype:'success',usage,result:'first',user_message_uuid:input.value.uuid,user_message_uuids:[input.value.uuid]};
+     while(next.value.shouldQuery===false){
+      if(text!=='dequeue-split-missing')yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};
+      next=await read();
+     }
+     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-steer'}}};
+     yield {type:'result',subtype:'success',usage,result:'second',user_message_uuid:next.value.uuid,...(text==='dequeue'?{user_message_uuids:[next.value.uuid]}:{})};
+     mark(cwd+'/.native-queued');
+     continue;
     }
     let late=null;
     if(text==='ack'){for(;;){const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};if(next.value.shouldQuery!==false)break;yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};}}
@@ -126,6 +143,14 @@ const acks = (bridge, id) =>
   );
 
 const ack = (bridge, id) => acks(bridge, id)[0];
+
+test.concurrent("the loaded bridge advertises exact steer completion receipts", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const initialized = await bridge.call("initialize", {});
+  assert.equal(initialized.capabilities.steerCompletionReceipts, true);
+});
 
 async function running(bridge, scenario) {
   const turn = (
@@ -195,6 +220,81 @@ test.concurrent("an echoed steer is acknowledged once inside its running turn", 
     "count every matching acknowledgement",
   );
 });
+
+// Live 24 October 2026: Claude finished its reply, then answered a steer as
+// its own prompt without a replay echo. The bridge deferred both results while
+// the steer stayed pending, so the turn never ended, Studio kept it running,
+// and every later message waited.
+test.concurrent("a steer that Claude answers as its own prompt is delivered and ends the turn", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "dequeue");
+  assert.deepEqual(await steer(bridge, turn, "event-dequeued"), {
+    turnId: turn,
+  });
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "completed");
+  assert.equal(done.params.turn.unappliedSteers, undefined);
+  const delivered = ack(bridge, "event-dequeued");
+  assert.ok(delivered, "the steer is acknowledged");
+  assert.equal(delivered.params.turnId, turn);
+  assert.equal(
+    bridge.notes.filter((n) => ack(bridge, "event-dequeued") === n).length,
+    1,
+  );
+  assert.deepEqual(await inputs(bridge), ["dequeue", "steer text"]);
+});
+
+for (const missing of [false, true]) {
+  test.concurrent(`a split steer needs exact prefix and final result receipts: missing=${missing}`, async ({
+    startBridge,
+  }) => {
+    const bridge = await startBridge();
+    const scenario = missing ? "dequeue-split-missing" : "dequeue-split";
+    const turn = await running(bridge, scenario);
+    const id = "split-dequeued";
+    await bridge.call("turn/steer", {
+      threadId: bridge.thread,
+      expectedTurnId: turn,
+      clientUserMessageId: id,
+      input: ["studio_event", "human", "studio_event"].map(
+        (inputOrigin, index) => ({
+          type: "text",
+          text: `split-part-${index}`,
+          inputOrigin,
+        }),
+      ),
+    });
+    await nativeQueued(bridge);
+    if (missing) {
+      assert.equal(ack(bridge, id), undefined);
+      assert.equal(
+        bridge.notes.some(
+          (note) =>
+            note.method === "turn/completed" && note.params.turn.id === turn,
+        ),
+        false,
+      );
+    } else {
+      assert.equal(
+        (await completed(bridge, turn)).params.turn.status,
+        "completed",
+      );
+      assert.ok(ack(bridge, id), "each split part has an exact result receipt");
+      assert.equal(
+        bridge.notes.filter((note) => ack(bridge, id) === note).length,
+        1,
+      );
+    }
+    assert.deepEqual(await inputs(bridge), [
+      scenario,
+      "split-part-0",
+      "split-part-1",
+      "split-part-2",
+    ]);
+  });
+}
 
 test.concurrent("a steer for another turn is rejected before any input is written", async ({
   startBridge,
@@ -522,6 +622,37 @@ test.concurrent("Stop without an active turn leaves the query unchanged", async 
   await end(bridge);
   await completed(bridge, next);
   assert.deepEqual(await inputs(bridge), ["hold", "probe"]);
+});
+
+test.concurrent("a compact active read never permits Stop to interrupt a replacement turn", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const previous = await running(bridge, "previous");
+  await end(bridge);
+  await completed(bridge, previous);
+  const current = await running(bridge, "replacement");
+  const snapshot = await bridge.call("thread/read", {
+    threadId: bridge.thread,
+    includeTurns: false,
+  });
+  assert.equal(snapshot.thread.status.type, "active");
+  assert.deepEqual(snapshot.thread.turns, []);
+  await assert.rejects(
+    bridge.call("turn/interrupt", {
+      threadId: bridge.thread,
+      turnId: previous,
+      stopBackgroundTasks: false,
+    }),
+    /different Claude turn/,
+  );
+  await end(bridge);
+  assert.equal(
+    (await completed(bridge, current)).params.turn.status,
+    "completed",
+  );
+  assert.deepEqual(await inputs(bridge), ["previous", "replacement"]);
+  assert.equal(existsSync(path.join(bridge.root, ".stopped-tasks")), false);
 });
 
 test.concurrent("a background task error preserves the successful queue cancellation receipt", async ({

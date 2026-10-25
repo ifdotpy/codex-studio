@@ -33,8 +33,14 @@ per_provider!(
 
 /// An accepted, running turn of a `provider` agent with queued input.
 async fn running_turn(provider: &'static str) -> (State, Peer, AccountHandle) {
+    running_turn_with_peer(provider, Peer::new()).await
+}
+
+async fn running_turn_with_peer(
+    provider: &'static str,
+    mut peer: Peer,
+) -> (State, Peer, AccountHandle) {
     let state = State::new().await;
-    let mut peer = Peer::new();
     let worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
@@ -62,6 +68,62 @@ async fn running_turn(provider: &'static str) -> (State, Peer, AccountHandle) {
         .await
         .unwrap();
     (state, peer, worker)
+}
+
+#[tokio::test]
+async fn legacy_claude_keeps_original_input_pending_until_the_next_turn() {
+    let peer =
+        Peer::identity_with_initialize_result("default", 1, None, None, false, false, json!({}));
+    let (state, mut peer, mut worker) = running_turn_with_peer("claude", peer).await;
+    state.wake(&worker).await;
+    tokio::select! {
+        wire = peer.writes.recv() => panic!("Legacy Claude must not receive busy-turn input: {:?}", wire.map(|wire| wire.value)),
+        () = worker_barrier(&worker) => {}
+    }
+    assert_eq!(input(&state).await, ("pending".into(), None, None));
+    assert_eq!(transcript(&state).await, 0);
+    assert_eq!(state.record().await["autoWake"], true);
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("claim".into());
+    frame(&mut peer, finished(&[])).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.bridge.faults.paused.notified(),
+    )
+    .await
+    .expect("native completion wakes the ordinary next-turn claim");
+    assert_eq!(state.record().await["provider"], "claude");
+    assert_eq!(input(&state).await, ("pending".into(), None, None));
+    let intent = store::claim(
+        state.bridge.store.clone(),
+        "default",
+        &state.agent,
+        state.epoch,
+    )
+    .await
+    .unwrap()
+    .expect("the ordinary Claude claim remains available");
+    assert_eq!(
+        intent.provider,
+        studio_runtime_providers::ProviderKind::Claude
+    );
+    assert_eq!(
+        intent
+            .events
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>(),
+        [INPUT]
+    );
+    assert_eq!(input(&state).await.0, "reserved");
+    assert_eq!(state.record().await["startAttempt"]["submitted"], false);
+    assert!(matches!(
+        peer.writes.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    worker.cancel();
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    state.bridge.faults.release.notify_one();
+    worker.completion().await.unwrap();
 }
 
 async fn set_provider(state: &State, provider: &'static str) {

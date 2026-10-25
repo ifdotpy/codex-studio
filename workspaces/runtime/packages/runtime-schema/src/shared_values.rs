@@ -226,9 +226,18 @@ pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconn
 pub const PROVIDER_START_UNKNOWN_ERROR: &str = "turn/start response timed out; outcome unknown";
 /// Error of input that the provider proved it never received.
 pub const PROVIDER_START_NOT_SENT_ERROR: &str = "Provider did not send turn/start";
-/// Hold reason of input whose thread resume answer was lost.
+/// Hold reason of input whose thread resume answer was lost twice: once, and once more
+/// after its single retry.
 pub const PROVIDER_RESUME_UNKNOWN_ERROR: &str =
     "Provider thread resume outcome is unknown; input remains pending.";
+/// Hold reason of input whose thread start answer was lost. Studio does not retry it,
+/// because a second thread start can create a second thread.
+pub const PROVIDER_THREAD_START_UNKNOWN_ERROR: &str =
+    "Provider thread start outcome is unknown; input remains pending.";
+/// Agent and input error of a thread resume whose saved provider session is gone. The input
+/// was never sent, so it settles as failed and its owner may send it again.
+pub const PROVIDER_SESSION_MISSING_ERROR: &str =
+    "The saved Claude session of this chat is missing. Start a new thread to continue.";
 /// Refusal of a monitor whose owner stopped its turn: the owner ended it, not Studio.
 pub const MONITOR_OWNER_STOPPED_ERROR: &str = "The agent turn was stopped";
 /// Seconds that the host retries one idempotent Linux VM provider journal read (next,

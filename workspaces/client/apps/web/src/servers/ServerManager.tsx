@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serverRows, relativeSeen } from "./serverRows";
 import { localDateTime } from "../local-time";
 import { ActionButton, SettingsSection } from "../components/ui/primitives";
@@ -416,7 +417,7 @@ export default function ServerManager({
                       saved?.origin === address &&
                       saved?.inviteId === invitation.inviteId
                         ? saved.id
-                        : crypto.randomUUID();
+                        : randomUUID();
                     request.current = {
                       origin: address,
                       code: code.trim(),

@@ -1,10 +1,8 @@
-//! Bounded legacy analytics repairs. Budget receipts are obtained outside the
-//! analytics transaction; a compare-and-swap acknowledges their durable page.
-use crate::analytics_capture::{CaptureError, check_identity, number, text};
-use crate::analytics_history::{HistoryBudgetSink, HistoryError};
+//! Bounded legacy analytics repairs.
+use crate::analytics_capture::{CaptureError, number, text};
+use crate::analytics_history::HistoryError;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
-use std::sync::Arc;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{AnalyticsRepository, RuntimeStore, truthy};
 const PAGE_SIZE: i64 = 64;
@@ -34,76 +32,6 @@ fn cursor(state: &Value) -> Result<(i64, i64), HistoryError> {
     Ok((value("cursor")?, value("end")?))
 }
 
-pub async fn migrate_budget(
-    store: &RuntimeStore,
-    agent: Value,
-    budget: &dyn HistoryBudgetSink,
-    now: f64,
-) -> Result<bool, HistoryError> {
-    let key = format!("budgetUsageMigrationV1:{}", text(&agent["id"]));
-    let metadata_key = key.clone();
-    let root = store.root().to_owned();
-    let agent_id = text(&agent["id"]).to_owned();
-    let agent = Arc::new(agent);
-    let blocking_agent = Arc::clone(&agent);
-    let (previous, mut state, records, captures, end) =
-        studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/analytics_history_budget_repair",
-            move || {
-                let db = AnalyticsRepository::new(&root)
-                    .open_read_only()
-                    .map_err(|_| HistoryError::read(crate::analytics_history::ANALYTICS_DATABASE))?;
-                let previous = metadata(&db, &metadata_key)?;
-                let mut state = match &previous {
-                    Some(v) => v.clone(),
-                    None => json!({"cursor":0,"end":db.query_row("SELECT COALESCE(MAX(seq),0) FROM analytics_usage",[],|r|r.get::<_,i64>(0)).map_err(studio_runtime_store::StoreError::from)?}),
-                };
-                let (start, end) = cursor(&state)?;
-                if start >= end {
-                    return Ok::<_, HistoryError>((previous, state, Vec::new(), Vec::new(), end));
-                }
-                let records = db.prepare("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?")
-                    .map_err(studio_runtime_store::StoreError::from)?
-                    .query_map(params![agent_id, start, end, PAGE_SIZE], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))
-                    .map_err(studio_runtime_store::StoreError::from)?
-                    .collect::<Result<Vec<_>,_>>()
-                    .map_err(studio_runtime_store::StoreError::from)?;
-                let mut captures = Vec::with_capacity(records.len());
-                for (seq, raw) in &records {
-                    let record: Value = serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
-                    CaptureTable::Usage.validate(&record)?;
-                    let provider = if blocking_agent["provider"] == "claude" { studio_runtime_schema::usage::UsageProvider::Claude } else { studio_runtime_schema::usage::UsageProvider::Codex };
-                    let mut params = studio_runtime_schema::usage::persisted::analytics_usage_notification(provider, &record).map_err(CaptureError::from)?;
-                    params["_analyticsTimestampSource"] = record["timestampSource"].clone();
-                    let at = number(&record["at"]).ok_or(CaptureError::Invalid("/analytics_usage/at"))?;
-                    captures.push((Arc::clone(&blocking_agent), params, at));
-                    state["cursor"] = json!(seq);
-                }
-                Ok((previous, state, records, captures, end))
-            },
-        )
-        .await
-        .map_err(|_| HistoryError::read(crate::analytics_history::BLOCKING_TASK))??;
-    if records.is_empty() {
-        return Ok(false);
-    }
-    budget.capture_page(captures, now).await?;
-    if records.len() < PAGE_SIZE as usize {
-        state["cursor"] = json!(end)
-    }
-    store.analytics_transaction(move |tx, canvas| {
-        check_identity(canvas, &agent)?;
-        if metadata(tx, &key)? != previous {
-            return Err(HistoryError::StaleCheckpoint);
-        }
-        tx.execute(
-            "INSERT INTO analytics_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![key, state.to_string()],
-        ).map_err(studio_runtime_store::StoreError::from)?;
-        Ok(())
-    }).await?;
-    Ok(!records.is_empty())
-}
 /// Repair exactly identified terminal errors; ambiguous old threadless notices
 /// advance the repair cursor but never replace a turn's error evidence.
 pub async fn repair_terminal_errors(store: &RuntimeStore) -> Result<(), HistoryError> {
@@ -196,53 +124,4 @@ fn repaired_turn(mut record: Value, notice: &Value) -> Value {
         }
     }
     record
-}
-
-#[cfg(test)]
-mod usage_contract_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn legacy_total_only_claude_migration_preserves_budget_total() {
-        let temp = tempfile::tempdir().expect("temporary state");
-        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
-        let agent = json!({"id":"agent","rootId":"agent","name":"Agent","status":"running","provider":"claude","threadId":"thread","turnId":"turn","accountKey":"default","accountHistory":[],"model":"claude-sonnet-4-5","epoch":0,"tokenBudget":1000,"tokensUsed":0});
-        let seed = agent.clone();
-        store
-            .transaction(move |tx| {
-                tx.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
-                    params!["agent", seed.to_string()],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("seed agent");
-        store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_| {
-            Repo::write(tx,CaptureTable::Usage,&json!({"id":"legacy","agentId":"agent","rootId":"agent","threadId":"thread","turnId":"turn","at":1,"last":{"totalTokens":23},"total":{"totalTokens":23}}))?;
-            Ok(())
-        }).await.expect("seed sparse legacy usage");
-        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
-        assert!(
-            migrate_budget(&store, agent.clone(), &sink, 2.0)
-                .await
-                .expect("migrate legacy budget")
-        );
-        assert!(
-            !migrate_budget(&store, agent, &sink, 2.0)
-                .await
-                .expect("idempotent migration")
-        );
-        let tokens = store
-            .transaction(|tx| {
-                Ok(tx.query_row(
-                    "SELECT sum(tokens) FROM runtime_budget_usage WHERE agent='agent'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )?)
-            })
-            .await
-            .expect("budget ledger");
-        assert_eq!(tokens, 23);
-    }
 }

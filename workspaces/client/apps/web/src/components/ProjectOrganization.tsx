@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { useId, useRef, useState } from "react";
 import { useProjectSave } from "./useProjectSave";
@@ -36,7 +37,7 @@ export function ProjectNameForm({
     folder === "new" ? "" : folder?.name || project.name || "",
   );
   const save = useProjectSave("/api/projects", saved);
-  const id = useRef(folder === "new" ? crypto.randomUUID() : folder?.id);
+  const id = useRef(folder === "new" ? randomUUID() : folder?.id);
   const revision = useRef(project.organizationRevision || 0);
   const nameId = useId();
   return (
@@ -164,7 +165,7 @@ export function ConvertChatForm({
   scope: string;
   saved: () => Promise<void>;
 }) {
-  const requestId = useRef(crypto.randomUUID());
+  const requestId = useRef(randomUUID());
   const save = useProjectSave(
     "/api/peer-teams",
     saved,

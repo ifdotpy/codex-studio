@@ -245,6 +245,283 @@ struct ProviderReadCall {
     deadline: Duration,
 }
 
+#[cfg(test)]
+mod reconnect_read_tests {
+    use super::*;
+    use crate::recovery_history::ConnectionScope;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ReconnectedSession(AtomicUsize);
+    impl AccountSessionPort for ReconnectedSession {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            Some(ConnectionScope {
+                account: account.into(),
+                connection: "new-connection".into(),
+                generation: 8,
+            })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            _request: ProviderRequest,
+        ) -> crate::account_session_runtime::AccountSessionFuture<'a, SessionReceipt> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(AccountSessionError::Refused("no native write is permitted")) })
+        }
+        fn transfer_provider_request<'a>(
+            &'a self,
+            _request: TransferProviderRequest,
+        ) -> crate::account_session_runtime::AccountSessionFuture<'a, SessionReceipt> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(AccountSessionError::Refused("no native write is permitted")) })
+        }
+    }
+
+    async fn fixture(change: &'static str) -> (tempfile::TempDir, RuntimeStore, Value) {
+        let root = tempfile::tempdir().expect("reconnect state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let old_scope = json!({"account":"source","connection":"old-connection","generation":7});
+        let mut saved = json!({"receipt":{"operation":"read","scope":old_scope,
+            "certainty":"written","ticket":{"generation":7,"id":"old-request","method":"thread/read"}},
+            "certainty":"written","result":{"kind":"reply","value":{"thread":{"id":"source-thread"}}}});
+        match change {
+            "receipt-scope" => saved["receipt"]["scope"]["connection"] = json!("wrong-connection"),
+            "ticket-generation" => saved["receipt"]["ticket"]["generation"] = json!(8),
+            "ticket-method" => saved["receipt"]["ticket"]["method"] = json!("thread/start"),
+            "ticket-id" => saved["receipt"]["ticket"]["id"] = Value::Null,
+            "unknown" => saved["certainty"] = json!("unknown"),
+            "not-sent" => saved["certainty"] = json!("not_sent"),
+            "rejected" => saved["result"]["kind"] = json!("rejected"),
+            _ => {}
+        }
+        let expected = saved.clone();
+        store.transaction(move |tx| {
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"member","rootId":"member","epoch":3,
+                "status":"completed","isLead":true,"autoWake":false,"accountKey":"target","accountTransferId":"move"}))?;
+            studio_runtime_store::AgentRepository::put(tx, &agent)?;
+            let operation = json!({"id":"move","leadId":"member","targetAccountKey":"target",
+                "status":"pending","scope":"team","created":1.0,"members":{"member":{
+                    "phase":"reading","sourceAccountKey":"source","sourceThreadId":"source-thread",
+                    "providerReadIntents":{"read":{"operation":"read","account":"source","scope":old_scope,
+                        "method":"thread/read","params":{"threadId":"source-thread","includeTurns":false}}},
+                    "providerReadReceipts":{"read":saved}}},"requests":{}});
+            studio_runtime_store::AccountTransferRepository::put(tx, "move", &operation.to_string())
+        }).await.expect("written read");
+        (root, store, expected)
+    }
+
+    async fn read(
+        store: &RuntimeStore,
+        session: &ReconnectedSession,
+        changed_content: bool,
+    ) -> Result<(SessionReceipt, Value), TransferError> {
+        session_reply(&ProviderReadContext { store, session, transfer:"move", agent:"member", account:"source", now:2.0 },
+            ProviderReadCall { actor:None, transfer_source_thread:None, operation:"read".into(), method:Method::ThreadRead,
+                params:json!({"threadId":if changed_content { "another-thread" } else { "source-thread" },"includeTurns":false}), deadline:Duration::from_secs(1) }).await
+    }
+
+    #[tokio::test]
+    async fn written_read_replays_its_original_receipt_after_reconnect_without_native_writes() {
+        let (_root, store, expected) = fixture("").await;
+        let session = ReconnectedSession(AtomicUsize::new(0));
+        let before = store
+            .read_async("before replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        let (receipt, value) = read(&store, &session, false)
+            .await
+            .expect("replay the durable reply");
+        assert_eq!(
+            serde_json::to_value(&receipt.scope).expect("scope"),
+            expected["receipt"]["scope"]
+        );
+        assert_eq!(
+            receipt.ticket.as_ref().expect("original ticket").id,
+            studio_runtime_providers::RequestId::String("old-request".into())
+        );
+        assert_eq!(value, expected["result"]["value"]);
+        assert!(receipt.replayed);
+        assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        let after = store
+            .read_async("after replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        assert_eq!(after, before);
+    }
+
+    #[tokio::test]
+    async fn reconnect_read_refuses_changed_content_or_unproven_receipts_without_native_writes() {
+        for change in [
+            "content",
+            "receipt-scope",
+            "ticket-generation",
+            "ticket-method",
+            "ticket-id",
+            "unknown",
+            "not-sent",
+            "rejected",
+        ] {
+            let (_root, store, _) = fixture(change).await;
+            let session = ReconnectedSession(AtomicUsize::new(0));
+            assert!(
+                read(&store, &session, change == "content").await.is_err(),
+                "{change}"
+            );
+            assert_eq!(session.0.load(Ordering::SeqCst), 0, "{change}");
+        }
+    }
+
+    #[tokio::test]
+    async fn written_source_unsubscribe_replays_only_its_exact_receipt_after_reconnect() {
+        let (_root, store, _) = fixture("").await;
+        const OPERATION: &str = "transfer:move:member:unsubscribe";
+        store
+            .transaction(|tx| {
+                let mut operation: Value = serde_json::from_str(
+                    &studio_runtime_store::AccountTransferRepository::get(tx, "move")?
+                        .expect("transfer"),
+                )?;
+                let member = &mut operation["members"]["member"];
+                let mut intent = member["providerReadIntents"]["read"].take();
+                intent["operation"] = json!(OPERATION);
+                intent["method"] = json!("thread/unsubscribe");
+                intent["params"] = json!({"threadId":"source-thread"});
+                member["providerReadIntents"] = json!({(OPERATION):intent});
+                let mut result = member["providerReadReceipts"]["read"].take();
+                result["receipt"]["operation"] = json!(OPERATION);
+                result["receipt"]["ticket"]["method"] = json!("thread/unsubscribe");
+                result["result"]["value"] = json!({});
+                member["providerReadReceipts"] = json!({(OPERATION):result});
+                studio_runtime_store::AccountTransferRepository::put(
+                    tx,
+                    "move",
+                    &operation.to_string(),
+                )
+            })
+            .await
+            .expect("written source unsubscribe");
+        let session = ReconnectedSession(AtomicUsize::new(0));
+        let before = store
+            .read_async("before unsubscribe replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        let (receipt, value) = session_reply(
+            &ProviderReadContext {
+                store: &store,
+                session: &session,
+                transfer: "move",
+                agent: "member",
+                account: "source",
+                now: 2.0,
+            },
+            ProviderReadCall {
+                actor: None,
+                transfer_source_thread: Some("source-thread".into()),
+                operation: OPERATION.into(),
+                method: Method::ThreadUnsubscribe,
+                params: json!({"threadId":"source-thread"}),
+                deadline: Duration::from_secs(1),
+            },
+        )
+        .await
+        .expect("replay without another unsubscribe");
+        assert_eq!(receipt.operation, OPERATION);
+        assert_eq!(receipt.scope.connection, "old-connection");
+        assert_eq!(
+            receipt.ticket.as_ref().expect("ticket").method,
+            Method::ThreadUnsubscribe
+        );
+        assert!(receipt.replayed);
+        assert_eq!(value, json!({}));
+        assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        let after = store
+            .read_async("after unsubscribe replay", |tx| {
+                driver::load(tx, "move").map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        assert_eq!(after, before);
+        for field in ["sourceAccountKey", "sourceThreadId"] {
+            let mut changed = before.clone();
+            changed["members"]["member"][field] = json!("another-source");
+            store
+                .transaction(move |tx| {
+                    studio_runtime_store::AccountTransferRepository::put(
+                        tx,
+                        "move",
+                        &changed.to_string(),
+                    )
+                })
+                .await
+                .expect("changed source ownership");
+            assert!(
+                session_reply(
+                    &ProviderReadContext {
+                        store: &store,
+                        session: &session,
+                        transfer: "move",
+                        agent: "member",
+                        account: "source",
+                        now: 3.0
+                    },
+                    ProviderReadCall {
+                        actor: None,
+                        transfer_source_thread: Some("source-thread".into()),
+                        operation: OPERATION.into(),
+                        method: Method::ThreadUnsubscribe,
+                        params: json!({"threadId":"source-thread"}),
+                        deadline: Duration::from_secs(1)
+                    }
+                )
+                .await
+                .is_err(),
+                "{field}"
+            );
+            assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn written_replay_never_authorizes_other_native_mutations() {
+        for method in [
+            Method::ThreadStart,
+            Method::ThreadFork,
+            Method::ThreadUnsubscribe,
+        ] {
+            let (_root, store, _) = fixture("").await;
+            let session = ReconnectedSession(AtomicUsize::new(0));
+            assert!(
+                session_reply(
+                    &ProviderReadContext {
+                        store: &store,
+                        session: &session,
+                        transfer: "move",
+                        agent: "member",
+                        account: "source",
+                        now: 2.0
+                    },
+                    ProviderReadCall {
+                        actor: None,
+                        transfer_source_thread: None,
+                        operation: "read".into(),
+                        method,
+                        params: json!({"threadId":"source-thread"}),
+                        deadline: Duration::from_secs(1)
+                    }
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(session.0.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
 async fn session_reply(
     context: &ProviderReadContext<'_>,
     call: ProviderReadCall,
@@ -309,7 +586,7 @@ async fn session_reply(
                 result: Some(ProviderResponse::Reply(value.clone())),
                 not_sent_reason: None,
 
-                replayed: false,
+                replayed: true,
             },
             value,
         ));
@@ -740,6 +1017,16 @@ impl TransferExecutor for AccountTransferExecutor {
                 studio_runtime_providers::ProviderKind::of_field(operation.get("targetProvider"))
                     .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
                     .key();
+            if let Some(accounts) = &self.preparation.account_driver {
+                // The registry snapshot is already validated and performs no auth refresh.
+                // Transfer preparation must not depend on an earlier HTTP model read.
+                let snapshot = accounts.snapshot().map_err(|_| {
+                    TransferError::Refused(
+                        "The account registry is unavailable for transfer preparation",
+                    )
+                })?;
+                self.catalog.retain_accounts(&snapshot.accounts);
+            }
             let (home, registered_provider) =
                 self.catalog
                     .account_profile(target_account)
@@ -838,7 +1125,7 @@ impl TransferExecutor for AccountTransferExecutor {
                             thread: thread_id,
                             suffix: "background-before",
                             method: Method::ThreadBackgroundTerminalsList,
-                            params: json!({"threadId":thread_id}),
+                            params: json!({"threadId":thread_id,"limit":studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE}),
                         },
                     )
                     .await?;
@@ -1007,6 +1294,27 @@ impl TransferExecutor for AccountTransferExecutor {
                     portable = Some(descriptor.to_value().map_err(|_| {
                         TransferError::Refused("Invalid portable archive descriptor")
                     })?);
+                }
+            }
+            // The retained settings read above does not populate the separate
+            // admission cache. Refresh its exact destination identity before
+            // native preparation reads and rechecks that cache generation.
+            match self
+                .preparation
+                .model_catalog
+                .wait_for_admission_catalog(target_account, &home, target_provider)
+                .await
+            {
+                crate::model_catalog::AdmissionCatalogRead::Fresh { .. } => {}
+                crate::model_catalog::AdmissionCatalogRead::Pending => {
+                    return Err(TransferError::Requires(
+                        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+                    ));
+                }
+                crate::model_catalog::AdmissionCatalogRead::Unavailable => {
+                    return Err(TransferError::Refused(
+                        crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
+                    ));
                 }
             }
             let scope = self
@@ -1546,6 +1854,16 @@ mod retained_executor_tests {
             request: ProviderRequest,
         ) -> crate::account_session_runtime::AccountSessionFuture<'a, SessionReceipt> {
             Box::pin(async move {
+                if request.operation.starts_with("model-list:") {
+                    assert_eq!(request.account, "target");
+                    assert_eq!(request.expected_scope, Some(Self::scope("target")));
+                    assert_eq!(request.method, Method::ModelList);
+                    assert_eq!(
+                        request.params,
+                        json!({"limit":studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE,
+                            "includeHidden":true})
+                    );
+                }
                 self.requests
                     .lock()
                     .expect("test fixture operation succeeds")
@@ -1585,7 +1903,29 @@ mod retained_executor_tests {
                 assert_eq!(request.member, "lead");
                 assert_eq!(request.source_account, "source");
                 assert_eq!(request.thread_id, "source-thread");
-                assert_eq!(request.params, json!({"threadId":"source-thread"}));
+                crate::account_worker::retained::validate(
+                    &crate::account_worker::retained::SessionRequest {
+                        scope: request.expected_scope.clone(),
+                        expected_scope: Some(request.expected_scope.clone()),
+                        operation: request.operation.clone(),
+                        actor: None,
+                        transfer: Some(crate::account_worker::retained::TransferAuthorization {
+                            transfer_id: request.transfer_id.clone(),
+                            member: request.member.clone(),
+                            source_account: request.source_account.clone(),
+                            thread_id: request.thread_id.clone(),
+                        }),
+                        deleted_actor_session: None,
+                        method: request.method,
+                        params: request.params.clone(),
+                        deadline: request.deadline,
+                    },
+                )
+                .map_err(|_| {
+                    AccountSessionError::Refused(
+                        "The real retained validator refused the transfer preflight",
+                    )
+                })?;
                 assert!(
                     request
                         .operation
@@ -1731,6 +2071,15 @@ mod retained_executor_tests {
     /// agent uses it. The source reads start its session first.
     #[tokio::test]
     async fn source_reads_start_a_dormant_source_session() {
+        assert_dormant_source_reads(false).await;
+    }
+
+    #[tokio::test]
+    async fn startup_transfer_reads_registered_profiles_before_any_http_catalog_request() {
+        assert_dormant_source_reads(true).await;
+    }
+
+    async fn assert_dormant_source_reads(register_from_driver: bool) {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
         let store = Arc::new(
             RuntimeStore::open(Some(root.path()))
@@ -1769,10 +2118,30 @@ mod retained_executor_tests {
             dormant: Mutex::new(Some("source".into())),
         });
         let catalog = ModelCatalogService::new();
-        catalog.retain_accounts(&[
-            json!({"id":"source","home":"/tmp/source","provider":"codex"}),
-            json!({"id":"target","home":"/tmp/target","provider":"codex"}),
-        ]);
+        let account_driver = if register_from_driver {
+            let registry_path = root.path().join("fixture-accounts.json");
+            let registry = json!({"version":1,"defaultAccountKey":"source","accounts":{
+                "source":{"id":"source","home":root.path().join("source-home"),
+                    "provider":"codex","label":"Source","source":"Codex CLI","status":"signedOut"},
+                "target":{"id":"target","home":root.path().join("target-home"),
+                    "provider":"codex","label":"Target","source":"Codex CLI","status":"signedOut"}
+                },"logins":{},"deleteReceipts":{}});
+            fs::write(
+                &registry_path,
+                serde_json::to_vec(&registry).expect("fixture registry"),
+            )
+            .expect("save fixture account metadata");
+            let driver = crate::account_driver::AccountDriver::open(&registry_path)
+                .expect("open fixture account metadata without authentication reads");
+            assert!(catalog.account_profile("target").is_none());
+            Some(Arc::new(driver))
+        } else {
+            catalog.retain_accounts(&[
+                json!({"id":"source","home":"/tmp/source","provider":"codex"}),
+                json!({"id":"target","home":"/tmp/target","provider":"codex"}),
+            ]);
+            None
+        };
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
             thread_config: Default::default(),
@@ -1785,7 +2154,7 @@ mod retained_executor_tests {
             shared_home: String::new(),
             filesystem_inputs: None,
             claude_account_pin: serde_json::Value::Null,
-            account_driver: None,
+            account_driver,
             account_session: Some(session.clone()),
             guest_rpc: None,
             vm_provider_launch: None,
@@ -1802,12 +2171,27 @@ mod retained_executor_tests {
         .await;
 
         // The queued source input refuses the move only after the source reads ran.
-        assert!(matches!(
-            result,
-            Err(TransferError::Refused(
-                "Source native thread has queued input; saved input remains queued"
-            ))
-        ));
+        assert!(
+            matches!(
+                &result,
+                Err(TransferError::Refused(
+                    "Source native thread has queued input; saved input remains queued"
+                ))
+            ),
+            "transfer preparation must reach source queue admission: {result:?}"
+        );
+        if register_from_driver {
+            assert_eq!(
+                catalog.account_profile("target"),
+                Some((
+                    root.path()
+                        .join("target-home")
+                        .to_string_lossy()
+                        .into_owned(),
+                    "codex".into()
+                ))
+            );
+        }
         assert_eq!(
             *session
                 .requests
@@ -1936,6 +2320,15 @@ mod retained_executor_tests {
 
     #[tokio::test]
     async fn before_start_copies_history_once_and_replays_unknown_fork_after_restart() {
+        assert_history_transfer_without_duplicate_fork(false).await;
+    }
+
+    #[tokio::test]
+    async fn cold_catalog_transfer_prepares_history_without_http_model_read() {
+        assert_history_transfer_without_duplicate_fork(true).await;
+    }
+
+    async fn assert_history_transfer_without_duplicate_fork(cold_catalog: bool) {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
         let fixture = root.path().join("fixture");
         let state_dir = root.path().join("state");
@@ -1990,13 +2383,15 @@ mod retained_executor_tests {
             json!({"id":"source","home":source_home,"provider":"codex"}),
             json!({"id":"target","home":target_home,"provider":"codex"}),
         ]);
-        catalog.seed_test_admission_catalog(
-            "target",
-            target_home.to_str().expect("target home"),
-            "codex",
-            json!({"data":[{"model":"gpt-6-astra","isDefault":true,
+        if !cold_catalog {
+            catalog.seed_test_admission_catalog(
+                "target",
+                target_home.to_str().expect("target home"),
+                "codex",
+                json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
-        );
+            );
+        }
         let session = Arc::new(GuardSession {
             store: store.clone(),
             transfer_id: transfer_id.into(),
@@ -2005,6 +2400,7 @@ mod retained_executor_tests {
             native_path: Some(native_path.to_string_lossy().into_owned()),
             dormant: Mutex::new(None),
         });
+        catalog.set_account_session(Some(session.clone()));
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
             thread_config: Default::default(),
@@ -2026,56 +2422,35 @@ mod retained_executor_tests {
             guest_rpc: None,
             vm_provider_launch: None,
         };
-        crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
-            .await
-            .expect("the durable member enters Reading before preparation");
-        let attempt_id = format!("account-transfer:{transfer_id}:lead");
-        let generic = crate::account_worker::preparation::prepare_native_thread(
-            Arc::clone(&store),
-            &resources,
-            "lead",
-            &attempt_id,
-            7,
-        )
-        .await
-        .expect_err("ordinary preparation keeps the transfer admission hold");
-        assert_eq!(generic.to_string(), "thread-preparation/AccountTransfer");
-        assert!(
-            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+        if !cold_catalog {
+            crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
+                .await
+                .expect("the durable member enters Reading before preparation");
+            let attempt_id = format!("account-transfer:{transfer_id}:lead");
+            let generic = crate::account_worker::preparation::prepare_native_thread(
                 Arc::clone(&store),
                 &resources,
                 "lead",
-                "a different transfer id",
                 &attempt_id,
                 7,
             )
             .await
-            .is_err(),
-            "a different owner cannot bypass the transfer hold"
-        );
-        let owned = crate::account_worker::preparation::prepare_account_transfer_native_thread(
-            Arc::clone(&store),
-            &resources,
-            "lead",
-            transfer_id,
-            &attempt_id,
-            7,
-        )
-        .await
-        .expect("the exact Reading transfer owner may prepare its destination");
-        assert!(owned.params.is_object());
-
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra
-                    .insert("contextRepair".into(), json!({"phase":"preparing"}));
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("context repair blocker is installed");
-        let context_repair =
-            crate::account_worker::preparation::prepare_account_transfer_native_thread(
+            .expect_err("ordinary preparation keeps the transfer admission hold");
+            assert_eq!(generic.to_string(), "thread-preparation/AccountTransfer");
+            assert!(
+                crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                    Arc::clone(&store),
+                    &resources,
+                    "lead",
+                    "a different transfer id",
+                    &attempt_id,
+                    7,
+                )
+                .await
+                .is_err(),
+                "a different owner cannot bypass the transfer hold"
+            );
+            let owned = crate::account_worker::preparation::prepare_account_transfer_native_thread(
                 Arc::clone(&store),
                 &resources,
                 "lead",
@@ -2084,54 +2459,83 @@ mod retained_executor_tests {
                 7,
             )
             .await
-            .expect_err("the transfer owner cannot bypass context repair");
-        assert_eq!(context_repair.to_string(), "preparation/ownership-changed");
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra.remove("contextRepair");
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("context repair blocker is removed");
+            .expect("the exact Reading transfer owner may prepare its destination");
+            assert!(owned.params.is_object());
 
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra.insert(
-                    "nativeRelease".into(),
-                    json!({"phase":"unknown","resetPending":true}),
-                );
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("native release blocker is installed");
-        let native_release =
-            crate::account_worker::preparation::prepare_account_transfer_native_thread(
-                Arc::clone(&store),
-                &resources,
-                "lead",
-                transfer_id,
-                &attempt_id,
-                7,
-            )
-            .await
-            .expect_err("the transfer owner cannot bypass native release");
-        assert_eq!(
-            native_release.to_string(),
-            "thread-preparation/NativeRelease"
-        );
-        store
-            .transaction_with_error(|tx| {
-                let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
-                row.extra.remove("nativeRelease");
-                AgentRepository::put(tx, &row)
-            })
-            .await
-            .expect("native release blocker is removed");
-        crate::account_transfer_driver::recover(&store, 1.75)
-            .await
-            .expect("startup recovery returns the member to its retryable phase");
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra
+                        .insert("contextRepair".into(), json!({"phase":"preparing"}));
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("context repair blocker is installed");
+            let context_repair =
+                crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                    Arc::clone(&store),
+                    &resources,
+                    "lead",
+                    transfer_id,
+                    &attempt_id,
+                    7,
+                )
+                .await
+                .expect_err("the transfer owner cannot bypass context repair");
+            assert_eq!(context_repair.to_string(), "preparation/ownership-changed");
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra.remove("contextRepair");
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("context repair blocker is removed");
+
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra.insert(
+                        "nativeRelease".into(),
+                        json!({"phase":"unknown","resetPending":true}),
+                    );
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("native release blocker is installed");
+            let native_release =
+                crate::account_worker::preparation::prepare_account_transfer_native_thread(
+                    Arc::clone(&store),
+                    &resources,
+                    "lead",
+                    transfer_id,
+                    &attempt_id,
+                    7,
+                )
+                .await
+                .expect_err("the transfer owner cannot bypass native release");
+            assert_eq!(
+                native_release.to_string(),
+                "thread-preparation/NativeRelease"
+            );
+            store
+                .transaction_with_error(|tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                    row.extra.remove("nativeRelease");
+                    AgentRepository::put(tx, &row)
+                })
+                .await
+                .expect("native release blocker is removed");
+            crate::account_transfer_driver::recover(&store, 1.75)
+                .await
+                .expect("startup recovery returns the member to its retryable phase");
+        }
+        if cold_catalog {
+            assert!(matches!(
+                catalog.read_for_admission("target", &resources.account_home, "codex"),
+                crate::model_catalog::AdmissionCatalogRead::Pending
+            ));
+        }
         let first = before_start(
             Arc::clone(&store),
             Some(session.clone()),
@@ -2142,6 +2546,34 @@ mod retained_executor_tests {
         )
         .await
         .expect("worker before-start prepares the transfer");
+        if cold_catalog {
+            assert_eq!(
+                session
+                    .requests
+                    .lock()
+                    .expect("the provider request log is available")
+                    .iter()
+                    .filter(|method| method.as_str() == "model/list")
+                    .count(),
+                2,
+                "the transfer read and the admission owner's refresh are distinct"
+            );
+            match catalog.read_for_admission("target", &resources.account_home, "codex") {
+                crate::model_catalog::AdmissionCatalogRead::Fresh {
+                    account_key,
+                    home,
+                    provider,
+                    generation,
+                    ..
+                } => {
+                    assert_eq!(account_key, "target");
+                    assert_eq!(home, target_home.to_string_lossy());
+                    assert_eq!(provider, "codex");
+                    assert!(generation > 0);
+                }
+                other => panic!("the exact destination admission cache must be fresh: {other:?}"),
+            }
+        }
         let imported = target_home.join("sessions/.studio-imports/source-thread.jsonl");
         assert!(imported.is_file());
         #[cfg(unix)]
@@ -2192,13 +2624,15 @@ mod retained_executor_tests {
             json!({"id":"source","home":source_home,"provider":"codex"}),
             json!({"id":"target","home":target_home,"provider":"codex"}),
         ]);
-        recovered_catalog.seed_test_admission_catalog(
-            "target",
-            target_home.to_str().expect("target home"),
-            "codex",
-            json!({"data":[{"model":"gpt-6-astra","isDefault":true,
+        if !cold_catalog {
+            recovered_catalog.seed_test_admission_catalog(
+                "target",
+                target_home.to_str().expect("target home"),
+                "codex",
+                json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
-        );
+            );
+        }
         let recovered_session = Arc::new(GuardSession {
             store: recovered_store.clone(),
             transfer_id: transfer_id.into(),
@@ -2241,6 +2675,16 @@ mod retained_executor_tests {
             .is_err(),
             "unknown provider outcome must refuse retry after restart"
         );
+        if cold_catalog {
+            assert!(
+                recovered_session
+                    .requests
+                    .lock()
+                    .expect("the provider request log is available")
+                    .is_empty(),
+                "a cold-cache restart must not refresh or resend an unknown transfer"
+            );
+        }
         assert_eq!(
             recovered_session
                 .requests

@@ -81,7 +81,33 @@ byte, a damaged frame, a missing checksum or content size, and a declared size
 above `STORED_TEXT_MAX_DECODED_BYTES`. A release that only reads plain TEXT
 refuses a compressed body as an invalid stored object; it does not misread it.
 `length(body)` and `typeof(body)` therefore describe the stored form, not the
-text.
+text. Current writers store stored format 1. The compaction pass
+([canvas maintenance](canvas-maintenance.md#compressed-full-text-and-analytics-records)) records its
+progress in the `stored-text-v1:runtime_item_fulltext.body` row of
+`runtime_payload_migrations`. Each converted batch is a row of
+`runtime_stored_text_batches(name, batch, first_rowid, last_rowid, rows,
+plain_bytes, stored_bytes, sha256, created)`, primary key `(name, batch)`.
+`sha256` covers, for each converted row in rowid order, the rowid and the text
+length as little-endian 64-bit integers, then the UTF-8 text.
+
+`analytics_items.record` in `analytics.sqlite3` uses the same stored format 1,
+but its frames name a dictionary trained from the table's own rows
+([`stored_text_dictionary.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text_dictionary.rs)).
+Dictionaries are rows of `analytics_stored_text_dictionaries(id, name, created,
+sha256, dictionary)`; `id` is the zstd dictionary id that frames carry. The
+rows hold fragments of user data, stay only in the state, and are never
+changed or deleted. SQLite triggers refuse updates, deletes, and replacements.
+Readers verify each dictionary's stored SHA-256 before use.
+Writers store a record compressed once the newest
+dictionary of `analytics_items.record` exists, and plain TEXT before. Every
+analytics connection that Studio opens registers the SQL function
+`stored_text(value)` and a temporary view `temp.analytics_items` with the
+table's columns and the decoded `record`. The view shadows the table for
+unqualified names, so reads keep their SQL and writes name
+`main.analytics_items`. A connection without the view, such as the `sqlite3`
+shell, sees the BLOB: `json_extract` on it fails, and `json_valid` returns 0.
+The analytics database has its own `runtime_payload_migrations` progress row
+(`stored-text-v1:analytics_items.record`) and `runtime_stored_text_batches`.
 
 ### Connection recovery request receipt
 

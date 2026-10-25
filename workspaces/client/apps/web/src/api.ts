@@ -1,8 +1,13 @@
+import { randomUUID } from "./uuid";
 import { hasNativeClient } from "./native/client";
 
 import { beginServerActivity } from "./servers/activity";
 
-import { beginServerMutation } from "./servers/mutationIdentity";
+import {
+  beginServerMutation,
+  pendingMonitorInput as pendingInput,
+  finishMonitorInput,
+} from "./servers/mutationIdentity";
 
 import {
   serverLocalStorage as localStorage,
@@ -709,7 +714,7 @@ export function createApiScope(options: ApiScopeOptions) {
       );
       if (!result.response.ok) {
         responseRejected = true;
-        mutation?.reject(result.response.status, result.error);
+        await mutation?.reject(result.response.status, result.error);
       }
       if (
         !result.response.ok &&
@@ -719,16 +724,16 @@ export function createApiScope(options: ApiScopeOptions) {
       if (!result.response.ok)
         throw errorPayload(result.error, result.response.status);
       if (!("data" in result)) {
-        mutation?.finish();
+        await mutation?.finish();
         return undefined as PostResult<Path>;
       }
       if (result.data === null)
         throw new Error("Successful response did not contain a body.");
       const data = result.data as PostResult<Path>;
-      mutation?.finish();
+      await mutation?.finish();
       return data;
     } catch (error) {
-      if (!responseRejected) mutation?.unknown();
+      if (!responseRejected) await mutation?.unknown();
       if (controller.timedOut()) throw new NetworkTimeoutError();
       throw error;
     } finally {
@@ -868,7 +873,7 @@ export function createApiScope(options: ApiScopeOptions) {
   function stableRequestId(key: string): string {
     const savedId = saved<string>(`request-id:${key}`, "");
     if (savedId) return savedId;
-    const requestId = crypto.randomUUID();
+    const requestId = randomUUID();
     save(`request-id:${key}`, requestId);
     return requestId;
   }
@@ -876,7 +881,42 @@ export function createApiScope(options: ApiScopeOptions) {
   function clearStableRequestId(key: string) {
     save(`request-id:${key}`, null);
   }
+
+  function pendingMonitorInput(id: string) {
+    return pendingInput(beginServerMutation, id);
+  }
+
+  async function checkMonitorInputReceipt(
+    id: string,
+    owner: { agent: string; accountKey: string; epoch: number },
+  ): Promise<"none" | "unknown" | "acknowledged" | "rejected"> {
+    const pending = await pendingMonitorInput(id);
+    if (!pending) return "none";
+    const receipt = await get("/api/processes/action", {
+      query: { requestId: pending.requestId, ...owner },
+    });
+    const result = receipt.result;
+    const response = result?.response;
+    if (
+      !receipt.found ||
+      result?.requestId !== pending.requestId ||
+      result.status !== "completed" ||
+      response?.kind !== "monitor_input" ||
+      response.monitorId !== id ||
+      (response.status !== "acknowledged" && response.status !== "rejected")
+    )
+      return "unknown";
+    return (await finishMonitorInput(
+      beginServerMutation,
+      id,
+      pending.requestId,
+    ))
+      ? response.status
+      : "unknown";
+  }
   return {
+    pendingMonitorInput,
+    checkMonitorInputReceipt,
     isApiSchemaMismatch,
     matchingApiSchemaResponseGeneration,
     onMatchingApiSchemaResponse,
@@ -913,6 +953,8 @@ const defaultApi = createApiScope({
   beginActivity: beginServerActivity,
 });
 export const {
+  pendingMonitorInput,
+  checkMonitorInputReceipt,
   isApiSchemaMismatch,
   matchingApiSchemaResponseGeneration,
   onMatchingApiSchemaResponse,

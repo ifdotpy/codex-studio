@@ -19,6 +19,11 @@ const CORE_DATABASES: [&str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
 /// The process supervisor's journal (`codex_process_supervisor.Journal` and
 /// `supervisor_journal::SupervisorJournal`). The supervisor owns it once it exists.
 const SUPERVISOR_DATABASE: &str = "supervisor.sqlite3";
+/// Files of background recovery in the state folder. Owners: `files.config` and the
+/// launch agent's log in desktop recovery.cjs, and the lock in recover_backend.py `run`.
+const RECOVERY_CONFIGURATION: &str = "background-recovery.json";
+const RECOVERY_LOCK: &str = "background-recovery.lock";
+const RECOVERY_LOG: &str = "background-recovery.log";
 
 /// Validate startup contents without creating the runtime lock or changing files.
 pub(crate) fn validate(root: &Path) -> StoreResult<()> {
@@ -89,6 +94,13 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
                 journal_exists && matches!(entry_kind(&path), EntryKind::File)
             }
             Some("supervisor.sock") => is_socket(&path),
+            // Background recovery can be turned on before the first backend starts: the
+            // recovery helper (desktop recovery.cjs) writes its private configuration, and
+            // the recovery job (recover_backend.py, umask 077) opens its private lock before
+            // it starts the server.
+            Some(RECOVERY_CONFIGURATION | RECOVERY_LOCK) => accepted_private_file(&path),
+            // launchd opens the recovery job's log with its own umask, as for supervisor.log.
+            Some(RECOVERY_LOG) => matches!(entry_kind(&path), EntryKind::File),
             _ => false,
         };
         if !accepted {

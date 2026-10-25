@@ -74,9 +74,10 @@ export function useRetainedWorktrees(
         if (!snapshot || source === snapshot.runtime.retainedWorktrees) return;
         source = snapshot.runtime.retainedWorktrees;
         setItems(
-          (snapshot.runtime.retainedWorktrees ?? []).filter(
-            (item) => item.rootId === leadId,
-          ),
+          (Array.isArray(snapshot.runtime.retainedWorktrees)
+            ? snapshot.runtime.retainedWorktrees
+            : []
+          ).filter((item) => item.rootId === leadId),
         );
       },
       () => {},

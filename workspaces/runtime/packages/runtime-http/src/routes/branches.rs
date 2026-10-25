@@ -118,7 +118,12 @@ async fn branch(
     }
     // Match Python's read-only request validation before requiring a live native
     // consumer. Invalid branch inputs must not depend on provider availability.
-    port.current_scope(&account).ok_or_else(unavailable)?;
+    port.ensure_session(&account).await.map_err(|error| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Could not ensure account session: {error}"),
+        )
+    })?;
     let operation = {
         let snapshot = snapshot.clone();
         let source = source.clone();
@@ -776,13 +781,21 @@ async fn ensure_branch_model_catalog(state: &HttpState, account_key: &str) -> Re
         .key();
     match state
         .model_catalog
-        .read_until_fresh(account_key, home, provider)
+        .wait_for_admission_catalog(account_key, home, provider)
         .await
     {
-        studio_runtime_services::model_catalog::CatalogRead::Ready(_) => Ok(()),
-        studio_runtime_services::model_catalog::CatalogRead::Pending
-        | studio_runtime_services::model_catalog::CatalogRead::Unavailable => {
-            Err(ApiError::dependency("provider-session/model-list"))
+        studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => Ok(()),
+        studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending => {
+            Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                super::models::PENDING_MESSAGE,
+            ))
+        }
+        studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
+            Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                super::models::UNAVAILABLE_MESSAGE,
+            ))
         }
     }
 }
@@ -1171,10 +1184,15 @@ mod tests {
     struct HistoryPort {
         requests: Mutex<Vec<ProviderRequest>>,
         body_bytes: Mutex<usize>,
+        live: std::sync::atomic::AtomicBool,
+        catalog_unavailable: bool,
     }
 
     impl AccountSessionPort for HistoryPort {
         fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            if !self.live.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
             Some(ConnectionScope {
                 account: account.into(),
                 connection: "fixture".into(),
@@ -1185,7 +1203,10 @@ mod tests {
             &'a self,
             account: &'a str,
         ) -> AccountSessionFuture<'a, ConnectionScope> {
-            Box::pin(async move { Ok(self.current_scope(account).expect("fixture scope")) })
+            Box::pin(async move {
+                self.live.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(self.current_scope(account).expect("fixture scope"))
+            })
         }
         fn provider_request<'a>(
             &'a self,
@@ -1198,6 +1219,9 @@ mod tests {
                     .push(request.clone());
                 let result = match request.method {
                     Method::ModelList => {
+                        if self.catalog_unavailable {
+                            return Err(AccountSessionError::Unknown);
+                        }
                         json!({"data":[{"model":"gpt-5.6-sol"}],"nextCursor":null})
                     }
                     Method::ThreadTurnsList => {
@@ -1240,7 +1264,11 @@ mod tests {
         }
     }
 
-    async fn lookup(selected: usize, before: bool) -> (Arc<HistoryPort>, Value) {
+    async fn lookup(
+        selected: usize,
+        before: bool,
+        catalog_unavailable: bool,
+    ) -> (Arc<HistoryPort>, Value, ApiError) {
         let root = tempfile::tempdir().expect("state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let cwd = root.path().display().to_string();
@@ -1281,7 +1309,10 @@ mod tests {
             Some(store.clone()),
             Some(policy),
         );
-        let port = Arc::new(HistoryPort::default());
+        let port = Arc::new(HistoryPort {
+            catalog_unavailable,
+            ..Default::default()
+        });
         state.account_session = Some(port.clone());
         let result = branch(
             State(state.clone()),
@@ -1293,7 +1324,7 @@ mod tests {
             ),
         )
         .await;
-        assert!(result.is_err(), "fixture leaves fork outcome unknown");
+        let error = result.expect_err("fixture leaves catalog unavailable or fork outcome unknown");
         let operation = store
             .read_async("branch witness", |db| {
                 let raw: String = db
@@ -1312,12 +1343,12 @@ mod tests {
             .shutdown()
             .await
             .expect("catalog shutdown");
-        (port, operation)
+        (port, operation, error)
     }
 
     #[tokio::test]
     async fn branch_before_reads_no_turn_bodies_and_stops_after_predecessor() {
-        let (port, operation) = lookup(81, true).await;
+        let (port, operation, _) = lookup(81, true, false).await;
         assert_eq!(
             *port.body_bytes.lock().expect("bytes"),
             0,
@@ -1346,7 +1377,7 @@ mod tests {
             (1, None, 10, Some(Method::ThreadStart)),
             (0, None, 10, None),
         ] {
-            let (port, operation) = lookup(selected, true).await;
+            let (port, operation, _) = lookup(selected, true, false).await;
             assert_eq!(*port.body_bytes.lock().expect("bytes"), 0);
             let requests = port.requests.lock().expect("requests");
             assert_eq!(
@@ -1378,7 +1409,7 @@ mod tests {
 
     #[tokio::test]
     async fn branch_after_uses_selected_turn_without_history_read() {
-        let (port, operation) = lookup(81, false).await;
+        let (port, operation, _) = lookup(81, false, false).await;
         assert_eq!(operation["forkTurnId"], "turn-81");
         let requests = port.requests.lock().expect("requests");
         assert!(requests.iter().all(|r| r.method != Method::ThreadTurnsList));
@@ -1386,5 +1417,147 @@ mod tests {
             requests.last().expect("fork").params["lastTurnId"],
             "turn-81"
         );
+    }
+
+    async fn error_response(error: ApiError) -> (StatusCode, Value) {
+        let response = axum::response::IntoResponse::into_response(error);
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body");
+        (status, serde_json::from_slice(&bytes).expect("error JSON"))
+    }
+
+    #[tokio::test]
+    async fn branch_catalog_unavailable_returns_service_failure_without_a_native_fork() {
+        let (port, operation, error) = lookup(81, false, true).await;
+        let (status, body) = error_response(error).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("error")
+                .contains("temporarily unavailable"),
+            "{body}"
+        );
+        assert_eq!(operation["phase"], "provider_pending");
+        let requests = port.requests.lock().expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, Method::ModelList);
+    }
+
+    #[derive(Default)]
+    struct LoadingCatalogPort {
+        ensuring: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        requested: tokio::sync::Notify,
+    }
+
+    impl AccountSessionPort for LoadingCatalogPort {
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> AccountSessionFuture<'a, ConnectionScope> {
+            Box::pin(async move {
+                self.ensuring.notify_one();
+                self.release.notified().await;
+                Ok(ConnectionScope {
+                    account: account.into(),
+                    connection: "loading".into(),
+                    generation: 1,
+                })
+            })
+        }
+
+        fn provider_request(
+            &self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'_, SessionReceipt> {
+            assert_eq!(request.method, Method::ModelList);
+            self.requested.notify_one();
+            Box::pin(std::future::pending())
+        }
+    }
+
+    fn catalog_state() -> HttpState {
+        let policy = Arc::new(studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"fixture","label":"Default","source":"Codex CLI","status":"signedOut"},"changed":{"id":"changed","home":"fixture","label":"Changed","source":"Codex CLI","status":"changed"}},"logins":{}}"#), []
+        ).expect("policy"));
+        HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            "/fixture".into(),
+            4000,
+            None,
+            None,
+            Some(policy),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn branch_catalog_pending_returns_its_loading_error_after_the_bounded_wait() {
+        let mut state = catalog_state();
+        let port = Arc::new(LoadingCatalogPort::default());
+        state.account_session = Some(port.clone());
+        let waiting = state.clone();
+        let mut request =
+            tokio::spawn(async move { ensure_branch_model_catalog(&waiting, "default").await });
+        port.ensuring.notified().await;
+        // The admission timer starts before the provider request timer. Keep
+        // their deadlines separate so this proves Pending, not a provider fault.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        port.release.notify_one();
+        port.requested.notified().await;
+        tokio::time::advance(Duration::from_secs(
+            studio_runtime_schema::shared_values::MODEL_CATALOG_ADMISSION_WAIT_SECONDS - 1,
+        ))
+        .await;
+        let bounded = tokio::time::timeout(Duration::from_millis(1), &mut request).await;
+        if bounded.is_err() {
+            request.abort();
+            let _cancelled = request.await;
+        }
+        state
+            .model_catalog
+            .shutdown()
+            .await
+            .expect("catalog shutdown");
+        let error = bounded
+            .expect("branch must return within the model admission budget")
+            .expect("catalog read")
+            .expect_err("catalog is still pending");
+        let (status, body) = error_response(error).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("error")
+                .contains("still loading"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn branch_catalog_preserves_account_validation_errors() {
+        let mut state = catalog_state();
+        let port = Arc::new(HistoryPort::default());
+        state.account_session = Some(port.clone());
+        for (account, message) in [
+            ("missing", "Unknown Codex account"),
+            ("changed", "Account is unavailable"),
+        ] {
+            let error = ensure_branch_model_catalog(&state, account)
+                .await
+                .expect_err("invalid account");
+            let (status, body) = error_response(error).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(body["error"], message);
+        }
+        assert!(port.requests.lock().expect("requests").is_empty());
+        state
+            .model_catalog
+            .shutdown()
+            .await
+            .expect("catalog shutdown");
     }
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import pwd
 from pathlib import Path
 import sys
 import tempfile
@@ -13,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError
 from host_exec_protocol import HostExecError
-from mac_sync import MacSync
+from mac_sync import MacSync, _state
 
 
 class MacSyncRead(unittest.IsolatedAsyncioTestCase):
@@ -116,6 +117,43 @@ class MacSyncRead(unittest.IsolatedAsyncioTestCase):
         for offset in (-1, True, "0"):
             with self.subTest(offset=offset), self.assertRaises(GuestError):
                 await self.read("file", offset)
+
+    async def test_preview_hashes_read_immutable_state_without_a_checkout(self) -> None:
+        state = "019a27f4-8200-7000-8000-123456789abc"
+        main = self.root / "lines/main"
+        main.mkdir(parents=True)
+        snapshot = self.root / "states" / state
+        snapshot.mkdir(parents=True)
+        (snapshot / "file").write_bytes(b"content")
+        self.sync.projects = MagicMock()
+        self.sync.projects.folder.return_value = self.root
+        self.sync.projects.owner.side_effect = AssertionError("preview creates a user")
+        self.sync.lines.side_effect = AssertionError("preview creates a line")
+        self.sync.checkout.side_effect = AssertionError("preview resets a line")
+        self.sync.layr = AsyncMock(return_value=state)
+        result = await self.sync.dispatch("preview", "sync.mac.preview", {
+            "projectId": "project", "stateId": state,
+        }, None)
+        self.assertEqual(result["items"]["file"]["size"], 7)
+        self.sync.layr.assert_awaited_once_with(
+            ["rev-parse", state], cwd=main, owner=pwd.getpwuid(main.stat().st_uid).pw_name)
+
+    async def test_hash_scan_error_is_not_an_empty_state(self) -> None:
+        def unreadable(*args, **kwargs):
+            if kwargs.get("onerror"):
+                kwargs["onerror"](PermissionError("unreadable snapshot"))
+            return iter([])
+        with patch("mac_sync.os.walk", side_effect=unreadable):
+            with self.assertRaises(PermissionError):
+                await self.sync.hashes("hashes", {"projectId": "project", "stateId": "abcdef0"})
+
+    def test_state_ids_preserve_hex_and_canonical_uuid_forms(self) -> None:
+        for value in ("abcdef0", "a" * 64, "019a27f4-8200-7000-8000-123456789abc"):
+            self.assertEqual(_state(value), value)
+        for value in ("HEAD", "../states", "--help", "ABCDEF0", "abcdef", "a" * 65,
+                      "019A27F4-8200-7000-8000-123456789abc", "abcdef0/other", None):
+            with self.subTest(value=value), self.assertRaises(GuestError):
+                _state(value)
 
 
 if __name__ == "__main__":

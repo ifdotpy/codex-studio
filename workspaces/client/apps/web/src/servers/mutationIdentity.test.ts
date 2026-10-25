@@ -1,5 +1,7 @@
 /// <reference lib="es2024.promise" />
 import { beforeEach, expect, it, vi } from "vitest";
+import { createHash, webcrypto } from "node:crypto";
+import { readFileSync } from "node:fs";
 const rows = new Map<string, string>();
 vi.mock("./environment", () => ({ serverViewId: "remote" }));
 vi.mock("./storage", () => ({
@@ -20,10 +22,62 @@ vi.mock("./transport", () => ({
 }));
 import {
   beginServerMutation,
+  createMutationJournal,
   serverMutationResponseIsUncertain,
 } from "./mutationIdentity";
 import { post } from "../api";
 beforeEach(() => rows.clear());
+it("keeps the same durable journal key and uncertain identity without subtle", async () => {
+  const storage = {
+    get length() {
+      return rows.size;
+    },
+    clear: () => rows.clear(),
+    key: (index: number) => [...rows.keys()][index] ?? null,
+    getItem: (key: string) => rows.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      rows.set(key, value);
+    },
+    removeItem: (key: string) => {
+      rows.delete(key);
+    },
+  } satisfies Storage;
+  const path = "/api/settings";
+  const body = { id: "account", value: "Привет 🦀" };
+  const expectedKey = `studio-server-write:${createHash("sha256")
+    .update(path + "\n" + JSON.stringify(body))
+    .digest("hex")}`;
+  const native = (await createMutationJournal("remote", storage)(path, body))!;
+  native.unknown();
+  vi.stubGlobal("crypto", {
+    getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
+  });
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        readFileSync(
+          new URL("../wasm/generated/client_bg.wasm", import.meta.url),
+        ),
+        { headers: { "Content-Type": "application/wasm" } },
+      ),
+  );
+  try {
+    const retry = (await createMutationJournal("remote", storage)(path, body))!;
+    expect([...rows.keys()]).toEqual([expectedKey]);
+    expect(retry.requestId).toBe(native.requestId);
+    expect(JSON.parse(rows.get(expectedKey)!)).toEqual({
+      requestId: native.requestId,
+      uncertain: true,
+    });
+    retry.reject(400, { error: "Unconfirmed retry" });
+    expect(rows.has(expectedKey)).toBe(true);
+    retry.finish();
+    expect(rows.size).toBe(0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 it.each([408, 429])("keeps HTTP %i outcomes uncertain", (status) => {
   expect(serverMutationResponseIsUncertain(status, { error: "Timeout" })).toBe(
     true,

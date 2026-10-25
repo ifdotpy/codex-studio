@@ -12,6 +12,68 @@ pub(super) fn panic_at(point: u8) {
     });
 }
 struct Factory(std::sync::Mutex<Option<ProviderAttachment>>);
+
+#[test]
+fn lifecycle_capability_requires_exact_ready_connection_and_boolean_proof() {
+    use studio_runtime_process::provider_seam::AttachmentInfo;
+    use studio_runtime_schema::provider_lifecycle::CLAUDE_STEER_COMPLETION_RECEIPTS as CAPABILITY;
+    let handle = ProviderHandle::for_account("owner");
+    let generation = Generation(7);
+    let status = SessionStatus {
+        supervisor_write_deduplication: false,
+        generation,
+        initialization: InitializationStatus::Ready,
+        initialize_result: Some(Arc::new(
+            serde_json::json!({"capabilities":{CAPABILITY:true}}),
+        )),
+        attachment: AttachmentStatus {
+            handle: handle.clone(),
+            open_attempted: true,
+            initialization: InitializationStatus::Ready,
+            info: Some(AttachmentInfo {
+                handle: handle.clone(),
+                generation,
+                pid: 42,
+                acknowledged: EventCursor(0),
+                resumed: true,
+            }),
+        },
+    };
+    assert!(status.has_capability(&handle, generation, CAPABILITY));
+    assert!(!status.has_capability(
+        &ProviderHandle::for_account("other"),
+        generation,
+        CAPABILITY
+    ));
+    assert!(!status.has_capability(&handle, Generation(8), CAPABILITY));
+    for value in [
+        Value::Null,
+        serde_json::json!({}),
+        serde_json::json!({"capabilities":{CAPABILITY:false}}),
+        serde_json::json!({"capabilities":{CAPABILITY:"true"}}),
+        serde_json::json!({"capabilities":{CAPABILITY:1}}),
+    ] {
+        let mut unknown = status.clone();
+        unknown.initialize_result = Some(Arc::new(value));
+        assert!(!unknown.has_capability(&handle, generation, CAPABILITY));
+    }
+    for change in 0..7 {
+        let mut stale = status.clone();
+        match change {
+            0 => stale.generation = Generation(8),
+            1 => stale.initialization = InitializationStatus::AwaitingReply,
+            2 => stale.attachment.initialization = InitializationStatus::AwaitingReply,
+            3 => stale.attachment.info.as_mut().unwrap().generation = Generation(8),
+            4 => {
+                stale.attachment.info.as_mut().unwrap().handle =
+                    ProviderHandle::for_account("other")
+            }
+            5 => stale.attachment.info.as_mut().unwrap().pid = 0,
+            _ => stale.initialize_result = None,
+        }
+        assert!(!stale.has_capability(&handle, generation, CAPABILITY));
+    }
+}
 impl ProviderTaskFactory for Factory {
     fn open(
         &self,

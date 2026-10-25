@@ -4546,6 +4546,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_claude_login_progress_refreshes_accounts_without_a_registry_change() {
+        use studio_runtime_services::account_policy::AccountPolicyState;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let policy = AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
+            [],
+        )
+        .expect("policy");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            Some(Arc::new(policy)),
+        );
+        let resources = [json!({"kind":"accounts"}), json!({"kind":"models"})];
+        let notifications = state.resource_notifications_handle();
+        let accounts = super::super::catalog::accounts(State(state.clone()))
+            .await
+            .expect("account list")
+            .0;
+        let initial = notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        let changed = state.claude_login_change_callback();
+        let mut after = initial.cursor.revision;
+        for _ in 0..2 {
+            // The actor publishes starting, then a provider URL, before adding an account.
+            changed();
+            let progress = notifications
+                .changes_since_with_content(&resources, Some(after), |resource| {
+                    resource_content(state.clone(), resource)
+                })
+                .await
+                .expect("login progress");
+            assert_eq!(progress.resources, vec![resources[0].clone()]);
+            assert_eq!(
+                progress.cursor.resource_revision, progress.cursor.revision,
+                "the existing completion wake still reaches related account resources"
+            );
+            after = progress.cursor.revision;
+            assert_eq!(
+                serde_json::to_value(
+                    super::super::catalog::accounts(State(state.clone()))
+                        .await
+                        .expect("account list")
+                        .0
+                )
+                .expect("JSON"),
+                serde_json::to_value(&accounts).expect("JSON"),
+                "a pending login does not publish an account or its private URL"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn bounded_entities_never_reconstruct_resource_content() {
         let root = tempfile::tempdir().expect("isolated state");
         let state = HttpState::new(

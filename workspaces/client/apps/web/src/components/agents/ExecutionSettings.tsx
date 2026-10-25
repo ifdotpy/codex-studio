@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import {
   isModelWhitelisted,
   useModelWhitelist,
@@ -925,7 +926,7 @@ function ScopedExecutionSettings({
     const requestId =
       previous && previous.target === target && previous.request_id
         ? previous.request_id
-        : crypto.randomUUID();
+        : randomUUID();
     save(subagentTransferReceiptKey, { target, request_id: requestId });
     saveLock.current = true;
     const previousPending = accountPending;
@@ -1142,7 +1143,7 @@ function ScopedExecutionSettings({
           fast_mode: next.fast_mode,
           daybreak_enabled: next.daybreak_enabled,
           ...(active || queued
-            ? { next_turn: true, request_id: crypto.randomUUID() }
+            ? { next_turn: true, request_id: randomUUID() }
             : {}),
         };
     await submit(request, adjustments.join(" "));

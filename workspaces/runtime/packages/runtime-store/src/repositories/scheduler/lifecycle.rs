@@ -6,6 +6,50 @@ use studio_runtime_schema::shared_values::{
 };
 
 impl SchedulerRepository {
+    /// Hold further input after manual recovery without stopping the exact
+    /// native turn that recovery already observed. This owns the hold record.
+    pub fn hold_recovered_delivery(agent: &mut AgentRecord) -> StoreResult<()> {
+        let active = agent.extra.get("inFlight") == Some(&json!(true));
+        if active {
+            let attempt = stored_attempt(agent).ok_or_else(|| invalid_agent(&agent.id.0))?;
+            let turn = bound_turn(agent, attempt).ok_or_else(|| invalid_agent(&agent.id.0))?;
+            let hold = json!({"epoch":agent.epoch,"attemptId":attempt["id"],"accountKey":agent.extra.get("accountKey").cloned().unwrap_or(json!("default")),"threadId":agent.extra.get("threadId"),"turnId":turn,"generation":attempt["connectionGeneration"]});
+            agent
+                .extra
+                .insert("manualRecoveryDeliveryHold".into(), hold);
+        }
+        agent.extra.insert("autoWake".into(), json!(false));
+        if agent.status == AgentStatus::Queued || active {
+            agent.status = AgentStatus::Paused;
+        }
+        Ok(())
+    }
+
+    /// Read the existing hold proof without changing delivery permission. A
+    /// real Stop or a stale native identity cannot match the current turn.
+    pub fn manual_delivery_hold_tracks(agent: &AgentRecord) -> bool {
+        if agent.status != AgentStatus::Paused || agent.extra.get("inFlight") != Some(&json!(true))
+        {
+            return false;
+        }
+        let Some(turn) = agent.extra.get("turnId").and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(attempt_id) = stored_attempt(agent).and_then(|attempt| attempt["id"].as_str())
+        else {
+            return false;
+        };
+        manual_delivery_hold_tracks(
+            agent,
+            &TurnAttemptIdentity {
+                agent_id: agent.id.0.clone(),
+                epoch: agent.epoch,
+                attempt_id: attempt_id.to_owned(),
+            },
+            turn,
+        )
+    }
+
     /// Unknown delivery is never replayed; a proven unsent request restores only its own batch.
     pub fn settle_start_outcome(
         transaction: &Transaction<'_>,
@@ -23,6 +67,9 @@ impl SchedulerRepository {
         });
         let reach = match outcome {
             "uncertain" => StartReach::Provider,
+            // The provider refused the start for good (its saved session is gone).
+            // The input was never sent: it settles as failed, and its owner may send it again.
+            "failed" => StartReach::Provider,
             // Callers settle `pending` only for a request proven never written.
             "pending" => StartReach::NotWritten,
             _ => StartReach::Preparation,
@@ -115,7 +162,9 @@ impl SchedulerRepository {
         {
             agent.extra.remove("startOutcomeHold");
         }
-        let interrupt = agent.status == AgentStatus::Paused || agent.epoch != identity.epoch;
+        let interrupt = (agent.status == AgentStatus::Paused
+            && !manual_delivery_hold_tracks(&agent, identity, turn_id))
+            || agent.epoch != identity.epoch;
         publish_agent(transaction, &agent)?;
         Ok(Some(interrupt))
     }
@@ -2640,6 +2689,33 @@ pub(super) fn current_attempt(agent: &AgentRecord, epoch: i64) -> bool {
     agent.epoch == epoch
         && agent.extra.get("turnEpoch") == Some(&json!(epoch))
         && agent.extra.get("autoWake") == Some(&json!(true))
+}
+fn manual_delivery_hold_tracks(
+    agent: &AgentRecord,
+    identity: &TurnAttemptIdentity,
+    turn: &str,
+) -> bool {
+    let Some(attempt) = stored_attempt(agent) else {
+        return false;
+    };
+    agent.epoch == identity.epoch
+        && agent.extra.get("autoWake") == Some(&json!(false))
+        && agent.extra.get("turnEpoch") == Some(&json!(identity.epoch))
+        && agent.extra.get("turnId").and_then(Value::as_str) == Some(turn)
+        && attempt["id"] == identity.attempt_id
+        && attempt["epoch"].as_i64() == Some(identity.epoch)
+        && bound_turn(agent, attempt) == Some(turn)
+        && attempt["submitted"] == true
+        && attempt["requestTicket"]
+            .as_str()
+            .is_some_and(|ticket| !ticket.is_empty())
+        && attempt["connectionGeneration"]
+            .as_u64()
+            .is_some_and(|generation| generation > 0)
+        && agent.extra.get("manualRecoveryDeliveryHold")
+            == Some(
+                &json!({"epoch":identity.epoch,"attemptId":identity.attempt_id,"accountKey":agent.extra.get("accountKey").cloned().unwrap_or(json!("default")),"threadId":agent.extra.get("threadId"),"turnId":turn,"generation":attempt["connectionGeneration"]}),
+            )
 }
 pub(super) fn stopped_attempt(agent: &AgentRecord, epoch: i64) -> bool {
     agent.status == AgentStatus::Paused

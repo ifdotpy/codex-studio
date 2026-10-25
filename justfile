@@ -26,9 +26,9 @@ build-release-binaries dir="":
 verify-release-binaries dir="":
     @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
 
-[doc("Deliver a commit (default HEAD) to the live server of this Linux host: source snapshot release, `current` link, systemd restart, automatic rollback when unhealthy. The only way to change the live server binary.")]
-deliver-server commit="HEAD":
-    @workspaces/runtime/apps/runtime-server/deliver.sh {{quote(commit)}}
+[doc("Deliver a commit (default HEAD) on this host. Linux uses its source release and systemd owner. macOS verifies a signed package and its upgrade canary, then uses the existing recovery owner. Use --app PATH for a prepared Mac package and --dry-run to verify without an install. Explicitly approved Mac installs may use --app PATH --skip-canary.")]
+deliver-server commit="HEAD" *args:
+    @node workspaces/runtime/apps/runtime-server/deliver.mjs "$@"
 
 [doc("Check the package signing setup in seconds: configuration, file modes, keychain unlock, identity. Prints PASS or the exact FAIL reason, never the password. Run it before package-native.")]
 signing-check:
@@ -159,6 +159,10 @@ test-browser-smoke *args:
 smoke-installed *args:
     @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.mjs")}} "$@"
 
+[doc("Install a newer build over the current one on an isolated clone with real processes, before a live install. See docs/testing.md, Upgrade canary.")]
+upgrade-canary *args:
+    @node {{quote(justfile_directory() / "workspaces/tooling/apps/upgrade-canary/canary.mjs")}} "$@"
+
 [doc("Run the full browser project as a manual heavy check.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
@@ -176,3 +180,11 @@ test-native-webview:
     @pnpm --filter codex-agents-web run build
     @cargo build -p studio-native-client --features native-check --locked
     @node workspaces/client/apps/native/check-native.mjs
+
+[doc("Manual check: run real guest module worker aggregation and crash scenarios.")]
+test-guest-runner-processes:
+    @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mjs
+
+[doc("Manual process check: run detached host_exec startup, replacement and guest broker scenarios.")]
+test-host-exec-processes:
+    @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^host_exec_service::/)'

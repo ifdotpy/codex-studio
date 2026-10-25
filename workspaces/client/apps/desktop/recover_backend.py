@@ -31,6 +31,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def validate_identity(data, state):
+    """Validate one desktop response before a recovery or delivery action."""
+    if (data.get("application") != "codex-agents" or data.get("protocol") != 1
+            or data.get("backendKind") != "rust" or data.get("stateDir") != str(state) or type(data.get("pid")) is not int
+            or data["pid"] < 1):
+        raise RuntimeError("The backend identity does not match this recovery service.")
+    return data
+
+
 def identity(port, state, timeout=5):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
@@ -40,10 +49,7 @@ def identity(port, state, timeout=5):
         if isinstance(error.reason, ConnectionRefusedError):
             return None
         raise
-    if (data.get("application") != "codex-agents" or data.get("protocol") != 1
-            or data.get("backendKind") != "rust" or data.get("stateDir") != str(state) or type(data.get("pid")) is not int
-            or data["pid"] < 1):
-        raise RuntimeError("The backend identity does not match this recovery service.")
+    validate_identity(data, state)
     os.kill(data["pid"], 0)
     return data
 

@@ -1,6 +1,5 @@
-//! Runtime notification effects. The main writer captures budget and move cache;
+//! Runtime notification effects. The main writer captures the move cache;
 //! analytics and volatile rates are immutable values for the caller after commit.
-use crate::budget::CaptureSource;
 use crate::notification_dispatch::{
     DispatchOutcome, NotificationDispatchError, NotificationEffects, NotificationObservation,
     NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
@@ -13,25 +12,6 @@ use studio_runtime_store::Transaction;
 pub struct RuntimeNotificationEffects;
 
 impl NotificationEffects for RuntimeNotificationEffects {
-    fn capture_usage(
-        &self,
-        tx: &Transaction<'_>,
-        agent: &mut Value,
-        params: &Value,
-        at: f64,
-    ) -> Result<crate::budget::UsageAcceptance, NotificationDispatchError> {
-        // The dispatcher persists `agent` after this capture.
-        let acceptance = crate::budget_service::capture_for_persisting_caller(
-            tx,
-            agent,
-            params,
-            at,
-            CaptureSource::Live,
-            at,
-        )?;
-        Ok(acceptance)
-    }
-
     fn capture_move_cache(
         &self,
         tx: &Transaction<'_>,
@@ -119,23 +99,10 @@ impl NotificationEffects for RuntimeNotificationEffects {
         {
             return result;
         }
-        let captured = (method == "thread/tokenUsage/updated")
-            .then(|| after.and_then(|agent| agent["tokensUsed"].as_u64()))
-            .flatten();
-        // Python captures the budget before freezing analytics arguments.
-        let mut analytics_agent = SharedJson::agent_projection(before);
-        if captured.is_some()
-            && let Some(after) = after
-        {
-            for field in ["tokensUsed", "tokenUsageAccounting"] {
-                if let Some(value) = after.get(field) {
-                    analytics_agent[field] = value.clone();
-                }
-            }
-        }
+        let analytics_agent = SharedJson::agent_projection(before);
         result.push(NotificationPostCommit::Analytics {
             observation: observation(Some(&analytics_agent)),
-            budget_capture_value: captured,
+            budget_capture_value: None,
         });
         if matches!(
             method,

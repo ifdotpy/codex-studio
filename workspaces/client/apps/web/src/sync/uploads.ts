@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serverStorageName } from "../servers/environment";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import { syncGet, syncPost, refreshSession } from "../api";
@@ -166,7 +167,7 @@ export function createUploads(
     // reliably put those File objects in IndexedDB. ArrayBuffer retains exact bytes.
     const rows: (PendingUpload & { bytes: ArrayBuffer })[] = await Promise.all(
       files.map(async (file, index) => ({
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         workspace: workspaceId,
         stateDir,
         agent,

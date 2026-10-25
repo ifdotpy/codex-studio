@@ -12,9 +12,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::path::Path;
 
 const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
     "CODEX_AGENTS_BACKEND_ID",
+    // The desktop launcher supplies the backend executable hash, not provider identity.
+    "CODEX_BACKEND_BUILD",
     "CODEX_RUNTIME_LOCK_METRICS",
     "CODEX_AGENTS_PROVIDER_CAPTURE",
     "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",
@@ -61,6 +64,7 @@ pub(crate) fn clean_environment(requested: &BTreeMap<String, String>) -> BTreeMa
 pub(crate) fn verify_environment(
     original: &BTreeMap<String, String>,
     clean: &BTreeMap<String, String>,
+    retained: &crate::RetainedLaunchValues,
 ) -> io::Result<()> {
     let without_launcher = |values: &BTreeMap<String, String>| {
         values
@@ -78,6 +82,16 @@ pub(crate) fn verify_environment(
             expected.remove(*key);
         }
     }
+    for (key, value) in original {
+        let retained_value = retained
+            .earlier
+            .get(key)
+            .is_some_and(|values| values.contains(value))
+            || retained.executable_variables.contains(key) && Path::new(value).is_absolute();
+        if retained_value && expected.contains_key(key) {
+            expected.insert(key.clone(), value.clone());
+        }
+    }
     if without_launcher(original) != expected {
         return Err(io::Error::other("retained provider environment differs"));
     }
@@ -90,12 +104,53 @@ pub(crate) fn verify_environment(
 #[must_use]
 pub fn retained_environment_accepted(
     original: &BTreeMap<String, String>,
-    launch: &BTreeMap<String, String>,
+    launch: &crate::ProviderLaunchSpec,
 ) -> bool {
-    verify_environment(original, &clean_environment(launch)).is_ok()
+    verify_environment(
+        original,
+        &clean_environment(&launch.environment),
+        &launch.retained,
+    )
+    .is_ok()
 }
 
-/// Upper bound in bytes for one retained child's launch environment record.
+/// Whether a running child started with `original` runs the provider of a
+/// launch with `command` and `reattach_commands`: one of those commands, or,
+/// when the program is a replaceable executable, one of them with another
+/// absolute program path.
+pub(crate) fn retained_command(
+    original: &[String],
+    command: &[String],
+    reattach_commands: &[Vec<String>],
+    retained: &crate::RetainedLaunchValues,
+) -> bool {
+    std::iter::once(command)
+        .chain(reattach_commands.iter().map(Vec::as_slice))
+        .any(|accepted| {
+            original == accepted
+                || retained.executable_program
+                    && original.len() == accepted.len()
+                    && original.get(1..) == accepted.get(1..)
+                    && original
+                        .first()
+                        .is_some_and(|program| Path::new(program).is_absolute())
+        })
+}
+
+/// Whether the supervisor reattaches a running child started with the
+/// command `original` under a launch with `launch`.
+#[must_use]
+pub fn retained_command_accepted(original: &[String], launch: &crate::ProviderLaunchSpec) -> bool {
+    retained_command(
+        original,
+        &launch.command,
+        &launch.reattach_commands,
+        &launch.retained,
+    )
+}
+
+/// Upper bound in bytes for one retained child's launch record: its
+/// arguments or its environment.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const PROCESS_ENVIRONMENT_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -113,6 +168,43 @@ pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, 
     parse_process_environment(&bytes)
 }
 
+/// Read a retained child's launch arguments from `/proc/<pid>/cmdline`.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_process_command(pid: u32) -> io::Result<Vec<String>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(format!("/proc/{pid}/cmdline"))?
+        .take(PROCESS_ENVIRONMENT_LIMIT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > PROCESS_ENVIRONMENT_LIMIT_BYTES {
+        return Err(io::Error::other("arguments exceed limit"));
+    }
+    bytes
+        .strip_suffix(&[0])
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid process arguments"))?
+        .split(|byte| *byte == 0)
+        .map(process_string)
+        .collect()
+}
+
+/// Read a retained child's launch arguments from `KERN_PROCARGS2`.
+#[cfg(target_os = "macos")]
+pub(crate) fn read_process_command(pid: u32) -> io::Result<Vec<String>> {
+    let raw = studio_runtime_proc_sys::process_arguments(pid, PROCESS_ENVIRONMENT_LIMIT_BYTES)?;
+    procargs_parts(&raw)?
+        .0
+        .into_iter()
+        .map(process_string)
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn process_string(bytes: &[u8]) -> io::Result<String> {
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 /// Read a retained child's launch environment from `KERN_PROCARGS2`, as the
 /// Python supervisor's `process_launch_environment` does on macOS.
 ///
@@ -125,14 +217,14 @@ pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, 
 #[cfg(target_os = "macos")]
 pub(crate) fn read_process_environment(pid: u32) -> io::Result<BTreeMap<String, String>> {
     let raw = studio_runtime_proc_sys::process_arguments(pid, PROCESS_ENVIRONMENT_LIMIT_BYTES)?;
-    parse_process_environment(procargs_environment(&raw)?)
+    parse_process_environment(procargs_parts(&raw)?.1)
 }
 
-/// Skip `argc`, the executable path, its NUL padding and `argc` argument
-/// strings of a `KERN_PROCARGS2` record. The environment strings follow; an
-/// empty string ends them before the Apple strings.
+/// Split a `KERN_PROCARGS2` record after `argc`, the executable path and its
+/// NUL padding into the `argc` argument strings and the rest. The environment
+/// strings start the rest; an empty string ends them before the Apple strings.
 #[cfg(target_os = "macos")]
-fn procargs_environment(raw: &[u8]) -> io::Result<&[u8]> {
+fn procargs_parts(raw: &[u8]) -> io::Result<(Vec<&[u8]>, &[u8])> {
     const MAX_ARGUMENTS: i32 = 4096;
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid process launch record");
     let (count, rest) = raw.split_first_chunk::<4>().ok_or_else(invalid)?;
@@ -151,10 +243,13 @@ fn procargs_environment(raw: &[u8]) -> io::Result<&[u8]> {
     while rest.get(position) == Some(&0) {
         position += 1;
     }
+    let mut arguments = Vec::new();
     for _ in 0..count {
+        let start = position;
         position += skip_string(rest.get(position..).ok_or_else(invalid)?)?;
+        arguments.push(rest.get(start..position - 1).ok_or_else(invalid)?);
     }
-    rest.get(position..).ok_or_else(invalid)
+    Ok((arguments, rest.get(position..).ok_or_else(invalid)?))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -419,24 +514,27 @@ pub(crate) fn serialize_frame(value: &impl Serialize) -> Result<Vec<u8>, Supervi
 #[cfg(all(test, target_os = "macos"))]
 mod macos_environment_tests {
     #![allow(clippy::unwrap_used)]
-    use super::{procargs_environment, read_process_environment};
+    use super::{procargs_parts, read_process_command, read_process_environment};
     use std::collections::BTreeMap;
     use std::process::{Command, Stdio};
 
     #[test]
-    fn procargs_record_skips_path_padding_and_arguments() {
+    fn procargs_record_splits_arguments_from_the_environment() {
         let mut raw = 2_i32.to_ne_bytes().to_vec();
         raw.extend_from_slice(
             b"/bin/tool\0\0\0\0tool\0--flag\0A=1\0B=2\0\0executable_path=/bin/tool\0",
         );
         assert_eq!(
-            procargs_environment(&raw).unwrap(),
-            b"A=1\0B=2\0\0executable_path=/bin/tool\0"
+            procargs_parts(&raw).unwrap(),
+            (
+                vec![&b"tool"[..], &b"--flag"[..]],
+                &b"A=1\0B=2\0\0executable_path=/bin/tool\0"[..]
+            )
         );
-        assert!(procargs_environment(&0_i32.to_ne_bytes()).is_err());
+        assert!(procargs_parts(&0_i32.to_ne_bytes()).is_err());
         let mut truncated = 3_i32.to_ne_bytes().to_vec();
         truncated.extend_from_slice(b"/bin/tool\0tool\0");
-        assert!(procargs_environment(&truncated).is_err());
+        assert!(procargs_parts(&truncated).is_err());
     }
 
     /// Child half of the test below: report that its startup has finished,
@@ -482,8 +580,18 @@ mod macos_environment_tests {
             assert_ne!(count, 0, "the probe child exited before it was ready");
         }
         let read = read_process_environment(child.id());
+        let command = read_process_command(child.id());
         child.kill().unwrap();
         child.wait().unwrap();
+        assert_eq!(
+            command.unwrap(),
+            [
+                std::env::current_exe().unwrap().to_string_lossy().as_ref(),
+                "--ignored",
+                "--exact",
+                "provider_shared::macos_environment_tests::environment_probe_child",
+            ]
+        );
         assert_eq!(
             read.unwrap(),
             BTreeMap::from([

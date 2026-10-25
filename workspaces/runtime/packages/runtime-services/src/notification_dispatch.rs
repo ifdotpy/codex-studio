@@ -64,11 +64,94 @@ pub struct NativeProcessSource {
 #[derive(Clone, Default)]
 pub struct PublicationContext {
     pub(crate) native_source: Option<NativeProcessSource>,
+    vm_journal: Option<VmJournalScope>,
 }
+
+/// Trusted actor binding, separate from the account used for authorization.
+#[derive(Clone)]
+struct VmJournalScope {
+    account: String,
+    actor: String,
+    epoch: i64,
+    provider_handle: String,
+}
+
 impl PublicationContext {
     pub fn with_native_source(mut self, source: Option<NativeProcessSource>) -> Self {
         self.native_source = source;
         self
+    }
+
+    /// Only the account journal owner supplies this exact VM namespace.
+    pub(crate) fn with_vm_journal(
+        mut self,
+        account: &str,
+        actor: &str,
+        epoch: i64,
+        journal_scope: &str,
+    ) -> Result<Self, NotificationDispatchError> {
+        if account.is_empty()
+            || actor.is_empty()
+            || epoch < 0
+            || journal_scope != crate::account_worker::vm_journal_scope(account, actor)
+        {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        self.vm_journal = Some(VmJournalScope {
+            account: account.into(),
+            actor: actor.into(),
+            epoch,
+            provider_handle: studio_runtime_process::ProviderHandle::for_account(journal_scope)
+                .as_str()
+                .into(),
+        });
+        Ok(self)
+    }
+
+    fn validate_actor(&self, agent: &Value, actor: &str) -> Result<(), NotificationDispatchError> {
+        let valid = match &self.vm_journal {
+            Some(scope) => {
+                agent["id"] == scope.actor
+                    && actor == scope.actor
+                    && agent["epoch"] == scope.epoch
+                    && agent["executionMode"] == "vm"
+                    && agent
+                        .get("accountKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or("default")
+                        == scope.account
+            }
+            None => agent["executionMode"] != "vm",
+        };
+        if !valid {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        Ok(())
+    }
+
+    /// Keep cursor/observation identities scoped without granting another account.
+    fn scoped_delivery(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &str,
+        authority: &ProviderDeliveryIdentity,
+    ) -> Result<Option<ProviderDeliveryIdentity>, NotificationDispatchError> {
+        let Some(scope) = &self.vm_journal else {
+            return Ok(None);
+        };
+        if authority.provider_handle
+            != studio_runtime_process::ProviderHandle::for_account(&scope.account).as_str()
+        {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        let agent = NotificationDispatchRepository::agent_record(tx, actor)?
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        self.validate_actor(&agent, actor)?;
+        Ok(Some(ProviderDeliveryIdentity {
+            provider_handle: scope.provider_handle.clone(),
+            generation: authority.generation,
+            cursor: authority.cursor,
+        }))
     }
 }
 
@@ -117,8 +200,6 @@ pub enum NotificationDispatchError {
     Dependency(&'static str),
     #[error(transparent)]
     Store(StoreError),
-    #[error(transparent)]
-    Budget(#[from] crate::budget::BudgetError),
     #[error(transparent)]
     Move(#[from] crate::agent_move::MoveError),
     #[error("JSON serialization failed")]
@@ -368,7 +449,7 @@ pub fn dispatch_notification(
     )
 }
 
-/// Dispatch with transactional budget and move-cache owners supplied by the worker.
+/// Dispatch with the transactional move-cache owner supplied by the worker.
 // Preserve the existing dispatcher signature, adding only the injected effect owner.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_notification_with_effects(
@@ -390,6 +471,8 @@ pub fn dispatch_notification_with_effects(
     let mut post_commit = NotificationPublicationBatch::default();
     let mut command_output_monitor_present = None;
     let result = in_savepoint(transaction, || {
+        let scoped = publication.scoped_delivery(transaction, agent_id, identity)?;
+        let delivery = scoped.as_ref().unwrap_or(identity);
         let outcome = (|| {
             if !observed_at.is_finite()
                 || observed_at < 0.0
@@ -404,9 +487,9 @@ pub fn dispatch_notification_with_effects(
             }
             let content_signature = notification_content_signature(agent_id, notification)?;
             let identity_signature = sha256_json(&json!({
-                "providerHandle": identity.provider_handle,
-                "generation": identity.generation,
-                "cursor": identity.cursor,
+                "providerHandle": delivery.provider_handle,
+                "generation": delivery.generation,
+                "cursor": delivery.cursor,
             }))?;
             let receipt_id = format!("{DELIVERY_RECEIPT_PREFIX}{identity_signature}");
             if let Some(receipt) =
@@ -447,6 +530,7 @@ pub fn dispatch_notification_with_effects(
                         DispatchOutcome::Written,
                     );
                 };
+                publication.validate_actor(&agent, agent_id)?;
                 if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
                     return save_outcome(
                         transaction,
@@ -468,6 +552,7 @@ pub fn dispatch_notification_with_effects(
             }
             let mut agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
                 .ok_or_else(|| stored("runtime_agents", agent_id))?;
+            publication.validate_actor(&agent, agent_id)?;
             if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
                 return save_outcome(
                     transaction,
@@ -508,7 +593,7 @@ pub fn dispatch_notification_with_effects(
                     Some(&agent),
                     Some(&agent),
                     &notification_payload(notification),
-                    identity,
+                    delivery,
                     observed_at,
                     &DispatchOutcome::Written,
                 ) {
@@ -762,8 +847,6 @@ pub fn dispatch_notification_with_effects(
                     if let TokenUsageObservation::Typed(usage) = &observation {
                         normalized["studioUsage"] = serde_json::to_value(usage)?;
                     }
-                    let acceptance =
-                        effects.capture_usage(transaction, &mut agent, &normalized, observed_at)?;
                     if crate::event_write::truthy(agent.get("movedFrom")) {
                         effects.capture_move_cache(
                             transaction,
@@ -772,7 +855,7 @@ pub fn dispatch_notification_with_effects(
                             observed_at,
                         )?;
                     }
-                    apply_token_usage(&mut agent, &observation, acceptance, observed_at)?
+                    apply_token_usage(&mut agent, &observation, observed_at)?
                 }
                 _ => return Err(NotificationDispatchError::InvalidNotification),
             };
@@ -838,7 +921,7 @@ pub fn dispatch_notification_with_effects(
                 before.as_ref(),
                 after,
                 &notification_payload(notification),
-                identity,
+                delivery,
                 observed_at,
                 &outcome,
             );
@@ -1974,13 +2057,9 @@ enum TokenUsageObservation {
 fn apply_token_usage(
     agent: &mut Value,
     observation: &TokenUsageObservation,
-    acceptance: crate::budget::UsageAcceptance,
     observed_at: f64,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
     use studio_runtime_schema::usage::UsageObservation;
-    if acceptance == crate::budget::UsageAcceptance::RejectedReplayConflict {
-        return Ok(DispatchOutcome::Written);
-    }
     let observation = match observation {
         TokenUsageObservation::Typed(usage) => usage,
         TokenUsageObservation::Legacy(usage) => {
@@ -2352,11 +2431,11 @@ mod tests {
         rates.settled().await;
         let rate_rows = rates.snapshot().to_value();
         let db = store.test_reader().unwrap();
-        for (agent, spent, context, output) in
-            [("claude-agent", 52, 33, 12.), ("codex-agent", 46, 46, 6.)]
-        {
-            let row = studio_runtime_store::budget::BudgetRepository::agent(&db, agent).unwrap();
-            assert_eq!(row["tokensUsed"], spent);
+        for (agent, context, output) in [("claude-agent", 33, 12.), ("codex-agent", 46, 6.)] {
+            let row = AgentRepository::get(&db, &agent.into())
+                .unwrap()
+                .unwrap()
+                .value();
             assert_eq!(row["contextUsage"]["tokens"], context);
             let rate = rate_rows["records"]
                 .as_array()
@@ -2428,8 +2507,10 @@ mod tests {
         )
         .expect("rollout context");
         let actions = rollout.actions(&json!({"type":"token_usage_record","payload":{"response_id":"codex-response","usage":{"input_tokens":40,"cached_input_tokens":5,"output_tokens":6,"reasoning_output_tokens":2,"total_tokens":46}}}), "native-response", 105.).expect("native import");
-        let agent =
-            studio_runtime_store::budget::BudgetRepository::agent(&db, "codex-agent").unwrap();
+        let agent = AgentRepository::get(&db, &"codex-agent".into())
+            .unwrap()
+            .unwrap()
+            .value();
         for action in actions {
             let crate::analytics_rollout::RolloutAction::Event { method, params, at } = action
             else {
@@ -2456,48 +2537,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_usage_conflict_keeps_first_charge_and_dispatches_context() {
-        let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
-        store
-            .transaction_with(|tx| {
-                AgentRepository::put(
-                    tx,
-                    &AgentRecord::from_value(json!({
-                        "id":"agent","rootId":"agent","epoch":1,"status":"running",
-                        "threadId":"thread","accountKey":"default","provider":"claude",
-                        "turnId":"turn","inFlight":true,"autoWake":false,"created":0,
-                        "activeTools":[],"events":0
-                    }))
-                    .unwrap(),
-                )
-            })
-            .await
-            .unwrap();
-        for (index, output) in [2, 2, 3].into_iter().enumerate() {
-            store.transaction_with(move |tx| {
-                let notification = json!({"method":"thread/tokenUsage/updated","params":{
-                    "threadId":"thread","turnId":"turn","studioUsage":{
-                        "kind":"response","responseId":"r","turnId":"turn","model":"claude","evidence":"live",
-                        "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":output},"modelContextWindow":1000
-                    }}});
-                let result = super::dispatch_notification_with_effects(tx,"agent",&PublicationContext::default(),&NotificationStreamBuffer::default(),&identity(index as u64 + 1),&frame(&notification),100. + index as f64,&crate::notification_runtime_effects::RuntimeNotificationEffects).expect("usage dispatch continues");
-                assert_eq!(result.outcome,DispatchOutcome::Written);
-                let agent = studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?;
-                assert_eq!(agent["tokensUsed"],12,"one immutable response charge");
-                assert_eq!(agent["contextUsage"]["tokens"],12,"a rejected replay preserves the accepted context usage");
-                assert_eq!(agent["contextUsage"]["at"], if index == 2 {101.} else {100. + index as f64}, "a rejected replay cannot refresh the gauge timestamp");
-                assert_eq!(agent["tokenUsageAccounting"],if index == 2 {"provisional"} else {"responseRecords"});
-                let state: String = tx.query_row("SELECT record FROM runtime_budget WHERE id='agent'",[],|row|row.get(0)).map_err(StoreError::from)?;
-                let state: Value = serde_json::from_str(&state)?;
-                assert_eq!(state["faults"].as_array().unwrap().iter().any(|fault|fault == "responseReplayConflict"),index == 2);
-                Ok::<_,super::NotificationDispatchError>(())
-            }).await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn typed_usage_bridge_golden_frames_reach_budget_and_context() {
+    async fn typed_usage_bridge_golden_frames_reach_context() {
         let root = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(root.path())).await.unwrap();
         store
@@ -2536,24 +2576,12 @@ mod tests {
                     )
                     .expect("bridge usage dispatch");
                     assert_eq!(result.outcome, DispatchOutcome::Written);
-                    let agent = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
-                    assert_eq!(
-                        agent["tokensUsed"], 806,
-                        "response and cumulative evidence settle by max"
-                    );
+                    let agent = AgentRepository::get(tx, &"agent".into())?.unwrap().value();
                     assert_eq!(
                         agent["contextUsage"]["tokens"], 806,
                         "only final response usage changes the context gauge"
                     );
                     assert_eq!(agent["contextUsage"]["window"], 200000);
-                    assert_eq!(
-                        agent["tokenUsageAccounting"],
-                        if index == 2 {
-                            "provisional"
-                        } else {
-                            "responseRecords"
-                        }
-                    );
                     Ok::<_, super::NotificationDispatchError>(())
                 })
                 .await
@@ -3323,11 +3351,7 @@ mod tests {
 
     #[test]
     fn absent_service_rolls_back_all_notification_rows_and_receipt() {
-        for method in [
-            "thread/realtime/started",
-            "account/updated",
-            "thread/tokenUsage/updated",
-        ] {
+        for method in ["thread/realtime/started", "account/updated"] {
             let mut connection = database();
             let tx = connection.transaction().expect("transaction");
             let rows = |tx: &rusqlite::Transaction<'_>| {
@@ -3377,6 +3401,22 @@ mod tests {
             );
             tx.commit().expect("caller may commit after caught error");
         }
+        // Token usage needs no injected service: the team token budget that
+        // captured it is removed.
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let result = super::dispatch_notification(
+            &tx,
+            "agent",
+            &PublicationContext::default(),
+            &NotificationStreamBuffer::default(),
+            &identity(1),
+            &frame(
+                &json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","tokenUsage":{"total":{"totalTokens":5},"last":{"totalTokens":5},"modelContextWindow":1000}}}),
+            ),
+            1234.5,
+        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

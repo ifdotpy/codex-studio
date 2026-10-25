@@ -120,6 +120,385 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
     }
 }
 
+async fn manual_start_authorization(
+    state: &State,
+    scope: &ConnectionScope,
+    restart: bool,
+) -> crate::agent_management_recovery::AuthorizedRecoveryRequest {
+    use crate::agent_management_recovery::AuthorizedRecoveryRequest;
+    let scope = scope.clone();
+    let target_id = state.agent.clone();
+    let epoch = state.epoch;
+    state.bridge.store.transaction(move |tx| {
+        let lead = json!({"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,"status":"running","isLead":true,"autoWake":true,"accountKey":"default","threadId":"lead-thread","turnId":"lead-turn"});
+        AgentRepository::put(tx, &AgentRecord::from_value(lead.clone())?)?;
+        let mut target = AgentRepository::get(tx, &AgentId::from(target_id.as_str()))?.expect("worker").value();
+        target["rootId"] = lead["rootId"].clone();
+        target["parentId"] = lead["id"].clone();
+        target["isLead"] = json!(false);
+        target["status"] = json!("running");
+        target["inFlight"] = json!(true);
+        target["autoWake"] = json!(true);
+        target["threadId"] = json!("fake-thread-0");
+        target["turnId"] = Value::Null;
+        target["turnEpoch"] = json!(epoch);
+        target["startAttempt"] = json!({"id":"manual-unknown-attempt","epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","events":["annotation:input"],"submitted":true,"executionOutcome":"unknown","requestTicket":"manual-start-ticket","connectionId":scope.connection,"connectionGeneration":scope.generation,"created":1.0});
+        for field in ["restartRecovery","disconnectRecovery","contextRepairWait","nativeFailureHold"] { target.as_object_mut().expect("worker object").remove(field); }
+        if restart {
+            let attempt = target.as_object_mut().expect("worker object").remove("startAttempt").expect("attempt");
+            target["status"] = json!("queued");
+            target["inFlight"] = json!(false);
+            target["restartRecovery"] = json!({"stage":"held","startAttempt":attempt});
+            target["contextRepairWait"] = json!({"scope":"native","events":["annotation:input"],"error":"Context repair waits for a confirmed input receipt: annotation:input","source":{"id":target_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null},"nextCheckAt":0});
+            target["error"] = json!("Context repair waits for a confirmed input receipt: annotation:input");
+        }
+        AgentRepository::put(tx, &AgentRecord::from_value(target.clone())?)?;
+        tx.execute("UPDATE runtime_events SET status='uncertain',error='Unknown native input outcome' WHERE id='annotation:input'", [])?;
+        EventWriteRepository::replace_receipt(tx, "manual-no-replay", "signature", "{\"status\":\"unconfirmed\"}")?;
+        Ok(AuthorizedRecoveryRequest { lead, target, request_id:"manual-no-replay".into(), signature:"signature".into() })
+    }).await.expect("manual recovery intent")
+}
+
+#[tokio::test]
+async fn manual_recovery_absence_never_makes_the_original_input_schedulable() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let auth = manual_start_authorization(&state, port.scope(), false).await;
+    let epoch = state.epoch;
+    let task = tokio::spawn(async move { port.recover_managed_agent(auth).await });
+    let turns = peer.write("thread/turns/list").await;
+    peer.reply(&turns, json!({"data":[{"id":"absent-attempt","threadId":"fake-thread-0","clientUserMessageId":"annotation:input","startOutcome":"not_applied","items":[]}],"nextCursor":null})).await;
+    let read = peer.write("thread/read").await;
+    peer.reply(
+        &read,
+        json!({"thread":{"id":"fake-thread-0","status":{"type":"idle"}}}),
+    )
+    .await;
+    let checked = task
+        .await
+        .expect("manual owner task")
+        .expect("manual result");
+    let target_id = state.agent.clone();
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &target_id, epoch, "must-not-replay", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("real scheduler admission");
+    let original_status = state.event_status("input").await;
+    worker.shutdown().await.expect("fixture worker shutdown");
+    assert!(
+        !schedulable,
+        "manual recovery requeued the original input: {checked}"
+    );
+    assert_eq!(original_status, "uncertain");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "manual recovery must not start a native turn"
+    );
+}
+
+async fn manual_active_start_case(restart: bool) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let auth = manual_start_authorization(&state, port.scope(), restart).await;
+    state.enqueue("new-input").await;
+    let task = tokio::spawn(async move { port.recover_managed_agent(auth).await });
+    let turns = peer.write("thread/turns/list").await;
+    peer.reply(&turns, json!({"data":[{"id":"manual-running-turn","threadId":"fake-thread-0","clientUserMessageId":"annotation:input","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"annotation:input","text":"input"}]}],"nextCursor":null})).await;
+    let checked = task.await.expect("manual task").expect("manual result");
+    let accepted = state.record().await;
+    let started = peer.frame(json!({"method":"turn/started","params":{"threadId":"fake-thread-0","turn":{"id":"manual-running-turn"}}})).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        peer.acknowledged_or_worker_exits(started, &mut worker),
+    )
+    .await
+    .expect("the observed turn remains tracked without an interrupt");
+    let cursor = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"manual-running-turn","status":"completed"}}})).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        peer.acknowledged_or_worker_exits(cursor, &mut worker),
+    )
+    .await
+    .expect("the exact completion remains tracked");
+    worker_barrier(&worker).await;
+    let after = state.record().await;
+    let original_status = state.event_status("input").await;
+    let next_status = state.event_status("new-input").await;
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &agent, epoch, "must-not-start-next", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("scheduler delivery check");
+    worker.shutdown().await.expect("fixture shutdown");
+    assert_eq!(accepted["turnId"], "manual-running-turn", "{checked}");
+    assert_eq!(original_status, "delivered");
+    assert!(
+        after["turnId"].is_null(),
+        "the exact completion was dropped: {after}"
+    );
+    assert_eq!(after["inFlight"], false);
+    assert_eq!(after["lastCompletedTurn"], "manual-running-turn");
+    assert_eq!(next_status, "pending");
+    assert!(!schedulable, "manual recovery enabled the next model input");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "manual recovery sent new native input"
+    );
+}
+
+#[tokio::test]
+async fn manual_recovery_reads_new_native_history_for_a_new_request_identity() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let mut auth = manual_start_authorization(&state, port.scope(), false).await;
+    let sender = port.clone();
+    let first_auth = auth.clone();
+    let first = tokio::spawn(async move { sender.recover_managed_agent(first_auth).await });
+    let turns = peer.write("thread/turns/list").await;
+    let preparing = json!({"data":[{"id":"preparing","threadId":"fake-thread-0","clientUserMessageId":"annotation:input","startOutcome":"preparing","items":[]}],"nextCursor":null});
+    peer.reply(&turns, preparing.clone()).await;
+    first
+        .await
+        .expect("first read task")
+        .expect("unconfirmed first read");
+    auth.request_id = "new-manual-history-request".into();
+    auth.signature = "new-signature".into();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            EventWriteRepository::replace_receipt(
+                tx,
+                "new-manual-history-request",
+                "new-signature",
+                "{\"status\":\"unconfirmed\"}",
+            )
+        })
+        .await
+        .expect("new explicit manual request");
+    let mut second = tokio::spawn(async move { port.recover_managed_agent(auth).await });
+    let next = tokio::select! {
+        wire = peer.write("thread/turns/list") => Some(wire),
+        _ = &mut second => None,
+    };
+    if let Some(wire) = next.as_ref() {
+        peer.reply(wire, preparing).await;
+        second
+            .await
+            .expect("second read task")
+            .expect("second read result");
+    }
+    worker.shutdown().await.expect("fixture shutdown");
+    assert!(
+        next.is_some(),
+        "a new manual request replayed an old native history response"
+    );
+}
+
+#[tokio::test]
+async fn manual_recovery_accepts_a_live_exact_start_and_tracks_its_terminal_notice() {
+    manual_active_start_case(false).await;
+}
+
+#[tokio::test]
+async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_notice() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let auth = manual_start_authorization(&state, port.scope(), true).await;
+    state.enqueue("new-input").await;
+    let sender = port.clone();
+    let active_auth = auth.clone();
+    let active = tokio::spawn(async move { sender.recover_managed_agent(active_auth).await });
+    let history = peer.write("thread/turns/list").await;
+    let mut turn = json!({"id":"manual-running-turn","threadId":"fake-thread-0",
+        "clientUserMessageId":"annotation:input","status":"inProgress",
+        "items":[{"id":"input","type":"userMessage","clientId":"annotation:input","text":"input"}]});
+    peer.reply(&history, json!({"data":[turn],"nextCursor":null}))
+        .await;
+    let unconfirmed = active
+        .await
+        .expect("active check task")
+        .expect("active check");
+    worker_barrier(&worker).await;
+    let held = state.record().await;
+    assert_eq!(unconfirmed["status"], "unconfirmed");
+    assert_eq!(held["restartRecovery"], auth.target["restartRecovery"]);
+    assert_eq!(held["contextRepairWait"], auth.target["contextRepairWait"]);
+    assert!(
+        held["turnId"].is_null(),
+        "history does not prove a live stream owner"
+    );
+    assert_eq!(held["inFlight"], false);
+    assert_eq!(state.event_status("input").await, "uncertain");
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &agent, epoch, "must-not-replay-held", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("held input scheduler check");
+    assert!(
+        !schedulable,
+        "active restart history cannot enable delivery"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the check sends no native input"
+    );
+
+    // A new explicit request must read new history, not replay the active result.
+    let mut terminal_auth = auth;
+    terminal_auth.target = held;
+    terminal_auth.request_id = "manual-terminal-proof".into();
+    terminal_auth.signature = "terminal-signature".into();
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            EventWriteRepository::replace_receipt(
+                tx,
+                "manual-terminal-proof",
+                "terminal-signature",
+                "{\"status\":\"unconfirmed\"}",
+            )
+        })
+        .await
+        .expect("new explicit manual request");
+    let sender = port.clone();
+    let terminal_request = terminal_auth.clone();
+    let terminal =
+        tokio::spawn(async move { sender.recover_managed_agent(terminal_request).await });
+    let history = peer.write("thread/turns/list").await;
+    turn["status"] = json!("completed");
+    peer.reply(&history, json!({"data":[turn],"nextCursor":null}))
+        .await;
+    let accepted = terminal
+        .await
+        .expect("terminal check task")
+        .expect("terminal check");
+    worker_barrier(&worker).await;
+    let settled = state.record().await;
+    assert_eq!(accepted["turnId"], "manual-running-turn");
+    assert_eq!(accepted["manualDeliveryHeld"], true);
+    assert_eq!(settled["lastCompletedTurn"], "manual-running-turn");
+    assert_eq!(settled["restartRecovery"]["stage"], "finished");
+    assert!(settled["contextRepairWait"].is_null());
+    assert!(settled["turnId"].is_null());
+    assert_eq!(settled["inFlight"], false);
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert_eq!(state.event_status("new-input").await, "pending");
+
+    let evidence = manual_restart_settlement_evidence(&state).await;
+    assert_eq!(evidence["activeReceipt"]["signature"], "signature");
+    assert_eq!(evidence["activeReceipt"]["result"], unconfirmed);
+    assert_eq!(
+        evidence["terminalReceipt"]["signature"],
+        "terminal-signature"
+    );
+    assert_eq!(evidence["terminalReceipt"]["result"], accepted);
+    for (receipt, turn_field) in [("startResult", "accepted"), ("terminal", "turn")] {
+        assert_eq!(
+            evidence["attempt"]["receipts"][receipt]["input"]["agent"],
+            state.agent
+        );
+        assert_eq!(
+            evidence["attempt"]["receipts"][receipt]["input"]["epoch"],
+            state.epoch
+        );
+        assert_eq!(
+            evidence["attempt"]["receipts"][receipt]["input"][turn_field],
+            "manual-running-turn"
+        );
+    }
+    assert_eq!(
+        evidence["events"],
+        json!([
+            {"id":"annotation:input","agent":state.agent,"epoch":state.epoch,"status":"delivered","turn":"manual-running-turn"},
+            {"id":"annotation:new-input","agent":state.agent,"epoch":state.epoch,"status":"pending","turn":null}
+        ])
+    );
+    let replay = port
+        .recover_managed_agent(terminal_auth)
+        .await
+        .expect("exact request replay");
+    assert_eq!(replay, accepted);
+    let duplicate = peer.frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"manual-running-turn","status":"completed"}}})).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        peer.acknowledged_or_worker_exits(duplicate, &mut worker),
+    )
+    .await
+    .expect("the duplicate terminal notice is checkpointed");
+    worker_barrier(&worker).await;
+    assert_eq!(
+        manual_restart_settlement_evidence(&state).await,
+        evidence,
+        "replay and duplicate terminal notice cannot settle twice"
+    );
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let schedulable = state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            SchedulerRepository::claim(tx, &agent, epoch, "must-not-start-after-terminal", 20.0, 10)
+                .map(|claim| claim.is_some())
+        })
+        .await
+        .expect("settled input scheduler check");
+    worker.shutdown().await.expect("fixture shutdown");
+    assert!(
+        !schedulable,
+        "manual settlement cannot enable the next input"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "manual recovery sends no new native input"
+    );
+}
+
+async fn manual_restart_settlement_evidence(state: &State) -> Value {
+    state.bridge.store.transaction(|tx| {
+        let mut receipts = Vec::new();
+        for id in ["manual-no-replay", "manual-terminal-proof"] {
+            let receipt = EventWriteRepository::receipt(tx, id)?.expect("exact manual receipt");
+            receipts.push(json!({"signature":receipt.signature,"result":serde_json::from_str::<Value>(&receipt.result)?}));
+        }
+        let events = tx.prepare("SELECT id,agent,epoch,status,turn_id FROM runtime_events WHERE id IN ('annotation:input','annotation:new-input') ORDER BY id")?
+            .query_map([], |row| Ok(json!({"id":row.get::<_,String>(0)?,"agent":row.get::<_,String>(1)?,"epoch":row.get::<_,i64>(2)?,"status":row.get::<_,String>(3)?,"turn":row.get::<_,Option<String>>(4)?})))?
+            .collect::<Result<Vec<_>,_>>()?;
+        let attempt = studio_runtime_store::ExecutionHistoryRepository::attempt(tx, "manual-unknown-attempt")?.expect("exact original attempt");
+        Ok::<_,StoreError>(json!({"activeReceipt":receipts[0],"terminalReceipt":receipts[1],"events":events,"attempt":attempt}))
+    }).await.expect("manual settlement evidence")
+}
+
 #[tokio::test]
 async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
     let state = State::new().await;
@@ -1983,6 +2362,240 @@ async fn monitor_write(
     }
 }
 
+async fn config_read_fixture(state: &State, port: &RetainedSessionPort) -> SessionRequest {
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
+    let saved_cwd = cwd.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with::<_, StoreError>(move |tx| {
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES('config-watch',?1)",
+                        [json!({"id":"config-watch","agent":agent,"epoch":epoch,
+                    "cwd":saved_cwd,"status":"starting","command":"true"})
+                        .to_string()],
+                    )?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    monitor_request(
+        state,
+        port,
+        format!("monitor-config:config-watch:{epoch}"),
+        Method::ConfigRead,
+        json!({"cwd":cwd,"includeLayers":false}),
+    )
+}
+
+#[tokio::test]
+async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_checkpoint() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = config_read_fixture(&state, &port).await;
+    let mut wrong_epoch = call.clone();
+    wrong_epoch.actor.as_mut().unwrap().epoch += 1;
+    let mut wrong_cwd = call.clone();
+    wrong_cwd.params["cwd"] = json!("/another-directory");
+    let mut wrong_monitor = call.clone();
+    wrong_monitor.operation = format!("monitor-config:another-monitor:{}", state.epoch);
+    for refused in [wrong_epoch, wrong_cwd, wrong_monitor] {
+        assert_eq!(
+            port.request(refused).await.unwrap_err(),
+            PortError::Identity
+        );
+    }
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "authorization failures must not reach the provider"
+    );
+    // An earlier unresolved journal entry holds the contiguous checkpoint.
+    // No live managed callback grants the retained-request completion exception.
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with::<_, WorkerError>(|tx| {
+                    store::replace(
+                        tx,
+                        &store::journal_operation("default", 1, 1),
+                        "settled",
+                        json!({"cursor":1,"digest":"held-entry","ready":false,"committed":true}),
+                    )
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    peer.cursor = 1;
+    let sender = port.clone();
+    let mut task = tokio::spawn(async move { sender.request(call).await });
+    let wire = monitor_write(&mut peer, &mut task, "config/read").await;
+    let reply_cursor = peer
+        .frame(json!({"id":wire["id"],"result":{"config":{}}}))
+        .await;
+    let receipt = tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("a configuration read must not wait for another operation's checkpoint")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.result, RequestResult::Reply(json!({"config":{}})));
+    let checkpoint = state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with::<_, WorkerError>(|tx| store::checkpoint(tx, "default", 1))
+                .await
+        })
+        .await
+        .unwrap();
+    assert!(
+        checkpoint < reply_cursor,
+        "the earlier journal entry is still unresolved"
+    );
+    assert_eq!(
+        retained_receipt_count(&state),
+        0,
+        "read results need no durable receipt"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn monitor_completion_config_read_retries_legacy_unknown_and_lost_reply() {
+    let state = State::new().await;
+    let peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = config_read_fixture(&state, &port).await;
+    let old = call.clone();
+    // A receipt from the old durable ConfigRead path must not hold a start.
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with::<_, WorkerError>(move |tx| {
+                    let key = format!(
+                        "retained:default:{}",
+                        studio_runtime_store::sha256_hex(old.operation.as_bytes())
+                    );
+                    let request = crate::provider_session_task::RecoveredRequest {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: 1,
+                            id: studio_runtime_providers::RequestId::String(key.clone()),
+                            method: Method::ConfigRead,
+                        },
+                        operation_id: OperationId(key.clone()),
+                        thread_id: None,
+                        lightweight: true,
+                        deadline_ms: 0,
+                        unknown: true,
+                        remote_id: None,
+                    };
+                    store::replace(
+                        tx,
+                        &key,
+                        "submitted",
+                        json!({
+                            "call": {
+                                "scope": old.scope,
+                                "operation": old.operation,
+                                "actor": old.actor,
+                                "transfer": null,
+                                "deleted_actor_session": null,
+                                "method": "config/read",
+                                "params": old.params
+                            },
+                            "request": store::record(&request)
+                        }),
+                    )?;
+                    store::replace(tx, &key, "result", json!({"cursor":0,"result":"Unknown"}))
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    worker.shutdown().await.unwrap();
+    let mut peer = Peer::identity("default", 2, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = call;
+    call.scope = port.scope().clone();
+    call.expected_scope = Some(port.scope().clone());
+    let receipts_before = retained_receipt_count(&state);
+    let sender = port.clone();
+    let first = call.clone();
+    let mut lost = tokio::spawn(async move { sender.request(first).await });
+    let first_wire = monitor_write(&mut peer, &mut lost, "config/read").await;
+    lost.abort();
+    assert!(lost.await.unwrap_err().is_cancelled());
+    let sender = port.clone();
+    let mut retry = tokio::spawn(async move { sender.request(call).await });
+    let second_wire = monitor_write(&mut peer, &mut retry, "config/read").await;
+    assert_ne!(
+        first_wire["id"], second_wire["id"],
+        "each safe read has its own transport ID"
+    );
+    peer.reply(&first_wire, json!({"config":{"allow_login_shell":false}}))
+        .await;
+    peer.reply(&second_wire, json!({"config":{"allow_login_shell":true}}))
+        .await;
+    assert_eq!(
+        retry.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({"config":{"allow_login_shell":true}}))
+    );
+    assert_eq!(
+        retained_receipt_count(&state),
+        receipts_before,
+        "the old receipt stays intact"
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn monitor_completion_config_read_preserves_the_command_unknown_receipt() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = config_read_fixture(&state, &port).await;
+    call.operation = "monitor:config-watch".into();
+    call.method = Method::CommandExec;
+    call.params = json!({"command":["/bin/sh","-c","true"],
+        "cwd":call.params["cwd"],"processId":"config-watch"});
+    let sender = port.clone();
+    let first = call.clone();
+    let task = tokio::spawn(async move { sender.request(first).await });
+    let _wire = peer.write("command/exec").await;
+    worker.shutdown().await.unwrap();
+    let _lost_reply = task.await;
+    let mut peer = Peer::identity("default", 2, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    call.scope = port.scope().clone();
+    call.expected_scope = Some(port.scope().clone());
+    assert_eq!(
+        port.request(call.clone()).await.unwrap().result,
+        RequestResult::Unknown
+    );
+    call.params["command"] = json!(["/bin/sh", "-c", "false"]);
+    assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "an uncertain command must not run again"
+    );
+    worker.shutdown().await.unwrap();
+}
+
 /// Live defect 2026-10-19: an `orchestration_monitor` command of an agent on a
 /// non-default account stayed `starting` forever. The tool records no monitor
 /// `accountKey` (Python never did either), and this check read the missing key
@@ -2087,6 +2700,261 @@ async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
         );
     }
     assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+/// A lazy transfer changes the actor's account before its old command ends.
+/// Cancel and the retained exit still belong to that original command only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_exit() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let scope = port.scope().clone();
+    let operation = crate::monitor_policy::Operation {
+        agent: actor.clone(),
+        epoch,
+        account_key: scope.account.clone(),
+        connection_id: scope.connection.clone(),
+        evidence: Default::default(),
+    };
+    let saved_operation = operation.clone();
+    let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
+    let seed_cwd = cwd.clone();
+    state.bridge.run(move |store| async move {
+        let log=crate::monitor_output::log_root(store.root()).join("transfer-watch.log");
+        store.transaction_with(move |tx| {
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('transfer-watch',?1)",
+                [json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
+                    "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation}).to_string()])?;
+            Ok(())
+        }).await
+    }).await.unwrap();
+    let exec = monitor_request(
+        &state,
+        &port,
+        "monitor:transfer-watch".into(),
+        Method::CommandExec,
+        json!({"command":["/bin/sh","-c","true"],"cwd":cwd,"processId":"transfer-watch"}),
+    );
+    let sender = port.clone();
+    let mut running = tokio::spawn(async move { sender.request(exec).await });
+    let exec_wire = monitor_write(&mut peer, &mut running, "command/exec").await;
+    let actor = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            crate::account_transfer_driver::request(
+                &store,
+                "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001",
+                &actor,
+                "target",
+                "team",
+                "codex",
+                1.0,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        })
+        .await
+        .unwrap();
+    let output_cursor=peer.frame(json!({"method":"command/exec/outputDelta","params":{"processId":"transfer-watch","stream":"stdout","deltaBase64":"aGVsbG8="}})).await;
+    peer.acknowledged(output_cursor).await;
+    let output_scope = scope.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let record =
+                        studio_runtime_store::MonitorsRepository::get(tx, "transfer-watch")?
+                            .unwrap();
+                    assert_eq!(record.value()["streamQueue"][0]["deltaBase64"], "aGVsbG8=");
+                    assert!(!crate::monitor_event_queue::enqueue_output_in_transaction(
+                        tx,
+                        "transfer-watch",
+                        &output_scope.account,
+                        output_scope.generation + 1,
+                        output_cursor + 1,
+                        &json!({"processId":"transfer-watch","deltaBase64":"eA=="})
+                    )?);
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let delivery = crate::monitor_event_queue::next(&state.bridge.store)
+        .await
+        .unwrap()
+        .unwrap();
+    let crate::monitor_runtime_wiring::MonitorEvent::OutputStream {
+        offset,
+        ref stream,
+        ref bytes,
+    } = delivery.event
+    else {
+        panic!("source output")
+    };
+    crate::monitor_output::MonitorOutput::default()
+        .append_stream(
+            &state.bridge.store,
+            &delivery.id,
+            &delivery.operation,
+            offset,
+            stream,
+            bytes,
+            2.0,
+        )
+        .await
+        .unwrap();
+    crate::monitor_event_queue::acknowledge(&state.bridge.store, &delivery)
+        .await
+        .unwrap();
+    let (observed, _, _) = crate::monitor_observation::read(
+        &state.bridge.store,
+        &state.agent,
+        state.epoch,
+        "target",
+        "transfer-watch",
+    )
+    .await
+    .unwrap();
+    assert_eq!(observed["tail"], "hello");
+    for (ticket, input) in [
+        (
+            "write-after-transfer",
+            crate::monitor_policy::Input {
+                text: "hello".into(),
+                rows: None,
+                cols: None,
+                close_stdin: false,
+            },
+        ),
+        (
+            "resize-after-transfer",
+            crate::monitor_policy::Input {
+                text: String::new(),
+                rows: Some(30),
+                cols: Some(100),
+                close_stdin: false,
+            },
+        ),
+    ] {
+        let effect = crate::monitor_runtime::reserve_input(
+            &state.bridge.store,
+            "transfer-watch",
+            &operation,
+            ticket,
+            &input,
+            2.0,
+        )
+        .await
+        .unwrap();
+        let crate::monitor_policy::Effect::Native {
+            identity,
+            method,
+            params,
+        } = effect
+        else {
+            panic!("native input")
+        };
+        let method = Method::from_wire(method).unwrap();
+        let call = monitor_request(&state, &port, identity, method, params);
+        let sender = port.clone();
+        let mut input_task = tokio::spawn(async move { sender.request(call).await });
+        let wire = monitor_write(&mut peer, &mut input_task, method.as_str()).await;
+        assert_eq!(wire["params"]["processId"], "transfer-watch");
+        peer.reply(&wire, json!({})).await;
+        assert!(input_task.await.unwrap().is_ok());
+        crate::monitor_runtime::settle_input(
+            &state.bridge.store,
+            "transfer-watch",
+            &operation,
+            ticket,
+            crate::monitor_policy::InputOutcome::Acknowledged,
+            3.0,
+        )
+        .await
+        .unwrap();
+    }
+    // The public driver latches cancellation before native I/O.
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    crate::monitor_driver::reserve_cancel(tx, "transfer-watch", None, 4.0)
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let cancel = monitor_request(
+        &state,
+        &port,
+        "monitor-cancel:transfer-watch".into(),
+        Method::CommandExecTerminate,
+        json!({"processId":"transfer-watch"}),
+    );
+    let sender = port.clone();
+    let replay = cancel.clone();
+    let mut cancelling = tokio::spawn(async move { sender.request(cancel).await });
+    let cancel_wire = monitor_write(&mut peer, &mut cancelling, "command/exec/terminate").await;
+    assert_eq!(cancel_wire["params"], json!({"processId":"transfer-watch"}));
+    peer.reply(&cancel_wire, json!({})).await;
+    assert!(cancelling.await.unwrap().is_ok());
+    assert!(port.request(replay).await.unwrap().replayed);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "cancel replay sends no second request"
+    );
+    peer.reply(&exec_wire, json!({"exitCode":0})).await;
+    assert!(running.await.unwrap().is_ok());
+    let result = crate::account_worker::retained::monitor_result(
+        &state.bridge.store,
+        "transfer-watch",
+        &operation,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result,Some(ProviderResponse::Reply(ref value)) if value["exitCode"]==0));
+    let receipt = crate::monitor_receipts::ResultReceipt {
+        version: 1,
+        key: "transfer-watch".into(),
+        code: Some(0),
+        error: None,
+        operation: Some(operation),
+        finished: 5.0,
+    };
+    crate::monitor_receipts::finish(&state.bridge.store, &receipt)
+        .await
+        .unwrap();
+    crate::monitor_receipts::finish(&state.bridge.store, &receipt)
+        .await
+        .unwrap();
+    state.bridge.run(|store|async move {
+        store.read_async("test/transferred-monitor-exit",|tx| {
+            let count:i64=tx.query_row("SELECT count(*) FROM runtime_events WHERE id='monitor:transfer-watch' AND kind='monitor_exit'",[],|row|row.get(0))?;
+            assert_eq!(count,1,"the transferred owner receives its source exit once");
+            Ok(())
+        }).await
+    }).await.unwrap();
+    assert_eq!(
+        state.event_status("input").await,
+        "pending",
+        "the source worker does not claim the target account's user input"
+    );
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "the original command never runs again"
+    );
     worker.shutdown().await.unwrap();
 }
 
@@ -2391,6 +3259,7 @@ async fn connection_recovery_repeated_request_returns_saved_status_without_histo
     };
     let result = crate::account_worker::connection_recovery::run(
         crate::account_worker::connection_recovery::Command {
+            authorization: None,
             bridge: state.bridge.clone(),
             account: "default".into(),
             scope: session.scope().clone(),

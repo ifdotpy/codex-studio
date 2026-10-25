@@ -285,6 +285,7 @@ fn actor(
             extra: Default::default(),
         },
         reattach_commands: Vec::new(),
+        retained: RetainedLaunchValues::default(),
         identity: BackendIdentity {
             backend_id: BackendId("unit".into()),
             state_dir: "/unused".into(),
@@ -1020,6 +1021,57 @@ fn launch_environment() -> BTreeMap<String, String> {
     ])
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn retained_environment_ignores_only_the_backend_build_identity() {
+    let mut requested = launch_environment();
+    requested.insert("CODEX_BACKEND_BUILD".into(), "new-backend".into());
+    requested.insert(
+        "STUDIO_CLAUDE_CREDENTIAL_IDENTITY".into(),
+        "claude:a@example.test".into(),
+    );
+    let clean = clean_environment(&requested);
+    assert!(!clean.contains_key("CODEX_BACKEND_BUILD"));
+    for previous_build in [None, Some("old-backend"), Some("new-backend")] {
+        let mut original = requested.clone();
+        original.remove("CODEX_BACKEND_BUILD");
+        if let Some(build) = previous_build {
+            original.insert("CODEX_BACKEND_BUILD".into(), build.into());
+        }
+        let (read, _) = scripted_records(vec![Ok(original.clone())]);
+        let shutdown = Shutdown::default();
+        let settled = settled_environment(
+            &mut shutdown.subscribe(),
+            &Arc::new(Semaphore::new(1)),
+            &clean,
+            &RetainedLaunchValues::default(),
+            Duration::ZERO,
+            read,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            settled, original,
+            "the supervisor keeps its original launch"
+        );
+        for key in [
+            "HOME",
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+            "OPENAI_API_KEY",
+            "UNCLASSIFIED_VARIABLE",
+        ] {
+            let mut foreign = original.clone();
+            foreign.insert(key.into(), "changed".into());
+            assert!(
+                verify_environment(&foreign, &clean, &RetainedLaunchValues::default()).is_err(),
+                "the backend build exception must not admit another {key}"
+            );
+        }
+    }
+}
+
 /// A reader that returns `records` in order, then the last one again.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn scripted_records(
@@ -1065,9 +1117,16 @@ async fn retained_environment_settles_after_a_transient_launch_record() {
     let shutdown = Shutdown::default();
     let mut stop = shutdown.subscribe();
     let slots = Arc::new(Semaphore::new(1));
-    let settled = settled_environment(&mut stop, &slots, &clean, RETAINED_ENVIRONMENT_SETTLE, read)
-        .await
-        .unwrap();
+    let settled = settled_environment(
+        &mut stop,
+        &slots,
+        &clean,
+        &RetainedLaunchValues::default(),
+        RETAINED_ENVIRONMENT_SETTLE,
+        read,
+    )
+    .await
+    .unwrap();
     assert_eq!(settled, clean);
     assert_eq!(reads.load(Ordering::SeqCst), 3);
     assert_eq!(slots.available_permits(), 1);
@@ -1086,8 +1145,15 @@ async fn retained_environment_refuses_a_record_that_never_matches() {
     let mut stop = shutdown.subscribe();
     let slots = Arc::new(Semaphore::new(1));
     let started = Instant::now();
-    let result =
-        settled_environment(&mut stop, &slots, &clean, RETAINED_ENVIRONMENT_SETTLE, read).await;
+    let result = settled_environment(
+        &mut stop,
+        &slots,
+        &clean,
+        &RetainedLaunchValues::default(),
+        RETAINED_ENVIRONMENT_SETTLE,
+        read,
+    )
+    .await;
     assert_eq!(started.elapsed(), RETAINED_ENVIRONMENT_SETTLE);
     assert!(matches!(result, Err(AdapterError::UnverifiableChild)));
     assert!(reads.load(Ordering::SeqCst) >= 2);
@@ -1110,8 +1176,15 @@ async fn retained_environment_wait_ends_on_shutdown() {
             shutdown.cancel();
         })
     };
-    let result =
-        settled_environment(&mut stop, &slots, &clean, Duration::from_secs(60), read).await;
+    let result = settled_environment(
+        &mut stop,
+        &slots,
+        &clean,
+        &RetainedLaunchValues::default(),
+        Duration::from_secs(60),
+        read,
+    )
+    .await;
     assert!(matches!(result, Err(AdapterError::Cancelled)));
     cancel.await.unwrap();
 }

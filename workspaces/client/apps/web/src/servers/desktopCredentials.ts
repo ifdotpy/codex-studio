@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type {
   ServerCredentialAdapter,
   PairAttemptIdentity,
@@ -82,7 +83,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
     return result as StudioServer;
   }
   async fetch(server: StudioServer, request: Request): Promise<Response> {
-    const streamId = crypto.randomUUID();
+    const streamId = randomUUID();
     let receiver: ReadableStreamDefaultController<Uint8Array> | undefined;
     let ready = false;
     const buffered: StreamChunk[] = [];

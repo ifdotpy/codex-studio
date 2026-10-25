@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serveOrigin, type StudioServer } from "./registry";
 import {
   ACCESS_PROTOCOL_VERSION,
@@ -171,7 +172,7 @@ export async function requestIdentity(request: Request): Promise<string> {
   if (request.headers.get("X-Studio-Request-Id"))
     return request.headers.get("X-Studio-Request-Id")!;
   if (request.method === "GET" || request.method === "HEAD")
-    return crypto.randomUUID();
+    return randomUUID();
   try {
     const value = await request.clone().json();
     return (
@@ -183,9 +184,9 @@ export async function requestIdentity(request: Request): Promise<string> {
         )
           ? [value.id]
           : []),
-      ].find((id) => typeof id === "string" && id) || crypto.randomUUID()
+      ].find((id) => typeof id === "string" && id) || randomUUID()
     );
   } catch {
-    return crypto.randomUUID();
+    return randomUUID();
   }
 }

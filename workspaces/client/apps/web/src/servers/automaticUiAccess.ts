@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { parseInvitation, PairingNotAppliedError } from "./pairing";
 import type { PairInvitation } from "./pairing";
 import type { StudioServer } from "./registry";
@@ -158,8 +159,8 @@ export class AutomaticUiAccess {
               serverId: peer.id,
               origin: peer.origin,
               generation: peer.generation,
-              inviteRequestId: crypto.randomUUID(),
-              pairRequestId: crypto.randomUUID(),
+              inviteRequestId: randomUUID(),
+              pairRequestId: randomUUID(),
             };
             await this.store.save(key, attempt);
           }

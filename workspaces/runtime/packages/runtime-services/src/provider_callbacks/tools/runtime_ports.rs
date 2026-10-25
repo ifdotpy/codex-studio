@@ -43,7 +43,13 @@ impl ManagedToolRuntime {
         resources: Arc<crate::account_worker::preparation::PreparationResources>,
     ) {
         // The host loads its resources once; a later call keeps the first.
-        self.preparation.get_or_init(|| resources);
+        let resources = self.preparation.get_or_init(|| resources);
+        if let Some(session) = resources.account_session.as_ref() {
+            self.ports
+                .late
+                .management_session
+                .get_or_init(|| Arc::clone(session));
+        }
     }
 
     pub(crate) fn preparation_resources(

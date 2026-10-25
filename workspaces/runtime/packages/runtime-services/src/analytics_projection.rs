@@ -467,7 +467,7 @@ mod tests {
                     } else {
                         ""
                     };
-                    tx.execute(&format!("DELETE FROM {table}{keep}"), [])?;
+                    tx.execute(&format!("DELETE FROM main.{table}{keep}"), [])?;
                 }
                 Ok::<_, StoreError>(())
             })

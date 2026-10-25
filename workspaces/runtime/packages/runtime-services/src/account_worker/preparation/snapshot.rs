@@ -615,6 +615,15 @@ fn flag(record: &Value, key: &str) -> Result<bool, WorkerError> {
 fn text(record: &Value, key: &str) -> Result<Option<String>, WorkerError> {
     optional(record, key)
 }
+// Only text can match a native catalog notice. Structured provider errors
+// remain in the stored agent and do not match that notice.
+fn catalog_notice_error(record: &Value) -> Result<Option<String>, WorkerError> {
+    match record.get("error") {
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        None | Some(Value::Null | Value::Object(_)) => Ok(None),
+        Some(_) => Err(invalid("error")),
+    }
+}
 fn stored<T: DeserializeOwned>(
     record: &Value,
     key: &str,
@@ -632,10 +641,12 @@ pub(super) fn guidance(
 ) -> Result<thread::GuidanceBundle, WorkerError> {
     let role = role_guidance(resources, record)?;
     let mut thread_config = resources.thread_config.clone();
-    // A managed worker (a child agent) runs without the user's MCP servers, so
-    // none of them is spawned per thread. The lead and root chats keep them.
+    // A managed host worker runs without the host account's user MCP servers.
+    // Isolated VM profiles do not inherit those transports.
     // (Claude workers get the same rule from the adapter's `userMcp` param.)
-    if record["parentId"].is_string() && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
+    if record["parentId"].is_string()
+        && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
+        && record["executionMode"] != "vm"
     {
         let servers: Map<String, Value> = resources
             .filesystem_inputs
@@ -808,10 +819,8 @@ fn catalog_source(record: &Value) -> Result<thread::CatalogSource, WorkerError> 
     )
 }
 
-/// The definitions an agent's tools come from (Python `Runtime.tool_definitions`):
-/// those of its catalog source, except that a VM agent always gets the
-/// current catalog, also on a thread that Python started with legacy tools.
-/// The legacy catalog lacks tools of VM agents, such as `orchestration_sign_in`.
+/// VM agents and providers that resend tools each turn use current definitions.
+/// Other agents retain their saved catalog source. Callers apply frozen overrides.
 fn catalog_definitions<'a>(
     resources: &'a PreparationResources,
     record: &Value,
@@ -819,6 +828,11 @@ fn catalog_definitions<'a>(
     Ok(
         if catalog_source(record)? == thread::CatalogSource::Legacy
             && record["executionMode"] != "vm"
+            && !crate::provider_adapter::adapter(
+                ProviderKind::of_record(record).map_err(|_| invalid("agent/provider"))?,
+            )
+            .capabilities()
+            .tools_on_every_turn
         {
             &resources.legacy_tools
         } else {
@@ -1061,14 +1075,25 @@ fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerE
     }))
 }
 
-fn native_claude_options(record:&Value,state_root:&Path)->Result<serde_json::Map<String,Value>,WorkerError> {
-    let mut options:serde_json::Map<String,Value>=optional(record,"claudeOptions")?.unwrap_or_default();
-    if crate::layr_native::is_native(record) && record["role"]=="reviewer" {
-        let scratch=record["layrScratch"].as_str().ok_or_else(||invalid("native-reviewer/scratch"))?;
+fn native_claude_options(
+    record: &Value,
+    state_root: &Path,
+) -> Result<serde_json::Map<String, Value>, WorkerError> {
+    let mut options: serde_json::Map<String, Value> =
+        optional(record, "claudeOptions")?.unwrap_or_default();
+    if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
+        let scratch = record["layrScratch"]
+            .as_str()
+            .ok_or_else(|| invalid("native-reviewer/scratch"))?;
         options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
             "filesystem":{"allowWrite":[scratch],"denyWrite":[crate::layr_native::store_path(state_root)]},
             "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
-        options.insert("nativeReviewerEnvironment".into(),Value::Object(crate::layr_native::reviewer_environment(state_root,scratch)));
+        options.insert(
+            "nativeReviewerEnvironment".into(),
+            Value::Object(crate::layr_native::reviewer_environment(
+                state_root, scratch,
+            )),
+        );
     }
     Ok(options)
 }
@@ -1128,7 +1153,7 @@ pub(super) fn thread_snapshot(
             native_role_guidance: text(record, "nativeRoleGuidance")?,
             native_tool_source: optional(record, "nativeToolSource")?,
             native_tool_update: optional(record, "nativeToolUpdate")?,
-            error: text(record, "error")?,
+            error: catalog_notice_error(record)?,
             native_release: optional(record, "nativeRelease")?,
             root_id: root_id.into(),
             parent_id: text(record, "parentId")?,
@@ -1160,7 +1185,7 @@ pub(super) fn thread_snapshot(
             role,
             is_lead: lead,
             needs_title: flag(record, "needsTitle")?,
-            claude_options: native_claude_options(record,state_root)?,
+            claude_options: native_claude_options(record, state_root)?,
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
@@ -1414,6 +1439,7 @@ pub(super) fn submission_snapshot(
             team_state,
             delivered_reminders,
             assets,
+            asset_paths: BTreeMap::new(),
             guidance: turn::GuidanceBundle { role },
             artifact_paths: BTreeMap::new(),
             prepared_at: now(),
@@ -1558,6 +1584,61 @@ mod resource_tests {
             assert!(text.contains("review defaults"), "{text}");
             assert!(!text.contains("Use `gpt-6-luna`"), "{text}");
         }
+    }
+
+    #[tokio::test]
+    async fn structured_native_errors_keep_thread_preparation_and_holds() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            for (error, context_wait) in [(Value::Null, Value::Null), (json!("plain error"), Value::Null),
+                (json!({"message":"Claude Code process exited with code 143"}), Value::Null),
+                (json!({"message":"context error","codexErrorInfo":"misalignmentPolicyViolation"}), json!("repair"))] {
+                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                    "isLead":true,"autoWake":true,"provider":"claude","accountKey":"default",
+                    "cwd":"/project","threadId":"existing-thread","error":error,
+                    "lastCompletedTurn":"old-turn","lastCompletedTurnStatus":"interrupted",
+                    "lastCompletedTurnError":error,"contextRepairWait":context_wait});
+                AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
+                let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None)?;
+                assert_eq!(snapshot.actor.error.as_deref(), error.as_str());
+                let plan = thread::plan(&snapshot, "next-attempt", "next-ticket");
+                assert_eq!(native_thread_blocked(&record), error["codexErrorInfo"] == "misalignmentPolicyViolation");
+                if !context_wait.is_null() {
+                    assert_eq!(plan, thread::Outcome::Hold(thread::HoldReason::ContextRepair));
+                } else {
+                    assert!(matches!(plan, thread::Outcome::Resume(_)), "{plan:?}");
+                }
+                let saved = agent(tx, "lead")?.value();
+                assert_eq!(saved["error"], error);
+                assert_eq!(saved["lastCompletedTurnError"], error);
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("valid structured errors preserve preparation and holds");
+    }
+
+    #[tokio::test]
+    async fn malformed_native_error_types_still_block_thread_preparation() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            for error in [json!(false), json!(42), json!([])] {
+                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                    "isLead":true,"provider":"claude","cwd":"/project","threadId":"existing-thread","error":error});
+                AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
+                assert!(matches!(thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None),
+                    Err(WorkerError::Store(StoreError::InvalidStoredObject { table: "turn_preparation", id })) if id == "error"));
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("invalid error shapes remain rejected");
     }
 
     /// igor-mbp rehearsal 2026-10-22: two moved Claude agents carried Python's
@@ -1798,6 +1879,109 @@ mod resource_tests {
             .expect("a VM agent keeps its tools");
     }
 
+    /// Claude resends its tools on each turn. Old host threads need the current
+    /// catalog without changing their saved source or exact moved tool list.
+    #[tokio::test]
+    async fn an_unfrozen_native_claude_on_an_old_thread_gets_the_current_catalog() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources")
+            .capture_filesystem(None);
+        store
+            .transaction_with(move |tx| {
+                let failed = |error: WorkerError| StoreError::SchemaMismatch(error.to_string());
+                for mode in ["native", "vm"] {
+                    for (thread_id, source) in [
+                        (Some("thread-old"), None),
+                        (Some("thread-old"), Some("legacy")),
+                        (None, None),
+                    ] {
+                        let mut record = json!({"id":"claude", "rootId":"claude", "epoch":1,
+                            "status":"running", "isLead":true, "name":"Lead", "provider":"claude",
+                            "accountKey":"default", "executionMode":mode, "cwd":"/line"});
+                        if let Some(thread_id) = thread_id {
+                            record["threadId"] = json!(thread_id);
+                        }
+                        if let Some(source) = source {
+                            record["nativeToolSource"] = json!(source);
+                        }
+                        AgentRepository::put(
+                            tx,
+                            &AgentRecord::from_value(record.clone()).expect("agent"),
+                        )?;
+                        let snapshot = thread_snapshot(
+                            tx,
+                            &resources,
+                            &record,
+                            "connection",
+                            Path::new("/state"),
+                            None,
+                        )
+                        .map_err(failed)?;
+                        let case = format!("{mode} {thread_id:?} {source:?}");
+                        let expected_source = if thread_id.is_some() {
+                            thread::CatalogSource::Legacy
+                        } else {
+                            thread::CatalogSource::Current
+                        };
+                        assert_eq!(snapshot.catalog.source, expected_source, "{case}");
+                        let tools = thread::tool_definitions(&snapshot).expect("tools");
+                        assert!(
+                            tools.iter().any(|tool| tool.name == crate::sign_in::TOOL),
+                            "{case}: Claude must receive the sign-in tool"
+                        );
+                        assert_eq!(snapshot.catalog.definitions, resources.tools, "{case}");
+                        assert_eq!(
+                            actor_tool_definitions(tx, &resources, &record).map_err(failed)?,
+                            json!(tools),
+                            "{case}: the context tool reports the same catalog"
+                        );
+                        let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
+                                attempt
+                            }
+                            other => panic!("{case}: {other:?}"),
+                        };
+                        assert_eq!(
+                            attempt.before_submit.set["nativeToolSource"],
+                            json!(expected_source),
+                            "{case}"
+                        );
+                        assert_eq!(attempt.params["dynamicTools"], json!(tools), "{case}");
+
+                        let mut frozen = snapshot;
+                        let saved_tools = resources
+                            .legacy_tools
+                            .iter()
+                            .filter(|tool| tool.name == "orchestration_title")
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        assert_eq!(saved_tools.len(), 1);
+                        let saved = json!({"baseInstructions":"saved base", "developerInstructions":"saved role",
+                            "model":"default", "dynamicTools":saved_tools});
+                        record["frozenNativeParams"] = saved;
+                        frozen.frozen = frozen_params(&record).map_err(failed)?;
+                        assert_eq!(
+                            thread::tool_definitions(&frozen).expect("exact frozen tools"),
+                            saved_tools,
+                            "{case}: moved tool snapshots stay exact"
+                        );
+                        assert_eq!(
+                            actor_tool_definitions(tx, &resources, &record).map_err(failed)?,
+                            json!(saved_tools),
+                            "{case}: frozen context tools stay exact"
+                        );
+                    }
+                }
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("Claude keeps current tools and exact frozen boundaries");
+    }
+
     #[test]
     fn only_host_codex_threads_send_sign_in_links_to_studio() {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
@@ -1951,6 +2135,36 @@ mod resource_tests {
             servers(json!({"id":"c", "parentId":"lead", "provider":"claude"})),
             None
         );
+    }
+
+    #[test]
+    fn vm_codex_children_do_not_inherit_host_mcp_server_overrides() {
+        let crate::browser::BrowserHomes {
+            root,
+            shared,
+            account,
+            ..
+        } = crate::browser::browser_homes();
+        let mut resources = PreparationResources::bundled(
+            account.to_string_lossy().into_owned(),
+            ModelCatalogService::new(),
+        )
+        .expect("resources");
+        resources.shared_home = shared.to_string_lossy().into_owned();
+        for role in ["implementer", "reviewer"] {
+            let record = json!({"id":"vm-child", "parentId":"lead", "isLead":false,
+                "role":role, "provider":"codex", "executionMode":"vm"});
+            let bundle = guidance(&resources, &record, root.path()).expect("VM guidance");
+            assert_eq!(bundle.browser, None);
+            assert!(
+                !bundle
+                    .thread_config
+                    .keys()
+                    .any(|key| key == "mcp_servers" || key.starts_with("mcp_servers.")),
+                "VM {role} must not fabricate host MCP transports: {:?}",
+                bundle.thread_config
+            );
+        }
     }
 
     #[test]
@@ -2246,15 +2460,33 @@ mod workspace_fence_tests {
                                 );
                             }
                             if mode == "layr-native" && provider == "claude" {
-                                assert_eq!(options["env"]["LAYR_DIRECT"], if cfg!(target_os = "linux") { "0" } else { "1" });
+                                assert_eq!(
+                                    options["env"]["LAYR_DIRECT"],
+                                    if cfg!(target_os = "linux") { "0" } else { "1" }
+                                );
                                 assert!(options["env"]["LAYR_ROOT"].is_string());
                                 if role == "reviewer" {
-                                    assert_eq!(options["sandbox"]["enabled"],true);
-                                    assert_eq!(options["sandbox"]["failIfUnavailable"],true);
-                                    assert_eq!(options["sandbox"]["filesystem"]["allowWrite"],json!(["/private/reviewer-scratch"]));
-                                    assert_eq!(options["sandbox"]["filesystem"]["denyWrite"],json!([crate::layr_native::store_path(Path::new("/state"))]));
-                                    assert_eq!(options["nativeReviewerEnvironment"]["TMPDIR"],"/private/reviewer-scratch");
-                                    assert!(options["nativeReviewerEnvironment"].get("LAYR_ROOT").is_none());
+                                    assert_eq!(options["sandbox"]["enabled"], true);
+                                    assert_eq!(options["sandbox"]["failIfUnavailable"], true);
+                                    assert_eq!(
+                                        options["sandbox"]["filesystem"]["allowWrite"],
+                                        json!(["/private/reviewer-scratch"])
+                                    );
+                                    assert_eq!(
+                                        options["sandbox"]["filesystem"]["denyWrite"],
+                                        json!([crate::layr_native::store_path(Path::new(
+                                            "/state"
+                                        ))])
+                                    );
+                                    assert_eq!(
+                                        options["nativeReviewerEnvironment"]["TMPDIR"],
+                                        "/private/reviewer-scratch"
+                                    );
+                                    assert!(
+                                        options["nativeReviewerEnvironment"]
+                                            .get("LAYR_ROOT")
+                                            .is_none()
+                                    );
                                 }
                             }
                         }

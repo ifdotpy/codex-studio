@@ -1,7 +1,11 @@
-import type { UsageEligibility } from "../components/ModelLimitEligibility";
+import type { GetResult } from "../api";
 import type { Agent, Json } from "../types";
 import { nativeErrorKind } from "../nativeErrors";
 import { providerLimitData } from "./providerLimits";
+
+export type UsageEligibility = NonNullable<
+  GetResult<"/api/limits">["eligibility"]
+>;
 
 export type LimitRecovery = {
   title: string;

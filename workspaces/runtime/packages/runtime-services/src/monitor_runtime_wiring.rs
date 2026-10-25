@@ -2,13 +2,7 @@
 //! this task owns no provider connection and never repeats an uncertain command.
 //! Result recovery precedes stall decisions. Publication and transport ACK follow commit.
 //!
-//! Registered HTTP gap: "monitor input has no request identity; pending owner decision".
-//! Python has the same acknowledged-response gap: codex_rules.py:727 refuses only while
-//! `inputAttempt` exists; codex_rules.py:781-782 clears it on settlement and saves
-//! `lastInputAttempt` without comparing it on the next call. Therefore an identical HTTP retry
-//! after an acknowledged response may be a new input. Each provider write still has a durable
-//! ticketed intent; an unknown provider outcome remains latched and is never resent. Managed-tool
-//! input uses its callback request identity for durable replay instead.
+//! HTTP input and managed-tool input retain their own stable request identities.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -147,6 +141,12 @@ pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
     fn exit_owned(&self, _id: &str) -> Option<bool> {
         None
     }
+    /// Wait, within its late-answer window, for the real answer of a command
+    /// lost at its deadline, and deliver it as the command's exit. Returns
+    /// promptly and never sends a provider request.
+    fn await_late_answer(&self, _snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
+        Ok(())
+    }
     /// Reserve through the account owner, using liveness:{id}:{generation}.
     /// Return promptly; completion is delivered as MonitorEvent::Probe.
     fn probe<'a>(
@@ -168,6 +168,7 @@ struct Scan {
     // Some(cursor) is the next page; None stays finished until the cycle ends.
     stall_monitor: Option<String>,
     orphan_monitor: Option<String>,
+    late_monitor: Option<String>,
     rule: i64,
     recovering_rules: bool,
     recovering_receipts: bool,
@@ -179,6 +180,7 @@ impl Default for Scan {
             monitor: String::new(),
             stall_monitor: Some(String::new()),
             orphan_monitor: Some(String::new()),
+            late_monitor: Some(String::new()),
             rule: 0,
             recovering_rules: false,
             recovering_receipts: false,
@@ -625,6 +627,7 @@ impl MonitorRuntime {
         // result receipts. Cancellation and rule work above does not.
         let mut stall_more = false;
         let mut orphan_more = false;
+        let mut late_more = false;
         if drained && !result_batch_full && failure.is_none() {
             if let Some(after) = scan.stall_monitor.as_deref() {
                 match monitor_runtime::tick_page(&self.store, now, Some(after)).await {
@@ -651,18 +654,24 @@ impl MonitorRuntime {
                 Ok(more) => orphan_more = more,
                 Err(error) => record_tick_failure(&mut failure, error),
             }
+            match self.await_late_answers(&mut scan, now).await {
+                Ok(more) => late_more = more,
+                Err(error) => record_tick_failure(&mut failure, error),
+            }
         }
         let more = result_batch_full
             || attach_more
             || !drained
             || stall_more
             || orphan_more
+            || late_more
             || start_more
             || cancel_more
             || rules_more;
         if !more {
             scan.stall_monitor = Some(String::new());
             scan.orphan_monitor = Some(String::new());
+            scan.late_monitor = Some(String::new());
         }
         match failure {
             Some(error) => Err(error),
@@ -702,6 +711,46 @@ impl MonitorRuntime {
             }
         }
         Ok(staged || full)
+    }
+
+    /// Give each deadline loss in its late-answer window an answer waiter in
+    /// this process, one bounded page per tick. Existing tasks do not prevent
+    /// the cursor from reaching later commands. A queued late exit is delivered first.
+    async fn await_late_answers(&self, scan: &mut Scan, now: f64) -> Result<bool, MonitorError> {
+        let Some(after) = scan.late_monitor.as_deref() else {
+            return Ok(false);
+        };
+        let ids = monitor_runtime::late_answer_ids(&self.store, Some(after), now).await?;
+        let full = ids.len() == monitor_runtime::MONITOR_TICK_BATCH;
+        for id in &ids {
+            if self.port.exit_owned(id) != Some(false) {
+                continue;
+            }
+            let read_id = id.clone();
+            let result = match self
+                .store
+                .read_async("runtime-services/monitor_late_answer", move |tx| {
+                    monitor_runtime::snapshot(tx, &read_id)
+                })
+                .await
+            {
+                Ok((snapshot, _)) if snapshot.awaits_late_answer(now) => {
+                    self.port.await_late_answer(&snapshot)
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(()) => {}
+                // A store failure retries this pass from durable state.
+                Err(error) if error.store_failure_for_task() => return Err(error),
+                // One unreadable row, for example of a deleted owner, must not
+                // hold back the other late answers.
+                Err(_) => {}
+            }
+        }
+        scan.late_monitor = if full { ids.last().cloned() } else { None };
+        Ok(full)
     }
 
     async fn quarantine_delivery(
@@ -766,6 +815,10 @@ impl MonitorRuntime {
                     monitor_runtime::snapshot(tx, &id_for_read)
                 })
                 .await?;
+            if !snapshot.recovering() {
+                scan.monitor.clone_from(id);
+                continue;
+            }
             match self.port.reattach(&snapshot).await? {
                 ReattachOutcome::Running(proof) => {
                     match monitor_runtime::reattach(&self.store, id, &proof, now).await? {
@@ -786,6 +839,10 @@ impl MonitorRuntime {
                             continue;
                         }
                         crate::monitor_policy::ReattachDisposition::AwaitExit => (),
+                        crate::monitor_policy::ReattachDisposition::Superseded => {
+                            scan.monitor.clone_from(id);
+                            continue;
+                        }
                     }
                     if let Err(error) = self.port.await_exit(&snapshot) {
                         monitor_runtime::reconcile_unknown(&self.store, id, now).await?;
@@ -975,19 +1032,42 @@ impl MonitorRuntime {
         Ok(result)
     }
 
-    /// Submit HTTP input with a fresh server ticket. The HTTP schema currently has
-    /// no caller request identity, so a lost HTTP response cannot be distinguished
-    /// from a new identical request; that retry gap is registered in this module's
-    /// documentation. Provider writes still commit an intent first, and an
-    /// uncertain provider outcome is retained and never resent.
+    /// Replay the exact HTTP input identity without another native write.
     pub async fn input_http(
         &self,
         id: &str,
+        request_id: &str,
         input: &Input,
         now: f64,
     ) -> Result<Value, MonitorError> {
-        let ticket = http_input_ticket()?;
-        self.input(id, &ticket, input, now).await
+        let Some((operation, ticket, submitted)) =
+            monitor_driver::input_http(&self.store, self.port.as_ref(), id, request_id, input, now)
+                .await?
+        else {
+            return Ok(crate::monitor_http_input::acknowledged(request_id));
+        };
+        if !matches!(submitted, Submission::Written) {
+            return Err(match submitted {
+                Submission::NotSent { .. } => MonitorError::Refused("Monitor input rejected"),
+                _ => MonitorError::InputOutcomeUnknown,
+            });
+        }
+        let (outcome, response) = match self.port.input_reply(&operation, &ticket).await {
+            InputReply::Acknowledged(_) => (
+                InputOutcome::Acknowledged,
+                Ok(crate::monitor_http_input::acknowledged(request_id)),
+            ),
+            InputReply::Rejected(error) => (
+                InputOutcome::Rejected(error),
+                Err(MonitorError::Refused("Monitor input rejected")),
+            ),
+            InputReply::Unknown(error) => (
+                InputOutcome::Unknown(error),
+                Err(MonitorError::InputOutcomeUnknown),
+            ),
+        };
+        monitor_runtime::settle_input(&self.store, id, &operation, &ticket, outcome, now).await?;
+        response
     }
 
     pub async fn input(
@@ -1267,15 +1347,6 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
         rule_deadline,
         reattach_deadline,
     ]))
-}
-
-fn http_input_ticket() -> Result<String, MonitorError> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes)
-        .map_err(|_| MonitorError::Refused("Could not allocate monitor input ticket"))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    Ok(uuid::Uuid::from_bytes(bytes).to_string())
 }
 
 fn record_tick_failure(current: &mut Option<MonitorError>, incoming: MonitorError) {
@@ -1675,8 +1746,9 @@ mod tests {
     use crate::monitor_runtime_wiring::{Delivery, InputReply};
     use crate::rules_engine::RuleCheck;
     use crate::rules_tick::{CheckReconciliation, CheckSubmission, RuleMonitor, RulesTickError};
+    use std::collections::BTreeSet;
     use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use studio_runtime_store::{ObservedTable, RuntimeStore};
@@ -1692,6 +1764,8 @@ mod tests {
         probe_errors: AtomicUsize,
         reattach_calls: AtomicUsize,
         orphan_checks: AtomicUsize,
+        own_late_answers: AtomicBool,
+        late_answers: Mutex<BTreeSet<String>>,
         last_error_time: Mutex<Option<tokio::time::Instant>>,
         called: Notify,
         probe_called: Notify,
@@ -1732,9 +1806,23 @@ mod tests {
     }
 
     impl super::MonitorPort for EventPort {
-        fn exit_owned(&self, _id: &str) -> Option<bool> {
+        fn exit_owned(&self, id: &str) -> Option<bool> {
             self.orphan_checks.fetch_add(1, Ordering::SeqCst);
+            if self.own_late_answers.load(Ordering::SeqCst) {
+                return Some(self.late_answers.lock().expect("late answers").contains(id));
+            }
             Some(true)
+        }
+
+        fn await_late_answer(&self, snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
+            assert!(
+                self.late_answers
+                    .lock()
+                    .expect("late answers")
+                    .insert(snapshot.id().into()),
+                "each command receives only one retained answer task"
+            );
+            Ok(())
         }
 
         fn next<'a>(
@@ -2373,6 +2461,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn late_answer_scan_passes_existing_waiters_and_reaches_the_next_page() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        let count = crate::monitor_runtime::MONITOR_TICK_BATCH + 1;
+        store
+            .transaction_with(move |tx| {
+                for index in 0..count {
+                    let id = format!("late-{index:03}");
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        (
+                            &id,
+                            serde_json::json!({
+                                "id":id,"agent":"owner","epoch":0,"status":"lost","created":1.0,
+                                "finished":90.0,"operation":{"agent":"owner","epoch":0,
+                                    "accountKey":"default","connectionId":"old"},
+                                "reattachRecovery":{"accountKey":"default","epoch":0,
+                                    "status":"not_reattachable","startedAt":80.0,
+                                    "proof":crate::monitor_policy::DEADLINE_PASSED}
+                            })
+                            .to_string(),
+                        ),
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("deadline losses");
+        port.own_late_answers.store(true, Ordering::SeqCst);
+        // The first page already has tasks that own its retained answers.
+        port.late_answers
+            .lock()
+            .expect("late answers")
+            .extend((0..count - 1).map(|index| format!("late-{index:03}")));
+        let runtime = MonitorRuntime::new(store, port.clone(), Arc::new(Notify::new()));
+        let more = runtime.tick_with_progress(100.0).await.expect("first page");
+        assert_eq!(
+            port.late_answers.lock().expect("late answers").len(),
+            count - 1
+        );
+        let second_more = runtime
+            .tick_with_progress(100.0)
+            .await
+            .expect("second page");
+        assert_eq!(
+            port.late_answers.lock().expect("late answers").len(),
+            count,
+            "the last command receives an answer task even while the first page still waits"
+        );
+        assert!(
+            more,
+            "a full page requests its continuation without a timer"
+        );
+        assert!(!second_more, "the final page completes the scan");
+        runtime.tick(100.0).await.expect("new scan");
+    }
+
+    #[tokio::test]
     async fn stall_monitor_scan_pages_past_the_first_sixty_four_ids() {
         let (_root, store, _port) = fixture().await;
         insert_active_owner(&store).await;
@@ -2582,11 +2728,12 @@ mod tests {
             Arc::new(Notify::new()),
         ));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        // Freeze time before the first error can schedule its retry deadline.
+        tokio::time::pause();
         let task = super::start(runtime.clone(), shutdown_rx);
         wait_for_calls(&port, 1).await;
         wait_for_cycles(&runtime, 1).await;
         assert_eq!(runtime.last_tick_error().as_deref(), Some("test transient"));
-        tokio::time::pause();
         let retry_at = port
             .last_error_time
             .lock()

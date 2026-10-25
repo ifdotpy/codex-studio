@@ -30,6 +30,8 @@ pub mod sqlite_durability;
 pub use sqlite_durability::WAL_FLUSH_INTERVAL;
 pub mod state_owner;
 pub mod stored_text;
+pub mod stored_text_compaction;
+pub mod stored_text_dictionary;
 pub mod supervisor_journal;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
@@ -48,7 +50,6 @@ pub use repositories::analytics::{
     SessionCostError,
 };
 pub use repositories::analytics_capture;
-pub use repositories::budget;
 pub use repositories::capability_reads::CapabilityReadsRepository;
 pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
@@ -195,8 +196,6 @@ pub enum ObservedTable {
     FederationOutbox,
     NativeActionReceipts,
     AccessReceipts,
-    Budget,
-    BudgetUsage,
     AccountTransfers,
     OrchestrationSettings,
     RuntimeRequests,
@@ -288,8 +287,6 @@ impl ObservedTable {
             Self::FederationOutbox => "runtime_federation_outbox",
             Self::NativeActionReceipts => "runtime_native_action_receipts",
             Self::AccessReceipts => "runtime_access_receipts",
-            Self::Budget => "runtime_budget",
-            Self::BudgetUsage => "runtime_budget_usage",
             Self::AccountTransfers => "runtime_account_transfers",
             Self::OrchestrationSettings => "runtime_orchestration_settings",
             Self::RuntimeRequests => "runtime_requests",
@@ -320,8 +317,6 @@ impl ObservedTable {
             Self::FederationOutbox => 1 << 16,
             Self::NativeActionReceipts => 1 << 17,
             Self::AccessReceipts => 1 << 18,
-            Self::Budget => 1 << 20,
-            Self::BudgetUsage => 1 << 21,
             Self::AccountTransfers => 1 << 22,
             Self::OrchestrationSettings => 1 << 23,
             Self::RuntimeRequests => 1 << 24,
@@ -338,7 +333,7 @@ impl ObservedTable {
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 27] = [
+const OBSERVED_TABLES: [ObservedTable; 25] = [
     ObservedTable::AccessClients,
     ObservedTable::UsageResumes,
     ObservedTable::Agents,
@@ -359,8 +354,6 @@ const OBSERVED_TABLES: [ObservedTable; 27] = [
     ObservedTable::FederationOutbox,
     ObservedTable::NativeActionReceipts,
     ObservedTable::AccessReceipts,
-    ObservedTable::Budget,
-    ObservedTable::BudgetUsage,
     ObservedTable::AccountTransfers,
     ObservedTable::OrchestrationSettings,
     ObservedTable::RuntimeRequests,
@@ -1323,6 +1316,8 @@ impl RuntimeStore {
         let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         sqlite_durability::configure_writer(&analytics)?;
         schema::verify_serving_pragmas(&analytics, "analytics.sqlite3")?;
+        stored_text_dictionary::ensure_analytics_schema(&analytics)?;
+        stored_text_dictionary::install_analytics_sql(&analytics)?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
         let identity_registry_path = canvas_path.clone();

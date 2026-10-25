@@ -3,8 +3,7 @@ use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use studio_runtime_services::submit_gates::{
     AuthorizationRecords, AuthorizationSnapshot, CatalogIdentity, CatalogObservation,
-    ExecutionSettings, ExecutionSnapshot, authorize_events, budget_admission, select_execution,
-    validate_execution,
+    ExecutionSettings, ExecutionSnapshot, authorize_events, select_execution, validate_execution,
 };
 
 struct CapturedExpectations(crate::turn_fixtures::FrozenResponses);
@@ -142,10 +141,6 @@ fn rust(case: &Value, records: Option<&Value>) -> Value {
                 Err(error) => rejection(error),
             }
         }
-        "budget" => match budget_admission(case.get("budget")) {
-            Ok(()) => json!({"allowed":true}),
-            Err(error) => rejection(error.to_string()),
-        },
         _ => panic!("unknown gate"),
     }
 }
@@ -327,18 +322,6 @@ fn submit_gates_python_corpus() {
                         }
                     }
                 }
-            }
-        }
-        for budget in matrix["budgets"].as_array().expect("budgets") {
-            for spent in [0, 1, 10, 100] {
-                let case = json!({"gate":"budget","budget":budget,"spent":spent});
-                compare(
-                    &mut oracle,
-                    "budget-matrix",
-                    &case,
-                    (!budget.is_null()).then_some("budget-policy/coverage-unavailable"),
-                );
-                count += 1;
             }
         }
     }

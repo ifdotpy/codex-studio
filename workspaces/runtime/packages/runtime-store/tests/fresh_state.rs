@@ -248,6 +248,70 @@ async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
     drop(journal);
 }
 
+/// A new Mac can turn on background recovery before the first backend starts. The
+/// recovery helper (desktop recovery.cjs) writes its private configuration, the recovery
+/// job (recover_backend.py, umask 077) opens its private lock, and launchd opens the
+/// job's log with its own umask; then the job starts the first backend.
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_files_written_before_the_first_start_are_accepted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state_directory = temporary_state("recovery-first");
+    let state = state_directory.path();
+    let configuration = br#"{"version":1,"enabled":true}"#;
+    for (name, body, mode) in [
+        ("background-recovery.json", &configuration[..], 0o600),
+        ("background-recovery.lock", &b""[..], 0o600),
+        (
+            "background-recovery.log",
+            &b"{\"event\": \"backend-recovery\"}\n"[..],
+            0o644,
+        ),
+    ] {
+        fs::write(state.join(name), body).expect("recovery file writes");
+        fs::set_permissions(state.join(name), fs::Permissions::from_mode(mode))
+            .expect("recovery file mode sets");
+    }
+
+    let store = RuntimeStore::open(Some(state))
+        .await
+        .expect("recovery files written before the first start are allowed entries");
+    drop(store);
+    assert!(state.join("canvas.sqlite3").is_file());
+    assert_eq!(
+        fs::read(state.join("background-recovery.json")).expect("configuration reads"),
+        configuration,
+        "the recovery configuration is kept"
+    );
+}
+
+/// The recovery configuration names the saved launch environment; a readable copy is not
+/// one that the recovery helper wrote, so a fresh state still refuses it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_readable_recovery_configuration_is_still_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state_directory = temporary_state("recovery-readable");
+    let state = state_directory.path();
+    fs::write(state.join("background-recovery.json"), b"{}").expect("configuration writes");
+    fs::set_permissions(
+        state.join("background-recovery.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("configuration mode sets");
+    let error = RuntimeStore::open(Some(state))
+        .await
+        .err()
+        .expect("a readable recovery configuration is refused");
+    assert!(
+        matches!(error, StoreError::SchemaMismatch(ref message) if message.contains("background-recovery.json")),
+        "{error}"
+    );
+    assert!(!state.join("canvas.sqlite3").exists());
+}
+
 #[tokio::test]
 async fn fresh_state_without_supervisor_still_creates_the_supervisor_journal() {
     let state_directory = temporary_state("no-supervisor");

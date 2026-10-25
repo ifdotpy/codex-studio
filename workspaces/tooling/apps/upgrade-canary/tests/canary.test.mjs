@@ -1,0 +1,524 @@
+import assert from "node:assert/strict";
+import "./studio-profile.test.mjs";
+import { test } from "node:test";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { createHash } from "node:crypto";
+import {
+  fileConfig,
+  claudeAccount,
+  claudeConfigEnvironment,
+} from "../claude-auth.mjs";
+import { cli as admissionCli } from "../claude-login.mjs";
+import {
+  FAILURE_LINES,
+  handleChanges,
+  profiles,
+  proxyDecision,
+  Canary,
+  options,
+  canaryReport,
+  RETAINED_CLAUDE_CANARY_CHECKS,
+} from "../canary.mjs";
+
+test("structured canary output preserves failed verdict and exact request evidence", () => {
+  assert.throws(
+    () => options(["--report-json", "/report.json"], {}),
+    /together/,
+  );
+  const parsed = options(
+    ["--report-json", "/report.json", "--request-id", "request-one"],
+    {},
+  );
+  assert.equal(parsed["request-id"], "request-one");
+  const evidence = {
+    runId: "run-one",
+    artifacts: {
+      from: { build: { commit: "old" } },
+      to: { build: { commit: "new" } },
+    },
+    steerScenario: { provider: "claude", accountKey: "claude-canary" },
+    handlesBefore: ["account:claude-canary|42|1"],
+    handlesAfter: ["account:claude-canary|42|1"],
+    report: {
+      rows: [
+        {
+          name: "steer delivered once",
+          status: "FAIL",
+          detail: "old retained process",
+          ms: 1,
+        },
+      ],
+    },
+    seconds: 2,
+  };
+  const report = canaryReport(evidence, "request-one");
+  assert.equal(report.requestId, "request-one");
+  assert.deepEqual(report.from, evidence.artifacts.from);
+  assert.deepEqual(report.to, evidence.artifacts.to);
+  assert.equal(report.steer.provider, "claude");
+  assert.equal(report.rows[0].status, "FAIL");
+  assert.notEqual(report.rows[0], evidence.report.rows[0]);
+});
+
+test("the narrow admission check list matches every actual complete Claude canary step", async (t) => {
+  const canary = new Canary({
+    from: os.tmpdir(),
+    to: os.tmpdir(),
+    "live-state": os.tmpdir(),
+  });
+  canary.root = os.tmpdir();
+  canary.proxy = {};
+  canary.accounts = [{ provider: "claude" }];
+  canary.chats.monitor = {};
+  for (const method of [
+    "prepare",
+    "accountsFile",
+    "sandbox",
+    "initializeState",
+    "configure",
+    "startJobs",
+    "models",
+    "startScenario",
+    "install",
+    "handles",
+    "monitorContinues",
+    "deliveredOnce",
+    "steerOnce",
+    "claudeBuckets",
+    "idleContinues",
+    "logLines",
+    "proxyReport",
+    "usage",
+    "liveUnchanged",
+    "cleanup",
+  ])
+    t.mock.method(canary, method, async () => "fixture pass");
+  const report = await canary.main();
+  assert.deepEqual(
+    report.rows.map((row) => row.name),
+    RETAINED_CLAUDE_CANARY_CHECKS,
+  );
+  assert.ok(report.rows.every((row) => row.status === "pass"));
+});
+
+function temporary(t) {
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "canary-profile-boundary-")),
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+test("replacement N+1 receives its build hash without changing N or retained supervisor environment", async (t) => {
+  const root = temporary(t);
+  const candidate = path.join(root, "candidate", "Codex Studio.app");
+  const server = path.join(
+    candidate,
+    "Contents/Resources/workspace/bin/studio-runtime-server",
+  );
+  fs.mkdirSync(path.dirname(server), { recursive: true });
+  fs.writeFileSync(server, "candidate backend fixture");
+  const hash = createHash("sha256")
+    .update(fs.readFileSync(server))
+    .digest("hex");
+  const canary = new Canary({
+    from: path.join(root, "old-app"),
+    to: candidate,
+    "live-state": path.join(root, "live"),
+  });
+  canary.root = root;
+  canary.python = "/fixture/python3";
+  canary.profiles = { installer: path.join(root, "installer.sb") };
+  canary.env = {
+    HOME: path.join(root, "home"),
+    PATH: "/usr/bin:/bin",
+    HTTPS_PROXY: "http://127.0.0.1:1234",
+  };
+  canary.builds = {
+    from: { commit: "a".repeat(40), builtAt: 1 },
+    to: { commit: "b".repeat(40), builtAt: 2 },
+  };
+  canary.artifacts = { to: { backendHash: hash } };
+  const originalNEnvironment = {
+    ...canary.env,
+    XPC_SERVICE_NAME: "canary.recovery",
+  };
+  const supervisorEnvironment = {
+    ...canary.env,
+    XPC_SERVICE_NAME: "canary.supervisor",
+  };
+  const originalN = structuredClone(originalNEnvironment);
+  const supervisor = structuredClone(supervisorEnvironment);
+  const shared = structuredClone(canary.env);
+  assert.equal(
+    Object.hasOwn(originalNEnvironment, "CODEX_BACKEND_BUILD"),
+    false,
+  );
+  const events = [];
+  let replacement;
+  canary.jobs = {
+    supervisor: { env: supervisorEnvironment },
+    recovery: {
+      env: originalNEnvironment,
+      stop: async () => {
+        events.push("stop N");
+      },
+      start() {
+        events.push("start N+1");
+        replacement = structuredClone(this.env);
+      },
+    },
+  };
+  fs.mkdirSync(canary.state, { recursive: true });
+  fs.mkdirSync(path.join(root, "logs"));
+  fs.writeFileSync(
+    path.join(canary.state, "update-receipt.json"),
+    JSON.stringify({ backend: "stopped" }),
+  );
+  t.mock.method(childProcess, "execFileSync", (command, args, options) => {
+    if (command === "/usr/bin/ditto") {
+      events.push("copy candidate");
+      assert.equal(args[0], candidate);
+      return Buffer.alloc(0);
+    }
+    assert.equal(
+      command,
+      "/usr/bin/sandbox-exec",
+      "No real process may start in this fixture",
+    );
+    events.push("install candidate");
+    assert.equal(Object.hasOwn(options.env, "CODEX_BACKEND_BUILD"), false);
+    return JSON.stringify({ detail: "fixture installed" });
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  t.mock.method(canary, "waitBackend", async (build, app) => {
+    events.push("verify N+1");
+    assert.equal(build, canary.builds.to);
+    assert.equal(app, candidate);
+    return { pid: 123 };
+  });
+  await canary.install();
+  assert.equal(
+    replacement.CODEX_BACKEND_BUILD,
+    canary.artifacts.to.backendHash,
+  );
+  assert.equal(replacement.CODEX_BACKEND_BUILD, hash);
+  assert.deepEqual(originalNEnvironment, originalN);
+  assert.deepEqual(canary.jobs.supervisor.env, supervisor);
+  assert.deepEqual(canary.env, shared);
+  assert.deepEqual(replacement, { ...originalN, CODEX_BACKEND_BUILD: hash });
+  assert.deepEqual(events, [
+    "stop N",
+    "copy candidate",
+    "install candidate",
+    "start N+1",
+    "verify N+1",
+  ]);
+});
+
+function subscriptionCanary(t, snapshot) {
+  const root = temporary(t);
+  const canary = new Canary({
+    from: root,
+    to: root,
+    "live-state": path.join(root, "live"),
+  });
+  canary.root = root;
+  canary.accounts = [
+    {
+      key: "claude-canary",
+      provider: "claude",
+      accountId: "claude:canary@example.test",
+    },
+  ];
+  const requests = [];
+  canary.backend = {
+    get: async (url) => {
+      requests.push(url);
+      return snapshot;
+    },
+  };
+  return { canary, requests };
+}
+
+function subscriptionLimits() {
+  return {
+    accountKey: "claude-canary",
+    error: null,
+    data: {
+      accountId: "claude:canary@example.test",
+      subscriptionType: "max",
+      rateLimits: {
+        primary: { windowDurationMins: 300 },
+        secondary: { windowDurationMins: 10080 },
+      },
+    },
+  };
+}
+
+test("Claude subscription proof reads native limits without a recorded turn window", async (t) => {
+  const { canary, requests } = subscriptionCanary(t, subscriptionLimits());
+  assert.equal(
+    fs.existsSync(path.join(canary.state, "analytics.sqlite3")),
+    false,
+  );
+  assert.equal(await canary.claudeBuckets(), "windows five_hour, weekly");
+  assert.deepEqual(requests, ["/api/limits?account_key=claude-canary"]);
+});
+
+test("Claude subscription proof rejects missing windows, wrong identity, and read errors", async (t) => {
+  for (const change of [
+    (snapshot) => {
+      snapshot.accountKey = "another-account";
+    },
+    (snapshot) => {
+      snapshot.data.accountId = "claude:another@example.test";
+    },
+    (snapshot) => {
+      delete snapshot.data.accountId;
+    },
+    (snapshot) => {
+      snapshot.error = "Native limits unavailable";
+    },
+    (snapshot) => {
+      snapshot.data = null;
+    },
+    (snapshot) => {
+      snapshot.data.rateLimits = {};
+    },
+    (snapshot) => {
+      delete snapshot.data.rateLimits.primary;
+    },
+  ]) {
+    const snapshot = subscriptionLimits();
+    change(snapshot);
+    const { canary } = subscriptionCanary(t, snapshot);
+    await assert.rejects(async () => canary.claudeBuckets());
+  }
+  const { canary } = subscriptionCanary(t, subscriptionLimits());
+  canary.backend.get = async () => {
+    throw new Error("Native read failed");
+  };
+  await assert.rejects(
+    async () => canary.claudeBuckets(),
+    /Native read failed/,
+  );
+});
+
+test("the admission helper cannot start native authentication", () => {
+  assert.throws(() => admissionCli(["--login", "--claude", "/native/claude"]));
+  assert.throws(() => admissionCli(["--prepare"]));
+});
+test("Keychain access requires the explicit mode and a bound Studio reservation", () => {
+  assert.equal(options([], {})["claude-keychain"], false);
+  assert.equal(
+    options([], { CANARY_CLAUDE_KEYCHAIN: "1" })["claude-keychain"],
+    true,
+  );
+  assert.equal(
+    options([], { CANARY_CLAUDE_KEYCHAIN: "0" })["claude-keychain"],
+    false,
+  );
+  assert.equal(options(["--claude-keychain"], {})["claude-keychain"], true);
+  assert.throws(() => options([], { CANARY_CLAUDE_KEYCHAIN: "true" }));
+  const parsed = options([], {
+    CANARY_CLAUDE_KEYCHAIN: "1",
+    CANARY_CLAUDE_RESERVATION: "/private/ownership.json",
+  });
+  assert.equal(parsed["claude-reservation"], "/private/ownership.json");
+  assert.equal(parsed["claude-config"], undefined);
+  assert.throws(
+    () =>
+      new Canary({
+        from: os.tmpdir(),
+        to: os.tmpdir(),
+        "live-state": path.join(os.tmpdir(), "state"),
+        "claude-keychain": true,
+      }),
+  );
+});
+test("all canary modes pin native discovery to the selected or empty config", (t) => {
+  const root = temporary(t),
+    config = path.join(root, "private-config");
+  const base = {
+    from: root,
+    to: root,
+    "claude-config": config,
+    "live-state": path.join(root, "live"),
+  };
+  const missing = new Canary(base);
+  missing.root = root;
+  assert.deepEqual(
+    missing.claudeEnvironment(),
+    claudeConfigEnvironment(config),
+  );
+  const disabled = new Canary({ ...base, "no-claude": true });
+  disabled.root = root;
+  assert.deepEqual(
+    disabled.claudeEnvironment(),
+    claudeConfigEnvironment(path.join(root, "homes/claude-disabled")),
+  );
+  assert.deepEqual(Object.keys(missing.claudeEnvironment()).sort(), [
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+  ]);
+});
+test("file mode keeps its missing prerequisite and refuses production or aliased paths", (t) => {
+  const home = temporary(t),
+    config = path.join(home, ".config/codex-studio/canary-claude");
+  assert.equal(fileConfig(config, { home }), config);
+  assert.throws(() => fileConfig(path.join(home, ".claude"), { home }));
+  fs.mkdirSync(config, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(config, ".claude.json"), "SENSITIVE_CLAUDE_VALUE");
+  assert.throws(
+    () => claudeAccount(config),
+    (e) => !e.message.includes("SENSITIVE"),
+  );
+  fs.symlinkSync(
+    "/missing-native-credentials",
+    path.join(config, ".credentials.json"),
+  );
+  assert.throws(() => fileConfig(config, { home }));
+});
+test("Keychain mode changes only service access and the exact dedicated write rule", () => {
+  const args = {
+    root: path.join(os.tmpdir(), "canary"),
+    tmp: os.tmpdir(),
+    home: "/Users/owner",
+    liveState: "/Users/owner/state",
+    app: path.join(os.tmpdir(), "canary/app"),
+    port: 4800,
+    proxyPort: 4900,
+    readable: [],
+  };
+  const locked = profiles(args),
+    config = path.join(args.liveState, "claude-logins/config-fixture");
+  const allowed = profiles({
+    ...args,
+    claudeKeychain: true,
+    claudeProfile: config,
+  });
+  for (const name of ["supervisor", "recovery"]) {
+    assert.equal(
+      allowed[name],
+      locked[name].replace(/\n\(deny mach-lookup[^\n]+/, "") +
+        `\n(allow file-write* (subpath "${config}"))`,
+    );
+  }
+  assert.equal(allowed.installer, locked.installer);
+});
+test(
+  "the actual sandbox permits the dedicated config but denies sibling and symlink writes",
+  { skip: process.platform !== "darwin" },
+  (t) => {
+    const root = temporary(t),
+      live = path.join(root, "live"),
+      config = path.join(live, "claude-logins/config-fixture"),
+      run = path.join(root, "run");
+    fs.mkdirSync(config, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(run);
+    const good = path.join(config, "fixture"),
+      sibling = path.join(live, "never-touch");
+    const escape = path.join(config, "escape");
+    fs.symlinkSync(sibling, escape);
+    const text = profiles({
+      root: run,
+      tmp: root,
+      home: root,
+      liveState: live,
+      app: path.join(run, "app"),
+      port: 4800,
+      proxyPort: 4900,
+      readable: [],
+      claudeKeychain: true,
+      claudeProfile: config,
+    }).supervisor;
+    execFileSync(
+      "/usr/bin/sandbox-exec",
+      [
+        "-p",
+        text,
+        "/bin/sh",
+        "-c",
+        'printf fixture > "$1" && ! (printf forbidden > "$2") && ! (printf forbidden > "$3")',
+        "fixture",
+        good,
+        sibling,
+        escape,
+      ],
+      { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    assert.equal(fs.readFileSync(good, "utf8"), "fixture");
+    assert.equal(fs.existsSync(sibling), false);
+  },
+);
+test("the proxy refuses the Codex token endpoint and every unknown host", () => {
+  assert.equal(proxyDecision("auth.openai.com"), "refused");
+  assert.equal(proxyDecision("AUTH.OPENAI.COM."), "refused");
+  for (const host of ["chatgpt.com", "api.openai.com", "api.anthropic.com"])
+    assert.equal(proxyDecision(host), "allowed");
+  assert.equal(proxyDecision("example.com"), "refused");
+  assert.equal(proxyDecision("chatgpt.com.example.com"), "refused");
+});
+test("a handle with another pid or generation is a change", () => {
+  const before = ["account:a|10|1", "account:b|20|4"];
+  assert.deepEqual(handleChanges(before, [...before]), []);
+  assert.deepEqual(
+    handleChanges(before, ["account:a|10|1", "account:b|21|5"]),
+    ["- account:b|20|4", "+ account:b|21|5"],
+  );
+  assert.deepEqual(handleChanges(before, ["account:a|10|1"]), [
+    "- account:b|20|4",
+  ]);
+});
+test("the failure lines match both outage messages", () => {
+  assert.match("Provider did not start: refused", FAILURE_LINES);
+  assert.match("The retained handle could not be verified", FAILURE_LINES);
+  assert.doesNotMatch("turn started", FAILURE_LINES);
+});
+test("default canary profiles keep live files, Keychain and direct network access denied", () => {
+  const text = profiles({
+    root: path.join(os.tmpdir(), "studio-canary-x"),
+    tmp: os.tmpdir(),
+    home: "/Users/owner",
+    liveState: "/Users/owner/.local/state/codex-agents",
+    app: path.join(os.tmpdir(), "studio-canary-x/apps/Codex Studio.app"),
+    port: 4800,
+    proxyPort: 4900,
+    readable: ["/Users/owner/.codex/auth.json"],
+  });
+  for (const [name, profile] of Object.entries(text)) {
+    assert.match(profile, /\(deny default\)/, name);
+    assert.match(profile, /global-name "com.apple.SecurityServer"/, name);
+    assert.match(
+      profile,
+      /\(deny file-write\* \(subpath "\/Users\/owner\/.local\/state\/codex-agents"\) \(subpath "\/Applications"\)/,
+      name,
+    );
+    assert.match(
+      profile,
+      /\(deny file-write\* \(literal "\/Users\/owner\/.codex\/auth.json"\)\)/,
+      name,
+    );
+    assert.match(
+      profile,
+      /\(deny process-exec \(subpath "\/Applications\/Codex Studio.app"\)/,
+      name,
+    );
+    assert.match(profile, /\(remote tcp "localhost:4900"\)/, name);
+    assert.doesNotMatch(profile, /\(allow network-outbound\)/, name);
+  }
+  assert.match(
+    text.installer,
+    /\(deny process-exec \(literal "\/usr\/bin\/osascript"\) \(literal "\/usr\/bin\/open"\)\)/,
+  );
+});

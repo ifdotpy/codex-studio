@@ -42,6 +42,19 @@ impl RecoveryObservation {
                 && current.generation == self.scope.generation
         })
     }
+    /// A later native provider generation proves that the process which received
+    /// the start no longer exists. The account worker's first pass knows this
+    /// generation but has no supervisor identity.
+    /// GuestProviderTaskFactory uses the host generation on VM tickets. A guest
+    /// process can survive a host replacement, so these tickets cannot prove
+    /// that the guest process ended.
+    pub fn replaced_generation(&self, snapshot: &RecoverySnapshot) -> bool {
+        let mode = &snapshot.record()["executionMode"];
+        (mode.is_null() || mode == "native")
+            && snapshot.start_attempt()["connectionGeneration"]
+                .as_u64()
+                .is_some_and(|submitted| self.scope.generation > submitted)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -57,7 +70,10 @@ pub fn start_absence(
     idle_twice: bool,
 ) -> StartAbsenceDecision {
     let a = snapshot.record();
-    if complete_history && idle_twice && observation.replaced_child(snapshot) {
+    if complete_history
+        && idle_twice
+        && (observation.replaced_child(snapshot) || observation.replaced_generation(snapshot))
+    {
         return StartAbsenceDecision::Restore;
     }
     let age = a["startAttempt"]["created"]

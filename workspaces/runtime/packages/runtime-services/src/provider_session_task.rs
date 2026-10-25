@@ -108,6 +108,7 @@ impl PreparedRequest {
 pub struct PreparedFrame {
     write: PreparedWrite,
     operation: OperationId,
+    callback_reply: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +174,36 @@ pub struct SessionStatus {
     pub generation: Generation,
     pub initialization: InitializationStatus,
     pub attachment: AttachmentStatus,
+    /// Reply from this generation's exact initialize request, including a
+    /// supervisor-cached reply from the retained process, not installed source.
+    pub initialize_result: Option<Arc<Value>>,
+    /// Transport-owned proof, never a provider-reported initialize capability.
+    pub supervisor_write_deduplication: bool,
+}
+
+impl SessionStatus {
+    /// A capability belongs to the ready, exact account handle and generation.
+    /// Missing metadata, an old reply, and non-boolean values grant nothing.
+    pub(crate) fn has_capability(
+        &self,
+        handle: &ProviderHandle,
+        generation: Generation,
+        capability: &str,
+    ) -> bool {
+        self.generation == generation
+            && self.initialization == InitializationStatus::Ready
+            && self.attachment.initialization == InitializationStatus::Ready
+            && self.attachment.handle == *handle
+            && self.attachment.info.as_ref().is_some_and(|info| {
+                info.handle == *handle && info.generation == generation && info.pid > 0
+            })
+            && self.initialize_result.as_ref().is_some_and(|result| {
+                result
+                    .get("capabilities")
+                    .and_then(|value| value.get(capability))
+                    == Some(&Value::Bool(true))
+            })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -335,6 +366,8 @@ impl SessionHandle {
         let (status, observed) = watch::channel(SessionStatus {
             generation: config.generation,
             initialization: InitializationStatus::AwaitingReply,
+            initialize_result: None,
+            supervisor_write_deduplication: false,
             attachment: AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: false,
@@ -473,7 +506,23 @@ impl SessionControl {
         Ok(PreparedFrame {
             write: PreparedWrite::new(operation.clone(), frame)?,
             operation,
+            callback_reply: false,
         })
+    }
+
+    /// The account callback owner opts into conservative duplicate receipts.
+    /// Other frames and requests keep their existing receipt semantics.
+    pub(crate) fn prepare_callback_reply(
+        &self,
+        operation: OperationId,
+        frame: &Frame,
+    ) -> Result<PreparedFrame, SessionTaskError> {
+        if !matches!(frame, Frame::Response { .. }) {
+            return Err(SessionTaskError::Invalid);
+        }
+        let mut prepared = self.prepare_frame(operation, frame)?;
+        prepared.callback_reply = true;
+        Ok(prepared)
     }
 
     pub async fn submit_frame(&self, prepared: PreparedFrame) -> Result<(), SessionTaskError> {
@@ -614,6 +663,7 @@ struct PendingWrite {
     operation: OperationId,
     ticket: Option<RequestTicket>,
     initialized: bool,
+    callback_reply: bool,
 }
 #[derive(Clone)]
 enum Flight {
@@ -622,6 +672,7 @@ enum Flight {
         operation: OperationId,
         ticket: Option<RequestTicket>,
         initialized: bool,
+        callback_reply: bool,
     },
     Ack(EventCursor),
 }
@@ -913,6 +964,7 @@ impl SessionTask {
                             operation: record.operation.clone(),
                             ticket: Some(record.ticket.clone()),
                             initialized: false,
+                            callback_reply: false,
                         })
                     } else {
                         queued.try_recv().ok()
@@ -938,6 +990,7 @@ impl SessionTask {
                             operation: write.operation,
                             ticket: write.ticket,
                             initialized: write.initialized,
+                            callback_reply: write.callback_reply,
                         };
                         let (command, receipt) = AdapterCommand::write(write.write);
                         *flight = Some(send_once(adapter.commands.clone(), command, receipt, kind));
@@ -1074,6 +1127,8 @@ impl SessionTask {
         self.status.send_if_modified(|status| {
             let attachment = adapter.status.borrow().clone();
             let changed = status.initialization != self.state.initialization_status()
+                || status.supervisor_write_deduplication
+                    != adapter.supervisor_write_deduplication()
                 || status.attachment.info.is_none() != attachment.info.is_none()
                 || status.attachment.initialization != attachment.initialization
                 || status.attachment.open_attempted != attachment.open_attempted
@@ -1085,6 +1140,7 @@ impl SessionTask {
                     != attachment.info.as_ref().map(|info| info.acknowledged);
             status.initialization = self.state.initialization_status();
             status.attachment = attachment;
+            status.supervisor_write_deduplication = adapter.supervisor_write_deduplication();
             changed
         });
     }
@@ -1140,6 +1196,7 @@ impl SessionTask {
                                 operation: prepared.operation,
                                 ticket: None,
                                 initialized: false,
+                                callback_reply: prepared.callback_reply,
                             })
                             .map_err(|_| SessionTaskError::Closed)
                     });
@@ -1226,6 +1283,7 @@ impl SessionTask {
                             operation,
                             ticket: None,
                             initialized: true,
+                            callback_reply: false,
                         });
                     }
                     _ => return Err(SessionTaskError::Invalid),
@@ -1233,6 +1291,19 @@ impl SessionTask {
                 Action::Resolve { ticket, outcome } => {
                     let ticket = ticket.clone();
                     let outcome = outcome.clone();
+                    if ticket.method == Method::Initialize
+                        && ticket.generation == self.state.generation()
+                    {
+                        self.status.send_modify(|status| {
+                            status.initialize_result = match &outcome {
+                                RequestOutcome::Reply {
+                                    body: ResponseBody::Result(value),
+                                    ..
+                                } => Some(Arc::new(value.clone())),
+                                _ => None,
+                            };
+                        });
+                    }
                     if self.retain_resolution(
                         ticket.clone(),
                         outcome,
@@ -1334,6 +1405,7 @@ impl SessionTask {
                 ticket,
                 initialized,
                 recovery,
+                callback_reply,
             },
             receipt,
         )) = self.retained.receipt.as_ref()
@@ -1348,6 +1420,12 @@ impl SessionTask {
             return;
         }
         let outcome = match receipt {
+            // A supervisor duplicate proves acceptance, not the earlier stdin
+            // write. Keep this conservative rule local to callback responses;
+            // request and monitor recovery retain their existing semantics.
+            CommandReceipt::Written {
+                duplicate: true, ..
+            } if *callback_reply => WriteOutcome::Unknown,
             CommandReceipt::Written { .. } => WriteOutcome::Written,
             CommandReceipt::NotSent => WriteOutcome::NotSent,
             CommandReceipt::WriteInterrupted { bytes_written } => {

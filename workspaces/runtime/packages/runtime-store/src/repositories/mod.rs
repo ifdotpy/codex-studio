@@ -6,7 +6,6 @@ pub(crate) mod agent_move;
 pub(crate) mod agents;
 pub mod analytics;
 pub mod analytics_capture;
-pub mod budget;
 pub mod capability_reads;
 pub(crate) mod checkpoints;
 pub(crate) mod claude_controls;

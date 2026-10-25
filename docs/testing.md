@@ -59,22 +59,37 @@ The guest service and desktop Python helpers are retained and remain independent
 of the backend. Historical verification reports describe their recorded revision;
 their removed Python commands are not current instructions.
 
-| Purpose                                              | Command                                  |
-| ---------------------------------------------------- | ---------------------------------------- |
-| Short safety gate                                    | `just test-fast`                         |
-| Publication gate                                     | `just test-comprehensive`                |
-| Generated contracts                                  | `just contracts-check`                   |
-| Workspace boundaries                                 | `just boundaries-check`                  |
-| Browser smoke                                        | `just test-browser-smoke`                |
-| Full browser project, manual heavy                   | `just test-browser` or `just test-heavy` |
-| Multi-server browser recovery, manual heavy          | `just test-browser-multi-server`         |
-| Full deterministic Rust corpora, manual heavy        | `just test-rust-runtime-corpora`         |
-| Full account-worker crash matrix, manual heavy       | `just test-crash-matrix-full`            |
-| Provider-session scheduling diagnostic, manual heavy | `just test-rust-session-fairness`        |
-| Many-agent scenario, manual heavy                    | `just test-rust-many-agents`             |
-| Continuation corpus and store faults, manual heavy   | `just test-rust-usage-resume-corpora`    |
-| Hidden Electron profile migration, manual heavy      | `just test-native-profile-migration`     |
-| Hidden Rust native WebView scenarios, manual heavy   | `just test-native-webview`               |
+| Purpose                                               | Command                                  |
+| ----------------------------------------------------- | ---------------------------------------- |
+| Short safety gate                                     | `just test-fast`                         |
+| Publication gate                                      | `just test-comprehensive`                |
+| Generated contracts                                   | `just contracts-check`                   |
+| Workspace boundaries                                  | `just boundaries-check`                  |
+| Browser smoke                                         | `just test-browser-smoke`                |
+| Full browser project, manual heavy                    | `just test-browser` or `just test-heavy` |
+| Multi-server browser recovery, manual heavy           | `just test-browser-multi-server`         |
+| Full deterministic Rust corpora, manual heavy         | `just test-rust-runtime-corpora`         |
+| Full account-worker crash matrix, manual heavy        | `just test-crash-matrix-full`            |
+| Provider-session scheduling diagnostic, manual heavy  | `just test-rust-session-fairness`        |
+| Guest module worker aggregation and crash, manual     | `just test-guest-runner-processes`       |
+| Detached host_exec lifecycle and guest broker, manual | `just test-host-exec-processes`          |
+| Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
+| Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
+| Hidden Electron profile migration, manual heavy       | `just test-native-profile-migration`     |
+| Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
+| Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
+
+The fast guest wrapper tests use an injected executor for ordered results,
+failure counts, and broken-pool cleanup. The actual guest suite remains in the
+fast tier with the default spawn-based process pool. The manual guest runner
+check keeps the two real worker-process scenarios outside the fast tier.
+
+The fast host_exec witnesses check private token creation, the actual Unix socket,
+authentication, retirement, and startup outcomes without a process-start deadline.
+The manual host_exec check retains the detached CLI startup, build replacement,
+busy-command preservation, and unchanged guest broker scenarios. Its fixture owns
+each service child through a private close channel and keeps failure logs in the
+test output. Production startup deadlines do not change.
 
 Set `STUDIO_STORE_COMPRESS_EVERY_WRITE=1` to run any Rust selection in the
 compress-every-write mode of [`stored_text.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text.rs):
@@ -281,6 +296,126 @@ that exact run with SQLite read-only mode, query-only transactions and a short
 busy timeout; costs remain SSE entities and receipts remain API reads. The
 artifact marks the analytics source `sqlite-ro`. Normal runs measure analytics
 request latency so OLD/NEW comparison also shows successful or timed-out reads.
+
+## Upgrade canary
+
+`just upgrade-canary --to <N+1 app> [--from <N app>]` installs build N+1 over
+build N on an isolated clone with real processes. Run it before every live
+install; `--from` defaults to the installed app. The
+[script](../workspaces/tooling/apps/upgrade-canary/canary.mjs) owns the steps
+and their time limits:
+
+1. Copy build N into a new run folder below the platform temporary directory, with
+   its own state folder, port, launchd stand-in and sandboxes.
+2. Accounts: one Codex login of the live registry (`--codex-account`, default
+   `default`), whose `auth.json` and `config.toml` the clone only links; the
+   sandbox keeps them read-only. A Claude login of the canary itself, in
+   `~/.config/codex-studio/canary-claude` (`--claude-config`, or
+   `CANARY_CLAUDE_CONFIG_DIR`). Explicit Keychain mode uses a separate native profile
+   described below. Without a file login the Claude row fails and the Codex part
+   still runs (`--no-claude` skips it).
+3. Start build N as a new Mac does: a first app start creates the state, build N's
+   recovery helper registers the jobs with the launchd stand-in, and the real
+   process supervisor and recovery job start in their sandboxes.
+4. On the cheapest model: an idle chat with one finished turn, a running turn with
+   a monitor that runs across the install and a message queued behind it, and a
+   running turn (Claude when the canary has its login) that gets a steer.
+5. Install build N+1 the way a paired-server install does: a staged copy and
+   `pending-update.json` in the clone state, the real installer of build N with
+   the clone's application folder and no window, and the recovery job started
+   again from the swapped app.
+6. Check that every provider handle kept its PID and generation, the monitor turn
+   and the idle chat continue, the steer and the queued message are delivered
+   exactly once, `/api/models` answers for every account, and no log line says
+   "did not start" or "could not be verified". With a Claude login, its rate-limit
+   windows show a subscription (five hours and a week).
+7. Always: report the hosts that the providers asked the proxy for, the tokens per
+   chat with their price at API rates, and that the live recovery configuration,
+   plists and app did not change; stop the clone jobs and its server, and delete
+   the run folder by its marker (`--keep` keeps it).
+
+Isolation: every clone process runs in a sandbox that writes only below the run
+folder, the canary Claude profile, and the user temporary folder. By default, it cannot reach the Keychain, the live state
+sockets, `/Applications` or the live app, and reaches the network only through
+the canary's proxy. The proxy refuses `auth.openai.com`, so the clone never
+refreshes, and never rotates, a live Codex login: when the live access token has
+expired, the turns fail. The installer never touches `/Applications` or the live
+window, which has the same bundle id.
+
+### Native Claude login for the upgrade canary
+
+Current native Claude releases can refuse a file login when the sandbox denies Keychain access.
+Do not change the Keychain settings or copy a live login to correct this refusal.
+The canary supports two explicit sources:
+
+- File mode: an existing private `.credentials.json` in `~/.config/codex-studio/canary-claude`, or a directory below it.
+  This mode still denies Keychain access.
+- Keychain mode: a fresh native profile from the existing Studio Add Claude dialog.
+  The canary requires a reservation from before that profile exists.
+  Use `--claude-keychain` with `--claude-reservation`, or set both environment variables in the example below.
+  `CANARY_CLAUDE_KEYCHAIN=0`, or an unset variable, keeps Keychain access disabled.
+  Profile existence never enables this mode.
+
+Keychain mode requires user approval. It permits the supervisor, provider processes, and recovery server to contact Keychain services.
+The installer still cannot contact these services. Other canary file and network restrictions remain unchanged.
+This permission does not restrict Keychain access to one service label.
+The native CLI selects its separate service from the exact private profile path.
+Do not treat this mode as Keychain isolation from a provider process.
+
+Create the reservation before you start Add Claude:
+
+```sh
+node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --reserve \
+  --record "$HOME/.config/codex-studio/canary-claude-keychain/studio-add.json"
+```
+
+1. Open Studio Settings, Accounts, Add account.
+2. Select Claude.
+3. Enter a separate test name, such as `Upgrade canary`.
+4. Complete the existing sign-in flow with the intended subscription.
+5. Wait for `Signed in as` and a ready Add receipt.
+6. Record the Add receipt's `requestId` as `LOGIN_UUID`.
+7. Delete only this fresh profile from the Studio account list.
+
+Studio stores the Add receipt in `<live-state>/claude-logins/<LOGIN_UUID>.json`.
+The account-list deletion preserves native credentials and history.
+It excludes this profile from new chats and the account auth watcher.
+Studio can start an SDK process for account metadata before any chat exists.
+A closed metadata handle does not prove model input.
+Admission still refuses every chat, execution, usage, or transfer footprint and every active matching handle.
+
+Bind the exact fresh profile after its metadata process exits:
+
+```sh
+node workspaces/tooling/apps/upgrade-canary/claude-login.mjs --bind \
+  --login-id LOGIN_UUID \
+  --record "$HOME/.config/codex-studio/canary-claude-keychain/studio-add.json"
+```
+
+If Studio uses another state directory, pass its exact path with `--live-state` to both commands.
+The helper reads only application metadata.
+It does not start authentication, read credentials, copy a profile, or change Keychain settings.
+A repeated reservation keeps its original baseline.
+An incomplete baseline or changed identity refuses admission.
+The helper checks indexed metadata and bounded new rows, not historical transcript bodies.
+
+Run the upgrade check with the explicit mode:
+
+```sh
+CANARY_CLAUDE_KEYCHAIN=1 \
+CANARY_CLAUDE_RESERVATION="$HOME/.config/codex-studio/canary-claude-keychain/studio-add.json" \
+  just upgrade-canary --to /absolute/path/to/Build.app
+```
+
+Use both environment variables for `just deliver-server` when it runs the upgrade canary.
+The helper, registry, and provider environment use the same exact path for `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR`.
+Do not copy, rename, or alias the profile. Native Keychain service identity depends on this path text.
+The reservation binds the state directory, Add receipt, profile, account, and native executable.
+The canary checks this evidence again before it starts.
+Only this exact profile can receive writes inside the live state directory.
+Existing profiles, symbolic links, another owner, or nonprivate profile directories refuse admission.
+File-mode `--claude-config` paths must stay inside the separate file-mode namespace.
+The runtime still requires native account email and subscription proof before it submits model input.
 
 ## Add or move a test
 

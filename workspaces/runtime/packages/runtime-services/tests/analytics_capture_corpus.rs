@@ -213,13 +213,14 @@ fn a_command_item_from_an_earlier_turn_still_captures_later_events() {
         json!({"itemId":"exec-1","delta":"line one\n"}),
         21.0,
     );
-    let raw: String = db
+    let raw = db
         .query_row(
             "SELECT record FROM analytics_items WHERE id LIKE '%:exec-1'",
             [],
-            |row| row.get(0),
+            |row| row.get::<_, studio_runtime_store::stored_text::StoredText>(0),
         )
-        .expect("item row");
+        .expect("item row")
+        .into_string();
     let item: Value = serde_json::from_str(&raw).expect("item record");
     assert_eq!(item["turnId"], "turn-a", "the item keeps its starting turn");
     assert_eq!(item["stream"]["deltas"], 1, "the later delta is counted");

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useMemo, useRef, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import { ApiError, errorText, type PostBody } from "../api";
@@ -202,7 +203,7 @@ export default function CombinedServerSidebar({
         const key = `studio-sidebar-rename:${reference.id}`;
         type Request = { body: PostBody<"/api/rename">; acknowledged: boolean };
         const request = backend.saved<Request | null>(key, null) || {
-          body: { id, name, request_id: crypto.randomUUID() },
+          body: { id, name, request_id: randomUUID() },
           acknowledged: false,
         };
         try {

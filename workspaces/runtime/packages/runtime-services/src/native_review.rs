@@ -205,6 +205,25 @@ pub trait ReviewCreator {
     fn child(&self, tx: &Transaction<'_>, actor: &Value, spec: &Value) -> Result<Value>;
     fn receipt(&self, tx: &Transaction<'_>, key: &str, response: &Value) -> Result<()>;
 }
+
+/// The store owns the provider progress fields. They cannot change review
+/// authority; every other field remains frozen through preparation.
+fn creation_inputs_match(expected: &Value, current: &Value) -> bool {
+    use studio_runtime_store::agent_volatile::is_volatile_field;
+
+    let (Some(expected), Some(current)) = (expected.as_object(), current.as_object()) else {
+        return false;
+    };
+    expected
+        .iter()
+        .filter(|(key, _)| !is_volatile_field(key))
+        .all(|(key, value)| current.get(key) == Some(value))
+        && current
+            .keys()
+            .filter(|key| !is_volatile_field(key))
+            .all(|key| expected.contains_key(key))
+}
+
 pub fn reserve(
     tx: &Transaction<'_>,
     plan: &ReviewPlan,
@@ -223,14 +242,14 @@ pub fn reserve(
     if crate::event_write::truthy(actor.get("daybreakEnabled")) {
         return Err(NativeError::Invalid("review.actor"));
     }
-    if actor != plan.actor {
+    if !creation_inputs_match(&plan.actor, &actor) {
         return Err(NativeError::Changed);
     }
     let root_id = actor["rootId"]
         .as_str()
         .ok_or(NativeError::Invalid("review.rootId"))?;
     let root = ContextRepairRepository::agent(tx, root_id)?.ok_or(NativeError::Changed)?;
-    if root != plan.root {
+    if !creation_inputs_match(&plan.root, &root) {
         return Err(NativeError::Changed);
     }
     crate::event_write::assert_delegation(&checked_agent(&root)?)

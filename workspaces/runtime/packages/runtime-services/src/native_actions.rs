@@ -621,9 +621,15 @@ pub async fn execute_provider_prepared(
     )
     .to_string();
     for retry in 0..=MAX_NOT_SENT_RETRIES {
-        let scope = port
-            .current_scope(&account)
-            .ok_or(NativeError::Unavailable("provider-session/native-request"))?;
+        let scope = match port.current_scope(&account) {
+            Some(scope) => scope,
+            // The account worker exits after its idle deadline. Start it again, as the
+            // other account-scoped routes do, instead of refusing the action.
+            None => port
+                .ensure_session(&account)
+                .await
+                .map_err(|_| NativeError::Unavailable("provider-session/native-request"))?,
+        };
         if scope.account != account {
             return Err(NativeError::Changed);
         }

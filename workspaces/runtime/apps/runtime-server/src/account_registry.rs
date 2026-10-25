@@ -638,11 +638,12 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             {
                 return Ok(not_sent(NotSentReason::ExpectedScopeMismatch));
             }
-            let allowed_params = request.params.as_object().is_some_and(|params| {
-                params.len() == 1
-                    && params.get("threadId").and_then(serde_json::Value::as_str)
-                        == Some(request.thread_id.as_str())
-            });
+            let allowed_params =
+                studio_runtime_services::account_transfer::valid_source_preflight_params(
+                    request.method.as_str(),
+                    &request.thread_id,
+                    &request.params,
+                );
             if !allowed_params
                 || !matches!(
                     request.method.as_str(),
@@ -778,6 +779,28 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                     studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Provider session scope changed")
                 }
                 _ => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Connection recovery could not be started"),
+            })
+        })
+    }
+
+    fn recover_managed_agent(
+        &self,
+        account: String,
+        request: studio_runtime_services::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> studio_runtime_services::account_session_runtime::RecoveryFuture {
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&account).cloned());
+        Box::pin(async move {
+            let Some(session) = session.filter(|session| session.is_live()) else {
+                return Err(
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Unknown,
+                );
+            };
+            session.recover_managed_agent(request).await.map_err(|_| {
+                studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
             })
         })
     }
@@ -1010,6 +1033,7 @@ impl AccountRegistry {
         }));
         self.worker_retry_at.remove(account);
         self.worker_retry_delay.remove(account);
+        session_started(Arc::clone(&self.store), account.to_owned()).await;
         Ok(())
     }
 
@@ -1049,7 +1073,21 @@ impl AccountRegistry {
         pending_agents: Vec<(String, i64, Option<String>)>,
         shutdown: Option<&Shutdown>,
     ) -> Result<AccountPageDispatch, WorkerError> {
-        if !allow_dormant_reconcile(&mut self.idle_dormant, account, !pending_agents.is_empty()) {
+        let callback_demand = if pending_agents.is_empty() && self.idle_dormant.contains(account) {
+            let account = account.to_owned();
+            self.store
+                .read_async("runtime-server/account_registry", move |db| {
+                    studio_runtime_services::account_worker::has_callback_reply_demand(db, &account)
+                })
+                .await?
+        } else {
+            false
+        };
+        if !allow_dormant_reconcile(
+            &mut self.idle_dormant,
+            account,
+            !pending_agents.is_empty() || callback_demand,
+        ) {
             self.after_agent.remove(account);
             return Ok(AccountPageDispatch::Exhausted);
         }
@@ -1084,6 +1122,12 @@ impl AccountRegistry {
             studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
         }
         if let Err(error) = self.start(account).await {
+            session_start_failed(
+                Arc::clone(&self.store),
+                account.to_owned(),
+                error.to_string(),
+            )
+            .await;
             // A launch that only a sign-in can fix holds these starts with
             // their reason and action, instead of a silent provider wait.
             if let Some(reason) =
@@ -1261,13 +1305,21 @@ impl AccountRegistry {
                 "runtime-server/account_registry",
                 move |db| -> Result<AccountTargetPage, WorkerError> {
                     let accounts = changed_accounts(db, &changes)?;
-                    SchedulerRepository::account_wake_for_accounts(
+                    let mut targets = SchedulerRepository::account_wake_for_accounts(
                         db,
                         accounts.iter().map(String::as_str),
                         WAKE_PAGE,
                         event_time(),
                     )
-                    .map_err(Into::into)
+                    .map_err(WorkerError::from)?;
+                    for account in accounts {
+                        if studio_runtime_services::account_worker::has_callback_reply_demand(
+                            db, &account,
+                        )? {
+                            targets.entry(account).or_default();
+                        }
+                    }
+                    Ok(targets)
                 },
             )
             .await?;
@@ -1471,6 +1523,12 @@ impl AccountRegistry {
                         studio_runtime_services::diagnostics::log_stderr(format_args!(
                             "account worker ended: {error}"
                         ));
+                        session_start_failed(
+                            Arc::clone(&self.store),
+                            account.clone(),
+                            format!("the account worker ended: {error}"),
+                        )
+                        .await;
                     }
                     if planned_idle_exit && clean_exit {
                         self.idle_dormant.insert(account.clone());
@@ -1534,7 +1592,13 @@ impl AccountRegistry {
                                     studio_runtime_services::diagnostics::log_stderr(format_args!(
                                         "account session for {} did not start: {error}",
                                         request.account
-                                    ))
+                                    ));
+                                    session_start_failed(
+                                        Arc::clone(&self.store),
+                                        request.account.clone(),
+                                        error.to_string(),
+                                    )
+                                    .await;
                                 }
                                 Ok(_) => {
                                     studio_runtime_services::diagnostics::log_stderr(format_args!(
@@ -1854,7 +1918,7 @@ pub fn target_page(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page(
+    let targets = SchedulerRepository::account_wake_page(
         db,
         after_account,
         after_agent,
@@ -1862,7 +1926,26 @@ pub fn target_page(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
+}
+
+fn with_callback_reply_targets(
+    db: &rusqlite::Connection,
+    mut targets: AccountTargetPage,
+    after_account: &str,
+) -> Result<AccountTargetPage, WorkerError> {
+    for account in studio_runtime_services::account_worker::callback_reply_accounts(
+        db,
+        after_account,
+        MAX_ACCOUNTS,
+    )? {
+        targets.entry(account).or_default();
+    }
+    while targets.len() > MAX_ACCOUNTS {
+        targets.pop_last();
+    }
+    Ok(targets)
 }
 
 fn target_page_after(
@@ -1870,7 +1953,7 @@ fn target_page_after(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page_after(
+    let targets = SchedulerRepository::account_wake_page_after(
         db,
         after_account,
         after_agent,
@@ -1878,7 +1961,8 @@ fn target_page_after(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
 }
 
 struct RuntimeRadioIngress;
@@ -2518,5 +2602,37 @@ mod tests {
         assert!(receipt.ticket.is_none());
         assert!(receipt.result.is_none());
         assert!(!changes.has_changed().expect("change watcher remains open"));
+    }
+}
+
+/// Keep the reason the session of `account` did not start, for the liveness
+/// row of the chats that wait for it.
+async fn session_start_failed(store: Arc<RuntimeStore>, account: String, reason: String) {
+    let now = studio_runtime_services::event_write::unix_time().unwrap_or_default();
+    if let Err(error) = store
+        .transaction(move |tx| {
+            studio_runtime_services::liveness::record_session_start_failure(
+                tx, &account, &reason, now,
+            )
+        })
+        .await
+    {
+        studio_runtime_services::diagnostics::log_stderr(format_args!(
+            "account session start error was not recorded: {error}"
+        ));
+    }
+}
+
+/// Forget the start error of `account` once its session runs.
+async fn session_started(store: Arc<RuntimeStore>, account: String) {
+    if let Err(error) = store
+        .transaction(move |tx| {
+            studio_runtime_services::liveness::clear_session_start_failure(tx, &account)
+        })
+        .await
+    {
+        studio_runtime_services::diagnostics::log_stderr(format_args!(
+            "account session start error was not cleared: {error}"
+        ));
     }
 }

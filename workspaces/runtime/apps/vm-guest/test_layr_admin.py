@@ -54,6 +54,23 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"]["code"], "outcome_unknown")
         self.broker.dispatch.assert_not_awaited()
 
+    async def test_an_interrupted_mac_sync_apply_runs_again_after_a_broker_restart(self):
+        # The broker saves its receipt after the operation. A broker stop during a Mac sync
+        # round left the row without a result, and every repeat answered outcome_unknown
+        # (igor-mbp, 2026-10-13). sync.mac.apply starts again from main and keeps its own
+        # receipt, so a repeat runs it again; other methods stay unknown.
+        from common import digest, receipt
+        params = {"projectId": "one", "operationId": "mac-1", "since": [], "entries": []}
+        receipt(self.broker.db, "mac-1", digest("sync.mac.apply", params))
+        self.broker.close()
+        self.broker = Broker(self.root / "state", self.root / "store", modules=())
+        self.broker.dispatch = AsyncMock(return_value={"mainStateId": "abcdef0"})
+        request = {"id": "mac-1", "method": "sync.mac.apply", "params": params}
+        first = await self.broker.request(request, None)
+        self.assertEqual(first["result"], {"mainStateId": "abcdef0"})
+        self.assertEqual(await self.broker.request(request, None), first)
+        self.broker.dispatch.assert_awaited_once()
+
     async def test_concurrent_same_identity_joins_one_operation(self):
         applied = []
         gate = asyncio.Event()

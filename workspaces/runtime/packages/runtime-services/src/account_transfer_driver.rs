@@ -709,6 +709,531 @@ pub(crate) struct ProviderReadIntent<'a> {
     pub params: Value,
 }
 
+#[cfg(test)]
+mod background_read_compat_tests {
+    use super::*;
+    use studio_runtime_store::{AgentRecord, EventWriteRepository};
+
+    const TRANSFER: &str = "88aa8d8c-3300-4da8-9c97-efc12a81bbd1";
+    const READ: &str = "transfer:88aa8d8c-3300-4da8-9c97-efc12a81bbd1:member:background-before";
+    fn scope() -> Value {
+        json!({"account":"source","connection":"source-connection","generation":7})
+    }
+
+    async fn fixture(evidence: Option<&'static str>) -> (tempfile::TempDir, RuntimeStore, Value) {
+        fixture_read(
+            evidence,
+            READ,
+            "thread/backgroundTerminals/list",
+            json!({"threadId":"source-thread"}),
+        )
+        .await
+    }
+
+    async fn fixture_read(
+        evidence: Option<&'static str>,
+        read: &'static str,
+        method: &'static str,
+        params: Value,
+    ) -> (tempfile::TempDir, RuntimeStore, Value) {
+        let root = tempfile::tempdir().expect("background read state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let legacy = json!({"operation":read,"account":"source","scope":scope(),
+            "method":method,"params":params});
+        let old = legacy.clone();
+        store.transaction(move |tx| {
+            let agent = AgentRecord::from_value(json!({"id":"member","rootId":"member","epoch":3,
+                "status":"completed","isLead":true,"autoWake":false,"accountKey":"target",
+                "threadId":"source-thread","accountTransferId":TRANSFER}))?;
+            AgentRepository::put(tx, &agent)?;
+            let mut operation = json!({"id":TRANSFER,"leadId":"member","targetAccountKey":"target",
+                "status":"pending","scope":"team","created":1.0,"members":{"member":{
+                    "phase":"reading","sourceAccountKey":"source","sourceThreadId":"source-thread",
+                    "providerReadIntents":{(read):old}}},"requests":{}});
+            if evidence == Some("transfer-unknown") {
+                operation["members"]["member"]["providerReadReceipts"][read] = json!({"certainty":"unknown"});
+            }
+            Repository::put(tx, TRANSFER, &operation.to_string())?;
+            if let Some(phase) = evidence.filter(|phase| *phase != "transfer-unknown") {
+                let key = format!("account-worker:retained:source:{}:{phase}", studio_runtime_store::sha256_hex(read.as_bytes()));
+                EventWriteRepository::replace_receipt(tx, &key, "account-worker", "{\"result\":\"Unknown\"}")?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("legacy read intent");
+        (root, store, legacy)
+    }
+
+    const TURN_READ: &str = "account-transfer:88aa8d8c-3300-4da8-9c97-efc12a81bbd1:member:turns:1";
+
+    fn turn_params() -> Value {
+        json!({"threadId":"source-thread","limit":20,"sortDirection":"desc","itemsView":"full","cursor":"20"})
+    }
+
+    async fn correct_turn_page(
+        store: &RuntimeStore,
+        current_scope: Value,
+        params: Value,
+        operation: &str,
+    ) -> Result<Option<Value>, TransferError> {
+        provider_read_intent(
+            store,
+            ProviderReadIntent {
+                transfer: TRANSFER,
+                agent: "member",
+                operation,
+                account: "source",
+                scope: current_scope,
+                method: "thread/turns/list",
+                params,
+            },
+            2.0,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn legacy_paginated_turn_read_rebinds_only_its_scope_without_transport_evidence() {
+        let (_root, store, legacy) =
+            fixture_read(None, TURN_READ, "thread/turns/list", turn_params()).await;
+        let before_agent = store
+            .read_async("agent before correction", |tx| {
+                AgentRepository::get(tx, &studio_runtime_store::AgentId::from("member"))
+            })
+            .await
+            .expect("agent");
+        for (connection, generation) in
+            [("new-source-connection", 8), ("next-source-connection", 9)]
+        {
+            let current =
+                json!({"account":"source","connection":connection,"generation":generation});
+            assert!(
+                correct_turn_page(&store, current.clone(), turn_params(), TURN_READ)
+                    .await
+                    .expect("rebind the known rejected page")
+                    .is_none()
+            );
+            let operation = store
+                .read_async("corrected turns page", |tx| {
+                    load(tx, TRANSFER).map(|s| s.operation().clone())
+                })
+                .await
+                .expect("operation");
+            let mut expected = legacy.clone();
+            expected["scope"] = current;
+            assert_eq!(
+                operation["members"]["member"]["providerReadIntents"][TURN_READ],
+                expected
+            );
+            assert_eq!(
+                operation["members"]["member"]["providerReadIntentCorrections"][TURN_READ],
+                legacy
+            );
+            assert!(operation["members"]["member"]["providerReadReceipts"][TURN_READ].is_null());
+        }
+        let after_agent = store
+            .read_async("agent after correction", |tx| {
+                AgentRepository::get(tx, &studio_runtime_store::AgentId::from("member"))
+            })
+            .await
+            .expect("agent")
+            .expect("member exists");
+        let mut actual_agent = after_agent.value();
+        let summary = actual_agent
+            .as_object_mut()
+            .expect("agent object")
+            .remove("accountTransfer")
+            .expect("the existing writer projects a transfer summary");
+        assert_eq!(summary["id"], TRANSFER);
+        assert_eq!(summary["targetAccountKey"], "target");
+        assert_eq!(summary["status"], "pending");
+        assert_eq!(summary["updated"], 2.0);
+        assert_eq!(
+            actual_agent,
+            before_agent.expect("member exists").value(),
+            "only the current transfer summary may change; input, thread and actor identity stay unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_paginated_turn_read_preserves_every_transport_or_transfer_receipt() {
+        for evidence in ["submitted", "written", "result", "transfer-unknown"] {
+            let (_root, store, legacy) = fixture_read(
+                Some(evidence),
+                TURN_READ,
+                "thread/turns/list",
+                turn_params(),
+            )
+            .await;
+            let current =
+                json!({"account":"source","connection":"new-source-connection","generation":8});
+            assert!(
+                correct_turn_page(&store, current, turn_params(), TURN_READ)
+                    .await
+                    .is_err(),
+                "{evidence}"
+            );
+            let operation = store
+                .read_async("held turns page", |tx| {
+                    load(tx, TRANSFER).map(|s| s.operation().clone())
+                })
+                .await
+                .expect("operation");
+            assert_eq!(
+                operation["members"]["member"]["providerReadIntents"][TURN_READ],
+                legacy
+            );
+            assert!(operation["members"]["member"]["providerReadIntentCorrections"].is_null());
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_paginated_turn_read_replays_its_written_reply_without_rebinding() {
+        let (_root, store, _) =
+            fixture_read(None, TURN_READ, "thread/turns/list", turn_params()).await;
+        let current =
+            json!({"account":"source","connection":"new-source-connection","generation":8});
+        correct_turn_page(&store, current.clone(), turn_params(), TURN_READ)
+            .await
+            .expect("correct unsubmitted page");
+        let receipt = json!({"operation":TURN_READ,"scope":current,"certainty":"written",
+            "ticket":{"generation":8,"id":"native-page-request","method":"thread/turns/list"}});
+        let result = json!({"kind":"reply","value":{"data":[],"nextCursor":null}});
+        provider_read_receipt(
+            &store,
+            ProviderReadReceipt {
+                transfer: TRANSFER,
+                agent: "member",
+                operation: TURN_READ,
+                receipt: receipt.clone(),
+                result: Some(result.clone()),
+                certainty: crate::account_session_runtime::RequestCertainty::Written,
+            },
+            3.0,
+        )
+        .await
+        .expect("record exact page reply");
+        let before = store
+            .read_async("before written page replay", |tx| {
+                load(tx, TRANSFER).map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        let next_scope =
+            json!({"account":"source","connection":"next-source-connection","generation":9});
+        let replay = correct_turn_page(&store, next_scope, turn_params(), TURN_READ)
+            .await
+            .expect("replay exact Written page");
+        assert_eq!(
+            replay,
+            Some(json!({"receipt":receipt,"result":result,"certainty":"written"})),
+            "Some receipt prohibits a second native request"
+        );
+        let after = store
+            .read_async("after written page replay", |tx| {
+                load(tx, TRANSFER).map(|s| s.operation().clone())
+            })
+            .await
+            .expect("operation");
+        assert_eq!(
+            after, before,
+            "Written reply keeps its original source scope and ticket"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_paginated_turn_read_refuses_changed_fingerprints_and_invalid_scopes() {
+        for change in [
+            "cursor",
+            "thread",
+            "limit",
+            "itemsView",
+            "sortDirection",
+            "extra",
+            "no-cursor",
+            "account",
+            "connection",
+            "generation",
+            "old-scope",
+            "method",
+            "operation",
+        ] {
+            let (_root, store, _) =
+                fixture_read(None, TURN_READ, "thread/turns/list", turn_params()).await;
+            let mut params = turn_params();
+            let mut current =
+                json!({"account":"source","connection":"new-source-connection","generation":8});
+            match change {
+                "cursor" => params["cursor"] = json!("40"),
+                "thread" => params["threadId"] = json!("another-thread"),
+                "limit" => params["limit"] = json!(21),
+                "itemsView" => params["itemsView"] = json!("notLoaded"),
+                "sortDirection" => params["sortDirection"] = json!("asc"),
+                "extra" => params["extra"] = json!(true),
+                "no-cursor" => {
+                    params.as_object_mut().expect("params").remove("cursor");
+                }
+                "account" => current["account"] = json!("another-account"),
+                "connection" => current["connection"] = json!(""),
+                "generation" => current["generation"] = json!(0),
+                _ => {
+                    store
+                        .transaction(move |tx| {
+                            let mut op: Value = serde_json::from_str(
+                                &Repository::get(tx, TRANSFER)?.expect("transfer"),
+                            )?;
+                            let saved =
+                                &mut op["members"]["member"]["providerReadIntents"][TURN_READ];
+                            match change {
+                                "old-scope" => saved["scope"]["account"] = json!("another-account"),
+                                "method" => saved["method"] = json!("thread/unsubscribe"),
+                                _ => saved["operation"] = json!("another-operation"),
+                            }
+                            Repository::put(tx, TRANSFER, &op.to_string())
+                        })
+                        .await
+                        .expect("changed legacy fingerprint");
+                }
+            }
+            let before = store
+                .read_async("before page refusal", |tx| {
+                    load(tx, TRANSFER).map(|s| s.operation().clone())
+                })
+                .await
+                .expect("operation");
+            assert!(
+                correct_turn_page(&store, current, params, TURN_READ)
+                    .await
+                    .is_err(),
+                "{change}"
+            );
+            let after = store
+                .read_async("after page refusal", |tx| {
+                    load(tx, TRANSFER).map(|s| s.operation().clone())
+                })
+                .await
+                .expect("operation");
+            assert_eq!(after, before, "{change}");
+        }
+    }
+
+    async fn corrected(
+        store: &RuntimeStore,
+        expected_scope: Value,
+    ) -> Result<Option<Value>, TransferError> {
+        provider_read_intent(
+            store,
+            ProviderReadIntent {
+                transfer: TRANSFER,
+                agent: "member",
+                operation: READ,
+                account: "source",
+                scope: expected_scope,
+                method: "thread/backgroundTerminals/list",
+                params: json!({"threadId":"source-thread","limit":100}),
+            },
+            2.0,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn legacy_background_read_without_transport_evidence_keeps_its_logical_identity() {
+        let (_root, store, legacy) = fixture(None).await;
+        assert!(
+            corrected(&store, scope())
+                .await
+                .expect("correct the proven unsubmitted read")
+                .is_none()
+        );
+        let operation = store
+            .read_async("corrected read", |tx| {
+                load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
+            })
+            .await
+            .expect("operation");
+        assert_eq!(
+            operation["members"]["member"]["providerReadIntents"][READ]["operation"],
+            READ
+        );
+        assert_eq!(
+            operation["members"]["member"]["providerReadIntents"][READ]["params"],
+            json!({"threadId":"source-thread","limit":100})
+        );
+        assert_eq!(
+            operation["members"]["member"]["providerReadIntentCorrections"][READ],
+            legacy
+        );
+        assert!(
+            corrected(&store, scope())
+                .await
+                .expect("resume before a native submission")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_background_read_reconnects_only_before_any_native_submission() {
+        let (_root, store, legacy) = fixture(None).await;
+        for (connection, generation) in
+            [("new-source-connection", 8), ("next-source-connection", 9)]
+        {
+            let current =
+                json!({"account":"source","connection":connection,"generation":generation});
+            assert!(
+                corrected(&store, current.clone())
+                    .await
+                    .expect("correct the unsubmitted legacy read for the current source session")
+                    .is_none()
+            );
+            let operation = store
+                .read_async("reconnected read", |tx| {
+                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
+                })
+                .await
+                .expect("operation");
+            let saved = &operation["members"]["member"]["providerReadIntents"][READ];
+            assert_eq!(saved["operation"], READ);
+            assert_eq!(saved["scope"], current);
+            assert_eq!(
+                operation["members"]["member"]["providerReadIntentCorrections"][READ],
+                legacy
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_background_read_never_discards_transport_evidence() {
+        for evidence in [
+            Some("submitted"),
+            Some("written"),
+            Some("result"),
+            Some("transfer-unknown"),
+        ] {
+            let (_root, store, legacy) = fixture(evidence).await;
+            let expected_scope =
+                json!({"account":"source","connection":"new-connection","generation":8});
+            assert!(
+                corrected(&store, expected_scope).await.is_err(),
+                "{evidence:?}"
+            );
+            let operation = store
+                .read_async("unchanged read", |tx| {
+                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
+                })
+                .await
+                .expect("operation");
+            assert_eq!(
+                operation["members"]["member"]["providerReadIntents"][READ],
+                legacy
+            );
+            assert!(operation["members"]["member"]["providerReadIntentCorrections"].is_null());
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_background_read_refuses_invalid_source_scope_and_changed_thread() {
+        for change in [
+            "account",
+            "empty-connection",
+            "zero-generation",
+            "negative-generation",
+            "extra-scope",
+            "old-account",
+            "old-generation",
+            "thread",
+        ] {
+            let (_root, store, _) = fixture(None).await;
+            let mut current =
+                json!({"account":"source","connection":"new-connection","generation":8});
+            match change {
+                "account" => current["account"] = json!("another-account"),
+                "empty-connection" => current["connection"] = json!(""),
+                "zero-generation" => current["generation"] = json!(0),
+                "negative-generation" => current["generation"] = json!(-1),
+                "extra-scope" => current["extra"] = json!(true),
+                _ => {
+                    store
+                        .transaction(move |tx| {
+                            let mut operation: Value = serde_json::from_str(
+                                &Repository::get(tx, TRANSFER)?.expect("transfer"),
+                            )?;
+                            let saved =
+                                &mut operation["members"]["member"]["providerReadIntents"][READ];
+                            match change {
+                                "old-account" => {
+                                    saved["scope"]["account"] = json!("another-account")
+                                }
+                                "old-generation" => saved["scope"]["generation"] = json!(0),
+                                _ => saved["params"]["threadId"] = json!("another-thread"),
+                            }
+                            Repository::put(tx, TRANSFER, &operation.to_string())
+                        })
+                        .await
+                        .expect("invalid legacy identity");
+                }
+            }
+            let before = store
+                .read_async("before refusal", |tx| {
+                    load(tx, TRANSFER).map(|s| s.operation().clone())
+                })
+                .await
+                .expect("operation");
+            assert!(corrected(&store, current).await.is_err(), "{change}");
+            let after = store
+                .read_async("after refusal", |tx| {
+                    load(tx, TRANSFER).map(|s| s.operation().clone())
+                })
+                .await
+                .expect("operation");
+            assert_eq!(after, before, "{change}");
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_background_correction_refuses_other_unknown_fingerprints() {
+        for changed in ["canonical-unknown", "mutation", "extra-field"] {
+            let (_root, store, _) = fixture(None).await;
+            store
+                .transaction(move |tx| {
+                    let mut operation = load(tx, TRANSFER)
+                        .map_err(|error| {
+                            studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+                        })?
+                        .operation()
+                        .clone();
+                    let saved = &mut operation["members"]["member"]["providerReadIntents"][READ];
+                    match changed {
+                        "canonical-unknown" => saved["params"]["limit"] = json!(100),
+                        "mutation" => saved["method"] = json!("thread/unsubscribe"),
+                        _ => saved["params"]["extra"] = json!(true),
+                    }
+                    Repository::put(tx, TRANSFER, &operation.to_string())
+                })
+                .await
+                .expect("another saved fingerprint");
+            let before = store
+                .read_async("prior fingerprint", |tx| {
+                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
+                })
+                .await
+                .expect("operation");
+            let error = corrected(&store, scope())
+                .await
+                .expect_err("unknown or changed identity must stay held");
+            if changed == "canonical-unknown" {
+                assert!(error.to_string().contains("outcome is unknown"));
+            }
+            let after = store
+                .read_async("held fingerprint", |tx| {
+                    load(tx, TRANSFER).map(|snapshot| snapshot.operation().clone())
+                })
+                .await
+                .expect("operation");
+            assert_eq!(after, before, "{changed}");
+        }
+    }
+}
+
 pub(crate) async fn provider_read_intent(
     store: &RuntimeStore,
     intent: ProviderReadIntent<'_>,
@@ -722,6 +1247,29 @@ pub(crate) async fn provider_read_intent(
     store
         .transaction_with_error(move |tx| {
             let snapshot = load(tx, &transfer)?;
+            let next = json!({"operation":operation,"account":account,"scope":intent.scope,
+                "method":method,"params":intent.params});
+            if let Some(reply) = snapshot.written_read_replay(&agent, &next)? {
+                return Ok(Some(reply));
+            }
+            if let Some(correction) =
+                snapshot.correct_unsubmitted_legacy_read(&agent, &operation, &next)?
+            {
+                let evidence = crate::account_worker::retained::has_transport_evidence(
+                    tx, &account, &operation,
+                )
+                .map_err(|error| match error {
+                    crate::account_worker::WorkerError::Store(error) => TransferError::Store(error),
+                    _ => TransferError::Refused("Cannot verify the legacy read transport evidence"),
+                })?;
+                if evidence {
+                    return Err(TransferError::Refused(
+                        "The legacy provider read has transport evidence; its intent is unchanged",
+                    ));
+                }
+                persist(tx, correction, now)?;
+                return Ok(None);
+            }
             let prior = snapshot.operation()["members"][agent.as_str()]["providerReadReceipts"]
                 [operation.as_str()]
             .as_object()
@@ -856,7 +1404,7 @@ pub async fn adopt_receipt(
 }
 
 fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), TransferError> {
-    for table in ["runtime_tasks", "runtime_monitors", "runtime_requests"] {
+    for table in ["runtime_tasks", "runtime_requests"] {
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown'))"
         );
@@ -866,6 +1414,26 @@ fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), Trans
         if busy {
             return Err(TransferError::Refused(
                 "Waiting for background work or a tool response",
+            ));
+        }
+    }
+    let mut monitors=tx.prepare_cached("SELECT id FROM runtime_monitors WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown')").map_err(studio_runtime_store::StoreError::from)?;
+    let monitors = monitors
+        .query_map([agent], |row| row.get::<_, String>(0))
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    for id in monitors {
+        if !crate::account_worker::retained::monitor_survives_account_transfer(tx, &id, agent)
+            .map_err(|error| match error {
+                crate::account_worker::WorkerError::Store(error) => TransferError::Store(error),
+                _ => {
+                    TransferError::Refused("Source monitor process ownership could not be verified")
+                }
+            })?
+        {
+            return Err(TransferError::Refused(
+                "Waiting for verified source monitor ownership. The original process was not stopped.",
             ));
         }
     }
@@ -941,7 +1509,17 @@ pub async fn execute_member(
     let transaction_agent_id = agent_id.clone();
     let input = store
         .transaction_with_error(move |tx| {
-            check_durable_blockers(tx, &transaction_agent_id)?;
+            if let Err(error) = check_durable_blockers(tx, &transaction_agent_id) {
+                if let TransferError::Refused(reason) = &error {
+                    let snapshot = load(tx, &operation_id)?;
+                    persist(
+                        tx,
+                        snapshot.waiting_for_blocker(&transaction_agent_id, reason)?,
+                        now,
+                    )?;
+                }
+                return Ok(Err(error));
+            }
             let snapshot = load(tx, &operation_id)?;
             let decision = snapshot.begin_read(&transaction_agent_id)?;
             let input = TransferPreparation {
@@ -949,9 +1527,9 @@ pub async fn execute_member(
                 agent: snapshot.agent(&transaction_agent_id)?.clone(),
             };
             persist(tx, decision, now)?;
-            Ok::<_, TransferError>(input)
+            Ok::<_, TransferError>(Ok(input))
         })
-        .await?;
+        .await??;
     let prepared = executor.prepare(&input).await.and_then(|prepared| {
         if prepared.ticket.operation != operation || prepared.ticket.agent != agent {
             return Err(TransferError::Refused(
@@ -1041,6 +1619,95 @@ mod request_tests {
             Ok::<_, studio_runtime_store::StoreError>(())
         })).expect("test fixture operation succeeds");
         (root, store)
+    }
+
+    #[test]
+    fn a_running_retained_monitor_does_not_block_its_owners_account_transfer() {
+        let (root, store) = store_with_agents();
+        let cwd = root.path().to_owned();
+        run_async(store.transaction(move |tx| {
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+                [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
+            let key=format!("retained:source:{}",studio_runtime_store::sha256_hex(b"monitor:watch"));
+            let submitted=json!({"call":{"scope":{"account":"source","connection":"original","generation":4},"operation":"monitor:watch","actor":{"agent":"lead","epoch":1},"transfer":null,"deleted_actor_session":null,"method":"command/exec","params":{"processId":"watch","cwd":cwd,"command":["true"]}},
+                "request":{"id":key,"generation":4,"method":"command/exec","operation":key,"thread":null,"lightweight":true,"deadline":60000,"remoteId":null}});
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:submitted"),submitted.to_string()))?;
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'test',?2)",(format!("account-worker:{key}:written"),submitted["request"].to_string()))?;
+            Ok(())
+        })).expect("persist the original written command");
+        let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";
+        request(&store, transfer, "lead", "target", "team", "codex", 1.0)
+            .expect("request the account transfer");
+        run_async(begin_read(&store, transfer, "lead", 2.0))
+            .expect("the model account can move without restarting its original process");
+        let monitor = studio_runtime_store::MonitorsRepository::get(
+            &store.test_reader().expect("reader"),
+            "watch",
+        )
+        .expect("read monitor")
+        .expect("monitor remains");
+        assert_eq!(monitor.value()["status"], "running");
+        assert_eq!(monitor.value()["operation"]["accountKey"], "source");
+    }
+
+    #[test]
+    fn an_unproven_monitor_publishes_one_transfer_wait_without_repeated_writes() {
+        struct NoNative;
+        impl TransferTransport for NoNative {
+            fn send<'a>(
+                &'a self,
+                _: &'a Ticket,
+                _: &'a crate::account_session_runtime::ConnectionScope,
+                _: &'a str,
+                _: &'a Value,
+            ) -> TransferFuture<'a, TransferDispatch> {
+                Box::pin(async { panic!("an unproven monitor cannot dispatch a transfer") })
+            }
+        }
+        impl TransferExecutor for NoNative {
+            fn available(&self) -> Result<(), TransferError> {
+                Ok(())
+            }
+            fn prepare<'a>(
+                &'a self,
+                _: &'a TransferPreparation,
+            ) -> TransferFuture<'a, Result<PreparedTransfer, TransferError>> {
+                Box::pin(async { panic!("an unproven monitor cannot prepare a transfer") })
+            }
+        }
+        let (_root, store) = store_with_agents();
+        run_async(store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
+            Ok(())
+        })).expect("persist the unproven monitor");
+        let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";
+        request(&store, transfer, "lead", "target", "team", "codex", 1.0)
+            .expect("request the account transfer");
+        let first = run_async(execute_member(&store, &NoNative, transfer, "lead", 2.0))
+            .expect_err("unproven ownership blocks the transfer");
+        assert!(
+            first
+                .to_string()
+                .contains("verified source monitor ownership")
+        );
+        let before=run_async(store.transaction(|tx| {
+            let raw=Repository::get(tx,transfer)?.expect("transfer remains");
+            let operation:Value=serde_json::from_str(&raw)?;
+            assert!(operation["members"]["lead"]["waiting"].as_str().expect("visible wait reason").contains("verified source monitor ownership"));
+            assert_eq!(operation["members"]["lead"]["phase"],"lazy");
+            tx.execute_batch("CREATE TRIGGER no_repeated_transfer_write BEFORE UPDATE ON runtime_account_transfers BEGIN SELECT RAISE(ABORT,'repeated transfer write'); END; CREATE TRIGGER no_repeated_actor_write BEFORE UPDATE ON runtime_agents BEGIN SELECT RAISE(ABORT,'repeated actor write'); END;")?;
+            Ok(raw)
+        })).expect("save the wait and install no-write guards");
+        let second = run_async(execute_member(&store, &NoNative, transfer, "lead", 3.0))
+            .expect_err("the same blocker remains read-only");
+        assert_eq!(first.to_string(), second.to_string());
+        let after = Repository::get(&store.test_reader().expect("reader"), transfer)
+            .expect("read unchanged transfer")
+            .expect("transfer remains");
+        assert_eq!(
+            before, after,
+            "the same blocker changes no revision or timestamp"
+        );
     }
 
     #[test]

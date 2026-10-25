@@ -213,14 +213,7 @@ fn archive_exclusions(root: &Path, root_worktree: bool) -> std::io::Result<VmArc
     let root_modules = root.join(".git/modules");
     validate_vm_git_modules(&root_modules)?;
     let mut module_roots = vec![root_modules];
-    let configured_store = std::env::var_os("CODEX_WORKSPACE_STORE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_default()
-                .join(".local/state/codex-agents/workspaces")
-        });
+    let configured_store = crate::image_workspace::store_dir();
     if let Ok(relative) = configured_store.strip_prefix(root) {
         ignored.insert(relative.to_string_lossy().replace('\\', "/"));
     }

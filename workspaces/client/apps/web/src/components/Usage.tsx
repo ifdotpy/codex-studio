@@ -1,5 +1,5 @@
 import { useSubscription } from "../sync/subscriptions";
-import Disclosure from "./ui/Disclosure";
+import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../usage/accountUsage";
@@ -25,8 +25,7 @@ import { errorText, type GetResult } from "../api";
 import { useServerSessionCosts } from "../servers/ServerServicesContext";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { useLimitEligibility } from "../usage/useLimitEligibility";
-import ModelLimitEligibility from "./ModelLimitEligibility";
-import { modelEligibility, limitRecovery } from "../usage/limitRecovery";
+import { limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
 import { useServerSync } from "../servers/ServerServicesContext";
 export { limitRecovery } from "../usage/limitRecovery";
@@ -287,7 +286,7 @@ export default function Usage({
       if (typeof accountId !== "string")
         throw new Error("Refresh limits before using this reset credit.");
       const key = `${accountId}:${creditId}`;
-      const requestId = resetAttempts.current.get(key) || crypto.randomUUID();
+      const requestId = resetAttempts.current.get(key) || randomUUID();
       resetAttempts.current.set(key, requestId);
       const result = await post("/api/limits/reset", {
         credit_id: creditId,
@@ -471,7 +470,6 @@ export default function Usage({
     currentAccount?.accountId,
   );
   const modelLimits = useLimitEligibility(agent, currentLimits);
-  const eligibility = modelEligibility(agent, modelLimits);
   const selectedLimits =
     selectedAccountKey === fallbackKey ? modelLimits : limits;
   const recovered = useRecoveredLimit(accountAgent, selectedLimits, now);
@@ -937,17 +935,6 @@ export default function Usage({
                             activeAccount.reload(true) ?? refreshLimits()
                           }
                         />
-                      )}
-                      {activeAccount.key === fallbackKey && (
-                        <Disclosure
-                          className="model-limit-details"
-                          summary="Model eligibility details"
-                        >
-                          <ModelLimitEligibility
-                            eligibility={recovery?.eligibility ?? eligibility}
-                            now={now}
-                          />
-                        </Disclosure>
                       )}
                       <div
                         className="account-limits-groups"

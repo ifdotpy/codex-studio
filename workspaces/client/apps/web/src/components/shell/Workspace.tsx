@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import { McpInventory } from "./McpInventory";
 import {
   isModelWhitelisted,
@@ -619,7 +620,7 @@ function Changes(c: Context) {
                               ? { turnId: report.turnId }
                               : {}),
                             text: "",
-                            id: crypto.randomUUID(),
+                            id: randomUUID(),
                           })
                         }
                       >
@@ -1101,7 +1102,7 @@ function Profiles(c: Context) {
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({
-              id: crypto.randomUUID(),
+              id: randomUUID(),
               isNew: true,
               name: "",
               role: "implementer",
@@ -1125,7 +1126,7 @@ function Profiles(c: Context) {
                 disabled={!lead || lead.autoWake === false}
                 onClick={() =>
                   setLaunch({
-                    id: crypto.randomUUID(),
+                    id: randomUUID(),
                     profile_id: profile.id,
                     provider:
                       modelProvider(profile.model) ?? lead?.provider ?? "codex",
@@ -1358,7 +1359,7 @@ function Rules(c: Context) {
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({
-              id: crypto.randomUUID(),
+              id: randomUUID(),
               isNew: true,
               name: "",
               kind: "interval",

@@ -72,7 +72,7 @@ sysinfo = { version = "=0.39.6", default-features = false, features = ["system"]
 sha2 = "=0.11.1"
 strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
 thiserror = "=2.0.21"
-zstd-safe = { version = "=8.0.0", default-features = false, features = ["std"] }
+zstd-safe = { version = "=8.0.0", default-features = false, features = ["std", "zdict_builder"] }
 
 axum = "=0.8.9"
 form_urlencoded = "=1.2.2"

@@ -311,6 +311,9 @@ pub struct ProviderAttachment {
     pub commands: mpsc::Sender<AdapterCommand>,
     pub journal: mpsc::Receiver<JournalEntry>,
     pub status: watch::Receiver<AttachmentStatus>,
+    /// The transport persists operation identity before stdin and suppresses
+    /// every repeated write of that operation. Direct pipes do not qualify.
+    supervisor_write_deduplication: bool,
     pub(crate) shutdown: Shutdown,
     pub(crate) task: Option<JoinHandle<TaskExit>>,
 }
@@ -333,9 +336,21 @@ impl ProviderAttachment {
             commands,
             journal,
             status,
+            supervisor_write_deduplication: false,
             shutdown,
             task: Some(task),
         }
+    }
+
+    /// Only supervised transports with durable operation deduplication may use
+    /// this contract. A duplicate receipt still does not prove an stdin write.
+    pub fn with_supervisor_write_deduplication(mut self) -> Self {
+        self.supervisor_write_deduplication = true;
+        self
+    }
+
+    pub fn supervisor_write_deduplication(&self) -> bool {
+        self.supervisor_write_deduplication
     }
 
     /// Returns only after the task has dropped its socket. Completion never

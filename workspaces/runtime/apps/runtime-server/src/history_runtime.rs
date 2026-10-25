@@ -11,7 +11,7 @@ use serde_json::Value;
 use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::analytics_history::{
     ANALYTICS_DATABASE, BLOCKING_TASK, HistoryClock, HistoryCollector, HistoryError,
-    HistoryRetryPolicy, StoreHistoryBudgetSink,
+    HistoryRetryPolicy,
 };
 use studio_runtime_store::{AgentRecord, ObservedTable, RuntimeStore, Table, TableChange};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -65,7 +65,6 @@ struct PendingHistoryEvents {
     roster_dirty: bool,
     /// Physical agent rows to reread, coalesced and sorted by rowid.
     agent_rows: BTreeSet<i64>,
-    budget_dirty: bool,
     accounts_dirty: bool,
     overflow: bool,
     files: BTreeMap<PathBuf, PendingFileEvent>,
@@ -95,18 +94,12 @@ struct HistoryWake {
     #[cfg(test)]
     step_pending: std::sync::atomic::AtomicBool,
     #[cfg(test)]
-    budget_failures: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
     progressed: Notify,
 }
 
 impl HistoryWake {
     fn commit(&self) {
         self.with_pending(|pending| pending.roster_dirty = true);
-    }
-
-    fn budget(&self) {
-        self.with_pending(|pending| pending.budget_dirty = true);
     }
 
     fn agents(&self, change: TableChange<'_>) {
@@ -408,7 +401,6 @@ impl HistoryRuntime {
                 .map(PathBuf::from)
                 .ok_or(HistoryError::ProfileUnavailable)
         };
-        let budget = StoreHistoryBudgetSink::new(&self.store);
         self.collector
             .step(
                 &self.store,
@@ -421,7 +413,6 @@ impl HistoryRuntime {
                 profile,
                 clock,
                 Arc::clone(&self.cancelled),
-                &budget,
             )
             .await
     }
@@ -557,16 +548,6 @@ async fn run_event_driven_with_wake(
         .add_table_row_change_observer(ObservedTable::Agents, move |change| {
             observer_wake.agents(change)
         });
-    let budget_observer_wake = Arc::clone(&wake);
-    runtime
-        .store
-        .add_table_change_observer(ObservedTable::Budget, move || budget_observer_wake.budget());
-    let usage_observer_wake = Arc::clone(&wake);
-    runtime
-        .store
-        .add_table_change_observer(ObservedTable::BudgetUsage, move || {
-            usage_observer_wake.budget()
-        });
 
     // Install the registry watch before reading either external accounts or the
     // durable roster. Notifications arriving during these snapshots stay queued.
@@ -602,9 +583,6 @@ async fn run_event_driven_with_wake(
         }
 
         let pending = wake.take();
-        if pending.budget_dirty {
-            runtime.collector.schedule.budget_changed();
-        }
         if let Some(error) = pending.error {
             eprintln!("provider history filesystem watcher failed: {error}");
             drop(watcher);
@@ -769,11 +747,6 @@ async fn run_event_driven_with_wake(
                     retry_at = None;
                 }
                 Err(error) => {
-                    #[cfg(test)]
-                    if error.retry_policy() == HistoryRetryPolicy::WaitForBudgetChange {
-                        wake.budget_failures
-                            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    }
                     if error.retry_policy() != HistoryRetryPolicy::Backoff {
                         failures = 0;
                         retry_at = None;
@@ -1077,7 +1050,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let wake = Arc::new(HistoryWake::default());
         let observer_wake = Arc::clone(&wake);
-        store.add_table_change_observer(ObservedTable::Budget, move || observer_wake.budget());
+        store.add_table_change_observer(ObservedTable::Agents, move || observer_wake.commit());
         let filesystem_wake = Arc::clone(&wake);
         let (entered, checking) = oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
@@ -1103,7 +1076,7 @@ mod tests {
             OBSERVER_DEADLINE,
             store.transaction(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_budget(id,record) VALUES('observer-witness','{}')",
+                    "INSERT INTO runtime_agents(id,record) VALUES('observer-witness','{}')",
                     [],
                 )?;
                 Ok(())
@@ -1117,7 +1090,7 @@ mod tests {
             .expect("store observer completes while metadata is blocked")
             .expect("commit");
         let pending = wake.take();
-        assert!(pending.budget_dirty);
+        assert!(pending.roster_dirty);
         assert_eq!(
             pending.files.values().copied().collect::<Vec<_>>(),
             vec![PendingFileEvent {
@@ -1134,14 +1107,6 @@ mod tests {
         let wake = Arc::new(HistoryWake::default());
         let observer_wake = Arc::clone(&wake);
         store.add_table_change_observer(ObservedTable::Agents, move || observer_wake.commit());
-        let budget_observer_wake = Arc::clone(&wake);
-        store.add_table_change_observer(ObservedTable::Budget, move || {
-            budget_observer_wake.budget()
-        });
-        let usage_observer_wake = Arc::clone(&wake);
-        store.add_table_change_observer(ObservedTable::BudgetUsage, move || {
-            usage_observer_wake.budget()
-        });
 
         store
             .transaction(|tx| {
@@ -1175,41 +1140,6 @@ mod tests {
         assert!(
             wake.take().roster_dirty,
             "agent changes must refresh the history roster"
-        );
-
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_budget(id,record) VALUES('history-budget-fixture','{}')",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("commit budget input");
-        let pending = wake.take();
-        assert!(
-            pending.budget_dirty,
-            "budget changes must wake blocked imports"
-        );
-        assert!(
-            !pending.roster_dirty,
-            "budget changes must not read or refresh the agent roster"
-        );
-
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at) VALUES('history-budget-usage-fixture','history-agent','response',1,1.0)",
-                    [],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("commit usage repair");
-        assert!(
-            wake.take().budget_dirty,
-            "usage changes also resume budget-invalid imports"
         );
     }
 
@@ -1757,7 +1687,6 @@ mod tests {
         wait_for_step_completion(&wake, 1).await;
         let attempts_before_failure = wake.step_attempts.load(Ordering::Acquire);
         let completions_before_failure = wake.step_completions.load(Ordering::Acquire);
-        let budget_failures_before = wake.budget_failures.load(Ordering::Acquire);
 
         let second_agent = AgentRecord::from_value(json!({
             "id": "history-agent-after-recovery", "rootId": "history-agent-after-recovery",
@@ -1770,93 +1699,7 @@ mod tests {
         }))
         .expect("typed recovery fixture agent");
         let second_agent_id = second_agent.id().as_ref().to_owned();
-        let second_agent_value = second_agent.value();
-        let budget_snapshot = studio_runtime_services::budget::BudgetSnapshot::from_records(
-            &second_agent_value,
-            &second_agent_value,
-            None,
-            200.0,
-        )
-        .expect("valid fixture budget identity");
-        let usage_params = json!({
-            "threadId": second_thread,
-            "turnId": "history-turn-after-recovery",
-            "responseId": second_response,
-            "tokenUsage": {
-                "total": {"inputTokens": 20, "outputTokens": 3, "totalTokens": 23},
-                "last": {"inputTokens": 20, "outputTokens": 3, "totalTokens": 23}
-            },
-            "requestUsage": {"inputTokens": 20, "outputTokens": 3, "totalTokens": 23},
-            "rawTokenUsageRecord": {
-                "response_id": second_response,
-                "usage": {"input_tokens": 20, "output_tokens": 3, "total_tokens": 23},
-                "thread_token_usage": {"input_tokens": 20, "output_tokens": 3, "total_tokens": 23}
-            },
-            "usageSource": "responseRecord"
-        });
-        let usage_key = studio_runtime_services::budget::UsageObservation::from_record(
-            &budget_snapshot,
-            &usage_params,
-            4.0,
-            studio_runtime_services::budget::CaptureSource::History,
-        )
-        .expect("valid fixture usage");
-        let usage_key = usage_key.key().to_owned();
         let second_checkpoint_id = format!("{second_agent_id}:default:{second_thread}");
-        let invalid_budget_usage_id = usage_key.clone();
-        let invalid_budget_id = second_agent_id.clone();
-        // A commit's table hints arrive when its caller resolves the transaction.
-        // Another roster refresh can read the committed actor first and block it
-        // for a budget change; a later budget hint from the same commit would then
-        // give it an extra attempt. Commit the budget rows alone and let the loop
-        // consume their hint before the actor that reads them becomes visible.
-        store
-            .transaction(move |tx| {
-                tx.execute(
-                    "INSERT INTO runtime_budget(id,record) VALUES(?1,?2)",
-                    rusqlite::params![
-                        invalid_budget_id,
-                        json!({
-                            "cutoff": 0.0,
-                            "floor": 0,
-                            "spent": 0,
-                            "before": 0,
-                            "after": 0,
-                            "historicalNotices": 0,
-                            "noticeSpent": 0,
-                            "counter": null,
-                            "thread": second_thread,
-                            "noticeAt": 0.0,
-                            "created": 0.0,
-                            "lastAmount": null,
-                            "ambiguousNotices": [],
-                            "faults": []
-                        })
-                        .to_string()
-                    ],
-                )?;
-                tx.execute(
-                    "INSERT INTO runtime_budget_usage(id,agent,kind,tokens,at) VALUES(?1,'wrong-agent','response',23,4.0)",
-                    [invalid_budget_usage_id],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("persist invalid usage identity");
-        // The hint is recorded before the transaction returns; the loop clears
-        // it when it takes the batch.
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while wake
-                .pending
-                .lock()
-                .expect("pending history events")
-                .budget_dirty
-            {
-                wake.progressed.notified().await;
-            }
-        })
-        .await
-        .expect("history loop should consume the budget hint before its deadline");
         wake.pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1881,57 +1724,16 @@ mod tests {
         .expect("filesystem watcher should recover before its deadline");
 
         // Watcher recovery notifies the old roster, and the queued commit adds
-        // the new actor. Drain both bounded hints before asserting the second
-        // actor's durable budget failure left the loop idle.
+        // the new actor. Each gets one bounded attempt, and the new actor
+        // imports its history.
         wait_for_step_completion(&wake, completions_before_failure + 2).await;
         assert_eq!(
             wake.step_attempts.load(Ordering::Acquire),
             attempts_before_failure + 2,
             "the old-roster refresh and recovery actor each get one attempt"
         );
-        assert!(
-            read_history_checkpoint_for(&state, &second_checkpoint_id).is_none(),
-            "invalid usage identity must retain the history checkpoint"
-        );
-        assert_eq!(
-            wake.budget_failures.load(Ordering::Acquire),
-            budget_failures_before + 1,
-            "the second actor's failure must be classified as waiting for a budget change"
-        );
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(60)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(
-            wake.step_attempts.load(Ordering::Acquire),
-            attempts_before_failure + 2,
-            "permanent budget input failures must remain idle without a timer"
-        );
-        assert_eq!(
-            wake.step_completions.load(Ordering::Acquire),
-            completions_before_failure + 2,
-            "both bounded recovery attempts should finish before time advances"
-        );
-        assert!(
-            !wake.step_pending.load(Ordering::Acquire),
-            "permanent budget failure should leave no scheduled history retry"
-        );
-        tokio::time::resume();
-
-        let repaired_usage_id = usage_key.clone();
-        store
-            .transaction(move |tx| {
-                tx.execute(
-                    "UPDATE runtime_budget_usage SET agent='history-agent-after-recovery' WHERE id=?1",
-                    [repaired_usage_id],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("repair only the durable budget usage identity");
-        wait_for_step_completion(&wake, completions_before_failure + 3).await;
         let second = read_history_checkpoint_for(&state, &second_checkpoint_id)
-            .expect("repaired usage should commit the second actor checkpoint");
+            .expect("the recovery actor commits its checkpoint");
         assert_eq!(second["offset"].as_u64(), Some(second_bytes.len() as u64));
         assert_eq!(second["status"], "current");
 
@@ -2034,6 +1836,8 @@ mod tests {
                 .expect("first composed history step")
         );
 
+        // The history import writes analytics only; the removed team token
+        // budget kept its own usage rows.
         let budget_counts = || {
             store
                 .test_reader()
@@ -2062,7 +1866,7 @@ mod tests {
                 )
                 .expect("read analytics usage")
         };
-        assert_eq!(budget_counts(), (1, 23));
+        assert_eq!(budget_counts(), (0, 0));
         assert_eq!(analytics_count(), 1);
 
         trigger
@@ -2072,7 +1876,7 @@ mod tests {
             })
             .await
             .expect("replay composed history step");
-        assert_eq!(budget_counts(), (1, 23));
+        assert_eq!(budget_counts(), (0, 0));
         assert_eq!(analytics_count(), 1);
 
         shutdown.send_replace(true);

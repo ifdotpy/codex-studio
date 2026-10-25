@@ -26,7 +26,7 @@ from upload import Uploads, sha, tree_space, upload_id
 
 READ_METHODS = {"health", "provider.attach", "provider.list", "provider.rpc",
                 "upload.begin", "upload.chunk", "upload.commit", "file.stat", "file.read"}
-READ_METHODS |= {"project.ensure", "share.status", "layr.health", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
+READ_METHODS |= {"project.ensure", "share.status", "layr.health", "sync.mac.read", "sync.mac.hashes", "sync.mac.preview", "sync.mac.head",
                  "vault.status", "secrets.list"}
 METHODS = READ_METHODS | {"exec", "sync.push", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
@@ -453,7 +453,7 @@ class Service:
         if method == "project.seed":
             return await self.seed_layer(request_id, params, admin_request)
         if method in {"project.ensure", "project.import", "project.exec", "share.configure", "share.name", "share.status", "layr.health",
-                      "sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
+                      "sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.preview", "sync.mac.head",
                       "sync.mac.handoff", "sync.mac.worktree", "vault.configure", "vault.push", "vault.status",
                       "secrets.set", "secrets.remove", "secrets.list"} | UPDATE_METHODS:
             return await admin_request(request_id, method, params, emit=emit)
@@ -586,7 +586,7 @@ class Service:
                 if method == "exec" and "result" in response:
                     await self.replay_exec(response["result"], emit)
                 return response
-            prior = receipt(self.db, request_id, request_digest)
+            prior = receipt(self.db, request_id, request_digest, method)
             if prior is not None:
                 if method == "exec" and "result" in prior:
                     await self.replay_exec(prior["result"], emit)
