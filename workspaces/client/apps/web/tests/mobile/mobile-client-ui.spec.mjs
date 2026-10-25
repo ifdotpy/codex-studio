@@ -482,15 +482,18 @@ test("Mobile client ui", async ({
   }
 });
 
-/** A session estimate with a priced total, e.g. "Session estimate: $2.00". */
-const pricedEstimate = /\$\d+\.\d{2}/;
-
 async function setupMobile320Composer(testBrowser) {
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-composer-"));
   const fixture = spawn(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
+      // The server's models.dev client honors proxy variables. A closed local
+      // proxy makes its startup pricing refresh fail at once, so the session
+      // estimate uses only the fixture catalog written below, offline.
+      ALL_PROXY: "http://127.0.0.1:9",
+      HTTPS_PROXY: "http://127.0.0.1:9",
+      https_proxy: "http://127.0.0.1:9",
       FIXTURE_AGENT_STEPS: JSON.stringify({
         "Release lead": [
           {
@@ -529,7 +532,8 @@ async function setupMobile320Composer(testBrowser) {
       fixture.once("exit", () => reject(new Error(log)));
     });
     // The real SSE cost projection needs a pricing artifact. The former GET
-    // stub cannot supply a sessionCost entity to the current client.
+    // stub cannot supply a sessionCost entity to the current client. The
+    // server refuses a non-empty fresh state directory, so write it here.
     const pricing = join(fixtureStateDirectory(state), "model-pricing");
     await mkdir(pricing, { recursive: true });
     await writeFile(
@@ -623,11 +627,8 @@ async function setupMobile320Composer(testBrowser) {
       await usage
         .getByRole("button", { name: "Account limits", exact: true })
         .waitFor({ state: "visible" });
-      // The startup pricing refresh may replace the fixture rates with the
-      // models.dev catalog, so assert a priced SSE estimate, not its amount.
-      // Session-cost arithmetic is owned by the Rust session cost witnesses.
       await expect(usage.locator(".session-cost-summary")).toContainText(
-        pricedEstimate,
+        "$2.00",
       );
       const interest = page.waitForResponse(
         (response) =>
@@ -639,7 +640,7 @@ async function setupMobile320Composer(testBrowser) {
         .click();
       assert.equal((await interest).ok(), true);
       await expect(usage.locator(".session-cost-summary")).toContainText(
-        pricedEstimate,
+        "$2.00",
       );
       await usage
         .getByRole("button", { name: "Account limits", exact: true })
