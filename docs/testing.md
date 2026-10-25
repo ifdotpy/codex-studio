@@ -339,7 +339,10 @@ afterward and checks that no agent or identifiable provider/tool process owned b
 the run remains (`--keep` skips this). Loaded-thread totals remain evidence only:
 the diagnostics API exposes counts, not the identities needed to attribute a
 loaded thread to this run on a shared server. Agent summaries and scoped details
-arrive through the current SSE resource contract.
+arrive through the current SSE resource contract. Multipart entity transfers stay
+staged until every page is continuous and the complete marker arrives; incomplete
+required transfers make the audit inconclusive and fail the run. Cleanup reports
+agents and owned processes separately from the unverified owned-thread boundary.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
 workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
@@ -366,7 +369,11 @@ last worker reply, a backend restart, an `ERROR` or panic journal line, a growin
 error counter, pending durable inputs on the run's own lead or workers, or a
 shared-server input/recovery gauge that grows beyond its baseline plus the run's
 pending inputs (which must themselves be zero). The scoped input audit reads
-existing event entities and uses the status projection owned by
+a fenced, read-only snapshot of every retained `runtime_events` row through
+`readRetainedInputRows` in
+[`verify-rust-chat-scale.mjs`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.mjs).
+The bounded event SSE window is not authoritative for pending-input absence.
+The audit uses the status projection owned by
 [`scaleVerifierHelpers.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.mjs).
 Baseline and final global gauges remain in the evidence. A worker's extra turn
 triggered by a unique `agent_message` from the run's lead is attributed to the

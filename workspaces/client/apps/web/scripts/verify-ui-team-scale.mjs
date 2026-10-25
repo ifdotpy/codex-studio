@@ -4,6 +4,7 @@
 // Chromium only; no window is activated and no operating-system input is sent.
 import assert from "node:assert/strict";
 import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
+import { readRetainedInputRows } from "./verify-rust-chat-scale.mjs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -40,6 +41,8 @@ import {
   openEntityStream,
   cleanupVerified,
   readTeamUiCounts,
+  approvedModelUiValues,
+  OWNED_CLEANUP_VERIFIED_STATE,
   evaluateCriteria,
   firstReachedMs,
   parseArgs,
@@ -286,6 +289,7 @@ async function resolveRole(api, accounts, profile) {
     profile,
     accountKey: accountKeys[0],
     uiModel: candidate.model,
+    uiModelValues: approvedModelUiValues(catalog, candidate),
     model: candidate.resolvedModel ?? candidate.model,
     effort: profile.effort,
   };
@@ -372,7 +376,7 @@ async function main({ setCleanup, setRemaining }) {
   const runStart = performance.now();
   const runMs = () => Math.round(performance.now() - runStart);
   const agents = new Map();
-  const inputEvents = new Map();
+
   let leadId = null;
   let tracker = null;
   const pending = [];
@@ -395,10 +399,6 @@ async function main({ setCleanup, setRemaining }) {
         failed,
       }),
     onAgent,
-    (event) => {
-      if (event.deleted) inputEvents.delete(event.id);
-      else inputEvents.set(event.id, event);
-    },
   );
 
   const browser = await chromium.launch({ headless: true });
@@ -432,8 +432,18 @@ async function main({ setCleanup, setRemaining }) {
     try {
       if (leadId) {
         await pull();
+        pull.assertComplete();
+        const identity = await api("GET", "/api/sync/identity");
+        const pendingInputs = pendingTeamInputs(
+          readRetainedInputRows(
+            desktop.stateDir,
+            identity.workspaceId,
+            performance.now() + REQUEST_DEADLINE_MS,
+          ),
+          [leadId, ...(tracker?.workers() ?? []).map((row) => row.id)],
+        );
         journal.audit = await auditRun({
-          inputEvents: [...inputEvents.values()],
+          pendingInputs,
           origin: options.origin,
           token: session.token,
           backendPid,
@@ -453,6 +463,7 @@ async function main({ setCleanup, setRemaining }) {
             after: journal.diagnostics.countersAfter,
           },
         });
+        pull.assertComplete();
         const kinds = [
           ...new Set(journal.audit.failures.map((entry) => entry.kind)),
         ];
@@ -497,7 +508,7 @@ async function main({ setCleanup, setRemaining }) {
         process.stdout.write(`\n${summaryText(journal)}`);
       }
       const cleanupOk =
-        journal.cleanup.state === "verified" ||
+        journal.cleanup.state === OWNED_CLEANUP_VERIFIED_STATE ||
         journal.cleanup.state.startsWith("skipped") ||
         journal.cleanup.state === "nothing created";
       process.stdout.write(`evidence: ${journalPath}\n`);
@@ -1009,7 +1020,7 @@ async function main({ setCleanup, setRemaining }) {
 // requests, backend journal and diagnostics of the run window. Its requests
 // are kept out of the run's API latency journal.
 async function auditRun({
-  inputEvents,
+  pendingInputs,
   origin,
   token,
   backendPid,
@@ -1083,7 +1094,6 @@ async function auditRun({
   });
   if (throttling.events)
     parts.push({ anomalies: [{ kind: "providerRetries", ...throttling }] });
-  const pendingInputs = pendingTeamInputs(inputEvents, [leadId, ...workerIds]);
   parts.push(
     auditDiagnostics(diagnostics.before, diagnostics.after, pendingInputs),
   );
@@ -1109,7 +1119,7 @@ async function auditRun({
   return {
     ...mergeAudits(parts),
     teamInputAudit: {
-      source: "SyncEntity event.status",
+      source: "readRetainedInputRows: fenced read-only runtime_events snapshot",
       pending: pendingInputs,
     },
     leadTurns: lead.turns,
@@ -1194,8 +1204,15 @@ async function cleanup({
       const toolLeaks = processesMentioning(runTag);
       state.leakedProviderPids = providerLeaks;
       state.leakedProcesses = toolLeaks;
-      if (cleanupVerified(state)) {
-        state.state = "verified";
+      let complete = true;
+      try {
+        pull.assertComplete();
+      } catch (error) {
+        complete = false;
+        state.observationError = String(error?.message ?? error);
+      }
+      if (complete && cleanupVerified(state)) {
+        state.state = OWNED_CLEANUP_VERIFIED_STATE;
         break;
       }
       if (performance.now() - startedAt > CLEANUP_DEADLINE_MS) {

@@ -10,6 +10,9 @@ import {
   openEntityStream,
   cleanupVerified,
   readTeamUiCounts,
+  approvedModelUiValues,
+  OWNED_CLEANUP_VERIFIED_STATE,
+  summaryText,
   cpuDeltaMs,
   cpuPercent,
   createTeamTracker,
@@ -305,6 +308,7 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
         expect(selector).toMatch(/^\[data-(?:account-key|value)=/);
         return node;
       },
+      first: () => node,
       getAttribute: async () => (kind === "radio" ? name : selectedAccount),
       count: async () => (fast ? 1 : 0),
       setChecked: async (checked) => actions.push(`Fast mode ${checked}`),
@@ -601,4 +605,90 @@ it("reads the current TeamSummary strong counts without summing All with its sta
     teamPanelClosed: false,
   });
   expect(selectors).not.toContain("[data-team-count] dd");
+});
+
+it("accepts only catalogue aliases resolving to the approved paid-test model", () => {
+  const candidate = { model: "haiku", resolvedModel: "claude-haiku-5-5" };
+  expect(
+    approvedModelUiValues(
+      {
+        data: [
+          candidate,
+          { model: "default", resolvedModel: "claude-haiku-5-5" },
+          { model: "claude-haiku-5-5" },
+          { model: "opus", resolvedModel: "claude-opus-5-5" },
+        ],
+      },
+      candidate,
+    ),
+  ).toEqual(["haiku", "default", "claude-haiku-5-5"]);
+});
+
+it("stages several transfer pages until the final complete marker and rejects missing pages", () => {
+  const accept = vi.fn();
+  const receive = createEntityFrameReader(accept);
+  const page = (index, after, through, complete) => ({
+    transferId: "multi",
+    pageIndex: index,
+    partIndex: 0,
+    partCount: 1,
+    complete,
+    data: JSON.stringify({
+      after,
+      through,
+      documents: [upsert("agentSummary", `worker-${index}`, {})],
+    }),
+  });
+  receive("entity-transfer", page(0, 0, 1, false));
+  receive("entity-transfer", page(1, 1, 2, false));
+  expect(accept).not.toHaveBeenCalled();
+  expect(() => receive.assertComplete()).toThrow(/incomplete/);
+  receive("entity-transfer", page(2, 2, 3, true));
+  expect(accept).toHaveBeenCalledTimes(1);
+  expect(accept.mock.calls[0][0]).toHaveLength(3);
+  expect(() => receive.assertComplete()).not.toThrow();
+  const missing = createEntityFrameReader(vi.fn());
+  missing("entity-transfer", page(0, 0, 1, false));
+  expect(() => missing("entity-transfer", page(2, 2, 3, true))).toThrow(
+    /pages arrived out of order/,
+  );
+  expect(() => missing.assertComplete()).toThrow(/incomplete/);
+});
+
+it("cannot certify observations interrupted before a required transfer completes", async () => {
+  let receive;
+  let failed;
+  const pull = createEntityReader(async (_resource, accept, onError) => {
+    receive = accept;
+    failed = onError;
+    return { close: async () => {} };
+  }, vi.fn());
+  await pull();
+  receive("entity-transfer", {
+    transferId: "interrupted",
+    pageIndex: 0,
+    partIndex: 0,
+    partCount: 1,
+    complete: false,
+    data: JSON.stringify({ after: 0, through: 1, documents: [] }),
+  });
+  expect(() => pull.assertComplete()).toThrow(/incomplete/);
+  failed(new Error("stream interrupted"));
+  expect(() => pull.assertComplete()).toThrow(/stream interrupted/);
+  await pull.close();
+});
+
+it("states the unknown owned-thread cleanup boundary explicitly", () => {
+  expect(OWNED_CLEANUP_VERIFIED_STATE).toBe(
+    "agents and owned processes verified; owned loaded threads not verifiable (diagnostics expose counts only)",
+  );
+  const summary = summaryText({
+    runTag: "fixture",
+    result: { passed: true, failures: [] },
+    options: { workers: 3 },
+    metrics: {},
+    cleanup: { state: OWNED_CLEANUP_VERIFIED_STATE },
+  });
+  expect(summary).toContain(OWNED_CLEANUP_VERIFIED_STATE);
+  expect(summary).not.toMatch(/cleanup\s+verified/);
 });

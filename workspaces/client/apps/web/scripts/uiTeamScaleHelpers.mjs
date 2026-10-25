@@ -49,29 +49,69 @@ export const WORKER_PROFILE_NAMES = Object.freeze([
 // Consume current resources and multipart entity-transfer frames. The server's
 // sync protocol and renderer resourceEvents.ts own these wire envelopes.
 export function createEntityFrameReader(accept) {
-  const parts = new Map();
-  return (name, frame) => {
+  const transfers = new Map();
+  const receive = (name, frame) => {
     if (name === "resources") {
       for (const version of frame.resourceVersions) {
         if (version.entityChanges) accept(version.entityChanges.documents);
       }
     } else if (name === "entity-transfer") {
-      const key = `${frame.transferId}:${frame.pageIndex}`;
-      const page = parts.get(key) || [];
+      const transfer = transfers.get(frame.transferId) || {
+        pageIndex: 0,
+        parts: [],
+        documents: [],
+        through: null,
+      };
+      transfers.set(frame.transferId, transfer);
+      assert.equal(
+        frame.pageIndex,
+        transfer.pageIndex,
+        "Entity transfer pages arrived out of order.",
+      );
       assert.equal(
         frame.partIndex,
-        page.length,
+        transfer.parts.length,
         "Entity transfer parts arrived out of order.",
       );
-      page.push(frame.data);
-      if (page.length === frame.partCount) {
-        parts.delete(key);
-        accept(JSON.parse(page.join("")).documents);
-      } else parts.set(key, page);
+      if (!transfer.parts.length) transfer.partCount = frame.partCount;
+      assert.equal(
+        frame.partCount,
+        transfer.partCount,
+        "Entity transfer part count changed.",
+      );
+      assert.ok(
+        !frame.complete || frame.partIndex + 1 === frame.partCount,
+        "Entity transfer completed before its last part.",
+      );
+      transfer.parts.push(frame.data);
+      if (transfer.parts.length === frame.partCount) {
+        const page = JSON.parse(transfer.parts.join(""));
+        if (transfer.through !== null)
+          assert.equal(
+            page.after,
+            transfer.through,
+            "Entity transfer cursor interval is discontinuous.",
+          );
+        transfer.through = page.through;
+        transfer.documents.push(...page.documents);
+        transfer.parts = [];
+        transfer.pageIndex += 1;
+        if (frame.complete) {
+          transfers.delete(frame.transferId);
+          accept(transfer.documents);
+        }
+      }
     } else if (name === "api-schema" && frame.mismatch) {
       throw new Error("Sync API schema mismatch.");
     }
   };
+  receive.assertComplete = () =>
+    assert.equal(
+      transfers.size,
+      0,
+      "Required entity transfer is incomplete; observation is inconclusive.",
+    );
+  return receive;
 }
 
 // A bounded connection attempt, then an explicitly owned SSE reader. Closing
@@ -154,6 +194,7 @@ export function createEntityReader(subscribe, onAgent, onEvent = () => {}) {
   const details = new Map();
   const streams = new Map();
   const pending = new Set();
+  const frameReaders = new Set();
   let rootId = null;
   let failure = null;
   let closed = false;
@@ -198,6 +239,7 @@ export function createEntityReader(subscribe, onAgent, onEvent = () => {}) {
         }
       }
     });
+    frameReaders.add(receive);
     const opening = Promise.resolve().then(() =>
       subscribe(resource, receive, (error) => {
         failure ??= error;
@@ -215,6 +257,10 @@ export function createEntityReader(subscribe, onAgent, onEvent = () => {}) {
     start({ kind: "state" });
     await Promise.allSettled(pending);
     if (failure) throw failure;
+  };
+  pull.assertComplete = () => {
+    if (failure) throw failure;
+    for (const reader of frameReaders) reader.assertComplete();
   };
   pull.watch = (id) => {
     rootId = id;
@@ -236,6 +282,10 @@ export function createEntityReader(subscribe, onAgent, onEvent = () => {}) {
   };
   return pull;
 }
+
+// Cleanup can establish agent/process absence, but diagnostics has no thread IDs.
+export const OWNED_CLEANUP_VERIFIED_STATE =
+  "agents and owned processes verified; owned loaded threads not verifiable (diagnostics expose counts only)";
 
 // Global provider counts cannot identify a leak on a shared backend.
 export function cleanupVerified({
@@ -288,6 +338,20 @@ async function chooseSegment(dialog, label, name) {
     .waitFor({ state: "attached" });
 }
 
+// Alias deduplication can retain a recommended default instead of the short
+// alias. Accept it only when the authoritative catalog resolves it to the
+// same approved model; never select an account's unverified default.
+export function approvedModelUiValues(catalog, candidate) {
+  const identity = candidate.resolvedModel ?? candidate.model;
+  return [
+    ...new Set(
+      catalog.data
+        .filter((row) => (row.resolvedModel ?? row.model) === identity)
+        .map((row) => row.model),
+    ),
+  ];
+}
+
 export async function configureNewChat(dialog, lead, worker) {
   for (const [role, prefix, accountLabel, settings] of [
     ["Lead", "Main agent", "Main agent account", lead],
@@ -314,9 +378,16 @@ export async function configureNewChat(dialog, lead, worker) {
       name: `${prefix} model`,
       exact: true,
     });
-    const model = dialog.locator(`[data-value="${settings.uiModel}"]`);
-    await models.getByRole("option").and(model).click();
-    await models.getByRole("option", { selected: true }).and(model).waitFor();
+    const values = settings.uiModelValues ?? [settings.uiModel];
+    const model = dialog.locator(
+      values.map((value) => `[data-value="${value}"]`).join(", "),
+    );
+    await models.getByRole("option").and(model).first().click();
+    await models
+      .getByRole("option", { selected: true })
+      .and(model)
+      .first()
+      .waitFor();
     await chooseSegment(
       dialog,
       `${prefix} reasoning`,
