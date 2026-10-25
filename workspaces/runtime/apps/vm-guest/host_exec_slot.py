@@ -264,8 +264,8 @@ class HostSlotHandlers:
                 # The safe point: this generation is current and leased, and the export that
                 # needs the space has not started.
                 await self.remove_stale_generations(slot, parent, number)
-            await self.layr(context, ["save", "-q", "--force", "-m", "host_exec slot " + params["slotId"]])
-            state = (await self.layr(context, ["rev-parse", "HEAD@{0}"])).strip()
+            await self.layr(context, ["save", "-q", "--force", "--note", "host_exec slot " + params["slotId"]])
+            state = (await self.layr(context, ["rev-parse", "head@{0}"])).strip()
             require(len(state) >= 7 and all(c in "0123456789abcdef" for c in state), "layr gave no state ID", "layr_failed")
             # The git tree ID of the exact state (public layr CLI); product builds record it as provenance.
             # A layr from before 2026-10-17 refuses the "^{tree}" form (exit 128): the command then

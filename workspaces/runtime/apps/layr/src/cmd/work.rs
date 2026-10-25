@@ -9,7 +9,7 @@ use crate::diff;
 use crate::fsutil;
 use crate::ids;
 use crate::model::{Line, Record, StateKind};
-use crate::repo::{conflict_open, skip_path, Repo, Status};
+use crate::repo::{conflict_open, skip_path, snap, Repo, Snap, Status, Temp};
 use crate::revs;
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,13 +45,43 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("-z")
         .flag("--long")
         .flag("-v|--verbose")
-        .flag("--no-renames");
+        .flag("--no-renames")
+        .flag("--json");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
+    #[cfg(target_os = "macos")]
+    let _lock = h.repo.p.lock()?;
     let line = h.line()?.clone();
-    h.repo.check_view(ctx, &line)?;
+    #[cfg(target_os = "macos")]
+    let line = h.repo.line(&line.id)?;
+    let filtered = h.repo.filtered_view(ctx, &line)?;
     let specs = h.specs(&a.rest())?;
-    let (st, _scan, _itemp, _index) = h.repo.status(&line)?;
+    #[cfg(target_os = "macos")]
+    let st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status_report(&line)? };
+    #[cfg(not(target_os = "macos"))]
+    let st = if filtered.is_some() { h.repo.snapshot_status(ctx, &line)? } else { h.repo.status(&line)?.0 };
+    let overlaps = if filtered.is_none() && (a.has("--json") || (!a.has("-s") && !a.has("--porcelain"))) {
+        h.repo.overlaps(ctx, &line)?.into_iter().filter(|o| matches(&specs, &o.path)).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    if a.has("--json") {
+        let row = |c: &Change| serde_json::json!({"path": c.path, "old_path": c.old_path, "status": xy(c).to_string()});
+        outln!(
+            ctx,
+            "{}",
+            serde_json::json!({
+                "line": line.name, "head": line.head,
+                "staged": st.staged.iter().filter(|c| matches(&specs, &c.path)).map(row).collect::<Vec<_>>(),
+                "unstaged": st.unstaged.iter().filter(|c| matches(&specs, &c.path)).map(row).collect::<Vec<_>>(),
+                "untracked": st.untracked.iter().filter(|p| matches(&specs, p)).collect::<Vec<_>>(),
+                "ignored": st.ignored.iter().filter(|p| matches(&specs, p)).collect::<Vec<_>>(),
+                "conflicts": st.conflicts.iter().filter(|c| matches(&specs, &c.path)).collect::<Vec<_>>(),
+                "overlaps": overlaps,
+            })
+        );
+        return Ok(0);
+    }
     let porcelain = a.has("--porcelain");
     let short = a.has("-s") || porcelain;
     let untracked_mode = a.get("-u").map(|s| if s.is_empty() { "all" } else { s }).unwrap_or("normal").to_string();
@@ -118,9 +148,23 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
 
     outln!(ctx, "On line {}", line.name);
+    if !overlaps.is_empty() {
+        outln!(ctx, "Overlaps with other live lines:");
+        for overlap in &overlaps {
+            outln!(
+                ctx,
+                "\t{} ({}, owner {}, changed_at {})",
+                h.rel(&overlap.path),
+                overlap.line,
+                overlap.owner,
+                overlap.changed_at
+            );
+        }
+        outln!(ctx);
+    }
     let head = h.repo.state(&line.head)?;
     if !head.conflicts.is_empty() && !st.conflicts.is_empty() {
-        outln!(ctx, "You have unmerged paths.\n  (fix conflicts and run \"layr commit\")\n");
+        outln!(ctx, "You have unmerged paths.\n  (fix conflicts and run \"layr save -m <message>\")\n");
     }
     let staged: Vec<&Change> = st.staged.iter().filter(|c| matches(&specs, &c.path) && !conflicted.contains(&c.path)).collect();
     let unstaged: Vec<&Change> =
@@ -140,7 +184,7 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
     };
     if !staged.is_empty() {
-        outln!(ctx, "Changes to be committed:\n  (use \"layr restore --staged <file>...\" to unstage)");
+        outln!(ctx, "Changes to be saved:\n  (use \"layr restore --staged <file>...\" to unstage)");
         for c in &staged {
             outln!(ctx, "\t{}", label(c));
         }
@@ -148,14 +192,14 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let moves: Vec<(String, String)> = h.repo.pending_moves(&line).into_iter().filter(|(p, _)| matches(&specs, p)).collect();
     if !moves.is_empty() {
-        outln!(ctx, "Moves to overlays (the next commit):");
+        outln!(ctx, "Moves to overlays (the next state):");
         for (p, o) in &moves {
             outln!(ctx, "\t{o}: {}", h.rel(p));
         }
         outln!(ctx);
     }
     if !st.conflicts.is_empty() {
-        outln!(ctx, "Unmerged paths:\n  (fix the files, then \"layr add <file>...\" and \"layr commit\")");
+        outln!(ctx, "Unmerged paths:\n  (fix the files, then \"layr add <file>...\" and \"layr save -m <message>\")");
         for c in &st.conflicts {
             if matches(&specs, &c.path) {
                 let what = match c.kind.as_str() {
@@ -171,14 +215,14 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
         outln!(ctx);
     }
     if !unstaged.is_empty() {
-        outln!(ctx, "Changes not staged for commit:\n  (use \"layr add <file>...\" to update what will be committed)\n  (use \"layr restore <file>...\" to discard changes in working directory)");
+        outln!(ctx, "Changes not staged for a state:\n  (use \"layr add <file>...\" to update what will be saved)\n  (use \"layr restore <file>...\" to discard changes in working directory)");
         for c in &unstaged {
             outln!(ctx, "\t{}", label(c));
         }
         outln!(ctx);
     }
     if !untracked.is_empty() {
-        outln!(ctx, "Untracked files:\n  (use \"layr add <file>...\" to include in what will be committed)");
+        outln!(ctx, "Untracked files:\n  (use \"layr add <file>...\" to include in what will be saved)");
         for u in &untracked {
             outln!(ctx, "\t{}", h.rel(u));
         }
@@ -193,11 +237,11 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     if staged.is_empty() {
         if !unstaged.is_empty() {
-            outln!(ctx, "no changes added to commit (use \"layr add\" and/or \"layr commit -a\")");
+            outln!(ctx, "no changes added to a state (use \"layr add\" and/or \"layr save -a -m <message>\")");
         } else if !untracked.is_empty() {
-            outln!(ctx, "nothing added to commit but untracked files present (use \"layr add\" to track)");
+            outln!(ctx, "nothing added to a state but untracked files present (use \"layr add\" to track)");
         } else if st.conflicts.is_empty() {
-            outln!(ctx, "nothing to commit, working tree clean");
+            outln!(ctx, "nothing to save, working tree clean");
         }
     }
     Ok(0)
@@ -240,6 +284,16 @@ pub fn begin(ctx: &Ctx, repo: &Repo, line: &Line, op: crate::repo::LineOp) -> Re
 /// the inode and btrfs reports the move.
 pub fn stage_paths(repo: &Repo, line: &Line, scan: &Path, paths: &BTreeSet<String>) -> Result<()> {
     let stage = repo.ensure_stage(line)?;
+    #[cfg(target_os = "macos")]
+    if crate::thin::is_thin(&stage) {
+        // A file with several names keeps them only in a complete index.
+        if !crate::thin::any_linked(&repo.working(line), paths) {
+            let (index, _) = repo.index_source(line)?;
+            return crate::thin::stage_entries(&index, scan, paths, repo.own(line));
+        }
+        let stage = repo.ensure_full_stage(line)?;
+        return stage_into(repo, line, &stage, scan, paths);
+    }
     stage_into(repo, line, &stage, scan, paths)
 }
 
@@ -268,7 +322,7 @@ fn stage_into(repo: &Repo, line: &Line, stage: &Path, scan: &Path, paths: &BTree
     }
     for p in paths {
         if fsutil::lmeta(scan, p).is_some() {
-            fsutil::copy_entry(scan, p, &stage, p, own)?;
+            fsutil::copy_index_entry(scan, p, &stage, p, own)?;
         } else if fsutil::lmeta(&stage, p).is_some() {
             fsutil::remove_entry(&stage, p)?;
             prune_empty(&stage, p);
@@ -290,6 +344,54 @@ fn prune_empty_in(t: &crate::tree::Tree, rel: &str) {
     while !comps.is_empty() && t.rmdir(&comps.join("/")) {
         comps.pop();
     }
+}
+
+/// Resolve add pathspecs against one consistent view before modifying the index.
+fn select_add(
+    h: &Here<'_>,
+    a: &crate::args::Parsed,
+    specs: &[String],
+    st: &Status,
+    scan: &Path,
+    index: &(impl fsutil::Src + ?Sized),
+) -> Result<(BTreeSet<String>, Vec<String>)> {
+    let mut paths: BTreeSet<String> = BTreeSet::new();
+    for c in &st.unstaged {
+        if matches(specs, &c.path) {
+            paths.insert(c.path.clone());
+        }
+    }
+    if !a.has("-u") {
+        for u in &st.untracked {
+            if matches(specs, u) {
+                paths.insert(u.clone());
+            }
+        }
+    }
+    // Ignored paths named explicitly.
+    let mut ignored_named = Vec::new();
+    for s in specs {
+        if s.is_empty() {
+            continue;
+        }
+        let in_scan = fsutil::lmeta(scan, s).is_some();
+        let in_index = fsutil::lmeta(index, s).is_some();
+        let matched = paths.iter().any(|p| p == s || p.starts_with(&format!("{s}/"))) || s.contains(['*', '?']);
+        if !matched {
+            if st.ignored.iter().any(|i| i == s || i.starts_with(&format!("{s}/"))) {
+                if a.has("-f") {
+                    for i in st.ignored.iter().filter(|i| *i == s || i.starts_with(&format!("{s}/"))) {
+                        paths.insert(i.clone());
+                    }
+                } else {
+                    ignored_named.push(h.rel(s));
+                }
+            } else if !in_scan && !in_index {
+                return Err(exit(128, format!("fatal: pathspec '{}' did not match any files", h.rel(s))));
+            }
+        }
+    }
+    Ok((paths, ignored_named))
 }
 
 pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
@@ -321,43 +423,34 @@ pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     h.repo.authorize_line(ctx, &line, crate::repo::LineOp::Direct)?;
     let _lock = h.repo.p.lock()?;
-    let (st, scan, _it, index) = h.repo.status(&line)?;
-    let mut paths: BTreeSet<String> = BTreeSet::new();
-    for c in &st.unstaged {
-        if matches(&specs, &c.path) {
-            paths.insert(c.path.clone());
+    let line = h.repo.line(&line.id)?;
+    #[cfg(target_os = "macos")]
+    let prepared = {
+        let work = h.repo.working(&line);
+        let (index, stage) = h.repo.index_source(&line)?;
+        let mut roots = vec![work.as_path()];
+        if let Some(s) = &stage {
+            roots.push(s.as_path());
         }
-    }
-    if !a.has("-u") {
-        for u in &st.untracked {
-            if matches(&specs, u) {
-                paths.insert(u.clone());
-            }
+        crate::storage::stable_read(&roots, || {
+            let st = h.repo.status_for_add(&line, &work, &index)?;
+            let (paths, ignored) = select_add(&h, &a, &specs, &st, &work, &index)?;
+            let scan = crate::repo::Temp { path: h.repo.p.scan_dir().join(ids::new_id()) };
+            crate::storage::create_subvolume(&scan.path)?;
+            crate::storage::copy_selected(&work, &scan.path, &paths)?;
+            Ok((scan, paths, ignored))
+        })?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let prepared: Option<(crate::repo::Temp, BTreeSet<String>, Vec<String>)> = None;
+    let (scan, paths, ignored_named) = match prepared {
+        Some(v) => v,
+        None => {
+            let (st, scan, _it, index) = h.repo.status(&line)?;
+            let (paths, ignored) = select_add(&h, &a, &specs, &st, &scan.path, &index)?;
+            (scan, paths, ignored)
         }
-    }
-    // Ignored paths named explicitly.
-    let mut ignored_named = Vec::new();
-    for s in &specs {
-        if s.is_empty() {
-            continue;
-        }
-        let in_scan = fsutil::lmeta(&scan.path, s).is_some();
-        let in_index = fsutil::lmeta(&index, s).is_some();
-        let matched = paths.iter().any(|p| p == s || p.starts_with(&format!("{s}/"))) || s.contains(['*', '?']);
-        if !matched {
-            if st.ignored.iter().any(|i| i == s || i.starts_with(&format!("{s}/"))) {
-                if a.has("-f") {
-                    for i in st.ignored.iter().filter(|i| *i == s || i.starts_with(&format!("{s}/"))) {
-                        paths.insert(i.clone());
-                    }
-                } else {
-                    ignored_named.push(h.rel(s));
-                }
-            } else if !in_scan && !in_index {
-                return Err(exit(128, format!("fatal: pathspec '{}' did not match any files", h.rel(s))));
-            }
-        }
-    }
+    };
     if a.has("-n") {
         for p in &paths {
             let what = if fsutil::lmeta(&scan.path, p).is_some() { "add" } else { "remove" };
@@ -394,7 +487,7 @@ pub fn rm(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let (_lock, _w) = begin_change(ctx, &h.repo, &line)?;
     let line = h.repo.line(&line.id)?;
-    let stage = h.repo.ensure_stage(&line)?;
+    let stage = h.repo.ensure_full_stage(&line)?;
     let w = h.repo.working(&line);
     let mut removed = Vec::new();
     for s in &specs {
@@ -503,7 +596,7 @@ pub fn mv(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 })?;
             }
         }
-        let stage = h.repo.ensure_stage(&line)?;
+        let stage = h.repo.ensure_full_stage(&line)?;
         if fsutil::lmeta(&stage, s).map(|m| m.is_dir()).unwrap_or(false) {
             fsutil::remove_entry(&stage, s)?;
         }
@@ -589,7 +682,7 @@ pub fn apply(ctx: &Ctx, args: &[String]) -> Result<i32> {
     // the working folder belongs to the owner, so the patch is applied there as the owner.
     let mut targets: Vec<(std::path::PathBuf, u32)> = Vec::new();
     if to_stage {
-        targets.push((h.repo.ensure_stage(&line)?, rustix::process::geteuid().as_raw()));
+        targets.push((h.repo.ensure_full_stage(&line)?, rustix::process::geteuid().as_raw()));
     }
     if to_work {
         targets.push((h.repo.working(&line), line.owner));
@@ -678,7 +771,7 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let stacked = h.repo.is_stacked(&line)?;
     if a.has("--amend") {
         if stacked {
-            return Err(exit(1, "error: --amend is not available in a line with overlays yet; make a new commit"));
+            return Err(exit(1, "error: --amend is not available in a line with overlays yet; make a new state"));
         }
         // The amended state replaces the head: the line's history changes.
         h.repo.authorize_line(ctx, &line, crate::repo::LineOp::Rewrite)?;
@@ -688,7 +781,7 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let message = message.trim_end().to_string();
     if message.is_empty() {
-        return Err(exit(1, "Aborting commit due to empty commit message (use -m <message>)."));
+        return Err(exit(1, "Cannot save a state with an empty message (use -m <message>)."));
     }
     // In a line with overlays the owner commits; a change of the shared set also needs the line's
     // rule (commit_layers checks it), so a protected line takes commits of its overlays only.
@@ -707,15 +800,15 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let (st2, _s2, _i2, _x2) = h.repo.status(line)?;
         outln!(ctx, "On line {}", line.name);
         if !st2.unstaged.is_empty() {
-            outln!(ctx, "Changes not staged for commit:");
+            outln!(ctx, "Changes not staged for a state:");
             for c in &st2.unstaged {
                 outln!(ctx, "\tmodified:   {}", h.rel(&c.path));
             }
-            outln!(ctx, "\nno changes added to commit (use \"layr add\" and/or \"layr commit -a\")");
+            outln!(ctx, "\nno changes added to a state (use \"layr add\" and/or \"layr save -a -m <message>\")");
         } else if !st2.untracked.is_empty() {
-            outln!(ctx, "nothing added to commit but untracked files present (use \"layr add\" to track)");
+            outln!(ctx, "nothing added to a state but untracked files present (use \"layr add\" to track)");
         } else {
-            outln!(ctx, "nothing to commit, working tree clean");
+            outln!(ctx, "nothing to save, working tree clean");
         }
         Ok(1)
     };
@@ -727,14 +820,36 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     // The new state is a snapshot of the staging line (or the head when nothing is staged);
     // its changes against the head say whether there is anything to commit.
-    let head_root = h.repo.state_root(&line.head)?;
+    let head_root = h.repo.state_src(&line.head)?;
     let parents = if a.has("--amend") { head.parents.clone() } else { vec![line.head.clone()] };
-    let src = match h.repo.current_stage(&line)? {
-        Some(s) => s,
-        None => head_root.clone(),
+    let stage = h.repo.current_stage(&line)?;
+    #[cfg(target_os = "macos")]
+    let mut promotion = match &stage {
+        Some(_) => Some(crate::apfs_commit::IndexCommit::prepare(&h.repo.p, &line.id)?),
+        None => None,
     };
-    let mut state = h.repo.new_state(ctx, &src, StateKind::Commit, parents, &message, Some(&line))?;
-    let staged: Vec<Change> = match changes::file_changes(&head_root, &h.repo.p.state_path(&state.id)) {
+    #[cfg(target_os = "macos")]
+    let mut state = if let Some(p) = &promotion {
+        h.repo.describe_state(ctx, p.id.clone(), StateKind::Commit, parents, &message, Some(&line))?
+    } else {
+        h.repo.same_state(ctx, &line.head, StateKind::Commit, parents, &message, Some(&line))?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut state = {
+        let src = stage.clone().unwrap_or(head_root.clone());
+        h.repo.new_state(ctx, &src, StateKind::Commit, parents, &message, Some(&line))?
+    };
+    if a.has("--amend") {
+        state.change_id = head.change_id.clone();
+    }
+    let new_root = match h.repo.state_src(&state.id) {
+        Ok(r) => r,
+        Err(e) => {
+            h.repo.discard_states(std::slice::from_ref(&state));
+            return Err(e);
+        }
+    };
+    let staged: Vec<Change> = match changes::file_changes(&head_root, &new_root) {
         Ok(v) => v.into_iter().filter(|c| !skip_path(&c.path)).collect(),
         Err(e) => {
             h.repo.discard_states(std::slice::from_ref(&state));
@@ -743,6 +858,10 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     };
     if staged.is_empty() && !a.has("--allow-empty") && !a.has("--amend") {
         h.repo.discard_states(std::slice::from_ref(&state));
+        #[cfg(target_os = "macos")]
+        if let Some(p) = promotion.take() {
+            p.rollback()?;
+        }
         return nothing(&h, &line);
     }
     if let Some((n, e)) = author {
@@ -751,7 +870,6 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     // Content conflicts stay listed while the committed file has markers; the commit clears
     // the other kinds.
-    let new_root = h.repo.p.state_path(&state.id);
     let mut cleared = Vec::new();
     for c in &head.conflicts {
         if (c.kind == "content" || c.kind == "add/add") && conflict_open(&new_root, c)? {
@@ -760,11 +878,29 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
             cleared.push(c.clone());
         }
     }
-    let rec = h.repo.move_head(ctx, "commit", &line, &state.id, vec![state.clone()], None, serde_json::json!({"line": line.id}));
+    if let Err(e) = crate::secrets::check_between(ctx, &h.repo, &head_root, &new_root, &line.head) {
+        h.repo.discard_states(std::slice::from_ref(&state));
+        return Err(e);
+    }
+    let mut data = serde_json::json!({"line": line.id});
+    if a.has("--amend") {
+        data["version"] = serde_json::to_value(crate::model::VersionOperation {
+            state: state.id.clone(),
+            kind: "amend".into(),
+            source: head.id.clone(),
+            target_line: Some(line.id.clone()),
+            target_head: line.head.clone(),
+        })?;
+    }
+    let rec = h.repo.move_head(ctx, "commit", &line, &state.id, vec![state.clone()], None, data);
     rec?;
+    #[cfg(target_os = "macos")]
+    if let Some(p) = promotion.take() {
+        p.finish()?;
+    }
     h.repo.drop_stage(&line)?;
     if !a.has("-q") {
-        let root = if parents_empty(&state) { " (root-commit)" } else { "" };
+        let root = if parents_empty(&state) { " (root-state)" } else { "" };
         outln!(ctx, "[{}{} {}] {}", line.name, root, ids::short(&state.id), message.lines().next().unwrap_or(""));
         let staged = changes::with_renames(&head_root, &new_root, staged);
         print_summary(ctx, &head_root, &new_root, &staged)?;
@@ -779,7 +915,7 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
 }
 
 /// The summary of a commit: the short statistics and the created, deleted and moved files.
-fn print_summary(ctx: &Ctx, old: &Path, new: &Path, list: &[Change]) -> Result<()> {
+fn print_summary(ctx: &Ctx, old: &Snap, new: &Snap, list: &[Change]) -> Result<()> {
     print_fds(ctx, &diff::file_diffs(old, new, list)?);
     Ok(())
 }
@@ -870,11 +1006,11 @@ fn parents_empty(s: &crate::model::StateRec) -> bool {
 fn restore_paths(
     repo: &Repo,
     line: &Line,
-    source: &Path,
+    source: &Snap,
     target_view: &Path,
     target: &Path,
     specs: &[String],
-    known: Option<&Path>,
+    known: Option<&Snap>,
 ) -> Result<Vec<String>> {
     let own = repo.own(line);
     let mut done = Vec::new();
@@ -947,7 +1083,7 @@ pub fn restore_impl(
         let wdir = repo.working(&line);
         let mut n = 0;
         for c in &head.conflicts {
-            if !matches(specs, &c.path) {
+            if !matches(&specs, &c.path) {
                 continue;
             }
             let sid = if ours { c.ours.clone() } else { c.theirs.clone() };
@@ -970,7 +1106,7 @@ pub fn restore_impl(
         return Ok(0);
     }
     let (index, _it) = repo.index_view(&line)?;
-    let head_root = repo.head_tree(&line)?;
+    let head_root = repo.head_src(&line)?;
     let src_id = match source {
         Some(r) => Some(revs::resolve(repo, Some(&line), r)?),
         None => None,
@@ -982,8 +1118,8 @@ pub fn restore_impl(
         _ => None,
     };
     let src_root = match &src_id {
-        Some(_) if src_view.is_some() => src_view.as_ref().unwrap().path.clone(),
-        Some(id) => repo.state_root(id)?,
+        Some(_) if src_view.is_some() => snap(&src_view.as_ref().unwrap().path),
+        Some(id) => repo.state_src(id)?,
         None => {
             if staged {
                 head_root.clone()
@@ -994,7 +1130,7 @@ pub fn restore_impl(
     };
     let mut matched = false;
     if staged {
-        let stage = repo.ensure_stage(&line)?;
+        let stage = repo.ensure_full_stage(&line)?;
         let view = repo.temp_snapshot(&stage, true)?;
         let d = restore_paths(repo, &line, &src_root, &view.path, &stage, specs, None)?;
         matched |= !d.is_empty();
@@ -1051,10 +1187,10 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     if !paths.is_empty() {
         let specs = h.specs(&paths)?;
-        let src = pos.first().map(|s| s.as_str()).unwrap_or("HEAD");
+        let src = pos.first().map(|s| s.as_str()).unwrap_or("head");
         return restore_impl(ctx, &h, &line, &specs, true, false, Some(src), false, false);
     }
-    let target = revs::resolve(&h.repo, Some(&line), pos.first().map(|s| s.as_str()).unwrap_or("HEAD"))?;
+    let target = revs::resolve(&h.repo, Some(&line), pos.first().map(|s| s.as_str()).unwrap_or("head"))?;
     let (_lock, w) = begin_change(ctx, &h.repo, &line)?;
     let line = h.repo.line(&line.id)?;
     let repo = &h.repo;
@@ -1079,6 +1215,8 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
     match mode {
         "soft" => {
             // Keep the index content, now based on the new head.
+            let mut temps: Vec<Temp> = Vec::new();
+            let index = repo.complete(index, &mut temps)?;
             let keep = repo.temp_snapshot(&index, true)?;
             repo.drop_stage(&line)?;
             let mut l2 = line.clone();
@@ -1090,22 +1228,22 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
         "mixed" => repo.drop_stage(&line)?,
         "hard" => {
             repo.drop_stage(&line)?;
-            let scan = repo.scan(&line)?;
-            let wdir = repo.working(&line);
-            // Revert every tracked path; untracked and ignored files stay.
-            let own = repo.own(&line);
-            for c in changes::without_moves(changes::file_changes(&scan.path, &target_root)?) {
-                if skip_path(&c.path) {
-                    continue;
-                }
-                if c.new.is_none() {
-                    if fsutil::lmeta(&index, &c.path).is_none() {
-                        continue;
-                    }
-                    fsutil::remove_entry(&wdir, &c.path)?;
-                } else {
-                    fsutil::copy_entry(&target_root, &c.path, &wdir, &c.path, own)?;
-                }
+            if !repo.reset_snapshot(ctx, &line, &target)? {
+                let scan = repo.scan(&line)?;
+                let wdir = repo.working(&line);
+                // Revert every tracked path; untracked and ignored files stay.
+                let own = repo.own(&line);
+                let list: Vec<_> = changes::without_moves(changes::file_changes(&scan.path, &target_root)?)
+                    .into_iter()
+                    .filter(|c| !skip_path(&c.path))
+                    .collect();
+                let gone: Vec<&str> = list
+                    .iter()
+                    .filter(|c| c.new.is_none() && fsutil::lmeta(&index, &c.path).is_some())
+                    .map(|c| c.path.as_str())
+                    .collect();
+                let write: Vec<&str> = list.iter().filter(|c| c.new.is_some()).map(|c| c.path.as_str()).collect();
+                fsutil::replace_entries(&target_root, &wdir, &gone, &write, own)?;
             }
         }
         _ => {
@@ -1121,7 +1259,7 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     if mode == "hard" && !a.has("-q") {
         let s = repo.state(&target)?;
-        outln!(ctx, "HEAD is now at {} {}", ids::short(&target), s.message.lines().next().unwrap_or(""));
+        outln!(ctx, "head is now at {} {}", ids::short(&target), s.message.lines().next().unwrap_or(""));
     }
     Ok(0)
 }
@@ -1138,20 +1276,20 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
     if repo.is_stacked(&line)? && !matches!(sub, "list" | "show" | "drop" | "clear") {
         return Err(exit(
             1,
-            "error: layr stash is not available in a line with overlays yet; commit the changes or use 'layr save'",
+            "error: layr park is not available in a line with overlays yet; save the changes or use 'layr save'",
         ));
     }
     match sub {
         "list" => {
             for (i, s) in repo.p.db.line_states(&line.id, StateKind::Stash)?.iter().enumerate() {
-                outln!(ctx, "stash@{{{i}}}: {}", s.message);
+                outln!(ctx, "park@{{{i}}}: {}", s.message);
             }
             Ok(0)
         }
         "show" => {
             let spec = Spec::new().flag("-p|--patch").flag("--stat").flag("-u|--include-untracked");
             let a = parse(&spec, &rest)?;
-            let rev = a.pos.first().cloned().unwrap_or_else(|| "stash@{0}".into());
+            let rev = a.pos.first().cloned().unwrap_or_else(|| "park@{0}".into());
             let id = revs::resolve(repo, Some(&line), &rev)?;
             let s = repo.state(&id)?;
             let parent = repo.state_root(&s.parents[0])?;
@@ -1174,7 +1312,7 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
             let targets: Vec<(usize, String)> = if sub == "clear" {
                 list.iter().enumerate().map(|(i, s)| (i, s.id.clone())).collect()
             } else {
-                let rev = rest.first().cloned().unwrap_or_else(|| "stash@{0}".into());
+                let rev = rest.first().cloned().unwrap_or_else(|| "park@{0}".into());
                 let id = revs::resolve(repo, Some(&line), &rev)?;
                 let i = list.iter().position(|s| s.id == id).unwrap_or(0);
                 vec![(i, id)]
@@ -1184,13 +1322,13 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 rec.data = serde_json::json!({"state": id, "line": line.id});
                 repo.commit_record(ctx, rec)?;
                 if sub == "drop" {
-                    outln!(ctx, "Dropped stash@{{{i}}} ({})", ids::short(&id));
+                    outln!(ctx, "Dropped park@{{{i}}} ({})", ids::short(&id));
                 }
             }
             Ok(0)
         }
         "pop" | "apply" => {
-            let rev = rest.iter().find(|r| !r.starts_with('-')).cloned().unwrap_or_else(|| "stash@{0}".into());
+            let rev = rest.iter().find(|r| !r.starts_with('-')).cloned().unwrap_or_else(|| "park@{0}".into());
             let id = revs::resolve(repo, Some(&line), &rev)?;
             let s = repo.state(&id)?;
             let (_lock, w) = begin_change(ctx, repo, &line)?;
@@ -1209,7 +1347,7 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 ours_id: &line.head,
                 theirs_id: &id,
                 ours_label: "Updated upstream",
-                theirs_label: "Stashed changes",
+                theirs_label: "Parked changes",
                 config: &cfg,
                 run_as: ctx.caller.driver_ids(),
                 allow_root: ctx.caller.is_root(),
@@ -1235,7 +1373,7 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
             }
             record_working(ctx, repo, &line, &format!("stash.{sub}"), w)?;
             if !out.conflicts.is_empty() {
-                outln!(ctx, "The stash entry is kept in case you need it again.");
+                outln!(ctx, "The park entry is kept in case you need it again.");
                 return Ok(1);
             }
             if sub == "pop" {
@@ -1264,8 +1402,9 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 return Ok(0);
             }
             let head = repo.state(&line.head)?;
-            let head_root = repo.state_root(&line.head)?;
-            let work = repo.temp_work(&head_root)?;
+            let head_root = repo.head_src(&line)?;
+            let work = Temp { path: repo.p.work_dir().join(ids::new_id()) };
+            repo.snapshot_state(&line.head, &work.path, false)?;
             let own = repo.own(&line);
             let mut paths: BTreeSet<String> = BTreeSet::new();
             for c in st.staged.iter().chain(st.unstaged.iter()) {
@@ -1295,7 +1434,7 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
             // Back to the head content, or with --keep-index to the index content (the index
             // stays). New files that went into the stash leave the working folder.
             let keep_index = a.has("-k");
-            let target: &Path = if keep_index { &index } else { &head_root };
+            let target: &Snap = if keep_index { &index } else { &head_root };
             let wdir = repo.working(&line);
             let wtree = crate::tree::Tree::open(&wdir)?;
             for p in &paths {
@@ -1373,7 +1512,7 @@ pub fn clean(ctx: &Ctx, args: &[String]) -> Result<i32> {
 /// index and everything in it is of the kinds being removed: with `-X` an ignored folder, with
 /// `-x` any new folder, without them a new folder that holds no ignored files. Otherwise the
 /// files go one by one. Without `-d`, files in new folders stay.
-fn clean_targets(st: &Status, scan: &Path, index: &Path, dirs: bool, with_ignored: bool, only_ignored: bool) -> BTreeSet<String> {
+fn clean_targets(st: &Status, scan: &Path, index: &Snap, dirs: bool, with_ignored: bool, only_ignored: bool) -> BTreeSet<String> {
     let rules = crate::ignore_rules::Rules::new(scan);
     let in_index = |d: &str| fsutil::lmeta(index, d).is_some();
     let folders = |p: &str| -> Vec<String> {

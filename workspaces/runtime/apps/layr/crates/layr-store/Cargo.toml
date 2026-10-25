@@ -1,0 +1,33 @@
+[package]
+name = "layr-store"
+version = "0.1.0"
+edition = "2021"
+description = "Encrypted Layr store format, keys, and transport"
+license = "MIT"
+
+[features]
+default = ["native"]
+native = ["dep:chrono", "dep:rand", "dep:reqwest", "dep:sha1", "dep:zstd-safe", "ed25519-dalek/rand_core", "uuid/v7"]
+wasm = ["dep:getrandom", "dep:ruzstd"]
+
+[dependencies]
+anyhow = "1"
+age = { version = "0.11", features = ["ssh"] }
+bech32 = "0.11"
+bip39 = "2"
+ssh-key = { version = "0.6", features = ["ed25519"] }
+zstd-safe = { version = "7", features = ["std"], optional = true }
+ruzstd = { version = "0.9", optional = true }
+getrandom = { version = "0.2", features = ["js"], optional = true }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"], optional = true }
+ed25519-dalek = "2"
+hex = "0.4"
+hmac = "0.12"
+rand = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
+sha2 = "0.10"
+sha1 = { version = "0.10", optional = true }
+uuid = "1"

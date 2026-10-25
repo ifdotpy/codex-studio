@@ -1,19 +1,10 @@
 //! Signed operation records. A stored record is one JSON line
 //! `{"r": <record>, "s": "<Ed25519 signature of the exact record bytes>"}`; the same line is the
-//! JSONL form used for replication, backups and export.
+//! JSONL form used for replication, remote copies and export.
 
 use crate::model::Record;
-use anyhow::{anyhow, Context, Result};
-use base64::Engine;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Line<'a> {
-    #[serde(borrow)]
-    r: &'a serde_json::value::RawValue,
-    s: String,
-}
+use anyhow::Result;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 
 pub struct Signed {
     pub record: Record,
@@ -23,38 +14,48 @@ pub struct Signed {
 
 pub fn sign_line(rec: &Record, key: &SigningKey) -> Result<String> {
     let body = serde_json::to_string(rec)?;
-    let sig = key.sign(body.as_bytes());
-    let s = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+    let s = layr_store::keys::sign_bytes(body.as_bytes(), key);
     Ok(format!("{{\"r\":{body},\"s\":\"{s}\"}}"))
 }
 
 /// Parse one stored line. With `key`, also check the signature.
 pub fn parse_line(line: &str, key: Option<&VerifyingKey>) -> Result<Signed> {
-    let l: Line = serde_json::from_str(line).context("parse log line")?;
-    if let Some(k) = key {
-        let sig = base64::engine::general_purpose::STANDARD.decode(&l.s)?;
-        let sig = Signature::from_slice(&sig).map_err(|e| anyhow!("bad signature: {e}"))?;
-        k.verify(l.r.get().as_bytes(), &sig).map_err(|_| anyhow!("record signature does not verify"))?;
-    }
-    let record: Record = serde_json::from_str(l.r.get())?;
+    let body = layr_store::record::parse_line(line, key)?;
+    let record: Record = serde_json::from_str(body.get())?;
     Ok(Signed { record, line: line.to_string() })
 }
 
 /// The public key that a machine publishes in its first record (`op: "machine"`).
 pub fn machine_key(rec: &Record) -> Result<VerifyingKey> {
-    let k = rec.data.get("public_key").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("machine record without key"))?;
-    let b = hex::decode(k)?;
-    let arr: [u8; 32] = b.try_into().map_err(|_| anyhow!("bad key length"))?;
-    Ok(VerifyingKey::from_bytes(&arr)?)
+    layr_store::record::machine_key(&serde_json::value::to_raw_value(rec)?)
 }
 
-/// Sign bytes that are not a record (a backup manifest) with the machine key.
-pub fn sign_bytes(data: &[u8], key: &SigningKey) -> String {
-    base64::engine::general_purpose::STANDARD.encode(key.sign(data).to_bytes())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
 
-pub fn verify_bytes(data: &[u8], signature: &str, key: &VerifyingKey) -> Result<()> {
-    let sig = base64::engine::general_purpose::STANDARD.decode(signature)?;
-    let sig = Signature::from_slice(&sig).map_err(|e| anyhow!("bad signature: {e}"))?;
-    key.verify(data, &sig).map_err(|_| anyhow!("signature does not verify"))
+    #[test]
+    fn operation_payloads_use_the_existing_signature_envelope() {
+        let key = SigningKey::from_bytes(&[19; 32]);
+        for (op, payload) in [
+            ("push", json!({"remote":"store","url":"file:///store","states_sent":2})),
+            ("sync", json!({"remote":"peer","direction":"sync","state_ids_received":["state"]})),
+            (
+                "bisect.run",
+                json!({"good":"good","bad":"bad","first_bad":"middle","steps":[{"state":"middle","exit":1,"reused":true}]}),
+            ),
+            ("rebase.step", json!({"version":{"kind":"replay","target_head":"main-head"}})),
+        ] {
+            let mut record = Record::new(op);
+            record.data = payload;
+            let line = sign_line(&record, &key).unwrap();
+            let parsed = parse_line(&line, Some(&key.verifying_key())).unwrap();
+            assert_eq!(parsed.record.data, record.data);
+            let raw: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let mut changed = raw.clone();
+            changed["r"]["data"]["result"] = json!("changed");
+            assert!(parse_line(&serde_json::to_string(&changed).unwrap(), Some(&key.verifying_key())).is_err());
+        }
+    }
 }

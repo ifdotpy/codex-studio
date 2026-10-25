@@ -42,7 +42,8 @@ class LineSave(unittest.TestCase):
         self.assertEqual(result, {"stateId": "state-1", "turnId": "turn-1"})
         # layr renamed its "layer" command to "cache"; the old name fails every turn save.
         self.assertEqual(calls[0], ("cache", "repair"))
-        self.assertEqual(calls[1][:2], ("save", "--force"))
+        self.assertEqual(calls[1], ("save", "--force", "--note", "Studio turn turn-1"))
+        self.assertEqual(calls[2], ("rev-parse", "head@{0}"))
 
 
 if __name__ == "__main__":
