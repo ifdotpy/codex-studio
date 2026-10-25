@@ -316,6 +316,63 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
   );
 });
 
+test("archived CI partitions reuse prepared binaries without Cargo build options", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "studio-gate-archive-"));
+  try {
+    const owner = "workspaces/tooling/apps/repository-checks/gate-config.mjs";
+    mkdirSync(path.dirname(path.join(root, owner)), { recursive: true });
+    writeFileSync(path.join(root, owner), readFileSync(owner));
+    writeFileSync(path.join(root, "justfile"), readFileSync("justfile"));
+    const tools = path.join(root, "tools");
+    mkdirSync(tools);
+    const capture = path.join(root, "capture.json");
+    writeFileSync(
+      path.join(tools, "cargo"),
+      `#!${process.execPath}
+require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify({args: process.argv.slice(2), supervisor: process.env.STUDIO_SUPERVISOR_BINARY}));
+`,
+    );
+    chmodSync(path.join(tools, "cargo"), 0o755);
+    const result = spawnSync(
+      "just",
+      ["test-fast-rust-partition", "1", "4", "archive.tar.zst"],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: tools + path.delimiter + process.env.PATH,
+          CAPTURE: capture,
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const recorded = JSON.parse(readFileSync(capture, "utf8"));
+    assert.deepEqual(recorded.args, [
+      "nextest",
+      "run",
+      "--archive-file",
+      "archive.tar.zst",
+      "--workspace-remap",
+      ".",
+      "--extract-to",
+      ".",
+      "--extract-overwrite",
+      "--profile",
+      "ci",
+      "--partition",
+      "hash:1/4",
+    ]);
+    assert.equal(
+      recorded.supervisor,
+      path.join(root, "target", "debug", "codex-process-supervisor"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("native platform filter keeps every common clause identical", () => {
   const source = readFileSync(".config/nextest.toml", "utf8");
   const [common, linux] = [
