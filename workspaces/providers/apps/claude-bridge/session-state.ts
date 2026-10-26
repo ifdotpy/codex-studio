@@ -1,4 +1,8 @@
 import type {
+  CacheReport,
+  ToolDefinition,
+} from "./runtime-contract.generated.ts";
+import type {
   Options,
   RewindFilesResult,
   SessionMessage,
@@ -143,7 +147,9 @@ export interface Session {
   sandbox?: string;
   claude?: Settings;
   developerInstructions?: string;
-  dynamicTools?: unknown[];
+  dynamicTools?: ToolDefinition[];
+  idleCache?: CacheReport;
+  moveProof?: unknown;
   dynamicToolsJson?: string;
   capabilityProfile?: unknown;
   moveTurnOptions?: Partial<Options>;
