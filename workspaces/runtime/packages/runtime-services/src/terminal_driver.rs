@@ -2683,9 +2683,9 @@ mod tests {
         }
 
         fn snapshot(store: &RuntimeStore) -> Value {
-            fn rows(connection: &rusqlite::Connection, table: &str) -> Value {
+            fn rows(connection: &rusqlite::Connection, table: &str, columns: &str) -> Value {
                 let mut statement = connection
-                    .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+                    .prepare(&format!("SELECT {columns} FROM \"{table}\" ORDER BY rowid"))
                     .expect("prepare action corpus table");
                 let count = statement.column_count();
                 let rows = statement
@@ -2712,11 +2712,12 @@ mod tests {
             }
             let connection = store.test_reader().expect("read action corpus rows");
             serde_json::json!({
-                "user_terminals":rows(&connection,"user_terminals"),
-                "user_terminal_receipts":rows(&connection,"user_terminal_receipts"),
-                "user_terminal_output":rows(&connection,"user_terminal_output"),
-                "user_terminal_event_cursor":rows(&connection,"user_terminal_event_cursor"),
-                "user_terminal_decoder_state":rows(&connection,"user_terminal_decoder_state"),
+                // The Python oracle predates the Rust-owned output_generation column.
+                "user_terminals":rows(&connection,"user_terminals","id,record,output,offset"),
+                "user_terminal_receipts":rows(&connection,"user_terminal_receipts","*"),
+                "user_terminal_output":rows(&connection,"user_terminal_output","*"),
+                "user_terminal_event_cursor":rows(&connection,"user_terminal_event_cursor","*"),
+                "user_terminal_decoder_state":rows(&connection,"user_terminal_decoder_state","*"),
             })
         }
 
