@@ -796,15 +796,15 @@ pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>
         ("cwd".into(), json!(s.actor.cwd)),
         ("serviceTier".into(), json!(service_tier(&s.settings))),
     ]);
-    // The wire owner is a struct, so its JSON representation is an object.
-    params.extend(
-        serde_json::from_value::<Map<String, Value>>(json!(
-            studio_runtime_schema::provider_input::ClaudeBridgeTurnWire {
-                model: Some(s.settings.model.clone()),
-            }
-        ))
-        .expect("Claude turn wire object"),
-    );
+    let Value::Object(wire) = json!(
+        studio_runtime_schema::provider_input::ClaudeBridgeTurnWire {
+            model: Some(s.settings.model.clone()),
+        }
+    ) else {
+        // The wire owner is a struct, so serialization always produces an object.
+        unreachable!("Claude turn wire object");
+    };
+    params.extend(wire);
     let effort = if s.actor.native_effort_present {
         &s.settings.native_effort
     } else {

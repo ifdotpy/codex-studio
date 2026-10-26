@@ -385,15 +385,15 @@ impl ProviderAdapter for ClaudeAdapter {
         params.insert("claude".into(), json!(options));
         // A managed worker (a child agent) runs without the user's MCP servers.
         if s.actor.parent_id.is_some() {
-            // The wire owner is a struct, so its JSON representation is an object.
-            params.extend(
-                serde_json::from_value::<Map<String, Value>>(json!(
-                    studio_runtime_schema::provider_input::ClaudeBridgeSessionWire {
-                        user_mcp: Some(false)
-                    }
-                ))
-                .expect("Claude session wire object"),
-            );
+            let Value::Object(wire) = json!(
+                studio_runtime_schema::provider_input::ClaudeBridgeSessionWire {
+                    user_mcp: Some(false)
+                }
+            ) else {
+                // The wire owner is a struct, so serialization always produces an object.
+                unreachable!("Claude session wire object");
+            };
+            params.extend(wire);
         }
     }
 
