@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Native desktop host for the LAYR Studio workspace",
+  "type": "module",
   "main": "main.cjs",
   "scripts": {
     "start": "pnpm exec install-electron && pnpm exec electron .",
