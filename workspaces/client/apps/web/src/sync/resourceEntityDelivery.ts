@@ -99,10 +99,9 @@ export class ResourceEntityDelivery {
     isCurrent: () => boolean,
   ) => Promise<void>;
   private readonly dispatch: (event: ResourceChangeEvent) => void;
-  private readonly failed?: (
-    event: ResourceChangeEvent,
-    error: unknown,
-  ) => boolean | void;
+  private readonly failed:
+    | ((event: ResourceChangeEvent, error: unknown) => boolean | void)
+    | undefined;
   constructor(
     persist: (
       event: ResourceChangeEvent,

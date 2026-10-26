@@ -12,7 +12,7 @@ export type AutomaticAccessAttempt = {
   pairRequestId: string;
   invitation?: Omit<PairInvitation, "token">;
   pairStarted?: boolean;
-  needsPairCheck?: true;
+  needsPairCheck?: true | undefined;
 };
 export interface AutomaticAccessStore {
   read(key: string): Promise<AutomaticAccessAttempt | null>;

@@ -154,7 +154,8 @@ type ProjectionState = {
 
 type StateProjectionPayload = Snapshot | null;
 
-type TranscriptProjectionPayload = TranscriptPageData | null;
+type TranscriptProjectionPayload =
+  import("./transcriptCache").CachedTranscript["payload"];
 
 import { clearTranscript } from "./transcriptCache";
 export type SyncClientOptions = {
@@ -628,7 +629,7 @@ export function createSyncClient(options: SyncClientOptions) {
       changes.through !== cursor.seq
     )
       throw new Error("Invalid subscription cursor interval");
-    const selector = resource as unknown as Record<string, unknown>;
+    const selector = resource as Record<string, unknown>;
     const selectedAgent = scope.agentField
       ? selector[scope.agentField]
       : undefined;
@@ -773,7 +774,7 @@ export function createSyncClient(options: SyncClientOptions) {
     const resource = interval.resource;
     const scope = scopes[resource.kind];
     if (!scope) throw new Error("Unknown staged entity scope");
-    const selector = resource as unknown as Record<string, unknown>;
+    const selector = resource as Record<string, unknown>;
     const selectedAgent = scope.agentField
       ? selector[scope.agentField]
       : undefined;
@@ -2864,7 +2865,7 @@ export function createSyncClient(options: SyncClientOptions) {
         }
       }
       replicationErrors = [
-        current.error$.subscribe((error: any) => {
+        current.error$.subscribe((error) => {
           if (generation !== replicationGeneration) return;
           const direction =
             error.code === "RC_PULL"

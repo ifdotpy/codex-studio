@@ -15,15 +15,23 @@ export function encodeDraftPayload(value: unknown): string {
     }
     return left.length - right.length;
   };
-  const encode = (item: any): string => {
+  const encode = (item: unknown): string => {
     if (Array.isArray(item)) return `[${item.map(encode).join(",")}]`;
     if (item === null) return "null";
     if (typeof item === "object")
       return `{${Object.keys(item)
         .sort(compareKeys)
-        .map((key) => `${JSON.stringify(key)}:${encode(item[key])}`)
+        .map(
+          (key) =>
+            `${JSON.stringify(key)}:${encode((item as Record<string, unknown>)[key])}`,
+        )
         .join(",")}}`;
-    return JSON.stringify(item);
+    const encoded = JSON.stringify(item);
+    if (encoded === undefined)
+      throw new Error(
+        "The draft payload contains a value without a JSON encoding.",
+      );
+    return encoded;
   };
   return encode(normalized);
 }
