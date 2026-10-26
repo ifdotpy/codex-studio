@@ -3,6 +3,17 @@
 set -Eeuo pipefail
 test "$(id -u)" = 0
 test "$(findmnt -n -o FSTYPE --target /var/lib/codex-studio)" = btrfs
+# Serialize installs for the VM-owned store, including receipt writes and activation.
+exec 9>/var/lib/codex-studio/layr-install.lock
+flock -n 9 || { echo 'Another Layr VM install holds the store lock.' >&2; exit 1; }
+if [ "${1:-}" = --activate ]; then
+    shift
+    status_path=${1:--}
+    if [ "$#" -gt 0 ]; then shift; fi
+    python3 -B /opt/codex-studio/vm/guest/guest_update.py layr-activate \
+        /usr/local/bin/layr /var/lib/codex-studio/layr /var/lib/codex-studio "$status_path" "$@"
+    exit 0
+fi
 rust_version=1.90.0
 rust_dir=/opt/codex-studio/rust
 export CARGO_HOME=/var/lib/codex-studio/layr-build-cache/cargo
@@ -43,10 +54,13 @@ if [ "$(cat /var/lib/codex-studio/layr-build 2>/dev/null || true)" != "$identity
     use_rust
     export CARGO_TARGET_DIR=/var/lib/codex-studio/layr-build-cache/target
     timeout --kill-after=10 1200 cargo build --manifest-path "$source_dir/Cargo.toml" --release --locked --jobs 2
-    install -m 0755 "$CARGO_TARGET_DIR/release/layr" /usr/local/bin/layr
-    printf '%s\n' "$identity" > /var/lib/codex-studio/layr-build
-    rebuilt=1
+    candidate="$CARGO_TARGET_DIR/release/layr"
+else
+    candidate=/usr/local/bin/layr
 fi
+# Stage only. Activation follows the broker drain when an update defers restarts.
+python3 -B /opt/codex-studio/vm/guest/guest_update.py layr-stage "$candidate" \
+    /usr/local/bin/layr /var/lib/codex-studio/layr /var/lib/codex-studio "$identity"
 # The vault writer (docs/vault.md): the root broker runs `layr-desk push`; it has no daemon.
 desk_dir=/opt/codex-studio/vm/layr-desk
 desk_identity=$(source_identity "$desk_dir")
@@ -65,8 +79,9 @@ done
 # Only our unit serves SMB, on the guest loopback; the vsock bridge carries it to the Mac.
 systemctl disable --now smbd.service nmbd.service 2>/dev/null || true
 systemctl daemon-reload
-systemctl enable --now codex-studio-layr.service codex-studio-layr-admin.service codex-studio-share-bridge.service
-# The daemon starts at boot, before provisioning rebuilds layr: a new binary needs a restart
-# (on 2026-10-11 the old daemon kept reading .regenerable after the .layrattributes release).
-# An in-place update (guest_update.py) restarts it later, once no broker request runs.
-if [ "${rebuilt:-0}" = 1 ] && [ -z "${STUDIO_DEFER_RESTARTS:-}" ]; then systemctl restart codex-studio-layr.service; fi
+systemctl enable codex-studio-layr.service codex-studio-layr-admin.service codex-studio-share-bridge.service
+if [ -z "${STUDIO_DEFER_RESTARTS:-}" ]; then
+    python3 -B /opt/codex-studio/vm/guest/guest_update.py layr-activate \
+        /usr/local/bin/layr /var/lib/codex-studio/layr /var/lib/codex-studio -
+    systemctl start codex-studio-layr.service codex-studio-layr-admin.service codex-studio-share-bridge.service
+fi

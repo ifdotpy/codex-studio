@@ -293,19 +293,75 @@ The installer verifies the manifest, builds with the pinned Rust toolchain, and 
 Run it only after VM commands finish.
 The install keeps the existing store and its machine identity.
 
-The local store format guard refuses an unversioned store until an operator explicitly upgrades it.
-Keep the VM idle during this procedure.
-Make a copy of its data disk first.
-After installation, run these commands inside the VM:
+### Store format upgrade
 
-```sh
-sudo env LAYR_ROOT=/var/lib/codex-studio/layr /usr/local/bin/layr store-version --json
-sudo env LAYR_ROOT=/var/lib/codex-studio/layr /usr/local/bin/layr store-version --upgrade
-sudo systemctl restart codex-studio-layr.service
-```
+The installer checks the candidate binary before it replaces `/usr/local/bin/layr`.
+It stages that binary at `/usr/local/bin/layr.next`.
+The source and binary hashes go in `/var/lib/codex-studio/layr-install-pending.json`.
+The guest uses its existing Python runtime for this procedure.
 
-Upgrade only a legacy store. A newer incompatible format requires a matching binary.
-The upgrade retains the projects, lines, caches, and machine identity.
+It reads `store-version --json` directly from the VM store.
+It upgrades an older or unversioned store only when Layr reports `upgrade.metadataOnly: true`.
+The reported source and target formats must match the store and candidate binary.
+An absent or empty store initializes with its first normal Layr command.
+The installer does not upgrade an empty root.
+
+The installer holds an exclusive lock at `/var/lib/codex-studio/layr-install.lock`.
+It saves the request `store-upgrade:<target-format>` before the upgrade starts.
+The receipt is `/var/lib/codex-studio/layr-store-upgrades/store-upgrade-<target-format>.json`.
+It records the store path, source hash, binary hash, formats, and timestamps.
+The installer reads the store again before it marks the receipt complete.
+A repeat changes neither the store nor a complete receipt.
+
+After a lost response, a compatible marker proves success without another upgrade command.
+An update first keeps the old daemon and client active.
+After the broker becomes idle, a separate unit runs `install-layr.sh --activate`.
+Activation stops the old daemon before the store upgrade.
+It then replaces the binary, starts the new daemon, and checks its protocol hello.
+Only that successful check permits the update receipt to become complete.
+
+A broker restart alone does not prove successful activation.
+If the broker stays busy for 10 minutes, activation refuses without a daemon restart.
+A direct install uses the same activation procedure immediately.
+
+A failed check or upgrade keeps the old binary and build receipt.
+A failure after binary replacement restores the old binary and build receipt.
+The helper starts the old daemon and broker again.
+If that restart also fails, the error states the failure.
+
+The build candidate remains at `/var/lib/codex-studio/layr-build-cache/target/release/layr`.
+The staged candidate remains at `/usr/local/bin/layr.next` after an activation failure.
+An unfinished receipt and an incompatible store require operator inspection.
+
+The installer does not repeat that upgrade request.
+A newer format requires a matching binary.
+An upgrade without the metadata-only declaration requires an explicit operator decision.
+
+For operator recovery:
+
+1. Wait until VM commands finish.
+2. Back up the VM data disk.
+3. Inspect the upgrade receipt.
+4. Inspect the store with the candidate binary:
+
+   ```sh
+   sudo env LAYR_DIRECT=1 LAYR_ROOT=/var/lib/codex-studio/layr \
+     /var/lib/codex-studio/layr-build-cache/target/release/layr store-version --json
+   ```
+
+5. For an older supported store, review the Layr upgrade requirements.
+6. If those requirements permit the upgrade, run the explicit command:
+
+   ```sh
+   sudo env LAYR_DIRECT=1 LAYR_ROOT=/var/lib/codex-studio/layr \
+     /var/lib/codex-studio/layr-build-cache/target/release/layr store-version --upgrade
+   ```
+
+7. Run `install-layr.sh` again.
+
+The second install reconciles the receipt from the compatible marker.
+It then activates the binary and checks the daemon hello.
+The metadata-only upgrade keeps the projects, lines, caches, and machine identity.
 
 ## Checks
 
