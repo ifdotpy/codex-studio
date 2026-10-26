@@ -238,6 +238,7 @@ platform = 'cfg(target_os = "linux")'
 default-filter = '''
     (package(=studio-runtime-http) & kind(lib) & test(/^bounded_entities::tests::desktop_source_projects_legacy_native_rotation_without_mutating_status$/)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::supervisor_health_(accepts_current_protocol_and_preserves_exact_handles|rejects_incompatible_or_degraded_status)$/)) |
+    (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(/^claude_controls_actor::mcp_auto_background_accepts_only_booleans$/)) |
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
     (package(=studio-runtime-schema) & kind(lib) & test(bridge_wire)) |
