@@ -2958,7 +2958,8 @@ async function handle(
     if (!turn) throw new Error("Unknown Claude turn");
     return page(turn.items) satisfies HandlerResult<typeof method>;
   }
-  if (method === "thread/list") {
+  if (request.method === "thread/list") {
+    const p = request.params;
     const page = await sessionStore.listMetadata(p.cursor, p.limit);
     return {
       data: page.data.map((metadata) => ({
@@ -2976,7 +2977,7 @@ async function handle(
         modelProvider: "claude",
       })),
       nextCursor: page.nextCursor,
-    } satisfies HandlerResult<typeof method>;
+    } satisfies HandlerResult<typeof request.method>;
   }
   if (method === "skills/extraRoots/set")
     throw new Error("Claude uses its native skills and MCP configuration");
