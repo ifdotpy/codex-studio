@@ -51,7 +51,12 @@ test("Stop withdraws the unyielded batch tail before background task control", a
   let withdrew = false;
   active.input.withdraw = () => {
     withdrew = true;
-    return [{ uuid: "native", studioInputIdentity: item.id }];
+    return [
+      {
+        uuid: "native" as import("./input-messages.ts").StudioInputMessage["uuid"],
+        studioInputIdentity: item.id,
+      },
+    ];
   };
   active.q = {
     interrupt: async () => ({
