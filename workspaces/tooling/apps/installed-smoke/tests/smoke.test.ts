@@ -28,7 +28,8 @@ import type {
   Supervisor,
   Optional,
 } from "../usage.ts";
-import { isRecord } from "../usage.ts";
+import { isRecord, readEvidence } from "../usage.ts";
+import type { OwnedEntities } from "../smoke.ts";
 
 test("process ages read every ps etime form", () => {
   assert.equal(elapsedSeconds("05:03"), 303);
@@ -741,7 +742,11 @@ test("collector waits for a matching final-turn cost publication through SSE", a
     );
   };
   mock.method(smoke.backend, "get", async (route: string) => {
-    if (route === "/api/sync/protocol") return { protocolVersion: 4 };
+    if (route === "/api/sync/protocol")
+      return { protocolVersion: 4 } satisfies Pick<
+        Schema["SyncProtocolResponse"],
+        "protocolVersion"
+      >;
     if (route.startsWith("/api/session-cost")) {
       if (!updated) {
         updated = true;
@@ -848,18 +853,28 @@ test("recovery uses saved serving provenance when no live bridge remains", async
   });
   mock.method(smoke.backend, "get", async (route: string) =>
     route === "/api/desktop"
-      ? { backendBuild: "build", stateDir: "/state", pid: 10 }
-      : { accounts: [] },
+      ? ({ backendBuild: "build", stateDir: "/state", pid: 10 } satisfies Pick<
+          Schema["DesktopResponse"],
+          "backendBuild" | "stateDir" | "pid"
+        >)
+      : ({ accounts: [] } satisfies Pick<
+          Schema["AccountsResponse"],
+          "accounts"
+        >),
   );
-  mock.method(smoke, "ownEntities", async () => ({
-    agent: {
-      name: "Studio smoke abcdef12 claude",
-      id: "a",
-      provider: "claude",
-      accountKey: "c",
-      model: "haiku",
-    },
-  }));
+  mock.method(
+    smoke,
+    "ownEntities",
+    async (): Promise<Pick<OwnedEntities, "agent">> => ({
+      agent: {
+        name: "Studio smoke abcdef12 claude",
+        id: "a",
+        provider: "claude",
+        accountKey: "c",
+        model: "haiku",
+      },
+    }),
+  );
   mock.method(smoke, "bridgeObservation", async () => {
     throw new Error("No live bridge");
   });
@@ -909,9 +924,12 @@ test("cancellation during Claude steering prevents steer and final message submi
       posts.push(args);
     },
   );
-  mock.method(smoke, "transcript", async () => [
-    { role: "assistant", turnId: "initial" },
-  ]);
+  mock.method(
+    smoke,
+    "transcript",
+    async () =>
+      [{ role: "assistant", turnId: "initial" }] satisfies Transcript[],
+  );
   smoke.live = {
     entities: new Map([["agentSummary:a", { turnId: "long" }]]),
     changed: async () => {},
@@ -919,7 +937,9 @@ test("cancellation during Claude steering prevents steer and final message submi
   };
   mock.method(smoke, "chatStatus", async () => {
     smoke.cancel.abort(new Error("steer interrupted"));
-    return { inFlight: true };
+    return { inFlight: true } satisfies Partial<
+      NonNullable<Awaited<ReturnType<typeof smoke.chatStatus>>>
+    >;
   });
   mock.method(smoke, "saveUsage", () => {});
   await assert.rejects(
@@ -944,13 +964,26 @@ test("usage chat stays idle until returned permissions have been verified", asyn
       let permissionRecord: PermissionRecord = {};
       mock.method(smoke, "permissionRecord", () => permissionRecord);
       smoke.accountsByProvider = new Map([["codex", "default"]]);
-      mock.method(smoke, "chooseModel", async () => ({
-        model: "small",
-        efforts: [],
-      }));
+      mock.method(
+        smoke,
+        "chooseModel",
+        async () =>
+          ({
+            model: "small",
+            efforts: [],
+          }) satisfies Awaited<ReturnType<typeof smoke.chooseModel>>,
+      );
       mock.method(smoke, "saveUsage", () => {});
       mock.method(smoke, "answered", async () => []);
-      mock.method(smoke.backend, "get", async () => ({ protocolVersion: 4 }));
+      mock.method(
+        smoke.backend,
+        "get",
+        async () =>
+          ({ protocolVersion: 4 }) satisfies Pick<
+            Schema["SyncProtocolResponse"],
+            "protocolVersion"
+          >,
+      );
       const control: {
         stream?: ReadableStreamDefaultController<Uint8Array> | null;
       } = {};
@@ -1406,11 +1439,11 @@ test("failed analytics collection persists its latency before a provider row exi
   });
   try {
     await assert.rejects(smoke.analyticsSnapshot("a", 17), /timed out/);
-    const evidence = JSON.parse(fs.readFileSync(file, "utf8"));
+    const evidence = readEvidence(file);
     assert.equal(evidence.providers.length, 0);
-    assert.equal(evidence.analyticsLatency[0].route, analyticsRoute("a"));
-    assert.equal(evidence.analyticsLatency[0].outcome, "timeout");
-    assert.equal(evidence.analyticsLatency[0].timeoutMs, 17);
+    assert.equal(evidence.analyticsLatency?.[0]?.route, analyticsRoute("a"));
+    assert.equal(evidence.analyticsLatency?.[0]?.outcome, "timeout");
+    assert.equal(evidence.analyticsLatency?.[0]?.timeoutMs, 17);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

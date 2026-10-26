@@ -748,9 +748,23 @@ export class Smoke {
   }
 
   async submitModel(
+    route: "/api/messages",
+    body: Schema["ManagedMessageBody"],
+  ): Promise<Schema["studio_api__work__models__MessageReceipt"]>;
+  async submitModel(
+    route: "/api/agents",
+    body: Schema["CreateAgentRequest"] &
+      Pick<Schema["ManagedMessageBody"], "id">,
+  ): Promise<Schema["AgentResponse"]>;
+  async submitModel(
     route: string,
-    body: { id: string; room?: string; [key: string]: unknown },
-  ) {
+    body:
+      | Schema["ManagedMessageBody"]
+      | (Schema["CreateAgentRequest"] &
+          Pick<Schema["ManagedMessageBody"], "id">),
+  ): Promise<
+    Schema["studio_api__work__models__MessageReceipt"] | Schema["AgentResponse"]
+  > {
     this.checkActive();
     if (this.usage && this.root) {
       if (
@@ -765,12 +779,15 @@ export class Smoke {
       this.usageEvidence.submissions.push({
         route,
         id: body.id,
-        room: body.room,
+        room: "room" in body ? body.room : undefined,
         at: new Date().toISOString(),
       });
       this.saveUsage();
     }
-    return this.backend.post(route, body);
+    return this.backend.post<
+      | Schema["studio_api__work__models__MessageReceipt"]
+      | Schema["AgentResponse"]
+    >(route, body);
   }
 
   async bridgeObservation(accountKey: string) {
@@ -1181,7 +1198,7 @@ export class Smoke {
     }
     if (this.usage) {
       this.checkActive();
-      const created = await this.backend.post<Schema["AgentRecordResponse"]>(
+      const created = await this.backend.post<Schema["AgentResponse"]>(
         "/api/leads",
         {
           id,
@@ -1699,7 +1716,7 @@ export class Smoke {
       room: agent,
       text: `Reply with exactly ${token}. Do not use tools.`,
       delivery: "next_turn",
-    };
+    } satisfies Schema["ManagedMessageBody"];
     await this.submitModel("/api/messages", message);
     // An exact retry of the same id must not enqueue the message again.
     await this.submitModel("/api/messages", message);

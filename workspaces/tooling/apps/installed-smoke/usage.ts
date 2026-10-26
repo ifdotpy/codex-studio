@@ -101,7 +101,7 @@ export type Steer = {
   id?: string | undefined;
   turnId?: string | null | undefined;
   sentAt?: string;
-  receipt?: Schema["JsonValue"];
+  receipt?: Schema["studio_api__work__models__MessageReceipt"];
   association?: string;
 };
 export type SavedProvider = {
@@ -1002,15 +1002,13 @@ export function directoryIdentity(folder: string) {
 }
 
 export type PermissionRecord = Optional<
-  Pick<
-    Schema["AgentRecordResponse"],
-    "cwd" | "role" | "approvalPolicy" | "sandbox"
-  >
-> & {
-  sandboxPolicy?: unknown;
-  yoloMode?: Schema["AgentDetailEntityDto"]["yoloMode"] | undefined;
-  claudeOptions?: Schema["AgentDetailEntityDto"]["claudeOptions"] | undefined;
-};
+  Pick<Schema["AgentRecordResponse"], "approvalPolicy" | "sandbox">
+> &
+  Partial<Pick<Schema["AgentResponse"], "cwd" | "role">> & {
+    sandboxPolicy?: unknown;
+    yoloMode?: Schema["AgentDetailEntityDto"]["yoloMode"] | undefined;
+    claudeOptions?: Schema["AgentDetailEntityDto"]["claudeOptions"] | undefined;
+  };
 
 export function verifiedPermissions(
   record: PermissionRecord,
