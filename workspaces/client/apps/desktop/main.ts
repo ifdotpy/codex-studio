@@ -360,7 +360,7 @@ function signInForward(value: SignInForward) {
   const forward = {
     server: string(value.server, 200),
     bridgeId: string(value.bridgeId, 32),
-    host: value.host,
+    host: string(value.host, 16),
     port: value.port,
     path: string(value.path, 2048),
     expiresAt: value.expiresAt,
@@ -368,7 +368,9 @@ function signInForward(value: SignInForward) {
   };
   if (
     !/^[0-9a-f]{32}$/.test(forward.bridgeId) ||
-    !["127.0.0.1", "localhost", "::1"].includes(forward.host) ||
+    (forward.host !== "127.0.0.1" &&
+      forward.host !== "localhost" &&
+      forward.host !== "::1") ||
     !Number.isInteger(forward.port) ||
     forward.port < 1024 ||
     forward.port > 65535 ||
@@ -376,7 +378,7 @@ function signInForward(value: SignInForward) {
     !Number.isFinite(forward.expiresAt)
   )
     throw new Error("Invalid sign-in forward.");
-  return forward;
+  return { ...forward, host: forward.host };
 }
 // This Mac's Studio server binds the port strictly and relays the one redirect
 // (codex_browser_bridge.open_remote_forward). The request is a local window request.
