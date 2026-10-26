@@ -168,6 +168,7 @@ function Fixture() {
             owner: {
               projects: data.runtime.projects.map((project) => ({
                 ...project,
+                ...(location.search.includes("legacy") ? { id: "" } : {}),
                 name: project.name ?? "",
                 path: project.path ?? "",
               })),

@@ -40,6 +40,29 @@ const project = {
   ],
 };
 describe("project locations", () => {
+  it("offers deletion for a registered path-only project but not an inferred chat group", () => {
+    const groups = logicalProjects({
+      local: view(
+        [{ path: "/registered", name: "Registered" }],
+        [
+          {
+            id: "orphan",
+            name: "Chat",
+            path: "/unregistered",
+            archived: false,
+            status: "",
+            unread: false,
+          },
+        ],
+      ),
+    });
+    expect(
+      groups.find((group) => group.path === "/registered")?.deleteTarget,
+    ).toBe("/registered");
+    expect(
+      groups.find((group) => group.path === "/unregistered")?.deleteTarget,
+    ).toBeUndefined();
+  });
   it("groups both registered folders and bound chats under one project", () => {
     const navigation = {
       local: view(

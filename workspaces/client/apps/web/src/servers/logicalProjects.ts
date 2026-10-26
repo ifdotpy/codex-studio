@@ -55,13 +55,13 @@ export function logicalProjects(
         owner,
         canonical?.projectId || project.path,
       );
-      group.deleteTarget ||= canonical?.projectId || project.id;
+      group.deleteTarget ||= canonical?.projectId || id;
       if (!canonical) {
         group.name = project.name;
         group.path = project.path;
         group.owner = source;
         group.compact = project.compact;
-        group.deleteTarget = project.id;
+        group.deleteTarget = id;
       }
       const rows = project.locations || [
         { serverId: source, path: project.path, projectId: id },
