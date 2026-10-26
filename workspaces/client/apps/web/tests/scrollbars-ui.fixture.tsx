@@ -9,9 +9,7 @@ import "../src/components/sidebar-projects.css";
 const content = (
   <div style={{ height: 1200, width: 800 }}>Scrollable content</div>
 );
-const mount = document.getElementById("fixture");
-if (!mount) throw new Error("Missing scrollbar fixture mount");
-createRoot(mount).render(
+createRoot(document.getElementById("fixture")!).render(
   <MantineProvider theme={theme}>
     <div
       id="messages"
@@ -61,9 +59,7 @@ function computedStyles() {
       '.mantine-ScrollArea-scrollbar[data-orientation="vertical"] > .mantine-ScrollArea-thumb',
     ].map((selector) => {
       const element = document.querySelector(selector);
-      if (!element)
-        throw new Error("Missing scrollbar fixture element: " + selector);
-      const style = getComputedStyle(element);
+      const style = getComputedStyle(element!);
       return [
         selector,
         Object.fromEntries(properties.map((key) => [key, style[key]])),
