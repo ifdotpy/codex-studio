@@ -21,6 +21,7 @@ export default {
       "src/rootSelectors.test.ts",
 
       "src/nativeErrors.schema.test.ts",
+      "src/components/BackgroundShellSettings.test.ts",
       "src/precompressedAssets.test.ts",
       "src/platformNeutralCopy.test.ts",
       "src/App.connection.test.ts",

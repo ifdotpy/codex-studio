@@ -80,6 +80,49 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 pub struct OrchestrationSettingsRepository;
 
 impl OrchestrationSettingsRepository {
+    pub fn shell_policy(
+        connection: &Connection,
+    ) -> StoreResult<studio_runtime_schema::shell_policy::Settings> {
+        if !crate::schema::table_exists(connection, TABLE)? {
+            return Ok(Default::default());
+        }
+        let raw: Option<String> = connection
+            .query_row(
+                &format!("SELECT json_extract(record,'$.shellPolicy') FROM {TABLE} WHERE id=?1"),
+                [ROW],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let settings: studio_runtime_schema::shell_policy::Settings = raw
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
+            .unwrap_or_default();
+        if !settings.valid() {
+            return Err(StoreError::SchemaMismatch(
+                "Invalid shellPolicy.quietThresholdMs".into(),
+            ));
+        }
+        Ok(settings)
+    }
+
+    pub fn set_shell_policy(
+        connection: &Connection,
+        settings: &studio_runtime_schema::shell_policy::Settings,
+    ) -> StoreResult<()> {
+        if !settings.valid() {
+            return Err(StoreError::SchemaMismatch(
+                "Invalid shellPolicy.quietThresholdMs".into(),
+            ));
+        }
+        connection.execute(
+            &format!("INSERT INTO {TABLE}(id,record) VALUES(?1,json_object('shellPolicy',json(?2))) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.shellPolicy',json(?2))"),
+            params![ROW, serde_json::to_string(settings).map_err(|error| StoreError::SchemaMismatch(error.to_string()))?]
+        )?;
+        Ok(())
+    }
+
     /// The stored value of `setting`. A state without the table, the row, or
     /// the field uses the setting's default; a stored value out of range is refused.
     pub fn value(connection: &Connection, setting: Setting) -> StoreResult<u64> {

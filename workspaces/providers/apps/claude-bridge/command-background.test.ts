@@ -24,8 +24,8 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-async function runningCommand() {
-  const bridge = await startBridge(FAKE_SDK, "claude-background-");
+async function runningCommand(options: Parameters<typeof startBridge>[2] = {}) {
+  const bridge = await startBridge(FAKE_SDK, "claude-background-", options);
   bridges.push(bridge);
   const turn = (
     await bridge.call("turn/start", {
@@ -54,6 +54,89 @@ async function backgroundCalls(bridge: BridgeHarness) {
     ? (await fs.readFile(file, "utf8")).trim().split("\n")
     : [];
 }
+
+test("native background shell policy checks in and stops through the real bridge", async () => {
+  const { bridge, turn } = await runningCommand({ clock: true });
+  const args = {
+    threadId: bridge.thread,
+    settings: { quietThresholdMs: 10000, pressureCleanup: true },
+    eligible: true,
+    critical: false,
+  };
+  await bridge.call("claude/shellPolicy", args);
+  await bridge.writeSignal(".registered");
+  await bridge.note(
+    "item/started",
+    (n) => n.params.item.canMoveToBackground === true,
+  );
+  await move(bridge, turn);
+  await bridge.note("turn/completed");
+  // The native envelope supplies the output path; a replace snapshot must
+  // not discard it. Write the file at that path without changing the fixture's
+  // public Bash envelope.
+  const output = path.join(bridge.root, "bash-1.output");
+  await fs.writeFile(output, "");
+  try {
+    await bridge.call("claude/shellPolicy", args);
+    await bridge.advanceTime(10000);
+    await bridge.call("claude/shellPolicy", args);
+    const quiet = await bridge.note(
+      "thread/shellPolicy/updated",
+      (n) => n.params.report.kind === "quiet",
+    );
+    assert.equal(quiet.params.report.taskId, "bash-1");
+    await bridge.advanceTime(1790000);
+    await bridge.call("claude/shellPolicy", {
+      ...args,
+      critical: true,
+      eligible: false,
+    });
+    assert.equal(existsSync(path.join(bridge.root, ".stop-calls")), false);
+    await bridge.call("claude/shellPolicy", { ...args, critical: true });
+    const stopped = await bridge.note(
+      "thread/shellPolicy/updated",
+      (n) => n.params.report.kind === "cleanup_stopped",
+    );
+    assert.equal(stopped.params.report.taskId, "bash-1");
+    assert.equal(
+      await fs.readFile(path.join(bridge.root, ".stop-calls"), "utf8"),
+      "bash-1\n",
+    );
+    await bridge.call("claude/shellPolicy", { ...args, critical: true });
+    assert.equal(
+      await fs.readFile(path.join(bridge.root, ".stop-calls"), "utf8"),
+      "bash-1\n",
+    );
+  } finally {
+    await fs.unlink(output);
+  }
+});
+
+test("the first critical observation uses the session's existing idle clock", async () => {
+  const { bridge, turn } = await runningCommand({ clock: true });
+  await bridge.writeSignal(".registered");
+  await bridge.note(
+    "item/started",
+    (n) => n.params.item.canMoveToBackground === true,
+  );
+  await move(bridge, turn);
+  await bridge.note("turn/completed");
+  await bridge.advanceTime(1800000);
+  await bridge.call("claude/shellPolicy", {
+    threadId: bridge.thread,
+    settings: { quietThresholdMs: 0, pressureCleanup: true },
+    eligible: true,
+    critical: true,
+  });
+  await bridge.note(
+    "thread/shellPolicy/updated",
+    (n) => n.params.report.kind === "cleanup_stopped",
+  );
+  assert.equal(
+    await fs.readFile(path.join(bridge.root, ".stop-calls"), "utf8"),
+    "bash-1\n",
+  );
+});
 
 test("a registered foreground command moves to the background and releases the turn", async () => {
   const { bridge, turn } = await runningCommand();

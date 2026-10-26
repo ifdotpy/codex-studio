@@ -19,6 +19,7 @@ pub mod provider_method_policy;
 pub mod provider_lifecycle;
 pub mod shared_values;
 pub mod supervisor_contract;
+pub mod shell_policy;
 pub mod task_results;
 pub mod usage;
 

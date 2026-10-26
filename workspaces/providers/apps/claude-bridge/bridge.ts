@@ -71,6 +71,9 @@ export interface ActiveQuery {
   assistantBlocks: Map<string, AssistantBlockState>;
   usage: ResponseUsage;
   idleRequestStartedAt: number;
+  // Last turn end. The shell policy measures quiet and pressure idle time from it.
+  shellLastUseAt: number;
+  shellPolicy?: ReturnType<typeof createShellPolicy> | undefined;
   lastEventAt: number;
   toolClocks: Map<string, ToolClock>;
   stall: QueryStall | null;
@@ -176,6 +179,11 @@ import {
 import { claudeImage } from "./images.ts";
 import { listSkills } from "./skills.ts";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.ts";
+import {
+  createShellPolicy,
+  replaceBackgroundTasks,
+  backgroundOutputPath,
+} from "./shell-policy.ts";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.ts";
 import {
   declaredTimeoutMs,
@@ -1402,6 +1410,8 @@ function finishTurn(
       clearTurnTimers(active);
       active.toolClocks.clear();
       if (active.turn === turn) active.turn = null;
+      active.shellLastUseAt = Date.now();
+      active.shellPolicy?.touch();
       if (state.stall) {
         active.stall = null;
         state.stall.ended();
@@ -1991,7 +2001,7 @@ async function startSession(
         continue;
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
-        active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
+        active.tasks = replaceBackgroundTasks(active.tasks, m.tasks);
         catalogCache.activityChanged();
         continue;
       }
@@ -2486,6 +2496,16 @@ async function startSession(
             old.type === "commandExecution" && !b.is_error
               ? backgroundedCommandFields(m.tool_use_result)
               : null;
+          if (background) {
+            const id = background.backgroundTaskId;
+            active.tasks.set(id, {
+              ...active.tasks.get(id),
+              task_id: id,
+              task_type: "local_bash",
+              is_backgrounded: true,
+              output_file: backgroundOutputPath(m.tool_use_result, text),
+            });
+          }
           const finished = {
             ...old,
             status: b.is_error ? "failed" : "completed",
@@ -2638,6 +2658,7 @@ function newActive(turn: FreshTurn): ActiveQuery {
     assistantBlocks: new Map(),
     usage: new ResponseUsage(),
     idleRequestStartedAt: Date.now(),
+    shellLastUseAt: Date.now(),
     // Stall watchdog state: the newest CLI message time, the running tool
     // calls of the current turn, and the recovery of a stalled turn.
     lastEventAt: Date.now(),
@@ -3712,6 +3733,23 @@ async function handle(
       queries.get(p.threadId),
       p,
     ) satisfies HandlerResult<typeof method>;
+  if (method === "claude/shellPolicy") {
+    const active = queries.get(p.threadId);
+    if (!active?.q)
+      return { watched: 0 } satisfies HandlerResult<typeof method>;
+    const query = active.q;
+    active.shellPolicy ??= createShellPolicy({
+      lastUseAt: active.shellLastUseAt,
+      emit: (report) =>
+        emit("thread/shellPolicy/updated", { threadId: p.threadId, report }),
+      stop: (taskId) => query.stopTask(taskId),
+      busy: () =>
+        !!active.turn || queryHasInput(active) || !!studioWaits.get(p.threadId),
+    });
+    return active.shellPolicy.tick(active, p) satisfies HandlerResult<
+      typeof method
+    >;
+  }
   if (method === "claude/stopTask") {
     const active = queries.get(p.threadId);
     if (!active?.q || !active.tasks.has(p.taskId))

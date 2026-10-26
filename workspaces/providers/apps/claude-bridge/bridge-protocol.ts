@@ -33,9 +33,11 @@ import type {
   ToolDefinition,
   RateLimitBucketDto,
   RateLimitWindowDto,
+  BackgroundShellPolicySettings,
   ClaudeBridgeSessionWire,
   ClaudeBridgeTurnWire,
 } from "./runtime-contract.generated.ts";
+import type { ShellPolicyReport } from "./shell-policy.ts";
 import type {
   HUMAN_INPUT,
   STUDIO_EVENT_INPUT,
@@ -429,6 +431,14 @@ export interface BridgeMethods {
     { status: "backgrounded" | "not_running" },
   ];
   "claude/stopTask": [BridgeThreadParams & { taskId: string }, BridgeEmpty];
+  "claude/shellPolicy": [
+    BridgeThreadParams & {
+      settings: BackgroundShellPolicySettings;
+      eligible: boolean;
+      critical: boolean;
+    },
+    { watched: number },
+  ];
   "mcpServerStatus/list": [
     BridgeThreadParams & BridgePageParams,
     BridgePage<Omit<McpServerStatus, "config">>,
@@ -503,6 +513,9 @@ export interface BridgeNotifications {
   "thread/idleCompaction/updated": BridgeThreadParams & {
     turnId: string;
     report: CacheReport;
+  };
+  "thread/shellPolicy/updated": BridgeThreadParams & {
+    report: ShellPolicyReport;
   };
   "turn/plan/updated": BridgeThreadParams & {
     turnId: string;

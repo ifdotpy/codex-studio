@@ -7,6 +7,19 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** BackgroundShellPolicySettings */
+    BackgroundShellPolicySettings: {
+      /**
+       * @description Stop background shells after 30 idle minutes under critical memory pressure, with no active turn or delegates.
+       * @default true
+       */
+      pressureCleanup: boolean;
+      /**
+       * @description Milliseconds without shell output before one check-in. Use 0 to disable, or at least 10000.
+       * @default 0
+       */
+      quietThresholdMs: number;
+    };
     CacheReport: {
       /** @default true */
       compactionEnabled: boolean;
@@ -240,6 +253,8 @@ export type JsonValue =
   | string
   | JsonValue[]
   | { [key: string]: JsonValue };
+export type BackgroundShellPolicySettings =
+  components["schemas"]["BackgroundShellPolicySettings"];
 export type CacheReport = components["schemas"]["CacheReport"];
 export type ClaudeBridgeSessionWire =
   components["schemas"]["ClaudeBridgeSessionWire"];

@@ -11,6 +11,10 @@ pub struct ThreadSerializationRule {
 /// Methods whose work must finish before the next operation on the same thread.
 pub const THREAD_SERIALIZATION_RULES: &[ThreadSerializationRule] = &[
     ThreadSerializationRule {
+        method: "claude/shellPolicy",
+        true_parameter: None,
+    },
+    ThreadSerializationRule {
         method: "turn/start",
         true_parameter: None,
     },

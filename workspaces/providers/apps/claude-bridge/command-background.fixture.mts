@@ -39,7 +39,9 @@ export function query({ prompt, options }: FixtureQuery) {
     setModel: async () => {},
     setPermissionMode: async () => {},
     applyFlagSettings: async () => {},
-    stopTask: async () => {},
+    stopTask: async (id: string) => {
+      fs.appendFileSync(cwd + "/.stop-calls", id + "\n");
+    },
     setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
     backgroundTasks: async (toolUseId: string) => {
       fs.appendFileSync(cwd + "/.background-calls", String(toolUseId) + "\n");
@@ -116,7 +118,9 @@ export function query({ prompt, options }: FixtureQuery) {
               type: "tool_result",
               tool_use_id: "toolu-1",
               content:
-                "Command running in background with ID: bash-1. Output is being written to: /tmp/bash-1.output",
+                "Command running in background with ID: bash-1. Output is being written to: " +
+                cwd +
+                "/bash-1.output.",
             },
           ],
         },
@@ -137,7 +141,7 @@ export function query({ prompt, options }: FixtureQuery) {
         task_id: "bash-1",
         tool_use_id: "toolu-1",
         status: "completed",
-        output_file: "/tmp/bash-1.output",
+        output_file: cwd + "/bash-1.output",
         summary: "Background command completed (exit code 0)",
         uuid: randomUUID(),
       };
