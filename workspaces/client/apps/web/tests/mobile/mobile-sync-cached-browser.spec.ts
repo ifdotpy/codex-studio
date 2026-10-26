@@ -114,20 +114,23 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     });
     await page.goto(fixtureServerOrigin(server) + "check");
     await page.evaluate(async () => {
-      const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
-      await db.projections.insert({
-        // @ts-expect-error Preserve the legacy cache fixture document with no payload.
-        op: "upsert",
-        collection: "agent",
-        id: "lead",
-        value: {
+      const { syncDatabase, entityCacheRow } =
+        await import("/src/sync/client.ts");
+      const { db } = await syncDatabase();
+      await db.projections.insert(
+        entityCacheRow({
+          op: "upsert",
+          collection: "agent",
           id: "lead",
-          name: "Cached",
-          status: "running",
-          source: "managed",
-        },
-        seq: 1,
-      });
+          value: {
+            id: "lead",
+            name: "Cached",
+            status: "running",
+            source: "managed",
+          },
+          seq: 1,
+        }),
+      );
       await db.projections.insert({
         id: "state:entities:ready",
         seq: 1,
