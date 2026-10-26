@@ -144,6 +144,7 @@
   --layout-sidebar-header-stack-max: 240px;
   --layout-edge-rail-top-status-reserve: 136px;
   --layout-edge-rail-menu-gap: 8px;
+  --layout-edge-rail-button-gap: 8px;
   --layout-edge-rail-button-size: 48px;
   --layout-layers-edge-rail: 201;
   --layout-legacy_main_workspace-diff-line-number-width: 48px;

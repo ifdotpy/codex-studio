@@ -17,6 +17,21 @@ export interface EdgeRailViewport {
   viewportWidth?: number;
   /** Height of a top status strip that the page does not reserve (Duo portrait). */
   topStrip?: number;
+  /**
+   * Bottom and left edges of the system status column in the strip, from the
+   * native shell. It grows with a call or recording pill. Without it the
+   * metrics' fixed status reserves apply.
+   */
+  statusColumn?: { bottom: number; left: number };
+}
+
+function measuredStatus({ statusColumn }: EdgeRailViewport) {
+  return statusColumn &&
+    [statusColumn.bottom, statusColumn.left].every(
+      (value) => Number.isFinite(value) && value >= 0,
+    )
+    ? statusColumn
+    : undefined;
 }
 
 /**
@@ -55,7 +70,10 @@ export function edgeRailGeometry(
   if (insets[side] < metrics.minimumInset) return topRail(viewport, metrics);
   const width = insets[side];
   const targetSize = Math.min(width, metrics.targetSize);
-  const top = Math.max(insets.top, metrics.statusReserve);
+  const top = Math.max(
+    insets.top,
+    measuredStatus(viewport)?.bottom ?? metrics.statusReserve,
+  );
   const height = viewportHeight - top - insets.bottom;
   if (targetSize <= 0 || height < targetSize) return null;
   const half = targetSize / 2;
@@ -76,9 +94,10 @@ export function edgeRailGeometry(
 
 /** A row of rail buttons in a top status strip, left of the status area. */
 function topRail(
-  { insets, viewportWidth, topStrip }: EdgeRailViewport,
+  viewport: EdgeRailViewport,
   metrics: EdgeRailMetrics,
 ): EdgeRailGeometry | null {
+  const { insets, viewportWidth, topStrip } = viewport;
   if (
     topStrip === undefined ||
     viewportWidth === undefined ||
@@ -87,7 +106,9 @@ function topRail(
   )
     return null;
   const targetSize = Math.min(topStrip, metrics.targetSize);
-  const length = viewportWidth - (metrics.topStatusReserve ?? 0);
+  const length =
+    measuredStatus(viewport)?.left ??
+    viewportWidth - (metrics.topStatusReserve ?? 0);
   if (length < targetSize) return null;
   const half = targetSize / 2;
   return {
