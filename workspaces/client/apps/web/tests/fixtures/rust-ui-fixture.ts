@@ -70,6 +70,25 @@ type FixtureHookMessage = {
   steps: FixtureStep[];
 };
 
+/** Provider notifications need a thread, but do not carry a scripted step list. */
+export type FixtureNotificationHook = Pick<
+  FixtureHookMessage,
+  "id" | "method" | "params"
+>;
+export type FixtureCreateWorkerHook = Pick<FixtureHookMessage, "id"> & {
+  method: "fixture/create-worker";
+  parent: NonNullable<FixtureHookMessage["parent"]>;
+  params: components["schemas"]["CreateAgentRequest"];
+};
+export type FixtureProviderHook = Pick<FixtureHookMessage, "id" | "steps"> & {
+  method: "fixture/provider";
+  agent: NonNullable<FixtureHookMessage["agent"]>;
+};
+export type FixtureHookInput =
+  | FixtureNotificationHook
+  | FixtureCreateWorkerHook
+  | FixtureProviderHook;
+
 // Hook messages are sent by this fixture’s test caller; narrow their envelope once.
 function parseHookMessage(text: string): FixtureHookMessage {
   return readProviderObject(text) as FixtureHookMessage;
