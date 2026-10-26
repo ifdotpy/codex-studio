@@ -222,8 +222,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
           ),
         (error) => {
           if (error)
-            window.syncResetBrowserFixtureSyncError =
-              (error as Error)?.stack || String(error);
+            window.syncError = (error as Error)?.stack || String(error);
         },
       );
     });
@@ -238,7 +237,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
             ).syncDatabase();
             const rows = await db.projections.find().exec();
             return {
-              error: window.syncResetBrowserFixtureSyncError,
+              error: window.syncError,
               docs: rows.map((doc) => ({
                 id: doc.id,
                 seq: doc.seq,
@@ -320,6 +319,5 @@ declare global {
   interface Window {
     entityValues: (string | null | undefined)[][];
     stopProjection: () => void;
-    syncResetBrowserFixtureSyncError: string | undefined;
   }
 }

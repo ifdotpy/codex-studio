@@ -8,16 +8,13 @@ const mount1 = async () => {
   window.unmountSnapshot = () => root.unmount();
   root.render(
     React.createElement(function SnapshotHarness() {
-      window.entityFirstLoadRetryBrowserFixtureSnapshot = useSnapshot();
+      window.snapshot = useSnapshot();
       return React.createElement(
         "p",
         {
-          role: window.entityFirstLoadRetryBrowserFixtureSnapshot.error
-            ? "alert"
-            : "status",
+          role: window.snapshot.error ? "alert" : "status",
         },
-        window.entityFirstLoadRetryBrowserFixtureSnapshot.error ||
-          "Connecting to LAYR Studio…",
+        window.snapshot.error || "Connecting to LAYR Studio…",
       );
     }),
   );
@@ -33,8 +30,5 @@ declare global {
   interface Window {
     snapshotMountedAt: number;
     unmountSnapshot: () => void;
-    entityFirstLoadRetryBrowserFixtureSnapshot: ReturnType<
-      typeof import("../../src/hooks.ts").useSnapshot
-    >;
   }
 }
