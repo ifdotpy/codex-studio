@@ -4,7 +4,12 @@ import {
   useServerOutbox,
   useServerStorage,
 } from "../servers/ServerServicesContext";
-import { createSendingMessageRemoval } from "./removeSendingMessages";
+import { createSendingMessageRemovalWithPorts } from "./removeSendingMessagesCore";
+import {
+  isRemovedMessage,
+  removeMessageFromDevice,
+  saveRemovedMessage,
+} from "./removedMessages";
 
 export function useSendingMessageRemoval() {
   const { get, syncPost } = useServerApi();
@@ -12,11 +17,14 @@ export function useSendingMessageRemoval() {
   const localStorage = useServerStorage();
   return useMemo(
     () =>
-      createSendingMessageRemoval({
+      createSendingMessageRemovalWithPorts({
         get,
         syncPost,
         stopRemovedMessage,
         localStorage,
+        isRemovedMessage,
+        removeMessageFromDevice,
+        saveRemovedMessage,
       }),
     [get, syncPost, stopRemovedMessage, localStorage],
   );

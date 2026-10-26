@@ -2,7 +2,6 @@ import { useServerApi } from "../servers/ServerServicesContext";
 import { Modal } from "@mantine/core";
 import type { Account, useAccounts } from "./Accounts";
 import AccountSignIn from "./AccountSignIn";
-import "../api";
 
 export default function CodexSignIn({
   account,

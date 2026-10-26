@@ -6,7 +6,7 @@ use studio_runtime_store::path_identity::CanonicalPath;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
@@ -20,6 +20,8 @@ const STATIC_ALLOWLIST: &[&str] = &[
     "icon-192.png",
     "icon-512.png",
 ];
+// Shared with the Vite precompression plugin: extensions eligible for encoding negotiation.
+const COMPRESSIBLE_EXTENSIONS: &str = include_str!("web_asset_extensions.txt");
 const BUILD_INSTRUCTIONS: &str =
     "Build the interface from the repository root with `pnpm --filter codex-agents-web run build`.";
 
@@ -65,13 +67,13 @@ pub(super) fn router(assets: WebAssets) -> Router {
         .with_state(assets)
 }
 
-async fn index(State(assets): State<WebAssets>) -> Response {
-    match read_asset(&assets, "index.html").await {
-        Ok(bytes) => response("index.html", bytes),
+async fn index(State(assets): State<WebAssets>, headers: HeaderMap) -> Response {
+    match read_asset(&assets, "index.html", &headers).await {
+        Ok(asset) => response("index.html", asset),
         Err(ReadAssetError::BuildMissing) => {
             (StatusCode::SERVICE_UNAVAILABLE, BUILD_INSTRUCTIONS).into_response()
         }
-        Err(ReadAssetError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -82,21 +84,94 @@ async fn allowlisted(State(assets): State<WebAssets>, request: Request) -> Respo
     if !STATIC_ALLOWLIST.contains(&relative) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    match read_asset(&assets, relative).await {
-        Ok(bytes) => response(relative, bytes),
+    match read_asset(&assets, relative, request.headers()).await {
+        Ok(asset) => response(relative, asset),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-async fn asset(State(assets): State<WebAssets>, AxumPath(relative): AxumPath<String>) -> Response {
+async fn asset(
+    State(assets): State<WebAssets>,
+    AxumPath(relative): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
     let relative = format!("assets/{relative}");
-    match read_asset(&assets, &relative).await {
-        Ok(bytes) => response(&relative, bytes),
+    match read_asset(&assets, &relative, &headers).await {
+        Ok(asset) => response(&relative, asset),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-async fn read_asset(assets: &WebAssets, relative: &str) -> Result<Vec<u8>, ReadAssetError> {
+struct EncodedAsset {
+    bytes: Vec<u8>,
+    encoding: Option<&'static str>,
+}
+
+fn is_compressible(relative: &str) -> bool {
+    Path::new(relative)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            COMPRESSIBLE_EXTENSIONS
+                .split_ascii_whitespace()
+                .any(|item| item == extension)
+        })
+}
+
+// Prefer Brotli whenever allowed, then gzip. Explicit entries override `*`,
+// including q=0. Missing/empty headers choose identity. If no encoded sibling
+// is usable, keep serving identity so static assets remain available.
+fn accepts_encoding(headers: &HeaderMap, encoding: &str) -> bool {
+    let mut explicit = None;
+    let mut wildcard = None;
+    for value in headers.get_all(header::ACCEPT_ENCODING) {
+        let Ok(value) = value.to_str() else { continue };
+        for entry in value.split(',') {
+            let mut fields = entry.split(';');
+            let token = fields.next().unwrap_or_default().trim();
+            let destination = if token.eq_ignore_ascii_case(encoding) {
+                &mut explicit
+            } else if token == "*" {
+                &mut wildcard
+            } else {
+                continue;
+            };
+            let mut allowed = true;
+            for parameter in fields {
+                let Some((name, value)) = parameter.trim().split_once('=') else {
+                    allowed = false;
+                    continue;
+                };
+                if name.trim().eq_ignore_ascii_case("q") {
+                    allowed &= valid_positive_quality(value.trim());
+                } else {
+                    allowed = false;
+                }
+            }
+            // A duplicate entry must never undo an explicit refusal.
+            *destination = Some(destination.unwrap_or(true) && allowed);
+        }
+    }
+    explicit.or(wildcard).unwrap_or(false)
+}
+
+fn valid_positive_quality(value: &str) -> bool {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 3 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    match whole {
+        "0" => fraction.bytes().any(|byte| byte != b'0'),
+        "1" => fraction.bytes().all(|byte| byte == b'0'),
+        _ => false,
+    }
+}
+
+async fn read_asset(
+    assets: &WebAssets,
+    relative: &str,
+    headers: &HeaderMap,
+) -> Result<EncodedAsset, ReadAssetError> {
     let Some(root) = &assets.root else {
         return Err(ReadAssetError::BuildMissing);
     };
@@ -104,24 +179,61 @@ async fn read_asset(assets: &WebAssets, relative: &str) -> Result<Vec<u8>, ReadA
     if requested
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
+        || matches!(
+            requested
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("br" | "gz")
+        )
     {
         return Err(ReadAssetError::NotFound);
     }
-    let candidate = root.join(requested);
-    let resolved = CanonicalPath::existing(&candidate).map_err(|_| ReadAssetError::NotFound)?;
-    if !resolved.starts_with(root) || !resolved.is_file() {
-        return Err(ReadAssetError::NotFound);
-    }
-    let resolved = resolved.clone();
+    let root = root.clone();
+    let relative = relative.to_owned();
+    let brotli = accepts_encoding(headers, "br");
+    let gzip = accepts_encoding(headers, "gzip");
     studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/web_assets", move || {
-        fs::read(resolved)
+        // Resolve the original first: an orphan sibling cannot create a new URL.
+        let original = resolve_asset(&root, &relative)?;
+        if is_compressible(&relative)
+            && let Ok(original_modified) = fs::metadata(&original).and_then(|metadata| metadata.modified())
+        {
+            for (allowed, suffix, encoding) in [(brotli, "br", "br"), (gzip, "gz", "gzip")] {
+                if allowed
+                    && let Ok(path) = resolve_asset(&root, &format!("{relative}.{suffix}"))
+                    // A rewritten original must not be shadowed by an older representation.
+                    && let Ok(sibling_modified) = fs::metadata(&path).and_then(|metadata| metadata.modified())
+                    && sibling_modified >= original_modified
+                    && let Ok(bytes) = fs::read(path)
+                {
+                    return Ok(EncodedAsset {
+                        bytes,
+                        encoding: Some(encoding),
+                    });
+                }
+            }
+        }
+        fs::read(original)
+            .map(|bytes| EncodedAsset {
+                bytes,
+                encoding: None,
+            })
+            .map_err(|_| ReadAssetError::NotFound)
     })
     .await
     .map_err(|_| ReadAssetError::NotFound)?
-    .map_err(|_| ReadAssetError::NotFound)
 }
 
-fn response(relative: &str, bytes: Vec<u8>) -> Response {
+fn resolve_asset(root: &Path, relative: &str) -> Result<CanonicalPath, ReadAssetError> {
+    let resolved =
+        CanonicalPath::existing(root.join(relative)).map_err(|_| ReadAssetError::NotFound)?;
+    if !resolved.starts_with(root) || !resolved.is_file() {
+        return Err(ReadAssetError::NotFound);
+    }
+    Ok(resolved)
+}
+
+fn response(relative: &str, asset: EncodedAsset) -> Response {
     let mime = if relative.ends_with(".webmanifest") {
         "application/manifest+json".to_owned()
     } else {
@@ -142,7 +254,17 @@ fn response(relative: &str, bytes: Vec<u8>) -> Response {
     } else {
         "no-store"
     };
-    let mut response = Body::from(bytes).into_response();
+    let mut response = Body::from(asset.bytes).into_response();
+    if is_compressible(relative) {
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    }
+    if let Some(encoding) = asset.encoding {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, HeaderValue::from_static(encoding));
+    }
     if let Ok(value) = HeaderValue::from_str(&content_type) {
         response.headers_mut().insert(header::CONTENT_TYPE, value);
     }
@@ -159,7 +281,10 @@ fn is_hashed_asset(relative: &str) -> bool {
     let Some((stem, extension)) = filename.rsplit_once('.') else {
         return false;
     };
-    if !matches!(extension, "js" | "css" | "png" | "svg" | "woff" | "woff2") {
+    if !matches!(
+        extension,
+        "js" | "css" | "png" | "svg" | "wasm" | "woff" | "woff2"
+    ) {
         return false;
     }
     let Some((name, hash)) = stem.rsplit_once('-') else {
@@ -244,6 +369,8 @@ mod tests {
         fs::write(root.join("studio-sw.js"), "self.skipWaiting();").expect("service worker");
         fs::write(root.join("assets/app-0123456789.js"), "console.log('ok');")
             .expect("hashed bundle");
+        fs::write(root.join("assets/client_bg-i8Hpi7VY.wasm"), b"\0asm")
+            .expect("hashed WebAssembly module");
         let assets = WebAssets {
             root: Some(
                 CanonicalPath::existing(root)
@@ -313,6 +440,22 @@ mod tests {
             "private, max-age=31536000, immutable"
         );
 
+        let module = app
+            .clone()
+            .oneshot(
+                Request::get("/assets/client_bg-i8Hpi7VY.wasm")
+                    .body(Body::empty())
+                    .expect("WebAssembly request"),
+            )
+            .await
+            .expect("WebAssembly response");
+        assert_eq!(module.status(), StatusCode::OK);
+        assert_eq!(
+            module.headers()[header::CACHE_CONTROL],
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(module.headers()[header::CONTENT_TYPE], "application/wasm");
+
         let api = app
             .oneshot(
                 Request::get("/api/test")
@@ -327,6 +470,297 @@ mod tests {
                 .await
                 .expect("API body bytes"),
             "api route"
+        );
+    }
+
+    #[tokio::test]
+    async fn negotiates_precompressed_assets_without_changing_types_or_cache_policy() {
+        let (directory, assets) = fixture();
+        let cases = [
+            ("/", "index.html", "text/html; charset=utf-8", "no-store"),
+            (
+                "/index.html",
+                "index.html",
+                "text/html; charset=utf-8",
+                "no-store",
+            ),
+            (
+                "/studio-sw.js",
+                "studio-sw.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
+            (
+                "/assets/app-0123456789.js",
+                "assets/app-0123456789.js",
+                "text/javascript; charset=utf-8",
+                "private, max-age=31536000, immutable",
+            ),
+            (
+                "/assets/client_bg-i8Hpi7VY.wasm",
+                "assets/client_bg-i8Hpi7VY.wasm",
+                "application/wasm",
+                "private, max-age=31536000, immutable",
+            ),
+        ];
+        let app = router(assets);
+        for (url, path, mime, cache) in cases {
+            let identity = fs::read(directory.path().join(path)).expect("original");
+            fs::write(
+                directory.path().join(format!("{path}.br")),
+                b"brotli fixture",
+            )
+            .expect("br");
+            fs::write(directory.path().join(format!("{path}.gz")), b"gzip fixture").expect("gzip");
+            for (accept, encoding, body) in [
+                (Some("gzip, br"), Some("br"), b"brotli fixture".as_slice()),
+                (Some("gzip"), Some("gzip"), b"gzip fixture".as_slice()),
+                (Some("*"), Some("br"), b"brotli fixture".as_slice()),
+                (
+                    Some("br;q=0, *;q=1"),
+                    Some("gzip"),
+                    b"gzip fixture".as_slice(),
+                ),
+                (Some("gzip;q=0, br;q=0"), None, identity.as_slice()),
+                (Some("*;q=0, identity;q=1"), None, identity.as_slice()),
+                (Some("*;q=0, identity;q=0"), None, identity.as_slice()),
+                (
+                    Some("br;q=0.000, gzip;q=1.000"),
+                    Some("gzip"),
+                    b"gzip fixture".as_slice(),
+                ),
+                (
+                    Some("BR;Q=0.001, gzip;q=1"),
+                    Some("br"),
+                    b"brotli fixture".as_slice(),
+                ),
+                (Some("br;q=bogus, gzip;q=0"), None, identity.as_slice()),
+                (Some("br;q=1.001, gzip;q=0"), None, identity.as_slice()),
+                (
+                    Some("br;q=0, br;q=1, gzip;q=1"),
+                    Some("gzip"),
+                    b"gzip fixture".as_slice(),
+                ),
+                (Some("deflate"), None, identity.as_slice()),
+                (Some(""), None, identity.as_slice()),
+                (None, None, identity.as_slice()),
+            ] {
+                let mut request = Request::get(url);
+                if let Some(accept) = accept {
+                    request = request.header(header::ACCEPT_ENCODING, accept);
+                }
+                let response = app
+                    .clone()
+                    .oneshot(request.body(Body::empty()).expect("request"))
+                    .await
+                    .expect("response");
+                assert_eq!(response.status(), StatusCode::OK, "{url} {accept:?}");
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::CONTENT_ENCODING)
+                        .map(|v| v.to_str().expect("encoding")),
+                    encoding,
+                    "{url} {accept:?}"
+                );
+                assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+                assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
+                assert_eq!(response.headers()[header::CACHE_CONTROL], cache);
+                assert_eq!(
+                    to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .expect("body"),
+                    body
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_siblings_fall_back_and_head_preserves_encoded_headers() {
+        let (directory, assets) = fixture();
+        let app = router(assets);
+        let path = "assets/app-0123456789.js";
+        fs::write(directory.path().join(format!("{path}.gz")), b"gzip fixture").expect("gzip");
+        for (accept, encoding) in [("gzip, br", Some("gzip")), ("br", None)] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("/{path}"))
+                        .header(header::ACCEPT_ENCODING, accept)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_ENCODING)
+                    .map(|v| v.to_str().expect("encoding")),
+                encoding
+            );
+            assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+        }
+        let head = app
+            .clone()
+            .oneshot(
+                Request::head(format!("/{path}"))
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(head.headers()[header::CONTENT_ENCODING], "gzip");
+        assert_eq!(head.headers()[header::CONTENT_LENGTH], "12");
+        assert!(
+            to_bytes(head.into_body(), usize::MAX)
+                .await
+                .expect("head body")
+                .is_empty()
+        );
+        for url in [
+            "/assets/app-0123456789.js.gz",
+            "/assets/app-0123456789.js.br",
+            "/index.html.br",
+            "/assets/%2e%2e/index.html",
+            "/assets/%2fetc/passwd",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(url).body(Body::empty()).expect("request"))
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{url}");
+        }
+        let refused = app
+            .oneshot(
+                Request::get("/")
+                    .header(header::ACCEPT_ENCODING, "br, gzip, identity;q=0")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(refused.status(), StatusCode::OK);
+        assert_eq!(refused.headers()[header::VARY], "Accept-Encoding");
+        assert_eq!(
+            to_bytes(refused.into_body(), usize::MAX)
+                .await
+                .expect("identity fallback"),
+            "<html>ok</html>"
+        );
+    }
+
+    #[tokio::test]
+    async fn handles_repeated_encoding_headers_and_hides_orphan_siblings() {
+        let (directory, assets) = fixture();
+        fs::write(directory.path().join("index.html.br"), b"brotli fixture").expect("br");
+        fs::write(directory.path().join("assets/orphan.js.br"), b"orphan").expect("orphan");
+        let app = router(assets);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/")
+                    .header(header::ACCEPT_ENCODING, "gzip;q=1")
+                    .header(header::ACCEPT_ENCODING, "br;q=0.5")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "br");
+        let orphan = app
+            .oneshot(
+                Request::get("/assets/orphan.js")
+                    .header(header::ACCEPT_ENCODING, "br")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(orphan.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn stale_siblings_fall_back_to_fresh_gzip_or_identity() {
+        let (directory, assets) = fixture();
+        let original = directory.path().join("index.html");
+        let br = directory.path().join("index.html.br");
+        let gz = directory.path().join("index.html.gz");
+        fs::write(&br, b"stale brotli").expect("br");
+        fs::write(&gz, b"fresh gzip").expect("gzip");
+        let set_modified = |path: &Path, seconds| {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("fixture file")
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .expect("fixture modification time");
+        };
+        set_modified(&original, 20);
+        set_modified(&br, 10);
+        set_modified(&gz, 20);
+        let app = router(assets);
+        for (gzip_time, encoding, body) in [
+            (20, Some("gzip"), b"fresh gzip".as_slice()),
+            (10, None, b"<html>ok</html>".as_slice()),
+        ] {
+            set_modified(&gz, gzip_time);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get("/")
+                        .header(header::ACCEPT_ENCODING, "br, gzip")
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_ENCODING)
+                    .map(|value| value.to_str().expect("encoding")),
+                encoding
+            );
+            assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+            assert_eq!(
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body"),
+                body
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn encoded_symlinks_cannot_escape_the_asset_root() {
+        let (directory, assets) = fixture();
+        let outside = tempfile::tempdir().expect("outside root");
+        let secret = outside.path().join("private.txt");
+        fs::write(&secret, b"private").expect("private file");
+        std::os::unix::fs::symlink(&secret, directory.path().join("index.html.br"))
+            .expect("encoded symlink");
+        let response = router(assets)
+            .oneshot(
+                Request::get("/")
+                    .header(header::ACCEPT_ENCODING, "br")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("identity"),
+            "<html>ok</html>"
         );
     }
 

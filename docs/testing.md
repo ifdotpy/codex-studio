@@ -18,9 +18,10 @@ model request or a real reset-credit redemption.
 `just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop
 recovery and retained-helper boundaries, web API/type witnesses, tooling tests,
 generated-contract and dependency guards, and the VM guest Python suite through its
-[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses three
-fixed concurrent lanes: Rust preparation and tests, JavaScript checks, and the guest
-suite. Cargo compilation stays in the Rust lane with four build jobs. WASM is
+[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses five
+bounded concurrent lanes: Rust preparation and tests, type checks, web tests,
+independent tooling/provider/desktop checks, and the guest suite. Independent
+checks start immediately; artifact consumers wait only for their preparation. Cargo compilation stays in the Rust lane with four build jobs. WASM is
 generated once; the renderer is built once before the native crate embeds it.
 Type checks wait for WASM; web tests wait for the workspace build's debug
 `examples/draft-server`, and the guest waits for its debug supervisor. The gate
@@ -28,7 +29,9 @@ passes both binary paths explicitly. These checks overlap the Rust build or test
 [WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs) requires
 the exact binding generator version pinned by the client-wasm crate; its error
 gives the installation command. Cold builds are outside the warm short-tier
-target. The short tier starts no browser or model provider.
+target. The nextest configuration also owns the failure deadline; its CI profile
+caps a stuck test above the measured busy-service witness. Test concurrency stays
+runner-derived, without global serial groups. The short tier starts no browser or model provider.
 
 `just test-comprehensive` runs the provider bridge, workspace Clippy, workspace
 Rust nextest with the `ci` profile, web type and unit checks, tooling tests, the
@@ -39,7 +42,12 @@ prepares the supervisor, contracts tool and HTTP fixture without package-only or
 release builds; one workspace nextest invocation selects the tests. Consumers get
 explicit debug binary paths. Browser smoke uses the prepared renderer and fixture,
 without repeating WASM generation, main TypeScript checking or the renderer build.
-Run it on the exact commit before every push to `main` and before packaging for
+The real IndexedDB staging witness runs in the provisioned browser smoke job;
+its two-tab owner lease, orphan cleanup and cancellation assertions need Chromium
+and Web Locks. The [smoke selector](../workspaces/client/apps/web/package.json)
+includes it, while deterministic transfer assembly remains in the short unit tier.
+Hosted Rust jobs build only the renderer bundle; API drift and TypeScript checks
+run once in their owning jobs. Run it on the exact commit before every push to `main` and before packaging for
 installation. Run `just test-fast` before every PR and merge and state its result
 in the PR. Workers run focused witnesses; the lead runs these gates on the
 integrated batch.
@@ -67,7 +75,20 @@ their removed Python commands are not current instructions.
 | Continuation corpus and store faults, manual heavy   | `just test-rust-usage-resume-corpora`    |
 | Hidden Electron profile migration, manual heavy      | `just test-native-profile-migration`     |
 | Hidden Rust native WebView scenarios, manual heavy   | `just test-native-webview`               |
-| Hidden Rust native WebView scenarios, manual heavy   | `just test-native-webview`               |
+| Detached host-exec process scenarios, manual         | `just test-host-exec-processes`          |
+| Real guest worker process scenarios, manual          | `just test-guest-runner-processes`       |
+
+The fast tier checks host-exec tokens, socket authentication, idle retirement and exact startup outcomes with deterministic fixtures.
+The manual process tier checks detached command startup, replacement, busy commands and the guest broker.
+Each fixture owns its private child and keeps failure logs.
+Cleanup requires proof of command cancellation and an idle service.
+The production deadlines remain unchanged.
+
+Fast guest executor fixtures check order, aggregation and error results without additional processes.
+The actual guest suite still uses spawn-based case workers.
+The manual guest runner checks real worker overlap and crashes.
+The browser monitor-input witness uses Playwright's context owner in the full manual browser tier.
+This change does not establish that the earlier operating-system close stall is corrected.
 
 Set `STUDIO_STORE_COMPRESS_EVERY_WRITE=1` to run any Rust selection in the
 compress-every-write mode of [`stored_text.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text.rs):
@@ -125,7 +146,7 @@ fixtures and the gate supply their explicit binary paths afterward.
 
 `just test-fast-rest` runs the comprehensive remainder without browser smoke.
 `just test-fast-rest-non-rust` consumes prebuilt WASM, a debug supervisor and draft-server and
-runs only the JavaScript and guest lanes: no Clippy, WASM builder or Rust
+runs only the type, web, independent check and guest lanes: no Clippy, WASM builder or Rust
 compilation. Hosted CI restores commit- and SHA-256-verified artifacts from the
 workspace build job for this remainder and browser smoke. Standalone browser
 smoke prepares itself; `just test-browser-smoke --prepared` consumes those inputs.
@@ -176,6 +197,13 @@ scripts select client unit, browser, desktop, and provider bridge checks. Browse
 checks build the renderer, use isolated state and a Rust HTTP fixture, and reap
 fixture process groups after success, failure, or timeout. Browser scratch and
 parallelism are owned by the [launcher](../workspaces/client/apps/web/scripts/run-browser-tests.mjs).
+Read-only layout and navigation specs can opt into `readOnlyRust` in the
+[shared browser fixtures](../workspaces/client/apps/web/tests/playwright.mjs).
+It reuses one minimal backend per worker, mocks preference and read acknowledgements
+per browser context, and rejects other persistent writes. Tests that exercise
+mutations keep disposable backends. The scroll-follow smoke covers the phone
+reader/stream/Latest path; its desktop, trackpad and content-growth matrix remains
+in the full browser project.
 Explicit worker counts override its automatic plan. The wrapper clears `BROWSER`
 before launching and retains JSON diagnostics for failures.
 

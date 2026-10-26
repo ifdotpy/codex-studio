@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mergePreferenceFields, preferenceCacheKey } from "./uiPreferenceMerge";
 import {
+  preferenceScope,
+  storageFields,
+  prunePreferenceFields,
+  type PreferenceFields,
+} from "./uiPreferenceMerge";
+import policyCases from "../../../../contracts/preference-policy-cases.json";
+import { MODEL_WHITELIST_PREFERENCE_KEY } from "../generated/sharedValues";
+import {
   capturePreferenceWrite,
   acknowledgePreferenceFields,
   readPreferenceFields,
@@ -38,6 +46,112 @@ beforeEach(() => {
   vi.stubGlobal("localStorage", memoryStorage());
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("StorageEvent", FakeStorageEvent);
+});
+
+describe("legacy preference parity with the canonical Rust client owner", () => {
+  it("removes only an acknowledged omitted raw property", () => {
+    const storage = memoryStorage();
+    const key = "codex-project-tree:/state";
+    const name = JSON.stringify([key, "item"]);
+    const submitted: PreferenceFields = {
+      [name]: { value: true, timestamp: 2, writer: "local" },
+    };
+    storage.setItem(key, JSON.stringify({ item: true, sibling: true }));
+    storage.setItem(`${preferenceCacheKey}:server`, JSON.stringify(submitted));
+    acknowledgePreferenceFields("server", submitted, {}, storage);
+    expect(JSON.parse(storage.getItem(key)!)).toEqual({ sibling: true });
+    expect(readPreferenceFields("server", storage)).toEqual({});
+  });
+  it("preserves exact-field ACK correction and complete-map omission", () => {
+    const cases: Array<{
+      name: string;
+      current: PreferenceFields;
+      submitted: PreferenceFields;
+      accepted: PreferenceFields;
+      expected: PreferenceFields;
+    }> = JSON.parse(JSON.stringify(policyCases.acknowledgements));
+    for (const entry of cases) {
+      const storage = memoryStorage();
+      storage.setItem(
+        `${preferenceCacheKey}:server`,
+        JSON.stringify(entry.current),
+      );
+      acknowledgePreferenceFields(
+        "server",
+        entry.submitted,
+        entry.accepted,
+        storage,
+      );
+      expect(readPreferenceFields("server", storage), entry.name).toEqual(
+        entry.expected,
+      );
+    }
+  });
+  it("runs every shared scope, field, merge, edit and pruning case", () => {
+    // Deserialize tracked JSON without TypeScript's synthetic optional union keys.
+    const mergeCases: Array<{
+      name: string;
+      prior: PreferenceFields;
+      incoming: PreferenceFields;
+      expected: PreferenceFields;
+    }> = JSON.parse(JSON.stringify(policyCases.merges));
+    expect(policyCases.owner).toBe(
+      "workspaces/client/packages/client-domain/src/preferences.rs",
+    );
+    expect(policyCases.legacyConsumers).toEqual([
+      "workspaces/client/apps/web/src/sync/uiPreferenceMerge.ts",
+      "workspaces/client/apps/web/src/sync/uiPreferenceStore.ts",
+    ]);
+    for (const entry of policyCases.scopes)
+      expect(
+        preferenceScope(
+          entry.key === "$modelWhitelistKey"
+            ? MODEL_WHITELIST_PREFERENCE_KEY
+            : entry.key,
+        ),
+      ).toBe(entry.expected);
+    for (const entry of policyCases.storage)
+      expect(storageFields(entry.key, entry.raw)).toEqual(entry.expected);
+    for (const entry of mergeCases)
+      expect(
+        mergePreferenceFields(entry.prior, entry.incoming),
+        entry.name,
+      ).toEqual(entry.expected);
+    for (const entry of policyCases.edits) {
+      const storage = memoryStorage();
+      const key = "codex-project-tree:/state";
+      storage.setItem(key, JSON.stringify(entry.latest));
+      expect(
+        writePreferenceEdit<Record<string, unknown>>(
+          key,
+          entry.previous,
+          entry.next,
+          storage,
+        ),
+      ).toEqual(entry.expected);
+    }
+    const item = (index: number) =>
+      JSON.stringify(["codex-worker-disclosures", String(index)]);
+    const fields: PreferenceFields = {
+      ...Object.fromEntries(
+        Array.from({ length: policyCases.prune.itemCount }, (_, index) => [
+          item(index),
+          { value: true, timestamp: index, writer: "a" },
+        ]),
+      ),
+      ...policyCases.prune.protected,
+      ...policyCases.prune.ignored,
+    };
+    const pruned = prunePreferenceFields(fields);
+    expect(Object.keys(pruned)).toHaveLength(policyCases.prune.expectedCount);
+    expect(pruned[item(policyCases.prune.oldestRetained - 1)]).toBeUndefined();
+    expect(pruned[item(policyCases.prune.oldestRetained)]).toBeDefined();
+    expect(pruned[item(policyCases.prune.newestRetained)]).toBeDefined();
+    for (const [key, field] of Object.entries(policyCases.prune.protected))
+      expect(pruned[key]).toEqual(field);
+    for (const key of Object.keys(policyCases.prune.ignored))
+      expect(pruned[key]).toBeUndefined();
+  });
 });
 describe("UI preference cache", () => {
   it("keeps one secure writer identity on HTTP without crypto.randomUUID", () => {

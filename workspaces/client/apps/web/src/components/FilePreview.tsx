@@ -2,45 +2,34 @@ import {
   useServerApi,
   useServerFileActions,
 } from "../servers/ServerServicesContext";
-import { Button, Loader } from "@mantine/core";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Loader } from "@mantine/core";
+import { lazy, Suspense, useEffect, useState } from "react";
 import "../api";
-
-import ErrorDescription from "./ErrorDescription";
 import { isolatedDocument } from "./RichPreview";
 import { fileFormat, parseDelimited, safeSvg } from "./filePreviewFormats";
-import ImageViewer from "./ImageViewer";
-import PreviewModal from "./PreviewModal";
-import "./file-preview.css";
-
-// StreamingText opens FilePreview for links. Load it only for Markdown files.
+import FilePreviewView, {
+  type FilePresentation,
+  type PreviewTarget,
+} from "./FilePreviewView";
+export type { PreviewTarget } from "./FilePreviewView";
 const Markdown = lazy(() => import("./conversation/transcript/StreamingText"));
-export interface PreviewTarget {
-  agent?: string;
-  path?: string;
-  asset?: string;
-  line?: number;
+function formattedJson(text: string) {
+  try {
+    return { text: JSON.stringify(JSON.parse(text), null, 2), error: "" };
+  } catch {
+    return { text, error: "Invalid JSON. The original source is shown." };
+  }
 }
-type LoadedFile = {
-  key: string;
-  name: string;
-  mime: string;
-  url: string;
-  text: string;
-  bytes: Uint8Array;
-  format: ReturnType<typeof fileFormat>;
-};
+type LoadedFile = FilePresentation & { key: string; bytes: Uint8Array };
 export default function FilePreview({
   target,
   onClose,
 }: {
   target: PreviewTarget | null;
-  onClose: () => void;
+  onClose(): void;
 }) {
-  const { canUseNativeFiles, openFile, previewFile, revealFile, saveFile } =
-    useServerFileActions();
+  const actions = useServerFileActions();
   const { get } = useServerApi();
-
   const key = JSON.stringify([target?.agent, target?.path, target?.asset]);
   const [loaded, setLoaded] = useState<LoadedFile | null>(null);
   const file = loaded?.key === key ? loaded : null;
@@ -48,13 +37,10 @@ export default function FilePreview({
     key: string;
     error: unknown;
   } | null>(null);
-  const [source, setSource] = useState(false);
-  const selectedLine = useRef<HTMLElement>(null);
   const error = failure?.key === key ? failure.error : null;
   useEffect(() => {
     setLoaded(null);
     setFailure(null);
-    setSource(!!target?.line);
     if (!target) return;
     let active = true,
       url = "";
@@ -95,6 +81,10 @@ export default function FilePreview({
           format,
           url,
           text,
+          table: ["csv", "tsv"].includes(format)
+            ? parseDelimited(text, format === "tsv" ? "\t" : ",")
+            : null,
+          json: format === "json" ? formattedJson(text) : null,
         });
       })
       .catch((error) => {
@@ -105,250 +95,72 @@ export default function FilePreview({
       if (url) URL.revokeObjectURL(url);
     };
   }, [key]);
-  useEffect(() => {
-    if (target?.line) setSource(true);
-  }, [target?.line]);
-  useEffect(() => {
-    if (!file || !target?.line || !source) return;
-    const frame = requestAnimationFrame(() =>
-      selectedLine.current?.scrollIntoView({ block: "center" }),
-    );
-    return () => cancelAnimationFrame(frame);
-  }, [file, target?.line, source]);
-  const excerpt = useMemo(() => {
-    if (!file || !target?.line) return null;
-    let start = 0;
-    for (let line = 1; line < target.line; line++) {
-      const end = file.text.indexOf("\n", start);
-      if (end < 0) return null;
-      start = end + 1;
-    }
-    const end = file.text.indexOf("\n", start),
-      stop = end < 0 ? file.text.length : end;
-    return {
-      before: file.text.slice(0, start),
-      line: file.text.slice(start, stop),
-      after: file.text.slice(stop),
-    };
-  }, [file, target?.line]);
-  const table = useMemo(
-    () =>
-      file && ["csv", "tsv"].includes(file.format)
-        ? parseDelimited(file.text, file.format === "tsv" ? "\t" : ",")
-        : null,
-    [file],
-  );
-  const json = useMemo(() => {
-    if (file?.format !== "json") return null;
-    try {
-      return {
-        text: JSON.stringify(JSON.parse(file.text), null, 2),
-        error: "",
-      };
-    } catch {
-      return {
-        text: file.text,
-        error: "Invalid JSON. The original source is shown.",
-      };
-    }
-  }, [file]);
-  const act = (operation: () => Promise<unknown>) => {
-    operation().catch((error) => setFailure({ key, error }));
-  };
-  const toggle =
-    file && ["markdown", "csv", "tsv", "json"].includes(file.format);
   return (
-    <PreviewModal
-      opened={!!target}
+    <FilePreviewView
+      target={target}
+      file={file}
+      error={error}
       onClose={onClose}
-      title={file?.name || target?.path || "File preview"}
-      size={
-        file &&
-        file.text.length < 2000 &&
-        ["text", "json"].includes(file.format)
-          ? "min(720px, 100vw)"
-          : "min(900px, 100vw)"
+      onError={(error) => setFailure({ key, error })}
+      actions={actions}
+      save={() =>
+        file
+          ? actions.saveFile({
+              name: file.name,
+              mime: file.mime,
+              data: file.bytes,
+            })
+          : Promise.resolve(false)
       }
-      overlayProps={{ blur: 0 }}
-      className="workspace-file-modal"
-    >
-      <div className="file-preview-toolbar">
-        {file && (
-          <>
-            <span title={file.mime}>
-              {["text", "markdown", "csv", "tsv", "json"].includes(file.format)
-                ? "Text file"
-                : file.mime}
-              {target?.line ? ` · Line ${target.line}` : ""}
-            </span>
-            <Button
-              size="xs"
-              variant="subtle"
-              onClick={() =>
-                act(() =>
-                  saveFile({
-                    name: file.name,
-                    mime: file.mime,
-                    data: file.bytes,
-                  }),
-                )
-              }
-            >
-              Save a copy
-            </Button>
-          </>
-        )}
-        {target && canUseNativeFiles() && (
-          <>
-            <Button
-              size="xs"
-              variant="subtle"
-              onClick={() => act(() => openFile(target))}
-            >
-              Open
-            </Button>
-            <Button
-              size="xs"
-              variant="subtle"
-              onClick={() => act(() => revealFile(target))}
-            >
-              Show in folder
-            </Button>
-            <Button
-              size="xs"
-              variant="subtle"
-              onClick={() => act(() => previewFile(target))}
-            >
-              Quick Look
-            </Button>
-          </>
-        )}
-      </div>
-      {error != null && (
-        <p>
-          <ErrorDescription value={error} />
-        </p>
-      )}
-      {!file && error == null && target && (
-        <Loader size="sm" aria-label="Load file" />
-      )}
-      {toggle && (
-        <div className="file-preview-toolbar" aria-label="File view">
-          <button
-            type="button"
-            aria-pressed={!source}
-            onClick={() => setSource(false)}
-          >
-            Preview
-          </button>
-          <button
-            type="button"
-            aria-pressed={source}
-            onClick={() => setSource(true)}
-          >
-            Source
-          </button>
-        </div>
-      )}
-      {file &&
-        (source || file.format === "text" ? (
-          <pre className="file-preview-body file-preview-source">
-            {excerpt ? (
-              <>
-                {excerpt.before}
-                <mark ref={selectedLine} data-file-line={target?.line}>
-                  {excerpt.line || " "}
-                </mark>
-                {excerpt.after}
-              </>
-            ) : (
-              file.text
-            )}
-          </pre>
-        ) : file.format === "image" || file.format === "svg" ? (
-          <ImageViewer
-            src={file.url}
-            alt={file.name}
-            onError={() =>
-              setFailure({ key, error: "Cannot load this image." })
-            }
+      markdown={(file, target) => (
+        <Suspense fallback={<Loader size="sm" />}>
+          <Markdown
+            text={file.text}
+            agentId={target.agent}
+            basePath={target.asset ? undefined : target.path}
           />
-        ) : file.format === "markdown" ? (
-          <div className="file-preview-body">
-            <Suspense fallback={<Loader size="sm" />}>
-              <Markdown
-                text={file.text}
-                agentId={target?.agent}
-                basePath={target?.asset ? undefined : target?.path}
-              />
-            </Suspense>
-          </div>
-        ) : table ? (
-          <>
-            {table.error && <p role="alert">{table.error}</p>}
-            {table.truncated && (
-              <p role="status">Shows up to 200 rows and 100 columns.</p>
-            )}
-            <div className="file-preview-table">
-              <table aria-label="File table">
-                <tbody>
-                  {table.rows.map((row, i) => (
-                    <tr key={i}>
-                      <th scope="row">{i + 1}</th>
-                      {row.map((cell, j) => (
-                        <td key={j}>{cell}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : json ? (
-          <>
-            {json.error && <p role="alert">{json.error}</p>}
-            <pre className="file-preview-body file-preview-source">
-              {json.text}
-            </pre>
-          </>
-        ) : file.format === "html" ? (
-          <iframe
-            title={file.name}
-            className="workspace-preview-frame"
-            sandbox=""
-            referrerPolicy="no-referrer"
-            srcDoc={isolatedDocument(file.text)}
-          />
-        ) : file.format === "pdf" ? (
-          <iframe
-            title={file.name}
-            className="workspace-preview-frame"
-            src={file.url}
-          />
-        ) : file.format === "audio" ? (
+        </Suspense>
+      )}
+      html={(file) => (
+        <iframe
+          title={file.name}
+          className="workspace-preview-frame"
+          sandbox=""
+          referrerPolicy="no-referrer"
+          srcDoc={isolatedDocument(file.text)}
+        />
+      )}
+      pdf={(file) => (
+        <iframe
+          title={file.name}
+          className="workspace-preview-frame"
+          src={file.url}
+        />
+      )}
+      media={(file) =>
+        file.format === "audio" ? (
           <audio
-            onError={() =>
-              setFailure({ key, error: "Cannot play this audio format." })
-            }
             className="file-preview-media"
             controls
             preload="metadata"
             src={file.url}
-          />
-        ) : file.format === "video" ? (
-          <video
             onError={() =>
-              setFailure({ key, error: "Cannot play this video format." })
+              setFailure({ key, error: "Cannot play this audio format." })
             }
+          />
+        ) : (
+          <video
             className="file-preview-media"
             controls
             playsInline
             preload="metadata"
             src={file.url}
+            onError={() =>
+              setFailure({ key, error: "Cannot play this video format." })
+            }
           />
-        ) : (
-          <p>No preview for this file type.</p>
-        ))}
-    </PreviewModal>
+        )
+      }
+    />
   );
 }

@@ -1,7 +1,6 @@
-import { Button, Loader } from "@mantine/core";
-import { Check, Code, Copy, Download, Eye } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
-import "./rich-preview.css";
+import RichPreviewView from "./RichPreviewView";
+import { saveFile } from "../fileActions";
 import { copyText } from "../clipboard/clipboard";
 
 // A sandbox without permissions has an opaque origin. Remove navigation elements
@@ -100,15 +99,8 @@ export default memo(function RichPreview({
   kind: "mermaid" | "html";
   source: string;
 }) {
-  const [mode, setMode] = useState<"preview" | "source">("preview");
   const [svg, setSvg] = useState("");
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState("");
-  useEffect(() => {
-    setCopied(false);
-    setCopyError("");
-  }, [source]);
   useEffect(() => {
     if (kind !== "mermaid") return;
     let active = true;
@@ -143,117 +135,31 @@ export default memo(function RichPreview({
       ? Math.max(120, Math.min(560, height + 40))
       : 310;
   }, [svg]);
-  const [url, setUrl] = useState("");
-  const downloadSvg = kind === "mermaid" && mode === "preview" && !!svg;
-  useEffect(() => {
-    const value = URL.createObjectURL(
-      new Blob([downloadSvg ? svg : source], {
-        type: downloadSvg
-          ? "image/svg+xml"
-          : kind === "html"
-            ? "text/html"
-            : "text/plain",
-      }),
-    );
-    setUrl(value);
-    return () => URL.revokeObjectURL(value);
-  }, [source, svg, kind, downloadSvg]);
   return (
-    <section
-      className="rich-preview"
-      data-preview-kind={kind}
-      aria-label={kind === "mermaid" ? "Mermaid diagram" : "HTML preview"}
-    >
-      <div className="rich-preview-toolbar">
-        <span className="rich-preview-label">
-          {kind === "mermaid" ? "Mermaid" : "HTML"}
-        </span>
-        <div
-          className="rich-preview-modes"
-          role="group"
-          aria-label="Preview display"
-        >
-          <Button
-            size="compact-xs"
-            variant={mode === "preview" ? "light" : "subtle"}
-            aria-pressed={mode === "preview"}
-            onClick={() => setMode("preview")}
-            leftSection={<Eye size={13} />}
-          >
-            Preview
-          </Button>
-          <Button
-            size="compact-xs"
-            variant={mode === "source" ? "light" : "subtle"}
-            aria-pressed={mode === "source"}
-            onClick={() => setMode("source")}
-            leftSection={<Code size={13} />}
-          >
-            Source
-          </Button>
-        </div>
-        <Button
-          size="compact-xs"
-          variant="subtle"
-          aria-label="Copy source"
-          title="Copy source"
-          onClick={async () => {
-            try {
-              await copyText(source);
-              setCopied(true);
-              setCopyError("");
-            } catch {
-              setCopyError(
-                "Cannot copy. Open Source and select the text to copy it.",
-              );
-            }
-          }}
-        >
-          {copied ? <Check size={14} /> : <Copy size={14} />}
-        </Button>
-        <Button
-          component="a"
-          href={url}
-          download={
+    <RichPreviewView
+      kind={kind}
+      source={source}
+      error={error}
+      busy={kind === "mermaid" && !svg}
+      copy={copyText}
+      save={(mode) => {
+        const diagram = kind === "mermaid" && mode === "preview" && !!svg;
+        return saveFile({
+          name:
             kind === "html"
               ? "preview.html"
-              : downloadSvg
+              : diagram
                 ? "diagram.svg"
-                : "diagram.mmd"
-          }
-          size="compact-xs"
-          variant="subtle"
-          aria-label="Download preview"
-          title="Download preview"
-        >
-          <Download size={14} />
-        </Button>
-      </div>
-      {copyError && (
-        <p role="alert" className="rich-preview-error">
-          {copyError}
-        </p>
-      )}
-      {mode === "source" ? (
-        <pre className="rich-preview-source">
-          <code>{source}</code>
-        </pre>
-      ) : error ? (
-        <div className="rich-preview-error" role="alert">
-          <strong>
-            {kind === "mermaid"
-              ? "Cannot render this diagram"
-              : "Preview error"}
-          </strong>
-          <pre>{error}</pre>
-          <p>Open Source to inspect the original text.</p>
-        </div>
-      ) : kind === "mermaid" && !svg ? (
-        <div className="rich-preview-loading">
-          <Loader size="sm" />
-          Render diagram
-        </div>
-      ) : (
+                : "diagram.mmd",
+          mime: diagram
+            ? "image/svg+xml"
+            : kind === "html"
+              ? "text/html"
+              : "text/plain",
+          data: diagram ? svg : source,
+        });
+      }}
+      preview={
         <iframe
           title={
             kind === "mermaid"
@@ -266,10 +172,7 @@ export default memo(function RichPreview({
           style={kind === "mermaid" ? { height: diagramHeight } : undefined}
           className={`rich-preview-frame ${kind === "mermaid" ? "rich-preview-diagram" : ""}`}
         />
-      )}
-      <div className="rich-preview-note">
-        {kind === "html" ? "Static preview." : "Diagram preview."}
-      </div>
-    </section>
+      }
+    />
   );
 });

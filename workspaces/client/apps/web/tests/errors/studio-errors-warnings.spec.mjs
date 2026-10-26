@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "../servers/multi-server-fixture.mjs";
 
-for (const width of [1440, 390]) {
+for (const width of [1440, 390, 320]) {
   for (const colorScheme of ["light", "dark"]) {
     test(`App errors in sidebar warnings ${width} ${colorScheme}`, async ({
       page,
@@ -37,6 +37,7 @@ for (const width of [1440, 390]) {
           }
         },
       });
+      server.snapshot.runtime.studioErrors = items;
       server.snapshot.runtime.nativeNotices = [
         {
           id: "provider-update:default",

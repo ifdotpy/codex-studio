@@ -117,13 +117,31 @@ impl VoiceRepository {
         agent: &str,
         after: i64,
     ) -> StoreResult<Vec<VoiceRecord>> {
+        Self::records_page(connection, agent, after, i64::MAX)
+    }
+
+    /// Bound transient stream reads; HTTP recovery retains the full history path.
+    pub fn records_page(
+        connection: &Connection,
+        agent: &str,
+        after: i64,
+        limit: i64,
+    ) -> StoreResult<Vec<VoiceRecord>> {
         let mut statement = connection.prepare_cached(
             "SELECT seq,id,agent,session,kind,text,item_id,previous_item_id,payload,created \
-             FROM voice_records WHERE agent=?1 AND seq>?2 ORDER BY seq",
+             FROM voice_records WHERE agent=?1 AND seq>?2 ORDER BY seq LIMIT ?3",
         )?;
-        let rows = statement.query_map(params![agent, after], record_from_row)?;
+        let rows = statement.query_map(params![agent, after, limit], record_from_row)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    pub fn record_sequence(connection: &Connection, agent: &str) -> StoreResult<i64> {
+        Ok(connection.query_row(
+            "SELECT COALESCE(MAX(seq),0) FROM voice_records WHERE agent=?1",
+            [agent],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn latest_session(connection: &Connection, agent: &str) -> StoreResult<Option<Value>> {

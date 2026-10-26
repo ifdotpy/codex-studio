@@ -1,18 +1,37 @@
 use crate::analytics_fixtures as common;
-use common::{actual, analytics, seed_state_blocking, tables};
+use common::{actual, tables};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use studio_runtime_services::analytics_capture::{
     CaptureSnapshot, CaptureSource, PreparedCapture, decide,
 };
 
-/// A fresh analytics database holding the agent and one started live turn.
-fn started_turn() -> (tempfile::TempDir, Connection, Value) {
-    let root = tempfile::tempdir().expect("state");
-    let agent = seed_state_blocking(root.path());
-    let mut db = analytics(root.path());
+// These transaction tests need only analytics; durable cross-database capture is
+// exercised by analytics_history_checkpoint and notification_dispatch_corpus.
+fn fixture() -> (Connection, Value) {
+    let db = Connection::open_in_memory().expect("analytics database");
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../runtime-store/src/runtime-state-schema.json"
+    ))
+    .expect("Rust-owned schema");
+    let mut objects = schema["analytics.sqlite3"]["sqlite_master"]
+        .as_array()
+        .expect("analytics catalog")
+        .iter()
+        .collect::<Vec<_>>();
+    objects.sort_by_key(|object| object["create_order"].as_i64().expect("creation order"));
+    for object in objects {
+        db.execute_batch(object["sql"].as_str().expect("DDL"))
+            .expect("analytics schema");
+    }
+    studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
+    (db, common::agent())
+}
+
+fn started_turn() -> (Connection, Value) {
+    let (mut db, agent) = fixture();
     capture(&mut db, &agent, "turn/started", json!({}), 10.);
-    (root, db, agent)
+    (db, agent)
 }
 
 fn capture(db: &mut Connection, agent: &Value, method: &str, params: Value, at: f64) {
@@ -27,7 +46,7 @@ fn capture(db: &mut Connection, agent: &Value, method: &str, params: Value, at: 
 
 #[test]
 fn uncertain_turn_keeps_its_outcome_and_reason_in_analytics() {
-    let (_root, mut db, agent) = started_turn();
+    let (mut db, agent) = started_turn();
     let error = json!({"message":"The native transcript cannot confirm the outcome."});
     capture(
         &mut db,
@@ -48,7 +67,7 @@ fn uncertain_turn_keeps_its_outcome_and_reason_in_analytics() {
 
 #[test]
 fn malformed_stored_rows_refuse_without_writes() {
-    let (_root, mut db, agent) = started_turn();
+    let (mut db, agent) = started_turn();
     for invalid in [
         json!({}),
         json!({"id":"a:thread:turn","agentId":"a","at":0,"startedAt":"bad","finishedAt":null,"firstOutputAt":null,"status":"running"}),
@@ -74,7 +93,7 @@ fn malformed_stored_rows_refuse_without_writes() {
 
 #[test]
 fn capture_rows_bind_request_identity_without_writes() {
-    let (_root, mut db, agent) = started_turn();
+    let (mut db, agent) = started_turn();
     let raw: String = db
         .query_row("SELECT record FROM analytics_turns LIMIT 1", [], |r| {
             r.get(0)
@@ -110,10 +129,8 @@ fn capture_rows_bind_request_identity_without_writes() {
 fn claude_rows_replay_without_usage_writes() {
     use studio_runtime_store::analytics_capture::CaptureTable;
     let usage = json!({"tokenUsage":{"total":{"inputTokens":10,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":20},"last":{"inputTokens":10,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":20},"modelContextWindow":100},"usageSource":"claudeResponse","requestUsage":{"inputTokens":10,"outputTokens":4,"cachedInputTokens":2,"cacheWriteInputTokens":1},"responseId":"r1"});
-    let root = tempfile::tempdir().expect("state");
-    let mut agent = seed_state_blocking(root.path());
+    let (mut db, mut agent) = fixture();
     agent["provider"] = json!("claude");
-    let mut db = analytics(root.path());
     let prepare = |at| {
         PreparedCapture::event(
             &agent,
@@ -163,9 +180,7 @@ fn a_command_item_from_an_earlier_turn_still_captures_later_events() {
     // earlier failed with "/snapshot/row/turnId", stopped the account's
     // publication queue at its head, and filled it to the evidence bound.
     // Items are keyed by agent, thread and item id only.
-    let root = tempfile::tempdir().expect("state");
-    let mut agent = seed_state_blocking(root.path());
-    let mut db = analytics(root.path());
+    let (mut db, mut agent) = fixture();
     let thread = agent["threadId"].as_str().expect("thread").to_owned();
     let mut run = |turn: &str, method: &str, params: Value, at: f64| {
         agent["turnId"] = json!(turn);

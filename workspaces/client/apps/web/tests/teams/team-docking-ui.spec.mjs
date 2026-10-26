@@ -1,8 +1,6 @@
 import {
   test,
   expect,
-  spawnFixture,
-  rustUiFixture,
   readTestState,
   stubEntityState,
   readFixtureSyncContract,
@@ -13,31 +11,30 @@ import { join } from "node:path";
 
 test("Team docks beside readable chats and uses a modal sheet below that width", async ({
   page,
+  readOnlyRust,
 }) => {
   test.setTimeout(120_000);
   page.setDefaultTimeout(10000);
   const state = await mkdtemp(join(tmpdir(), "team-docking-"));
-  const evidence =
-    process.env.TEAM_DOCKING_EVIDENCE ||
-    join(tmpdir(), "redesign", "team-v4", "docking");
+  const evidence = process.env.TEAM_DOCKING_EVIDENCE || state;
   await mkdir(evidence, { recursive: true });
-  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
-    stdio: ["ignore", "pipe", "pipe"],
+  const origin = readOnlyRust.origin;
+  const snapshot = await readTestState(origin);
+  const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
+  // A static roster row opens the real Team layout without another provider.
+  snapshot.threads.push({
+    ...lead,
+    id: "layout-worker",
+    name: "Layout worker",
+    parentId: lead.id,
+    rootId: lead.id,
+    isLead: false,
+    threadId: null,
   });
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) =>
-      resolve(Number(String(chunk).trim())),
-    );
-    fixture.once("exit", () =>
-      reject(new Error("Team fixture exited before startup")),
-    );
-  });
-  const origin = `http://127.0.0.1:${port}`;
-  await stubEntityState(
-    page,
-    await readTestState(origin),
-    await readFixtureSyncContract(origin),
+  snapshot.runtime.agents = snapshot.threads.filter(
+    (agent) => agent.source === "managed",
   );
+  await stubEntityState(page, snapshot, await readFixtureSyncContract(origin));
   // Keep the roster fixed while native transcript scopes read fixture messages.
   await page.route("**/api/sync/pull**", (route) =>
     new URL(route.request().url()).searchParams.get("scope") ===
@@ -46,7 +43,10 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
       : route.continue(),
   );
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(`http://127.0.0.1:${port}`);
+  await page.route("**/api/sync/drafts", (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await readOnlyRust.open(page);
   await page
     .locator(".project-chats [data-chat]")
     .filter({ hasText: "Release lead" })

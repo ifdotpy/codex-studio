@@ -54,9 +54,151 @@ pub struct RemoteClient {
     server_slots: std::sync::Mutex<HashMap<String, Arc<Semaphore>>>,
     http: reqwest::Client,
     bodies: Mutex<HashMap<String, BodyEntry>>,
+    registry_events: Arc<server_keys::RegistryEvents>,
 }
+
+/// A host-selected paired server. Credentials never cross the renderer boundary.
+/// Every send checks that pairing has not changed since this context opened.
+#[derive(Clone)]
+pub struct RemoteBinding {
+    client: Arc<RemoteClient>,
+    server: String,
+    credential: Value,
+    origin: String,
+}
+
+impl RemoteBinding {
+    /// Immutable host-selected server identity, without credential material.
+    pub fn server_id(&self) -> &str {
+        &self.server
+    }
+
+    /// Public metadata for this immutable pairing. The pair receipt uses clientId as credentialId.
+    pub fn public_identity(&self) -> Value {
+        json!({"origin":self.origin,"credentialId":self.credential["clientId"]})
+    }
+
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    /// Stable private-store namespace for this exact pairing, not a caller path.
+    pub fn storage_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(
+            serde_json::to_vec(&(&self.server, &self.credential)).expect("JSON credential"),
+        )
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.client.vault.read()?["servers"][&self.server] != self.credential {
+            return Err(
+                "The paired server identity changed. Reopen its services before another request."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn send(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &Value,
+        body: Vec<u8>,
+        id: &str,
+    ) -> Result<reqwest::Response, String> {
+        self.validate()?;
+        let slots = self
+            .client
+            .server_slots
+            .lock()
+            .map_err(|_| "The server transport stopped.")?
+            .entry(self.server.clone())
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_OPEN_RESPONSES_PER_SERVER)))
+            .clone();
+        let permits = (
+            slots.try_acquire_owned().map_err(
+                |_| "Too many open responses for this server. The request was not sent.",
+            )?,
+            self.client
+                .response_slots
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| "Too many open server responses. The request was not sent.")?,
+        );
+        // Reserve before submission and retain through consumption of the body.
+        let mut response = self
+            .client
+            .signed(&self.credential, method, url, headers, body, id)
+            .await?;
+        response.extensions_mut().insert(Arc::new(permits));
+        Ok(response)
+    }
+}
+
 impl RemoteClient {
+    /// Public metadata only. The vault remains the sole pairing authority.
+    pub fn registry_snapshot(&self) -> Result<Value, String> {
+        server_keys::public_registry(self.vault.as_ref())
+    }
+
+    pub fn registry_changes(&self) -> tokio::sync::watch::Receiver<String> {
+        self.registry_events.subscribe()
+    }
+
+    /// Host-only inventory. Bindings retain credentials inside their existing
+    /// transport owner; callers expose only public_identity to a renderer.
+    pub fn migration_bindings(self: &Arc<Self>) -> Result<Vec<(String, RemoteBinding)>, String> {
+        let state = self.vault.read()?;
+        let servers = state["servers"]
+            .as_object()
+            .ok_or("The saved paired server inventory is invalid.")?;
+        let mut names = servers.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        let mut bindings = Vec::with_capacity(names.len());
+        for server in names {
+            bindings.push((server.clone(), self.bind(&server)?));
+        }
+        // Do not publish a partial inventory across concurrent pairing changes.
+        if self.vault.read()?["servers"] != state["servers"] {
+            return Err("The paired server inventory changed during verification.".into());
+        }
+        Ok(bindings)
+    }
+
+    pub fn bind(self: &Arc<Self>, server: &str) -> Result<RemoteBinding, String> {
+        if !server_keys::selector(server) {
+            return Err("Invalid paired server selector.".into());
+        }
+        let credential = self.vault.read()?["servers"][server].clone();
+        if field(&credential, "serverId")? != server {
+            return Err("The paired server registry identity does not match its key.".into());
+        }
+        let origin = server_keys::origin(field(&credential, "origin")?)?;
+        field(&credential, "clientId")?;
+        // Validate the actual key before any state directory is selected.
+        server_keys::signature(
+            &credential,
+            "GET",
+            "/api/sync/identity",
+            "0",
+            "binding",
+            "binding",
+            &[],
+        )?;
+        Ok(RemoteBinding {
+            client: self.clone(),
+            server: server.into(),
+            credential,
+            origin,
+        })
+    }
     pub fn new(vault: Arc<dyn Vault>) -> Result<Self, String> {
+        let registry_events = server_keys::observe_registry(vault.as_ref())?;
         Ok(Self {
             vault,
             mutation: Mutex::new(()),
@@ -69,6 +211,7 @@ impl RemoteClient {
                 .build()
                 .map_err(|e| e.to_string())?,
             bodies: Mutex::new(HashMap::new()),
+            registry_events,
         })
     }
     async fn signed(
@@ -90,6 +233,50 @@ impl RemoteClient {
         {
             return Err("The request does not belong to this server API.".into());
         }
+        let path = percent_encoding::percent_decode_str(url.path())
+            .decode_utf8()
+            .map_err(|_| "Invalid server path.")?;
+        let path = path.trim_end_matches('/');
+        if path.starts_with("/api/multi-server/v1/")
+            || (method == "POST"
+                && (path == "/api/multi-server" || path.starts_with("/api/multi-server/")))
+        {
+            return Err("Use the workspace shell for server management.".into());
+        }
+        self.send_signed(credential, method, url, headers, body, request_id)
+            .await
+    }
+
+    /// Only pair() supplies this endpoint after validating the exact invitation.
+    /// Public signed transport never receives this management exception.
+    async fn pair_send(
+        &self,
+        draft: &Value,
+        request_id: &str,
+    ) -> Result<reqwest::Response, String> {
+        let origin = server_keys::origin(field(draft, "origin")?)?;
+        let url = reqwest::Url::parse(&(origin + "/api/multi-server/v1/pair"))
+            .map_err(|_| "Invalid pairing endpoint.")?;
+        self.send_signed(
+            draft,
+            "POST",
+            url,
+            &json!([["content-type", "application/json"]]),
+            field(draft, "body")?.as_bytes().to_vec(),
+            request_id,
+        )
+        .await
+    }
+
+    async fn send_signed(
+        &self,
+        credential: &Value,
+        method: &str,
+        url: reqwest::Url,
+        headers: &Value,
+        body: Vec<u8>,
+        request_id: &str,
+    ) -> Result<reqwest::Response, String> {
         if request_id.is_empty()
             || request_id.len() > 128
             || request_id.contains(['\n', '\r'])
@@ -369,6 +556,9 @@ impl RemoteClient {
                 if draft.is_null() {
                     return Ok(json!(false));
                 }
+                if draft["forgotten"] == true {
+                    return Ok(json!(false));
+                }
                 if field(draft, "serverId")? != field(p, "serverId")?
                     || field(draft, "origin")? != server_keys::origin(field(p, "origin")?)?
                     || p.get("inviteId").is_some_and(|v| v != &draft["inviteId"])
@@ -382,17 +572,37 @@ impl RemoteClient {
             }
             "servers.forget" => {
                 let _guard = self.mutation.lock().await;
-                let mut state = self.vault.read()?;
                 let server = field(p, "serverId")?;
-                state["servers"]
-                    .as_object_mut()
-                    .ok_or("Invalid server key store.")?
-                    .remove(server);
-                state["drafts"]
-                    .as_object_mut()
-                    .ok_or("Invalid server key store.")?
-                    .retain(|_, v| v["serverId"] != server);
-                self.vault.write(&state)?;
+                if !server_keys::selector(server) {
+                    return Err("Invalid paired server selector.".into());
+                }
+                server_keys::mutate(self.vault.as_ref(), |state| {
+                    if state["forgottenServers"].is_null() {
+                        state["forgottenServers"] = json!({});
+                    }
+                    state["forgottenServers"]
+                        .as_object_mut()
+                        .ok_or("Invalid forgotten server identities.")?
+                        .insert(server.into(), json!(true));
+                    state["servers"]
+                        .as_object_mut()
+                        .ok_or("Invalid server key store.")?
+                        .remove(server);
+                    for draft in state["drafts"]
+                        .as_object_mut()
+                        .ok_or("Invalid server key store.")?
+                        .values_mut()
+                        .filter(|draft| draft["serverId"] == server)
+                    {
+                        let draft = draft
+                            .as_object_mut()
+                            .ok_or("Invalid saved pairing attempt.")?;
+                        draft.remove("privateKey");
+                        draft.remove("body");
+                        draft.insert("forgotten".into(), json!(true));
+                    }
+                    Ok(())
+                })?;
                 // A removed pairing must not retain live authenticated streams.
                 self.bodies
                     .lock()
@@ -408,39 +618,67 @@ impl RemoteClient {
         let _guard = self.mutation.lock().await;
         let invitation = &p["invitation"];
         let id = field(p, "requestId")?;
+        if !server_keys::request_identity(id) {
+            return Err("Invalid pairing request identity.".into());
+        }
         let origin = server_keys::origin(field(p, "origin")?)?;
         if server_keys::origin(field(invitation, "origin")?)? != origin {
             return Err("The invitation belongs to another server.".into());
         }
-        let mut state = self.vault.read()?;
-        if state["drafts"][id].is_null() {
-            let draft = server_keys::new_pair(invitation, id)?;
-            state["drafts"]
-                .as_object_mut()
-                .ok_or("Invalid server key store.")?
-                .insert(id.to_owned(), draft);
-            self.vault.write(&state)?;
-        }
-        let draft = state["drafts"][id].clone();
+        // Keep exact invitation and base authority in the private draft. Every
+        // commit re-reads the vault after the network wait under the shared owner.
+        let invitation_hash = server_keys::private_digest(invitation)?;
+        let draft = server_keys::mutate(self.vault.as_ref(), |state| {
+            if state["drafts"][id].is_null() {
+                let mut draft = server_keys::new_pair(invitation, id)?;
+                draft["invitationHash"] = json!(invitation_hash);
+                draft["baseCredentialHash"] = json!(server_keys::private_digest(
+                    &state["servers"][field(invitation, "serverId")?]
+                )?);
+                state["drafts"]
+                    .as_object_mut()
+                    .ok_or("Invalid server key store.")?
+                    .insert(id.into(), draft);
+            }
+            Ok(state["drafts"][id].clone())
+        })?;
         if draft["serverId"] != invitation["serverId"]
             || draft["inviteId"] != invitation["inviteId"]
             || draft["origin"] != origin
         {
             return Err("This request belongs to another pairing attempt.".into());
         }
-        if !draft["receipt"].is_null() {
-            return Ok(draft["receipt"].clone());
+        if draft["forgotten"] == true {
+            return Err("This pairing attempt was forgotten. Keep its original outcome.".into());
         }
-        let mut response = self
-            .signed(
-                &draft,
-                "POST",
-                &(origin.clone() + "/api/multi-server/v1/pair"),
-                &json!([["content-type", "application/json"]]),
-                field(&draft, "body")?.as_bytes().to_vec(),
-                id,
-            )
-            .await?;
+        if draft
+            .get("invitationHash")
+            .is_some_and(|saved| saved != &Value::String(invitation_hash.clone()))
+        {
+            return Err("This request belongs to another pairing invitation.".into());
+        }
+        if !draft["receipt"].is_null() {
+            return server_keys::mutate(self.vault.as_ref(), |state| {
+                let current = &state["servers"][field(&draft, "serverId")?];
+                if field(current, "clientId")? != field(&draft["receipt"], "credentialId")?
+                    || field(current, "origin")? != field(&draft["receipt"], "origin")?
+                    || current["publicKey"] != draft["publicKey"]
+                {
+                    return Err("The completed pairing no longer owns this server.".into());
+                }
+                Ok(draft["receipt"].clone())
+            });
+        }
+        if draft["rejected"] == true {
+            return Ok(json!({"notApplied":"invite_unavailable"}));
+        }
+        if draft.get("baseCredentialHash").is_none() {
+            return Err(
+                "The saved pairing has no original authority proof. Its outcome remains unknown."
+                    .into(),
+            );
+        }
+        let mut response = self.pair_send(&draft, id).await?;
         let status = response.status();
         let bytes = tokio::time::timeout(Duration::from_secs(15), async {
             let mut bytes = Vec::new();
@@ -467,8 +705,13 @@ impl RemoteClient {
         let receipt: Value = serde_json::from_slice(&bytes)
             .map_err(|_| "Invalid pairing reply. Retry the same invitation.")?;
         if status.as_u16() == 403 && receipt["code"] == "invite_unavailable" {
-            state["drafts"][id]["rejected"] = json!(true);
-            self.vault.write(&state)?;
+            server_keys::mutate(self.vault.as_ref(), |state| {
+                if state["drafts"][id] != draft {
+                    return Err("The pairing attempt changed while its reply was pending.".into());
+                }
+                state["drafts"][id]["rejected"] = json!(true);
+                Ok(())
+            })?;
             return Ok(json!({"notApplied":"invite_unavailable"}));
         }
         if !status.is_success() {
@@ -490,20 +733,54 @@ impl RemoteClient {
         credential.as_object_mut().unwrap().remove("body");
         credential["targetPublicKey"] = receipt["publicKey"].clone();
         credential["tailscaleUser"] = receipt["tailscaleUser"].clone();
-        state["servers"]
+        credential["label"] = result["label"].clone();
+        credential
             .as_object_mut()
-            .ok_or("Invalid server key store.")?
-            .insert(server.to_owned(), credential);
-        state["drafts"][id]
+            .expect("pair credential")
+            .remove("invitationHash");
+        credential
             .as_object_mut()
-            .unwrap()
-            .remove("privateKey");
-        state["drafts"][id].as_object_mut().unwrap().remove("body");
-        state["drafts"][id]["receipt"] = result.clone();
-        self.vault.write(&state)?;
+            .expect("pair credential")
+            .remove("baseCredentialHash");
+        server_keys::mutate(self.vault.as_ref(), |state| {
+            if state["drafts"][id] != draft {
+                if state["drafts"][id]["receipt"] == result
+                    && state["servers"][server] == credential
+                {
+                    return Ok(());
+                }
+                return Err("The pairing attempt changed while its reply was pending.".into());
+            }
+            if draft["baseCredentialHash"].as_str()
+                != Some(server_keys::private_digest(&state["servers"][server])?.as_str())
+            {
+                return Err("The paired server changed while its reply was pending.".into());
+            }
+            if !state["forgottenServers"].is_null() {
+                state["forgottenServers"]
+                    .as_object_mut()
+                    .ok_or("Invalid forgotten server identities.")?
+                    .remove(server);
+            }
+            state["servers"]
+                .as_object_mut()
+                .ok_or("Invalid server key store.")?
+                .insert(server.to_owned(), credential);
+            state["drafts"][id]
+                .as_object_mut()
+                .unwrap()
+                .remove("privateKey");
+            state["drafts"][id].as_object_mut().unwrap().remove("body");
+            state["drafts"][id]["receipt"] = result.clone();
+            Ok(())
+        })?;
         Ok(result)
     }
 }
+
+#[cfg(test)]
+#[path = "server_registry_tests.rs"]
+mod registry_tests;
 
 #[cfg(test)]
 mod tests {
@@ -522,6 +799,161 @@ mod tests {
             *self.0.lock().unwrap() = value.clone();
             Ok(())
         }
+    }
+    #[tokio::test]
+    async fn native_host_capture_paired_inventory_retains_empty_profile_bindings() {
+        let pair = |server: &str| {
+            server_keys::new_pair(&json!({"protocol":1,"origin":format!("https://{server}.tailnet.ts.net"),"serverId":server,"inviteId":"synthetic-invite","token":"synthetic","publicKey":"fixture","tailscaleUser":"user"}),"original-pair").unwrap()
+        };
+        let first = pair("first");
+        let second = pair("second");
+        let vault = Arc::new(Memory(StdMutex::new(
+            json!({"drafts":{},"servers":{"second":second,"first":first}}),
+        )));
+        let client = Arc::new(RemoteClient::new(vault.clone()).unwrap());
+        // Neither pairing has a Store or a logical record. Both still own a
+        // persistent native profile and must appear in the host inventory.
+        let bindings = client
+            .migration_bindings()
+            .expect("Every paired profile needs an exact host binding, including empty profiles");
+        assert_eq!(
+            bindings
+                .iter()
+                .map(|(server, _)| server.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        for (server, binding) in bindings {
+            assert_eq!(
+                binding.storage_key(),
+                client.bind(&server).unwrap().storage_key()
+            );
+            let public = binding.public_identity();
+            assert_eq!(public["origin"], format!("https://{server}.tailnet.ts.net"));
+            assert_eq!(
+                public
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                vec!["credentialId", "origin"]
+            );
+            assert!(public["credentialId"].is_string());
+        }
+        vault.0.lock().unwrap()["servers"]["broken"] = json!({"serverId":"broken"});
+        assert!(
+            client.migration_bindings().is_err(),
+            "A malformed retained pairing cannot disappear from a partial inventory"
+        );
+    }
+    #[tokio::test]
+    async fn native_server_context_uses_paired_transport_and_refuses_changed_authority() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert =
+            rcgen::generate_simple_self_signed(vec!["context.tailnet.ts.net".into()]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = format!("https://context.tailnet.ts.net:{}", address.port());
+        let invitation = json!({"protocol":1,"origin":origin,"serverId":"remote","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
+        let credential = server_keys::new_pair(&invitation, "pair").unwrap();
+        let root = reqwest::Certificate::from_der(cert.cert.der().as_ref()).unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.cert.der().clone()],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
+        )
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut stream = rustls::StreamOwned::new(
+                rustls::ServerConnection::new(Arc::new(config)).unwrap(),
+                socket,
+            );
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                bytes.push(byte[0]);
+            }
+            let header = String::from_utf8(bytes).unwrap();
+            assert!(header.starts_with("POST /api/messages HTTP/1.1\r\n"));
+            let headers = header
+                .lines()
+                .skip(1)
+                .filter_map(|line| line.split_once(':'))
+                .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_owned()))
+                .collect::<HashMap<_, _>>();
+            assert_eq!(headers["x-studio-server"], "remote");
+            assert_eq!(headers["x-studio-request-id"], "original-message");
+            assert_eq!(headers["x-studio-api-schema"], "exact-schema");
+            assert_eq!(headers["x-canvas-workspace"], "a".repeat(32));
+            assert!(!headers.contains_key("x-canvas-token"));
+            let mut body = vec![0; headers["content-length"].parse::<usize>().unwrap()];
+            stream.read_exact(&mut body).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                json!({"id":"original-message","text":"synthetic"})
+            );
+            let reply = br#"{"id":"original-message","status":"accepted"}"#;
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",reply.len()).unwrap();
+            stream.write_all(reply).unwrap();
+            stream.flush().unwrap();
+            listener
+        });
+        let vault = Arc::new(Memory(StdMutex::new(
+            json!({"drafts":{},"servers":{"remote":credential}}),
+        )));
+        let mut transport = RemoteClient::new(vault.clone()).unwrap();
+        transport.http = reqwest::Client::builder()
+            .no_proxy()
+            .resolve("context.tailnet.ts.net", address)
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .tls_certs_only([root])
+            .build()
+            .unwrap();
+        let transport = Arc::new(transport);
+        let binding = transport.bind("remote").unwrap();
+        let namespace = binding.storage_key();
+        assert_eq!(namespace.len(), 64);
+        assert!(!namespace.contains("remote"));
+        let backend = crate::backend::Backend::from_remote(binding).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let client = crate::client::Client::open_with_backend(
+            directory.path().join("owned"),
+            backend,
+            |_| {},
+        )
+        .unwrap();
+        let request = || crate::protocol::Request {
+            id: "original-message".into(),
+            method: "api.request".into(),
+            params: json!({"path":"/api/messages","requestId":"original-message","apiSchema":"exact-schema","workspaceId":"a".repeat(32),"body":{"id":"original-message","text":"synthetic"}}),
+        };
+        assert_eq!(
+            client.request(request()).await.unwrap().result.unwrap()["id"],
+            "original-message"
+        );
+        let listener = server.join().unwrap();
+        vault.0.lock().unwrap()["servers"]["remote"]["origin"] =
+            json!("https://changed.tailnet.ts.net");
+        let refused = client.request(request()).await.unwrap();
+        assert!(refused.error.unwrap().message.contains("identity changed"));
+        assert!(transport.bind("missing").is_err());
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
     #[tokio::test]
     async fn one_server_cannot_hold_the_slots_of_another_server() {
@@ -703,19 +1135,30 @@ mod tests {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
             );
 
-            assert_eq!(
-                headers["x-studio-signature"],
-                server_keys::signature(
-                    &expected,
-                    "POST",
-                    "/api/test?q=1",
-                    &headers["x-studio-timestamp"],
-                    &headers["x-studio-nonce"],
-                    "original",
-                    &body
-                )
-                .unwrap()
-            );
+            {
+                // Verify the wire request with the public key; never sign the expectation
+                // with the implementation under test. The body digest is the fixed null vector.
+                let public = expected["publicKey"]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .filter(|line| !line.starts_with("-----"))
+                    .collect::<String>();
+                let public = STANDARD.decode(public).unwrap();
+                assert_eq!(public.len(), 44);
+                let message = format!(
+                    "studio-multi-server-v1\nPOST\n/api/test?q=1\nserver\n{}\n{}\n{}\noriginal\n74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                    expected["clientId"].as_str().unwrap(),
+                    headers["x-studio-timestamp"],
+                    headers["x-studio-nonce"]
+                );
+                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public[12..])
+                    .verify(
+                        message.as_bytes(),
+                        &STANDARD.decode(&headers["x-studio-signature"]).unwrap(),
+                    )
+                    .unwrap();
+            };
             stream.write_all(b"HTTP/1.1 409 Conflict\r\nContent-Length: 3\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\na\0\xff").unwrap();
             stream.flush().unwrap();
         });

@@ -130,38 +130,26 @@ mod invalid_agent_repair_tests {
     use super::*;
     use serde_json::json;
 
-    #[tokio::test]
-    async fn valid_agent_repair_clears_the_invalid_record_hold() {
-        let directory = tempfile::tempdir().expect("temporary runtime");
-        let store = crate::RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("runtime opens");
+    #[test]
+    fn valid_agent_repair_clears_the_invalid_record_hold() {
+        let mut connection = crate::fresh_state::test_canvas();
         let agent = AgentRecord::from_value(json!({
             "id":"agent", "rootId":"agent", "epoch":1, "status":"idle"
         }))
         .expect("valid repair record");
-        let seed_agent = agent.clone();
-        store
-            .transaction(move |tx| {
-                AgentRepository::put(tx, &seed_agent)?;
-                tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,'{}')",
-                    rusqlite::params![
-                        format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
-                        crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("seed agent and hold");
-
-        store
-            .transaction(move |tx| AgentRepository::put(tx, &agent))
-            .await
-            .expect("typed repair saves and clears hold atomically");
-
-        let connection = store.test_reader().expect("reader opens");
+        AgentRepository::put(&connection, &agent).expect("seed agent");
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,'{}')",
+                rusqlite::params![
+                    format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                ],
+            )
+            .expect("seed hold");
+        let tx = connection.transaction().expect("repair transaction");
+        AgentRepository::put(&tx, &agent).expect("typed repair saves and clears hold");
+        tx.commit().expect("repair commits atomically");
         let remaining: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",

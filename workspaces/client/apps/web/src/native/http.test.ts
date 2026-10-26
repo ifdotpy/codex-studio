@@ -7,7 +7,18 @@ function host(
   reply: (request: { id: string; params: Record<string, unknown> }) => unknown,
 ) {
   const invoke = vi.fn(async (_command, args) => reply(args.request));
-  vi.stubGlobal("__TAURI__", { core: { invoke } });
+  let identity = 0;
+  vi.stubGlobal("__TAURI__", {
+    core: {
+      invoke: async (command: string, args: any) =>
+        args.request.method === "system.uuid"
+          ? {
+              id: args.request.id,
+              result: `00000000-0000-4000-8000-${String(++identity).padStart(12, "0")}`,
+            }
+          : invoke(command, args),
+    },
+  });
   return invoke;
 }
 

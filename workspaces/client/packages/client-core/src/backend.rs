@@ -13,12 +13,15 @@ pub struct Backend {
     client: Client,
     credentials: Arc<Mutex<Option<String>>>,
     authorized: Arc<std::sync::atomic::AtomicBool>,
+    remote: Option<crate::server_transport::RemoteBinding>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ApiRequest {
     path: String,
+    #[serde(default)]
+    query: Option<Value>,
     #[serde(default)]
     method: Option<String>,
     #[serde(default)]
@@ -39,6 +42,8 @@ struct ApiRequest {
     download: bool,
     #[serde(default)]
     http_response: bool,
+    #[serde(default)]
+    json_response: bool,
 }
 
 fn error(code: &str, message: impl ToString) -> CommandError {
@@ -76,7 +81,48 @@ impl Backend {
             client,
             credentials: Arc::new(Mutex::new(None)),
             authorized: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            remote: None,
         })
+    }
+
+    /// The native host selects an existing pairing, never a renderer URL or key.
+    pub fn from_remote(binding: crate::server_transport::RemoteBinding) -> Result<Self, String> {
+        let origin = Url::parse(binding.origin()).map_err(|e| e.to_string())?;
+        Ok(Self {
+            origin,
+            client: crate::tls::client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()
+                .map_err(|e| e.to_string())?,
+            credentials: Arc::new(Mutex::new(None)),
+            authorized: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            remote: Some(binding),
+        })
+    }
+
+    pub fn validate_identity(&self) -> Result<(), String> {
+        match &self.remote {
+            Some(binding) => binding.validate(),
+            None => Ok(()),
+        }
+    }
+
+    /// The host-selected pairing identity. Local transport has no remote server.
+    pub fn remote_server_id(&self) -> Option<&str> {
+        self.remote
+            .as_ref()
+            .map(crate::server_transport::RemoteBinding::server_id)
+    }
+
+    /// Host-stamped transport metadata. No key or session token leaves this owner.
+    pub fn public_identity(&self) -> Value {
+        match &self.remote {
+            Some(binding) => binding.public_identity(),
+            None => {
+                serde_json::json!({"origin":self.origin.origin().ascii_serialization(),"credentialId":null})
+            }
+        }
     }
 
     pub fn desktop_client(origin: &str) -> Result<Self, String> {
@@ -86,7 +132,8 @@ impl Backend {
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(client)
     }
-    pub(crate) fn authorize(&self) {
+    /// The native host calls this only after verifying its configured local server.
+    pub fn authorize(&self) {
         self.authorized
             .store(true, std::sync::atomic::Ordering::Release);
     }
@@ -139,10 +186,26 @@ impl Backend {
         if !last_id.is_empty() {
             request = request.header("Last-Event-ID", last_id);
         }
-        let response = tokio::time::timeout(Duration::from_secs(15), request.send())
-            .await
-            .map_err(|_| error("timeout", "The server event stream did not open in time."))?
-            .map_err(Self::network)?;
+        let response = if let Some(remote) = &self.remote {
+            remote
+                .send(
+                    "GET",
+                    self.url(path)?.as_str(),
+                    &serde_json::json!([
+                        ["accept", "text/event-stream"],
+                        ["last-event-id", last_id]
+                    ]),
+                    Vec::new(),
+                    &crate::server_keys::random_id().map_err(|e| error("identity", e))?,
+                )
+                .await
+                .map_err(|e| error("network", e))?
+        } else {
+            tokio::time::timeout(Duration::from_secs(15), request.send())
+                .await
+                .map_err(|_| error("timeout", "The server event stream did not open in time."))?
+                .map_err(Self::network)?
+        };
         if response.status().as_u16() == 204 {
             return Ok(None);
         }
@@ -255,6 +318,9 @@ impl Backend {
     }
 
     pub async fn prepare_session(&self) -> Result<(), CommandError> {
+        if let Some(remote) = &self.remote {
+            return remote.validate().map_err(|e| error("server_identity", e));
+        }
         self.token().await.map(|_| ())
     }
 
@@ -265,7 +331,34 @@ impl Backend {
                 "The local backend identity has not been verified.",
             ));
         }
-        let url = self.url(&request.path)?;
+        let mut url = self.url(&request.path)?;
+        if let Some(query) = &request.query {
+            let query = query
+                .as_object()
+                .ok_or_else(|| error("invalid_query", "The API query must be an object."))?;
+            for (key, value) in query {
+                let values = if let Value::Array(values) = value {
+                    values.as_slice()
+                } else {
+                    std::slice::from_ref(value)
+                };
+                for value in values {
+                    let value = match value {
+                        Value::Null => continue,
+                        Value::String(value) => value.clone(),
+                        Value::Bool(value) => value.to_string(),
+                        Value::Number(value) => value.to_string(),
+                        _ => {
+                            return Err(error(
+                                "invalid_query",
+                                "The API query contains an invalid value.",
+                            ));
+                        }
+                    };
+                    url.query_pairs_mut().append_pair(key, &value);
+                }
+            }
+        }
         // Validate before acquiring a token or sending any network request.
         for (name, value) in [
             ("request ID", request.request_id.as_deref()),
@@ -299,24 +392,30 @@ impl Backend {
         }
         let conditional_read = method == "GET";
         let mut builder = if method == "POST" {
-            let body = request.body.unwrap_or(Value::Null);
-            let token = self.token().await?;
-            let mut builder = self
-                .client
-                .post(url)
-                .header("X-Canvas-Token", token)
-                .json(&body);
-            if let Some(workspace) = request.workspace_id.filter(|value| !value.is_empty()) {
-                builder = builder.header("X-Canvas-Workspace", workspace);
+            let body = request.body.as_ref().unwrap_or(&Value::Null);
+            if self.remote.is_some() {
+                self.client.post(url.clone()).json(body)
+            } else {
+                let token = self.token().await?;
+                let builder = self
+                    .client
+                    .post(url.clone())
+                    .header("X-Canvas-Token", token)
+                    .json(&body);
+                builder
             }
-            builder
         } else {
-            self.client.get(url).timeout(Duration::from_secs(15))
+            self.client
+                .get(url.clone())
+                .timeout(Duration::from_secs(15))
         };
-        if let Some(id) = request.request_id {
+        if let Some(id) = &request.request_id {
             builder = builder.header("X-Studio-Request-Id", id);
         }
-        if let Some(schema) = request.api_schema {
+        if let Some(workspace) = &request.workspace_id {
+            builder = builder.header("X-Canvas-Workspace", workspace);
+        }
+        if let Some(schema) = &request.api_schema {
             builder = builder.header("X-Studio-API-Schema", schema);
         }
         if conditional_read && let Some(etag) = request.etag.as_deref() {
@@ -334,9 +433,70 @@ impl Backend {
             }
             builder = builder.timeout(Duration::from_millis(timeout));
         }
-        let response = builder.send().await.map_err(Self::network)?;
+        let response = if let Some(remote) = &self.remote {
+            let id = request
+                .request_id
+                .clone()
+                .or_else(|| {
+                    request.body.as_ref().and_then(|body| {
+                        body["id"]
+                            .as_str()
+                            .or_else(|| body["request_id"].as_str())
+                            .map(str::to_owned)
+                    })
+                })
+                .filter(|id| !id.is_empty());
+            let id = match id {
+                Some(id) => id,
+                None if method == "GET" => {
+                    crate::server_keys::random_id().map_err(|e| error("identity", e))?
+                }
+                _ => {
+                    return Err(error(
+                        "request_identity",
+                        "A remote write needs its original request ID.",
+                    ));
+                }
+            };
+            let mut headers = vec![serde_json::json!(["content-type", "application/json"])];
+            for (key, value) in [
+                ("x-studio-api-schema", request.api_schema.as_deref()),
+                ("x-canvas-workspace", request.workspace_id.as_deref()),
+                ("if-none-match", request.etag.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    headers.push(serde_json::json!([key, value]));
+                }
+            }
+            let body = request
+                .body
+                .as_ref()
+                .map(serde_json::to_vec)
+                .transpose()
+                .map_err(|e| error("invalid_request", e))?
+                .unwrap_or_default();
+            let headers = Value::Array(headers);
+            let send = remote.send(method, url.as_str(), &headers, body, &id);
+            tokio::time::timeout(
+                Duration::from_millis(request.timeout_ms.unwrap_or(15_000)),
+                send,
+            )
+            .await
+            .map_err(|_| {
+                error(
+                    "timeout",
+                    "The server did not respond. The command outcome may be unknown.",
+                )
+            })?
+            .map_err(|e| error("network", e))?
+        } else {
+            builder.send().await.map_err(Self::network)?
+        };
         if response.status().as_u16() == 401 || response.status().as_u16() == 403 {
             *self.credentials.lock().await = None;
+        }
+        if request.json_response {
+            return Self::json_response(response).await;
         }
         if request.http_response {
             return Self::http_response(response).await;
@@ -478,17 +638,65 @@ impl Backend {
         }))
     }
 
+    /// Typed UI port: status and schema headers stay intact without browser HTTP objects.
+    async fn json_response(mut response: reqwest::Response) -> Result<Value, CommandError> {
+        const LIMIT: usize = 20 * 1024 * 1024;
+        let status = response.status().as_u16();
+        let mut headers = serde_json::Map::new();
+        for name in [
+            "etag",
+            "x-studio-api-schema",
+            "x-studio-api-schema-mismatch",
+            "retry-after",
+        ] {
+            if let Some(value) = response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+            {
+                headers.insert(name.into(), value.into());
+            }
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(Self::network)? {
+            if bytes.len().saturating_add(chunk.len()) > LIMIT {
+                return Err(error(
+                    "response_size",
+                    "The JSON response exceeds the native transport limit.",
+                ));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let value = if matches!(status, 204 | 205 | 304) {
+            Value::Null
+        } else {
+            serde_json::from_slice::<Value>(&bytes).map_err(|e| error("invalid_response", e))?
+        };
+        Ok(serde_json::json!({"status":status,"headers":headers,"body":value}))
+    }
+
     pub(crate) async fn read_bounded(&self, path: &str, limit: usize) -> Result<Value, String> {
         if !self.authorized.load(std::sync::atomic::Ordering::Acquire) {
             return Err("The local backend identity has not been verified.".into());
         }
-        let mut response = self
-            .client
-            .get(self.url(path).map_err(|e| e.message)?)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut response = if let Some(remote) = &self.remote {
+            remote
+                .send(
+                    "GET",
+                    self.url(path).map_err(|e| e.message)?.as_str(),
+                    &Value::Array(Vec::new()),
+                    Vec::new(),
+                    &crate::server_keys::random_id()?,
+                )
+                .await?
+        } else {
+            self.client
+                .get(self.url(path).map_err(|e| e.message)?)
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+        };
         let status = response.status();
         if response.content_length().is_some_and(|n| n > limit as u64) {
             return Err("The file response exceeds the preview limit.".into());
@@ -511,6 +719,16 @@ impl Backend {
     }
 
     pub async fn dispatch(&self, request: Request) -> Response {
+        if request.method == "api.prepareSession" {
+            return match self.prepare_session().await {
+                Ok(()) => Response::success(request.id, serde_json::json!({"ready":true})),
+                Err(error) => Response {
+                    id: request.id,
+                    result: None,
+                    error: Some(error),
+                },
+            };
+        }
         let result = match serde_json::from_value::<ApiRequest>(request.params) {
             Ok(params) => self.request(params).await,
             Err(value) => Err(error("invalid_params", value)),
@@ -533,6 +751,43 @@ pub(crate) mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+    #[tokio::test]
+    async fn native_api_query_and_json_metadata_preserve_workspace_without_browser_http() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (headers, body) = read_http(&mut socket).await;
+            let workspace = headers
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("x-canvas-workspace: exact-workspace"));
+            assert!(
+                headers.starts_with("GET /api/accounts?key=a+%26+b&many=one&many=two HTTP/1.1"),
+                "{headers}"
+            );
+            assert_eq!(body, Value::Null);
+            socket.write_all(b"HTTP/1.1 304 Not Modified\r\nETag: exact\r\nX-Studio-API-Schema: schema\r\nConnection: close\r\n\r\n").await.unwrap();
+            workspace
+        });
+        let response=Backend::new(&origin).unwrap().dispatch(Request{id:"read".into(),method:"api.request".into(),params:serde_json::json!({"path":"/api/accounts","workspaceId":"exact-workspace","query":{"key":"a & b","many":["one","two"]},"jsonResponse":true,"etag":"exact"})}).await;
+        assert!(
+            server.await.unwrap(),
+            "The native GET must carry its exact workspace assertion."
+        );
+        let result = response.result.expect("JSON metadata response");
+        assert_eq!(result["status"], 304);
+        assert_eq!(result["headers"]["etag"], "exact");
+        assert_eq!(result["body"], Value::Null);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let invalid=Backend::new(&origin).unwrap().dispatch(Request{id:"invalid".into(),method:"api.request".into(),params:serde_json::json!({"path":"/api/accounts","query":{"nested":{"foreign":"value"}}})}).await;
+        assert_eq!(invalid.error.unwrap().code, "invalid_query");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+    }
     #[tokio::test]
     async fn native_backend_negotiates_and_decodes_brotli_json() {
         use std::io::Write;
@@ -707,6 +962,8 @@ pub(crate) mod tests {
             .unwrap()
             .request(ApiRequest {
                 path: "/api/monitor/log?id=one".into(),
+                query: None,
+                json_response: false,
                 method: None,
                 request_id: None,
                 api_schema: None,
@@ -746,6 +1003,8 @@ pub(crate) mod tests {
             .unwrap()
             .request(ApiRequest {
                 path: "/api/analytics?export=1".into(),
+                query: None,
+                json_response: false,
                 method: None,
                 request_id: None,
                 api_schema: None,

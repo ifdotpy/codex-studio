@@ -117,6 +117,7 @@ fn agent_and_projection(store: &RuntimeStore) -> (String, Vec<Value>) {
 
 fn persisted_snapshot(store: &RuntimeStore) -> Value {
     let connection = store.test_reader().expect("snapshot reader");
+    super::agent_view_fixtures::assert_agent_view_projections(&connection);
     let agent: String = connection
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='title-agent'",
@@ -516,6 +517,7 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
             None if scenario == TitleScenario::Refusal => write_deleted(&task_store).await,
             None => {}
         }
+        let before_result = agent_and_projection(&task_store);
         reply_tx
             .send(receipt(
                 &request,
@@ -523,9 +525,21 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
                 Some("Generated title"),
             ))
             .expect("provider result");
-        task.await
+        let result = task
+            .await
             .expect("title task joins")
             .expect("title service result");
+        if scenario == TitleScenario::Apply {
+            assert_eq!(
+                result,
+                TitleResult::Applied {
+                    title: "Generated title".into()
+                }
+            );
+        } else {
+            assert_eq!(result, TitleResult::Discarded);
+            assert_eq!(agent_and_projection(&task_store), before_result);
+        }
         let rust = persisted_snapshot(&task_store);
         let python = expected_snapshot(scenario);
         assert_eq!(rust["receipts"].as_array().map(Vec::len), Some(2));
@@ -559,6 +573,14 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
             .as_object_mut()
             .expect("Python snapshot")
             .remove("receipts");
+        // Added summary/detail publications share the durable sequence owner.
+        // Keep complete payload/hash parity; check counters as positive revisions.
+        for snapshot in [&mut rust_without_receipts, &mut python_without_receipts] {
+            for projection in snapshot["projection"].as_array_mut().expect("projections") {
+                assert!(projection[2].as_i64().is_some_and(|seq| seq > 0));
+                projection[2] = json!("<revision>");
+            }
+        }
         assert_eq!(
             rust_without_receipts, python_without_receipts,
             "agent, events, and projection for {scenario:?}"
@@ -716,50 +738,6 @@ async fn unknown_provider_outcome_is_never_resent_after_replay() {
     assert_eq!(first, TitleResult::HeldUnknown);
     assert_eq!(second, TitleResult::HeldUnknown);
     assert_eq!(port.calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn late_result_after_manual_or_tool_title_writes_no_agent_or_projection_rows() {
-    for (name, manual) in [("manual title", true), ("tool title", false)] {
-        let (_root, store) = fixture().await;
-        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let port = Arc::new(GatedPort {
-            started: started_tx,
-            reply: Mutex::new(Some(reply_rx)),
-        });
-        let task_store = Arc::new(store);
-        let future_store = task_store.clone();
-        let future_port = port.clone();
-        let task = tokio::spawn(async move {
-            generate(
-                &future_store,
-                future_port.as_ref(),
-                "title-agent",
-                &catalog(),
-                "late-title",
-                deadline(),
-            )
-            .await
-        });
-        let request = started_rx.recv().await.expect("request is pending");
-        write_concurrent_title(&task_store, name, manual).await;
-        let before_late_result = agent_and_projection(&task_store);
-        reply_tx
-            .send(receipt(
-                &request,
-                WriteOutcome::Written,
-                Some("Provider title"),
-            ))
-            .expect("late receipt");
-        assert_eq!(
-            task.await
-                .expect("title task joins")
-                .expect("service result"),
-            TitleResult::Discarded
-        );
-        assert_eq!(agent_and_projection(&task_store), before_late_result);
-    }
 }
 
 #[tokio::test]

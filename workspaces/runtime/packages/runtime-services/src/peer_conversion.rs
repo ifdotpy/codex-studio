@@ -129,7 +129,7 @@ pub async fn convert(store: Arc<RuntimeStore>, body: &Value) -> Result<Value, Pr
             put(db,"runtime_agents",&agent)?;
             let context=crate::sync_entity_context::agent_view_context(db,&agent,prepared.server().ok())?;
             let view=crate::sync_views::agent_entity_view(&agent,&context).ok_or(ProjectsError::Invalid("agent projection unavailable"))?;
-            SyncDocumentsRepository::put_entity(db,"agent",agent["id"].as_str().unwrap_or_default(),view,truthy(agent.get("deletedAt")))?;
+            crate::sync_policy::publish_agent_projection(db,agent["id"].as_str().unwrap_or_default(),view,truthy(agent.get("deletedAt")), &|_, _, _, _| true)?;
         }
         for (table,fields) in MOVE_FIELDS {
             for mut record in records::all(db,table)? {

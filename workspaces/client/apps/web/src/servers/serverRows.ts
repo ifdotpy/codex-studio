@@ -1,6 +1,6 @@
 import type { StudioServer } from "./registry";
 import type { DiscoveredServer } from "./discoveryModel";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 export type ServerStatus =
   | "Active"
   | "Online"

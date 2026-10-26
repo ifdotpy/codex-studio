@@ -200,6 +200,46 @@ export const Dark: Story = {
 export const Light: Story = {
   render: (props) => <FleetFixture {...props} scheme="light" />,
 };
+export const CompactHeader: Story = {
+  render: (props) => <FleetFixture {...props} scheme="dark" />,
+  play: async ({ canvasElement, args }) => {
+    const sidebar = canvasElement.querySelector("#sidebar")!;
+    await expect(sidebar.querySelector(".sidebar-nav")).toBeNull();
+    await expect(sidebar.querySelector("kbd")).toBeNull();
+    const header = within(
+      sidebar.querySelector<HTMLElement>(".sidebar-header")!,
+    );
+    const search = header.getByRole("button", { name: "Search chats" });
+    await expect(search).toHaveAttribute(
+      "aria-keyshortcuts",
+      "Control+k Meta+k",
+    );
+    await expect(search).toHaveAttribute(
+      "title",
+      expect.stringContaining("Ctrl+K"),
+    );
+    await userEvent.click(search);
+    await expect(args.onSearch).toHaveBeenCalledOnce();
+    const projects = within(
+      sidebar.querySelector<HTMLElement>(".projects-heading")!,
+    );
+    await userEvent.click(projects.getByRole("button", { name: "New chat" }));
+    await expect(args.newChat).toHaveBeenCalledWith();
+    await userEvent.click(
+      projects.getByRole("button", { name: "New shared chat" }),
+    );
+    await expect(args.newSharedChat).toHaveBeenCalledWith();
+    await userEvent.click(
+      projects.getByRole("button", { name: "Add project" }),
+    );
+    await expect(args.addProject).toHaveBeenCalledOnce();
+    await expect(
+      within(sidebar as HTMLElement).getByRole("searchbox", {
+        name: "Filter projects and chats",
+      }),
+    ).toBeVisible();
+  },
+};
 export const Interactions: Story = {
   render: (props) => <FleetFixture {...props} scheme="dark" />,
   play: async ({ canvasElement, args }) => {

@@ -4,13 +4,10 @@ import { serverLocalStorage as localStorage } from "../servers/storage";
 import { syncGet, syncPost, refreshSession } from "../api";
 import { writeLocalDraft } from "./localDraft";
 import { syncDatabase } from "./client";
-import type { Attachment } from "../components/ComposerAttachments";
-import {
-  MAX_USER_ATTACHMENT_BYTES,
-  USER_ATTACHMENT_LIMIT_LABEL,
-} from "../generated/sharedValues";
+import { attachmentLimit, type Attachment } from "../attachmentSelection";
+import { USER_ATTACHMENT_LIMIT_LABEL } from "../generated/sharedValues";
 
-export const attachmentLimit = MAX_USER_ATTACHMENT_BYTES;
+export { attachmentLimit } from "../attachmentSelection";
 export type PendingUpload = {
   id: string;
   workspace: string;
@@ -23,6 +20,19 @@ export type PendingUpload = {
   asset?: Attachment;
 };
 export const UPLOAD_DATABASE_NAME = "codex-studio-uploads";
+export type UploadBatchIdentity = Readonly<{ id: string; created: number }>;
+export function createUploadBatch(
+  count: number,
+): readonly UploadBatchIdentity[] {
+  if (!Number.isSafeInteger(count) || count < 1)
+    throw new Error("Select at least one file.");
+  const created = Date.now();
+  return Object.freeze(
+    Array.from({ length: count }, (_, index) =>
+      Object.freeze({ id: randomUUID(), created: created + index }),
+    ),
+  );
+}
 export function createUploads(
   options = {
     databaseName: serverStorageName(UPLOAD_DATABASE_NAME),
@@ -33,6 +43,7 @@ export function createUploads(
     writeLocalDraft,
     syncDatabase,
   },
+  openDatabase?: () => Promise<IDBDatabase>,
 ) {
   const {
     databaseName,
@@ -81,31 +92,34 @@ export function createUploads(
     setTimeout(() => channel.close(), 0);
   };
 
-  const database = () =>
-    new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(databaseName, 2);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        const uploads = db.objectStoreNames.contains("uploads")
-          ? request.transaction!.objectStore("uploads")
-          : db.createObjectStore("uploads", { keyPath: "id" });
-        const contents = db.createObjectStore("contents", { keyPath: "id" });
-        uploads.openCursor().onsuccess = (event) => {
-          const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>)
-            .result;
-          if (!cursor) return;
-          const { bytes, file, ...row } = cursor.value;
-          contents.put({ id: row.id, bytes, file });
-          cursor.update({
-            ...row,
-            size: bytes?.byteLength ?? file?.size ?? row.size,
-          });
-          cursor.continue();
+  const database =
+    openDatabase ??
+    (() =>
+      new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open(databaseName, 2);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          const uploads = db.objectStoreNames.contains("uploads")
+            ? request.transaction!.objectStore("uploads")
+            : db.createObjectStore("uploads", { keyPath: "id" });
+          const contents = db.createObjectStore("contents", { keyPath: "id" });
+          uploads.openCursor().onsuccess = (event) => {
+            const cursor = (
+              event.target as IDBRequest<IDBCursorWithValue | null>
+            ).result;
+            if (!cursor) return;
+            const { bytes, file, ...row } = cursor.value;
+            contents.put({ id: row.id, bytes, file });
+            cursor.update({
+              ...row,
+              size: bytes?.byteLength ?? file?.size ?? row.size,
+            });
+            cursor.continue();
+          };
         };
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      }));
   async function transaction<T>(
     mode: IDBTransactionMode,
     action: (store: IDBObjectStore, tx: IDBTransaction) => IDBRequest<T>,
@@ -147,6 +161,9 @@ export function createUploads(
     agent: string,
     files: File[],
     expectedWorkspace: string,
+    identities: readonly UploadBatchIdentity[] = createUploadBatch(
+      files.length,
+    ),
   ) {
     if (!files.length) throw new Error("Select at least one file.");
     for (const file of files)
@@ -158,6 +175,15 @@ export function createUploads(
       throw new Error(
         "Wait for this workspace to finish loading before attaching files.",
       );
+    if (
+      identities.length !== files.length ||
+      new Set(identities.map((row) => row.id)).size !== files.length ||
+      identities.some(
+        (row) =>
+          !row.id || !Number.isSafeInteger(row.created) || row.created < 0,
+      )
+    )
+      throw new Error("The original upload identities are invalid.");
     const { workspaceId } = await syncDatabase();
     if (workspaceId !== expectedWorkspace)
       throw new Error(
@@ -167,7 +193,7 @@ export function createUploads(
     // reliably put those File objects in IndexedDB. ArrayBuffer retains exact bytes.
     const rows: (PendingUpload & { bytes: ArrayBuffer })[] = await Promise.all(
       files.map(async (file, index) => ({
-        id: randomUUID(),
+        id: identities[index].id,
         workspace: workspaceId,
         stateDir,
         agent,
@@ -175,23 +201,85 @@ export function createUploads(
         bytes: await file.arrayBuffer(),
         size: file.size,
         mime: file.type,
-        created: Date.now() + index,
+        created: identities[index].created,
       })),
     );
-    await transaction(
-      "readwrite",
-      (store, tx) => {
-        let request: IDBRequest = store.count();
-        for (const { bytes, ...row } of rows) {
-          request = store.add(row);
-          tx.objectStore("contents").add({ id: row.id, bytes });
+    const db = await database();
+    const retained = await new Promise<PendingUpload[]>((resolve, reject) => {
+      const tx = db.transaction(["uploads", "contents"], "readwrite", {
+        durability: "strict",
+      });
+      const store = tx.objectStore("uploads"),
+        contents = tx.objectStore("contents");
+      const found: Array<PendingUpload | undefined> = [],
+        saved: Array<{ bytes?: ArrayBuffer } | undefined> = [];
+      let pending = rows.length * 2,
+        failure: Error | undefined;
+      const refuse = () => {
+        failure = new Error(
+          "The saved upload identity has different contents or another owner.",
+        );
+        tx.abort();
+      };
+      const ready = () => {
+        if (--pending) return;
+        // Validate every original identity before adding any row. The transaction
+        // serializes concurrent retries and preserves an already delivered asset.
+        for (const [index, { bytes, ...row }] of rows.entries()) {
+          const old = found[index],
+            content = saved[index];
+          if (uploadCancelled(row.id) || !!old !== !!content) return refuse();
+          if (!old) continue;
+          const original =
+            content?.bytes instanceof ArrayBuffer
+              ? new Uint8Array(content.bytes)
+              : undefined;
+          if (
+            Object.entries(row).some(
+              ([key, value]) => old[key as keyof PendingUpload] !== value,
+            ) ||
+            !original ||
+            original.byteLength !== bytes.byteLength ||
+            new Uint8Array(bytes).some(
+              (value, offset) => value !== original[offset],
+            )
+          )
+            return refuse();
         }
-        return request;
-      },
-      ["uploads", "contents"],
-    );
+        for (const [index, { bytes, ...row }] of rows.entries()) {
+          if (found[index]) continue;
+          store.add(row);
+          contents.add({ id: row.id, bytes });
+          found[index] = row;
+        }
+      };
+      for (const [index, row] of rows.entries()) {
+        const record = store.get(row.id),
+          content = contents.get(row.id);
+        record.onsuccess = () => {
+          found[index] = record.result;
+          ready();
+        };
+        content.onsuccess = () => {
+          saved[index] = content.result;
+          ready();
+        };
+      }
+      tx.oncomplete = () => {
+        db.close();
+        resolve(found as PendingUpload[]);
+      };
+      tx.onerror = tx.onabort = () => {
+        db.close();
+        reject(
+          failure ??
+            tx.error ??
+            new Error("Files could not be saved on this device."),
+        );
+      };
+    });
     uploadsChanged();
-    return rows.map(({ bytes: _bytes, ...row }) => row);
+    return retained;
   }
   async function pendingUploads(stateDir: string, expectedWorkspace?: string) {
     const { workspaceId } = await syncDatabase();
@@ -317,6 +405,7 @@ export function createUploads(
   }
 
   return {
+    createUploadBatch,
     uploadsChanged,
     onUploadsChanged,
     queueUploads,

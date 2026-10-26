@@ -210,9 +210,10 @@ impl SupervisorProviderTaskFactory {
                 cleanup_error: None,
             };
             let task = tokio::spawn(actor.run());
-            Ok(ProviderAttachment::from_task(
-                commands, journal, status, shutdown, task,
-            ))
+            Ok(
+                ProviderAttachment::from_task(commands, journal, status, shutdown, task)
+                    .with_supervisor_write_deduplication(),
+            )
         })
     }
 }

@@ -227,7 +227,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn counted_rotation_keeps_the_exact_bound_and_python_backup_order() {
+    fn counted_rotation_keeps_the_exact_bound_and_newest_backup_first() {
         let directory = tempdir().expect("isolated test directory");
         let path = directory.path().join("app-server.log");
         let writer = OperationalLog::open(path.clone(), 8, 2, 8).expect("log writer");
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_logs_use_the_python_state_directory_paths_and_limits() {
+    fn standard_logs_use_the_state_directory_paths_and_limits() {
         let directory = tempdir().expect("isolated test directory");
         let app = OperationalLog::app_server(directory.path()).expect("app log");
         let errors = OperationalLog::orchestration_errors(directory.path()).expect("error log");

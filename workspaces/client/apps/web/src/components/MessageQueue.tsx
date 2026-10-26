@@ -17,7 +17,8 @@ import {
   Send,
   Trash2,
 } from "lucide-react";
-import { errorText, type QueueItemDto } from "../api";
+import { errorText } from "../apiPresentation";
+import type { QueueItemDto } from "../api";
 import type { components } from "../generated/api";
 import type { Message } from "../types";
 import "./message-queue.css";

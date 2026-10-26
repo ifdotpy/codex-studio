@@ -1,0 +1,119 @@
+{
+  "fields": [
+    "id",
+    "sourceId",
+    "clientMessageId",
+    "role",
+    "title",
+    "assets",
+    "materialized",
+    "pending",
+    "deliveryStatus",
+    "deliveryError",
+    "threadId",
+    "text"
+  ],
+  "cases": [
+    {
+      "id": "chat",
+      "source": [
+        {
+          "id": "batch",
+          "role": "user",
+          "text": "batch",
+          "threadId": null,
+          "clientMessageId": "parent",
+          "assets": [],
+          "materialized": false,
+          "inputs": [
+            {
+              "id": "first",
+              "kind": "user",
+              "text": "Привет 🦀",
+              "deliveryStatus": "uncertain",
+              "pending": true
+            },
+            {
+              "id": "result",
+              "kind": "child_result",
+              "text": "{\"sender_name\":\"Worker\"}",
+              "assets": [],
+              "materialized": true,
+              "deliveryError": null
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "id": "chat:first",
+          "sourceId": "batch",
+          "clientMessageId": "first",
+          "role": "user",
+          "title": "You",
+          "assets": [],
+          "materialized": false,
+          "pending": true,
+          "deliveryStatus": "uncertain",
+          "text": "Привет 🦀"
+        },
+        {
+          "id": "chat:result",
+          "sourceId": "batch",
+          "clientMessageId": "result",
+          "role": "tool",
+          "title": "Result from Worker",
+          "assets": [],
+          "materialized": true,
+          "deliveryError": null,
+          "text": "{\"sender_name\":\"Worker\"}"
+        }
+      ]
+    },
+    {
+      "id": "chat",
+      "source": [
+        {
+          "id": "batch",
+          "role": "user",
+          "text": "batch",
+          "clientMessageId": "parent",
+          "inputs": [
+            { "kind": "monitor_exit", "text": "done" },
+            { "kind": "agent_message", "text": "invalid JSON" }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "id": "batch:0",
+          "sourceId": "batch",
+          "clientMessageId": "parent",
+          "role": "tool",
+          "title": "Command finished",
+          "text": "done"
+        },
+        {
+          "id": "batch:1",
+          "sourceId": "batch",
+          "role": "tool",
+          "title": "Agent message received",
+          "assets": [],
+          "text": "invalid JSON"
+        }
+      ]
+    },
+    {
+      "id": "chat",
+      "source": [
+        {
+          "id": "answer",
+          "role": "assistant",
+          "text": "Answer",
+          "threadId": null
+        }
+      ],
+      "expected": [{ "id": "answer", "role": "assistant", "text": "Answer" }]
+    }
+  ]
+}

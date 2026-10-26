@@ -19,6 +19,7 @@ const models = names.map((model, index) => ({
 
 test("Models whitelist filters every execution role and preserves the current model", async ({
   page,
+  browser,
 }) => {
   test.setTimeout(90000);
   const root = await mkdtemp(join(tmpdir(), "studio-model-whitelist-"));
@@ -62,9 +63,28 @@ test("Models whitelist filters every execution role and preserves the current mo
     await expect(whitelist.getByRole("checkbox")).toHaveCount(3);
     for (const checkbox of await whitelist.getByRole("checkbox").all())
       await expect(checkbox).toBeChecked();
+    const failPreferenceWrite = async (route) => {
+      if (route.request().postDataJSON()?.scope === "server")
+        await route.abort("failed");
+      else await route.continue();
+    };
+    await page.route("**/api/sync/preferences", failPreferenceWrite);
     await whitelist
       .getByRole("checkbox", { name: "Luna 6", exact: true })
       .uncheck();
+    await expect(
+      whitelist.getByText("Model selection is not saved.", { exact: true }),
+    ).toBeVisible();
+    await expect(whitelist.getByRole("alert")).toBeVisible();
+    await page.unroute("**/api/sync/preferences", failPreferenceWrite);
+    await whitelist
+      .getByRole("button", { name: "Retry saving", exact: true })
+      .click();
+    await expect(
+      whitelist.getByText("Model selection saved on this server.", {
+        exact: true,
+      }),
+    ).toBeVisible();
     for (const width of [320, 390, 1440])
       for (const scheme of ["light", "dark"]) {
         await page.setViewportSize({ width, height: 900 });
@@ -75,6 +95,21 @@ test("Models whitelist filters every execution role and preserves the current mo
         await expect(whitelist).toBeVisible();
         expect(
           await settings.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        ).toBe(true);
+        const columns = await whitelist
+          .locator(".model-whitelist-grid")
+          .evaluate(
+            (el) => getComputedStyle(el).gridTemplateColumns.split(" ").length,
+          );
+        if (width === 1440) expect(columns).toBeGreaterThanOrEqual(2);
+        else expect(columns).toBe(1);
+        expect(
+          await whitelist.evaluate(
+            (el) =>
+              Math.abs(
+                el.getBoundingClientRect().width - el.parentElement.clientWidth,
+              ) < 16,
+          ),
         ).toBe(true);
         await page.screenshot({
           path: join(evidence, `models-${width}-${scheme}.png`),
@@ -114,7 +149,7 @@ test("Models whitelist filters every execution role and preserves the current mo
     await page.keyboard.press("Escape");
     const openNewChat = async () => {
       await page
-        .locator(".sidebar-nav")
+        .locator("#sidebar .projects-heading")
         .getByRole("button", { name: "New chat", exact: true })
         .click();
       return page.getByRole("dialog", { name: "New chat", exact: true });
@@ -194,6 +229,11 @@ test("Models whitelist filters every execution role and preserves the current mo
     await whitelist
       .getByRole("button", { name: "Clear selection", exact: true })
       .click();
+    await expect(
+      whitelist.getByText("Model selection saved on this server.", {
+        exact: true,
+      }),
+    ).toBeVisible();
     await page.keyboard.press("Escape");
     await page.locator("#composer .execution-summary-trigger").click();
     const retained = page.getByLabel("Main agent model", { exact: true });
@@ -215,7 +255,7 @@ test("Models whitelist filters every execution role and preserves the current mo
       "No enabled models",
     );
     await creation.getByRole("button", { name: "Cancel", exact: true }).click();
-    // Persistence is pending: the current experimental owner deliberately resets.
+    // Reload must keep the committed choice; a fresh browser has no cache or outbox.
     await page.reload();
     await page
       .getByRole("button", { name: "Studio settings", exact: true })
@@ -223,7 +263,56 @@ test("Models whitelist filters every execution role and preserves the current mo
     await settings.getByRole("tab", { name: "Models", exact: true }).click();
     await expect(whitelist.getByRole("checkbox")).toHaveCount(3);
     for (const checkbox of await whitelist.getByRole("checkbox").all())
-      await expect(checkbox).toBeChecked();
+      await expect(checkbox).not.toBeChecked();
+    const fresh = await browser.newContext({
+      viewport: { width: 390, height: 900 },
+    });
+    try {
+      const phone = await fresh.newPage();
+      await phone.goto(`http://127.0.0.1:${port}`);
+      await phone
+        .getByRole("button", { name: "Studio settings", exact: true })
+        .click();
+      const phoneSettings = phone.getByRole("dialog", {
+        name: "Studio settings",
+        exact: true,
+      });
+      await phoneSettings
+        .getByRole("tab", { name: "Models", exact: true })
+        .click();
+      const phoneModels = phoneSettings.getByRole("tabpanel", {
+        name: "Models",
+        exact: true,
+      });
+      await expect(phoneModels.getByRole("checkbox")).toHaveCount(3);
+      for (const checkbox of await phoneModels.getByRole("checkbox").all())
+        await expect(checkbox).not.toBeChecked();
+      await phoneModels
+        .getByRole("button", { name: "Select all models", exact: true })
+        .click();
+      await expect(
+        phoneModels.getByText("Model selection saved on this server.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      // The first browser receives the changed server field through SSE.
+      for (const checkbox of await whitelist.getByRole("checkbox").all())
+        await expect(checkbox).toBeChecked();
+      await phone.reload();
+      await phone
+        .getByRole("button", { name: "Studio settings", exact: true })
+        .click();
+      await phoneSettings
+        .getByRole("tab", { name: "Models", exact: true })
+        .click();
+      await expect(
+        phoneModels.getByText("All models selected, including new models.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+    } finally {
+      await fresh.close();
+    }
   } finally {
     fixture.kill("SIGTERM");
   }

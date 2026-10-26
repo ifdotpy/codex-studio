@@ -50,6 +50,7 @@ setInterval(() => {
 
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
+  // The trailing newline publishes a complete request to the Rust witness.
   fs.appendFileSync(log, `${line}\n`);
   if (!Object.hasOwn(request, "id")) return;
   const method = request.method;

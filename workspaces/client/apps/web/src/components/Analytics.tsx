@@ -1,4 +1,5 @@
 import { useServerApi } from "../servers/ServerServicesContext";
+import { saveApiDownload } from "../downloads";
 import { localDateTime, localTime } from "../local-time";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -16,7 +17,8 @@ import {
   ChevronRight,
   RefreshCw,
 } from "lucide-react";
-import { errorText, type GetOptions, type GetResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { GetOptions, GetResult } from "../api";
 import type { Agent } from "../types";
 import "./Analytics.css";
 
@@ -540,16 +542,14 @@ export default function Analytics({
   const download = async () => {
     setError("");
     try {
-      const { blob } = await apiDownload("/api/analytics", {
+      const result = await apiDownload("/api/analytics", {
         ...query,
         export: "1",
       });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `codex-studio-analytics-${scope}-${new Date().toISOString().replaceAll(":", "-")}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      await saveApiDownload(
+        result,
+        `codex-studio-analytics-${scope}-${new Date().toISOString().replaceAll(":", "-")}.json`,
+      );
     } catch (failure) {
       setError(errorText(failure));
     }

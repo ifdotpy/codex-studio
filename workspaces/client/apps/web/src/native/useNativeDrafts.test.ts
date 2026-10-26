@@ -3,7 +3,7 @@ import type {
   ResourceConnectionState,
   ResourceStreamState,
   ResourceVersion,
-} from "../sync/resourceEvents";
+} from "../sync/subscriptions/events";
 import type { DraftView } from "./draftState";
 
 const mocks = vi.hoisted(() => ({
@@ -32,7 +32,7 @@ vi.mock("../sync/resume", () => ({
     return () => mocks.resumes.delete(callback);
   },
 }));
-vi.mock("../sync/resourceEvents", () => ({
+vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (
     resource: unknown,
     callback: (version?: ResourceVersion) => void,
@@ -90,7 +90,11 @@ beforeEach(() => {
     Object.assign(new EventTarget(), { hidden: false }),
   );
   mocks.request.mockImplementation(async (method: string) =>
-    method === "identity.get" ? { workspaceId: "workspace" } : view,
+    method === "system.uuid"
+      ? `native-id:${mocks.request.mock.calls.length}`
+      : method === "identity.get"
+        ? { workspaceId: "workspace" }
+        : view,
   );
 });
 afterEach(() => {
@@ -157,11 +161,15 @@ it("retains notifications during a request and coalesces them into one follow-up
 it("refreshes after a committed local edit without refreshing for unchanged text", async () => {
   const hook = mount();
   await settle();
-  mocks.request.mockResolvedValue({
-    ...view,
-    drafts: { room: "local" },
-    revision: 1,
-  });
+  mocks.request.mockImplementation(async (method: string) =>
+    method === "system.uuid"
+      ? "native-edit"
+      : {
+          ...view,
+          drafts: { room: "local" },
+          revision: 1,
+        },
+  );
   hook.setDrafts({ room: "local" });
   await settle();
   expect(refreshCount()).toBe(2);

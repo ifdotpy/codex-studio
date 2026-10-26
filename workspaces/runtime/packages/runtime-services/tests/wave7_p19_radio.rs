@@ -210,6 +210,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
 }
 fn state(store: &RuntimeStore, tables: &Value) -> Value {
     let db = store.test_reader().expect("read");
+    super::agent_view_fixtures::assert_agent_view_projections(&db);
     let mut result = serde_json::Map::new();
     for table in tables.as_object().expect("tables").keys() {
         let order = if table == "chat_messages" {
@@ -268,8 +269,10 @@ fn normalize(value: &mut Value) {
                 if key == "sync_entities"
                     && let Some(rows) = value.as_array_mut()
                 {
-                    // Keep every collection written by the scenario. The Python
-                    // oracle builds its own projection rows for agent/room/event.
+                    // View projections are checked against their OpenAPI owners above.
+                    rows.retain(|row| {
+                        !super::agent_view_fixtures::is_agent_view_collection(&row["collection"])
+                    });
                     rows.sort_by_key(|row| {
                         (
                             row["collection"].as_str().unwrap_or_default().to_owned(),
@@ -473,127 +476,88 @@ async fn python_written_radio_corpus_and_restart_replay() {
     }
 }
 
-#[tokio::test]
-async fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
+// AFTER failures include the attempted write. BEFORE failures exercise the same
+// SQLite rollback contract with less work performed. Reuse the rolled-back store
+// across tables, then cross each operation's restart boundary once.
+async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
     let corpus = corpus();
-    for (name, tables) in [
-        (
-            "create",
-            vec![
-                "runtime_agents",
-                "runtime_rooms",
-                "sync_entities",
-                "runtime_operation_receipts",
-            ],
-        ),
-        (
-            "convert",
-            vec![
-                "runtime_projects",
-                "runtime_agents",
-                "sync_entities",
-                "runtime_operation_receipts",
-            ],
-        ),
-        (
-            "stop-pending",
-            vec![
-                "runtime_events",
-                "runtime_rooms",
-                "sync_entities",
-                "runtime_operation_receipts",
-            ],
-        ),
-        ("interrupt", vec!["runtime_rooms", "sync_entities"]),
-        (
-            "floor",
-            vec!["runtime_events", "runtime_rooms", "sync_entities"],
-        ),
-        ("binding", vec!["runtime_rooms", "sync_entities"]),
-        (
-            "answer",
-            vec!["runtime_chat_messages", "runtime_rooms", "sync_entities"],
-        ),
-        (
-            "send",
-            vec![
-                "runtime_chat_messages",
-                "runtime_rooms",
-                "sync_entities",
-                "runtime_operation_receipts",
-            ],
-        ),
-    ] {
-        let original_case = corpus
-            .cases
-            .iter()
-            .find(|c| c["name"] == name)
-            .expect("case");
-        for table in tables {
-            for boundary in ["BEFORE", "AFTER"] {
-                let root = tempfile::tempdir().expect("radio state directory");
-                copy_template(&corpus, root.path());
-                let store =
-                    std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
-                seed(&store, &original_case["before"]).await;
-                let before = state(&store, &original_case["before"]);
-                let all_before = database_rows(&store);
-                let table_for_trigger = table.to_string();
-                let boundary_for_trigger = boundary.to_string();
-                store.transaction(move |db| {db.execute_batch(&format!("CREATE TRIGGER p19_fail_insert {boundary_for_trigger} INSERT ON {table_for_trigger} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END; CREATE TRIGGER p19_fail_update {boundary_for_trigger} UPDATE ON {table_for_trigger} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END;"))?;Ok(())}).await.expect("failpoint");
-                assert!(
-                    run(std::sync::Arc::clone(&store), original_case)
-                        .await
-                        .is_err(),
-                    "{name} {boundary} {table} reached"
-                );
-                assert_eq!(
-                    state(&store, &original_case["before"]),
-                    before,
-                    "{name} {boundary} {table} rollback"
-                );
-                assert_eq!(database_rows(&store), all_before, "all tables rollback");
-                drop(store);
-                let store = std::sync::Arc::new(
-                    RuntimeStore::open(Some(root.path()))
-                        .await
-                        .expect("restart"),
-                );
-                assert_eq!(
-                    state(&store, &original_case["before"]),
-                    before,
-                    "restart before retry"
-                );
-                store
-                    .transaction(|db| {
-                        db.execute_batch(
-                            "DROP TRIGGER p19_fail_insert; DROP TRIGGER p19_fail_update",
-                        )?;
-                        Ok(())
-                    })
-                    .await
-                    .expect("remove failpoint");
-                run(std::sync::Arc::clone(&store), original_case)
-                    .await
-                    .expect("retry after rollback");
-                let committed = state(&store, &original_case["before"]);
-                drop(store);
-                let store = std::sync::Arc::new(
-                    RuntimeStore::open(Some(root.path()))
-                        .await
-                        .expect("restart after commit"),
-                );
-                run(std::sync::Arc::clone(&store), original_case)
-                    .await
-                    .expect("retry after lost response");
-                assert_eq!(
-                    state(&store, &original_case["before"]),
-                    committed,
-                    "{name} no duplicate after commit"
-                );
-            }
-        }
+    let case = corpus
+        .cases
+        .iter()
+        .find(|case| case["name"] == name)
+        .expect("case");
+    let root = tempfile::tempdir().expect("radio state directory");
+    copy_template(&corpus, root.path());
+    let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(&store, &case["before"]).await;
+    let before = database_rows(&store);
+    for table in tables {
+        let trigger_table = table.to_string();
+        store.transaction(move |db| {
+            db.execute_batch(&format!("CREATE TRIGGER p19_fail_insert AFTER INSERT ON {trigger_table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END; CREATE TRIGGER p19_fail_update AFTER UPDATE ON {trigger_table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END;"))?;
+            Ok(())
+        }).await.expect("failpoint");
+        assert!(
+            run(std::sync::Arc::clone(&store), case).await.is_err(),
+            "{name} {table} reached"
+        );
+        assert_eq!(
+            database_rows(&store),
+            before,
+            "{name} {table}: all tables roll back"
+        );
+        store
+            .transaction(|db| {
+                db.execute_batch("DROP TRIGGER p19_fail_insert; DROP TRIGGER p19_fail_update")?;
+                Ok(())
+            })
+            .await
+            .expect("remove failpoint");
     }
+    drop(store);
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart after rollback"),
+    );
+    assert_eq!(database_rows(&store), before, "rollback survives restart");
+    run(std::sync::Arc::clone(&store), case)
+        .await
+        .expect("retry after rollback");
+    let committed = database_rows(&store);
+    drop(store);
+    let store = std::sync::Arc::new(
+        RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("restart after commit"),
+    );
+    run(std::sync::Arc::clone(&store), case)
+        .await
+        .expect("retry after lost response");
+    assert_eq!(
+        database_rows(&store),
+        committed,
+        "{name}: no duplicate after commit"
+    );
+}
+
+macro_rules! radio_failpoints {
+    ($($test:ident: $case:literal => [$($table:literal),+]),+ $(,)?) => {$ (
+        #[tokio::test]
+        async fn $test() {
+            failpoints_rollback_then_restart($case, &[$($table),+]).await;
+        }
+    )+};
+}
+radio_failpoints! {
+    create_rollback_and_restart: "create" => ["runtime_agents", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
+    convert_rollback_and_restart: "convert" => ["runtime_projects", "runtime_agents", "sync_entities", "runtime_operation_receipts"],
+    stop_rollback_and_restart: "stop-pending" => ["runtime_events", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
+    interrupt_rollback_and_restart: "interrupt" => ["runtime_rooms", "sync_entities"],
+    floor_rollback_and_restart: "floor" => ["runtime_events", "runtime_rooms", "sync_entities"],
+    binding_rollback_and_restart: "binding" => ["runtime_rooms", "sync_entities"],
+    answer_rollback_and_restart: "answer" => ["runtime_chat_messages", "runtime_rooms", "sync_entities"],
+    send_rollback_and_restart: "send" => ["runtime_chat_messages", "runtime_rooms", "sync_entities", "runtime_operation_receipts"],
 }
 
 fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {

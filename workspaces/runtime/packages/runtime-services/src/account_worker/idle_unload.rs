@@ -1001,6 +1001,8 @@ mod tests {
         let mut status = SessionStatus {
             generation,
             initialization: InitializationStatus::Ready,
+            initialize_result: None,
+            supervisor_write_deduplication: false,
             attachment: AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: true,

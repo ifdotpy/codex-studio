@@ -1,5 +1,4 @@
 import { useServerApi } from "../../servers/ServerServicesContext";
-import "../../api";
 import Accounts, { type useAccounts } from "../Accounts";
 import { ExecutionSettings } from "./ExecutionSettings";
 import { AccountExclusionsControl } from "./AccountExclusionsControl";
@@ -10,6 +9,7 @@ export function UnifiedAgentSettings({
   notify,
   onAccountModalOpenChange,
   showAccountExclusions = false,
+  showTransferStatus = true,
   ...settings
 }: Omit<
   ComponentProps<typeof ExecutionSettings>,
@@ -19,6 +19,7 @@ export function UnifiedAgentSettings({
   notify: (message: string) => void;
   onAccountModalOpenChange?: (opened: boolean) => void;
   showAccountExclusions?: boolean;
+  showTransferStatus?: boolean;
 }) {
   const { post } = useServerApi();
 
@@ -33,6 +34,7 @@ export function UnifiedAgentSettings({
   return (
     <Accounts
       state={state}
+      showTransferStatus={showTransferStatus}
       onModalOpenChange={updateAccountModalOpen}
       agent={settings.agent}
       accountKey={settings.agent.accountKey || "default"}

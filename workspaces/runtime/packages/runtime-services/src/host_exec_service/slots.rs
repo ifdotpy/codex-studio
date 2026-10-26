@@ -38,6 +38,11 @@ fn leased(slot: &Path) -> bool {
     slot.join("lease.json").exists()
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static REMOVE_SLOT_FAILURE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 impl HostService {
     pub(crate) fn used_at(slot: &Path) -> Result<f64, HostExecError> {
         let recovery = || {
@@ -152,7 +157,15 @@ impl HostService {
         let marker = slot.with_file_name(format!(".retiring-{name}.json"));
         let metadata = protocol::read_json(&slot.join("slot.json"))?;
         protocol::atomic(&marker, &json!({"slotId": name, "metadata": metadata}))?;
-        fs::remove_dir_all(slot)
+        #[cfg(test)]
+        let removed = if REMOVE_SLOT_FAILURE.with_borrow(|path| path.as_deref() == Some(slot)) {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        } else {
+            fs::remove_dir_all(slot)
+        };
+        #[cfg(not(test))]
+        let removed = fs::remove_dir_all(slot);
+        removed
             .and_then(|()| fs::remove_file(&marker))
             .map_err(|error| {
                 let text: String = format!(

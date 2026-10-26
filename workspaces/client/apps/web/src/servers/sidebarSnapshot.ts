@@ -21,6 +21,8 @@ export type ServerSidebarSnapshot = {
   collapsed: Record<string, boolean>;
   /** Edit times of the compact and collapse values, for last-writer-wins merges. */
   visualFields?: PreferenceFields;
+  /** Local errors keep their server-owned ids for safe actions. */
+  studioErrors?: Snapshot["runtime"]["studioErrors"];
   indicators: [string, ChatIndicator][];
   unread: string[];
 };
@@ -112,7 +114,7 @@ export function sidebarVisualFields(
   return result;
 }
 
-/** Preserve sidebar fields and source identities without transcripts or runtime collections. */
+/** Preserve sidebar fields and source identities without transcripts or session state. */
 export function sidebarSnapshot(
   data: Snapshot,
   unread = new Set<string>(),
@@ -167,6 +169,7 @@ export function sidebarSnapshot(
     peerTeams: (runtime?.peerTeams || []).map((team) =>
       pick(team, ["id", "name", "projectPath", "members", "revision"]),
     ),
+    studioErrors: runtime?.studioErrors || [],
     peerTeamsVersion: runtime?.peerTeamsVersion,
     projectOrganizationVersion: runtime?.projectOrganizationVersion,
     sidebarOrder: runtime?.sidebarOrder,

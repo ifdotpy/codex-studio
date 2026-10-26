@@ -1,11 +1,11 @@
 # Provider replay fixtures
 
-These transcripts are hand-authored from the public JSON-RPC frame shapes in
-the runtime and Claude bridge contract fixtures. They use no live backend or
-paid model request. `provider-replay-runner.py` replays their provider events
-through `AppServer` and the real `Runtime` in a temporary state directory.
+These hand-authored JSON-RPC frames are consumed by
+[`connection.rs`](../../connection.rs). The session witness checks event frames
+through the codec and session dispatcher; dedicated witnesses exercise RPC reply
+templates, missing replies, and orphaned responses. The Claude bridge owns its
+SDK-level fixtures separately.
 
-Each JSON file records its source and the protocol events that it supplies.
-The replay subprocess returns local setup replies and injects the recorded
-notification frames after `turn/start`. Fixture paths and machine credentials
-do not enter the checked-in frames.
+The fixtures require no backend or paid model request. The provider session
+checks do not establish the historical runtime outcomes described in fixture
+metadata such as `expectedStatus` or `assert`.

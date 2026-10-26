@@ -197,12 +197,15 @@ pub(crate) fn agent_view_contexts(
             && !item_agents.contains(id)
             && !parent_ids.contains(id)
             && !monitor_agents.contains(id);
+        let attention = pending_attention(transaction, id, record)?;
         contexts.insert(
             id.to_owned(),
             AgentViewContext {
                 project_server_id: project_server_id.map(str::to_owned),
                 launcher_alive: true,
                 empty_lead,
+                has_question: attention.0,
+                has_approval: attention.1,
                 latest_work_result_file: latest_work.remove(id).map(|(_, path)| path),
                 command_progress: progress.commands,
                 stall: progress.stall,
@@ -281,12 +284,15 @@ pub(crate) fn agent_view_context(
         }
     }
     let progress = crate::agent_progress::derive(transaction, record, &assigned)?;
+    let attention = pending_attention(transaction, id, record)?;
     Ok(AgentViewContext {
         command_progress: progress.commands,
         stall: progress.stall,
         project_server_id: project_server_id.map(str::to_owned),
         launcher_alive: true,
         empty_lead,
+        has_question: attention.0,
+        has_approval: attention.1,
         latest_work_result_file: latest.map(|(_, path)| path),
     })
 }
@@ -505,6 +511,26 @@ impl RoomDirectory {
             },
         })
     }
+}
+
+/// Pending input flags are list data, independent of whether a chat is visible.
+fn pending_attention(
+    transaction: &Transaction<'_>,
+    id: &str,
+    record: &Value,
+) -> StoreResult<(bool, bool)> {
+    if !table_exists(transaction, "runtime_requests")? {
+        return Ok((false, false));
+    }
+    let epoch = record
+        .get("epoch")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    transaction.query_row_cached(
+        "SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND json_extract(record,'$.method') IN ('item/tool/requestUserInput','mcpServer/elicitation/request')), \
+                EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND COALESCE(json_extract(record,'$.method'),'') NOT IN ('item/tool/requestUserInput','mcpServer/elicitation/request'))",
+        rusqlite::params![id, epoch], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(Into::into)
 }
 
 #[cfg(test)]

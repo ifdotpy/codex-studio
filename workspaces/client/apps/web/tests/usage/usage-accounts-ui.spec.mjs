@@ -61,13 +61,6 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
     );
   };
-  const writeHeartbeat = (stream) => {
-    const event = { protocol: 4, workspaceId, epoch, revision };
-    assert.ok(Number.isFinite(event.revision));
-    stream.response.write(
-      `event: heartbeat\ndata: ${JSON.stringify(event)}\n\n`,
-    );
-  };
   let resetPayload;
   const source = `
   import React,{useState} from 'react';
@@ -75,6 +68,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   import {MantineProvider} from '@mantine/core';
   import '@mantine/core/styles.css';
   import Usage from '/src/components/Usage.tsx';
+  import {ServerServicesProvider} from '/src/servers/ServerServicesContext.tsx';
+  import * as sync from '/src/sync/client.ts';
+  const services={owner:{id:'fixture',origin:location.origin,credentialId:null},sync:{...sync,subscribeStateProjection(accept){accept({runtime:{sessionCostsByAgent:{chat:{pricingState:'ready',totalUSD:0,rootId:'chat',claudeHistoryIncomplete:true}},accountCostsByAccount:{own:{accountKey:'own',data:{todayUSD:0,last30DaysUSD:0}}}}});return ()=>{};}}};
   import {accountLimitFixtures} from '/src/components/AccountLimits.fixtures.ts';
   import {theme} from '/src/theme.ts';
   const geometry=location.search.includes('geometry');
@@ -94,7 +90,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
    const accounts=geometry?accountLimitFixtures:[{key:'own',label:'Own account',email:'own@example.test',accountId:'own-account',limits:ownLimits,loading:false,reload:(force=false)=>{window.reloadCalls.push(['own',force]);}},...(multi?[{key:'team',label:'Team account',email:'team@example.test',provider:'openai',accountId:'team-account',limits:teamReady?teamLimits:null,loading:false,reload:(force=false)=>{window.reloadCalls.push(['team',force]);if(!teamReady)setTeamReady(true);}},{key:'claude',label:'Claude work',email:'claude@example.test',provider:'claude',limits:{accountKey:'claude',at:${now},data:{rateLimits:{limitId:'claude',primary:{usedPercent:50,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['claude',force])},{key:'unnamed',label:'unnamed',provider:'codex',limits:{accountKey:'unnamed',at:${now},data:{rateLimits:{limitId:'codex',primary:{usedPercent:85,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['unnamed',force])}]:[])];
    return <MantineProvider theme={theme} forceColorScheme={new URLSearchParams(location.search).get('scheme') || undefined}><div style={geometry?{display:'flex',alignItems:'end',width:'100%',height:'100dvh',padding:'var(--mantine-spacing-sm)',containerType:'inline-size',containerName:'conversation-footer'}:undefined}><Usage agent={geometry?{...own,accountKey:'codex-main'}:own} stateDir='/fixture' limits={ownLimits} accountLabel='own@example.test' reload={()=>window.reloadCalls.push(['fallback',true])} opened={true} onChange={()=>{}} limitsLoading={false} accounts={accounts}/></div></MantineProvider>;
   }
-  createRoot(document.getElementById('root')).render(<Fixture/>);`;
+  createRoot(document.getElementById('root')).render(<ServerServicesProvider services={services}><Fixture/></ServerServicesProvider>);`;
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
@@ -210,42 +206,10 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await page.locator(".session-cost-summary").innerText(),
       /incomplete|Unpriced/,
     );
-    assert.ok(reads.costs >= 1, "the initial costs baseline performed a GET");
-    assert.ok(
-      reads.sessionCost >= 1,
-      "the initial session-cost baseline performed a GET",
-    );
-    const costsBeforeChange = reads.costs;
-    const sessionCostBeforeChange = reads.sessionCost;
-    const costsChanged = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/costs",
-    );
-    for (const stream of streams) {
-      const costs = stream.resources.filter(
-        (resource) => resource.kind === "costs",
-      );
-      if (costs.length) writeResources(stream, "change", costs);
-    }
-    await (await costsChanged).finished();
-    assert.equal(
-      reads.costs,
-      costsBeforeChange + 1,
-      "a typed costs notification performs exactly one targeted read",
-    );
-    for (const count of [1, 2, 3]) {
-      for (const stream of streams) writeHeartbeat(stream);
-      await page.waitForFunction((count) => window.heartbeats >= count, count);
-      await page.clock.runFor(1100);
-    }
-    assert.equal(
-      reads.costs,
-      costsBeforeChange + 1,
-      "typed cost changes and heartbeats do not cause duplicate or idle reads",
-    );
-    assert.equal(
-      reads.sessionCost,
-      sessionCostBeforeChange,
-      "a costs notification does not refresh per-agent session cost",
+    assert.deepEqual(
+      reads,
+      { costs: 0, sessionCost: 0 },
+      "the component consumes cost projections without legacy resource GETs",
     );
     const _toggle = page.getByRole("button", {
       name: "Account limits",
@@ -352,16 +316,11 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     const teamMeter = teamTab.getByRole("meter");
     assert.equal(await teamMeter.getAttribute("aria-valuenow"), "8");
-    const { remainingLimitColor } = await server.ssrLoadModule(
-      "/src/components/accountLimitColor.ts",
-    );
     assert.equal(
       await teamMeter
         .locator("span")
         .evaluate((element) => element.style.background),
-      remainingLimitColor(
-        Number(await teamMeter.getAttribute("aria-valuenow")),
-      ),
+      "var(--studio-state-error)",
     );
     await page
       .getByRole("radio", { name: "Claude", exact: true })
@@ -386,9 +345,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await claudeMeter
         .locator("span")
         .evaluate((element) => element.style.background),
-      remainingLimitColor(
-        Number(await claudeMeter.getAttribute("aria-valuenow")),
-      ),
+      "var(--studio-state-answer)",
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
@@ -407,9 +364,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         .getByRole("meter")
         .locator("span")
         .evaluate((element) => element.style.background),
-      remainingLimitColor(
-        Number(await ownTile.getByRole("meter").getAttribute("aria-valuenow")),
-      ),
+      "var(--studio-state-unread)",
     );
     const unnamedTile = page.getByRole("tab", {
       name: "Account name unavailable, codex account limits",
@@ -428,11 +383,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         .getByRole("meter")
         .locator("span")
         .evaluate((element) => element.style.background),
-      remainingLimitColor(
-        Number(
-          await unnamedTile.getByRole("meter").getAttribute("aria-valuenow"),
-        ),
-      ),
+      "var(--studio-state-answer)",
     );
     await unnamedTile.click();
     assert.equal(await unnamedTile.getAttribute("aria-selected"), "true");

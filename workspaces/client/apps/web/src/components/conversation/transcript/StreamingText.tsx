@@ -2,8 +2,7 @@ import NativeMarkdown from "../../../native/NativeMarkdown";
 import { memo, useEffect, useState } from "react";
 import PreviewModal from "../../PreviewModal";
 import FilePreview, { type PreviewTarget } from "../../FilePreview";
-import { localFileLink } from "../../fileLinks";
-import { relativeToDocument } from "../../filePreviewFormats";
+import { localFileLink, relativeToDocument } from "../../fileLinks";
 
 export default memo(function StreamingText({
   text,

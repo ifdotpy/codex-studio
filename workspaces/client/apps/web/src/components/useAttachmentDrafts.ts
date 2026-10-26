@@ -2,10 +2,10 @@ import {
   useServerApi,
   useServerUploads,
   useServerLocalDrafts,
-  useServerStorageEventKey,
+  useServerPreferenceEvents,
 } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState, type SetStateAction } from "react";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import type { Attachment } from "./ComposerAttachments";
 
 type Attachments = Record<string, Attachment[]>;
@@ -15,7 +15,7 @@ export function useAttachmentDrafts(
 ) {
   const { attachmentCancelled } = useServerUploads();
   const { updateLocalDraft } = useServerLocalDrafts();
-  const storageEventKey = useServerStorageEventKey();
+  const preferenceEvents = useServerPreferenceEvents();
   const retained = (stored: Attachments) =>
     Object.fromEntries(
       Object.entries(stored).map(([id, files]) => [
@@ -30,10 +30,9 @@ export function useAttachmentDrafts(
   if (!scopes.current.has(key))
     scopes.current.set(key, retained(saved<Attachments>(key, {})));
   useEffect(() => {
-    const refresh = (event: StorageEvent) => {
-      const changed = storageEventKey(event);
+    const refresh = (changed: string | null) => {
       if (
-        event.key === null ||
+        changed === null ||
         changed === key ||
         changed?.startsWith("studio-upload-cancelled:")
       ) {
@@ -41,9 +40,8 @@ export function useAttachmentDrafts(
         render((version) => version + 1);
       }
     };
-    window.addEventListener("storage", refresh);
-    return () => window.removeEventListener("storage", refresh);
-  }, [key, saved, attachmentCancelled, storageEventKey]);
+    return preferenceEvents.subscribe(refresh);
+  }, [key, saved, attachmentCancelled, preferenceEvents]);
   const setAttachments = async (
     change: SetStateAction<Attachments>,
   ): Promise<boolean> => {

@@ -744,6 +744,9 @@ impl NativeRuntime {
             self.inner
                 .fail_points
                 .after(DurableStep::StatusDirectorySync)?;
+            crate::resource_notify::publish_bounded_source(
+                crate::resource_notify::BoundedSource::Desktop,
+            );
             Ok(())
         })()
     }

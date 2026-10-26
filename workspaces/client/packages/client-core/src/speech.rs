@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::{io::AsyncBufReadExt, sync::broadcast};
@@ -20,12 +20,38 @@ pub const CANCELLED: &str = "Transcription canceled. Your recording is saved.";
 #[derive(Default)]
 struct Service {
     permits: HashMap<String, Instant>,
-    cancelled: HashMap<String, Instant>,
-    running: Option<(String, tokio::sync::watch::Sender<bool>)>,
+    cancelled: Vec<Cancellation>,
+    running: Option<Attempt>,
+}
+struct Cancellation {
+    store: tokio::sync::mpsc::WeakSender<crate::delivery::StoreCommand>,
+    id: String,
+    expires: Instant,
+}
+struct Attempt {
+    incarnation: Arc<()>,
+    store: tokio::sync::mpsc::WeakSender<crate::delivery::StoreCommand>,
+    id: String,
+    stop: tokio::sync::watch::Sender<bool>,
+}
+fn same_store(
+    owner: &tokio::sync::mpsc::WeakSender<crate::delivery::StoreCommand>,
+    store: &StoreSender,
+) -> bool {
+    owner
+        .upgrade()
+        .is_some_and(|owner| owner.same_channel(store))
 }
 fn service() -> &'static Mutex<Service> {
     static VALUE: OnceLock<Mutex<Service>> = OnceLock::new();
     VALUE.get_or_init(Mutex::default)
+}
+
+/// True only after the native transcription child has finished.
+pub(crate) fn audio_idle() -> bool {
+    service()
+        .lock()
+        .is_ok_and(|service| service.running.is_none())
 }
 pub fn progress() -> &'static broadcast::Sender<Value> {
     static VALUE: OnceLock<broadcast::Sender<Value>> = OnceLock::new();
@@ -47,7 +73,7 @@ pub fn prepare(now: Instant) -> Result<Value, String> {
 }
 
 /// Called after the native gesture for Cancel transcription.
-pub fn cancel(id: &Value) -> Result<Value, String> {
+pub fn cancel(store: &StoreSender, id: &Value) -> Result<Value, String> {
     let id = id
         .as_str()
         .filter(|id| !id.is_empty() && id.len() <= 128)
@@ -56,17 +82,36 @@ pub fn cancel(id: &Value) -> Result<Value, String> {
         .lock()
         .map_err(|_| "The speech service stopped.")?;
     let now = Instant::now();
-    service.cancelled.retain(|_, expires| *expires > now);
-    if service.cancelled.len() >= 128 && !service.cancelled.contains_key(id) {
+    if service
+        .running
+        .as_ref()
+        .is_some_and(|running| running.id == id && !same_store(&running.store, store))
+    {
+        return Err("The transcription belongs to another server context.".into());
+    }
+    service
+        .cancelled
+        .retain(|row| row.expires > now && row.store.strong_count() > 0);
+    let previous = service
+        .cancelled
+        .iter()
+        .position(|row| row.id == id && same_store(&row.store, store));
+    if service.cancelled.len() >= 128 && previous.is_none() {
         return Err("Too many transcription cancellations are pending.".into());
     }
     // Cancellation can reach the worker before the queued transcription starts.
-    service
-        .cancelled
-        .insert(id.to_owned(), now + PERMIT_LIFETIME);
+    if let Some(index) = previous {
+        service.cancelled[index].expires = now + PERMIT_LIFETIME;
+    } else {
+        service.cancelled.push(Cancellation {
+            store: store.downgrade(),
+            id: id.into(),
+            expires: now + PERMIT_LIFETIME,
+        });
+    }
     Ok(Value::Bool(match &service.running {
-        Some((running, stop)) if running == id => {
-            let _ = stop.send(true);
+        Some(running) if running.id == id && same_store(&running.store, store) => {
+            let _ = running.stop.send(true);
             true
         }
         _ => false,
@@ -105,7 +150,7 @@ fn upload(method: &str, params: &Value) -> Result<Value, String> {
     }
 }
 
-fn valid_locale(value: &str) -> bool {
+pub(crate) fn valid_locale(value: &str) -> bool {
     let mut parts = value.split(['-', '_']);
     let first = parts.next().unwrap_or("");
     let rest: Vec<_> = parts.collect();
@@ -115,6 +160,33 @@ fn valid_locale(value: &str) -> bool {
         && rest
             .iter()
             .all(|p| (2..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+fn languages() -> Result<Value, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSLocale, NSString};
+        objc2::rc::autoreleasepool(|_| {
+            let display = NSLocale::currentLocale();
+            let locale = display.localeIdentifier().to_string();
+            let locale = locale.split('@').next().unwrap_or("").replace('_', "-");
+            if !valid_locale(&locale) {
+                return Err("The native speech language is invalid.".into());
+            }
+            let mut codes = vec![locale.clone()];
+            for code in [
+                "en-US", "ru-RU", "de-DE", "fr-FR", "es-ES", "pl-PL", "uk-UA",
+            ] {
+                if !codes.iter().any(|c| c == code) {
+                    codes.push(code.into());
+                }
+            }
+            let choices=codes.iter().map(|code|json!({"code":code,"label":display.localizedStringForLocaleIdentifier(&NSString::from_str(code)).to_string()})).collect::<Vec<_>>();
+            Ok(json!({"locale":locale,"choices":choices}))
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("Native speech languages require macOS.".into())
 }
 
 /// Same WAV contract as the Electron helper: mono 16-bit PCM, at most 30 minutes.
@@ -173,14 +245,14 @@ fn helper() -> Result<PathBuf, String> {
         .join("../Resources/helpers/studio-speech"))
 }
 
-struct Running(String);
+struct Running(Arc<()>);
 impl Drop for Running {
     fn drop(&mut self) {
         if let Ok(mut service) = service().lock()
             && service
                 .running
                 .as_ref()
-                .is_some_and(|(id, _)| *id == self.0)
+                .is_some_and(|running| Arc::ptr_eq(&running.incarnation, &self.0))
         {
             service.running = None;
         }
@@ -287,6 +359,7 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
         return Err("Invalid recording.".into());
     }
     let (stop, stopped) = tokio::sync::watch::channel(false);
+    let incarnation = Arc::new(());
     {
         let mut service = service()
             .lock()
@@ -296,19 +369,49 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
             Some(expires) if expires > Instant::now() => {}
             _ => return Err("Use the Transcribe button again.".into()),
         }
-        if service
+        let now = Instant::now();
+        service
             .cancelled
-            .remove(&id)
-            .is_some_and(|expires| expires > Instant::now())
+            .retain(|row| row.expires > now && row.store.strong_count() > 0);
+        if let Some(index) = service
+            .cancelled
+            .iter()
+            .position(|row| row.id == id && same_store(&row.store, store))
         {
+            service.cancelled.remove(index);
             return Err(CANCELLED.into());
         }
         if service.running.is_some() {
             return Err("Another recording is being transcribed. Retry when it finishes.".into());
         }
-        service.running = Some((id.clone(), stop));
+        service.running = Some(Attempt {
+            incarnation: incarnation.clone(),
+            store: store.downgrade(),
+            id: id.clone(),
+            stop,
+        });
     }
-    let _running = Running(id.clone());
+    let _running = Running(incarnation);
+    if let Some(recording) = recording {
+        let chat_id = params["chatId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or("The recording chat is required.")?;
+        let claim = state(
+            store,
+            "dictation.claimTranscription",
+            json!({"id":recording,"chatId":chat_id,"attempt":id,"locale":locale}),
+        )
+        .await?;
+        if claim["claimed"] != true {
+            let saved = &claim["row"];
+            return match saved["transcriptionState"].as_str(){
+                Some("completed")=>saved["transcript"].as_str().map(|text|json!({"text":text,"replayed":true})).ok_or("The saved transcription result is invalid.".into()),
+                Some("failed")=>Err(saved["error"].as_str().unwrap_or("The transcription failed.").into()),
+                _=>Err("The previous transcription result is not confirmed. The attempt was not repeated.".into()),
+            };
+        }
+    }
     let directory = tempfile::Builder::new()
         .prefix("codex-studio-speech-")
         .tempdir()
@@ -340,13 +443,22 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
             .map_err(|e| e.to_string())?;
         file
     };
-    run(&helper()?, &file, locale, &id, stopped).await
+    let result = run(&helper()?, &file, locale, &id, stopped).await;
+    if let Some(recording) = recording {
+        let params = match &result {
+            Ok(value) => json!({"id":recording,"attempt":id,"text":value["text"]}),
+            Err(error) => json!({"id":recording,"attempt":id,"error":error}),
+        };
+        state(store, "dictation.settleTranscription", params).await?;
+    }
+    result
 }
 
 pub async fn dispatch(store: &StoreSender, request: Request) -> Response {
     let result = match request.method.as_str() {
+        "speech.languages" => languages(),
         "speech.transcribe" => transcribe(store, &request.params).await,
-        "speech.cancel" => cancel(&request.params["id"]),
+        "speech.cancel" => cancel(store, &request.params["id"]),
         "speech.uploadBegin" | "speech.uploadChunk" | "speech.uploadCancel" => {
             upload(&request.method, &request.params)
         }
@@ -361,6 +473,160 @@ pub async fn dispatch(store: &StoreSender, request: Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cancel_request(id: &str) -> Request {
+        Request {
+            id: format!("{id}:cancel"),
+            method: "speech.cancel".into(),
+            params: json!({"id":id}),
+        }
+    }
+
+    fn queued_transcription(store: StoreSender, id: &str) -> tokio::task::JoinHandle<Response> {
+        let permit = prepare(Instant::now()).unwrap();
+        let request = Request {
+            id: id.into(),
+            method: "speech.transcribe".into(),
+            params: json!({"id":id,"permit":permit,"locale":"en-US","recording":"saved-recording","chatId":"chat-a"}),
+        };
+        tokio::spawn(async move { dispatch(&store, request).await })
+    }
+
+    fn finish_claim(command: crate::delivery::StoreCommand) {
+        let (request, reply) = command;
+        assert_eq!(request.method, "dictation.claimTranscription");
+        // A saved result ends this fixture before any WAV export or native helper.
+        reply.send(Response::success(request.id, json!({
+            "claimed":false,"row":{"transcriptionState":"completed","transcript":"saved fixture text"}
+        }))).unwrap();
+    }
+
+    async fn transcription_reaches_claim(
+        store: &StoreSender,
+        input: &mut tokio::sync::mpsc::Receiver<crate::delivery::StoreCommand>,
+        id: &str,
+    ) -> (bool, Response) {
+        let mut task = queued_transcription(store.clone(), id);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                command = input.recv() => {
+                    finish_claim(command.unwrap());
+                    (true, task.await.unwrap())
+                }
+                result = &mut task => (false, result.unwrap()),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn native_speech_cancel_cannot_signal_a_sibling_store_with_the_same_attempt_id() {
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
+        let check = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (owner, mut owner_input) = tokio::sync::mpsc::channel(1);
+            let (sibling, mut sibling_input) = tokio::sync::mpsc::channel(1);
+            let task = queued_transcription(owner.clone(), "owned-live-attempt");
+            let claim = tokio::time::timeout(Duration::from_secs(5), owner_input.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let stopped = service()
+                .lock()
+                .unwrap()
+                .running
+                .as_ref()
+                .unwrap()
+                .stop
+                .subscribe();
+            let sibling_reply = dispatch(&sibling, cancel_request("owned-live-attempt")).await;
+            let sibling_signaled = *stopped.borrow();
+            let owner_reply = dispatch(&owner, cancel_request("owned-live-attempt")).await;
+            let owner_signaled = *stopped.borrow();
+            finish_claim(claim);
+            let finished = task.await.unwrap();
+            assert!(audio_idle());
+            // The rejected sibling must not leave a cancellation for its own
+            // later attempt with the same ID, either.
+            let (sibling_claimed, sibling_attempt) =
+                transcription_reaches_claim(&sibling, &mut sibling_input, "owned-live-attempt")
+                    .await;
+            move || {
+                assert!(
+                    sibling_reply.error.is_some(),
+                    "A running attempt belongs to its original Store."
+                );
+                assert!(
+                    !sibling_signaled,
+                    "A sibling cannot signal the owner's helper."
+                );
+                assert_eq!(owner_reply.result.unwrap(), true);
+                assert!(owner_signaled);
+                assert!(finished.error.is_none());
+                assert!(
+                    sibling_claimed,
+                    "A refused cancellation cannot poison a later sibling attempt."
+                );
+                assert!(sibling_attempt.error.is_none());
+            }
+        });
+        drop(_serial);
+        check();
+    }
+
+    #[test]
+    fn native_speech_precancel_stays_with_the_original_store_and_attempt() {
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
+        let check = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (owner, mut owner_input) = tokio::sync::mpsc::channel(1);
+            let (sibling, mut sibling_input) = tokio::sync::mpsc::channel(1);
+            let owner_cancel = dispatch(&owner, cancel_request("owner-pending-attempt")).await;
+            let (sibling_claimed, sibling_result) =
+                transcription_reaches_claim(&sibling, &mut sibling_input, "owner-pending-attempt")
+                    .await;
+            let (owner_claimed, owner_result) =
+                transcription_reaches_claim(&owner, &mut owner_input, "owner-pending-attempt")
+                    .await;
+            let sibling_cancel =
+                dispatch(&sibling, cancel_request("sibling-pending-attempt")).await;
+            let (second_owner_claimed, second_owner_result) =
+                transcription_reaches_claim(&owner, &mut owner_input, "sibling-pending-attempt")
+                    .await;
+            let (second_sibling_claimed, second_sibling_result) = transcription_reaches_claim(
+                &sibling,
+                &mut sibling_input,
+                "sibling-pending-attempt",
+            )
+            .await;
+
+            move || {
+                assert_eq!(owner_cancel.result.unwrap(), false);
+                assert_eq!(sibling_cancel.result.unwrap(), false);
+                assert!(
+                    sibling_claimed,
+                    "A sibling cannot consume the original owner's pre-cancel."
+                );
+                assert!(sibling_result.error.is_none());
+                assert!(
+                    !owner_claimed,
+                    "The original pre-cancel must stop work before any Store read."
+                );
+                assert_eq!(owner_result.error.unwrap().message, CANCELLED);
+                assert!(
+                    second_owner_claimed,
+                    "A sibling pre-cancel cannot poison another Store."
+                );
+                assert!(second_owner_result.error.is_none());
+                assert!(!second_sibling_claimed);
+                assert_eq!(second_sibling_result.error.unwrap().message, CANCELLED);
+                assert!(owner_input.try_recv().is_err());
+                assert!(sibling_input.try_recv().is_err());
+            }
+        });
+        drop(_serial);
+        check();
+    }
+
     #[test]
     fn speech_uploads_require_permission_preserve_bytes_and_cannot_authorize_saves() {
         use base64::Engine;
@@ -400,19 +666,22 @@ mod tests {
             .remove(permit.as_str().unwrap());
     }
 
-    #[tokio::test]
-    async fn cancellation_before_dispatch_never_reads_the_saved_recording() {
-        let id = "cancel-before-worker";
-        let permit = prepare(Instant::now()).unwrap();
-        assert_eq!(cancel(&json!(id)).unwrap(), false);
-        let (store, mut receiver) = tokio::sync::mpsc::channel(1);
-        let result = transcribe(
-            &store,
-            &json!({"id":id,"permit":permit,"locale":"en-US","recording":"saved"}),
-        )
-        .await;
-        assert_eq!(result.unwrap_err(), CANCELLED);
-        assert!(receiver.try_recv().is_err());
+    #[test]
+    fn cancellation_before_dispatch_never_reads_the_saved_recording() {
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let id = "cancel-before-worker";
+            let permit = prepare(Instant::now()).unwrap();
+            let (store, mut receiver) = tokio::sync::mpsc::channel(1);
+            assert_eq!(cancel(&store, &json!(id)).unwrap(), false);
+            let result = transcribe(
+                &store,
+                &json!({"id":id,"permit":permit,"locale":"en-US","recording":"saved"}),
+            )
+            .await;
+            assert_eq!(result.unwrap_err(), CANCELLED);
+            assert!(receiver.try_recv().is_err());
+        });
     }
 
     #[test]
@@ -464,7 +733,7 @@ mod tests {
              en-US) echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; echo '{\"type\":\"progress\",\"completed\":1,\"total\":1}' >&2; echo '{\"text\":\"Привет 🦀\",\"provider\":\"macOS Speech\",\"onDevice\":true}';;\n\
              de-DE) echo '{\"error\":\"On-device speech is unavailable.\"}'; exit 1;;\n\
              fr-FR) echo 'not json'; exit 1;;\n\
-             *) sleep 30;;\nesac\n",
+             *) mkfifo \"$1\"; echo '{\"type\":\"progress\",\"completed\":0,\"total\":1}' >&2; exec cat \"$1\";;\nesac\n",
         )
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -496,15 +765,30 @@ mod tests {
                 .starts_with("Native transcription failed")
         );
         let (stop, stopped) = tokio::sync::watch::channel(false);
-        let started = Instant::now();
         let task = tokio::spawn({
             let (script, file) = (script.clone(), file.clone());
             async move { run(&script, &file, "ja-JP", "four", stopped).await }
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event["id"] == "four" {
+                    assert_eq!(event["completed"], 0);
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("helper reports readiness before cancellation");
         stop.send(true).unwrap();
-        assert_eq!(task.await.unwrap().unwrap_err(), CANCELLED);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("cancellation stops the helper")
+                .unwrap()
+                .unwrap_err(),
+            CANCELLED
+        );
         assert!(
             run(
                 &directory.path().join("missing"),
@@ -521,6 +805,7 @@ mod tests {
 
     #[test]
     fn permits_are_single_use_and_cancel_matches_the_running_identity() {
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
         let now = Instant::now();
         let permit = prepare(now).unwrap();
         let mut guard = service().lock().unwrap();
@@ -528,12 +813,19 @@ mod tests {
         assert!(guard.permits.remove(permit.as_str().unwrap()).is_some());
         assert!(guard.permits.remove(permit.as_str().unwrap()).is_none());
         let (stop, stopped) = tokio::sync::watch::channel(false);
-        guard.running = Some(("run".into(), stop));
+        let (store, _input) = tokio::sync::mpsc::channel(1);
+        let incarnation = Arc::new(());
+        guard.running = Some(Attempt {
+            incarnation: incarnation.clone(),
+            store: store.downgrade(),
+            id: "run".into(),
+            stop,
+        });
         drop(guard);
-        assert_eq!(cancel(&json!("other")).unwrap(), false);
-        assert_eq!(cancel(&json!("run")).unwrap(), true);
+        assert_eq!(cancel(&store, &json!("other")).unwrap(), false);
+        assert_eq!(cancel(&store, &json!("run")).unwrap(), true);
         assert!(*stopped.borrow());
-        drop(Running("run".into()));
+        drop(Running(incarnation));
         assert!(service().lock().unwrap().running.is_none());
     }
 }

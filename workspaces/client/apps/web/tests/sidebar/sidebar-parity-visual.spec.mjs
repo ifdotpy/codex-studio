@@ -194,7 +194,7 @@ function inspectLayout(element) {
     .querySelector(".sidebar-header")
     .getBoundingClientRect().bottom;
   const selectors =
-    ".sidebar-nav,.projects-heading,input,.project-tree-heading,.sidebar-row,.project-show-more,.project-show-all,.row-copy strong,.chat-server-line";
+    ".sidebar-header,.projects-heading,input,.project-tree-heading,.sidebar-row,.project-show-more,.project-show-all,.row-copy strong,.chat-server-line";
   return [...element.querySelectorAll(selectors)].map((node) => {
     const rect = node.getBoundingClientRect();
     const style = getComputedStyle(node);

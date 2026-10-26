@@ -4,7 +4,8 @@ import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { errorText, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostResult } from "../api";
 import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard/clipboard";
 
@@ -121,9 +122,9 @@ export default function AccountSignIn({
             : {}),
           ...(!targetAccount && label ? { label } : {}),
         },
-        { timeoutMs: 30000, requestId: stableRequestId(mutationKey) },
+        { timeoutMs: 30000, requestId: await stableRequestId(mutationKey) },
       );
-      clearStableRequestId(mutationKey);
+      await clearStableRequestId(mutationKey);
       store({ ...result, requestId: id });
       setCopied(false);
       await state.refresh();
@@ -138,11 +139,11 @@ export default function AccountSignIn({
           { login_id: receipt.requestId },
           {
             timeoutMs: 15000,
-            requestId: stableRequestId(mutationKey),
+            requestId: await stableRequestId(mutationKey),
           },
         ),
       );
-      clearStableRequestId(mutationKey);
+      await clearStableRequestId(mutationKey);
       await state.refresh();
     });
   // A replay of the same sign-in request starts nothing. The server settles a
@@ -154,9 +155,9 @@ export default function AccountSignIn({
         const result = await post(
           "/api/accounts/login",
           { login_id: receipt.requestId, account_key: targetAccount.id },
-          { timeoutMs: 30000, requestId: stableRequestId(mutationKey) },
+          { timeoutMs: 30000, requestId: await stableRequestId(mutationKey) },
         );
-        clearStableRequestId(mutationKey);
+        await clearStableRequestId(mutationKey);
         store({ ...result, requestId: receipt.requestId });
       }
       await state.refresh();

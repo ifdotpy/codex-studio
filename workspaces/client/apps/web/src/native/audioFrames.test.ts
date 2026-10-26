@@ -1,5 +1,8 @@
 import { expect, it, vi } from "vitest";
 import { bindAudioFrames } from "./audioFrames";
+let nextNative = 0;
+const nativeValue = (method: string) =>
+  method === "system.uuid" ? `native-${++nextNative}` : true;
 function caller() {
   const frame = {
     contentWindow: { postMessage: vi.fn() },
@@ -10,6 +13,7 @@ it("binds speech permits, uploads, progress and cancellation to the initiating f
   let events: (value: unknown) => void = () => {};
   let finish!: (value: unknown) => void;
   const invoke = vi.fn(async (method: string) => {
+    if (method === "system.uuid") return nativeValue(method);
     if (method === "desktop.prepareTranscription") return "permit";
     if (method === "speech.uploadBegin") return { transfer: "upload" };
     if (method === "speech.transcribe")
@@ -103,7 +107,8 @@ it("binds speech permits, uploads, progress and cancellation to the initiating f
 it("rewrites microphone identities and stops a detached owner without affecting other frames", async () => {
   let events: (value: unknown) => void = () => {};
   const invoke = vi.fn(
-    async (_method: string, _params: unknown, _id?: string) => true,
+    async (_method: string, _params: unknown, _id?: string) =>
+      nativeValue(_method),
   );
   const audio = bindAudioFrames(invoke, async (callback) => {
     events = callback;
@@ -155,7 +160,8 @@ it("rewrites microphone identities and stops a detached owner without affecting 
 it("keeps the Rust voice peer and its events private to its owning server", async () => {
   let events: (value: unknown) => void = () => {};
   const invoke = vi.fn(
-    async (_method: string, _params: unknown, _id?: string) => true,
+    async (_method: string, _params: unknown, _id?: string) =>
+      nativeValue(_method),
   );
   const audio = bindAudioFrames(invoke, async (callback) => {
     events = callback;
@@ -200,7 +206,8 @@ it("keeps the Rust voice peer and its events private to its owning server", asyn
 it("isolates direct server owners and releases capture when an owner closes", async () => {
   let events: (value: unknown) => void = () => {};
   const invoke = vi.fn(
-    async (_method: string, _params: unknown, _id?: string) => true,
+    async (_method: string, _params: unknown, _id?: string) =>
+      nativeValue(_method),
   );
   const audio = bindAudioFrames(invoke, async (callback) => {
     events = callback;

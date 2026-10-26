@@ -125,6 +125,9 @@ request keeps the old service, and the backend reports the reason; a later call
 replaces it. A service without a build identity is never stopped by the backend.
 Receipts, tokens, leases, and unknown outcomes stay in the same state folder. The
 runtime-server witnesses `host_exec_service::*` check this with real service processes.
+After securing its Unix socket, the service emits the stdout readiness line owned by
+[`SERVICE_READY_LINE`](../workspaces/runtime/packages/runtime-services/src/host_exec_service/mod.rs).
+The launcher writes stdout to the service log; fixtures await that line before using the socket.
 
 ### Backend
 

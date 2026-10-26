@@ -30,7 +30,11 @@ function fixture() {
   const resources = path.join(root, "resources & source");
   mkdirSync(path.join(resources, "bin"), { recursive: true });
   mkdirSync(path.join(resources, "web/dist"), { recursive: true });
-  for (const name of ["studio-runtime-server", "codex-process-supervisor"]) {
+  for (const name of [
+    "studio-runtime-server",
+    "codex-process-supervisor",
+    "codex",
+  ]) {
     const binary = path.join(resources, "bin", name);
     writeFileSync(binary, "#!/bin/sh\nexit 0\n");
     chmodSync(binary, 0o755);
@@ -41,7 +45,7 @@ function fixture() {
   const env = {
     CODEX_AGENTS_STATE_DIR: path.join(root, "state"),
     PATH: process.env.PATH,
-    CODEX_BIN: "/usr/bin/true",
+    CODEX_BIN: path.join(resources, "bin/codex"),
     CODEX_AGENTS_PYTHON: "/nonexistent",
     CODEX_HOME: path.join(root, "accounts"),
     CODEX_CANVAS_CWD: path.join(root, "workspace"),
@@ -573,7 +577,7 @@ test("launchd registration failure is an error and cannot report success", async
 });
 
 test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
-  "the hidden desktop survives crash loops and resets its recovery budget",
+  "the hidden desktop survives crash loops and supports native reload",
   async () => {
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
@@ -720,20 +724,21 @@ test("recovery rejects an invalid saved launch environment before changing it", 
 // The shapes of two live background-recovery.json files that the deleted
 // Python backend wrote (one Mac still on Python, one already switched to Rust;
 // values replaced by fixture paths). Main refused both for CODEX_AGENTS_PYTHON.
-function pythonEraRecords(state) {
+function pythonEraRecords(state, resources) {
+  const codex = path.join(resources, "bin/codex");
   return [
     {
       version: 1,
       enabled: true,
       supervisorEnabled: true,
       stateDir: state,
-      resources: "/Applications/Codex Studio.app/Contents/Resources/workspace",
+      resources,
       python: "/opt/homebrew/bin/python3",
-      codex: "/opt/homebrew/bin/codex",
+      codex,
       port: 4620,
       environment: {
         SHELL: "/bin/zsh",
-        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+        PATH: path.dirname(codex),
       },
       unsetEnvironment: [
         "CODEX_HOME",
@@ -752,16 +757,16 @@ function pythonEraRecords(state) {
       enabled: true,
       supervisorEnabled: true,
       stateDir: state,
-      resources: "/Applications/Codex Studio.app/Contents/Resources/workspace",
+      resources,
       python: "/opt/homebrew/bin/python3",
-      codex: "/opt/homebrew/bin/codex",
+      codex,
       port: 4620,
       environment: {
-        CODEX_BIN: "/usr/bin/true",
+        CODEX_BIN: codex,
         SHELL: "/bin/zsh",
         LANG: "en_US.UTF-8",
         LC_ALL: "en_US.UTF-8",
-        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+        PATH: path.dirname(codex),
       },
       unsetEnvironment: [
         "CODEX_HOME",
@@ -772,10 +777,8 @@ function pythonEraRecords(state) {
         "CODEX_AGENTS_SUPERVISOR_FALLBACK",
       ],
       backend: "rust",
-      runtimeServer:
-        "/Applications/Codex Studio.app/Contents/Resources/workspace/bin/studio-runtime-server",
-      processSupervisor:
-        "/Applications/Codex Studio.app/Contents/Resources/workspace/bin/codex-process-supervisor",
+      runtimeServer: path.join(resources, "bin/studio-runtime-server"),
+      processSupervisor: path.join(resources, "bin/codex-process-supervisor"),
     },
   ];
 }
@@ -784,7 +787,7 @@ test("a Python-era saved launch environment is accepted without its retired keys
   const data = fixture();
   const files = recoveryPaths(data.env, data.home);
   try {
-    for (const saved of pythonEraRecords(files.state)) {
+    for (const saved of pythonEraRecords(files.state, data.resources)) {
       writeFileSync(files.config, JSON.stringify(saved));
       await configureRecovery({ ...data, enabled: true, run: async () => {} });
       const after = JSON.parse(readFileSync(files.config, "utf8"));
@@ -795,7 +798,7 @@ test("a Python-era saved launch environment is accepted without its retired keys
       assert.ok(after.unsetEnvironment.includes("CODEX_HOME"));
     }
     // A retired name with a saved value is accepted and not restored.
-    const [first] = pythonEraRecords(files.state);
+    const [first] = pythonEraRecords(files.state, data.resources);
     writeFileSync(
       files.config,
       JSON.stringify({

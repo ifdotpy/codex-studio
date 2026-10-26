@@ -195,9 +195,7 @@ async fn scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
         })
         .await
         .expect("seed prepared replies of the live turn");
-    for index in 0..=FORMER_REPLY_CAP {
-        answered_tool_call(&state, &mut peer, index).await;
-    }
+    answered_tool_call(&state, &mut peer, FORMER_REPLY_CAP).await;
     assert_eq!(
         reply_rows(&state).await,
         (FORMER_REPLY_CAP as i64, 0),

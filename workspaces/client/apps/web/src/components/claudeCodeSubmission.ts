@@ -1,4 +1,4 @@
-import { ApiError } from "../api";
+import { ApiError } from "../apiErrors";
 
 export function codeVerificationPending(
   receipt: {

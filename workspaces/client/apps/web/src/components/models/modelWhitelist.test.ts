@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INHERITED_MODEL, toModelOptions } from "./modelOption";
 import {
   modelWhitelistKey,
+  validModelWhitelist,
   readModelWhitelist,
   subscribeModelWhitelist,
   whitelistedModelOptions,
@@ -18,7 +19,42 @@ const models = toModelOptions([
   { model: "opus", resolvedModel: "claude-opus-4-6", provider: "claude" },
   { model: "gpt-6-astra", provider: "codex" },
 ]);
-afterEach(() => writeModelWhitelist(null));
+beforeEach(() => {
+  const values = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    get length() {
+      return values.size;
+    },
+    key: (i: number) => [...values.keys()][i] ?? null,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+    clear: () => values.clear(),
+  });
+  vi.stubGlobal("window", new EventTarget());
+  vi.stubGlobal("document", new EventTarget());
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+it("writes a versioned server preference instead of session memory", async () => {
+  writeModelWhitelist([], "local");
+  const { readPreferenceFields } = await import("../../sync/uiPreferenceStore");
+  expect(
+    readPreferenceFields("server")['["studio-model-whitelist-v1"]'],
+  ).toMatchObject({
+    value: [],
+    timestamp: expect.any(Number),
+    writer: expect.any(String),
+  });
+  vi.resetModules();
+  const reloaded = await import("./modelWhitelist");
+  expect(reloaded.readModelWhitelist("local")).toEqual([]);
+});
 describe("model whitelist", () => {
   it("defaults to all models, including future catalog entries", () => {
     expect(readModelWhitelist()).toBeNull();
@@ -95,4 +131,24 @@ it("does not retain an excluded default for a new draft", () => {
       false,
     ),
   ).toEqual(models.slice(0, 2));
+});
+
+it("rejects malformed whitelist values before writing", () => {
+  for (const value of [
+    true,
+    {},
+    [1],
+    [""],
+    ["astra"],
+    [":opus"],
+    ["codex:"],
+    ["codex:a", "codex:a"],
+  ]) {
+    expect(validModelWhitelist(value)).toBe(false);
+  }
+  expect(validModelWhitelist(null)).toBe(true);
+  expect(validModelWhitelist([])).toBe(true);
+  expect(
+    validModelWhitelist(["codex:future-model", "claude:future-model"]),
+  ).toBe(true);
 });

@@ -17,6 +17,7 @@ export function serverSidebarBackend(
   return {
     ownerId,
     storage,
+    resources: services.resources,
     async post<Path extends ApiPostPath>(
       path: Path,
       body: PostBody<Path>,

@@ -1,7 +1,8 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Group, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
-import { errorText, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostResult } from "../api";
 import { parseGroups } from "./accountPreference";
 import type { Account } from "./Accounts";
 

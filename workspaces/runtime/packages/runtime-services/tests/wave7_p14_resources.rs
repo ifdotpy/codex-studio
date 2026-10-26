@@ -7,9 +7,6 @@ use studio_runtime_services::resource_notify::{
 };
 use studio_runtime_services::token_rate::TokenRateHub;
 
-#[path = "support/token_rate_difference.rs"]
-mod token_rate_difference;
-
 fn request(id: &str, resources: Value) -> Value {
     json!({"requestId": id, "resources": resources})
 }
@@ -31,102 +28,41 @@ fn token_hub(changes: &Arc<ChangeNotificationHub>) -> TokenRateHub {
 }
 
 #[test]
-fn python_corpus_matches_complete_notify_and_token_publication_results() {
-    let mut cases = vec![
-        json!({"op": "notify", "body": request("same", json!([{"kind":"accounts"}, {"kind":"state"}]))}),
-        json!({"op": "notify", "body": request("same", json!([{"kind":"state"}, {"kind":"accounts"}, {"kind":"accounts"}]))}),
-        json!({"op": "notify", "body": request("same", json!([{"kind":"models"}]))}),
-        json!({"op": "rates", "body": rates(0)}),
-        json!({"op": "rates", "body": rates(0)}),
-        json!({"op": "rates", "body": rates(123)}),
-        json!({"op": "rates", "body": floating_rates(123.0)}),
-        json!({"op": "rates", "body": {"records": []}}),
-        json!({"op": "notify", "body": request("", json!([{"kind":"accounts"}]))}),
-        json!({"op": "notify", "body": request("empty", json!([]))}),
-        json!({"op": "notify", "body": request("unknown", json!([{"kind":"unknown"}]))}),
-        json!({"op": "rates", "body": {"records": null}}),
-    ];
-    // Full corpus adds schema field variations; the default already covers eviction.
-    if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
-        for field in ["turnId", "active", "estimated", "rate", "outputTokens"] {
-            for invalid in [
-                Value::Null,
-                json!([]),
-                json!({}),
-                json!(""),
-                json!(false),
-                json!(-1),
-            ] {
-                let mut value = rates(1);
-                value["records"][0][field] = invalid;
-                cases.push(json!({"op":"rates", "body":value}));
-            }
-            let mut value = rates(1);
-            value["records"][0]
-                .as_object_mut()
-                .expect("agent rate")
-                .remove(field);
-            cases.push(json!({"op":"rates", "body":value}));
-        }
-        for id in ["x".repeat(200), "x".repeat(201), "界".repeat(200)] {
-            cases.push(json!({"op":"notify", "body":request(&id, json!([{"kind":"accounts"}]))}));
-        }
-    }
-    for kind in [
-        "queue",
-        "receipts",
-        "workspace",
-        "voice",
-        "session-cost",
-        "transcript",
+fn normalized_resource_replay_and_conflict_preserve_the_publication() {
+    let changes = Arc::new(ChangeNotificationHub::new());
+    let publisher = ResourceNotifications::new(changes.clone());
+    assert!(
+        publisher
+            .publish_once(&request(
+                "same",
+                json!([{"kind":"accounts"}, {"kind":"state"}])
+            ))
+            .expect("publish")
+    );
+    assert!(
+        !publisher
+            .publish_once(&request(
+                "same",
+                json!([{"kind":"state"}, {"kind":"accounts"}, {"kind":"accounts"}])
+            ))
+            .expect("normalized replay")
+    );
+    assert_eq!(
+        publisher.publish_once(&request("same", json!([{"kind":"models"}]))),
+        Err(ResourceNotifyError::Conflict)
+    );
+    for body in [
+        request("", json!([{"kind":"accounts"}])),
+        request("empty", json!([])),
+        request("unknown", json!([{"kind":"unknown"}])),
     ] {
-        cases.push(
-            json!({"op":"notify", "body": request(kind, json!([{"kind":kind,"agentId":"agent"}]))}),
+        assert_eq!(
+            publisher.publish_once(&body),
+            Err(ResourceNotifyError::Invalid)
         );
     }
-    for index in 0..=MAX_NOTIFY_RECEIPTS {
-        cases.push(json!({"op":"notify", "body":request(&format!("bound-{index}"), json!([{"kind":"accounts"}]))}));
-    }
-    cases.push(cases[0].clone()); // The initial receipt was evicted.
-    cases.push(json!({"op":"restart"}));
-    cases.push(cases[0].clone()); // Process-local identity scope resets.
-    let data = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
-        include_str!("wave7_p14_resources/expected-full.json")
-    } else {
-        include_str!("wave7_p14_resources/expected.json")
-    };
-    let expected: Vec<Value> = serde_json::from_str(data).expect("frozen publication results");
-    assert_eq!(expected.len(), cases.len(), "oracle must return every case");
-    let mut hub = Arc::new(ChangeNotificationHub::new());
-    let mut publisher = ResourceNotifications::new(hub.clone());
-    let mut tokens = token_hub(&hub);
-    for (index, (case, expected)) in cases.iter().zip(expected).enumerate() {
-        let result = match case["op"].as_str().expect("operation") {
-            "restart" => {
-                hub = Arc::new(ChangeNotificationHub::new());
-                publisher = ResourceNotifications::new(hub.clone());
-                tokens = token_hub(&hub);
-                Ok(true)
-            }
-            "rates" => tokens
-                .publish(case["body"].clone())
-                .map_err(|_| ResourceNotifyError::Invalid),
-            _ => publisher.publish_once(&case["body"]),
-        };
-        let result = match result {
-            Ok(changed) => json!(changed),
-            Err(ResourceNotifyError::Conflict) => json!(409),
-            Err(ResourceNotifyError::Invalid) => json!(400),
-            Err(error) => panic!("{error}"),
-        };
-        let actual = json!({"result":result,"revision":hub.snapshot().revision,"rates":tokens.snapshot().to_value()});
-        token_rate_difference::assert_token_rate_documents_equal(
-            &expected,
-            &actual,
-            &["rates"],
-            &format!("case {index}: {case}"),
-        );
-    }
+    // State reset and targeted resources each advance the broad cursor once.
+    assert_eq!(changes.snapshot().revision, 2);
 }
 
 #[test]

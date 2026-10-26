@@ -114,6 +114,12 @@ fn rows(
     request: &PageRequest,
 ) -> Result<Vec<(PageRowMetadata, Value)>, TranscriptError> {
     let before = request.before.as_deref().filter(|v| !v.is_empty());
+    let inclusive_before = before.and_then(|value| {
+        value.strip_prefix(
+            studio_runtime_schema::shared_values::TRANSCRIPT_BEFORE_INCLUSIVE_CURSOR_PREFIX,
+        )
+    });
+    let before = inclusive_before.or(before);
     let around = request.around.as_deref().filter(|v| !v.is_empty());
     let after = request.after.as_deref().filter(|v| !v.is_empty());
     if [before, around, after].into_iter().flatten().count() > 1 {
@@ -151,7 +157,7 @@ fn rows(
     }
     let relation = if after.is_some() {
         ">"
-    } else if around.is_some() {
+    } else if around.is_some() || inclusive_before.is_some() {
         "<="
     } else {
         "<"

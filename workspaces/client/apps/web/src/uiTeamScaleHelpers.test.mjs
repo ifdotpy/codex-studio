@@ -3,10 +3,6 @@ import {
   ECHO_LATENCY_LIMIT_MS,
   FRAME_GAP_LIMIT_MS,
   SPAWN_BATCH_MAX,
-  STAGE_DEADLINE_BASE_MS,
-  STAGE_DEADLINE_PER_WORKER_MS,
-  THROTTLE_WAVE_MS,
-  ACCOUNT_CONCURRENT_REQUESTS,
   buildLeadPrompt,
   cpuDeltaMs,
   cpuPercent,
@@ -153,19 +149,9 @@ describe("ui team scale helpers", () => {
   });
 
   it("spreads the deadline over throttle waves per account", () => {
-    expect(stageDeadlineMs(30, 3)).toBe(
-      STAGE_DEADLINE_BASE_MS +
-        30 * STAGE_DEADLINE_PER_WORKER_MS +
-        THROTTLE_WAVE_MS,
-    );
-    expect(stageDeadlineMs(30, 1)).toBe(
-      stageDeadlineMs(30, 3) + 2 * THROTTLE_WAVE_MS,
-    );
-    expect(stageDeadlineMs(ACCOUNT_CONCURRENT_REQUESTS)).toBe(
-      STAGE_DEADLINE_BASE_MS +
-        ACCOUNT_CONCURRENT_REQUESTS * STAGE_DEADLINE_PER_WORKER_MS +
-        THROTTLE_WAVE_MS,
-    );
+    expect(stageDeadlineMs(30, 3)).toBe(195_000);
+    expect(stageDeadlineMs(30, 1)).toBe(315_000);
+    expect(stageDeadlineMs(10)).toBe(185_000);
   });
 
   it("reports account distribution and provider retries without failing", () => {

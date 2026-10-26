@@ -355,13 +355,16 @@ test("Mobile Send Reliability Browser", async ({
 
     // A real stalled fetch expires, preserves the request, and accepts an exact retry.
     const hung = body("hold-timeout");
-    const timeoutStart = Date.now();
+    await first.clock.install();
     await start(first, hung);
     await until(() => pending.get(hung.id)?.length === 1);
+    await first.clock.setSystemTime(
+      (await first.evaluate(() => Date.now())) + 16_000,
+    );
+    await first.evaluate(() => window.dispatchEvent(new Event("pageshow")));
     const timeoutResult = await settle(first);
     assert.equal(timeoutResult.queued, true);
     assert.match(timeoutResult.error, /did not respond in time/);
-    assert.ok(Date.now() - timeoutStart < 20000);
     assert.equal((await stored(first, hung.id)).attempted, true);
     await pending
       .get(hung.id)[0]
@@ -376,6 +379,7 @@ test("Mobile Send Reliability Browser", async ({
       posts.filter((post) => post.id === hung.id),
       [hung, hung],
     );
+    await first.clock.setSystemTime(new Date());
     // Reconnect keeps same-chat order without making another chat wait for HTTP.
     await context.setOffline(true);
     const orderedFirst = { ...body("hold-order-first"), room: "slow-chat" };

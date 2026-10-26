@@ -108,6 +108,13 @@ pub fn loaded(window: &tauri::Webview) {
         }
     }
     let mode = std::env::var("STUDIO_NATIVE_CHECK_MODE").unwrap_or_else(|_| "write".into());
+    if mode == crate::attachment_event_privacy::MODE {
+        if let Err(error) = window.eval(crate::attachment_event_privacy::script()) {
+            eprintln!("Cannot run the hidden attachment privacy check: {error}");
+            window.app_handle().exit(2);
+        }
+        return;
+    }
     let script = format!(
         "window.__studioCheckMode = {};\n{}",
         serde_json::to_string(&mode).unwrap(),

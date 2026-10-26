@@ -1011,7 +1011,7 @@ mod tests {
                         "environment keys differ (supervisor={supervisor}, backend-overrides={backend_overrides}, locale={locale_case})"
                     );
                     if !supervisor && backend_overrides && locale_case == "utf8" {
-                        let probe = Command::new("/usr/bin/env")
+                        let probe = Command::new("env")
                             .arg("-0")
                             .current_dir(cwd.path())
                             .env_clear()
@@ -1233,12 +1233,12 @@ mod tests {
 
         let cwd = terminal_cwd();
         let fifo = cwd.path().join("terminal-fifo");
-        let status = Command::new("/usr/bin/mkfifo")
+        let status = Command::new("mkfifo")
             .arg(&fifo)
             .status()
             .expect("create harmless FIFO for blocked cat");
         assert!(status.success());
-        let mut leader = Command::new("/usr/bin/setsid")
+        let mut leader = Command::new("setsid")
             .arg("/bin/sh")
             .arg("-c")
             .arg("set -m; /bin/sh -c 'trap \\\"\\\" HUP TERM; echo JOB_READY; exec /bin/cat terminal-fifo >/dev/null' & job=$!; echo CHILD_PID:$job; IFS= read -r release; exit 0")
@@ -1297,7 +1297,7 @@ mod tests {
         struct KillGroup(i32);
         impl Drop for KillGroup {
             fn drop(&mut self) {
-                let _kill_result = Command::new("/bin/kill")
+                let _kill_result = Command::new("kill")
                     .args(["-KILL", "--", &format!("-{}", self.0)])
                     .status();
             }
@@ -1392,7 +1392,7 @@ mod tests {
                     == Some("Z")
             });
         if !remains {
-            let _kill_result = std::process::Command::new("/bin/kill")
+            let _kill_result = std::process::Command::new("kill")
                 .args(["-KILL", "--", &format!("-{child_group}")])
                 .status();
         }
@@ -1448,7 +1448,7 @@ mod tests {
             .expect("child process group");
         assert_ne!(process_group, std::process::id() as i32);
 
-        std::process::Command::new("/bin/kill")
+        std::process::Command::new("kill")
             .args(["-TERM", "--", &format!("-{process_group}")])
             .status()
             .expect("send TERM to the job before terminal close");
@@ -1481,7 +1481,7 @@ mod tests {
                     .is_some_and(|state| state != "Z")
             });
         if remains {
-            let _kill_result = std::process::Command::new("/bin/kill")
+            let _kill_result = std::process::Command::new("kill")
                 .args(["-KILL", "--", &format!("-{process_group}")])
                 .status();
         }

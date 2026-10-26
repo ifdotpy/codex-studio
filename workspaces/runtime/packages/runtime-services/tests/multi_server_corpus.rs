@@ -1268,8 +1268,7 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
 
     // The same request identity now only probes; the command never repeats.
     // The first test checks this identity against the Python probe.
-    let probe_id =
-        studio_runtime_services::projects::cross_server_identity(&["exec-receipt", "fresh-exec"]);
+    let probe_id = "d941e93e-db8c-5643-844d-aae0c6888829".to_owned();
     let receipt = json!({"requestId":"fresh-exec","outcome":"applied","value":{"status":"exited"}});
     let wire = ExecWire::new(Some(
         json!({"requestId":probe_id,"outcome":"applied","value":receipt}),
@@ -1451,6 +1450,7 @@ fn full_matrix() -> bool {
     std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()
 }
 
+#[tokio::test]
 async fn python_authentication_outputs_match_complete_principal_and_writes() {
     let data = &fixture().data;
     for case in data["auth"].as_array().expect("cases") {
@@ -1623,6 +1623,7 @@ async fn frozen_python_signature_matches_rust_for_multi_server_requests() {
     verify_signature(&public_key, &python_wire, python_signature)
         .expect("Rust verifies Python's fixture request signature");
 }
+#[test]
 fn malformed_stored_rows_are_located_without_panics() {
     let data = &fixture().data;
     for field in ["id", "clientId", "kind", "publicKey", "status"] {
@@ -1648,6 +1649,7 @@ fn malformed_stored_rows_are_located_without_panics() {
         }
     }
 }
+#[test]
 fn owner_observations_reject_tags_wrong_ip_and_spoofed_login() {
     let data = &fixture().data;
     assert!(
@@ -1675,6 +1677,7 @@ fn owner_observations_reject_tags_wrong_ip_and_spoofed_login() {
         .is_err()
     );
 }
+#[test]
 fn discovery_includes_local_other_port_and_only_online_owner_nodes() {
     let data = &fixture().data;
     let snapshot = DiscoverySnapshot::from_status(
@@ -1705,6 +1708,7 @@ fn discovery_includes_local_other_port_and_only_online_owner_nodes() {
         ]
     );
 }
+#[tokio::test]
 async fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
     let data = &fixture().data;
     let case = &data["auth"][0];
@@ -1995,19 +1999,9 @@ async fn multi_server_corpus_witness() {
         );
         assert_eq!(checked.rejected_count, 0, "{table}: {:?}", checked.failures);
     }
-    python_authentication_outputs_match_complete_principal_and_writes().await;
-    malformed_stored_rows_are_located_without_panics();
-    owner_observations_reject_tags_wrong_ip_and_spoofed_login();
-    discovery_includes_local_other_port_and_only_online_owner_nodes();
-    pairing_is_atomic_at_every_write_and_replays_after_restart().await;
-    orchestration_claims_survive_lost_receipts_and_reject_changed_content().await;
-    python_receipt_states_preserve_completed_results_and_uncertainty().await;
-    nonce_capacity_is_rate_limited_without_committing_access_writes().await;
-    signatures_precede_owner_lookups_and_probes().await;
-    queried_status_crosses_service_dispatch().await;
-    fractional_invitation_boundary_matches_python().await;
 }
 
+#[tokio::test]
 async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content() {
     use std::sync::{
         Arc,
@@ -2291,6 +2285,7 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
     );
 }
 
+#[tokio::test]
 async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
     let data = &fixture().data;
     let case = &data["auth"][0];
@@ -2355,6 +2350,7 @@ async fn python_receipt_states_preserve_completed_results_and_uncertainty() {
     }
 }
 
+#[tokio::test]
 async fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
     let data = &fixture().data;
     let now = data["now"].as_i64().expect("now");
@@ -2390,6 +2386,7 @@ async fn nonce_capacity_is_rate_limited_without_committing_access_writes() {
     }
 }
 
+#[tokio::test]
 async fn fractional_invitation_boundary_matches_python() {
     let data = &fixture().data;
     for case in data["auth"].as_array().expect("cases").iter().filter(|c| {
@@ -2431,6 +2428,7 @@ async fn fractional_invitation_boundary_matches_python() {
     }
 }
 
+#[tokio::test]
 async fn queried_status_crosses_service_dispatch() {
     let data = &fixture().data;
     let case = data["auth"]
@@ -2482,6 +2480,7 @@ async fn queried_status_crosses_service_dispatch() {
     );
 }
 
+#[tokio::test]
 async fn signatures_precede_owner_lookups_and_probes() {
     use std::sync::atomic::Ordering;
     use studio_runtime_services::multi_server_pairing::MultiServerBoundary;

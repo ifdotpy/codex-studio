@@ -1,16 +1,193 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hasNativeClient, nativeRequest } from "./client";
+import migrationContract from "../../../../contracts/native-migration.json";
+import {
+  hasNativeClient,
+  nativeRequest,
+  nativeServerContext,
+  nativeStorageCutover,
+} from "./client";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 function mock(
   reply: (request: { id: string; method: string; params: unknown }) => unknown,
 ) {
   const invoke = vi.fn(async (_command, args) => reply(args.request));
-  vi.stubGlobal("__TAURI__", { core: { invoke } });
+  let identity = 0;
+  vi.stubGlobal("__TAURI__", {
+    core: {
+      invoke: async (command: string, args: any) =>
+        args.request.method === "system.uuid"
+          ? {
+              id: args.request.id,
+              result: `00000000-0000-4000-8000-${String(++identity).padStart(12, "0")}`,
+            }
+          : invoke(command, args),
+    },
+  });
   return invoke;
 }
 describe("native request transport", () => {
+  it("uses native identities without browser crypto", async () => {
+    vi.stubGlobal("crypto", undefined);
+    const invoke = mock(({ id }) => ({ id, result: true }));
+    await expect(nativeRequest("read", {})).resolves.toBe(true);
+    expect(invoke.mock.calls[0][1].request.id).toMatch(/^[a-f0-9-]{36}$/);
+  });
+  it("binds host migration and verification without accepting renderer inventories", async () => {
+    const invoke = mock(({ id, method }) => ({
+      id,
+      result:
+        method === "service.storage_cutover"
+          ? {
+              token: "proof",
+              serverId: "remote",
+              sourceIdentity: "a".repeat(64),
+              migrationComplete: true,
+              archive: null,
+            }
+          : method === migrationContract.verifyMethod
+            ? { verified: true }
+            : { complete: true },
+    }));
+    const owner = { id: "remote" };
+    const proof = await nativeStorageCutover(owner);
+    owner.id = "foreign";
+    expect(proof.migrationComplete).toBe(true);
+    await proof.verify();
+    await proof.migrate();
+    await proof.verify({
+      serverId: "remote",
+      sourceIdentity: "a".repeat(64),
+      proofVersion: migrationContract.proofVersion,
+      sourceDigest: "b".repeat(64),
+      inventoryDigest: "c".repeat(64),
+    });
+    expect(invoke.mock.calls[1][1].request.params).toEqual({
+      serverId: "remote",
+      token: "proof",
+    });
+    expect(invoke.mock.calls[2][1].request.params).toEqual({
+      serverId: "remote",
+      token: "proof",
+    });
+    expect(invoke.mock.calls[2][1].request.method).toBe(
+      migrationContract.migrateMethod,
+    );
+    expect(invoke.mock.calls[3][1].request.params).toEqual({
+      serverId: "remote",
+      token: "proof",
+      proofVersion: migrationContract.proofVersion,
+      sourceDigest: "b".repeat(64),
+      inventoryDigest: "c".repeat(64),
+    });
+  });
+  it("binds requests to the host context and keeps an exact lost-response identity", async () => {
+    const sent: { id: string; method: string; params: any }[] = [];
+    let lost = true;
+    mock(({ id, method, params }) => {
+      sent.push({ id, method, params });
+      if (method === "system.uuid") return { id, result: "host-generated-id" };
+      if (method === "service.open")
+        return {
+          id,
+          result: {
+            handle: "opaque",
+            serverId: "remote",
+            workspaceId: "a".repeat(32),
+            origin: "https://owned.ts.net",
+            credentialId: "host-credential",
+          },
+        };
+      if (lost) {
+        lost = false;
+        throw new Error("response lost");
+      }
+      return { id, result: { saved: true } };
+    });
+    const owner = {
+      id: "remote",
+      origin: "https://untrusted.invalid",
+      credentialId: "forged",
+    };
+    const context = await nativeServerContext(owner);
+    expect(context.origin).toBe("https://owned.ts.net");
+    expect(context.credentialId).toBe("host-credential");
+    owner.id = "other";
+    await expect(
+      context.request(
+        "outbox.enqueue",
+        { body: { id: "message" } },
+        "exact-write",
+      ),
+    ).rejects.toThrow("response lost");
+    expect(
+      await context.request(
+        "outbox.enqueue",
+        { body: { id: "message" } },
+        "exact-write",
+      ),
+    ).toEqual({ saved: true });
+    expect(
+      sent.find((entry) => entry.method === "service.open")?.params,
+    ).toEqual({ serverId: "remote" });
+    const writes = sent.filter((entry) => entry.method === "service.request");
+    expect(writes).toHaveLength(2);
+    expect(writes[0]).toEqual(writes[1]);
+    expect(writes[0]).toEqual({
+      id: "exact-write",
+      method: "service.request",
+      params: {
+        handle: "opaque",
+        method: "outbox.enqueue",
+        params: { body: { id: "message" } },
+      },
+    });
+    expect(Object.isFrozen(context)).toBe(true);
+  });
+  it("retains the host's local origin and explicit absence of a credential", async () => {
+    mock(({ id }) => ({
+      id,
+      result: {
+        handle: "local-handle",
+        serverId: "local",
+        workspaceId: "a".repeat(32),
+        origin: "http://127.0.0.1:8337",
+        credentialId: null,
+      },
+    }));
+    const context = await nativeServerContext({ id: "local" });
+    expect(context.origin).toBe("http://127.0.0.1:8337");
+    expect(context.credentialId).toBeNull();
+  });
+  it.each([
+    { origin: "" },
+    { origin: null },
+    { credentialId: undefined },
+    { credentialId: "" },
+    { credentialId: 1 },
+    { serverId: "other" },
+    { workspaceId: "wrong" },
+  ])("refuses malformed host owner metadata %j", async (invalid) => {
+    mock(({ id }) => ({
+      id,
+      result: {
+        handle: "opaque",
+        serverId: "remote",
+        workspaceId: "a".repeat(32),
+        origin: "https://owned.ts.net",
+        credentialId: "host-credential",
+        ...invalid,
+      },
+    }));
+    await expect(nativeServerContext({ id: "remote" })).rejects.toThrow(
+      "owner",
+    );
+  });
   it("renders 150 messages below transport limits without delaying writes", async () => {
+    vi.useFakeTimers();
     let active = 0;
     let peak = 0;
     let completed = 0;
@@ -33,7 +210,9 @@ describe("native request transport", () => {
     expect(
       await nativeRequest("preferences.raw_set", { key: "test", value: "yes" }),
     ).toBe("saved");
-    expect(completed).toBeLessThan(150);
+    expect(active).toBe(4);
+    expect(completed).toBe(0);
+    await vi.runAllTimersAsync();
     expect(await Promise.all(replies)).toHaveLength(150);
     expect(completed).toBe(150);
     expect(peak).toBe(4);
@@ -105,9 +284,22 @@ describe("native request transport", () => {
     expect(invoke.mock.calls[0]).toEqual(invoke.mock.calls[1]);
   });
   it("surfaces native command errors", async () => {
-    mock(({ id }) => ({ id, error: { message: "Permission denied" } }));
+    mock(({ id }) => ({
+      id,
+      error: {
+        message: "Permission denied",
+        code: "authority",
+        status: 403,
+        details: { outcome: "unknown" },
+      },
+    }));
     await expect(nativeRequest("write", null)).rejects.toThrow(
       "Permission denied",
     );
+    await expect(nativeRequest("write", null)).rejects.toMatchObject({
+      code: "authority",
+      status: 403,
+      details: { outcome: "unknown" },
+    });
   });
 });

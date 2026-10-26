@@ -27,5 +27,6 @@ test("imported agents read the agent transcript that preserves native warnings",
     false,
     "/fixture",
     "fixture",
+    true,
   );
 });

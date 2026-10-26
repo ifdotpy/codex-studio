@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +8,9 @@ import { createRequire } from "node:module";
 const { createRendererRecovery } = createRequire(import.meta.url)(
   "./renderer-recovery.cjs",
 );
-function fixture() {
+afterEach(() => vi.useRealTimers());
+
+function fixture(options = {}) {
   const profile = mkdtempSync(path.join(tmpdir(), "studio-renderer-contract-"));
   const workspaceURL = "http://127.0.0.1:4620/";
   const win = new EventEmitter();
@@ -33,6 +35,7 @@ function fixture() {
     profile,
     workspaceURL,
     maxRetries: 0,
+    ...options,
   });
   return {
     win,
@@ -113,6 +116,46 @@ test("an initial load failure gives a reloadable fallback with no foreign-frame 
       }),
       true,
     );
+    assert.equal(f.loads.at(-1), f.workspaceURL);
+  } finally {
+    f.close();
+  }
+});
+
+test("only a continuously healthy renderer resets the automatic retry budget", async () => {
+  vi.useFakeTimers();
+  const f = fixture({ maxRetries: 1 });
+  const crash = () =>
+    f.contents.emit(
+      "render-process-gone",
+      {},
+      { reason: "crashed", exitCode: 1 },
+    );
+  try {
+    crash();
+    await vi.advanceTimersByTimeAsync(1_000);
+    assert.deepEqual(f.loads, [f.workspaceURL]);
+    await vi.advanceTimersByTimeAsync(59_999);
+    crash();
+    assert.match(f.loads.at(-1), /^data:text\/html/);
+    await f.controller.reload();
+    crash();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const records = readFileSync(
+      path.join(f.profile, "renderer-recovery.jsonl"),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map(JSON.parse);
+    assert.equal(
+      records.find((record) => record.event === "renderer-healthy")
+        .previousFailures,
+      1,
+    );
+    crash();
+    await vi.advanceTimersByTimeAsync(1_000);
     assert.equal(f.loads.at(-1), f.workspaceURL);
   } finally {
     f.close();

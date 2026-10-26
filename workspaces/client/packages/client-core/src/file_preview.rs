@@ -12,9 +12,216 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+struct ExternalImageResponse {
+    status: u16,
+    mime: String,
+    bytes: Vec<u8>,
+}
+#[async_trait::async_trait]
+trait ExternalImageNetwork: Send + Sync {
+    async fn confirm(&self, url: &reqwest::Url) -> Result<bool, String>;
+    async fn resolve(&self, url: &reqwest::Url) -> Result<Vec<std::net::SocketAddr>, String>;
+    async fn get_pinned(
+        &self,
+        url: &reqwest::Url,
+        addresses: &[std::net::SocketAddr],
+    ) -> Result<ExternalImageResponse, String>;
+}
+struct HostExternalImageNetwork;
+#[async_trait::async_trait]
+impl ExternalImageNetwork for HostExternalImageNetwork {
+    async fn confirm(&self, url: &reqwest::Url) -> Result<bool, String> {
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            if crate::platform::hidden_check() {
+                return Err("Hidden checks do not open image confirmation dialogs.".into());
+            }
+            let exact_url = url.to_string();
+            crate::media::mac::on_main(move || {
+                use objc2::MainThreadMarker;
+                use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn};
+                use objc2_foundation::NSString;
+                let mtm = MainThreadMarker::new()
+                    .ok_or("The native confirmation UI thread is unavailable.")?;
+                let alert = NSAlert::new(mtm);
+                alert.setMessageText(&NSString::from_str("Load this external image?"));
+                alert.setInformativeText(&NSString::from_str(&exact_url));
+                let _ = alert.addButtonWithTitle(&NSString::from_str("Load image"));
+                let _ = alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+                Ok(alert.runModal() == NSAlertFirstButtonReturn)
+            })
+            .await
+            .map_err(|_| "The native image confirmation did not complete.".into())
+        }
+        #[cfg(any(not(target_os = "macos"), test))]
+        {
+            let _ = url;
+            Err("The native image confirmation is unavailable.".into())
+        }
+    }
+    async fn resolve(&self, url: &reqwest::Url) -> Result<Vec<std::net::SocketAddr>, String> {
+        let host = url
+            .host_str()
+            .ok_or("The external image address is invalid.")?
+            .trim_matches(['[', ']']);
+        let port = url
+            .port_or_known_default()
+            .ok_or("The external image port is invalid.")?;
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            return Ok(vec![std::net::SocketAddr::new(ip, port)]);
+        }
+        tokio::net::lookup_host((host, port))
+            .await
+            .map(|values| values.collect())
+            .map_err(|_| "The external image address could not be resolved.".into())
+    }
+    async fn get_pinned(
+        &self,
+        url: &reqwest::Url,
+        addresses: &[std::net::SocketAddr],
+    ) -> Result<ExternalImageResponse, String> {
+        validate_external_url(url)?;
+        validate_external_addresses(url, addresses)?;
+        let host = url
+            .host_str()
+            .ok_or("The external image address is invalid.")?
+            .trim_matches(['[', ']']);
+        // The only network authority is the confirmed URL and this pinned DNS set.
+        // No proxy, cookie store, account client, redirect or automatic retry enters it.
+        let client = crate::tls::client_builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(EXTERNAL_IMAGE_CONNECT_TIMEOUT)
+            .timeout(EXTERNAL_IMAGE_TIMEOUT)
+            .resolve_to_addrs(host, addresses)
+            .build()
+            .map_err(|_| "The external image connection could not be prepared.")?;
+        let mut response = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|_| "The external image could not be loaded.")?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(format!("The external image request failed ({status})."));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > FILE_LIMIT as u64)
+        {
+            return Err("The external image exceeds the preview limit.".into());
+        }
+        let mime = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+            })
+            .ok_or("The external image has no valid media type.")?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| "The external image body is not confirmed.")?
+        {
+            if bytes.len().saturating_add(chunk.len()) > FILE_LIMIT {
+                return Err("The external image exceeds the preview limit.".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(ExternalImageResponse {
+            status,
+            mime,
+            bytes,
+        })
+    }
+}
+
+/// Maximum confirmed external image URL length. Unit: UTF-8 bytes.
+const EXTERNAL_IMAGE_URL_BYTES: usize = 8 * 1024;
 const FILE_LIMIT: usize = 20 * 1024 * 1024;
 const CACHE_LIMIT: usize = 256 * 1024 * 1024;
 const CHUNK: usize = 256 * 1024;
+/// Deadline for one confirmed external image, including DNS and its body. Unit: seconds.
+const EXTERNAL_IMAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Maximum connection setup for a confirmed external image. Unit: seconds.
+const EXTERNAL_IMAGE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+// Conservative public unicast policy. Special-use registry owners:
+// https://www.iana.org/assignments/iana-ipv4-special-registry/
+// https://www.iana.org/assignments/iana-ipv6-special-registry/
+fn public_image_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_documentation()
+                || a == 0
+                || a >= 224
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && matches!(b, 18 | 19)))
+        }
+        std::net::IpAddr::V6(ip) => {
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                return public_image_address(v4.into());
+            }
+            let parts = ip.segments();
+            parts[0] & 0xe000 == 0x2000
+                && !(parts[0] == 0x2001 && (parts[1] < 0x200 || parts[1] == 0xdb8))
+                && parts[0] != 0x2002
+                && !(parts[0] == 0x3fff && parts[1] & 0xf000 == 0)
+        }
+    }
+}
+fn validate_external_url(url: &reqwest::Url) -> Result<(), String> {
+    if url.as_str().len() > EXTERNAL_IMAGE_URL_BYTES
+        || !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+        || url.port_or_known_default().is_none()
+    {
+        return Err("The external image address is invalid.".into());
+    }
+    let host = url.host_str().unwrap().trim_matches(['[', ']']);
+    if host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| !public_image_address(ip))
+    {
+        return Err("External images on private or reserved networks are not available through this preview.".into());
+    }
+    Ok(())
+}
+fn validate_external_addresses(
+    url: &reqwest::Url,
+    addresses: &[std::net::SocketAddr],
+) -> Result<(), String> {
+    let literal = url.host_str().and_then(|host| {
+        host.trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .ok()
+    });
+    if addresses.is_empty()
+        || addresses.iter().any(|address| {
+            !public_image_address(address.ip())
+                || Some(address.port()) != url.port_or_known_default()
+                || literal.is_some_and(|ip| ip != address.ip())
+        })
+    {
+        return Err("External images on private or reserved networks are not available through this preview.".into());
+    }
+    Ok(())
+}
 struct File {
     name: String,
     format: &'static str,
@@ -25,16 +232,25 @@ struct File {
 pub struct Previews {
     files: Arc<Mutex<HashMap<String, File>>>,
     preparation: Arc<Semaphore>,
+    external: Arc<dyn ExternalImageNetwork>,
 }
 impl Default for Previews {
     fn default() -> Self {
         Self {
             files: Arc::default(),
             preparation: Arc::new(Semaphore::new(2)),
+            external: Arc::new(HostExternalImageNetwork),
         }
     }
 }
 impl Previews {
+    #[cfg(test)]
+    pub(crate) fn test_file(&self, name: &str, mime: &str, bytes: &[u8]) -> Value {
+        self.insert(
+            prepare(json!({"name":name,"mime":mime,"base64":STANDARD.encode(bytes)})).unwrap(),
+        )
+        .unwrap()
+    }
     fn insert(&self, file: File) -> Result<Value, String> {
         let mut files = self
             .files
@@ -85,9 +301,46 @@ impl Previews {
             .ok_or("This file preview is closed.")?;
         Ok((file.name.clone(), file.bytes.clone()))
     }
+    pub(crate) fn media_snapshot(&self, value: &Value) -> Result<(String, Arc<Vec<u8>>), String> {
+        let files = self
+            .files
+            .lock()
+            .map_err(|_| "The preview service stopped.")?;
+        let file = files
+            .get(handle(value)?)
+            .ok_or("This file preview is closed.")?;
+        if !matches!(file.format, "audio" | "video") {
+            return Err("This file is not an audio or video preview.".into());
+        }
+        Ok((file.name.clone(), file.bytes.clone()))
+    }
     pub async fn dispatch(&self, backend: Option<&Backend>, request: Request) -> Response {
         let result = async {
             match request.method.as_str() {
+                "preview.externalImage" => {
+                    crate::desktop::consume_permission(&request)?;
+                    let url=request.params["url"].as_str().ok_or("The external image address is invalid.")?;
+                    let mut url=reqwest::Url::parse(url).map_err(|_|"The external image address is invalid.")?;
+                    validate_external_url(&url)?;
+                    url.set_fragment(None);
+                    if !self.external.confirm(&url).await? {
+                        return Err("The external image request was cancelled.".into());
+                    }
+                    tokio::time::timeout(EXTERNAL_IMAGE_TIMEOUT,async {
+                        let permit=self.preparation.clone().acquire_owned().await.map_err(|_|"The preview service stopped.")?;
+                        let addresses=self.external.resolve(&url).await?;
+                        validate_external_addresses(&url,&addresses)?;
+                        let response=self.external.get_pinned(&url,&addresses).await?;
+                        if !(200..300).contains(&response.status) {return Err("The external image request was refused. Redirects are not followed.".into());}
+                        if response.bytes.len()>FILE_LIMIT {return Err("The external image exceeds the preview limit.".into());}
+                        if !matches!(format("external-image",&response.mime),"image"|"svg") {return Err("This external image type is not supported.".into());}
+                        let file=tokio::task::spawn_blocking(move || {
+                            let _permit=permit;
+                            prepare(json!({"name":"external-image","mime":response.mime,"base64":STANDARD.encode(response.bytes)}))
+                        }).await.map_err(|_|"The native image preparation stopped.")??;
+                        self.insert(file)
+                    }).await.map_err(|_|"The external image request timed out.")?
+                }
                 "preview.open" => {
                     let path = crate::file_actions::content_path(request.params["target"].clone())?;
                     let backend = backend.ok_or("The native backend is unavailable.")?;
@@ -268,7 +521,7 @@ fn prepare(data: Value) -> Result<File, String> {
             format!("data:image/svg+xml;base64,{}", STANDARD.encode(clean)),
             dimensions,
         )
-    } else if matches!(format, "image" | "audio" | "video") {
+    } else if format == "image" {
         let dimensions = if format == "image" {
             image::ImageReader::new(Cursor::new(&bytes))
                 .with_guessed_format()
@@ -384,8 +637,229 @@ fn delimited(source: &str, delimiter: char) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct FakeImageNetwork {
+        addresses: Vec<std::net::SocketAddr>,
+        response: Mutex<Option<ExternalImageResponse>>,
+        resolves: std::sync::atomic::AtomicUsize,
+        requests: Mutex<Vec<(String, Vec<std::net::SocketAddr>)>>,
+        stalled: bool,
+        approved: std::sync::atomic::AtomicBool,
+        confirmations: Mutex<Vec<String>>,
+    }
+    #[async_trait::async_trait]
+    impl ExternalImageNetwork for FakeImageNetwork {
+        async fn confirm(&self, url: &reqwest::Url) -> Result<bool, String> {
+            self.confirmations.lock().unwrap().push(url.to_string());
+            Ok(self.approved.load(std::sync::atomic::Ordering::SeqCst))
+        }
+        async fn resolve(&self, _url: &reqwest::Url) -> Result<Vec<std::net::SocketAddr>, String> {
+            self.resolves
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.stalled {
+                return std::future::pending().await;
+            }
+            Ok(self.addresses.clone())
+        }
+        async fn get_pinned(
+            &self,
+            url: &reqwest::Url,
+            addresses: &[std::net::SocketAddr],
+        ) -> Result<ExternalImageResponse, String> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((url.to_string(), addresses.to_vec()));
+            Ok(self
+                .response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("one credential-free image request"))
+        }
+    }
+    fn external_fixture(
+        status: u16,
+        bytes: Vec<u8>,
+        addresses: &[&str],
+        stalled: bool,
+    ) -> (Previews, Arc<FakeImageNetwork>) {
+        let network = Arc::new(FakeImageNetwork {
+            addresses: addresses
+                .iter()
+                .map(|value| value.parse().unwrap())
+                .collect(),
+            response: Mutex::new(Some(ExternalImageResponse {
+                status,
+                mime: "image/png".into(),
+                bytes,
+            })),
+            resolves: std::sync::atomic::AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            stalled,
+            approved: std::sync::atomic::AtomicBool::new(true),
+            confirmations: Mutex::new(Vec::new()),
+        });
+        let previews = Previews {
+            external: network.clone(),
+            ..Previews::default()
+        };
+        (previews, network)
+    }
+    fn external_request(url: &str, permit: u64) -> Request {
+        Request {
+            id: "original-image-request".into(),
+            method: "preview.externalImage".into(),
+            params: json!({"url":url,"permit":permit}),
+        }
+    }
+    #[tokio::test]
+    async fn external_image_dispatch_requires_a_native_confirmation_and_pins_the_dns_result() {
+        use std::sync::atomic::Ordering;
+        let bytes = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=").unwrap();
+        let (previews, network) =
+            external_fixture(200, bytes.clone(), &["93.184.216.34:443"], false);
+        let url = "https://images.example.test/image.png";
+        let denied = previews.dispatch(None, external_request(url, 0)).await;
+        assert!(denied.error.is_some());
+        assert_eq!(network.resolves.load(Ordering::SeqCst), 0);
+        assert!(network.confirmations.lock().unwrap().is_empty());
+        let permit = crate::desktop::test_native_permit(6);
+        let reply = previews.dispatch(None, external_request(url, permit)).await;
+        assert!(reply.error.is_none(), "{reply:?}");
+        let snapshot = previews.snapshot(&reply.result.unwrap()).unwrap();
+        assert_eq!(snapshot.1.as_slice(), bytes.as_slice());
+        assert_eq!(network.resolves.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *network.confirmations.lock().unwrap(),
+            vec![url.to_string()]
+        );
+        assert_eq!(
+            *network.requests.lock().unwrap(),
+            vec![(url.into(), network.addresses.clone())]
+        );
+        let replay = previews.dispatch(None, external_request(url, permit)).await;
+        assert!(replay.error.is_some());
+        assert_eq!(network.requests.lock().unwrap().len(), 1);
+    }
+    #[tokio::test]
+    async fn external_image_dispatch_cancelled_exact_confirmation_never_resolves_or_connects() {
+        use std::sync::atomic::Ordering;
+        let (previews, network) = external_fixture(200, vec![], &["93.184.216.34:443"], false);
+        network.approved.store(false, Ordering::SeqCst);
+        let reply = previews
+            .dispatch(
+                None,
+                external_request(
+                    "https://images.example.test/exact.png?size=small#ignored",
+                    crate::desktop::test_native_permit(6),
+                ),
+            )
+            .await;
+        assert!(reply.error.is_some());
+        assert_eq!(
+            *network.confirmations.lock().unwrap(),
+            vec!["https://images.example.test/exact.png?size=small"]
+        );
+        assert_eq!(network.resolves.load(Ordering::SeqCst), 0);
+        assert!(network.requests.lock().unwrap().is_empty());
+        assert!(previews.files.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn external_image_dispatch_refuses_credentials_and_nonpublic_addresses_before_connect() {
+        use std::sync::atomic::Ordering;
+        for url in [
+            "file:///private/image.png",
+            "https://user:secret@example.test/image.png",
+            "http://127.0.0.1/image.png",
+            "http://[::1]/image.png",
+        ] {
+            let (previews, network) = external_fixture(200, vec![], &["93.184.216.34:443"], false);
+            assert!(
+                previews
+                    .dispatch(
+                        None,
+                        external_request(url, crate::desktop::test_native_permit(6))
+                    )
+                    .await
+                    .error
+                    .is_some()
+            );
+            assert_eq!(network.resolves.load(Ordering::SeqCst), 0);
+            assert!(network.requests.lock().unwrap().is_empty());
+        }
+        for addresses in [
+            vec!["10.0.0.1:443"],
+            vec!["169.254.1.1:443"],
+            vec!["93.184.216.34:443", "127.0.0.1:443"],
+            vec!["[fe80::1]:443"],
+        ] {
+            let (previews, network) = external_fixture(200, vec![], &addresses, false);
+            let denied = previews
+                .dispatch(
+                    None,
+                    external_request(
+                        "https://images.example.test/image.png",
+                        crate::desktop::test_native_permit(6),
+                    ),
+                )
+                .await;
+            assert!(denied.error.is_some());
+            assert_eq!(network.resolves.load(Ordering::SeqCst), 1);
+            assert!(network.requests.lock().unwrap().is_empty());
+        }
+    }
+    #[tokio::test]
+    async fn external_image_dispatch_never_follows_redirects_or_caches_an_oversized_body() {
+        for (status, bytes) in [(302, vec![]), (200, vec![0; FILE_LIMIT + 1])] {
+            let (previews, network) =
+                external_fixture(status, bytes, &["93.184.216.34:443"], false);
+            let reply = previews
+                .dispatch(
+                    None,
+                    external_request(
+                        "https://images.example.test/image.png",
+                        crate::desktop::test_native_permit(6),
+                    ),
+                )
+                .await;
+            assert!(reply.error.is_some());
+            assert_eq!(network.requests.lock().unwrap().len(), 1);
+            assert!(previews.files.lock().unwrap().is_empty());
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn external_image_dispatch_deadline_includes_dns_without_real_wait_or_network() {
+        let (previews, network) = external_fixture(200, vec![], &["93.184.216.34:443"], true);
+        let start = tokio::time::Instant::now();
+        let reply = previews
+            .dispatch(
+                None,
+                external_request(
+                    "https://images.example.test/image.png",
+                    crate::desktop::test_native_permit(6),
+                ),
+            )
+            .await;
+        assert!(reply.error.is_some());
+        assert_eq!(tokio::time::Instant::now() - start, EXTERNAL_IMAGE_TIMEOUT);
+        assert!(network.requests.lock().unwrap().is_empty());
+    }
     fn data(name: &str, mime: &str, bytes: &[u8]) -> Value {
         json!({"name":name,"mime":mime,"base64":STANDARD.encode(bytes)})
+    }
+    #[test]
+    fn media_presentation_keeps_bytes_only_in_the_native_snapshot() {
+        for (name, mime) in [("audio.wav", "audio/wav"), ("video.mp4", "video/mp4")] {
+            let file = prepare(data(name, mime, b"native-owned-media")).unwrap();
+            let view: Value = serde_json::from_str(&file.presentation).unwrap();
+            assert_eq!(
+                view["url"], "",
+                "Media bytes must not enter the UI presentation."
+            );
+            assert_eq!(file.bytes.as_slice(), b"native-owned-media");
+            assert_eq!(view["text"], "");
+        }
     }
     #[test]
     fn source_bytes_survive_display_conversion_and_table_limits() {

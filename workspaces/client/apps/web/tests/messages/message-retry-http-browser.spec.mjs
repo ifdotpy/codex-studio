@@ -5,6 +5,7 @@ import {
   spawnFixture as spawn,
   rustUiFixture,
   queryFixtureDatabase,
+  createFixtureViteServer,
 } from "../playwright.mjs";
 // Lose a real committed HTTP response, reload, and retry the same stored intention.
 import assert from "node:assert/strict";
@@ -14,9 +15,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("message retry http browser", async ({ page: runnerPage }) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
   const state = await mkdtemp(join(tmpdir(), "studio-retry-http-"));
   const fixture = spawn(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -39,7 +37,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     const lead = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     );
-    server = await createServer({
+    server = await createFixtureViteServer({
       configFile: false,
       root: join(root, "workspaces/client/apps/web"),
       server: {
@@ -74,14 +72,17 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     const gate = new Promise((resolve) => {
       release = resolve;
     });
-    let committed = false;
+    let markCommitted;
+    const committed = new Promise((resolve) => {
+      markCommitted = resolve;
+    });
     await page.route("**/api/messages", async (route) => {
       attempts.push(route.request().postDataJSON());
       const first = attempts.length === 1;
       const response = await route.fetch();
       assert.equal(response.status(), 200);
       if (first) {
-        committed = true;
+        markCommitted();
         await gate;
         try {
           await route.abort("failed");
@@ -117,18 +118,17 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       assets: [],
       delivery: "queue",
     };
-    const start = Date.now();
-    const result = await page.evaluate((body) => window.send(body), body);
-    assert.equal(
-      committed,
-      true,
-      "The server commits before the response is lost",
+    await page.clock.install();
+    await page.evaluate((body) => {
+      window.sendResult = window.send(body);
+    }, body);
+    await committed;
+    await page.clock.setSystemTime(
+      (await page.evaluate(() => Date.now())) + 16_000,
     );
+    await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+    const result = await page.evaluate(() => window.sendResult);
     assert.equal(result.queued, true, "A missing response remains pending");
-    assert.ok(
-      Date.now() - start < 20000,
-      "A lost response must not leave Sending active indefinitely",
-    );
     release();
     await mount();
     await page.waitForFunction(

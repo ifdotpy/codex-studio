@@ -1,12 +1,8 @@
 import { useSidebarBackend } from "./sidebar/services";
 import { useRef, useState } from "react";
-import {
-  ApiError,
-  errorText,
-  type ApiPostPath,
-  type PostBody,
-  type PostResult,
-} from "../api";
+import { ApiError } from "../apiErrors";
+import { errorText } from "../apiPresentation";
+import type { ApiPostPath, PostBody, PostResult } from "../api";
 
 export function persistedProjectRequest<Path extends ApiPostPath>(
   persisted: PostBody<Path> | null,

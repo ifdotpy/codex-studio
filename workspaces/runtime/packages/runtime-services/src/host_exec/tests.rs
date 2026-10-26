@@ -361,10 +361,10 @@ async fn vm_agent_runs_one_command_with_its_exact_guest_request() {
         configure[0],
         (
             json!({"token": TOKEN}),
-            Some(format!(
-                "host-configure:{}",
-                studio_runtime_store::sha256_hex(TOKEN.as_bytes())
-            )),
+            Some(
+                "host-configure:a8ae6e6ee929abea3afcfc5258c8ccd6f85273e0d4626d26c7279f3250f77c8e"
+                    .to_owned()
+            ),
             Duration::from_secs(15)
         )
     );

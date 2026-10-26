@@ -74,13 +74,21 @@ boundaries-check:
 check-affected base *args:
     @node {{quote(facade)}} check-affected {{quote(base)}} {{args}}
 
-[doc("Run the fast nextest profile and JS/guest witnesses in three concurrent lanes.")]
+[doc("Run the fast nextest profile and JS/guest witnesses in five bounded concurrent lanes.")]
 test-fast:
     @node {{quote(facade)}} test-fast
+
+[doc("Manual process check: run detached host_exec startup, replacement and guest broker scenarios.")]
+test-host-exec-processes:
+    @cargo nextest run -j 4 -p studio-runtime-server --test integration --run-ignored only --test-threads 1 -E 'test(/^host_exec_service::/)'
 
 [doc("Run the broad nextest profile and JS/guest checks with one renderer build and browser smoke.")]
 test-comprehensive:
     @node {{quote(facade)}} test-comprehensive
+
+[doc("Manual process check: run real guest case-worker overlap, aggregation and crash scenarios.")]
+test-guest-runner-processes:
+    @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mjs
 
 [doc("Run the comprehensive checks excluding browser smoke (legacy CI composition).")]
 test-fast-rest:

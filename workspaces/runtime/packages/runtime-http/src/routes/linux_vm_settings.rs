@@ -26,7 +26,7 @@ pub(crate) fn routes() -> RouteGroup {
 }
 
 async fn get_settings(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
-    let vm_dir = vm_dir(&state);
+    let vm_dir = state.vm_state_dir;
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/linux_vm_settings",
         move || settings_response(&vm_dir, None),
@@ -40,7 +40,7 @@ async fn set_settings(
     State(state): State<HttpState>,
     ApiJson(settings): ApiJson<generated::LinuxVMSettings>,
 ) -> Result<Json<Value>, ApiError> {
-    let vm_dir = vm_dir(&state);
+    let vm_dir = state.vm_state_dir;
     let requested: linux_vm_settings::VmSettings =
         serde_json::from_value(serde_json::to_value(settings).map_err(|_| ApiError::internal())?)
             .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid VM settings"))?;
@@ -51,12 +51,6 @@ async fn set_settings(
     .await
     .map_err(|_| ApiError::internal())?
     .map(Json)
-}
-
-fn vm_dir(state: &HttpState) -> std::path::PathBuf {
-    std::env::var_os("CODEX_LINUX_VM_STATE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(&state.state_dir).join("linux-vm"))
 }
 
 fn settings_response(
@@ -101,8 +95,9 @@ mod tests {
         http::{Method, Request},
     };
     use serde_json::json;
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+    use tokio_util::task::AbortOnDropHandle;
     use tower::ServiceExt;
 
     fn settings_request(
@@ -141,7 +136,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .with_vm_state_dir(state_dir.path().join("private-vm"));
         let app = crate::router::router(state).expect("valid router");
         let body = json!({"cpus":1,"memoryBytes":4294967296u64,"systemDiskBytes":17179869184u64,"dataDiskBytes":137438953472u64});
         let schema_hash = crate::schema::api_schema_hash();
@@ -169,28 +165,31 @@ mod tests {
             .expect("schema mismatch response");
         assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
 
-        let vm_dir = state_dir.path().join("linux-vm");
+        let vm_dir = state_dir.path().join("private-vm");
         std::fs::create_dir_all(&vm_dir).expect("fake VM state directory created");
         let listener =
             UnixListener::bind(vm_dir.join("control.sock")).expect("fake control socket binds");
-        let server = std::thread::spawn(move || {
+        let server = AbortOnDropHandle::new(tokio::spawn(async move {
             // Set, response status, and subsequent GET status. This fake supports
             // status queries only, so the fixture cannot execute a VM action.
             for _ in 0..3 {
-                let (stream, _) = listener.accept().expect("fake control accepts request");
+                let (stream, _) = listener.accept().await.expect("status request");
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 reader
                     .read_line(&mut line)
+                    .await
                     .expect("fake control reads request");
                 let request = serde_json::from_str::<Value>(&line).expect("request parses");
                 assert_eq!(request["method"], "host.status");
-                let id = request["id"].clone();
                 let mut stream = reader.into_inner();
-                writeln!(stream, "{}", json!({"id":id,"result":{"state":"stopped"}}))
+                let reply = json!({"id":request["id"],"result":{"state":"stopped"}});
+                stream
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
                     .expect("fake control sends status");
             }
-        });
+        }));
         let response = app
             .clone()
             .oneshot(settings_request(
@@ -232,7 +231,18 @@ mod tests {
         let readback = serde_json::from_slice::<Value>(&bytes).expect("GET response parses");
         assert_eq!(readback["settings"], value["settings"]);
         assert_eq!(readback["state"], "stopped");
-        server.join().expect("fixture operation succeeds");
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &std::fs::read(vm_dir.join("settings.json"))
+                    .expect("settings use the injected directory")
+            )
+            .expect("persisted settings"),
+            value["settings"]
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("socket responder stops")
+            .expect("socket responder succeeds");
     }
 
     #[tokio::test]
@@ -246,7 +256,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .with_vm_state_dir(state_dir.path().join("private-vm"));
         let app = crate::router::router(state).expect("valid router");
         let request = |method: axum::http::Method, body: Option<Value>| {
             let mut builder = axum::http::Request::builder()
@@ -284,10 +295,11 @@ mod tests {
         .expect("fixture operation succeeds");
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["settings"]["memoryBytes"], 4 * 1024 * 1024 * 1024u64);
-        let before = std::fs::read_dir(state_dir.path().join("linux-vm"))
-            .ok()
-            .map(|entries| entries.count())
-            .unwrap_or(0);
+        let vm_dir = state_dir.path().join("private-vm");
+        std::fs::create_dir_all(&vm_dir).expect("private settings directory");
+        let settings_file = vm_dir.join("settings.json");
+        let before = serde_json::to_vec(&value["settings"]).expect("existing settings");
+        std::fs::write(&settings_file, &before).expect("seed existing settings");
         let response = app
             .oneshot(request(
                 axum::http::Method::POST,
@@ -296,10 +308,14 @@ mod tests {
             .await
             .expect("fixture operation succeeds");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let after = std::fs::read_dir(state_dir.path().join("linux-vm"))
-            .ok()
-            .map(|entries| entries.count())
-            .unwrap_or(0);
-        assert_eq!(before, after);
+        assert_eq!(
+            std::fs::read(&settings_file).expect("settings retained"),
+            before
+        );
+        let entries = std::fs::read_dir(&vm_dir)
+            .expect("settings directory retained")
+            .map(|entry| entry.expect("readable entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, [std::ffi::OsString::from("settings.json")]);
     }
 }

@@ -33,8 +33,10 @@ it("uploads exact bounded PCM WAV bytes and never repeats a lost recognition res
     .map(([, value]) => value as { offset: number; base64: string });
   expect(chunks.map((c) => c.offset)).toEqual([0, 262144]);
   expect(
-    chunks.flatMap((c) => [...atob(c.base64)].map((c) => c.charCodeAt(0))),
-  ).toEqual([...bytes]);
+    Buffer.concat(chunks.map((c) => Buffer.from(c.base64, "base64"))).equals(
+      Buffer.from(bytes),
+    ),
+  ).toBe(true);
   expect(
     calls.filter(([method]) => method === "speech.transcribe"),
   ).toHaveLength(1);

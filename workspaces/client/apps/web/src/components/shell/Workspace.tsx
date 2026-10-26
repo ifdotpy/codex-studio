@@ -41,13 +41,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  errorText,
-  type ApiPostPath,
-  type GetResult,
-  type PostBody,
-  type PostResult,
-} from "../../api";
+import { errorText } from "../../apiPresentation";
+import type { ApiPostPath, GetResult, PostBody, PostResult } from "../../api";
 import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelField } from "../models/ModelField";
@@ -57,7 +52,6 @@ import {
   toModelOptions,
 } from "../models/modelOption";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
-import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import TeamChats from "./messages/TeamChats";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
 import "./Workspace.css";
@@ -154,7 +148,6 @@ function Status({ value }: { value: string }) {
 }
 
 export function Workspace(props: Props) {
-  const watchResourceReads = useServerResourceReads();
   const { post } = useServerApi();
 
   const [section, setSection] = useState(props.initialSection || "messages"),
@@ -206,16 +199,6 @@ export function Workspace(props: Props) {
     }
   }
   const reload = useCallback(() => setRevision((value) => value + 1), []);
-  useEffect(() => {
-    if (!props.opened || !agentId) return;
-    return watchResourceReads(
-      { kind: "workspace", agentId },
-      async () => reload(),
-      () => {
-        // The current panel remains visible until its next workspace change.
-      },
-    );
-  }, [props.opened, agentId, reload, watchResourceReads]);
   const run = useCallback(
     async <Path extends ApiPostPath>(
       path: Path,
@@ -471,7 +454,7 @@ export function Workspace(props: Props) {
                     <Tasks
                       key={selected.id}
                       agentId={selected.id}
-                      revision={revision}
+                      rootId={selected.rootId || selected.id}
                     />
                   )}
                   {section === "checkpoints" && <Checkpoints {...context} />}
@@ -497,12 +480,11 @@ function Changes(c: Context) {
         scope: "chat",
       },
     }),
-    comments = useResource("/api/workspace", c.revision, {
-      query: {
-        ...(c.selected ? { agent: c.selected.id } : {}),
-        view: "annotations",
-      },
-    });
+    comments = {
+      data: { annotations: c.data.runtime.annotations ?? [] },
+      error: "",
+      loading: false,
+    };
   const [comment, setComment] = useState<{
       path: string;
       line: number;
@@ -710,9 +692,12 @@ function Changes(c: Context) {
 }
 
 function Plan(c: Context) {
-  const state = useResource("/api/plan", c.revision, {
-    query: c.selected ? { agent: c.selected.id } : {},
-  });
+  const state = {
+    data:
+      c.data.runtime.plans?.find((plan) => plan.id === c.selected?.id) ?? null,
+    error: "",
+    loading: !c.data.entitiesComplete,
+  };
   const native = state.data?.native;
   const steps = native?.plan ?? [];
   const explanation = native?.explanation ?? "";
@@ -740,9 +725,7 @@ function Plan(c: Context) {
           })}
         </section>
       ) : (
-        state.data !== null && (
-          <Empty>This agent has not reported a plan.</Empty>
-        )
+        !state.loading && <Empty>This agent has not reported a plan.</Empty>
       )}
     </>
   );

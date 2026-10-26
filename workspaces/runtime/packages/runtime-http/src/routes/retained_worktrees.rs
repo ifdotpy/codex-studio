@@ -17,22 +17,6 @@ pub(crate) fn routes() -> RouteGroup {
     )])
 }
 
-/// Whether cleanup kept the worktree or workspace of this local member: the cleanup did not
-/// confirm a removal (`not_sent` or `unknown`).
-fn retained(member: &Value) -> bool {
-    matches!(
-        member
-            .pointer("/workspaceCleanupIntent/phase")
-            .and_then(Value::as_str),
-        Some("not_sent" | "unknown")
-    ) && matches!(
-        member
-            .pointer("/workspaceCleanupIntent/effect/kind")
-            .and_then(Value::as_str),
-        Some("remove_worktree" | "save_worktree_ref")
-    ) && member.get("remoteWorker").is_none_or(Value::is_null)
-}
-
 async fn retained_worktrees(
     State(state): State<HttpState>,
     query: QueryParams,
@@ -55,16 +39,11 @@ async fn retained_worktrees(
             let retained_worktrees = members
                 .iter()
                 .filter_map(|(_, raw)| serde_json::from_str::<Value>(raw).ok())
-                .filter(retained)
                 .filter_map(|member| {
-                    // The public projection keeps only the phase, reason and path of the
-                    // cleanup, without its private operation identities.
-                    let projected = studio_runtime_services::sync_views::project_persisted_record(
-                        "agent", &member,
-                    )?;
-                    Some(json!({"id": member["id"],
-                                "name": member.get("name").and_then(Value::as_str),
-                                "cleanup": projected["workspaceCleanupIntent"]}))
+                    let mut value =
+                        studio_runtime_services::sync_views::retained_worktree_entity(&member)?;
+                    value.as_object_mut()?.remove("rootId");
+                    Some(value)
                 })
                 .collect::<Vec<_>>();
             Ok::<_, ApiError>(json!({"rootId": root_id, "retainedWorktrees": retained_worktrees}))

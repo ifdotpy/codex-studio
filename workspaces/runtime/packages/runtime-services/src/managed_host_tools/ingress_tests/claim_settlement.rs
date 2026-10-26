@@ -376,6 +376,21 @@ async fn rolled_back_local_execution_settles_not_applied() {
     assert!(matches!(replay, CallbackDecision::Answer(_)));
 }
 
+async fn wait_for_settlement(store: &RuntimeStore, call_id: &str) {
+    let committed = Arc::new(tokio::sync::Notify::new());
+    store.add_table_change_observer(studio_runtime_store::ObservedTable::RuntimeToolRequests, {
+        let committed = Arc::clone(&committed);
+        move || committed.notify_one()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while request_row(store, call_id)["stage"] == "running" {
+            committed.notified().await;
+        }
+    })
+    .await
+    .expect("drop guard commits a terminal request");
+}
+
 #[tokio::test]
 async fn dropped_dispatch_settles_unknown() {
     let (_root, store, context) = fixture().await;
@@ -399,13 +414,7 @@ async fn dropped_dispatch_settles_unknown() {
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     // The guard settles on the writer; wait for that commit, bounded.
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while request_row(&store, call_id)["stage"] == "running" {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_settlement(&store, call_id).await;
     assert_terminal(&store, call_id, "unknown", Some("unknown"));
     replay_returns_saved_result(&store, &context, &frame, &creation, call_id).await;
 }
@@ -616,13 +625,7 @@ async fn connection_recovery_settles_a_claim_without_an_in_process_owner() {
     }
     // Let the drop guard settle first, then reopen the claim as a dispatcher
     // that vanished without one (the shape left by a failed settlement).
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while request_row(&store, call_id)["stage"] == "running" {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_settlement(&store, call_id).await;
     let id = request_row(&store, call_id)["id"]
         .as_str()
         .unwrap()

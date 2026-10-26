@@ -1,3 +1,104 @@
 {
-  "maxKeyBytes": 16384
+  "version": 1,
+  "maxKeyBytes": 16384,
+  "maxRawBytes": 8388608,
+  "fieldCacheKey": "studio-ui-preference-fields-v1",
+  "writerStorageKey": "studio-ui-preference-writer-v1",
+  "itemFieldCap": 3000,
+  "appearance": {
+    "storageKey": "codex-studio-preferences-v1",
+    "defaults": {
+      "theme": "auto",
+      "typography": "custom",
+      "contentLayout": "custom",
+      "sidebarFontSize": 14,
+      "mainFontSize": 14,
+      "fontFamily": "system",
+      "contentWidth": 100,
+      "showMessageAvatars": false,
+      "hideOldChatsThreshold": 3,
+      "checkProviderUpdates": true
+    },
+    "sidebarShortcut": { "mac": "Meta+b", "other": "Control+b" }
+  },
+  "revision": {
+    "representation": "canonical-decimal-string",
+    "maximum": "9223372036854775807"
+  },
+  "remoteStatusSchema": {
+    "description": "Remote preference commit state for each user/server scope. Local SQLite commit is not a remote acknowledgement. An uncertain error retains the exact HTTP request identity until a confirmed server receipt.",
+    "oneOf": [
+      {
+        "type": "object",
+        "properties": { "state": { "const": "saved" } },
+        "required": ["state"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": { "state": { "const": "saving" } },
+        "required": ["state"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "state": { "const": "error" },
+          "error": { "type": "string", "minLength": 1 },
+          "uncertain": { "type": "boolean" },
+          "requestId": { "type": "string", "minLength": 1 }
+        },
+        "required": ["state", "error", "uncertain", "requestId"],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "rpc": {
+    "view": "preferences.view",
+    "compareExchange": "preferences.raw_compare_exchange",
+    "edit": "preferences.edit",
+    "adoptFields": "preferences.adopt_fields",
+    "rawSet": "preferences.raw_set",
+    "rawRemove": "preferences.raw_remove",
+    "uploadsSnapshot": "uploads.snapshot"
+  },
+  "mutationRpcKeys": [
+    "compareExchange",
+    "edit",
+    "adoptFields",
+    "rawSet",
+    "rawRemove"
+  ],
+  "uploadMutationMethods": [
+    "uploads.queue",
+    "uploads.cancel",
+    "uploads.finish",
+    "uploads.receipt",
+    "files.importCommit"
+  ],
+  "topics": {
+    "preferences": "preferences",
+    "uploads": "uploads"
+  },
+  "scopes": {
+    "user": {
+      "keys": [
+        "codex-studio-preferences-v1",
+        "studio-server-project-compact-v1"
+      ],
+      "prefixes": ["server-", "studio-logical-project-"]
+    },
+    "server": {
+      "keys": ["codex-worker-disclosures"],
+      "prefixes": [
+        "codex-project-tree:",
+        "codex-project-compact:",
+        "studio-prompt-bookmarks:"
+      ],
+      "includeModelWhitelistKey": true
+    }
+  },
+  "protectedFieldKeys": ["codex-studio-preferences-v1"],
+  "protectedFieldKeyPrefixes": ["server-"],
+  "ignoredFieldKeyPrefixes": ["studio-turns:"]
 }

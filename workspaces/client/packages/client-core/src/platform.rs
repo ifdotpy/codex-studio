@@ -3,9 +3,42 @@ use crate::protocol::{Request, Response};
 use serde_json::{Value, json};
 use unicode_segmentation::UnicodeSegmentation;
 
+// Unused UI identity pool size, in UUIDs. The UI consumes each native value once.
+const UI_IDENTITY_BATCH_COUNT: usize = 128;
+// Begin the next native batch with this many unused UI identities remaining.
+const UI_IDENTITY_REFILL_COUNT: usize = 32;
+
+fn native_uuid() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    let hex = format!("{:032x}", u128::from_be_bytes(bytes));
+    Ok(format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]))
+}
+
 fn execute(request: &Request) -> Result<Value, String> {
     let p = &request.params;
     match request.method.as_str() {
+        "system.sha256" => {
+            use base64::Engine;
+            const HASH_BYTES: usize = 4 * 1024 * 1024;
+            let value = p["base64"]
+                .as_str()
+                .filter(|s| s.len() <= HASH_BYTES.div_ceil(3) * 4)
+                .ok_or(
+                    "Hash at most 4 MiB per request; use the source hash stream for larger values.",
+                )?;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .map_err(|_| "Invalid hash bytes.")?;
+            if bytes.len() > HASH_BYTES {
+                return Err("The hash input is too large.".into());
+            }
+            Ok(json!({"bytes":bytes.len(),"sha256":crate::uploads::byte_hash(&bytes)}))
+        }
         "text.sentences" => {
             let text = p["text"].as_str().ok_or("Text is required.")?;
             let mut index = 0;
@@ -46,22 +79,10 @@ fn execute(request: &Request) -> Result<Value, String> {
                 Err("Native locale names require macOS.".into())
             }
         }
-        "system.uuid" => {
-            let mut bytes = [0u8; 16];
-            if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            bytes[6] = (bytes[6] & 15) | 64;
-            bytes[8] = (bytes[8] & 63) | 128;
-            let hex = format!("{:032x}", u128::from_be_bytes(bytes));
-            Ok(json!(format!(
-                "{}-{}-{}-{}-{}",
-                &hex[..8],
-                &hex[8..12],
-                &hex[12..16],
-                &hex[16..20],
-                &hex[20..]
-            )))
+        "system.uuid" => native_uuid().map(Value::String),
+        "system.uuidBatch" => {
+            let ids = (0..UI_IDENTITY_BATCH_COUNT).map(|_| native_uuid()).collect::<Result<Vec<_>,_>>()?;
+            Ok(json!({"ids":ids,"refillAt":UI_IDENTITY_REFILL_COUNT}))
         }
         "url.parse" => {
             let value = p["value"].as_str().ok_or("A URL is required.")?;
@@ -111,6 +132,19 @@ pub fn dispatch(request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_sha256_hashes_exact_bytes_without_a_browser() {
+        let request = |base64| Request {
+            id: "hash".into(),
+            method: "system.sha256".into(),
+            params: json!({"base64":base64}),
+        };
+        assert_eq!(
+            execute(&request("YWJj")).unwrap(),
+            json!({"bytes":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"})
+        );
+        assert!(execute(&request("not-base64")).is_err());
+    }
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     #[test]
     fn native_language_names_use_the_requested_display_locale() {

@@ -30,11 +30,40 @@ pub struct Client {
     reader: AbortHandle,
 }
 impl Client {
+    /// The migration caller has not yet admitted user effects on this Store.
+    pub fn open_for_migration(
+        state_directory: std::path::PathBuf,
+        backend: crate::backend::Backend,
+        event: impl Fn(Value) + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        let socket = native::connect_for_migration(state_directory, backend)
+            .map_err(|error| error.to_string())?;
+        Self::from_socket(socket, event)
+    }
+
     pub fn open(
         config: ConnectionConfig,
         event: impl Fn(Value) + Send + Sync + 'static,
     ) -> Result<Self, String> {
         let socket = native::connect(config).map_err(|error| error.to_string())?;
+        Self::from_socket(socket, event)
+    }
+
+    /// The host owns both the store path and its immutable network authority.
+    pub fn open_with_backend(
+        state_directory: std::path::PathBuf,
+        backend: crate::backend::Backend,
+        event: impl Fn(Value) + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        let socket =
+            native::connect_with_backend(state_directory, backend).map_err(|e| e.to_string())?;
+        Self::from_socket(socket, event)
+    }
+
+    fn from_socket(
+        socket: std::os::unix::net::UnixStream,
+        event: impl Fn(Value) + Send + Sync + 'static,
+    ) -> Result<Self, String> {
         let socket = tokio::net::UnixStream::from_std(socket).map_err(|error| error.to_string())?;
         let (mut reader, mut writer) = socket.into_split();
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));

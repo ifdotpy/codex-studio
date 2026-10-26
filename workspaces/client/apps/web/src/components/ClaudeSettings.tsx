@@ -14,7 +14,8 @@ import {
   SegmentedControl,
   Accordion,
 } from "@mantine/core";
-import { errorText, type PostBody, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostBody, PostResult } from "../api";
 import { busy, type Agent } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import AccountSignInNotice from "./AccountSignInNotice";
@@ -184,6 +185,7 @@ export function ClaudeSettings({
     setValues(next);
     setWindow(next.autoCompactWindow ? String(next.autoCompactWindow) : "");
   };
+  // Account events must not reload the session or overwrite local edits.
   useEffect(() => {
     let active = true;
     setStateLoaded(false);
@@ -218,7 +220,7 @@ export function ClaudeSettings({
       if (timer.current) clearTimeout(timer.current);
       if (windowSaveTimer.current) clearTimeout(windowSaveTimer.current);
     };
-  }, [agent.id, agent.accountKey, account?.status, loadAttempt]);
+  }, [agent.id, loadAttempt]);
 
   const saveSetting = async (field: string, patch: Partial<ClaudeValues>) => {
     if (busyAction || savingField) return;

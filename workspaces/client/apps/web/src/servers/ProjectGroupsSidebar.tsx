@@ -1,10 +1,8 @@
-import { useServerApi } from "./ServerServicesContext";
-import { writePreferenceEdit } from "../sync/uiPreferenceStore";
+import { useServerApi, useServerAppPreferences } from "./ServerServicesContext";
 import { useSyncedVisualState } from "../sync/useSyncedVisualState";
 import { ActionIcon, Button, Menu, Modal } from "@mantine/core";
 import { FolderOpen, MoreHorizontal, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
-import "../api";
 import ProjectServerCards from "../components/ProjectServerCards";
 import ProjectChatRows from "./ProjectChatRows";
 import { logicalProjects, type LogicalProject } from "./logicalProjects";
@@ -12,7 +10,7 @@ import { projectServerChoices } from "./projectLocations";
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { StudioServer } from "./registry";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 
 export default function ProjectGroupsSidebar({
   navigation,
@@ -36,6 +34,7 @@ export default function ProjectGroupsSidebar({
   hideOldChatsThreshold: number;
 }) {
   const { saved, save } = useServerApi();
+  const { editPreference } = useServerAppPreferences();
 
   const groups = useMemo(() => logicalProjects(navigation), [navigation]);
   const [choosing, setChoosing] = useState<LogicalProject | null>(null);
@@ -148,7 +147,7 @@ export default function ProjectGroupsSidebar({
               setCompact={(value) => {
                 const next = { ...compact, [project.key]: value };
                 setCompact(
-                  writePreferenceEdit(
+                  editPreference(
                     "studio-logical-project-compact",
                     compact,
                     next,

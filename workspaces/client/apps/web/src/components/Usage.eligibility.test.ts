@@ -4,6 +4,14 @@ import { MantineProvider } from "@mantine/core";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Agent } from "../types";
 
+const resources = vi.hoisted(() => {
+  const snapshot = { data: undefined, status: "stale", error: null };
+  return {
+    subscribe: vi.fn(() => () => {}),
+    getSnapshot: vi.fn(() => snapshot),
+  };
+});
+
 vi.mock("@mantine/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mantine/core")>();
   return {
@@ -17,7 +25,8 @@ vi.mock("@mantine/core", async (importOriginal) => {
 });
 vi.mock("../servers/ServerServicesContext", () => ({
   useServerApi: () => ({ get: vi.fn(), post: vi.fn(), saved: () => "" }),
-  useServerResourceReads: () => vi.fn(),
+  useServerSync: () => ({ subscribeStateProjection: vi.fn(() => () => {}) }),
+  useServerResources: () => resources,
   useServerSessionCosts: () => ({
     peekSessionCost: () => null,
     storeSessionCost: vi.fn(),

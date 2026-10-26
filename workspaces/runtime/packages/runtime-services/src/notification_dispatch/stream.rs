@@ -940,10 +940,7 @@ mod tests {
                 .as_ptr(),
             allocation
         );
-        assert_eq!(
-            capture.retained_bytes,
-            NotificationStreamBuffer::capture_size(&capture.observation, &capture.metrics)
-        );
+        assert_eq!(capture.retained_bytes, 64_050);
     }
 
     #[test]
@@ -951,11 +948,18 @@ mod tests {
         let mut streams = NotificationStreamBuffer::default();
         let mut key = turn_key(0, 0);
         key.method = "item/commandExecution/outputDelta".into();
-        let mut expected = String::new();
-        for (cursor, fragment) in [
-            "界\"\\\n\u{0001}".repeat(3_000),
-            "é".into(),
-            "z".repeat(13_000),
+        for (cursor, (fragment, expected, retained_bytes)) in [
+            (
+                "界\"\\\n\u{0001}".repeat(3_000),
+                "界\"\\\n\u{0001}".repeat(2_400),
+                36_036,
+            ),
+            (
+                "é".into(),
+                format!("\"\\\n\u{0001}{}é", "界\"\\\n\u{0001}".repeat(2_399)),
+                36_059,
+            ),
+            ("z".repeat(13_000), "z".repeat(12_000), 12_084),
         ]
         .into_iter()
         .enumerate()
@@ -963,15 +967,10 @@ mod tests {
             let mut observation = analytics_observation(&key.method, cursor as u64);
             observation.observed_at = (cursor + 1) as f64 * 3600.0;
             observation.params = super::super::SharedJson::new(json!({"delta":fragment}));
-            expected.push_str(&fragment);
-            expected = super::super::suffix(&expected, TOOL_OUTPUT_CHARS);
             streams.stage_analytics(key.clone(), observation).unwrap();
             let capture = &streams.analytics[0];
             assert_eq!(capture.observation.params["delta"], expected);
-            assert_eq!(
-                capture.retained_bytes,
-                NotificationStreamBuffer::capture_size(&capture.observation, &capture.metrics)
-            );
+            assert_eq!(capture.retained_bytes, retained_bytes);
             let restored: NotificationStreamBuffer =
                 serde_json::from_value(serde_json::to_value(&streams).unwrap()).unwrap();
             assert_eq!(restored.analytics_bytes, streams.analytics_bytes);

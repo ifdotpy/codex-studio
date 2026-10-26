@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import { setPreferenceWriteStatus } from "./uiPreferenceStatus";
 import { serverStoragePrefix } from "../servers/storage";
 import {
   defaultStudioPreferences,
@@ -18,6 +19,7 @@ import {
   preferenceScope,
   storageFields,
   mergePreferenceFields,
+  acknowledgePreferenceFieldMap,
   migratePreferenceFields,
   type PreferenceFields,
   type PreferenceScope,
@@ -116,6 +118,7 @@ export function capturePreferenceWrite(
   }
   if (!changed) return;
   persist(target, scope, fields);
+  setPreferenceWriteStatus(storage, scope, { state: "saving" });
   listeners.forEach((listener) => listener());
   window.dispatchEvent(new CustomEvent(preferenceEvent, { detail: key }));
 }
@@ -144,6 +147,7 @@ export function receivePreferenceFields(
   incoming: PreferenceFields,
   storage = serverLocalStorage,
   materialize = false,
+  removed: ReadonlySet<string> = new Set(),
 ) {
   const target = scope === "user" ? userStorage() : storage;
   const prior = cache(target, scope);
@@ -154,7 +158,14 @@ export function receivePreferenceFields(
     persist(target, scope, fields);
     const keys = new Map<string, Record<string, unknown>>();
     const scalars = new Map<string, unknown>();
-    for (const [name, field] of Object.entries(fields)) {
+    const materializedValues: Array<[string, unknown]> = [
+      ...Object.entries(fields).map(([name, field]): [string, unknown] => [
+        name,
+        field.value,
+      ]),
+      ...Array.from(removed, (name): [string, unknown] => [name, null]),
+    ];
+    for (const [name, value] of materializedValues) {
       let parts: string[];
       try {
         parts = JSON.parse(name);
@@ -163,7 +174,7 @@ export function receivePreferenceFields(
       }
       const key = parts[0];
       if (preferenceScope(key) !== scope || key.startsWith("server-")) continue;
-      if (parts.length === 1) scalars.set(key, field.value);
+      if (parts.length === 1) scalars.set(key, value);
       else {
         if (!keys.has(key)) {
           try {
@@ -183,8 +194,8 @@ export function receivePreferenceFields(
           }
         }
         const record = keys.get(key)!;
-        if (field.value === null) delete record[parts[1]];
-        else record[parts[1]] = field.value;
+        if (value === null) delete record[parts[1]];
+        else record[parts[1]] = value;
       }
     }
     for (const [key, value] of [...keys, ...scalars]) {
@@ -327,12 +338,38 @@ export function acknowledgePreferenceFields(
   storage = serverLocalStorage,
 ) {
   const target = scope === "user" ? userStorage() : storage;
-  const fields = cache(target, scope);
-  for (const [name, sent] of Object.entries(submitted)) {
-    if (JSON.stringify(fields[name]) !== JSON.stringify(sent)) continue;
-    if (accepted[name]) fields[name] = accepted[name];
-    else delete fields[name];
-  }
+  const prior = cache(target, scope);
+  const fields = acknowledgePreferenceFieldMap(prior, submitted, accepted);
+  const removed = new Set(
+    Object.keys(prior).filter((name) => !Object.hasOwn(fields, name)),
+  );
   persist(target, scope, fields);
-  receivePreferenceFields(scope, accepted, storage, true);
+  receivePreferenceFields(scope, fields, storage, true, removed);
+}
+
+/** Write one scalar field, including an explicit null, without replacing siblings. */
+export function writePreferenceValue(
+  key: string,
+  value: PreferenceFields[string]["value"],
+  storage = serverLocalStorage,
+) {
+  const scope = preferenceScope(key);
+  if (!scope) throw new Error("Unsupported preference");
+  const target = scope === "user" ? userStorage() : storage;
+  const fields = cache(target, scope);
+  const name = JSON.stringify([key]);
+  if (
+    fields[name] &&
+    JSON.stringify(fields[name].value) === JSON.stringify(value)
+  )
+    return;
+  const timestamp = Object.values(fields).reduce(
+    (latest, field) => Math.max(latest, field.timestamp + 1),
+    Date.now(),
+  );
+  fields[name] = { value, timestamp, writer: writer() };
+  persist(target, scope, fields);
+  setPreferenceWriteStatus(storage, scope, { state: "saving" });
+  listeners.forEach((listener) => listener());
+  window.dispatchEvent(new CustomEvent(preferenceEvent, { detail: key }));
 }

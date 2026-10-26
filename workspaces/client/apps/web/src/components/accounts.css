@@ -446,7 +446,7 @@
   font-size: var(--studio-text-meta);
 }
 
-/* A one-line status in the composer row; the details are in the tooltip and settings. */
+/* Compact account status; full details remain in the tooltip and settings. */
 .account-transfer-chip {
   display: inline-flex;
   align-items: center;

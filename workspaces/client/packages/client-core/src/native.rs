@@ -5,6 +5,7 @@ use crate::{
     store::Store,
 };
 use std::{
+    collections::HashSet,
     env,
     fs::{self, File, OpenOptions},
     io,
@@ -29,7 +30,7 @@ pub struct ConnectionConfig {
     pub backend_origin: String,
 }
 
-fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
+fn open_store(state: &std::path::Path, migration_held: bool) -> Result<(Store, File), String> {
     if !state.is_absolute() {
         return Err("The client state directory must be absolute.".into());
     }
@@ -49,19 +50,34 @@ fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
         return Err("Another native client owns this local client state.".into());
     }
     Ok((
-        Store::open(&state.join("studio-client.sqlite3")).map_err(|e| e.to_string())?,
+        if migration_held {
+            Store::open_for_migration(&state.join("studio-client.sqlite3"))
+        } else {
+            Store::open(&state.join("studio-client.sqlite3"))
+        }
+        .map_err(|e| e.to_string())?,
         lock,
     ))
 }
 
 fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
+    let backend = Backend::new(&config.backend_origin);
+    serve_backend(channel, config.state_directory, backend, false)
+}
+
+fn serve_backend(
+    channel: UnixStream,
+    state_directory: PathBuf,
+    backend: Result<Backend, String>,
+    migration_held: bool,
+) -> Result<(), String> {
     let (changes, changed) = tokio::sync::watch::channel(0u64);
     let (store_sender, mut store_receiver) =
         tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
     let store_worker = thread::Builder::new()
         .name("studio-state".into())
         .spawn(move || {
-            let mut state = open_store(&config.state_directory);
+            let mut state = open_store(&state_directory, migration_held);
             while let Some((request, reply)) = store_receiver.blocking_recv() {
                 let mutation = matches!(
                     request.method.as_str(),
@@ -76,16 +92,43 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         | "preferences.import"
                         | "preferences.raw_set"
                         | "preferences.raw_remove"
+                        | "preferences.raw_compare_exchange"
+                        | "preferences.edit"
+                        | "preferences.adopt_fields"
+                        | "preference_sync.network_ready"
+                        | "preference_sync.ack"
+                        | "preference_sync.failure"
+                        | "uploads.queue"
+                        | "uploads.cancel"
+                        | "uploads.finish"
+                        | "uploads.receipt"
                         | "identity.set"
                         | "projection.put"
+                        | "projection.applyEntities"
+                        | "projection.applySubscription"
+                        | "projection.stageSubscriptionFragment"
                         | "outbox.enqueue"
                         | "outbox.change"
+                        | "outbox.stop_removed"
                         | "outbox.display"
                         | "outbox.acknowledge"
                         | "outbox.acknowledge_many"
                         | "outbox.claim"
                         | "outbox.receipt"
                         | "outbox.failure"
+                        | "dictation.save"
+                        | "dictation.chunk"
+                        | "dictation.delete"
+                        | "dictation.update"
+                        | "dictation.begin"
+                        | "dictation.trash"
+                        | "dictation.restore"
+                        | "files.importCommit"
+                        | "dictation.capturePrepare"
+                        | "dictation.captureAppend"
+                        | "dictation.captureFinish"
+                        | "dictation.claimTranscription"
+                        | "dictation.settleTranscription"
                 );
                 let response = match &mut state {
                     Ok((store, _lock)) => store.dispatch(request),
@@ -100,7 +143,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     // Electron verifies/starts the backend before opening the client. Rust must
     // never race that owner by launching a second backend.
-    let backend = Arc::new(Backend::new(&config.backend_origin));
+    let backend = Arc::new(backend);
     channel.set_nonblocking(true).map_err(|e| e.to_string())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -116,16 +159,19 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let mut requests = tokio::task::JoinSet::new();
         let startup = Arc::new(tokio::sync::Mutex::new(None::<serde_json::Value>));
         let active = Arc::new(AtomicBool::new(false));
+        let migration_held = Arc::new(AtomicBool::new(migration_held));
         let previews = crate::file_preview::Previews::default();
         let terminals = crate::terminal::Terminals::default();
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
+        let transcript_views = crate::transcript_views::TranscriptViews::new(backend.clone(),store_sender.clone());
         let mut views = crate::views::Views::new(
             backend.clone(),
             store_sender.clone(),
             changed,
             events,
             terminals.clone(),
+            transcript_views.clone(),
         );
         let event_writer = writer.clone();
         background.spawn(async move {
@@ -137,24 +183,37 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         });
         let (queue_backend, queue_store, queue_active) =
             (backend.clone(), store_sender.clone(), active.clone());
+        let queue_held=migration_held.clone();
         background.spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
-                if queue_active.load(Ordering::Relaxed)
+                if !queue_held.load(Ordering::Acquire) && queue_active.load(Ordering::Relaxed)
                     && let Ok(backend) = queue_backend.as_ref() {
-                        tokio::join!(
-                            crate::delivery::drain(backend, &queue_store),
-                            crate::draft_replication::refresh(backend, &queue_store)
-                        );
+                        crate::delivery::drain(backend, &queue_store).await;
                     }
             }
         });
         let mut assembler = protocol::Assembler::default();
-        // Audio adapters currently expose one process-wide playback/voice service.
-        // Retain exclusive ownership until teardown completes, including error paths.
-        let mut audio_lease = None;
+        // Audio adapters share a process-wide device. A new request fences any
+        // older completion before that completion can release the device.
+        let audio = Arc::new(tokio::sync::Mutex::new(AudioOwnership::default()));
+        let mut playback_changes=crate::media::watch_playback_owner(&store_sender)?;
+        let playback_audio=audio.clone();
+        background.spawn(async move {
+            loop {
+                let receipt={playback_changes.borrow_and_update().clone()};
+                if receipt.status.terminal() {
+                    let mut owner=playback_audio.lock().await;
+                    owner.media_terminal=true;
+                    if owner.inflight.is_empty() && audio_idle().await {
+                        owner.lease.take();owner.media_terminal=false;
+                    }
+                }
+                if playback_changes.changed().await.is_err() {break;}
+            }
+        });
         let result = async {
         loop {
             let mut header = [0; 4];
@@ -197,18 +256,54 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Startup(Request),
                 Delivery(Request),
                 Sync(Request),
+                Subscriptions(Request),
+                TranscriptView(Request),
                 DraftSync(Request),
                 Speech(Request),
                 Media(Request),
                 Notify(Request),
                 Voice(Request),
+                Admission(String,tokio::sync::oneshot::Receiver<Response>),
                 Stored(String, tokio::sync::oneshot::Receiver<Response>),
                 Immediate(Response),
             }
             // Queue state commands before spawning their response tasks. This
             // preserves edit order even when network replies arrive out of order.
-            let work = match serde_json::from_slice::<Request>(&bytes) {
-                Ok(request) if audio_request(&request) && !claim_audio(&mut audio_lease) => {
+            let parsed = serde_json::from_slice::<Request>(&bytes);
+            let migration_blocked = migration_held.load(Ordering::Acquire) && parsed.as_ref().is_ok_and(|request|!migration_allowed(&request.method));
+            let mut audio_generation = None;
+            let mut audio_busy = false;
+            let audio_method = parsed.as_ref().ok().map(|request|request.method.clone());
+            if let Ok(request) = &parsed && !migration_blocked && audio_request(request) {
+                let mut owner = audio.lock().await;
+                // These handlers check the exact Store. Cleanup cannot grant a new lease.
+                let store_cleanup = matches!(request.method.as_str(), "voice.sessionEnd" | "media.recordingStop" | "media.stopPlayback");
+                let owns_audio = if store_cleanup {
+                    owner.lease.is_some()
+                } else {
+                    claim_audio(&mut owner.lease)
+                };
+                if owns_audio {
+                    owner.generation = owner.generation.wrapping_add(1);
+                    audio_generation = Some(owner.generation);
+                    let generation=owner.generation;
+                    owner.inflight.insert(generation);
+                } else if !store_cleanup { audio_busy = true; }
+            }
+            let work = match parsed {
+                Ok(request) if migration_blocked => Work::Immediate(Response::failure(request.id,"migration_held","The native runtime requires its durable private host proof before user effects.")),
+                Ok(request) if request.method == crate::mutation_journal::migration_policy()["runtimeStateMethod"].as_str().unwrap() => {
+                    if request.params.as_object().is_none_or(|params|!params.is_empty()) {
+                        Work::Immediate(Response::failure(request.id,"invalid_request","The migration runtime state does not accept selectors."))
+                    } else { Work::Immediate(Response::success(request.id,serde_json::json!({"held":migration_held.load(Ordering::Acquire)}))) }
+                }
+                Ok(request) if request.method == crate::mutation_journal::migration_policy()["admitMethod"].as_str().unwrap() => {
+                    let id=request.id.clone();
+                    let (reply,receive)=tokio::sync::oneshot::channel();
+                    store_sender.send((request,reply)).await.map_err(|_|"The state worker stopped.")?;
+                    Work::Admission(id,receive)
+                }
+                Ok(request) if audio_busy => {
                     Work::Immediate(Response::failure(
                         request.id, "audio_busy", "Another client connection owns audio. Close that connection before using audio here.",
                     ))
@@ -242,18 +337,20 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Ok(request) if request.method.starts_with("view.") => {
                     Work::Immediate(views.command(&request))
                 }
-                Ok(request) if request.method == "drafts.refresh" => Work::DraftSync(request),
+                Ok(request) if matches!(request.method.as_str(),"drafts.refresh"|"drafts.push") => Work::DraftSync(request),
                 Ok(request) if request.method.starts_with("sync.") => Work::Sync(request),
+                Ok(request) if request.method.starts_with("subscriptions.") => Work::Subscriptions(request),
+                Ok(request) if request.method.starts_with("transcript_view.") => Work::TranscriptView(request),
                 Ok(request)
                     if matches!(
                         request.method.as_str(),
-                        "uploads.pending" | "uploads.enqueue" | "uploads.deliver"
+                        "uploads.pending" | "uploads.enqueue" | "uploads.deliver" | "uploads.download"
                     ) =>
                 {
                     Work::Upload(request)
                 }
                 Ok(request) if request.method == "actions.submit" => Work::Action(request),
-                Ok(request) if request.method == "api.request" => Work::Network(request),
+                Ok(request) if matches!(request.method.as_str(), "api.request" | "api.prepareSession") => Work::Network(request),
                 Ok(request) if request.method == "outbox.deliver" => Work::Delivery(request),
                 Ok(request) if request.method == "outbox.activate" => {
                     active.store(true, Ordering::Relaxed);
@@ -280,9 +377,23 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             while requests.try_join_next().is_some() {}
             let startup = startup.clone();
             let previews = previews.clone();
+            let transcript_views = transcript_views.clone();
+            let audio = audio.clone();
+            let migration_held=migration_held.clone();
             requests.spawn(async move {
                 let _permit = permit;
                 let response = match work {
+                    Work::Admission(id,receive) => {
+                        let response=receive.await.unwrap_or_else(|error|Response::failure(id,"core_failed",error));
+                        if response.error.is_none() && response.result.as_ref()==Some(&serde_json::json!({"admitted":true})) {
+                            let was_held=migration_held.swap(false,Ordering::AcqRel);
+                            #[cfg(target_os="macos")]
+                            if was_held { dispatch2::DispatchQueue::main().exec_async(crate::notifications::mac::install); }
+                            #[cfg(not(target_os="macos"))]
+                            let _=was_held;
+                        }
+                        response
+                    }
                     Work::Startup(request) => {
                         let mut ready = startup.lock().await;
                         let result = if let Some(value) = ready.as_ref() {
@@ -319,7 +430,10 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     }
                     Work::Speech(request) => crate::speech::dispatch(&sender, request).await,
                     Work::Media(request) => crate::media::dispatch(request, &sender).await,
-                    Work::Voice(request) => crate::voice::dispatch(request).await,
+                    Work::Voice(request) => match backend.as_ref() {
+                        Ok(backend) => crate::voice::dispatch_with_backend(backend,&sender,request).await,
+                        Err(error) => Response::failure(request.id,"backend_config",error),
+                    },
                     Work::Notify(request) => {
                         match crate::notifications::notify(&request.params["value"]).await {
                             Ok(value) => Response::success(request.id, value),
@@ -348,6 +462,11 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         Ok(backend) => crate::sync::dispatch(backend, &sender, request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
                     },
+                    Work::Subscriptions(request) => match backend.as_ref() {
+                        Ok(backend) => crate::subscriptions::dispatch(backend,&sender,request).await,
+                        Err(error) => Response::failure(request.id,"backend_config",error),
+                    },
+                    Work::TranscriptView(request) => transcript_views.dispatch(request).await,
                     Work::Delivery(request) => match backend.as_ref() {
                         Ok(backend) => crate::delivery::dispatch(backend, &sender, request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
@@ -357,6 +476,12 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         .unwrap_or_else(|error| Response::failure(id, "core_failed", error)),
                     Work::Immediate(response) => response,
                 };
+                if let Some(generation) = audio_generation {
+                    let mut owner = audio.lock().await;
+                    owner.inflight.remove(&generation);
+                    let eligible=owner.media_terminal || (owner.generation==generation && audio_method.as_deref().is_some_and(|method|audio_release_candidate(method,response.error.is_none())));
+                    if eligible && owner.inflight.is_empty() && audio_idle().await {owner.lease.take();owner.media_terminal=false;}
+                }
                 write_packet(
                     &writer,
                     serde_json::to_value(response).expect("response serialization"),
@@ -375,11 +500,16 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         while background.join_next().await.is_some() {}
         // Stop this owner's work before releasing the lease. Read-only connections
         // must never stop another connection's microphone, playback or voice.
-        if audio_lease.is_some() {
-            crate::media::close_all();
+        let mut owner = audio.lock().await;
+        if owner.lease.is_some() {
+            crate::media::close_recordings(&store_sender).await;
+            if let Ok(backend) = backend.as_ref() { let _ = crate::voice::close_context(backend,&store_sender).await; }
+            let _ = crate::media::close_audio(&store_sender).await;
             crate::voice::close_all().await;
+            // An unconfirmed device stop cannot authorize a different owner.
+            if !audio_idle().await && let Some(lease) = owner.lease.take() { lease.forget(); }
         }
-        drop(audio_lease);
+        owner.lease.take();
         result
     });
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
@@ -392,16 +522,57 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
 }
 
 fn audio_request(request: &Request) -> bool {
-    request.method.starts_with("media.")
+    !matches!(
+        request.method.as_str(),
+        "media.recordingState" | "media.playbackState" | "voice.sessionState"
+    ) && (request.method.starts_with("media.")
         || request.method.starts_with("voice.")
         || matches!(
             request.method.as_str(),
-            "desktop.requestMicrophone" | "desktop.reserveMicrophone"
+            "desktop.requestMicrophone" | "desktop.reserveMicrophone" | "desktop.previewMedia"
         )
         || (request.method == "view.subscribe"
             && matches!(
                 request.params["topic"].as_str(),
                 Some("microphone" | "voice")
+            )))
+}
+
+#[cfg(test)]
+#[path = "preference_replication_tests.rs"]
+mod preference_replication_tests;
+
+#[derive(Default)]
+struct AudioOwnership {
+    lease: Option<tokio::sync::OwnedSemaphorePermit>,
+    generation: u64,
+    inflight: HashSet<u64>,
+    media_terminal: bool,
+}
+
+async fn audio_idle() -> bool {
+    crate::media::audio_idle() && crate::speech::audio_idle() && crate::voice::audio_idle().await
+}
+
+fn audio_release_candidate(method: &str, success: bool) -> bool {
+    (success
+        && matches!(
+            method,
+            "media.recordingStop"
+                | "media.captureStop"
+                | "media.stopPlayback"
+                | "voice.sessionEnd"
+                | "voice.close"
+        ))
+        || (!success
+            && matches!(
+                method,
+                "media.recordingStart"
+                    | "media.captureStart"
+                    | "voice.sessionStart"
+                    | "voice.create"
+                    | "media.playRecording"
+                    | "desktop.previewMedia"
             ))
 }
 
@@ -426,9 +597,47 @@ fn claim_audio_from(
 fn pure(method: &str) -> bool {
     matches!(
         method,
-        "markdown.parse" | "system.uuid" | "text.sentences" | "locale.language_name"
+        "markdown.parse"
+            | "system.uuid"
+            | "system.uuidBatch"
+            | "system.sha256"
+            | "text.sentences"
+            | "locale.language_name"
     ) || method.starts_with("url.")
         || method.starts_with("file_link.")
+}
+
+fn migration_allowed(method: &str) -> bool {
+    let policy = crate::mutation_journal::migration_policy();
+    pure(method)
+        || [
+            "runtimeStateMethod",
+            "admitMethod",
+            "statusMethod",
+            "finishMethod",
+            "ownerInventoryMethod",
+            "nativeSourceMethod",
+            "nativeImportMethod",
+        ]
+        .iter()
+        .any(|key| policy[*key].as_str() == Some(method))
+        || matches!(
+            method,
+            "preferences.raw_all"
+                | "identity.get"
+                | "identity.set"
+                | "client_storage.import"
+                | "client_storage.status"
+                | "client_storage.export_preferences"
+                | "client_storage.replay_preferences"
+                | "files.importBegin"
+                | "files.importChunk"
+                | "files.importCommit"
+                | "files.importReadback"
+                | "files.hashBegin"
+                | "files.hashChunk"
+                | "files.hashFinish"
+        )
 }
 fn compute(request: &Request) -> Response {
     if request.id.is_empty() || request.id.len() > 128 {
@@ -507,6 +716,28 @@ async fn write_packet(
 }
 
 pub fn connect(config: ConnectionConfig) -> io::Result<UnixStream> {
+    connect_owned(true, move |core| serve(core, config))
+}
+
+/// Host-only entry for a verified local or paired remote service context.
+pub fn connect_with_backend(state_directory: PathBuf, backend: Backend) -> io::Result<UnixStream> {
+    connect_owned(true, move |core| {
+        serve_backend(core, state_directory, Ok(backend), false)
+    })
+}
+
+/// Private host entry. Schema creation is allowed; recovery and user effects
+/// stay held until this same Store verifies a durable host capture receipt.
+pub fn connect_for_migration(state_directory: PathBuf, backend: Backend) -> io::Result<UnixStream> {
+    connect_owned(false, move |core| {
+        serve_backend(core, state_directory, Ok(backend), true)
+    })
+}
+
+fn connect_owned(
+    install_notifications: bool,
+    serve: impl FnOnce(UnixStream) -> Result<(), String> + Send + 'static,
+) -> io::Result<UnixStream> {
     let (ui, core) = UnixStream::pair()?;
     ui.set_nonblocking(true)?;
     #[cfg(target_os = "macos")]
@@ -526,11 +757,15 @@ pub fn connect(config: ConnectionConfig) -> io::Result<UnixStream> {
         }
     }
     #[cfg(target_os = "macos")]
-    dispatch2::DispatchQueue::main().exec_async(crate::notifications::mac::install);
+    if install_notifications {
+        dispatch2::DispatchQueue::main().exec_async(crate::notifications::mac::install);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = install_notifications;
     thread::Builder::new()
         .name("studio-core".into())
         .spawn(move || {
-            if let Err(error) = serve(core, config) {
+            if let Err(error) = serve(core) {
                 eprintln!("STUDIO_CORE_CHANNEL_CLOSED {error}");
             }
         })?;
@@ -540,6 +775,193 @@ pub fn connect(config: ConnectionConfig) -> io::Result<UnixStream> {
 #[cfg(test)]
 mod audio_ownership_tests {
     use super::*;
+
+    struct AudioConnection {
+        socket: Option<UnixStream>,
+        worker: Option<thread::JoinHandle<Result<(), String>>>,
+        events: Vec<serde_json::Value>,
+    }
+
+    impl AudioConnection {
+        fn open(state_directory: PathBuf) -> Self {
+            Self::open_with_origin(state_directory, "http://127.0.0.1:9".into())
+        }
+
+        fn open_with_origin(state_directory: PathBuf, backend_origin: String) -> Self {
+            let (socket, core) = UnixStream::pair().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let worker = thread::spawn(move || {
+                serve(
+                    core,
+                    ConnectionConfig {
+                        state_directory,
+                        backend_origin,
+                    },
+                )
+            });
+            Self {
+                socket: Some(socket),
+                worker: Some(worker),
+                events: Vec::new(),
+            }
+        }
+
+        fn request(&mut self, id: &str, method: &str, params: serde_json::Value) -> Response {
+            use std::io::{Read, Write};
+            let socket = self.socket.as_mut().unwrap();
+            let request = Request {
+                id: id.into(),
+                method: method.into(),
+                params,
+            };
+            let bytes = serde_json::to_vec(&request).unwrap();
+            for (flag, bytes) in protocol::fragments(&bytes).unwrap() {
+                socket
+                    .write_all(&((bytes.len() + 1) as u32).to_le_bytes())
+                    .unwrap();
+                socket.write_all(&[flag]).unwrap();
+                socket.write_all(bytes).unwrap();
+            }
+            let mut assembler = protocol::Assembler::default();
+            loop {
+                let mut header = [0; 4];
+                socket.read_exact(&mut header).unwrap();
+                let mut frame = vec![0; u32::from_le_bytes(header) as usize];
+                socket.read_exact(&mut frame).unwrap();
+                if let Some(bytes) = assembler.push(&frame).unwrap() {
+                    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    if value.get("event").is_some() {
+                        self.events.push(value);
+                        continue;
+                    }
+                    let response: Response = serde_json::from_value(value).unwrap();
+                    assert_eq!(response.id, id);
+                    return response;
+                }
+            }
+        }
+
+        fn event(&mut self, subscription: &str) -> serde_json::Value {
+            use std::io::Read;
+            if let Some(index) = self
+                .events
+                .iter()
+                .position(|event| event["event"] == subscription)
+            {
+                return self.events.remove(index);
+            }
+            let socket = self.socket.as_mut().unwrap();
+            let mut assembler = protocol::Assembler::default();
+            loop {
+                let mut header = [0; 4];
+                socket.read_exact(&mut header).unwrap();
+                let mut frame = vec![0; u32::from_le_bytes(header) as usize];
+                socket.read_exact(&mut frame).unwrap();
+                if let Some(bytes) = assembler.push(&frame).unwrap() {
+                    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    assert!(
+                        value.get("event").is_some(),
+                        "unexpected RPC reply while waiting for a native event"
+                    );
+                    if value["event"] == subscription {
+                        return value;
+                    }
+                    self.events.push(value);
+                }
+            }
+        }
+    }
+
+    impl Drop for AudioConnection {
+        fn drop(&mut self) {
+            self.socket.take();
+            if let Some(worker) = self.worker.take() {
+                let result = worker.join();
+                if !thread::panicking() {
+                    result.unwrap().unwrap();
+                }
+            }
+        }
+    }
+
+    fn idle_cleanup_does_not_take_audio(method: &str, expected_code: &str) {
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut idle = AudioConnection::open(directory.path().join("idle"));
+        let mut next = AudioConnection::open(directory.path().join("next"));
+        let cleanup = idle.request("invalid-stop", method, serde_json::json!({}));
+        // An absent agent fails before backend I/O, peer creation or microphone use.
+        let start = next.request("invalid-start", "voice.sessionStart", serde_json::json!({}));
+        // Release the erroneous lease before disconnect, without native audio cleanup.
+        let release = idle.request(
+            "fixture-release",
+            "voice.sessionEnd",
+            serde_json::json!({"agent":"fixture"}),
+        );
+        drop(next);
+        drop(idle);
+        drop(_serial);
+        assert!(release.error.is_none());
+        assert_eq!(cleanup.error.unwrap().code, expected_code);
+        assert_eq!(
+            start.error.unwrap().code,
+            "voice",
+            "idle cleanup must not claim the global audio lease"
+        );
+    }
+
+    #[test]
+    fn native_voice_stop_invalid_idle_end_does_not_claim_audio() {
+        idle_cleanup_does_not_take_audio("voice.sessionEnd", "voice");
+    }
+
+    #[test]
+    fn native_voice_stop_invalid_idle_recording_stop_does_not_claim_audio() {
+        idle_cleanup_does_not_take_audio("media.recordingStop", "media");
+    }
+
+    #[test]
+    fn native_voice_stop_preserves_the_existing_connection_lease() {
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut owner = AudioConnection::open(directory.path().join("owner"));
+        let mut sibling = AudioConnection::open(directory.path().join("sibling"));
+        let subscribed = owner.request(
+            "own",
+            "view.subscribe",
+            serde_json::json!({
+                "subscription":"own", "topic":"microphone", "capture":"lease-only"
+            }),
+        );
+        let _ = sibling.request("sibling-stop", "voice.sessionEnd", serde_json::json!({}));
+        let sibling_start =
+            sibling.request("sibling-start", "voice.sessionStart", serde_json::json!({}));
+        let invalid_owner_stop = owner.request(
+            "invalid-owner-stop",
+            "media.recordingStop",
+            serde_json::json!({}),
+        );
+        let still_owned =
+            sibling.request("still-owned", "voice.sessionStart", serde_json::json!({}));
+        // No voice session exists. This exact owner's End is a harmless cleanup.
+        let owner_end = owner.request(
+            "owner-end",
+            "voice.sessionEnd",
+            serde_json::json!({"agent":"fixture"}),
+        );
+        let next_start = sibling.request("next-start", "voice.sessionStart", serde_json::json!({}));
+        drop(sibling);
+        drop(owner);
+        drop(_serial);
+        assert!(subscribed.error.is_none());
+        assert_eq!(sibling_start.error.unwrap().code, "audio_busy");
+        assert_eq!(invalid_owner_stop.error.unwrap().code, "media");
+        assert_eq!(still_owned.error.unwrap().code, "audio_busy");
+        assert!(owner_end.error.is_none());
+        assert_eq!(next_start.error.unwrap().code, "voice");
+    }
 
     #[test]
     fn only_the_audio_owner_holds_cleanup_authority_until_disconnect() {
@@ -560,6 +982,80 @@ mod audio_ownership_tests {
         drop(first);
         let mut next = None;
         assert!(claim_audio_from(&pool, &mut next));
+    }
+
+    #[test]
+    fn generic_media_preview_keeps_the_connection_lease_until_exact_owner_disconnect() {
+        use std::io::{Read, Write};
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
+        let device = crate::media::playback_tests::install_preview_mock();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let http = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 4096);
+            }
+            assert!(
+                String::from_utf8(request)
+                    .unwrap()
+                    .starts_with("GET /api/file?asset=clip ")
+            );
+            let body = serde_json::json!({"name":"clip.wav","mime":"audio/wav","base64":"bmF0aXZlLW93bmVkLW1lZGlh"}).to_string();
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let mut owner = AudioConnection::open_with_origin(directory.path().join("owner"), origin);
+        let snapshot = owner.request(
+            "open-file",
+            "preview.open",
+            serde_json::json!({"target":{"asset":"clip"}}),
+        );
+        assert!(snapshot.error.is_none(), "{snapshot:?}");
+        let handle = snapshot.result.unwrap()["handle"].clone();
+        let watch = owner.request("watch-original-media", "view.subscribe", serde_json::json!({"topic":"media-preview","subscription":"exact-media-watch","requestId":"original-media-open"}));
+        assert!(watch.error.is_none(), "{watch:?}");
+        let started = owner.request("original-media-open", "desktop.previewMedia", serde_json::json!({"permit":crate::desktop::test_native_permit(6),"value":{"handle":handle}}));
+        assert!(started.error.is_none(), "{started:?}");
+        let started = started.result.expect("preparing receipt");
+        assert_eq!(started["status"], "preparing");
+        loop {
+            let event = owner.event("exact-media-watch");
+            assert_eq!(event["value"]["requestId"], "original-media-open");
+            if event["value"]["status"] == "playing" {
+                assert_eq!(event["value"]["playbackId"], started["playbackId"]);
+                break;
+            }
+            assert!(matches!(
+                event["value"]["status"].as_str(),
+                Some("unknown" | "preparing")
+            ));
+        }
+        let mut unrelated = AudioConnection::open(directory.path().join("unrelated"));
+        let blocked = unrelated.request("other-audio", "voice.sessionStart", serde_json::json!({}));
+        assert_eq!(blocked.error.unwrap().code, "audio_busy");
+        drop(unrelated);
+        let current = owner.request(
+            "original-receipt",
+            "media.playbackState",
+            serde_json::json!({"requestId":"original-media-open"}),
+        );
+        assert_eq!(current.result.unwrap()["status"], "playing");
+        assert!(device.0.stopped().is_empty());
+        drop(owner);
+        assert_eq!(device.0.stopped(), vec![1]);
+        let mut next = AudioConnection::open(directory.path().join("next"));
+        let accepted = next.request("next-audio", "voice.sessionStart", serde_json::json!({}));
+        assert_eq!(accepted.error.unwrap().code, "voice");
+        drop(next);
+        http.join().unwrap();
     }
 
     #[test]
@@ -653,5 +1149,17 @@ mod audio_ownership_tests {
             method: "preferences.raw_all".into(),
             params: serde_json::Value::Null
         }));
+        for method in ["media.recordingState", "voice.sessionState"] {
+            assert!(!audio_request(&Request {
+                id: "read".into(),
+                method: method.into(),
+                params: serde_json::Value::Null
+            }));
+            assert!(!audio_release_candidate(method, true));
+        }
+        assert!(audio_release_candidate("media.recordingStop", true));
+        assert!(!audio_release_candidate("media.recordingStop", false));
+        assert!(audio_release_candidate("voice.sessionStart", false));
+        assert!(!audio_release_candidate("voice.sessionStart", true));
     }
 }

@@ -6,7 +6,7 @@
 //! prepared before a writer transaction and monitor cancellation IDs are
 //! returned only after the rule transaction commits.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -19,8 +19,8 @@ use studio_runtime_schema::agent_limits::{
     MAX_SUBAGENT_CONCURRENCY, MIN_GLOBAL_CONCURRENCY, MIN_SUBAGENT_CONCURRENCY,
 };
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, MonitorRecord, RuleRecord, RulesRepository,
-    RuntimeStore, StoreError, Table, truthy,
+    AgentId, AgentRecord, AgentRepository, MonitorRecord, RecordOrder, RecordPredicate, RuleRecord,
+    RulesRepository, RuntimeStore, StoreError, Table, truthy,
 };
 use thiserror::Error;
 
@@ -154,8 +154,11 @@ struct StatusPathSnapshot {
     storage: crate::disk_space::StorageReport,
 }
 
-/// Build a status snapshot and retain its revision in the same serialized
-/// transaction, matching the Python callback's state point.
+/// Build a status snapshot in one read snapshot, then retain its revision.
+///
+/// The snapshot is assembled on the reader pool: the serialized writer lane is
+/// shared by every canvas write, and listing team state there stalled all of
+/// them. The writer job only re-checks the caller and stores the revision.
 pub async fn model_directory(
     store: &RuntimeStore,
     actor_id: &str,
@@ -200,30 +203,69 @@ pub async fn model_directory(
         resolved,
         storage,
     };
-    let actor_id = actor_id.to_owned();
+    let snapshot_actor = actor_id.to_owned();
     let args = args.clone();
+    let snapshot = store
+        .read_async("runtime-services/managed_status_watch", move |tx| {
+            status_snapshot(tx, &snapshot_actor, actor_epoch, &root_id, &paths, &args)
+        })
+        .await?;
+    let actor_id = actor_id.to_owned();
     store
         .transaction_with(move |tx| {
-            status_in_transaction(tx, &actor_id, actor_epoch, &root_id, &paths, &args, now)
+            record_status_revision(tx, &actor_id, actor_epoch, &snapshot, now)?;
+            Ok::<_, StatusError>(snapshot.result)
         })
         .await
 }
 
-fn status_in_transaction(
+/// A status response together with the revision record it must retain.
+struct StatusSnapshot {
+    result: Value,
+    revision: String,
+    records: String,
+}
+
+/// Store the snapshot's revision for later `since_revision` diffs and keep the
+/// bounded history. A caller whose identity changed after the snapshot gets
+/// `Stale`, as it would have before the snapshot.
+fn record_status_revision(
+    tx: &Transaction<'_>,
+    actor_id: &str,
+    actor_epoch: u64,
+    snapshot: &StatusSnapshot,
+    now: f64,
+) -> Result<(), StatusError> {
+    checked_actor(tx, actor_id, actor_epoch)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO runtime_model_status(agent,revision,at,record) VALUES(?1,?2,?3,?4)",
+        params![actor_id, snapshot.revision, now, snapshot.records],
+    )?;
+    tx.execute(
+        "DELETE FROM runtime_model_status WHERE agent=?1 AND revision NOT IN \
+         (SELECT revision FROM runtime_model_status WHERE agent=?1 ORDER BY at DESC LIMIT ?2)",
+        params![actor_id, MODEL_STATUS_HISTORY],
+    )?;
+    Ok(())
+}
+
+fn status_snapshot(
     tx: &Transaction<'_>,
     actor_id: &str,
     actor_epoch: u64,
     root_id: &str,
     paths: &StatusPathSnapshot,
     args: &Value,
-    now: f64,
-) -> Result<Value, StatusError> {
+) -> Result<StatusSnapshot, StatusError> {
     let actor = checked_actor(tx, actor_id, actor_epoch)?;
     if actor.root_id.0 != root_id || status_path_inputs(tx, root_id)? != paths.inputs {
         return Err(StatusError::Stale);
     }
     let team = team_agents(tx, root_id)?;
-    let ids: BTreeSet<String> = team.iter().map(|agent| agent.id.0.clone()).collect();
+    let team_ids = team
+        .iter()
+        .map(|agent| agent.id.0.clone())
+        .collect::<Vec<_>>();
     let root = team
         .iter()
         .find(|agent| agent.id.0 == root_id)
@@ -234,16 +276,12 @@ fn status_in_transaction(
         .filter(|agent| !is_terminal_agent(agent.status.as_str()))
         .map(agent_status_record)
         .collect::<Vec<_>>();
-    let all_monitors = Table::<MonitorRecord>::new(tx).list()?;
-    let team_monitors = all_monitors
-        .into_iter()
-        .filter(|monitor| {
-            monitor
-                .get("agent")
-                .and_then(Value::as_str)
-                .is_some_and(|agent| ids.contains(agent))
-        })
-        .collect::<Vec<_>>();
+    // The owner predicate is served by `runtime_monitor_agent_status`, so the
+    // monitor history of other teams is neither read nor decoded.
+    let team_monitors = Table::<MonitorRecord>::new(tx).list_matching(
+        Some(RecordPredicate::JsonAgentIn(&team_ids)),
+        RecordOrder::RowId,
+    )?;
     active_records.extend(
         team_monitors
             .iter()
@@ -348,20 +386,7 @@ fn status_in_transaction(
         .cloned()
         .collect::<Vec<_>>();
 
-    tx.execute(
-        "INSERT OR REPLACE INTO runtime_model_status(agent,revision,at,record) VALUES(?1,?2,?3,?4)",
-        params![
-            actor_id,
-            revision,
-            now,
-            serde_json::to_string(&active_records)?
-        ],
-    )?;
-    tx.execute(
-        "DELETE FROM runtime_model_status WHERE agent=?1 AND revision NOT IN \
-         (SELECT revision FROM runtime_model_status WHERE agent=?1 ORDER BY at DESC LIMIT ?2)",
-        params![actor_id, MODEL_STATUS_HISTORY],
-    )?;
+    let records = serde_json::to_string(&active_records)?;
 
     let mut result = json!({
         "apiVersion": 2,
@@ -411,7 +436,11 @@ fn status_in_transaction(
             "nextCursor": next_cursor,
         });
     }
-    Ok(result)
+    Ok(StatusSnapshot {
+        result,
+        revision,
+        records,
+    })
 }
 
 fn checked_actor(
@@ -1640,6 +1669,94 @@ mod tests {
             })
             .expect("count status rows");
         assert_eq!(count, 0);
+    }
+
+    /// Checks that the status of one team never reads monitors owned by other
+    /// agents. It was added because status listed the whole monitor table
+    /// (about 50k rows live) inside the shared writer transaction; a corrupt
+    /// row of another team now proves those rows are not even decoded, and the
+    /// unchanged response proves the team's own monitors are still selected.
+    #[tokio::test]
+    async fn status_reads_only_team_monitors_and_keeps_its_response() {
+        let (_directory, store) = fixture().await;
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES('m-live',?1)",
+                    [json!({"id":"m-live","agent":"queued","status":"running"}).to_string()],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("seed active team monitor");
+        let args = json!({"include_finished":true});
+        let before = model_directory(&store, "lead", 3, &args, 100.0)
+            .await
+            .expect("team status");
+        assert_eq!(before["changes"][2]["id"], "m-live");
+        assert_eq!(before["finished"]["items"][1]["id"], "m-done");
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES('m-stranger',?1)",
+                    [
+                        json!({"id":"m-stranger","agent":"stranger","status":"running"})
+                            .to_string(),
+                    ],
+                )?;
+                // The payload id differs from the row id, so decoding fails.
+                tx.execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES('m-corrupt',?1)",
+                    [json!({"id":"other","agent":"stranger","status":"failed"}).to_string()],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("seed monitors of another team");
+        let after = model_directory(&store, "lead", 3, &args, 100.0)
+            .await
+            .expect("team status ignores other teams' monitors");
+        let mut before = before;
+        let mut after = after;
+        // Free-space samples are fresh filesystem metadata, not stored state.
+        before
+            .as_object_mut()
+            .expect("status object")
+            .remove("storage");
+        after
+            .as_object_mut()
+            .expect("status object")
+            .remove("storage");
+        assert_eq!(after, before);
+    }
+
+    /// Checks that a status call rejected by its arguments never takes the
+    /// serialized writer lane. It was added because status was assembled inside
+    /// a writer transaction, so every call, even an invalid one, blocked all
+    /// canvas writes while it ran.
+    #[tokio::test]
+    async fn rejected_status_arguments_never_enter_the_writer_lane() {
+        let (_directory, store) = fixture().await;
+        let admissions = store.writer_admissions();
+        for args in [
+            json!({"include_finished":true,"limit":0}),
+            json!({"include_finished":true,"cursor":"not-a-cursor"}),
+        ] {
+            assert!(
+                model_directory(&store, "lead", 3, &args, 100.0)
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(store.writer_admissions(), admissions);
+        model_directory(&store, "lead", 3, &json!({}), 100.0)
+            .await
+            .expect("valid status");
+        assert_eq!(
+            store.writer_admissions(),
+            admissions + 1,
+            "only the revision record takes the writer lane"
+        );
     }
 
     #[tokio::test]

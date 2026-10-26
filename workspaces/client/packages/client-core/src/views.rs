@@ -19,6 +19,8 @@ pub struct Views {
     changes: watch::Receiver<u64>,
     output: mpsc::Sender<Value>,
     terminals: crate::terminal::Terminals,
+    transcripts: crate::transcript_views::TranscriptViews,
+    preferences: Option<JoinHandle<()>>,
 }
 
 impl Views {
@@ -28,6 +30,7 @@ impl Views {
         changes: watch::Receiver<u64>,
         output: mpsc::Sender<Value>,
         terminals: crate::terminal::Terminals,
+        transcripts: crate::transcript_views::TranscriptViews,
     ) -> Self {
         Self {
             tasks: HashMap::new(),
@@ -36,6 +39,8 @@ impl Views {
             changes,
             output,
             terminals,
+            transcripts,
+            preferences: None,
         }
     }
     pub fn command(&mut self, request: &Request) -> Response {
@@ -77,6 +82,14 @@ impl Views {
                 | "voice"
                 | "transcription"
                 | "navigation"
+                | "subscriptions"
+                | "recordings"
+                | "state"
+                | "voice-session"
+                | "media-preview"
+                | "transcript-view"
+                | "preferences"
+                | "uploads"
         ) {
             return Response::failure(
                 request.id.clone(),
@@ -85,12 +98,20 @@ impl Views {
             );
         }
         let (id, topic, params) = (id.to_owned(), topic.to_owned(), request.params.clone());
+        if topic == "preferences" && self.preferences.is_none() {
+            self.preferences = Some(tokio::spawn(crate::preference_replication::run(
+                self.backend.clone(),
+                self.store.clone(),
+                self.changes.clone(),
+            )));
+        }
         let (backend, store, changes, output) = (
             self.backend.clone(),
             self.store.clone(),
             self.changes.clone(),
             self.output.clone(),
         );
+        let transcripts = self.transcripts.clone();
         let terminal = if topic == "terminal" {
             match self
                 .terminals
@@ -166,6 +187,38 @@ impl Views {
                     }
                 } else if topic == "sse" {
                     crate::events::run(id, params, backend, output).await;
+                } else if topic == "subscriptions" {
+                    crate::subscriptions::run(id, params, backend, store, output).await;
+                } else if topic == "transcript-view" {
+                    transcripts.run(id, params, output).await;
+                } else if topic == "media-preview" {
+                    let request=params["requestId"].as_str().unwrap_or("");
+                    let mut changes=match crate::media::watch_playback(&store,request) {
+                        Ok(changes)=>changes,
+                        Err(error)=>{let _=output.send(json!({"event":id,"error":{"message":error}})).await;return;}
+                    };
+                    loop {
+                        let receipt={changes.borrow_and_update().clone()};
+                        if output.send(json!({"event":id,"value":receipt})).await.is_err() {break;}
+                        if changes.changed().await.is_err() {break;}
+                    }
+                } else if topic == "voice-session" {
+                    let mut changes =
+                        crate::voice::watch_session(&store, params["agent"].as_str().unwrap_or(""))
+                            .await;
+                    loop {
+                        let value = changes.borrow_and_update().clone();
+                        if output
+                            .send(json!({"event":id,"value":value}))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        if changes.changed().await.is_err() {
+                            break;
+                        }
+                    }
                 } else {
                     run(id, topic, params, backend, store, changes, output).await;
                 }
@@ -177,6 +230,9 @@ impl Views {
 
 impl Drop for Views {
     fn drop(&mut self) {
+        if let Some(task) = self.preferences.take() {
+            task.abort();
+        }
         for (_, task) in self.tasks.drain() {
             task.abort();
         }
@@ -301,7 +357,7 @@ async fn run(
     let mut network_error: Option<crate::protocol::CommandError> = None;
     loop {
         let result = async {
-            if workspace.is_empty() {
+            if workspace.is_empty() && topic != "preferences" && topic != "uploads" {
                 let backend = backend
                     .as_ref()
                     .as_ref()
@@ -311,7 +367,23 @@ async fn run(
                     .unwrap_or("")
                     .to_owned();
             }
-            let value = if topic == "projection" {
+            let value = if topic == "preferences" {
+                state(&store, "preferences.view", json!({}))
+                    .await
+                    .map_err(|e| sync::error("storage_error", e))?
+            } else if topic == "uploads" {
+                state(&store, "uploads.snapshot", json!({}))
+                    .await
+                    .map_err(|e| sync::error("storage_error", e))?
+            } else if topic == "state" {
+                state(
+                    &store,
+                    "projection.stateSnapshot",
+                    json!({"workspace":workspace}),
+                )
+                .await
+                .map_err(|e| sync::error("storage_error", e))?
+            } else if topic == "projection" {
                 // Publish cached data before the first HTTP wait.
                 let cached = state(
                     &store,
@@ -359,6 +431,15 @@ async fn run(
                 state(&store, "drafts.view", json!({"workspace":workspace}))
                     .await
                     .map_err(|e| sync::error("storage_error", e))?
+            } else if topic == "recordings" {
+                let params = json!({"chatId":params["chatId"]});
+                let recordings = state(&store, "dictation.list", params.clone())
+                    .await
+                    .map_err(|e| sync::error("storage_error", e))?;
+                let deleted = state(&store, "dictation.deleted", params)
+                    .await
+                    .map_err(|e| sync::error("storage_error", e))?;
+                json!({"recordings":recordings,"deleted":deleted})
             } else {
                 let entries = state(&store, "outbox.list", json!({"workspace":workspace}))
                     .await
@@ -386,7 +467,7 @@ async fn run(
             return;
         }
         tokio::select! {
-            _=interval.tick()=>refresh=true,
+            _=interval.tick(), if topic == "projection" =>refresh=true,
             result=changes.changed()=>{ if result.is_err(){return;} refresh=false; },
         }
     }

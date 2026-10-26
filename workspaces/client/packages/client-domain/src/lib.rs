@@ -1,6 +1,7 @@
 //! Platform-independent client rules shared by native and WebAssembly hosts.
 pub mod drafts;
 pub mod markdown;
+pub mod preferences;
 pub mod protocol;
 
 /// Largest integer a JavaScript number holds exactly (2^53 - 1).

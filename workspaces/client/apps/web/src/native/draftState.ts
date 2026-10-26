@@ -1,4 +1,3 @@
-import { randomUUID } from "../uuid";
 import type { DraftJournal } from "./draftJournal";
 import type { DraftVersion } from "../sync/drafts";
 
@@ -10,7 +9,11 @@ export type DraftView = {
   error?: string;
 };
 type Invoke = <T>(method: string, params: unknown, id?: string) => Promise<T>;
-type Edit = { id: string; changes: Record<string, string> };
+type Edit = {
+  id?: string;
+  identity?: Promise<string>;
+  changes: Record<string, string>;
+};
 
 // TODO(attar-sync): When this renderer moves to Attar, restore synchronous
 // core.commit("drafts.edit"/"drafts.dismiss") after the SQLite transaction commits.
@@ -31,6 +34,8 @@ export class NativeDraftState {
     readonly workspace: string,
     private invoke: Invoke,
     private journal?: DraftJournal,
+    private identify: () => string | Promise<string> = () =>
+      invoke<string>("system.uuid", {}),
   ) {
     this.committed = {
       drafts: {},
@@ -84,9 +89,15 @@ export class NativeDraftState {
     // coalesce the unsent tail to bound typing backlog while IPC is delayed.
     if (!this.journal && this.queue.length > 1)
       Object.assign(this.queue[1].changes, changes);
-    else this.queue.push({ id: randomUUID(), changes });
+    else {
+      const id = this.identify();
+      this.queue.push(
+        typeof id === "string" ? { id, changes } : { identity: id, changes },
+      );
+    }
     try {
-      this.journal?.save(this.queue[this.queue.length - 1]);
+      const edit = this.queue[this.queue.length - 1];
+      if (edit.id) this.journal?.save({ id: edit.id, changes: edit.changes });
     } catch (error) {
       this.failure = error instanceof Error ? error.message : String(error);
     }
@@ -99,7 +110,7 @@ export class NativeDraftState {
     await this.flush();
   }
   /** Wait for all queued local commits, without replaying an uncertain write. */
-  waitCommitted(timeoutMs = 8_000): Promise<void> {
+  waitCommitted(timeoutMs?: number): Promise<void> {
     if (!this.snapshot.pending) return Promise.resolve();
     if (this.failure) return Promise.reject(new Error(this.failure));
     return new Promise((resolve, reject) => {
@@ -114,10 +125,14 @@ export class NativeDraftState {
           finish(new Error(this.snapshot.localError));
         else if (!this.snapshot.pending) finish();
       });
-      const timer = setTimeout(
-        () => finish(new Error("Draft changes have not finished saving.")),
-        timeoutMs,
-      );
+      const timer =
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(
+              () =>
+                finish(new Error("Draft changes have not finished saving.")),
+              timeoutMs,
+            );
     });
   }
   private async flush() {
@@ -126,7 +141,22 @@ export class NativeDraftState {
     try {
       while (this.queue.length) {
         const edit = this.queue[0];
-        this.journal?.save(edit);
+        if (!edit.id) {
+          try {
+            edit.id = await (edit.identity ??= Promise.resolve(
+              this.identify(),
+            ));
+          } catch (error) {
+            edit.identity = undefined;
+            throw error;
+          }
+          if (typeof edit.id !== "string" || !edit.id || edit.id.length > 128) {
+            edit.id = undefined;
+            edit.identity = undefined;
+            throw new Error("The native draft identity is invalid.");
+          }
+        }
+        this.journal?.save({ id: edit.id, changes: edit.changes });
         const view = await this.invoke<DraftView>(
           "drafts.edit",
           {
@@ -138,7 +168,7 @@ export class NativeDraftState {
         if (view.workspaceId !== this.workspace)
           throw new Error("The draft acknowledgement has another workspace.");
         // Drop only the acknowledged command; later edits remain overlaid.
-        this.journal?.acknowledge(edit);
+        this.journal?.acknowledge({ id: edit.id, changes: edit.changes });
         this.queue.shift();
         if (view.revision >= this.committed.revision) this.committed = view;
         this.failure = "";

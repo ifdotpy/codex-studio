@@ -10,6 +10,8 @@ import {
 import ComposerAutocomplete from "../ComposerAutocomplete";
 import { useSkillAutocomplete } from "../useSkillAutocomplete";
 import type { DraftReader, DraftWriter } from "./PromptComposer";
+import type { AttachmentSelectionBatch } from "../../attachmentSelection";
+import { useServerAttachmentSelections } from "../../servers/ServerServicesContext";
 
 const INPUT_ROWS = 1;
 
@@ -66,7 +68,8 @@ export default function PromptInput(p: {
   modelCommand: boolean;
   hasAttachments: boolean;
   onChange: (value: string) => void;
-  onPasteFiles: (files: File[]) => void;
+  onPasteFiles: (files: AttachmentSelectionBatch) => void;
+  onPasteError?: (error: unknown) => void;
   onSend: () => void;
   onQueue: () => void;
   onRecallKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
@@ -79,6 +82,7 @@ export default function PromptInput(p: {
     provider: string;
   };
 }) {
+  const attachmentSelections = useServerAttachmentSelections();
   const insertSkill = useCallback(
     (text: string, start: number, end: number) => {
       const current = p.input.current?.value ?? p.getDraft(p.session);
@@ -116,10 +120,15 @@ export default function PromptInput(p: {
   );
   handlers.current = {
     onPaste: (event) => {
-      const files = Array.from(event.clipboardData.files);
-      if (p.managed && files.length) {
-        event.preventDefault();
-        p.onPasteFiles(files);
+      if (!p.managed) return;
+      try {
+        const selection = attachmentSelections.paste(event);
+        if (selection)
+          void selection
+            .then((files) => files && p.onPasteFiles(files))
+            .catch((error) => p.onPasteError?.(error));
+      } catch (error) {
+        p.onPasteError?.(error);
       }
     },
     onChange: (event) => p.onChange(event.currentTarget.value),

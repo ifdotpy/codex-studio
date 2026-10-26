@@ -48,6 +48,7 @@ pub(super) fn canonical_response(value: &Value) -> Value {
     result
 }
 
+#[tokio::test]
 async fn work_commands_match_python_arguments_bounds_and_provenance() {
     for (index, case) in template().value["reviewCases"]
         .as_array()
@@ -138,6 +139,7 @@ async fn work_commands_match_python_arguments_bounds_and_provenance() {
     }
 }
 
+#[tokio::test]
 async fn malformed_work_never_poison_store_writer() {
     for (field, value) in [
         ("results", json!(["bad"])),
@@ -184,6 +186,7 @@ async fn malformed_work_never_poison_store_writer() {
     }
 }
 
+#[tokio::test]
 async fn native_preview_matches_python_admission() {
     let (_dir, store, context) = fixture().await;
     let case = &template().value["preview"];
@@ -205,6 +208,7 @@ async fn native_preview_matches_python_admission() {
     );
 }
 
+#[tokio::test]
 async fn resolved_answering_unknown_and_blocked_match_python() {
     for case in template().value["resolved"].as_array().unwrap() {
         let (_dir, store, context) = fixture().await;
@@ -292,6 +296,7 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
     }
 }
 
+#[tokio::test]
 async fn stale_answer_attempt_cannot_submit_or_settle_replacement() {
     let (_dir, store, context) = fixture().await;
     let frame = request(
@@ -357,6 +362,7 @@ async fn stale_answer_attempt_cannot_submit_or_settle_replacement() {
     );
 }
 
+#[tokio::test]
 async fn model_projection_matches_python_and_keeps_full_result() {
     for case in template().value["projections"].as_array().unwrap() {
         let actual = project_tool_result(
@@ -412,6 +418,7 @@ async fn model_projection_matches_python_and_keeps_full_result() {
     );
 }
 
+#[tokio::test]
 async fn archived_private_member_blocks_saved_chat_like_python() {
     for case in template().value["chatVisibility"].as_array().unwrap() {
         let (_dir, store, context) = fixture().await;
@@ -448,6 +455,7 @@ async fn archived_private_member_blocks_saved_chat_like_python() {
     }
 }
 
+#[tokio::test]
 async fn resolve_retirement_rolls_back_with_card_and_agent() {
     for table in [
         "runtime_operation_receipts",
@@ -531,56 +539,4 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
             "resolved"
         );
     }
-}
-
-pub(super) async fn run_corpus() {
-    let cases: &[Case] = &[
-        (
-            "work_commands_match_python_arguments_bounds_and_provenance",
-            || Box::pin(work_commands_match_python_arguments_bounds_and_provenance()),
-        ),
-        ("malformed_work_never_poison_store_writer", || {
-            Box::pin(malformed_work_never_poison_store_writer())
-        }),
-        ("native_preview_matches_python_admission", || {
-            Box::pin(native_preview_matches_python_admission())
-        }),
-        (
-            "resolved_answering_unknown_and_blocked_match_python",
-            || Box::pin(resolved_answering_unknown_and_blocked_match_python()),
-        ),
-        (
-            "stale_answer_attempt_cannot_submit_or_settle_replacement",
-            || Box::pin(stale_answer_attempt_cannot_submit_or_settle_replacement()),
-        ),
-        (
-            "model_projection_matches_python_and_keeps_full_result",
-            || Box::pin(model_projection_matches_python_and_keeps_full_result()),
-        ),
-        (
-            "archived_private_member_blocks_saved_chat_like_python",
-            || Box::pin(archived_private_member_blocks_saved_chat_like_python()),
-        ),
-        ("resolve_retirement_rolls_back_with_card_and_agent", || {
-            Box::pin(resolve_retirement_rolls_back_with_card_and_agent())
-        }),
-    ];
-    let mut failures = Vec::new();
-    for (name, case) in cases {
-        if let Err(payload) =
-            futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(case())).await
-        {
-            let message = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic");
-            failures.push(format!("{name}: {message}"));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "review callback failures:\n{}",
-        failures.join("\n")
-    );
 }

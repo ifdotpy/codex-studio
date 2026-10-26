@@ -664,21 +664,26 @@ setTimeout(() => process.exit(0), fixtureLifetimeMs);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let backend =
             Backend::desktop_client(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let (accepted, connected) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (_stream, _) = listener.accept().await.unwrap();
-            sleep(Duration::from_millis(80)).await;
+            drop(listener); // Later attempts see refusal after the uncertain timeout.
+            accepted.send(()).unwrap();
+            std::future::pending::<()>().await;
         });
-        assert!(
+        let probe = tokio::spawn(async move {
             identity(
                 &backend,
                 Path::new("/expected"),
                 Duration::from_millis(30),
-                Duration::from_millis(300)
+                Duration::from_millis(300),
             )
             .await
-            .unwrap_err()
-            .contains("No replacement")
-        );
-        server.await.unwrap();
+        });
+        connected.await.unwrap();
+        tokio::time::pause();
+        assert!(probe.await.unwrap().unwrap_err().contains("No replacement"));
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
     }
 }

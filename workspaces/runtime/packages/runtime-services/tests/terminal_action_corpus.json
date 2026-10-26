@@ -237,16 +237,16 @@
       "operationId": "terminal-spawn:f48d7c00-0000-4000-8000-000000000001",
       "params": {
         "command": [
-          "/home/alex/.cache/codex-studio-rust-ui/agent-scale-throughput-env/xdg/codex-agents/python/8a29a1451ad1aaa88d6cac967202983a40a98f861e7730f5fa30da67cc577a64/bin/python",
+          "/fixture/home/.cache/codex-studio-rust-ui/agent-scale-throughput-env/xdg/codex-agents/python/8a29a1451ad1aaa88d6cac967202983a40a98f861e7730f5fa30da67cc577a64/bin/python",
           "-B",
-          "/home/alex/src/codex-studio/.worktrees/codex-agents/a44af64b-3193-559a-b19a-06a0d247f0f4/workspaces/runtime/packages/runtime-services/../../apps/server/src/codex_terminal_child.py",
+          "/fixture/home/src/codex-studio/.worktrees/codex-agents/a44af64b-3193-559a-b19a-06a0d247f0f4/workspaces/runtime/packages/runtime-services/../../apps/server/src/codex_terminal_child.py",
           "$ROOT/terminal-server/f48d7c00-0000-4000-8000-000000000001.pid",
           "/bin/bash"
         ],
         "cwd": "$ROOT",
         "env": {
           "CODEX_API_KEY": null,
-          "CODEX_HOME": "/home/alex/.codex",
+          "CODEX_HOME": "/fixture/home/.codex",
           "COLORTERM": "truecolor",
           "OPENAI_API_KEY": null,
           "TERM": "xterm-256color"

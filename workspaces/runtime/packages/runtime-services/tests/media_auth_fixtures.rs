@@ -25,8 +25,7 @@ pub(crate) fn write_state(root: &Path, fixture: &str) {
             fs::remove_file(&path).expect("replace closed fixture database");
         }
         let database = rusqlite::Connection::open(path).expect("fixture database");
-        database
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+        studio_runtime_store::sqlite_durability::configure_writer(&database)
             .expect("fixture database durability");
         database
             .execute_batch(&sql)

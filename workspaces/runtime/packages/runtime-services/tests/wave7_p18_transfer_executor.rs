@@ -12,9 +12,7 @@ use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 
 const OPERATION: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
 
-async fn fixture() -> tempfile::TempDir {
-    crate::account_transfer_driver::state().await
-}
+use crate::account_transfer_driver::state as fixture;
 fn operation(store: &RuntimeStore) -> Value {
     serde_json::from_str(
         &AccountTransferRepository::get(&store.test_reader().expect("read"), OPERATION)
@@ -143,8 +141,7 @@ impl TransferExecutor for Executor<'_> {
 #[tokio::test]
 async fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
     for behavior in [Behavior::Success, Behavior::LostResponse] {
-        let root = fixture().await;
-        let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+        let (root, store) = fixture().await;
         let executor = Executor {
             store: &store,
             behavior,
@@ -255,8 +252,7 @@ async fn preparation_failures_do_not_send_or_strand_reading_members() {
         Behavior::BusyDuringPreparation,
         Behavior::ForeignTicket,
     ] {
-        let root = fixture().await;
-        let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+        let (_root, store) = fixture().await;
         let before = operation(&store);
         let executor = Executor {
             store: &store,
@@ -281,8 +277,7 @@ async fn preparation_failures_do_not_send_or_strand_reading_members() {
 async fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
     for phase in ["reading", "submitted", "ready"] {
         for timing in ["BEFORE", "AFTER"] {
-            let root = fixture().await;
-            let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+            let (root, store) = fixture().await;
             let phase = phase.to_owned();
             let failpoint_phase = phase.clone();
             let timing = timing.to_owned();

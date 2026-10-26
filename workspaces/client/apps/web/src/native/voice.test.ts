@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("./client", () => ({
   nativeRequest: vi.fn(),
@@ -46,18 +47,20 @@ it("subscribes before creating a Rust peer, then applies answer, mute and close"
   expect(stop).toHaveBeenCalledOnce();
 });
 it("closes a late native offer after the chat was left", async () => {
+  const entered = Promise.withResolvers<void>();
   let finish!: (value: unknown) => void;
   vi.mocked(listenNativeEvents).mockResolvedValue(() => {});
   vi.mocked(nativeRequest).mockImplementation(async (method) =>
     method === "voice.create"
       ? new Promise((resolve) => {
           finish = resolve;
+          entered.resolve();
         })
       : true,
   );
   const peer = nativeVoice("late", vi.fn());
   const offer = peer.offer();
-  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  await entered.promise;
   await peer.close();
   finish({ sdp: "late-offer" });
   await expect(offer).rejects.toThrow("Voice ended");

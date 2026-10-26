@@ -13,6 +13,7 @@ path = "src/main.rs"
 studio-runtime-process = { path = "../../packages/runtime-process" }
 
 [dev-dependencies]
+notify.workspace = true
 rusqlite.workspace = true
 studio-runtime-store = { path = "../../packages/runtime-store", features = ["test-support"] }
 serde_json.workspace = true

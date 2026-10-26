@@ -110,7 +110,7 @@ async fn report_with(
 fn collect(lead: &Value, team: &[Value], state_dir: &Path, sources: &dyn Sources) -> Value {
     let mut worktrees = Vec::new();
     for agent in team {
-        if let Some(row) = crate::workspace_cleanup_runtime::maintenance_worktree(agent) {
+        if let Some(row) = crate::workspace_cleanup_runtime::maintenance_worktree(agent, state_dir) {
             worktrees.push(row);
         }
     }

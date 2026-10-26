@@ -4,7 +4,8 @@ import { useSyncedVisualState } from "../sync/useSyncedVisualState";
 import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
 import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
-import { errorText, type GetResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { GetResult } from "../api";
 import type { Message } from "../types";
 import "./prompt-navigation.css";
 

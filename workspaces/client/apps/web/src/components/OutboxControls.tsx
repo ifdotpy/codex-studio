@@ -1,7 +1,7 @@
 import { useServerOutbox } from "../servers/ServerServicesContext";
 import { Button } from "@mantine/core";
 import { useState } from "react";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import { type OutgoingMessage } from "../sync/send";
 
 export default function OutboxControls({

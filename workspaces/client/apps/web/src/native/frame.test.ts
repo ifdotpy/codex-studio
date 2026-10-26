@@ -1,7 +1,155 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { bindNativeFrames } from "./frame";
+import { bindNativeFrames, frameRequest } from "./frame";
+
+it("gets an identity from Rust without a browser timer or crypto", async () => {
+  const listeners = new Set<(event: MessageEvent) => void>();
+  const timer = vi.fn(() => {
+    throw new Error("Browser deadlines are forbidden.");
+  });
+  const parent = {
+    postMessage: vi.fn((message: any) =>
+      queueMicrotask(() => {
+        for (const listener of listeners)
+          listener({
+            source: parent,
+            origin: "tauri://localhost",
+            data: {
+              kind: "studio-native-frame-response",
+              id: message.id,
+              result:
+                message.method === "system.uuid"
+                  ? "00000000-0000-4000-8000-000000000001"
+                  : true,
+            },
+          } as unknown as MessageEvent);
+      }),
+    ),
+  };
+  vi.stubGlobal("crypto", undefined);
+  vi.stubGlobal("window", {
+    parent,
+    setTimeout: timer,
+    addEventListener: (name: string, callback: any) => {
+      if (name === "message") listeners.add(callback);
+    },
+    removeEventListener: (name: string, callback: any) => {
+      if (name === "message") listeners.delete(callback);
+    },
+  });
+  await expect(frameRequest("read", {})).resolves.toBe(true);
+  expect(
+    parent.postMessage.mock.calls.map(([request]) => request.method),
+  ).toEqual(["system.uuid", "read"]);
+  expect(parent.postMessage.mock.calls[1][0].id).toBe(
+    "00000000-0000-4000-8000-000000000001",
+  );
+  expect(timer).not.toHaveBeenCalled();
+  expect(listeners.size).toBe(0);
+});
 
 afterEach(() => vi.unstubAllGlobals());
+it("selects a native context from the frame owner and refuses foreign handles", async () => {
+  let listener: (event: MessageEvent) => Promise<void>;
+  vi.stubGlobal("window", {
+    addEventListener: (_: string, callback: typeof listener) => {
+      listener = callback;
+    },
+    removeEventListener: vi.fn(),
+  });
+  const source = { postMessage: vi.fn() };
+  const frame = {
+    src: "studio-view://studio-remote.localhost/?studio-server=remote",
+    isConnected: true,
+    contentWindow: source,
+  };
+  const otherSource = { postMessage: vi.fn() };
+  const other = {
+    src: "studio-view://studio-other.localhost/?studio-server=other",
+    isConnected: true,
+    contentWindow: otherSource,
+  };
+  const frames = new Map([
+    ["remote", frame as unknown as HTMLIFrameElement],
+    ["other", other as unknown as HTMLIFrameElement],
+  ]);
+  const invoke = vi.fn(async (method: string) =>
+    method === "service.open"
+      ? {
+          handle: "remote-capability",
+          serverId: "remote",
+          workspaceId: "a".repeat(32),
+        }
+      : { saved: true },
+  );
+  const dispose = bindNativeFrames(frames, invoke);
+  const event = (method: string, params: unknown, caller = frame) =>
+    ({
+      source: caller.contentWindow,
+      origin: new URL(caller.src).origin,
+      data: {
+        kind: "studio-native-frame-request",
+        id: "exact",
+        method,
+        params,
+      },
+    }) as unknown as MessageEvent;
+  // Custom-scheme URL.origin is null in Node, so use the actual WebView origin.
+  const from = (method: string, params: unknown, caller = frame) =>
+    ({
+      ...event(method, params, caller),
+      origin: `studio-view://${new URL(caller.src).host}`,
+    }) as MessageEvent;
+  await listener!(
+    from("service.open", {
+      serverId: "local",
+      stateDirectory: "/foreign",
+      credentialId: "forged",
+    }),
+  );
+  expect(invoke).toHaveBeenLastCalledWith(
+    "service.open",
+    { serverId: "remote" },
+    "exact",
+  );
+  await listener!(
+    from(
+      "service.request",
+      {
+        handle: "remote-capability",
+        method: "outbox.enqueue",
+        params: { body: { id: "original" } },
+      },
+      other,
+    ),
+  );
+  expect(otherSource.postMessage.mock.lastCall?.[0].error).toContain(
+    "another server view",
+  );
+  expect(invoke).toHaveBeenCalledTimes(1);
+  await listener!(
+    from("service.request", {
+      handle: "remote-capability",
+      method: "outbox.enqueue",
+      params: { body: { id: "original" } },
+    }),
+  );
+  expect(invoke).toHaveBeenCalledTimes(2);
+  frames.delete("remote");
+  frame.src = "studio-view://studio-third.localhost/?studio-server=third";
+  frames.set("third", frame as unknown as HTMLIFrameElement);
+  await listener!(
+    from("service.request", {
+      handle: "remote-capability",
+      method: "outbox.enqueue",
+      params: {},
+    }),
+  );
+  expect(source.postMessage.mock.lastCall?.[0].error).toContain(
+    "another server view",
+  );
+  expect(invoke).toHaveBeenCalledTimes(2);
+  dispose();
+});
 it("derives the caller from the live frame and exposes only pure commands", async () => {
   let listener: (event: MessageEvent) => Promise<void>;
   vi.stubGlobal("window", {

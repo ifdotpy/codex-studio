@@ -9,3 +9,17 @@ test("macOS memory comes from the kernel's available percent", () => {
   for (const bad of ["", "-5", "101", "8.5", "high", undefined])
     expect(darwinAvailableBytes(bad, total)).toBeUndefined();
 });
+
+test("worker planning reads current contention once without sleeping", async () => {
+  const { sampleCompetingRunnableProcesses } =
+    await import("../playwright-workers.mjs");
+  let reads = 0;
+  const result = sampleCompetingRunnableProcesses({
+    readProcStat: () => {
+      reads++;
+      return "procs_running 4\n";
+    },
+  });
+  expect(result).toEqual({ samples: [3], competingRunnable: 3 });
+  expect(reads).toBe(1);
+});

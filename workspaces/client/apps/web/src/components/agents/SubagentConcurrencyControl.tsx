@@ -3,7 +3,9 @@ import { useServerStorage } from "../../servers/ServerServicesContext";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { SegmentedControl, NumberInput, Button } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, errorText, type PostBody } from "../../api";
+import { ApiError } from "../../apiErrors";
+import { errorText } from "../../apiPresentation";
+import type { PostBody } from "../../api";
 import {
   DEFAULT_SUBAGENT_CONCURRENCY,
   MAX_SUBAGENT_CONCURRENCY,

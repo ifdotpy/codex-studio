@@ -1,11 +1,7 @@
 import { randomUUID } from "../../../uuid";
-import {
-  ApiError,
-  errorText,
-  type PostBody,
-  type PostResult,
-  type ServerApi,
-} from "../../../api";
+import { ApiError } from "../../../apiErrors";
+import { errorText } from "../../../apiPresentation";
+import type { PostBody, PostResult, ServerApi } from "../../../api";
 import type { Json } from "../../../types";
 
 /** A provider adapter sets `canMoveToBackground` only while its native control can act. */

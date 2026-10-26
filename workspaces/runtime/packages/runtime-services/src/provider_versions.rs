@@ -919,6 +919,9 @@ impl ProviderVersionMonitor {
                     state.upstream_enabled = upstream_enabled;
                 }
                 self.checked.notify_waiters();
+                crate::resource_notify::publish_bounded_source(
+                    crate::resource_notify::BoundedSource::Desktop,
+                );
             }
             return outcome;
         }
@@ -939,6 +942,9 @@ impl ProviderVersionMonitor {
                 state.upstream_enabled = upstream_enabled;
             }
             self.checked.notify_waiters();
+            crate::resource_notify::publish_bounded_source(
+                crate::resource_notify::BoundedSource::Desktop,
+            );
         } else {
             outcome.retry = true;
         }

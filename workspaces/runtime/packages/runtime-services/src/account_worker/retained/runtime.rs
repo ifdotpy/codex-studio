@@ -130,6 +130,12 @@ impl Worker {
         }
         if is_vm_actor
             && let Some(actor) = actor_id.as_deref()
+            && !self.vm_sessions.contains_key(actor)
+        {
+            self.restore_existing_vm_actor(actor).await;
+        }
+        if is_vm_actor
+            && let Some(actor) = actor_id.as_deref()
             && let Some(actor_identity) = call.actor.as_ref()
             && !self
                 .vm_session_matches_actor(actor, &call.scope.account, actor_identity.epoch)

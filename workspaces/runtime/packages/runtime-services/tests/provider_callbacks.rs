@@ -6,9 +6,6 @@ use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseB
 use studio_runtime_services::provider_callbacks::*;
 use studio_runtime_store::RuntimeStore;
 
-type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
-type Case = (&'static str, fn() -> CaseFuture);
-
 struct Template {
     value: Value,
 }
@@ -73,6 +70,7 @@ fn tool_value(reply: &Reply) -> Value {
     serde_json::from_str(body(reply)["contentItems"][0]["text"].as_str().unwrap()).unwrap()
 }
 
+#[tokio::test]
 async fn provider_callbacks_python_answer_corpus() {
     for case in template().value["answers"].as_array().unwrap() {
         let (actual, history) = answer_value(
@@ -85,6 +83,7 @@ async fn provider_callbacks_python_answer_corpus() {
         assert_eq!(history, case["history"]);
     }
 }
+#[tokio::test]
 async fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     let (_dir, store, context) = fixture().await;
     let frame = call(
@@ -141,6 +140,7 @@ async fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     assert_ne!(first.identity, replay.identity);
     assert!(!tool_value(&first)["id"].as_str().unwrap().is_empty());
 }
+#[tokio::test]
 async fn provider_callbacks_human_pending_and_write_outcomes() {
     let (_dir, store, context) = fixture().await;
     let frame = request(
@@ -206,6 +206,7 @@ async fn provider_callbacks_human_pending_and_write_outcomes() {
         prepared
     );
 }
+#[tokio::test]
 async fn provider_callbacks_stale_and_worker_authority() {
     let (_dir, store, context) = fixture().await;
     let mut stale = context.clone();
@@ -256,6 +257,7 @@ async fn provider_callbacks_stale_and_worker_authority() {
     );
 }
 
+#[tokio::test]
 async fn provider_callbacks_transaction_failpoint_matrix() {
     // Admission and claim failpoints leave no committed running claim, so retry
     // may execute. Execution failpoints happen after claim commit: they roll
@@ -411,6 +413,7 @@ async fn provider_callbacks_transaction_failpoint_matrix() {
         }
     }
 }
+#[tokio::test]
 async fn provider_callbacks_not_sent_and_expiry() {
     let (_dir, store, context) = fixture().await;
     let frame = request(
@@ -461,6 +464,7 @@ async fn provider_callbacks_not_sent_and_expiry() {
             .is_err()
     );
 }
+#[tokio::test]
 async fn provider_callbacks_malformed_and_foreign_records_are_refused() {
     let (_dir, store, context) = fixture().await;
     for field in ["epoch", "accountKey", "threadId", "turnId"] {
@@ -504,6 +508,7 @@ async fn provider_callbacks_malformed_and_foreign_records_are_refused() {
         0
     );
 }
+#[tokio::test]
 async fn provider_callbacks_local_message_once_and_worker_chat() {
     let (_dir, store, context) = fixture().await;
     let worker = template().value["agents"][1]["id"].as_str().unwrap();
@@ -553,6 +558,7 @@ async fn provider_callbacks_local_message_once_and_worker_chat() {
     );
 }
 
+#[tokio::test]
 async fn provider_callbacks_worker_versioned_progress_reaches_the_parent_once() {
     // Live cutover 4: every versioned progress update was refused with
     // "requires coordination/versioned-progress-delivery".
@@ -651,6 +657,7 @@ async fn provider_callbacks_worker_versioned_progress_reaches_the_parent_once() 
     );
 }
 
+#[tokio::test]
 async fn provider_callbacks_python_reservations_and_restart() {
     let (_dir, store, context) = fixture().await;
     recover_connection(&store, &context.account, &context.connection, 20.0)
@@ -738,6 +745,7 @@ async fn provider_callbacks_python_reservations_and_restart() {
     }
 }
 
+#[tokio::test]
 async fn provider_callbacks_utility_invalid_and_deleted() {
     let (_dir, store, context) = fixture().await;
     let time = request(Method::CurrentTimeRead, RequestId::Number(0), json!({}));
@@ -800,6 +808,7 @@ async fn provider_callbacks_utility_invalid_and_deleted() {
     );
 }
 
+#[tokio::test]
 async fn provider_callbacks_concurrent_duplicate_runs_once() {
     let (_dir, store, context) = fixture().await;
     let gate = std::sync::Arc::new(tokio::sync::Barrier::new(2));
@@ -836,6 +845,7 @@ async fn provider_callbacks_concurrent_duplicate_runs_once() {
     );
 }
 
+#[tokio::test]
 async fn provider_callbacks_answer_commit_failpoint() {
     let (_dir, store, context) = fixture().await;
     let frame = request(
@@ -910,6 +920,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
     ));
 }
 
+#[tokio::test]
 async fn provider_callbacks_python_durable_answers() {
     let (_dir, store, context) = fixture().await;
     for (index, case) in template().value["answers"]
@@ -966,6 +977,7 @@ async fn provider_callbacks_python_durable_answers() {
     }
 }
 
+#[tokio::test]
 async fn provider_callbacks_python_dynamic_read_and_title() {
     let (_dir, store, context) = fixture().await;
     for case in template().value["dynamic"].as_array().unwrap() {
@@ -1000,6 +1012,7 @@ async fn provider_callbacks_python_dynamic_read_and_title() {
     assert_eq!(lead["needsTitle"], false);
 }
 
+#[tokio::test]
 async fn provider_callbacks_python_visible_id_resolution() {
     let (_dir, store, context) = fixture().await;
     for (index, case) in template().value["resolutions"]
@@ -1097,78 +1110,3 @@ async fn provider_callbacks_unjournaled_card_is_refused_without_writes() {
 
 #[path = "provider_callbacks/review.rs"]
 mod review_regressions;
-
-#[tokio::test]
-async fn provider_callbacks_corpus() {
-    let cases: &[Case] = &[
-        ("python_answer_corpus", || {
-            Box::pin(provider_callbacks_python_answer_corpus())
-        }),
-        ("durable_tool_replay_and_content_conflict", || {
-            Box::pin(provider_callbacks_durable_tool_replay_and_content_conflict())
-        }),
-        ("human_pending_and_write_outcomes", || {
-            Box::pin(provider_callbacks_human_pending_and_write_outcomes())
-        }),
-        ("stale_and_worker_authority", || {
-            Box::pin(provider_callbacks_stale_and_worker_authority())
-        }),
-        ("transaction_failpoint_matrix", || {
-            Box::pin(provider_callbacks_transaction_failpoint_matrix())
-        }),
-        ("not_sent_and_expiry", || {
-            Box::pin(provider_callbacks_not_sent_and_expiry())
-        }),
-        ("malformed_and_foreign_records_are_refused", || {
-            Box::pin(provider_callbacks_malformed_and_foreign_records_are_refused())
-        }),
-        ("local_message_once_and_worker_chat", || {
-            Box::pin(provider_callbacks_local_message_once_and_worker_chat())
-        }),
-        ("worker_versioned_progress_reaches_the_parent_once", || {
-            Box::pin(provider_callbacks_worker_versioned_progress_reaches_the_parent_once())
-        }),
-        ("python_reservations_and_restart", || {
-            Box::pin(provider_callbacks_python_reservations_and_restart())
-        }),
-        ("utility_invalid_and_deleted", || {
-            Box::pin(provider_callbacks_utility_invalid_and_deleted())
-        }),
-        ("concurrent_duplicate_runs_once", || {
-            Box::pin(provider_callbacks_concurrent_duplicate_runs_once())
-        }),
-        ("answer_commit_failpoint", || {
-            Box::pin(provider_callbacks_answer_commit_failpoint())
-        }),
-        ("python_durable_answers", || {
-            Box::pin(provider_callbacks_python_durable_answers())
-        }),
-        ("python_dynamic_read_and_title", || {
-            Box::pin(provider_callbacks_python_dynamic_read_and_title())
-        }),
-        ("python_visible_id_resolution", || {
-            Box::pin(provider_callbacks_python_visible_id_resolution())
-        }),
-        ("review regressions", || {
-            Box::pin(review_regressions::run_corpus())
-        }),
-    ];
-    let mut failures = Vec::new();
-    for (name, case) in cases {
-        if let Err(payload) =
-            futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(case())).await
-        {
-            let message = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic");
-            failures.push(format!("{name}: {message}"));
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "provider callback failures:\n{}",
-        failures.join("\n")
-    );
-}

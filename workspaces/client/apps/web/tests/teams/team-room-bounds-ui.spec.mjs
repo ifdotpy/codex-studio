@@ -56,7 +56,6 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
   const room={id:'private:lead:worker',kind:'private',members:['lead','worker'],name:'Worker',updated:1,lastMessage:{seq:1391,text:'room message 1391',created:1,sender:'worker'}};
   const data={stateDir:'room-fixture',threads:[lead,worker],runtime:{rooms:[room],requests:[],complaints:[],projects:[],peerTeams:[]}};
   const app=createRoot(document.getElementById('root'));
-  window.showLegacy=()=>app.render(<div className='team-chat-messages'>{Array.from({length:1391},(_,i)=><article className='team-message' key={i}><strong>Worker</strong><p>{'room message '+(i+1)+' '}{'x'.repeat(520)}</p></article>)}</div>);
   window.showCurrent=()=>app.render(<MantineProvider theme={theme} defaultColorScheme='dark'><TeamChats data={data} leadId='lead' refresh={async()=>{}} notify={()=>{}}/></MantineProvider>);
   window.showCurrent();`;
         },
@@ -143,13 +142,6 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
-    await page.evaluate(() => window.showLegacy());
-    const legacyStart = Date.now();
-    await page.waitForFunction(
-      () => document.querySelectorAll(".team-message").length === 1391,
-    );
-    const legacyRenderMs = Date.now() - legacyStart;
-    await page.evaluate(() => window.showCurrent());
     await page.locator('[data-room="private:lead:worker"]').click();
     const start = Date.now();
     await page
@@ -181,14 +173,28 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     );
     assert.ok(requests.some((request) => request.before !== null));
     assert.ok(requests.some((request) => request.after !== null));
+    await page
+      .getByRole("button", { name: "Latest messages", exact: true })
+      .click();
+    await expect(page.locator('[data-message="m1391"]')).toBeVisible();
+    const bottomGap = () =>
+      scroll.evaluate(
+        (element) =>
+          element.scrollHeight - element.scrollTop - element.clientHeight,
+      );
+    await expect.poll(bottomGap).toBeLessThan(2);
+    // A mounted row grows after its first measurement (for example, an image loads).
+    await page.locator('[data-message="m1391"]').evaluate((element) => {
+      element.style.paddingBottom = "300px";
+    });
+    await expect.poll(bottomGap).toBeLessThan(2);
+    expect(await page.locator(".team-message").count()).toBeLessThan(60);
     expect(errors).toEqual([]);
     console.log(
       JSON.stringify({
         ok: true,
         retainedMessages: Number(retained),
         mountedMessages: mounted,
-        legacyMessages: 1391,
-        legacyRenderMs,
         initialRenderMs: initialMs,
         requests,
       }),

@@ -1,12 +1,14 @@
-import { useServerApi } from "../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerLocalDrafts,
+} from "../servers/ServerServicesContext";
 import { useRef, useState, type SetStateAction } from "react";
-import "../api";
-import { writeLocalDraft } from "../sync/localDraft";
 import type { Json } from "../types";
 
 // These profile and rule forms contain no credential fields.
 export function useFormDraft(key: string, notify: (message: string) => void) {
   const { saved } = useServerApi();
+  const { writeLocalDraft } = useServerLocalDrafts();
 
   const scopes = useRef(new Map<string, Json | null>());
   const [, render] = useState(0);

@@ -1,3 +1,4 @@
+import { MODEL_WHITELIST_PREFERENCE_KEY } from "../generated/sharedValues";
 import type { components } from "../generated/api";
 export type PreferenceField = components["schemas"]["PreferenceField"];
 export type PreferenceFields = Record<string, PreferenceField>;
@@ -16,7 +17,8 @@ export function preferenceScope(key: string): PreferenceScope | null {
     key.startsWith("codex-project-tree:") ||
     key.startsWith("codex-project-compact:") ||
     key.startsWith("studio-prompt-bookmarks:") ||
-    key === "codex-worker-disclosures"
+    key === "codex-worker-disclosures" ||
+    key === MODEL_WHITELIST_PREFERENCE_KEY
   )
     return "server";
   return null;
@@ -61,6 +63,36 @@ export function mergePreferenceFields(
       result[key] = field;
   }
   return result;
+}
+/** Legacy adapter for the canonical Rust client's exact-field ACK policy. */
+export function acknowledgePreferenceFieldMap(
+  current: PreferenceFields,
+  submitted: PreferenceFields,
+  accepted: PreferenceFields,
+): PreferenceFields {
+  const result = { ...current };
+  const protectedNames = new Set(
+    [...Object.keys(current), ...Object.keys(submitted)].filter(
+      (name) =>
+        canonicalPreferenceJson(current[name] ?? null) !==
+        canonicalPreferenceJson(submitted[name] ?? null),
+    ),
+  );
+  for (const [name, sent] of Object.entries(submitted)) {
+    if (
+      canonicalPreferenceJson(result[name] ?? null) !==
+      canonicalPreferenceJson(sent)
+    )
+      continue;
+    if (accepted[name]) result[name] = accepted[name];
+    else delete result[name];
+  }
+  return mergePreferenceFields(
+    result,
+    Object.fromEntries(
+      Object.entries(accepted).filter(([name]) => !protectedNames.has(name)),
+    ),
+  );
 }
 export function storageFields(
   key: string,
@@ -116,7 +148,11 @@ export function prunePreferenceFields(
       key = name;
     }
     if (key.startsWith("studio-turns:")) continue;
-    if (key === "codex-studio-preferences-v1" || key.startsWith("server-"))
+    if (
+      key === "codex-studio-preferences-v1" ||
+      key.startsWith("server-") ||
+      key === MODEL_WHITELIST_PREFERENCE_KEY
+    )
       protectedFields[name] = field;
     else items.push([name, field]);
   }

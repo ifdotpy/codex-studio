@@ -1,7 +1,8 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import { Button, Checkbox, Switch, Textarea, TextInput } from "@mantine/core";
-import { errorText, type PostBody, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostBody, PostResult } from "../api";
 import type { Agent } from "../types";
 
 type FederationResponse = PostResult<"/api/federation">;

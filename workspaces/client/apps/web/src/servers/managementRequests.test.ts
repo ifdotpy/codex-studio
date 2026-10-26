@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { expect, it, vi } from "vitest";
 import { ServerManagementRequests } from "./managementRequests";
 function fixture() {
@@ -48,6 +49,7 @@ it("tab B cannot clear tab A's uncertain discover request", async () => {
 });
 it("serializes management mutations across tabs and gives each its own saved key", async () => {
   const f = fixture();
+  const entered = Promise.withResolvers<void>();
   let finish!: () => void;
   const calls: string[] = [];
   const a = new ServerManagementRequests(
@@ -58,6 +60,7 @@ it("serializes management mutations across tabs and gives each its own saved key
       calls.push(body.requestId);
       await new Promise<void>((resolve) => {
         finish = resolve;
+        entered.resolve();
       });
     },
   );
@@ -71,7 +74,8 @@ it("serializes management mutations across tabs and gives each its own saved key
   );
   const one = a.run({ action: "discover", requestId: "one" });
   const two = b.run({ action: "settings", autoPair: false, requestId: "two" });
-  await vi.waitFor(() => expect(calls).toEqual(["one"]));
+  await entered.promise;
+  expect(calls).toEqual(["one"]);
   expect([...f.records.keys()]).toEqual([
     "studio-server-management-v1:home:one",
   ]);

@@ -16,6 +16,7 @@ fn state_root() -> tempfile::TempDir {
 
 fn rust_snapshot(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("read Rust startup rows");
+    super::agent_view_fixtures::assert_agent_view_projections(&db);
     let records = |table: &str| -> Vec<Value> {
         let mut statement = db
             .prepare(&format!("SELECT record FROM {table} ORDER BY id"))
@@ -65,7 +66,7 @@ fn rust_snapshot(store: &RuntimeStore) -> Value {
     let sync_entities = {
         let mut statement = db
             .prepare(
-                "SELECT collection,id,payload,deleted FROM sync_entities ORDER BY collection,id",
+                "SELECT collection,id,payload,deleted FROM sync_entities WHERE collection NOT IN ('agentSummary','agentDetail') ORDER BY collection,id",
             )
             .expect("prepare projection snapshot");
         statement

@@ -1,7 +1,8 @@
 import { randomUUID } from "../uuid";
 import { Button } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { errorText, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostResult } from "../api";
 import { useServerApi } from "../servers/ServerServicesContext";
 
 type Usage = PostResult<"/api/claude/file-backups">;

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "snapshotMethod": "registry.snapshot",
+  "eventTopic": "registry",
+  "revision": {
+    "purpose": "Committed native paired-server authority version",
+    "vaultField": "registryRevision",
+    "representation": "canonical-decimal-string",
+    "maximum": "9223372036854775807"
+  },
+  "snapshotFields": ["serverId", "workspaceId", "revision", "local", "servers"],
+  "localFields": ["id", "label", "origin", "workspaceId"],
+  "serverRequiredFields": ["id", "label", "origin", "credentialId"],
+  "serverOptionalFields": ["workspaceId"],
+  "eventFields": ["event", "value"],
+  "errorEventFields": ["event", "error"],
+  "labelMaximumCharacters": 128,
+  "labelLengthUnit": "UTF-16-code-units"
+}

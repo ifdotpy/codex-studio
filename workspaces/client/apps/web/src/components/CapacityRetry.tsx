@@ -2,7 +2,8 @@ import { useServerApi } from "../servers/ServerServicesContext";
 import ErrorDescription from "./ErrorDescription";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
-import { errorText, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostResult } from "../api";
 import {
   DISK_FULL_CAUSE,
   type CapacityRetry as CapacityRetryRecord,

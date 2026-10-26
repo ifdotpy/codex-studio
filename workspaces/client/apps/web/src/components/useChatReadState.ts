@@ -8,7 +8,8 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { ApiError, errorText } from "../api";
+import { ApiError } from "../apiErrors";
+import { errorText } from "../apiPresentation";
 import "../sync/client";
 import type { Agent, Message, Snapshot } from "../types";
 
@@ -208,7 +209,7 @@ export function useChatReadState(
         current.uncertain.delete(proof.id);
         changedMetadata((value) => value + 1);
         redraw((value) => value + 1);
-        await latest.current.refresh();
+        // The mutation response confirms the CAS; the agent stream carries it to other views.
       } catch (error) {
         if (valid()) {
           current.attempted.delete(attempt);

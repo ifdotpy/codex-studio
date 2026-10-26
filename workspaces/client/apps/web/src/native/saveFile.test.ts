@@ -21,8 +21,10 @@ it("sends bounded exact chunks then reports a cancelled save", async () => {
     .map(([, p]) => (p as { value: { offset: number; base64: string } }).value);
   expect(chunks.map((c) => c.offset)).toEqual([0, 256 * 1024]);
   expect(
-    chunks.flatMap((c) => [...atob(c.base64)].map((x) => x.charCodeAt(0))),
-  ).toEqual([...bytes]);
+    Buffer.concat(chunks.map((c) => Buffer.from(c.base64, "base64"))).equals(
+      Buffer.from(bytes),
+    ),
+  ).toBe(true);
   expect(invoke.mock.calls.at(-1)?.[0]).toBe("desktop.saveFinish");
 });
 it("does not replay an uncertain save and only discards its transfer", async () => {

@@ -3,7 +3,7 @@ import ErrorDescription from "../../ErrorDescription";
 import { useRef, useState } from "react";
 import { Button, Modal } from "@mantine/core";
 import { Clock3 } from "lucide-react";
-import { errorText } from "../../../api";
+import { errorText } from "../../../apiPresentation";
 import type { Agent } from "../../../types";
 
 export default function SafetyBuffering({ agent }: { agent: Agent }) {

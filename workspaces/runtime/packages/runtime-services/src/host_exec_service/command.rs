@@ -393,6 +393,8 @@ impl HostService {
         let mut inner = self.inner();
         inner.children.remove(&identity);
         inner.commands.remove(&identity);
+        #[cfg(test)]
+        self.command_finished.notify_one();
     }
 
     #[allow(clippy::too_many_lines, reason = "one ordered command lifecycle")]

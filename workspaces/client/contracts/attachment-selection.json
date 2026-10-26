@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "methods": {
+    "pending": "attachments.pending",
+    "bindTarget": "attachments.bindTarget",
+    "textIntent": "attachments.textIntent",
+    "settle": "attachments.settle",
+    "activate": "attachments.activate",
+    "deactivate": "attachments.deactivate",
+    "pick": "desktop.pickAttachmentSelection",
+    "contextMenu": "attachments.contextMenu"
+  },
+  "privateMethods": {
+    "capture": "attachments.capture",
+    "captureStatus": "attachments.captureStatus"
+  },
+  "eventTopic": "attachment-selection",
+  "requestScopeField": "_attachmentScope",
+  "pasteMenuAction": "native-attachment-paste",
+  "popupPasteActionPrefix": "native-attachment-popup:",
+  "gesturePurposes": { "contextMenu": 12 },
+  "textFile": {
+    "name": "message.txt",
+    "mime": "text/plain",
+    "stageMethod": "files.text"
+  },
+  "kinds": ["pick", "drop", "paste", "text"],
+  "batchFields": [
+    "id",
+    "enqueueRequestId",
+    "serverId",
+    "workspaceId",
+    "files",
+    "target"
+  ],
+  "identityFields": ["id", "enqueueRequestId", "serverId", "workspaceId"],
+  "targetFields": ["stateDir", "agent", "workspace"],
+  "parameterFields": {
+    "attachments.pending": ["scope", "kind"],
+    "attachments.bindTarget": ["scope", "selectionId", "target"],
+    "attachments.textIntent": ["scope", "target", "text"],
+    "attachments.settle": ["scope", "batch"],
+    "attachments.capture": ["scope", "kind", "target", "files"],
+    "attachments.captureStatus": ["scope", "captureId", "kind", "target"]
+  },
+  "captureFileFields": ["name", "mime", "base64"],
+  "limits": {
+    "fileBytesOwner": "studio_runtime_schema::shared_values::MAX_USER_ATTACHMENT_BYTES",
+    "fileCountOwner": "studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS"
+  }
+}

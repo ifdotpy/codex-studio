@@ -1,12 +1,8 @@
 import { randomUUID } from "../../uuid";
 import { Button } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import {
-  errorText,
-  type GetResult,
-  type PostBody,
-  type PostResult,
-} from "../../api";
+import { errorText } from "../../apiPresentation";
+import type { GetResult, PostBody, PostResult } from "../../api";
 import { useServerServices } from "../../servers/ServerServicesContext";
 import { serverViewId } from "../../servers/environment";
 

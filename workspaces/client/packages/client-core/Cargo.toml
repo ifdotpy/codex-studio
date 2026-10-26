@@ -10,6 +10,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 studio-client-domain = { path = "../client-domain" }
+studio-runtime-schema = { path = "../../../runtime/packages/runtime-schema" }
 libc.workspace = true
 ring.workspace = true
 rustls.workspace = true
@@ -41,12 +42,13 @@ objc2 = "=0.6.5"
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFData", "CFCGTypes"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGPDFDocument", "CGPDFPage", "CGDataProvider", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGAffineTransform"] }
 objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKWebpagePreferences", "WKWebsiteDataStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKFrameInfo", "WKContentWorld", "WKSnapshotConfiguration", "block2"] }
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSEvent", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSImage", "NSBitmapImageRep", "NSImageRep", "block2"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSError", "NSProcessInfo", "NSLocale", "NSGeometry", "NSBundle", "NSNotification", "NSOperation", "block2"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSEvent", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWorkspace", "NSRunningApplication", "NSPasteboard", "NSImage", "NSBitmapImageRep", "NSImageRep", "block2", "NSView", "NSAlert", "NSButton", "NSControl"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSError", "NSProcessInfo", "NSLocale", "NSGeometry", "NSBundle", "NSNotification", "NSOperation", "block2", "NSDictionary", "NSValue", "NSKeyValueObserving"] }
 objc2-quick-look-ui = { version = "=0.3.2", default-features = false, features = ["std", "QLPreviewItem", "QLPreviewView", "objc2-app-kit"] }
 objc2-avf-audio = { version = "=0.3.2", default-features = false, features = ["std", "block2", "AVAudioEngine", "AVAudioNode", "AVAudioIONode", "AVAudioFormat", "AVAudioBuffer", "AVAudioTime", "AVAudioTypes", "AVAudioPlayer", "AVAudioChannelLayout", "AVAudioSourceNode", "AVAudioMixerNode", "objc2-core-audio-types"] }
 objc2-core-audio-types = { version = "=0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes", "objc2"] }
-objc2-av-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
+objc2-av-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat", "AVAsset", "AVAsynchronousKeyValueLoading", "AVPlayer", "AVPlayerItem"] }
+objc2-av-kit = { version = "=0.3.2", default-features = false, features = ["std", "AVPlayerView", "objc2-app-kit", "objc2-av-foundation"] }
 objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNNotificationSettings", "UNNotificationSound"] }
 dispatch2 = "=0.3.1"
 block2 = "=0.6.2"

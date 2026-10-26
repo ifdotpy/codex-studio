@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 const MAX_EVENT: usize = 4 * 1024 * 1024;
 
 #[derive(Default)]
-struct Parser {
+pub(crate) struct Parser {
     line: Vec<u8>,
     data: String,
     event: String,
@@ -17,14 +17,14 @@ struct Parser {
     retry: Option<u64>,
 }
 impl Parser {
-    fn new(id: String) -> Self {
+    pub(crate) fn new(id: String) -> Self {
         Self {
             first: true,
             id,
             ..Self::default()
         }
     }
-    fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Value>, String> {
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Value>, String> {
         let mut events = Vec::new();
         for &byte in bytes {
             if self.cr && byte == b'\n' {

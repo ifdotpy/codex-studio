@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { beforeEach, expect, it, vi } from "vitest";
 import { createHash, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -169,9 +170,11 @@ it("releases a final pre-handler HTTP failure for the next user action", async (
 });
 it("bounds an ordinary remote POST and keeps the same identity for its retry", async () => {
   vi.useFakeTimers();
+  const entered = Promise.withResolvers<void>();
   const requests: Request[] = [];
   vi.stubGlobal("fetch", (request: Request) => {
     requests.push(request);
+    entered.resolve();
     if (requests.length > 1)
       return Promise.resolve(Response.json({ rows: [] }));
     return new Promise<Response>((_resolve, reject) =>
@@ -185,7 +188,8 @@ it("bounds an ordinary remote POST and keeps the same identity for its retry", a
       () => "success",
       (error) => error.name,
     );
-    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await entered.promise;
+    expect(requests).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(16000);
     expect(requests[0].signal.aborted).toBe(true);
     expect(await pending).toBe("NetworkTimeoutError");

@@ -91,7 +91,7 @@ native Codex delegation disabled in both modes.
 
 **Subagents** sets the account, model, reasoning level, and Fast default for future workers in this team.
 The default is `gpt-6-luna` with `high` reasoning for Codex and Claude leads.
-The orchestrator can select any available model and reasoning level for either
+When the user explicitly requests an override, the orchestrator can select any available model and reasoning level for either
 an implementer or reviewer. Explicit models are not limited by the default
 subagent model's price or provider; account selection and model availability
 still apply.
@@ -104,7 +104,14 @@ model access and reasoning levels. Each batch validates all targets before it
 creates any worker. Parent transfers preserve independent worker settings.
 The lead can override execution defaults in `orchestration_spawn`, but cannot change the user's account choice.
 Omitted fields use the latest root lead defaults, including for workers created by another worker.
-A null default model uses the root lead model. A null effort uses the selected model's native default.
+Implementers use the worker defaults. A null worker default model uses the root lead model.
+Reviewers use the team review defaults, falling back to the caller's model and effort when no review model is configured.
+Both `orchestration_spawn` with `role: "reviewer"` and `orchestration_review` use the
+[review settings owner](../workspaces/runtime/packages/runtime-services/src/native_review.rs).
+An explicit reviewer model equal to the caller's model keeps the caller's effort;
+a different explicit model without effort uses its native default. Explicit effort wins,
+including `effort: null` on spawn for the selected model's native default.
+A null default effort uses the selected model's native default.
 Fast defaults to off. The main agent's reasoning and Fast settings do not become worker defaults.
 Explicit profile model and effort values override team defaults; explicit spawn fields override the profile.
 A profile's null effort leaves the team default in effect.
@@ -218,7 +225,9 @@ The server creates a managed reviewer in `cwd` without sending an initial user
 turn. `cwd` defaults to the caller's folder and must be inside a git repository;
 otherwise the call fails and no reviewer is created. It runs `review/start` on that reviewer's native thread.
 The caller's active turn continues. The reviewer uses read-only permissions and
-the caller's model, unless native `review_model` selects another model.
+the team review defaults, then the caller's model and effort. Explicit model and effort
+override these defaults as described above. Studio sets the reviewer's native
+`review_model` to the selected model, so account configuration cannot replace it.
 Team concurrency, active agent limits, and budget admission apply. Completed,
 failed, interrupted, and stopped paused agents do not use active agent slots.
 Completion sends one

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import {
   API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
@@ -62,7 +61,6 @@ test("an open transcript streams text without pulls and recovers incomplete inte
     delta: true,
     items: [item()],
     removed: [],
-    itemRevisions: { answer: createHash("sha256").update(text).digest("hex") },
     truncated: false,
   });
   const cacheDir = await mkdtemp(

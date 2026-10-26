@@ -1,4 +1,4 @@
-import { useServerApi } from "../servers/ServerServicesContext";
+import { useServerSync } from "../servers/ServerServicesContext";
 import { Text } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./ui/primitives";
@@ -16,22 +16,21 @@ export default function BrowserAccessNotice({
   active: boolean;
   compact?: boolean;
 }) {
-  const { get } = useServerApi();
+  const { subscribeStateProjection } = useServerSync();
 
   const [status, setStatus] = useState<BrowserStatus | null>(null);
 
   useEffect(() => {
     setStatus(null);
     if (!active) return;
-    const controller = new AbortController();
-    void get("/api/desktop", {
-      query: { account_key: accountKey },
-      signal: controller.signal,
-    })
-      .then((data) => setStatus(data.browser || null))
-      .catch(() => {});
-    return () => controller.abort();
-  }, [accountKey, active]);
+    return subscribeStateProjection(
+      (snapshot) => {
+        if (snapshot?.runtime.desktop)
+          setStatus(snapshot.runtime.desktop.browser || null);
+      },
+      () => {},
+    );
+  }, [accountKey, active, subscribeStateProjection]);
 
   if (compact)
     return (

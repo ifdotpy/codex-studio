@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
-use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
+use studio_runtime_schema::shared_values::{MAX_SAFE_INTEGER, MAX_VOICE_IDENTITY_CHARS};
 use studio_runtime_store::{
     AgentId, AgentRepository, Connection, QuestionsReadsRepository, RuntimeStore, StoreError,
     VoiceRecord, VoiceRepository,
@@ -29,7 +29,6 @@ pub mod provider;
 pub use crate::voice_runtime as runtime;
 
 const MAX_RECORD_TEXT: usize = 100_000;
-const MAX_IDENTITY: usize = 240;
 const MAX_PAYLOAD: usize = 100_000;
 const MAX_DELIVERY_RECORDS: usize = 2_000;
 const MAX_DELIVERY_TEXT: usize = 32_000;
@@ -339,6 +338,49 @@ pub async fn records(
     Ok(json!({"records": records, "cursor": cursor, "delivered": delivered, "session": session}))
 }
 
+/// A bounded transient interval. Large histories retain the HTTP recovery path.
+/// The returned cursor advances even when the interval cannot be inlined.
+pub async fn stream_records(
+    store: &RuntimeStore,
+    agent_id: &str,
+    after: i64,
+) -> Result<(i64, Option<Value>), VoiceError> {
+    use studio_runtime_schema::shared_values::SYNC_VOICE_STREAM_MAX_RECORDS;
+    let id = agent_id.to_owned();
+    let (agent, rows, session, cursor) = store
+        .read_async("runtime-services/voice-stream", move |connection| {
+            Ok::<_, StoreError>((
+                AgentRepository::get(connection, &AgentId::from(id.as_str()))?,
+                VoiceRepository::records_page(
+                    connection,
+                    &id,
+                    after,
+                    SYNC_VOICE_STREAM_MAX_RECORDS + 1,
+                )?,
+                VoiceRepository::latest_session(connection, &id)?,
+                VoiceRepository::record_sequence(connection, &id)?,
+            ))
+        })
+        .await?;
+    validate_agent(agent, agent_id)?;
+    if rows.len() > SYNC_VOICE_STREAM_MAX_RECORDS as usize {
+        return Ok((cursor, None));
+    }
+    let cursor = rows.last().map_or(after, |row| row.sequence);
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        validate_record(&row)?;
+        records.push(row.value()?);
+    }
+    if let Some(session) = &session {
+        validate_session(session)?;
+    }
+    Ok((
+        cursor,
+        Some(json!({"after":after,"cursor":cursor,"records":records,"session":session})),
+    ))
+}
+
 pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
     let agent_for_read = AgentId::from(agent_id);
     let (agent, rows) = store
@@ -605,11 +647,11 @@ fn validate_record(record: &VoiceRecord) -> Result<(), VoiceError> {
 
 fn validate_record_input(record: &VoiceRecord, payload: &Value) -> Result<(), VoiceError> {
     if record.id.is_empty()
-        || record.id.chars().count() > MAX_IDENTITY
+        || record.id.chars().count() > MAX_VOICE_IDENTITY_CHARS
         || record.agent.is_empty()
-        || record.session.chars().count() > MAX_IDENTITY
-        || record.item_id.chars().count() > MAX_IDENTITY
-        || record.previous_item_id.chars().count() > MAX_IDENTITY
+        || record.session.chars().count() > MAX_VOICE_IDENTITY_CHARS
+        || record.item_id.chars().count() > MAX_VOICE_IDENTITY_CHARS
+        || record.previous_item_id.chars().count() > MAX_VOICE_IDENTITY_CHARS
         || !RECORD_KINDS.contains(&record.kind.as_str())
         || record.text.chars().count() > MAX_RECORD_TEXT
         || !payload.is_object()
@@ -624,11 +666,11 @@ fn validate_record_content(record: &VoiceRecord) -> Result<(), VoiceError> {
     let payload: Value =
         serde_json::from_str(&record.payload).map_err(|_| invalid("voice_records", &record.id))?;
     if record.id.is_empty()
-        || record.id.chars().count() > MAX_IDENTITY
+        || record.id.chars().count() > MAX_VOICE_IDENTITY_CHARS
         || record.agent.is_empty()
-        || record.session.chars().count() > MAX_IDENTITY
-        || record.item_id.chars().count() > MAX_IDENTITY
-        || record.previous_item_id.chars().count() > MAX_IDENTITY
+        || record.session.chars().count() > MAX_VOICE_IDENTITY_CHARS
+        || record.item_id.chars().count() > MAX_VOICE_IDENTITY_CHARS
+        || record.previous_item_id.chars().count() > MAX_VOICE_IDENTITY_CHARS
         || !RECORD_KINDS.contains(&record.kind.as_str())
         || record.text.chars().count() > MAX_RECORD_TEXT
         || !payload.is_object()

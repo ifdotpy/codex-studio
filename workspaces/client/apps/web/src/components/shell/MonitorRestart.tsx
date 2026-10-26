@@ -1,7 +1,9 @@
 import { randomUUID } from "../../uuid";
 import { Button, Text, Textarea, TextInput } from "@mantine/core";
 import { useState } from "react";
-import { ApiError, errorText, type PostBody } from "../../api";
+import { ApiError } from "../../apiErrors";
+import { errorText } from "../../apiPresentation";
+import type { PostBody } from "../../api";
 import {
   useServerApi,
   useServerServices,

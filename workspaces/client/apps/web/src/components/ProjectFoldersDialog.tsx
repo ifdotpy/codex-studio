@@ -1,7 +1,7 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Tabs } from "@mantine/core";
 import { useEffect, useState } from "react";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import {
   readProjectServers,
   type LocationProject,

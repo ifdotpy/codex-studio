@@ -31,6 +31,7 @@ async fn spawn_permission_case(
                 AgentRepository::put(tx, &AgentRecord::from_value(saved).unwrap())?;
             }
             root["workerDefaults"] = json!({"model": "claude-haiku-4-5", "delegationDepth": 2});
+            root["reviewDefaults"] = json!({"model": "claude-haiku-4-5"});
             AgentRepository::put(tx, &AgentRecord::from_value(root).unwrap())
         })
         .await
@@ -74,6 +75,7 @@ async fn spawn_permission_case(
         .unwrap()
         .unwrap()
         .value();
+    assert_eq!(child["model"], "claude-haiku-4-5");
     assert_eq!(child["claudeOptions"]["permissionMode"], expected);
     assert_eq!(child["yoloMode"], expected == "bypassPermissions");
     assert!(

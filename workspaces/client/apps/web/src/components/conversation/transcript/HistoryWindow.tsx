@@ -9,7 +9,6 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import "../../../api";
 import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import { FOLLOW_THRESHOLD_PX } from "../../useConversationScroll";
 import type { HistoryGroup } from "../../turnHistoryModel";

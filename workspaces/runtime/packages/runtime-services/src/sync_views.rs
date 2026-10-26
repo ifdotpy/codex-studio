@@ -6,6 +6,11 @@ use std::sync::{Arc, OnceLock};
 
 use crate::event_write::truthy;
 
+/// Derived list-attention fields. Compatibility agent envelopes omit these;
+/// view-scoped summaries own them. Unit: OpenAPI field names.
+pub(crate) const AGENT_SUMMARY_ATTENTION_FIELDS: [&str; 3] =
+    ["hasQuestion", "hasApproval", "hasBackgroundWork"];
+
 /// Maximum last-answer text retained in an agent sync view. Unit: Unicode scalar values.
 pub(crate) const AGENT_SYNC_LAST_ANSWER_CHARS: usize = 4_000;
 
@@ -220,9 +225,16 @@ fn project_schema_value(
 pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Value> {
     let schema_name = match collection {
         "agent" => "AgentEntityDto",
+        "agentSummary" => "AgentSummaryEntityDto",
+        "agentDetail" => "AgentDetailEntityDto",
         "room" => "RoomEntityDto",
         "task" => "TaskEntityDto",
         "taskDetail" => "TaskDetailResponse",
+        "messageReceipt" => "MessageReceiptEntityDto",
+        "retainedWorktree" => "RetainedWorktreeEntityDto",
+        "questionHistory" => "AgentRequest",
+        "plan" => "PlanSummaryEntityDto",
+        "annotation" => "AnnotationEntityDto",
         "monitor" => "MonitorEntityDto",
         "complaint" => "ComplaintEntityDto",
         "request" => "RequestEntityDto",
@@ -265,7 +277,7 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
     {
         fields.remove(*field);
     }
-    Some(project_schema_value(
+    let mut projected = project_schema_value(
         &public_record,
         schema,
         "",
@@ -273,7 +285,28 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         0,
         collection == "agent",
         false,
-    ))
+    );
+    if collection == "task"
+        && let Some(tail) = record.get("tail").and_then(Value::as_str)
+        && let Some(summary) = projected.get("tail").and_then(Value::as_str)
+        && summary != tail
+    {
+        // The canonical text projection owns the bound. A task tail keeps
+        // that many newest characters and advertises the omitted output.
+        let suffix = tail
+            .chars()
+            .rev()
+            .take(summary.chars().count())
+            .collect::<String>();
+        projected["tail"] = json!(suffix.chars().rev().collect::<String>());
+        projected["outputTruncated"] = json!(true);
+    }
+    if matches!(collection, "agent" | "agentDetail")
+        && let Some(gate) = record.get("taskDefaultGate")
+    {
+        projected["taskDefaultGate"] = gate.clone();
+    }
+    Some(projected)
 }
 
 /// `(collection, field)` pairs that a sync view publishes only when set: a
@@ -291,6 +324,8 @@ pub struct AgentViewContext {
     pub project_server_id: Option<String>,
     pub launcher_alive: bool,
     pub empty_lead: bool,
+    pub has_question: bool,
+    pub has_approval: bool,
     pub latest_work_result_file: Option<String>,
     pub command_progress: Vec<studio_runtime_schema::agent_progress::AgentCommandProgress>,
     pub stall: Option<studio_runtime_schema::agent_progress::AgentStall>,
@@ -422,6 +457,19 @@ pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<V
     );
     view.insert("nextTurnSettingsSupported".to_owned(), Value::Bool(true));
     view.insert("readStateSupported".to_owned(), Value::Bool(true));
+    // False attention is represented by absence, preserving the legacy DTO's
+    // wire shape while a replacement summary clears any previous true flag.
+    for (field, enabled) in AGENT_SUMMARY_ATTENTION_FIELDS.into_iter().zip([
+        context.has_question,
+        context.has_approval,
+        !context.command_progress.is_empty(),
+    ]) {
+        if enabled {
+            view.insert(field.to_owned(), Value::Bool(true));
+        } else {
+            view.remove(field);
+        }
+    }
     if let Some(block) = block {
         view.insert("nativeThreadBlock".to_owned(), block);
     } else {
@@ -769,6 +817,26 @@ pub fn project_entity_view(
         }
     }
     project_persisted_record("project", &Value::Object(view))
+}
+
+/// Public retained-folder entity. Cleanup operation identities never leave the server.
+pub fn retained_worktree_entity(member: &Value) -> Option<Value> {
+    let intent = member.get("workspaceCleanupIntent")?;
+    if !matches!(
+        intent.get("phase").and_then(Value::as_str),
+        Some("not_sent" | "unknown")
+    ) || !matches!(
+        intent.pointer("/effect/kind").and_then(Value::as_str),
+        Some("remove_worktree" | "save_worktree_ref")
+    ) || member
+        .get("remoteWorker")
+        .is_some_and(|value| !value.is_null())
+    {
+        return None;
+    }
+    let projected = project_persisted_record("agent", member)?;
+    Some(json!({"id":member["id"], "rootId":member["rootId"],
+        "name":projected.get("name"), "cleanup":projected["workspaceCleanupIntent"]}))
 }
 
 #[cfg(test)]

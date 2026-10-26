@@ -90,5 +90,4 @@ export function estimateWorkerMemoryBytes(input: {
 }): number;
 export function sampleCompetingRunnableProcesses(input?: {
   readProcStat?: () => string | undefined;
-  pause?: (milliseconds: number) => void;
 }): { samples: number[]; competingRunnable: number };

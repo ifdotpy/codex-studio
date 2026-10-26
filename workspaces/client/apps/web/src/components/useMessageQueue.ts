@@ -3,17 +3,16 @@ import {
   useServerApi,
   useServerStorage,
   useServerLocalDrafts,
-  useServerStorageEventKey,
+  useServerPreferenceEvents,
 } from "../servers/ServerServicesContext";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, errorText } from "../api";
+import { ApiError } from "../apiErrors";
+import { errorText } from "../apiPresentation";
 import type { QueueItemDto, QueueView } from "../api";
 import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
-import { createQueueResourceRefresh } from "./queueResourceRefresh";
-import { retryableReadError } from "../sync/readRetry";
+import { useServerSync } from "../servers/ServerServicesContext";
 
 type QueueMutation =
   paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
@@ -84,11 +83,11 @@ export function useMessageQueue(p: {
   edited?: (id: string, text: string) => void;
   refresh: () => Promise<void>;
 }) {
-  const watchResourceReads = useServerResourceReads();
+  const { subscribeStateProjection } = useServerSync();
   const { get, syncPost } = useServerApi();
   const storage = useServerStorage();
   const { updateLocalDraft } = useServerLocalDrafts();
-  const serverStorageEventKey = useServerStorageEventKey();
+  const preferenceEvents = useServerPreferenceEvents();
   const readQueueRequest = useCallback(
     (key: string) => readStoredQueueRequest(storage, key),
     [storage],
@@ -115,11 +114,6 @@ export function useMessageQueue(p: {
   });
   const [busyKey, setBusy] = useState<string | null>(null);
   const locks = useRef(new Set<string>());
-  const resourceRefresh = useRef<{
-    key: string;
-    gate: ReturnType<typeof createQueueResourceRefresh>;
-    refresh: () => void;
-  } | null>(null);
   const serial = useRef(0);
   const view = state.key === key ? state.view : emptyQueue;
   const pending =
@@ -148,26 +142,23 @@ export function useMessageQueue(p: {
     serial.current++;
     setPending({ key, request: readQueueRequest(key) });
     if (!p.enabled || !p.id) return;
-    let active = true;
-    const gate = createQueueResourceRefresh(
-      () => locks.current.has(key),
-      reload,
-    );
-    const stop = watchResourceReads(
-      { kind: "queue", agentId: p.id },
-      gate.invalidate,
+    return subscribeStateProjection(
+      (snapshot) => {
+        const value = snapshot?.runtime.queuesByAgent?.[p.id!];
+        if (value) {
+          setState((previous) =>
+            previous.key === key && previous.view.revision === value.revision
+              ? previous
+              : { key, view: value, loaded: true },
+          );
+          setFailure({ key, text: "" });
+        }
+      },
       (error) => {
-        if (active) setFailure({ key, text: errorText(error) });
+        if (error) setFailure({ key, text: errorText(error) });
       },
     );
-    resourceRefresh.current = { key, gate, refresh: stop.refresh };
-    return () => {
-      active = false;
-      stop();
-      if (resourceRefresh.current?.gate === gate)
-        resourceRefresh.current = null;
-    };
-  }, [key, reload, p.enabled, p.id, watchResourceReads]);
+  }, [key, p.enabled, p.id, subscribeStateProjection, readQueueRequest]);
 
   const clearRequest = async (request: QueueMutation) => {
     const next = await updateLocalDraft<unknown>(key, null, (current) =>
@@ -180,21 +171,17 @@ export function useMessageQueue(p: {
   useEffect(() => {
     const syncPending = () =>
       setPending({ key, request: readQueueRequest(key) });
-    const changed = (event: StorageEvent) => {
-      if (
-        serverStorageEventKey(event) === key ||
-        serverStorageEventKey(event) === null
-      )
-        syncPending();
+    const changed = (changedKey: string | null) => {
+      if (changedKey === key || changedKey === null) syncPending();
     };
-    window.addEventListener("storage", changed);
+    const stopPreferences = preferenceEvents.subscribe(changed);
     const stop = onResume(syncPending);
     syncPending();
     return () => {
-      window.removeEventListener("storage", changed);
+      stopPreferences();
       stop();
     };
-  }, [key, readQueueRequest, serverStorageEventKey]);
+  }, [key, readQueueRequest, preferenceEvents]);
   const execute = async (request: QueueMutation) => {
     if (locks.current.has(key))
       throw new Error("Wait for the current queue change.");
@@ -203,7 +190,6 @@ export function useMessageQueue(p: {
     locks.current.add(key);
     setBusy(key);
     serial.current++;
-    let readFailed = false;
     try {
       await syncPost("/api/queue", request, {
         workspaceId: p.workspaceId,
@@ -219,7 +205,6 @@ export function useMessageQueue(p: {
         p.edited?.(messageId, request.text);
       if (currentKey.current === key) {
         await reload().catch((error) => {
-          readFailed = retryableReadError(error);
           setFailure({ key, text: errorText(error) });
         });
         void p.refresh().catch(() => {});
@@ -231,17 +216,11 @@ export function useMessageQueue(p: {
       ) {
         await clearRequest(request);
       }
-      if (currentKey.current === key)
-        await reload().catch((error) => {
-          readFailed = retryableReadError(error);
-        });
+      if (currentKey.current === key) await reload().catch(() => {});
       throw error;
     } finally {
       locks.current.delete(key);
       setBusy((value) => (value === key ? null : value));
-      const deferred = resourceRefresh.current;
-      if (deferred?.key === key && (deferred.gate.pending || readFailed))
-        deferred.refresh();
     }
   };
   const mutate = async (change: QueueChange) => {

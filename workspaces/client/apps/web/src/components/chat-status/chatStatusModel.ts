@@ -324,6 +324,10 @@ export function chatIndicators(
       else includeLead(answers, agent.id);
     }
   }
+  for (const agent of agents) {
+    if (agent.hasQuestion || agent.hasApproval) includeLead(answers, agent.id);
+    if (agent.hasBackgroundWork) includeLead(active, agent.id);
+  }
   for (const [id, entries] of activities) {
     if (entries.length) active.add(id);
   }
@@ -343,6 +347,11 @@ export function chatIndicators(
         indicator = {
           kind: "answer",
           label,
+        };
+      } else if (waiting && agent.hasBackgroundWork) {
+        indicator = {
+          kind: "working",
+          label: "Waiting for background command",
         };
       } else if (waiting) {
         const wait = getWait();

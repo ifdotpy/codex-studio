@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
-import type { ResourceChangeEvent } from "./resourceEvents";
+import type { ResourceChangeEvent } from "./subscriptions/events";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
-import { readRetryDelay } from "./readRetry";
+import { READ_RECOVERY_MAX_ATTEMPTS, readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
   ApiError: class extends Error {
@@ -24,10 +24,12 @@ const mocks = vi.hoisted(() => ({
   schemaHash: "a".repeat(64),
   matchingSchemaListener: undefined as (() => void) | undefined,
   transcriptInvalidation: undefined as (() => void) | undefined,
+  connectionStatus: undefined as string | undefined,
   connectionListener: undefined as ((status: string) => void) | undefined,
   invalidation: undefined as
     | ((version?: {
         epoch: string;
+        revision?: number;
         entitySequence?: number;
         entitySequenceReset?: boolean;
       }) => void)
@@ -55,7 +57,6 @@ vi.mock("rxdb/plugins/replication", () => ({
 }));
 vi.mock("../api", () => ({
   ApiError: mocks.ApiError,
-  registerSyncEntityPersister: mocks.registerPersister,
   isApiSchemaMismatch: mocks.isApiSchemaMismatch,
   onMatchingApiSchemaResponse: vi.fn((listener: () => void) => {
     mocks.matchingSchemaListener = listener;
@@ -73,11 +74,12 @@ vi.mock("../api", () => ({
   syncGet: mocks.syncGet,
   syncPost: vi.fn(),
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceChanges: mocks.watchResourceChanges,
   watchResourceConnection: vi.fn((listener: (status: string) => void) => {
     mocks.connectionListener = listener;
+    if (mocks.connectionStatus) listener(mocks.connectionStatus);
     return () => {
       if (mocks.connectionListener === listener)
         mocks.connectionListener = undefined;
@@ -96,6 +98,7 @@ vi.mock("./entityCacheStorage", () => ({
 }));
 
 describe("entity pull reset wiring", () => {
+  beforeEach(() => vi.useFakeTimers());
   afterEach(() => {
     vi.useRealTimers();
     vi.resetModules();
@@ -115,6 +118,7 @@ describe("entity pull reset wiring", () => {
     mocks.matchingSchemaListener = undefined;
     mocks.transcriptInvalidation = undefined;
     mocks.connectionListener = undefined;
+    mocks.connectionStatus = undefined;
     mocks.invalidation = undefined;
   });
 
@@ -219,7 +223,6 @@ describe("entity pull reset wiring", () => {
               delta: true,
               items: items as never,
               removed: [],
-              itemRevisions: {},
               truncated: false,
             },
           },
@@ -233,8 +236,7 @@ describe("entity pull reset wiring", () => {
           ids.every((id) => id.startsWith("transcript:item:agent:")),
       ).length;
     const settle = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
     };
 
     // The writer patches its own cache entry, so no full read is needed.
@@ -434,17 +436,29 @@ describe("entity pull reset wiring", () => {
 
     const client = await import("./client");
     const stop = client.subscribeStateProjection(vi.fn(), vi.fn());
-    await vi.waitFor(() => expect(mocks.invalidation).toBeTypeOf("function"));
+    await vi.advanceTimersByTimeAsync(0);
     expect(mocks.invalidation).toBeTypeOf("function");
     mocks.invalidation?.({ epoch: "before-restore", entitySequence: 1000 });
     mocks.invalidation?.({ epoch: "after-restore", entitySequence: 900 });
 
-    await vi.waitFor(() => expect(pulls).toEqual([1000, 0]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toEqual([1000, 0]);
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(900);
     stop();
   });
 
-  it.each(["delta", "retry", "gap", "epoch", "storage"])(
+  it.each([
+    "delta",
+    "legacy-cache",
+    "unsupported-cache",
+    "retry",
+    "gap",
+    "epoch",
+    "storage",
+    "snapshot",
+    "window",
+    "window-order",
+  ])(
     "applies or rejects a transcript stream %s through the pulled delta applier",
     async (scenario) => {
       const workspaceId = "8".repeat(32);
@@ -453,11 +467,21 @@ describe("entity pull reset wiring", () => {
         id: "transcript:agent",
         seq: 1,
         payload: JSON.stringify({
-          format: 2,
+          format:
+            scenario === "legacy-cache"
+              ? 2
+              : scenario === "unsupported-cache"
+                ? 4
+                : 3,
           epoch: scenario === "epoch" ? "old" : "epoch",
-          metadata: { truncated: false },
+          metadata: {
+            truncated: scenario.startsWith("window"),
+            nextCursor: scenario.startsWith("window") ? "answer" : null,
+          },
           order: ["answer"],
-          itemRevisions: {},
+          ...(scenario === "legacy-cache"
+            ? { itemRevisions: { answer: "0".repeat(64) } }
+            : {}),
         }),
       });
       rows.set("transcript:item:agent:answer", {
@@ -520,18 +544,35 @@ describe("entity pull reset wiring", () => {
                   },
                 ],
                 removed: [],
-                itemRevisions: { answer: "0".repeat(64) },
                 truncated: false,
               },
             },
           },
         ],
       };
+      if (scenario.startsWith("window")) {
+        const delta = event.resourceVersions[0].transcriptChanges!.delta;
+        delta.items.unshift({
+          id: "older",
+          role: "assistant",
+          text: "outside the window",
+        });
+        if (scenario === "window-order")
+          delta.order = ["older", "missing", "answer"];
+      }
+      if (scenario === "snapshot") {
+        event.reason = "initial";
+        delete event.resourceVersions[0].transcriptChanges;
+        event.resourceVersions[0].transcriptSnapshot = {
+          items: [{ id: "answer", role: "assistant", text: "streamed" }],
+          truncated: false,
+        };
+      }
       if (scenario === "storage")
         storageInstance.bulkWrite.mockRejectedValueOnce(
           new Error("storage unavailable"),
         );
-      if (["gap", "epoch", "storage"].includes(scenario)) {
+      if (["gap", "epoch", "storage", "unsupported-cache"].includes(scenario)) {
         await expect(
           client.persistResourceEntityChanges(event, () => true),
         ).rejects.toThrow();
@@ -544,11 +585,30 @@ describe("entity pull reset wiring", () => {
         event.resourceVersions[0].transcriptChanges,
       );
       const writes = storageInstance.bulkWrite.mock.calls.length;
+      if (scenario.startsWith("window")) {
+        const meta = JSON.parse(String(rows.get("transcript:agent")?.payload));
+        expect(meta.order).toEqual(["answer"]);
+        expect(meta.metadata).toMatchObject({
+          truncated: true,
+          nextCursor: "answer",
+        });
+        expect(rows.has("transcript:item:agent:older")).toBe(false);
+        expect(mocks.syncGet).not.toHaveBeenCalledWith(
+          "/api/sync/pull",
+          expect.anything(),
+        );
+      }
       if (scenario === "retry") {
         await client.persistResourceEntityChanges(event, () => true);
         expect(storageInstance.bulkWrite).toHaveBeenCalledTimes(writes);
       }
       expect(rows.get("transcript:agent")?.seq).toBe(2);
+      const storedMeta = JSON.parse(
+        String(rows.get("transcript:agent")?.payload),
+      );
+      expect(storedMeta.format).toBe(3);
+      expect(storedMeta).not.toHaveProperty("itemRevisions");
+      expect(storedMeta.metadata).not.toHaveProperty("itemRevisions");
       expect(
         JSON.parse(String(rows.get("transcript:item:agent:answer")?.payload))
           .text,
@@ -636,7 +696,6 @@ describe("entity pull reset wiring", () => {
               delta: true,
               items: items as never,
               removed: [],
-              itemRevisions: {},
               truncated: false,
             },
           },
@@ -676,9 +735,10 @@ describe("entity pull reset wiring", () => {
     { liveBeforeConflict: false, stopDuringBackoff: false },
     { liveBeforeConflict: true, stopDuringBackoff: false },
     { liveBeforeConflict: true, stopDuringBackoff: true },
+    { liveBeforeConflict: true, stopDuringBackoff: false, typed: true },
   ])(
-    "recovers transcript conflicts with live=$liveBeforeConflict stop=$stopDuringBackoff",
-    async ({ liveBeforeConflict, stopDuringBackoff }) => {
+    "recovers transcript conflicts with live=$liveBeforeConflict stop=$stopDuringBackoff typed=$typed",
+    async ({ liveBeforeConflict, stopDuringBackoff, typed = false }) => {
       const workspaceId = "9".repeat(32);
       const rows = new Map<string, Record<string, unknown>>();
       const storageInstance = {
@@ -844,6 +904,10 @@ describe("entity pull reset wiring", () => {
             accepted.push(payload);
           },
           report,
+          typed,
+          typed
+            ? { kind: "transcript", agentId: "agent", tail: 40 }
+            : undefined,
         );
         let stopped = false;
         const stopOnce = () => {
@@ -860,6 +924,15 @@ describe("entity pull reset wiring", () => {
           if (error instanceof mocks.ApiError && error.status === 409)
             resolveConflictReported();
         });
+        if (typed) {
+          await vi.advanceTimersByTimeAsync(0);
+          expect(mocks.watchResourceChanges).toHaveBeenCalledWith(
+            { kind: "transcript", agentId: "agent", tail: 40 },
+            expect.any(Function),
+            { waitForBaseline: true },
+          );
+          expect(pullCount).toBe(0);
+        }
         await transcriptWatched.promise;
         await projectionWatched.promise;
         expect(mocks.connectionListener).toBeTypeOf("function");
@@ -932,6 +1005,102 @@ describe("entity pull reset wiring", () => {
         // Remove the wrapper while the fake clock is installed, then the clock.
         restoreSetTimeout?.();
         vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    "new version",
+    "new epoch",
+    "notification",
+    "reconnect",
+    "user retry",
+  ])(
+    "exhausts persistent 503 sync pulls and resets only on %s",
+    async (reset) => {
+      const workspaceId = "8".repeat(32);
+      const subscription = { unsubscribe: vi.fn() };
+      const projections = {
+        database: { name: `studio-entity-projection-${workspaceId}` },
+        storageInstance: { findDocumentsById: vi.fn(async () => []) },
+        $: { subscribe: vi.fn(() => subscription) },
+        find: vi.fn(() => ({
+          exec: vi.fn(async () => []),
+          $: { subscribe: vi.fn(() => subscription) },
+        })),
+        findOne: vi.fn(() => ({
+          exec: vi.fn(async () => null),
+          $: { subscribe: vi.fn(() => subscription) },
+        })),
+      };
+      mocks.createRxDatabase
+        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+        .mockResolvedValueOnce({
+          addCollections: vi.fn(async () => ({ projections })),
+        });
+      const pullRead = vi.fn(async () => {
+        throw new mocks.ApiError("Unavailable", 503);
+      });
+      mocks.syncGet.mockImplementation(async (path: string) => {
+        if (path === "/api/sync/identity") return { workspaceId };
+        return pullRead();
+      });
+      const baseline = { epoch: "workspace", revision: 1, entitySequence: 1 };
+      mocks.watchResourceChanges.mockImplementation(
+        (resource: { kind: string }, listener: typeof mocks.invalidation) => {
+          if (resource.kind === "state") {
+            mocks.invalidation = listener;
+            listener?.(baseline);
+          }
+          return () => {};
+        },
+      );
+      mocks.connectionStatus = "live";
+      vi.stubGlobal("window", {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        matchMedia: vi.fn(() => ({ matches: false })),
+      });
+      vi.stubGlobal("document", { hidden: false });
+      vi.stubGlobal("navigator", { onLine: true });
+      vi.stubGlobal("location", { origin: "http://studio.test" });
+      const client = await import("./client");
+      await client.syncDatabase();
+      vi.useFakeTimers();
+      const failed = vi.fn();
+      const stop = client.subscribeStateProjection(vi.fn(), failed);
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(mocks.invalidation).toBeTypeOf("function");
+        expect(pullRead).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS);
+        expect(failed).toHaveBeenLastCalledWith(
+          expect.objectContaining({ name: "ReadRecoveryExhaustedError" }),
+        );
+        expect(vi.getTimerCount()).toBe(0);
+        mocks.invalidation?.(baseline);
+        mocks.connectionListener?.("live"); // A repeated live status is not a reconnect.
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(pullRead).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS);
+
+        let explicitRetry: Promise<unknown> | undefined;
+        if (reset === "new version")
+          mocks.invalidation?.({ ...baseline, revision: 2, entitySequence: 2 });
+        else if (reset === "new epoch")
+          mocks.invalidation?.({ ...baseline, epoch: "next-workspace" });
+        else if (reset === "notification") mocks.invalidation?.();
+        else if (reset === "reconnect") {
+          mocks.connectionListener?.("degraded");
+          mocks.connectionListener?.("live");
+        } else
+          explicitRetry = client.refreshProjection().catch((error) => error);
+        await vi.advanceTimersByTimeAsync(120_000);
+        await explicitRetry;
+        expect(pullRead).toHaveBeenCalledTimes(2 * READ_RECOVERY_MAX_ATTEMPTS);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        stop();
+        await vi.advanceTimersByTimeAsync(0);
       }
     },
   );
@@ -1052,5 +1221,454 @@ describe("entity pull reset wiring", () => {
       "new-build-agent",
     );
     expect(projectedWorkspaceId).toBe(workspaceId);
+  });
+  it.each([false, true])(
+    "advances a scoped resume cursor only after the projection is fully applied (team scope: %s)",
+    async (teamScope) => {
+      const workspaceId = "7".repeat(32);
+      const rows = new Map<string, Record<string, unknown>>();
+      rows.set("entity:task:removed", {
+        id: "entity:task:removed",
+        seq: 2,
+        payload: "",
+        entity: {
+          collection: "task",
+          id: "removed",
+          value: { id: "removed", agent: "worker" },
+        },
+      });
+      rows.set("entity:agentSummary:worker", {
+        id: "entity:agentSummary:worker",
+        seq: 1,
+        payload: "",
+        entity: {
+          collection: "agentSummary",
+          id: "worker",
+          value: { id: "worker", rootId: "lead" },
+        },
+      });
+      const storageInstance = {
+        findDocumentsById: vi.fn(async (ids: string[]) =>
+          ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+        ),
+        bulkWrite: vi.fn(
+          async (writes: { document: Record<string, unknown> }[]) => {
+            for (const { document } of writes)
+              rows.set(String(document.id), document);
+            return { error: [] };
+          },
+        ),
+      };
+      const projections = {
+        database: { name: "resume-projection" },
+        storageInstance,
+        $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+        find: vi.fn(
+          ({
+            selector,
+          }: {
+            selector: { id: { $gte: string; $lt: string } };
+          }) => ({
+            exec: async () =>
+              [...rows.values()]
+                .filter(
+                  (row) =>
+                    !row._deleted &&
+                    String(row.id) >= selector.id.$gte &&
+                    String(row.id) < selector.id.$lt,
+                )
+                .map((row) => ({ toJSON: () => row })),
+          }),
+        ),
+      };
+      mocks.createRxDatabase
+        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+        .mockResolvedValueOnce({
+          addCollections: vi.fn(async () => ({ projections })),
+        });
+      mocks.syncGet.mockResolvedValue({ workspaceId });
+      vi.stubGlobal("window", { addEventListener: vi.fn() });
+      vi.stubGlobal("navigator", {
+        onLine: true,
+        locks: {
+          request: (_key: string, callback: () => Promise<unknown>) =>
+            callback(),
+        },
+      });
+      const client = await import("./client");
+      const resource = teamScope
+        ? ({ kind: "tasks", agentId: "lead" } as const)
+        : ({ kind: "tasks" } as const);
+      const event = (seq: number, replyKind: "snapshot" | "delta") =>
+        ({
+          protocol: SYNC_PROTOCOL_VERSION,
+          workspaceId,
+          epoch: "new-epoch",
+          revision: seq,
+          reason: "initial",
+          resources: [resource],
+          resourceVersions: [
+            {
+              revision: seq,
+              cursor: { workspaceId, seq },
+              replyKind,
+              entityChanges: {
+                after: replyKind === "snapshot" ? 0 : seq - 1,
+                through: seq,
+                documents: [
+                  {
+                    op: "upsert",
+                    collection: "task",
+                    id: "kept",
+                    seq: replyKind === "snapshot" ? 8 : seq,
+                    value: { id: "kept", agent: "worker" },
+                  },
+                ],
+              },
+            },
+          ],
+        }) as ResourceChangeEvent;
+      await client.persistResourceEntityChanges(
+        event(10, "snapshot"),
+        () => true,
+      );
+      expect(rows.get("entity:task:removed")?._deleted).toBe(true);
+      expect(rows.get("entity:task:kept")?.seq).toBe(8);
+      expect(await client.readSubscriptionCursor(resource)).toEqual({
+        workspaceId,
+        seq: 10,
+      });
+      storageInstance.bulkWrite.mockRejectedValueOnce(
+        new Error("disk unavailable"),
+      );
+      await expect(
+        client.persistResourceEntityChanges(event(11, "delta"), () => true),
+      ).rejects.toThrow("disk unavailable");
+      expect(await client.readSubscriptionCursor(resource)).toEqual({
+        workspaceId,
+        seq: 10,
+      });
+      await client.persistResourceEntityChanges(
+        event(11, "delta"),
+        () => false,
+      );
+      expect(await client.readSubscriptionCursor(resource)).toEqual({
+        workspaceId,
+        seq: 10,
+      });
+      await client.persistResourceEntityChanges(event(11, "delta"), () => true);
+      expect(await client.readSubscriptionCursor(resource)).toEqual({
+        workspaceId,
+        seq: 11,
+      });
+      const emptyDelta = event(11, "delta");
+      delete emptyDelta.resourceVersions![0].entityChanges;
+      let current = true;
+      storageInstance.findDocumentsById.mockImplementationOnce(async () => {
+        current = false;
+        delete emptyDelta.resourceVersions![0].cursor;
+        return [];
+      });
+      await expect(
+        client.persistResourceEntityChanges(emptyDelta, () => current),
+      ).resolves.toBeUndefined();
+    },
+  );
+  it("persists terminal records and cursor atomically, replays without duplicate output, and leaves the old cursor on failure", async () => {
+    const workspaceId = "8".repeat(32);
+    const rows = new Map<string, Record<string, any>>();
+    let fail = false;
+    const projections = {
+      database: { name: "terminal-resume" },
+      storageInstance: {
+        findDocumentsById: vi.fn(async (ids: string[]) =>
+          ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+        ),
+        bulkWrite: vi.fn(
+          async (writes: { document: Record<string, any> }[]) => {
+            if (fail) throw new Error("disk unavailable");
+            for (const { document } of writes) rows.set(document.id, document);
+            return { error: [] };
+          },
+        ),
+      },
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    const resource = { kind: "terminal-output", terminalId: "shell" } as const;
+    const event = (
+      text: string,
+      seq: number,
+      replyKind: "snapshot" | "delta",
+      revision = seq,
+    ): ResourceChangeEvent => ({
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId,
+      epoch: "epoch",
+      revision,
+      reason: "initial",
+      resources: [resource],
+      resourceVersions: [
+        {
+          revision,
+          cursor: { workspaceId, seq },
+          replyKind,
+          viewSnapshot: {
+            terminalOutput: {
+              text,
+              offset: seq,
+              status: "running",
+              truncated: false,
+            },
+          },
+        },
+      ],
+    });
+    await client.persistResourceEntityChanges(
+      event("a🙂", 2, "snapshot"),
+      () => true,
+    );
+    const resumed = event("中", 3, "delta");
+    await client.persistResourceEntityChanges(resumed, () => true);
+    expect(resumed.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
+      "a🙂中",
+    );
+    const replay = event("中", 3, "delta");
+    await client.persistResourceEntityChanges(replay, () => true);
+    expect(replay.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
+      "a🙂中",
+    );
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 3,
+    });
+    const late = event("a🙂", 2, "delta");
+    await client.persistResourceEntityChanges(late, () => true);
+    expect(late.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
+      "a🙂中",
+    );
+    expect(late.resourceVersions[0].cursor?.seq).toBe(3);
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 3,
+    });
+    const record = [...rows.values()].find(
+      (row) => JSON.parse(row.payload).viewSnapshot?.terminalOutput,
+    );
+    expect(JSON.parse(record!.payload)).toMatchObject({
+      workspaceId,
+      seq: 3,
+      viewSnapshot: { terminalOutput: { text: "a🙂中", offset: 3 } },
+    });
+    fail = true;
+    await expect(
+      client.persistResourceEntityChanges(event("x", 4, "delta"), () => true),
+    ).rejects.toThrow("disk unavailable");
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 3,
+    });
+    fail = false;
+    const exited = event("", 3, "delta", 4);
+    exited.resourceVersions[0].viewSnapshot!.terminalOutput!.status = "exited";
+    await client.persistResourceEntityChanges(exited, () => true);
+    const stored = () =>
+      [...rows.values()]
+        .map((row) => JSON.parse(row.payload))
+        .find((row) => row.viewSnapshot?.terminalOutput);
+    expect(stored().viewSnapshot.terminalOutput.status).toBe("exited");
+    await client.persistResourceEntityChanges(
+      event("x", 1, "snapshot", 5),
+      () => true,
+    );
+    expect(stored().viewSnapshot.terminalOutput.text).toBe("x");
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 1,
+    });
+    await client.persistResourceEntityChanges(
+      event("a🙂", 2, "snapshot"),
+      () => true,
+    );
+    expect(stored().viewSnapshot.terminalOutput.text).toBe("x");
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 1,
+    });
+    await client.persistResourceEntityChanges(
+      event("old", 40, "snapshot", 10),
+      () => true,
+    );
+    fail = true;
+    await expect(
+      client.persistResourceEntityChanges(
+        event("new", 3, "snapshot", 11),
+        () => true,
+      ),
+    ).rejects.toThrow("disk unavailable");
+    fail = false;
+    await expect(
+      client.persistResourceEntityChanges(
+        event("!", 4, "delta", 12),
+        () => true,
+      ),
+    ).rejects.toThrow("local base");
+    expect(stored().viewSnapshot.terminalOutput.text).toBe("old");
+    expect(stored().viewRevision).toBe(10);
+    const { ResourceEntityDelivery } = await import("./resourceEntityDelivery");
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const [index, cause] of [
+      "failure",
+      "cancel",
+      "overflow",
+      "failure-queued",
+    ].entries()) {
+      const revision = 20 + index * 10;
+      await client.persistResourceEntityChanges(
+        event("o".repeat(40), 40, "snapshot", revision),
+        () => true,
+      );
+      let finish: (() => void) | undefined;
+      const persist = vi.fn(
+        async (incoming: ResourceChangeEvent, current: () => boolean) => {
+          if (
+            incoming.resourceVersions[0].revision === revision + 1 &&
+            cause !== "failure"
+          )
+            await new Promise<void>((resolve) => {
+              finish = resolve;
+            });
+          await client.persistResourceEntityChanges(incoming, current);
+        },
+      );
+      const dispatch = vi.fn();
+      const delivery = new ResourceEntityDelivery(persist, dispatch);
+      delivery.receive(event("o".repeat(40), 40, "snapshot", revision));
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+      dispatch.mockClear();
+      fail = cause === "failure" || cause === "failure-queued";
+      delivery.receive(event("new", 3, "snapshot", revision + 1));
+      if (cause === "failure-queued")
+        delivery.receive(event("!".repeat(41), 44, "delta", revision + 2));
+      if (cause === "cancel") delivery.invalidate();
+      if (cause === "overflow") {
+        const overflow = event("new", 3, "snapshot", revision + 2);
+        overflow.reason = "overflow";
+        delivery.receive(overflow);
+      }
+      finish?.();
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalled());
+      if (cause === "failure-queued") {
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
+        expect(
+          dispatch.mock.calls.at(-1)![0].resourceVersions[0].viewSnapshot
+            ?.terminalOutput,
+        ).toBeUndefined();
+      }
+      fail = false;
+      const beforeDelta = persist.mock.calls.length;
+      dispatch.mockClear();
+      delivery.receive(event("!", 4, "delta", revision + 2));
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalled());
+      expect(persist).toHaveBeenCalledTimes(beforeDelta);
+      expect(
+        dispatch.mock.calls.at(-1)![0].resourceVersions[0].viewSnapshot
+          ?.terminalOutput,
+      ).toBeUndefined();
+      dispatch.mockClear();
+      // The new source can also cross the old cursor before its next delta.
+      delivery.receive(event("!".repeat(41), 44, "delta", revision + 3));
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalled());
+      expect(persist).toHaveBeenCalledTimes(beforeDelta);
+      expect(
+        dispatch.mock.calls.at(-1)![0].resourceVersions[0].viewSnapshot
+          ?.terminalOutput,
+      ).toBeUndefined();
+      expect(stored().viewRevision).toBe(revision);
+      // An old snapshot replay cannot clear the requirement for a new base.
+      delivery.receive(event("o".repeat(40), 40, "snapshot", revision));
+      await Promise.resolve();
+      delivery.receive(event("!".repeat(42), 45, "delta", revision + 4));
+      expect(stored().viewRevision).toBe(revision);
+      delivery.receive(event("new", 3, "snapshot", revision + 5));
+      await vi.waitFor(() => expect(stored().viewRevision).toBe(revision + 5));
+      delivery.receive(event("!", 4, "delta", revision + 6));
+      await vi.waitFor(() =>
+        expect(stored().viewSnapshot.terminalOutput.text).toBe("new!"),
+      );
+      expect(await client.readSubscriptionCursor(resource)).toEqual({
+        workspaceId,
+        seq: 4,
+      });
+    }
+    await client.persistResourceEntityChanges(
+      event("o".repeat(40), 40, "snapshot", 70),
+      () => true,
+    );
+    const oldDispatch = vi.fn();
+    const oldDelivery = new ResourceEntityDelivery(
+      client.persistResourceEntityChanges,
+      oldDispatch,
+    );
+    fail = true;
+    oldDelivery.receive(event("new", 3, "snapshot", 71));
+    await vi.waitFor(() => expect(oldDispatch).toHaveBeenCalled());
+    expect(oldDelivery.requiresSnapshot(resource)).toBe(true);
+    fail = false;
+    const cursorAfterReload = await client.readSubscriptionCursor(resource);
+    expect(cursorAfterReload).toEqual({ workspaceId, seq: 40 });
+    // A replacement transport has a fresh delivery object but the same durable cache.
+    const reloadedDispatch = vi.fn();
+    const reloadedDelivery = new ResourceEntityDelivery(
+      client.persistResourceEntityChanges,
+      reloadedDispatch,
+    );
+    const reloadDelta = event("!!!!", 44, "delta", 72);
+    reloadDelta.reason = "reconnect";
+    reloadedDelivery.receive(reloadDelta);
+    await vi.waitFor(() => expect(reloadedDispatch).toHaveBeenCalled());
+    expect(
+      reloadedDispatch.mock.calls[0][0].resourceVersions[0].viewSnapshot
+        ?.terminalOutput,
+    ).toBeUndefined();
+    expect(stored().viewRevision).toBe(70);
+    reloadedDelivery.receive(event("new" + "!".repeat(41), 44, "snapshot", 73));
+    await vi.waitFor(() => expect(stored().viewRevision).toBe(73));
+    reloadedDelivery.receive(event("!", 45, "delta", 74));
+    await vi.waitFor(() =>
+      expect(stored().viewSnapshot.terminalOutput.text).toBe(
+        "new" + "!".repeat(42),
+      ),
+    );
+    expect(await client.readSubscriptionCursor(resource)).toEqual({
+      workspaceId,
+      seq: 45,
+    });
+    const noOpDispatch = vi.fn();
+    const noOpDelivery = new ResourceEntityDelivery(
+      client.persistResourceEntityChanges,
+      noOpDispatch,
+    );
+    const foreignSnapshot = event("foreign", 7, "snapshot", 80);
+    foreignSnapshot.workspaceId = "9".repeat(32);
+    foreignSnapshot.resourceVersions[0].cursor!.workspaceId =
+      foreignSnapshot.workspaceId;
+    noOpDelivery.receive(foreignSnapshot);
+    await vi.waitFor(() => expect(noOpDispatch).toHaveBeenCalled());
+    expect(noOpDelivery.requiresSnapshot(resource)).toBe(true);
+    quiet.mockRestore();
   });
 });

@@ -2,10 +2,12 @@ import { defineConfig } from "vite";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { API_SCHEMA_HASH } from "./src/generated/apiSchema.ts";
+import { precompressAssets } from "./scripts/precompress-assets.ts";
 const target = "http://127.0.0.1:4620";
 export default defineConfig({
   base: "./",
   plugins: [
+    precompressAssets(),
     {
       name: "studio-offline-shell",
       enforce: "post",

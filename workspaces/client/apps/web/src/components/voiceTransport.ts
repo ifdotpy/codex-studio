@@ -6,8 +6,9 @@ import {
 export function watchVoiceTransport(
   onState: (state: ResourceConnectionState) => void,
   stopVoice: () => void,
+  watchConnection: typeof watchResourceConnection = watchResourceConnection,
 ): () => void {
-  return watchResourceConnection((state) => {
+  return watchConnection((state) => {
     onState(state);
     if (state !== "live") stopVoice();
   });

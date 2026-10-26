@@ -1,7 +1,8 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
 import { Button } from "@mantine/core";
-import { errorText, type GetResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { GetResult } from "../api";
 import {
   devicePushId,
   enableSignInPush,

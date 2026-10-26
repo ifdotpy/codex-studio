@@ -1,14 +1,12 @@
-import {
-  startBridge as startScriptedBridge,
-  HANG_GUARD_MS,
-} from "./testing/bridge-harness.mjs";
+import { waitForFile } from "./testing/file-signals.mjs";
+import { startBridge as startScriptedBridge } from "./testing/bridge-harness.mjs";
 // Stalled tool calls through the real bridge with a scripted SDK. The fake CLI
 // emits a Bash tool_use and then never returns its result, as in the
 // 2026-10-17 incident. No model calls.
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { bashTimeoutMs, findStall, recordedInputIds } from "./stall-watch.mjs";
 
@@ -75,7 +73,7 @@ export function query({prompt,options}){
     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-'+text}}};
     // While the test keeps a .hold file, steers queue before the tool call.
     while(fs.existsSync(cwd+'/.hold')){
-     const next=await Promise.race([read(),sleep(5).then(()=>null)]);
+     const next=await Promise.race([read(),waitForFile(cwd+'/.hold',{absent:true}).then(()=>null)]);
      if(next?.done)return;
      if(next)hold(next.value);
     }
@@ -144,6 +142,7 @@ async function startBridge({ env = {}, thread = {} } = {}) {
       ...env,
     },
     thread,
+    clock: true,
   });
   bridges.push(bridge);
   return bridge;
@@ -151,7 +150,7 @@ async function startBridge({ env = {}, thread = {} } = {}) {
 
 const text = (value) => [{ type: "text", text: value }];
 const completed = (bridge, turn) =>
-  bridge.note(
+  bridge.advanceUntil(
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
 const acks = (bridge, id) =>
@@ -161,7 +160,6 @@ const acks = (bridge, id) =>
       n.params.item.type === "userMessage" &&
       n.params.item.clientId === id,
   );
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Start a scenario turn. Each steer in `steers` ([id, text] pairs) is in the
 // CLI queue before its tool call starts: the stall clock starts with the tool
@@ -202,13 +200,13 @@ async function inputs(bridge) {
     : [];
 }
 
-async function read(bridge, value) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!(await inputs(bridge)).includes(value)) {
-    if (Date.now() > deadline) throw new Error(value + " was not read");
-    await sleep(5);
-  }
-}
+const read = (bridge, value) => {
+  const file = path.join(bridge.root, ".inputs");
+  return waitForFile(file, {
+    matches: () =>
+      readFileSync(file, "utf8").trim().split("\n").includes(value),
+  });
+};
 
 test("a tool stall closes a CLI with unconfirmed input without resending it", async () => {
   const bridge = await startBridge();
@@ -281,7 +279,7 @@ test("a CLI whose stream outlives its close still ends the stalled turn once", a
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(done.params.turn.error.message, /Studio stopped this turn/);
-  await sleep(200);
+  await bridge.advanceTime(200);
   assert.equal(
     bridge.notes.filter(
       (n) => n.method === "turn/completed" && n.params.turn.id === turn,
@@ -310,16 +308,18 @@ test("an unanswered approval is not a stall, and the tool budget restarts at the
   );
   assert.equal(approval.params.itemId, "toolu_stall");
   // Several tool budgets pass while Studio owns the wait.
-  await sleep(100 + GRACE_MS * 4);
+  await bridge.advanceTime(100 + GRACE_MS * 4);
   assert.equal(
     bridge.notes.find((n) => n.method === "turn/completed"),
     undefined,
   );
-  const answeredAt = Date.now();
+
   bridge.answer(approval.id, { decision: "accept" });
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
-  assert.ok(Date.now() - answeredAt >= 100 + GRACE_MS);
+  assert.ok(
+    done.params.turn.error.data.claudeToolStall.elapsedMs >= 100 + GRACE_MS,
+  );
   assert.equal(
     await fs.readFile(path.join(bridge.root, ".approved"), "utf8"),
     "allow",
@@ -344,7 +344,7 @@ test("an approval nobody answers in a no-approval agent is declined and its card
     approval.params.reason,
     "Claude requests permission to use Bash although this agent runs without approvals: rm on a critical path",
   );
-  const resolved = await bridge.note(
+  const resolved = await bridge.advanceUntil(
     (n) => n.method === "serverRequest/resolved",
   );
   assert.deepEqual(resolved.params, {
@@ -372,7 +372,7 @@ test("an approval nobody answers in a no-approval agent is declined and its card
   );
   // A late answer to the closed card changes nothing.
   bridge.answer(approval.id, { decision: "accept" });
-  await sleep(100);
+  await bridge.advanceTime(100);
   assert.equal(
     await fs.readFile(path.join(bridge.root, ".approved"), "utf8"),
     "deny",

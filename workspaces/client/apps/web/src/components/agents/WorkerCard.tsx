@@ -13,7 +13,6 @@ import {
 import { memo, useContext, useMemo, type CSSProperties } from "react";
 import { useCommittedCallback } from "../../hooks";
 import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
-import "../../api";
 import { nativeErrorView } from "../../nativeErrors";
 import { DISK_FULL_WAIT_LABEL, diskFullHold } from "../../capacityRetry";
 import { startWaitLabel } from "../../startWait";

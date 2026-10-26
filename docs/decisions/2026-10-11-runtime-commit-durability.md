@@ -1,6 +1,8 @@
 # Runtime database commits stay fully durable
 
-- **Status:** Accepted, 2026-10-11, by the maintainer.
+- **Status:** Superseded on 2026-10-24 by
+  [SQLite commits use synchronous=NORMAL with a periodic flush](2026-10-24-sqlite-normal-with-periodic-flush.md).
+  Accepted 2026-10-11 by the maintainer.
 - **Audience:** anyone who changes how the server writes its SQLite database or
   who investigates the time spent under the runtime lock.
 

@@ -237,6 +237,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_delivery_stored_only_settles_once_without_retry_after_restart() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let receipt = json!({"id":"message-one","status":"stored_only","materialized":false,"deliveries":{"remote":"stored_only"}});
+        let server_receipt = receipt.clone();
+        let posts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let server_posts = posts.clone();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            tokio::pin!(stopped);
+            loop {
+                let (mut stream, _) = tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = listener.accept() => accepted.unwrap(),
+                };
+                let (headers, body) = read_http(&mut stream).await;
+                if headers.starts_with("GET /api/sync/identity ") {
+                    reply(&mut stream, r#"{"workspaceId":"w"}"#).await;
+                } else if headers.starts_with("GET /api/session ") {
+                    reply(&mut stream, r#"{"token":"private-test-token"}"#).await;
+                } else {
+                    assert!(headers.starts_with("POST /api/messages "));
+                    assert_eq!(
+                        body,
+                        json!({"id":"message-one","room":"room","text":"original"})
+                    );
+                    server_posts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    reply(&mut stream, &server_receipt.to_string()).await;
+                }
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let (sender, worker) = store(path.clone());
+        assert!(
+            user(
+                &sender,
+                "enqueue",
+                "outbox.enqueue",
+                json!({"workspace":"w","body":{"id":"message-one","room":"room","text":"original"}})
+            )
+            .await
+            .error
+            .is_none()
+        );
+        let backend = Backend::new(&origin).unwrap();
+        let response = dispatch(
+            &backend,
+            &sender,
+            Request {
+                id: "deliver-stored-only".into(),
+                method: "outbox.deliver".into(),
+                params: json!({"workspace":"w","id":"message-one"}),
+            },
+        )
+        .await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.result, Some(receipt.clone()));
+        drain(&backend, &sender).await;
+        drop(sender);
+        worker.join().unwrap();
+        let (sender, worker) = store(path);
+        let replay = deliver(&backend, &sender, "w", "message-one")
+            .await
+            .unwrap();
+        assert_eq!(replay["status"], "accepted");
+        assert_eq!(replay["receipt"], receipt);
+        assert_eq!(replay["attempted"], true);
+        drain(&backend, &sender).await;
+        drop(sender);
+        worker.join().unwrap();
+        stop.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(posts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn delivery_retry_after_restart_keeps_the_original_message_identity() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());

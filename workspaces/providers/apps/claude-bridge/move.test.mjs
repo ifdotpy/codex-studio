@@ -327,13 +327,17 @@ test("native prompt snapshots use schema and keep deferred records separate", as
   try {
     await fs.writeFile(file, bytes);
     const proof = await savedPromptProof(file, session);
-    assert.deepEqual(
-      proof.tools,
-      snapshot.tools.map(({ schema, ...entry }) => ({
-        ...entry,
-        input_schema: schema,
-      })),
-    );
+    assert.deepEqual(proof.tools, [
+      {
+        name: "Bash",
+        description: "[redacted]",
+        input_schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+    ]);
     assert.deepEqual(proof.deferredTools, [deferred]);
     assert.equal(await fs.readFile(file, "utf8"), bytes);
     await fs.appendFile(

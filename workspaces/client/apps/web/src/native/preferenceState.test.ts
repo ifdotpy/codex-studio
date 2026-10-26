@@ -60,6 +60,7 @@ function backend() {
   };
 }
 
+
 it("imports existing preferences once, then retains native edits and clear across restart", async () => {
   const journal = memory();
   journal.setItem("theme", "dark");

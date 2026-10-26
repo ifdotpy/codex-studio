@@ -9,6 +9,7 @@ mod multi_server_incoming;
 mod orchestration_settings;
 mod process_controls;
 mod project_preparation;
+mod queue_recovery;
 mod recovery_http;
 mod remote_access_origin;
 mod retained_worktrees;
@@ -46,3 +47,6 @@ pub(crate) mod monitor_runtime_support;
 
 #[path = "../../runtime-services/tests/multi_server/common.rs"]
 pub(crate) mod multi_server_fixtures;
+
+#[path = "../../runtime-services/tests/test_support/agent_views.rs"]
+pub(crate) mod agent_view_fixtures;

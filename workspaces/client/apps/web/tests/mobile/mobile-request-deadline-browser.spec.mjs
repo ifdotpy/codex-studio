@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import {
   test,
+  expect,
   browserExecutablePath,
   skipIfWebKitCannotLaunch,
 } from "../playwright.mjs";
@@ -49,13 +50,11 @@ async function runDeadlineChecks(name, engine, executablePath) {
         held.set(new URL(r.request().url()).pathname, r),
       );
       await page.goto(server.resolvedUrls.local[0] + "deadline-fixture");
-      await page.evaluate(async () => {
-        const { get, post, syncPost } = await import("/src/api.ts");
+      await page.clock.install();
+      const { start, readDeadline } = await page.evaluate(async () => {
+        const { get, post, syncPost, READ_DEADLINE_MS } =
+          await import("/src/api.ts");
         window.outcomes = {};
-        window.start = Date.now();
-        const realNow = Date.now;
-        window.advance = 0;
-        Date.now = () => realNow() + window.advance;
         const record = (key, p) =>
           p.then(
             () => (window.outcomes[key] = "success"),
@@ -64,16 +63,18 @@ async function runDeadlineChecks(name, engine, executablePath) {
         record("read", get("/api/held-read"));
         record("durable", syncPost("/api/held-durable", { id: "fixed-id" }));
         record("ordinary", post("/api/held-ordinary", { action: "one-time" }));
+        return { start: Date.now(), readDeadline: READ_DEADLINE_MS };
       });
-      await page.waitForTimeout(100);
-      assert.equal(held.size, 3);
-      await page.evaluate(() => {
-        window.advance = 16000;
-        window.dispatchEvent(new Event("pageshow"));
+      await expect.poll(() => held.size).toBe(3);
+      await page.clock.setSystemTime(start + 16_000);
+      await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+      await page.waitForFunction(() => window.outcomes.durable);
+      assert.deepEqual(await page.evaluate(() => window.outcomes), {
+        durable: "NetworkTimeoutError",
       });
-      await page.waitForFunction(
-        () => window.outcomes.read && window.outcomes.durable,
-      );
+      await page.clock.setSystemTime(start + readDeadline + 1);
+      await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+      await page.waitForFunction(() => window.outcomes.read);
       assert.deepEqual(await page.evaluate(() => window.outcomes), {
         read: "NetworkTimeoutError",
         durable: "NetworkTimeoutError",
@@ -120,9 +121,13 @@ async function runDeadlineChecks(name, engine, executablePath) {
           ),
         );
       });
-      await page.waitForTimeout(100);
-      assert(held.has("/api/held-cancel-read"));
-      assert(held.has("/api/held-cancel-post"));
+      await expect
+        .poll(
+          () =>
+            held.has("/api/held-cancel-read") &&
+            held.has("/api/held-cancel-post"),
+        )
+        .toBe(true);
       await page.evaluate(() => {
         window.cancelWithDeadline.abort();
         window.cancelOnly.abort();

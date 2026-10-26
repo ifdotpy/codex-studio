@@ -1,40 +1,37 @@
 import { MAX_TURN_ATTACHMENTS } from "../generated/sharedValues";
 import { useServerApi } from "../servers/ServerServicesContext";
-import { useServerFileDialogs } from "../servers/ServerServicesContext";
+import { useServerAttachmentSelections } from "../servers/ServerServicesContext";
 import { Button, Loader } from "@mantine/core";
 import { File, Paperclip, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import { IconAction } from "./ui/actions/IconAction";
 import FilePreview from "./FilePreview";
 
-export interface Attachment {
-  id: string;
-  name: string;
-  mime: string;
-  image: boolean;
-  size: number;
-  preview?: string;
-}
-export { attachmentLimit } from "../sync/uploads";
+import type {
+  Attachment,
+  AttachmentSelectionBatch,
+} from "../attachmentSelection";
+export type { Attachment } from "../attachmentSelection";
+export { attachmentLimit } from "../attachmentSelection";
 export default function ComposerAttachments(p: {
   notify: (message: string) => void;
   assets: Attachment[];
   uploading: boolean;
   disabled: boolean;
-  add: (files: globalThis.File[]) => Promise<void>;
+  add: (selection: AttachmentSelectionBatch) => Promise<void>;
   remove: (id: string) => void;
 }) {
-  const { canPickFiles, pickFiles } = useServerFileDialogs();
+  const selections = useServerAttachmentSelections();
   const input = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const unsavedFiles = useRef<{
-    files: globalThis.File[];
+    files: AttachmentSelectionBatch;
     add: typeof p.add;
   } | null>(null);
   const [saveError, setSaveError] = useState("");
-  const saveFiles = async (files: globalThis.File[], add = p.add) => {
-    if (!files.length) return;
+  const saveFiles = async (files: AttachmentSelectionBatch, add = p.add) => {
+    if (!files.files.length) return;
     const pending = { files, add };
     unsavedFiles.current = pending;
     try {
@@ -62,7 +59,10 @@ export default function ComposerAttachments(p: {
         hidden
         aria-label="Choose attachments"
         onChange={(event) => {
-          void saveFiles(Array.from(event.currentTarget.files || []));
+          void selections
+            .input(event.currentTarget)
+            .then((selection) => selection && saveFiles(selection))
+            .catch((error) => p.notify(errorText(error)));
         }}
       />
       <IconAction
@@ -76,12 +76,13 @@ export default function ComposerAttachments(p: {
           p.disabled || p.uploading || p.assets.length >= MAX_TURN_ATTACHMENTS
         }
         onClick={() => {
-          if (!canPickFiles()) {
+          if (selections.usesInput()) {
             input.current?.click();
             return;
           }
-          void pickFiles()
-            .then((files) => saveFiles(files))
+          void selections
+            .pick()
+            .then((files) => files && saveFiles(files))
             .catch((error) => p.notify(errorText(error)));
         }}
       >

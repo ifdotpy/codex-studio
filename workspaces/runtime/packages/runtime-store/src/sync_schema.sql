@@ -53,6 +53,90 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_tombstone_count_delete
         UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)-1
         WHERE key='entity_tombstone_count';
       END;
+-- Visibility keys are owned by sync_documents::ENTITY_SCOPE_VISIBILITY_KEY_PREFIX.
+-- Reassignment invalidates only affected direct selectors and their current team
+-- roots. Content updates, ordinary inserts and tombstones remain row deltas.
+CREATE TRIGGER IF NOT EXISTS sync_entity_scope_visibility_insert
+AFTER INSERT ON sync_entities
+WHEN NEW.collection='agentSummary' AND NEW.deleted=0
+     AND json_extract(NEW.payload,'$.value.rootId') IS NOT NULL BEGIN
+  INSERT INTO sync_entity_meta(key,value)
+  VALUES('entity_scope_visibility:' || json_array('*',json_extract(NEW.payload,'$.value.rootId')),CAST(NEW.seq AS TEXT))
+  ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(sync_entity_meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT);
+END;
+CREATE TRIGGER IF NOT EXISTS sync_entity_scope_visibility_update
+AFTER UPDATE OF payload,deleted ON sync_entities
+WHEN (OLD.deleted=0 AND NEW.deleted=0 AND (
+        json_extract(OLD.payload,'$.value.agent') IS NOT json_extract(NEW.payload,'$.value.agent') OR
+        json_extract(OLD.payload,'$.value.rootId') IS NOT json_extract(NEW.payload,'$.value.rootId')))
+     OR (NEW.collection='agentSummary' AND OLD.deleted IS NOT NEW.deleted) BEGIN
+  INSERT INTO sync_entity_meta(key,value)
+  SELECT 'entity_scope_visibility:' || identity,CAST(NEW.seq AS TEXT)
+  FROM (
+    SELECT json_array(NEW.collection,json_extract(OLD.payload,'$.value.rootId')) AS identity
+      WHERE json_extract(OLD.payload,'$.value.rootId') IS NOT NULL AND json_extract(OLD.payload,'$.value.rootId') IS NOT json_extract(NEW.payload,'$.value.rootId')
+    UNION SELECT json_array(NEW.collection,json_extract(NEW.payload,'$.value.rootId'))
+      WHERE json_extract(NEW.payload,'$.value.rootId') IS NOT NULL AND json_extract(OLD.payload,'$.value.rootId') IS NOT json_extract(NEW.payload,'$.value.rootId')
+    UNION SELECT json_array(NEW.collection,selector,'team') FROM (
+      SELECT json_extract(OLD.payload,'$.value.agent') AS selector
+      UNION SELECT json_extract(NEW.payload,'$.value.agent')
+      UNION SELECT json_extract(payload,'$.value.rootId') FROM sync_entities
+        WHERE collection='agentSummary' AND deleted=0 AND id IN
+        (json_extract(OLD.payload,'$.value.agent'),json_extract(NEW.payload,'$.value.agent'))
+    ) WHERE selector IS NOT NULL AND json_extract(OLD.payload,'$.value.agent') IS NOT json_extract(NEW.payload,'$.value.agent')
+  ) WHERE OLD.deleted=0 AND NEW.deleted=0
+  ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(sync_entity_meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT);
+  INSERT INTO sync_entity_meta(key,value)
+  SELECT 'entity_scope_visibility:' || json_array('*',root),CAST(NEW.seq AS TEXT)
+  FROM (
+    SELECT json_extract(OLD.payload,'$.value.rootId') AS root WHERE OLD.deleted=0
+    UNION SELECT json_extract(NEW.payload,'$.value.rootId') WHERE NEW.deleted=0
+  ) WHERE NEW.collection='agentSummary' AND root IS NOT NULL
+  ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(sync_entity_meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT);
+END;
+-- Tombstone selector provenance has the same lifetime as its retained source row.
+-- It is consumed only on restore, so ordinary deletion stays incremental.
+CREATE TRIGGER IF NOT EXISTS sync_entity_scope_tombstone_update
+AFTER UPDATE OF deleted ON sync_entities
+WHEN OLD.deleted IS NOT NEW.deleted AND NEW.collection!='agentSummary' BEGIN
+  INSERT INTO sync_entity_meta(key,value)
+  SELECT 'entity_scope_tombstone:' || json_array(OLD.collection,OLD.id), json_group_array(identity)
+  FROM (
+    SELECT json_array(OLD.collection,json_extract(OLD.payload,'$.value.rootId')) AS identity
+      WHERE json_extract(OLD.payload,'$.value.rootId') IS NOT NULL
+    UNION SELECT json_array(OLD.collection,selector,'team') FROM (
+      SELECT json_extract(OLD.payload,'$.value.agent') AS selector
+      UNION SELECT json_extract(payload,'$.value.rootId') FROM sync_entities
+        WHERE collection='agentSummary' AND deleted=0 AND id=json_extract(OLD.payload,'$.value.agent')
+    ) WHERE selector IS NOT NULL
+  ) WHERE OLD.deleted=0 AND NEW.deleted=1
+  HAVING COUNT(*)>0
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+  INSERT INTO sync_entity_meta(key,value)
+  SELECT 'entity_scope_visibility:' || old.value,CAST(NEW.seq AS TEXT)
+  FROM sync_entity_meta AS provenance,json_each(provenance.value) AS old
+  WHERE provenance.key='entity_scope_tombstone:' || json_array(NEW.collection,NEW.id)
+    AND OLD.deleted=1 AND NEW.deleted=0
+    AND EXISTS (
+      SELECT value FROM json_each(provenance.value)
+      EXCEPT SELECT identity FROM (
+        SELECT json_array(NEW.collection,json_extract(NEW.payload,'$.value.rootId')) AS identity
+          WHERE json_extract(NEW.payload,'$.value.rootId') IS NOT NULL
+        UNION SELECT json_array(NEW.collection,selector,'team') FROM (
+          SELECT json_extract(NEW.payload,'$.value.agent') AS selector
+          UNION SELECT json_extract(payload,'$.value.rootId') FROM sync_entities
+            WHERE collection='agentSummary' AND deleted=0 AND id=json_extract(NEW.payload,'$.value.agent')
+        ) WHERE selector IS NOT NULL
+      )
+    )
+  ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(sync_entity_meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT);
+  DELETE FROM sync_entity_meta
+  WHERE key='entity_scope_tombstone:' || json_array(NEW.collection,NEW.id) AND NEW.deleted=0;
+END;
+CREATE TRIGGER IF NOT EXISTS sync_entity_scope_tombstone_delete
+AFTER DELETE ON sync_entities BEGIN
+  DELETE FROM sync_entity_meta WHERE key='entity_scope_tombstone:' || json_array(OLD.collection,OLD.id);
+END;
 INSERT INTO sync_entity_meta(key, value)
 SELECT 'entity_tombstone_count', (
     SELECT CAST(COUNT(*) AS TEXT) FROM sync_entities

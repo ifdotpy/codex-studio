@@ -52,3 +52,14 @@ export function localFileLink(href: string): LocalFileLink | null {
 export function relativeFileLocation(value: string) {
   return /^[^/:?#]+\.[^/:?#]+:\d+(?::\d+)?(?:#.*)?$/.test(value);
 }
+
+export function relativeToDocument(
+  target: LocalFileLink,
+  basePath?: string,
+): LocalFileLink {
+  if (!basePath || target.path.startsWith("/")) return target;
+  const slash = basePath.lastIndexOf("/");
+  return slash < 0
+    ? target
+    : { ...target, path: basePath.slice(0, slash + 1) + target.path };
+}

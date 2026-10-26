@@ -555,8 +555,17 @@ fn delivery_bounds_invocation_history_and_preserves_active_and_latest_records() 
     let lock = fs::File::create(fixture.release_root.join("deliver.lock")).unwrap();
     // Successful, lock-refused, and failed-build attempts must all prune.
     let binary = fixture.release.join("bin/studio-runtime-server");
-    for index in 0..kept + 4 {
-        let mode = index % 3;
+    for mode in 0..3 {
+        // Seed excess history directly; each outcome still has to prune an
+        // overfull directory, without launching a delivery for every old row.
+        for index in 0..kept + 4 {
+            let old = fs::File::create(directory.join(format!("old-{mode}-{index:032x}"))).unwrap();
+            old.set_times(
+                fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+            )
+            .unwrap();
+        }
         if mode == 1 {
             lock.try_lock().unwrap();
         } else if mode == 2 {

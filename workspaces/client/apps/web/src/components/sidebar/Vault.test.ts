@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   chipWithVault,
   deskLink,
@@ -9,7 +9,6 @@ import {
   runJob,
   vaultLabel,
   type ProjectVault,
-  type VaultPull,
 } from "./Vault";
 
 const vault = (fields: Partial<ProjectVault> = {}): ProjectVault => ({
@@ -48,45 +47,112 @@ describe("vault menu", () => {
     expect(deskLink(vault({ prefix: null }))).toBeNull();
   });
 
-  it("asks about one pull with one request id until it ends", async () => {
-    const bodies: unknown[] = [];
-    const replies: VaultPull[] = [
-      { requestId: "r1", state: "running", folder: "/Downloads/codex-agents" },
-      { requestId: "r1", state: "running", folder: "/Downloads/codex-agents" },
-      {
+  it.each([
+    "/api/vault/setup",
+    "/api/vault/aws-login",
+    "/api/vault/pull",
+  ] as const)(
+    "streams %s receipts with zero timer reads and unsubscribes at completion",
+    async (url) => {
+      vi.useFakeTimers();
+      let changed!: (
+        version?: import("../../sync/resourceEvents").ResourceVersion,
+      ) => void;
+      const remove = vi.fn();
+      const post = vi
+        .fn()
+        .mockResolvedValue({ requestId: "r1", state: "running" });
+      const resources = {
+        watchResourceChanges: vi.fn((_resource, accept) => {
+          changed = accept;
+          return remove;
+        }),
+        watchResourceConnection: () => remove,
+      };
+      const updates = vi.fn();
+      try {
+        const pending = runJob(
+          { post } as never,
+          url,
+          { requestId: "r1" },
+          { resources, onUpdate: updates },
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(post).toHaveBeenCalledTimes(1);
+        const resource = resources.watchResourceChanges.mock.calls[0][0];
+        changed({ epoch: "e", revision: 2 });
+        changed({
+          epoch: "e",
+          revision: 3,
+          progress: {
+            resource,
+            value: { requestId: "r1", state: "running", progress: "creating" },
+          },
+        });
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(post).toHaveBeenCalledTimes(1);
+        changed({
+          epoch: "e",
+          revision: 4,
+          progress: { resource, value: { requestId: "r1", state: "done" } },
+        });
+        await expect(pending).resolves.toEqual({
+          requestId: "r1",
+          state: "done",
+        });
+        expect(remove).toHaveBeenCalledTimes(2);
+        expect(updates).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("recovers one lost response using the same logical request", async () => {
+    const post = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("lost response"))
+      .mockResolvedValue({
         requestId: "r1",
         state: "done",
-        folder: "/Downloads/codex-agents",
+        folder: "/Downloads/demo",
         seq: 12,
         files: 340,
-        bytes: 1000,
-      },
-    ];
-    const backend = {
-      post: (async (path: string, body: unknown) => {
-        expect(path).toBe("/api/vault/pull");
-        bodies.push(body);
-        return replies.shift();
-      }) as never,
-    };
-    const job = await pullVault(backend, "p1", "/Downloads", {
+      });
+    const done = await pullVault({ post } as never, "p1", "/Downloads", {
       requestId: "r1",
-      wait: async () => {},
     });
-    expect(bodies).toEqual(
-      Array(3).fill({ projectId: "p1", requestId: "r1", to: "/Downloads" }),
+    expect(post.mock.calls.map((call) => call[1])).toEqual(
+      Array(2).fill({ projectId: "p1", requestId: "r1", to: "/Downloads" }),
     );
-    expect(pullText(job)).toBe(
-      "Pulled state 12 (340 files) into /Downloads/codex-agents",
+    expect(pullText(done)).toBe(
+      "Pulled state 12 (340 files) into /Downloads/demo",
     );
-    expect(
-      pullText({
-        requestId: "r2",
-        state: "failed",
-        folder: "x",
-        error: "the vault codex-agents is locked on this Mac",
-      }),
-    ).toBe("The pull failed: the vault codex-agents is locked on this Mac");
+  });
+
+  it("stops watching when the view closes without cancelling the server job", async () => {
+    const remove = vi.fn();
+    const controller = new AbortController();
+    const post = vi
+      .fn()
+      .mockResolvedValue({ requestId: "r1", state: "running" });
+    const pending = runJob(
+      { post } as never,
+      "/api/vault/setup",
+      { requestId: "r1" },
+      {
+        signal: controller.signal,
+        resources: {
+          watchResourceChanges: () => remove,
+          watchResourceConnection: () => remove,
+        },
+      },
+    );
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toThrow("Stopped watching");
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenCalledTimes(1);
   });
 
   it("puts a cloud on the LAYR chip of a project with a vault", () => {
@@ -153,51 +219,6 @@ describe("vault menu", () => {
       }),
     ).toEqual(["desk"]);
     expect(vaultActions(vault({ site: null }), here)).toEqual([]);
-  });
-
-  it("asks for a job with one request id until it ends, and reports each update", async () => {
-    const replies = [
-      { requestId: "s1", state: "running", prefix: "demo" },
-      {
-        requestId: "s1",
-        state: "running",
-        prefix: "demo",
-        progress: "creating",
-      },
-      {
-        requestId: "s1",
-        state: "done",
-        prefix: "demo",
-        site: "https://d/demo/",
-      },
-    ];
-    const bodies: unknown[] = [];
-    const seen: unknown[] = [];
-    const backend = {
-      post: (async (path: string, body: unknown) => {
-        expect(path).toBe("/api/vault/setup");
-        bodies.push(body);
-        return replies.shift();
-      }) as never,
-    };
-    const body = { projectId: "p1", requestId: "s1", prefix: "demo" };
-    const done = await runJob<{ state: string; site?: string }>(
-      backend,
-      "/api/vault/setup",
-      body,
-      { wait: async () => {}, onUpdate: (job) => seen.push(job.state) },
-    );
-    expect(done.site).toBe("https://d/demo/");
-    expect(bodies).toEqual([body, body, body]);
-    expect(seen).toEqual(["running", "running", "done"]);
-    await expect(
-      runJob(
-        { post: (async () => ({ state: "running" })) as never },
-        "/api/vault/setup",
-        body,
-        { wait: async () => {}, deadline: 0 },
-      ),
-    ).rejects.toThrow("takes more than an hour");
   });
 
   it("chooses the gateway's AWS profile first", () => {

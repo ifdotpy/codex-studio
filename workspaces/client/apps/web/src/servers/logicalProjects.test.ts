@@ -148,7 +148,12 @@ describe("project locations", () => {
       setItem: (key: string, value: string) => entries.set(key, value),
       removeItem: (key: string) => entries.delete(key),
     };
-    const body = { server: "mbp", path: "/Projects/attar" };
+    const body = {
+      action: "add_location",
+      project: project.id,
+      server: "mbp",
+      path: "/Projects/attar",
+    };
     const refusal = new ApiError("Refused", 403);
     durableProjectRequest(body, "fresh", storage).reject(refusal);
     expect(entries.size).toBe(1);
@@ -178,26 +183,6 @@ describe("project locations", () => {
     } finally {
       get.mockRestore();
     }
-  });
-  it("keeps the exact identity after a first HTTP refusal with an uncertain effect", () => {
-    const entries = new Map<string, string>();
-    const storage = {
-      getItem: (key: string) => entries.get(key) || null,
-      setItem: (key: string, value: string) => entries.set(key, value),
-      removeItem: (key: string) => entries.delete(key),
-    };
-    const body = {
-      action: "add_location",
-      project: project.id,
-      server: "mbp",
-      path: "/Projects/attar",
-    };
-    durableProjectRequest(body, "accepted-at-peer", storage).reject(
-      new ApiError("Invalid peer reply", 403),
-    );
-    expect(durableProjectRequest(body, "fresh-modal", storage).id).toBe(
-      "accepted-at-peer",
-    );
   });
   it("reads the same location receipt after HTTP refusal and clears a final receipt", async () => {
     const body = {

@@ -581,6 +581,9 @@ export function mergeSidebar(
       rules: [],
       events: [],
       work: [],
+      studioErrors:
+        sources.find((source) => source.id === "local")?.sidebar.studioErrors ||
+        [],
       peerTeamsVersion: sources.some(
         (source) => source.sidebar.peerTeamsVersion === 1,
       )

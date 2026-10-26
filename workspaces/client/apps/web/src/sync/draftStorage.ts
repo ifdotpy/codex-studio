@@ -1,62 +1,20 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
 
-export type LocalDraftRecord = {
-  version: 1;
-  workspace: string;
-  session: string;
-  text: string;
-  deleted: boolean;
-  source: "local" | "remote";
-  updated?: number;
-};
+import {
+  draftWorkspace as workspaceOf,
+  localDraftPrefix as localPrefix,
+  localDraftKey,
+  parseLocalDraftRecord as parseRecord,
+  readSavedLocalDraftRecord,
+  type LocalDraftRecord,
+} from "./draftRead";
+export { localDraftKey, type LocalDraftRecord } from "./draftRead";
 
 export type DraftMap = Record<string, string>;
 
-const localPrefix = "codex-chat-draft:";
-
-export function localDraftKey(scope: string, session: string) {
-  return `${localPrefix}${scope.slice("codex-drafts:".length)}:${encodeURIComponent(session)}`;
-}
-
-function workspaceOf(scope: string) {
-  return scope.slice("codex-drafts:".length);
-}
-
-function parseRecord(
-  raw: string,
-  workspace: string,
-  session: string,
-): LocalDraftRecord {
-  const value = JSON.parse(raw) as Record<string, unknown>;
-  if (
-    !value ||
-    value.version !== 1 ||
-    value.workspace !== workspace ||
-    value.session !== session ||
-    typeof value.text !== "string" ||
-    typeof value.deleted !== "boolean" ||
-    (value.source !== "local" &&
-      value.source !== "remote" &&
-      value.source !== "legacy") ||
-    (value.updated !== undefined && !Number.isFinite(value.updated))
-  )
-    throw new Error("A saved draft could not be read. Keep this chat open.");
-  return {
-    version: 1 as const,
-    workspace,
-    session,
-    text: value.text,
-    deleted: value.deleted,
-    source: value.source === "legacy" ? "local" : value.source,
-    ...(value.updated !== undefined
-      ? { updated: value.updated as number }
-      : {}),
-  };
-}
 export function createDraftStorage(localStorage: Storage) {
   function readLocalDraftRecord(scope: string, session: string) {
-    const raw = localStorage.getItem(localDraftKey(scope, session));
-    return raw === null ? null : parseRecord(raw, workspaceOf(scope), session);
+    return readSavedLocalDraftRecord(localStorage, scope, session);
   }
 
   function readLocalDrafts(

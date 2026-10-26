@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { Button } from "@mantine/core";
 import type { LimitRecovery } from "../usage/limitRecovery";
 import { copyText } from "../clipboard/clipboard";
-import { errorText, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostResult } from "../api";
 import type { Agent } from "../types";
 
 /**

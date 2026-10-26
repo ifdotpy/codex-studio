@@ -30,6 +30,8 @@ pub const NATIVE_ACTION_ATTEMPT_KINDS: [&str; 2] = ["compact", "review"];
 /// Kinds whose admission belongs to a dedicated policy, rather than the shared
 /// generic notification compiler. Timing is independently owned by DeliveryMoment.
 const DEDICATED_TURN_EVENT_KINDS: &[&str] = &["radio", "radio_turn", "chat_review"];
+/// Queue event statuses whose input is not yet settled by a finished turn.
+const UNSETTLED_EVENT_STATUSES: &str = "'pending','reserved','dispatching','uncertain'";
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",

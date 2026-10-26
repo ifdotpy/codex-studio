@@ -54,7 +54,23 @@ fn permissions() -> &'static Mutex<Permissions> {
     static VALUE: OnceLock<Mutex<Permissions>> = OnceLock::new();
     VALUE.get_or_init(Mutex::default)
 }
+#[cfg(test)]
+pub(crate) fn test_native_permit(purpose: u32) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(100_000);
+    let token = NEXT.fetch_add(1, Ordering::Relaxed);
+    permissions()
+        .lock()
+        .unwrap()
+        .issue((1, token), purpose, token, Instant::now(), Duration::ZERO)
+}
 fn purpose(method: &str) -> Option<u32> {
+    if method == crate::attachment_selections::contract()["methods"]["pick"] {
+        return purpose("desktop.pickFiles");
+    }
+    if method == crate::attachment_selections::contract()["methods"]["contextMenu"] {
+        return Some(attachment_context_menu_purpose());
+    }
     Some(match method {
         "desktop.pickDirectory" => 1,
         "desktop.pickFiles" | "desktop.pickAttachments" => 2,
@@ -63,8 +79,10 @@ fn purpose(method: &str) -> Option<u32> {
         "desktop.saveBegin"
         | "desktop.savePreview"
         | "desktop.saveTerminal"
+        | "desktop.saveText"
+        | "desktop.downloadAndSave"
         | "desktop.saveRecording" => 5,
-        "desktop.fileAction" => 6,
+        "desktop.fileAction" | "desktop.previewMedia" | "preview.externalImage" => 6,
         "desktop.requestMicrophone" | "desktop.reserveMicrophone" => 7,
         "desktop.prepareTranscription" => 8,
         "desktop.cancelTranscription" => 9,
@@ -72,6 +90,32 @@ fn purpose(method: &str) -> Option<u32> {
         "desktop.showVaultKeys" => 11,
         _ => return None,
     })
+}
+
+fn attachment_context_menu_purpose() -> u32 {
+    crate::attachment_selections::contract()["gesturePurposes"]["contextMenu"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .expect("attachment popup gesture purpose")
+}
+
+#[cfg(target_os = "macos")]
+fn native_action_event_allowed(purpose: u32, kind: objc2_app_kit::NSEventType) -> bool {
+    use objc2_app_kit::NSEventType;
+    matches!(
+        kind,
+        NSEventType::LeftMouseUp | NSEventType::KeyDown | NSEventType::KeyUp
+    ) || (purpose == attachment_context_menu_purpose()
+        && matches!(
+            kind,
+            NSEventType::RightMouseDown | NSEventType::RightMouseUp
+        ))
+}
+/// Consume the host-issued action permit before any asynchronous native work.
+pub(crate) fn consume_permission(request:&Request) -> Result<(),String> {
+    let action=purpose(&request.method).ok_or("This native action is not available.")?;
+    let token=request.params.get("permit").and_then(Value::as_u64).ok_or(DENIED)?;
+    permissions().lock().map_err(|_|DENIED)?.consume(token,action,Instant::now())
 }
 
 /// Issue an action-specific permit on the native UI thread.
@@ -87,13 +131,13 @@ pub fn gesture_for_method(method: &str) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn studio_core_gesture_v1(purpose: u32) -> u64 {
     std::panic::catch_unwind(|| {
-        if !(1..=11).contains(&purpose) {
+        if !(1..=11).contains(&purpose) && purpose != attachment_context_menu_purpose() {
             return 0;
         }
         #[cfg(target_os = "macos")]
         {
             use objc2::{MainThreadMarker, rc::autoreleasepool};
-            use objc2_app_kit::{NSApplication, NSEventType};
+            use objc2_app_kit::NSApplication;
             use objc2_foundation::NSProcessInfo;
             let Some(mtm) = MainThreadMarker::new() else {
                 return 0;
@@ -107,10 +151,7 @@ pub extern "C" fn studio_core_gesture_v1(purpose: u32) -> u64 {
                     return 0;
                 };
                 if event.windowNumber() != window.windowNumber()
-                    || !matches!(
-                        event.r#type(),
-                        NSEventType::LeftMouseUp | NSEventType::KeyDown | NSEventType::KeyUp
-                    )
+                    || !native_action_event_allowed(purpose, event.r#type())
                 {
                     return 0;
                 }
@@ -220,6 +261,17 @@ pub async fn dispatch(
     previews: Option<&crate::file_preview::Previews>,
 ) -> Response {
     let result = async {
+        let selection = request.method == crate::attachment_selections::contract()["methods"]["pick"];
+        if selection {
+            let sender = sender.ok_or("The native state service is unavailable.")?;
+            let prior = crate::delivery::state(sender,crate::attachment_selections::contract()["privateMethods"]["captureStatus"].as_str().expect("native capture status method"),serde_json::json!({"scope":request.params["scope"],"captureId":request.id,"kind":"pick","target":request.params["target"]})).await?;
+            if !prior.is_null() { return Ok(prior); }
+            let pending = crate::delivery::state(sender,crate::attachment_selections::contract()["methods"]["pending"].as_str().expect("native pending selection method"),serde_json::json!({"scope":request.params["scope"],"kind":"pick"})).await?;
+            if let Some(batch) = pending.as_array().and_then(|rows| rows.first()) {
+                if batch["target"] != request.params["target"] { return Err("Resolve the original native file selection in its original chat before selecting more files.".into()); }
+                return Ok(batch.clone());
+            }
+        }
         if matches!(
             request.method.as_str(),
             "desktop.saveDeclare" | "desktop.saveChunk" | "desktop.saveCancel"
@@ -231,16 +283,7 @@ pub async fn dispatch(
             let (name, bytes) = crate::file_save::finish(&request.params["value"])?;
             return save_snapshot(name, std::sync::Arc::new(bytes)).await;
         }
-        let action = purpose(&request.method).ok_or("This native action is not available.")?;
-        let token = request
-            .params
-            .get("permit")
-            .and_then(Value::as_u64)
-            .ok_or(DENIED)?;
-        permissions()
-            .lock()
-            .map_err(|_| DENIED)?
-            .consume(token, action, Instant::now())?;
+        consume_permission(&request)?;
         let mut value = request.params.get("value").cloned().unwrap_or(Value::Null);
         if request.method == "desktop.openSignIn" && value.is_object() {
             value = prepare_sign_in(
@@ -252,12 +295,25 @@ pub async fn dispatch(
             .await?;
         }
         match request.method.as_str() {
+            "desktop.previewMedia" => {
+                let owner=sender.ok_or("The native media server context is unavailable.")?;
+                let previews=previews.ok_or("The preview service is unavailable.")?;
+                let (name,bytes)=previews.media_snapshot(&value)?;
+                let handle=value["handle"].as_str().ok_or("The native preview handle is invalid.")?;
+                return serde_json::to_value(crate::media::prepare_preview(owner,&request.id,handle,name,bytes)?)
+                    .map_err(|_|"The native media receipt could not be encoded.".into());
+            }
             "desktop.showVaultKeys" => return crate::vault_keys::show(&value).await,
             "desktop.saveBegin" => return crate::file_save::command(&request.method, &value),
             "desktop.requestMicrophone" => return crate::media::request_microphone().await,
             "desktop.reserveMicrophone" => return crate::media::reserve_microphone(Instant::now()),
             "desktop.prepareTranscription" => return crate::speech::prepare(Instant::now()),
-            "desktop.cancelTranscription" => return crate::speech::cancel(&value),
+            "desktop.cancelTranscription" => {
+                return crate::speech::cancel(
+                    sender.ok_or("The transcription server context is unavailable.")?,
+                    &value,
+                );
+            }
             _ => {}
         }
         #[cfg(target_os = "macos")]
@@ -266,6 +322,18 @@ pub async fn dispatch(
                 let backend = backend.ok_or("The native backend is unavailable.")?;
                 let (name, bytes) = crate::terminal::history(backend, &value).await?;
                 return save_snapshot(name, bytes).await;
+            }
+            if matches!(
+                request.method.as_str(),
+                "desktop.downloadAndSave" | "desktop.saveText"
+            ) {
+                return download_and_save(
+                    &request,
+                    &value,
+                    sender.ok_or("The native state service is unavailable.")?,
+                    backend,
+                )
+                .await;
             }
             if request.method == "desktop.saveRecording" {
                 let sender = sender.ok_or("The native state service is unavailable.")?;
@@ -301,7 +369,18 @@ pub async fn dispatch(
                 let file = crate::file_actions::resolve(backend, value).await?;
                 return mac::file_action(file).await;
             }
-            let value = mac::run(request.method.clone(), value).await?;
+            let value = mac::run(if selection { "desktop.pickFiles".into() } else { request.method.clone() }, value).await?;
+            if selection {
+                let paths: Vec<std::path::PathBuf> = serde_json::from_value(value).map_err(|_|"Invalid native picker result.")?;
+                if paths.is_empty() { return Ok(Value::Null); }
+                let capture = CapturedAttachmentFiles::from_native_drop(paths)?;
+                let files = tokio::task::spawn_blocking(move ||capture.read()).await.map_err(|error|error.to_string())??;
+                let sender = sender.ok_or("The native state service is unavailable.")?;
+                let (send,receive)=tokio::sync::oneshot::channel();
+                sender.send((Request {id:request.id.clone(),method:crate::attachment_selections::contract()["privateMethods"]["capture"].as_str().expect("native capture method").into(),params:serde_json::json!({"scope":request.params["scope"],"target":request.params["target"],"kind":"pick","files":files})},send)).await.map_err(|error|error.to_string())?;
+                let response=receive.await.map_err(|error|error.to_string())?;
+                return response.result.ok_or_else(||response.error.map(|error|error.message).unwrap_or("The native file selection has no saved receipt.".into()));
+            }
             if matches!(
                 request.method.as_str(),
                 "desktop.pickFiles" | "desktop.pickAttachments"
@@ -345,7 +424,111 @@ pub async fn dispatch(
     .await;
     match result {
         Ok(value) => Response::success(request.id, value),
-        Err(error) => Response::failure(request.id, "desktop_action", error),
+        Err(error) => {
+            // Media returns an ACK as soon as its job is owned. An error here
+            // rejects this submitted payload before an asynchronous media effect.
+            let rejected=(request.method=="desktop.previewMedia").then(||crate::protocol::PlaybackReceipt {
+                request_id:request.id.clone(),status:crate::protocol::PlaybackStatus::Failed,playback_id:None,
+                preview_handle:request.params["value"]["handle"].as_str().filter(|value|uuid::Uuid::parse_str(value).is_ok()).map(str::to_owned),
+                error:Some(error.clone()),duration:None,
+            });
+            let mut response=Response::failure(request.id,"desktop_action",error);
+            if let Some(receipt)=rejected && let Some(error)=response.error.as_mut() {
+                error.details=Some(serde_json::json!({"playback":receipt}));
+            }
+            response
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn download_and_save(
+    request: &Request,
+    value: &Value,
+    sender: &crate::delivery::StoreSender,
+    backend: Option<&crate::backend::Backend>,
+) -> Result<Value, String> {
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    sender
+        .send((
+            Request {
+                id: request.id.clone(),
+                method: "files.saveClaim".into(),
+                params: serde_json::json!({"method":request.method,"value":value}),
+            },
+            reply,
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    let claim = receive.await.map_err(|e| e.to_string())?;
+    let claim = claim.result.ok_or_else(|| {
+        claim
+            .error
+            .map(|e| e.message)
+            .unwrap_or("The native Save claim was not confirmed.".into())
+    })?;
+    if claim["fresh"] != true {
+        if claim["receipt"].is_object() {
+            return if request.method == "desktop.saveText" {
+                Ok(claim["receipt"]["saved"].clone())
+            } else {
+                Ok(claim["receipt"].clone())
+            };
+        }
+        return Err("This Save request already ran. Its result is not confirmed. The dialog was not repeated.".into());
+    }
+    let mut result = if request.method == "desktop.downloadAndSave" {
+        crate::uploads::download(
+            backend.ok_or("The native backend is unavailable.")?,
+            sender,
+            &Request {
+                id: request.id.clone(),
+                method: "uploads.download".into(),
+                params: value.clone(),
+            },
+        )
+        .await?
+    } else {
+        let text = value["text"]
+            .as_str()
+            .filter(|s| s.len() <= crate::uploads::LIMIT)
+            .ok_or("The text exceeds the native Save bound.")?;
+        use base64::Engine;
+        crate::uploads::stage_download(sender,&request.id,serde_json::json!({"name":value["name"],"mime":"text/plain","base64":base64::engine::general_purpose::STANDARD.encode(text.as_bytes())})).await?
+    };
+    let snapshot = crate::delivery::state(
+        sender,
+        "files.exportForSave",
+        serde_json::json!({"nativeHandle":result["nativeHandle"]}),
+    )
+    .await?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(
+            snapshot["base64"]
+                .as_str()
+                .ok_or("The native download bytes are unavailable.")?,
+        )
+        .map_err(|e| e.to_string())?;
+    let saved = save_snapshot(
+        snapshot["name"]
+            .as_str()
+            .ok_or("The download name is unavailable.")?
+            .into(),
+        std::sync::Arc::new(bytes),
+    )
+    .await?;
+    result["saved"] = saved;
+    let receipt = crate::delivery::state(
+        sender,
+        "files.saveSettle",
+        serde_json::json!({"requestId":request.id,"receipt":result}),
+    )
+    .await?;
+    if request.method == "desktop.saveText" {
+        Ok(receipt["saved"].clone())
+    } else {
+        Ok(receipt)
     }
 }
 
@@ -376,6 +559,148 @@ async fn save_snapshot(name: String, bytes: std::sync::Arc<Vec<u8>>) -> Result<V
     Ok(Value::Bool(true))
 }
 
+/// Paths enter through a native picker or native drag event, never renderer IPC.
+/// The private field prevents a renderer descriptor from masquerading as a capture.
+pub struct CapturedAttachmentFiles {
+    paths: Vec<std::path::PathBuf>,
+}
+impl CapturedAttachmentFiles {
+    pub fn from_native_drop(paths: Vec<std::path::PathBuf>) -> Result<Self, String> {
+        if paths.is_empty()
+            || paths.len() > studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS
+            || paths.iter().any(|path| !path.is_absolute())
+        {
+            return Err("The native file selection is empty, exceeds the attachment limit, or has an invalid path.".into());
+        }
+        Ok(Self { paths })
+    }
+
+    /// Run outside the UI thread. The existing file owner checks bytes and quotas.
+    pub fn read(self) -> Result<Value, String> {
+        let paths = serde_json::to_value(self.paths)
+            .map_err(|_| "The selected file path is not valid text.")?;
+        read_selected_files(paths)
+    }
+}
+
+/// Called only by a host native Paste action after its view/target lease check.
+/// None means no native file representation, so the original responder handles text.
+#[cfg(target_os = "macos")]
+pub fn capture_file_paste(
+    expected_window: isize,
+) -> Result<Option<CapturedAttachmentFiles>, String> {
+    use objc2::{ClassType, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSPasteboard, NSPasteboardTypeFileURL};
+    use objc2_foundation::{NSArray, NSURL};
+    let thread =
+        MainThreadMarker::new().ok_or("The native paste action requires the UI thread.")?;
+    let app = NSApplication::sharedApplication(thread);
+    if !app.isActive()
+        || app
+            .mainWindow()
+            .is_none_or(|window| window.windowNumber() != expected_window)
+    {
+        return Err("The native paste action belongs to another window.".into());
+    }
+    let clipboard = NSPasteboard::generalPasteboard();
+    let before = clipboard.changeCount();
+    // The classes are native NSURL objects. No text or renderer path is read.
+    let classes = NSArray::from_slice(&[NSURL::class()]);
+    let objects = unsafe { clipboard.readObjectsForClasses_options(&classes, None) };
+    let mut paths = vec![];
+    if let Some(objects) = objects {
+        for index in 0..objects.count() {
+            let object = objects.objectAtIndex(index);
+            let url = object
+                .downcast_ref::<NSURL>()
+                .ok_or("The native paste action returned an invalid file URL.")?;
+            if !url.isFileURL() {
+                continue;
+            }
+            let path = url
+                .filePathURL()
+                .and_then(|url| url.path())
+                .ok_or("The native file URL is unavailable.")?;
+            paths.push(std::path::PathBuf::from(path.to_string()));
+        }
+    }
+    if before != clipboard.changeCount() {
+        return Err("The clipboard changed before the native paste capture finished.".into());
+    }
+    if paths.is_empty() {
+        let file_types = NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]);
+        if clipboard.availableTypeFromArray(&file_types).is_some() {
+            return Err(
+                "The clipboard advertises files that the native host cannot capture.".into(),
+            );
+        }
+        return Ok(None);
+    }
+    CapturedAttachmentFiles::from_native_drop(paths).map(Some)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn capture_file_paste(
+    _expected_window: isize,
+) -> Result<Option<CapturedAttachmentFiles>, String> {
+    Err("Native file paste is unavailable on this device.".into())
+}
+
+/// Forward ordinary text to the native responder. The host never reads or inserts it.
+#[cfg(target_os = "macos")]
+pub fn forward_text_paste() -> Result<(), String> {
+    use objc2::{MainThreadMarker, sel};
+    let thread =
+        MainThreadMarker::new().ok_or("The native paste action requires the UI thread.")?;
+    let app = objc2_app_kit::NSApplication::sharedApplication(thread);
+    // paste: is the same selector used by the predefined native menu. Nil target
+    // and sender preserve the current responder, selection, caret, and undo owner.
+    unsafe {
+        app.sendAction_to_from(sel!(paste:), None, None);
+    }
+    Ok(())
+}
+
+/// Only the actual caller's native window can spend the popup's own gesture.
+/// The root supplies expected_window from its native caller proof, never JS.
+#[cfg(target_os = "macos")]
+pub fn consume_attachment_context_menu_permission(
+    token: u64,
+    expected_window: isize,
+) -> Result<(), String> {
+    let thread = objc2::MainThreadMarker::new()
+        .ok_or("The native attachment menu requires the UI thread.")?;
+    let app = objc2_app_kit::NSApplication::sharedApplication(thread);
+    if !app.isActive()
+        || app
+            .mainWindow()
+            .is_none_or(|window| window.windowNumber() != expected_window)
+        || app
+            .currentEvent()
+            .is_none_or(|event| event.windowNumber() != expected_window)
+    {
+        return Err("The native attachment menu belongs to another window.".into());
+    }
+    consume_permission(&Request {
+        id: "native-attachment-menu".into(),
+        method: crate::attachment_selections::contract()["methods"]["contextMenu"]
+            .as_str()
+            .expect("attachment context menu method")
+            .into(),
+        params: serde_json::json!({"permit":token}),
+    })
+}
+#[cfg(not(target_os = "macos"))]
+pub fn consume_attachment_context_menu_permission(
+    _token: u64,
+    _expected_window: isize,
+) -> Result<(), String> {
+    Err("Native attachment menus are unavailable on this device.".into())
+}
+#[cfg(not(target_os = "macos"))]
+pub fn forward_text_paste() -> Result<(), String> {
+    Err("Native text paste is unavailable on this device.".into())
+}
 fn read_selected_files(paths: Value) -> Result<Value, String> {
     use base64::Engine;
     use std::{io::Read, os::unix::fs::OpenOptionsExt};
@@ -660,6 +985,53 @@ mod tests {
         serde_json::json!({"server":"remote", "bridgeId":"a".repeat(32), "host":"127.0.0.1", "port":49152, "path":"/callback", "expiresAt":1900000000, "token":"secret"})
     }
     #[tokio::test]
+    async fn media_preview_uses_the_exact_cached_handle_and_native_permission() {
+        let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
+        let _device = crate::media::playback_tests::install_preview_mock();
+        let previews = crate::file_preview::Previews::default();
+        let owned = previews.test_file("clip.wav", "audio/wav", b"native-owned-media");
+        let (store, _receive) = tokio::sync::mpsc::channel(1);
+        let reply = dispatch(Request {
+            id: "original-media-open".into(),
+            method: "desktop.previewMedia".into(),
+            params: serde_json::json!({"permit":test_native_permit(6),"value":{"handle":owned["handle"]}}),
+        }, Some(&store), None, Some(&previews)).await;
+        assert!(reply.error.is_none(), "{reply:?}");
+        let receipt = reply.result.expect("native media receipt");
+        assert_eq!(receipt["status"], "preparing");
+        assert!(
+            receipt["playbackId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
+        _device.0.wait_for_start().await;
+        let replay = dispatch(Request {
+            id: "original-media-open".into(), method: "desktop.previewMedia".into(),
+            params: serde_json::json!({"permit":test_native_permit(6),"value":{"handle":owned["handle"]}}),
+        }, Some(&store), None, Some(&previews)).await;
+        assert_eq!(replay.result, Some(receipt.clone()));
+        assert_eq!(
+            _device.0.starts(),
+            1,
+            "An exact request replay opened a second native player."
+        );
+        let another = previews.test_file("another.mp4", "video/mp4", b"another-native-media");
+        let changed = dispatch(Request {
+            id: "original-media-open".into(), method: "desktop.previewMedia".into(),
+            params: serde_json::json!({"permit":test_native_permit(6),"value":{"handle":another["handle"]}}),
+        }, Some(&store), None, Some(&previews)).await;
+        assert!(changed.error.is_some());
+        assert_eq!(_device.0.starts(), 1);
+        let foreign = crate::file_preview::Previews::default();
+        let denied = dispatch(Request {
+            id:"foreign-preview-open".into(),method:"desktop.previewMedia".into(),
+            params:serde_json::json!({"permit":test_native_permit(6),"value":{"handle":owned["handle"]}}),
+        }, Some(&store), None, Some(&foreign)).await;
+        assert!(denied.error.is_some());
+        assert_eq!(_device.0.starts(), 1);
+    }
+
+    #[tokio::test]
     async fn sign_in_validates_owner_before_network_and_requires_port_confirmation() {
         use crate::backend::tests::{read_http, reply};
         let forward = forward();
@@ -805,5 +1177,60 @@ mod tests {
         let huge = std::fs::File::create(directory.path().join("huge")).unwrap();
         huge.set_len((crate::uploads::LIMIT + 1) as u64).unwrap();
         assert!(read_selected_files(serde_json::json!([directory.path().join("huge")])).is_err());
+    }
+}
+
+#[cfg(test)]
+mod native_attachment_capture_tests {
+    use super::CapturedAttachmentFiles;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_attachment_context_menu_right_click_cannot_authorize_other_desktop_actions() {
+        use objc2_app_kit::NSEventType;
+        let popup = super::attachment_context_menu_purpose();
+        for event in [NSEventType::RightMouseDown, NSEventType::RightMouseUp] {
+            assert!(super::native_action_event_allowed(popup, event));
+            assert!(!super::native_action_event_allowed(
+                super::purpose("desktop.pickFiles").unwrap(),
+                event
+            ));
+            assert!(!super::native_action_event_allowed(
+                super::purpose("desktop.previewMedia").unwrap(),
+                event
+            ));
+        }
+        let request = |permit| crate::protocol::Request {
+            id: "attachment-context-menu".into(),
+            method: crate::attachment_selections::contract()["methods"]["contextMenu"]
+                .as_str()
+                .unwrap()
+                .into(),
+            params: serde_json::json!({"permit":permit}),
+        };
+        let permit = super::test_native_permit(popup);
+        assert!(super::consume_permission(&request(permit)).is_ok());
+        assert!(super::consume_permission(&request(permit)).is_err());
+    }
+    #[test]
+    fn native_attachment_capture_keeps_paths_private_and_reuses_the_file_byte_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("selected.txt");
+        std::fs::write(&path, b"original native bytes").unwrap();
+        let selected = CapturedAttachmentFiles::from_native_drop(vec![path])
+            .unwrap()
+            .read()
+            .unwrap();
+        assert_eq!(selected[0]["name"], "selected.txt");
+        assert_eq!(selected[0]["mime"], "text/plain");
+        assert_eq!(selected[0]["base64"], "b3JpZ2luYWwgbmF0aXZlIGJ5dGVz");
+        assert!(selected[0].get("path").is_none());
+        assert!(CapturedAttachmentFiles::from_native_drop(vec![]).is_err());
+        assert!(CapturedAttachmentFiles::from_native_drop(vec!["relative.txt".into()]).is_err());
+        assert!(
+            CapturedAttachmentFiles::from_native_drop(vec![directory.path().to_owned()])
+                .unwrap()
+                .read()
+                .is_err()
+        );
     }
 }

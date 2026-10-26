@@ -15,7 +15,8 @@ import {
   type HTMLAttributes,
   type ReactNode,
 } from "react";
-import { ApiError, errorText } from "../../../api";
+import { ApiError } from "../../../apiErrors";
+import { errorText } from "../../../apiPresentation";
 import { useSidebarBackend, type SidebarBackend } from "../../sidebar/services";
 import type { paths } from "../../../generated/api";
 import type { Agent, PeerTeam } from "../../../types";

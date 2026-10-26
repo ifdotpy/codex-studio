@@ -2,6 +2,8 @@ import { TeamRetainedWorktrees } from "./RetainedWorktrees";
 import { ActionIcon, Button, TextInput } from "@mantine/core";
 import { ArrowLeft, Search, X } from "lucide-react";
 import type { Agent } from "../../types";
+import { useMemo, type ComponentProps } from "react";
+import { useSubscription } from "../../sync/subscriptions";
 import type { Account } from "../Accounts";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import type { PreviewTarget } from "../FilePreview";
@@ -41,6 +43,19 @@ type Props = {
   previewResult: (target: PreviewTarget) => void;
   remove: (id: string) => void;
 };
+
+/** Only mounted roster rows retain detailed progress and result subscriptions. */
+function LiveWorkerCard(props: ComponentProps<typeof WorkerCard>) {
+  const detail = useSubscription({
+    kind: "agentDetail",
+    agentId: props.agent.id,
+  });
+  const agent = useMemo(
+    () => (detail.data ? { ...detail.data, ...props.agent } : props.agent),
+    [detail.data, props.agent],
+  );
+  return <WorkerCard {...props} agent={agent} />;
+}
 
 export default function TeamPanel({
   lead,
@@ -82,7 +97,7 @@ export default function TeamPanel({
   );
   const worker = (a: Agent) => (
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
-      <WorkerCard
+      <LiveWorkerCard
         agent={a}
         depth={workerDepth(a, byId, lead?.id)}
         accounts={accounts}

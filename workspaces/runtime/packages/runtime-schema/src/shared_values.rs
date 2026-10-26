@@ -23,6 +23,9 @@ pub const MONITOR_WAIT_SLOTS: usize = 64;
 /// Most error ids accepted in one atomic Studio error dismissal request. Unit: ids.
 pub const STUDIO_ERRORS_DISMISS_MAX_IDS: usize = 200;
 
+/// Legacy removal-fence key prefix. The suffix is a JSON [workspace, message] pair.
+pub const REMOVED_SEND_STORAGE_PREFIX: &str = "studio-removed-send:";
+
 // Native terminal discovery before a stop.
 /// Terminal entries per discovery page.
 pub const NATIVE_TERMINAL_ITEMS_PER_PAGE: usize = 100;
@@ -76,12 +79,47 @@ pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
 pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Maximum complete resources SSE event, including event/id/data lines, in UTF-8 bytes.
 pub const SYNC_STREAM_EVENT_MAX_BYTES: usize = 262144;
+/// Maximum retained terminal output per stream snapshot and renderer cache, in Unicode scalars.
+pub const SYNC_TERMINAL_STREAM_MAX_CHARS: usize = 16_384;
+/// Maximum transfer identity length, in Unicode code points.
+pub const SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS: usize = 128;
+/// Opaque history cursor prefix that includes the named preceding persisted row.
+/// Synthetic reasoning rows have no runtime_items identity of their own.
+pub const TRANSCRIPT_BEFORE_INCLUSIVE_CURSOR_PREFIX: &str = "@transcript-before-inclusive:";
+/// Default newest transcript records in a subscription baseline, in items.
+pub const SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS: usize = 40;
+/// Maximum visible messages in one retained transcript window, in messages.
+pub const MAX_TRANSCRIPT_PAGE_ITEMS: usize = 240;
+/// Maximum transcript window estimate, in bytes (two bytes per serialized UTF-16 code unit).
+pub const MAX_TRANSCRIPT_PAGE_MEMORY_BYTES: usize = 4_000_000;
+/// Maximum retained transcript messages across one view's cache, in messages.
+pub const MAX_TRANSCRIPT_CACHE_ITEMS: usize = 1_200;
+/// Maximum transcript cache estimate, in bytes (two bytes per serialized UTF-16 code unit).
+pub const MAX_TRANSCRIPT_CACHE_MEMORY_BYTES: usize = 12_000_000;
+/// Maximum retained conversation selections in one transcript view, in selections.
+pub const MAX_TRANSCRIPT_CACHE_SCOPES: usize = 12;
 /// Maximum changed and removed transcript records in a complete stream interval, in items.
 pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
+/// Maximum voice records in a complete transient stream interval, in records.
+pub const SYNC_VOICE_STREAM_MAX_RECORDS: i64 = 128;
+/// Maximum voice record identity length, in Unicode code points.
+pub const MAX_VOICE_IDENTITY_CHARS: usize = 240;
 /// Maximum records in a complete draft stream interval, in documents.
 pub const SYNC_DRAFT_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Seconds between sync resource heartbeats.
 pub const SYNC_RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
+
+// SQLite durability (docs/decisions/2026-10-24-sqlite-normal-with-periodic-flush.md).
+// Studio databases use WAL with synchronous=NORMAL: a commit survives a process crash
+// at once, and a later checkpoint flushes it to disk, so an OS crash or power loss
+// loses at most the commits of one flush interval.
+/// Longest time a committed SQLite change waits for its flush to disk, and the
+/// shortest time between two periodic flushes of one database, in seconds.
+pub const SQLITE_WAL_FLUSH_INTERVAL_SECONDS: u64 = 15;
+/// Size a WAL file is truncated to when a checkpoint lets SQLite restart it
+/// (`PRAGMA journal_size_limit`), in bytes. Without a limit a WAL file keeps
+/// its largest size forever.
+pub const SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES: i64 = 16777216;
 
 // Codex model/list catalog response contract; byte values count encoded UTF-8.
 /// Largest model catalog frame, in bytes.
@@ -331,6 +369,15 @@ pub const IDLE_COMPACTION_MAX_FIRE_FRACTION: f64 = 0.95;
 pub const IDLE_COMPACTION_MAX_LATE_SECONDS: f64 = 60.0;
 /// One-hour prompt cache lifetime, in seconds.
 pub const IDLE_COMPACTION_CACHE_SECONDS: f64 = 3600.0;
+
+/// Server-scoped preference scalar storing enabled provider-qualified model keys.
+pub const MODEL_WHITELIST_PREFERENCE_KEY: &str = "studio-model-whitelist-v1";
+/// Maximum model identities in one explicit whitelist. Unit: keys.
+pub const MODEL_WHITELIST_MAX_KEYS: usize = 2048;
+/// Maximum provider-qualified identity length. Unit: Unicode code points.
+pub const MODEL_WHITELIST_KEY_MAX_CODEPOINTS: usize = 512;
+/// Provider namespace and nonempty model identifier; shared with the renderer validator.
+pub const MODEL_WHITELIST_KEY_PATTERN: &str = r"^[a-z][a-z0-9_-]*:\S+$";
 
 #[cfg(test)]
 mod tests {

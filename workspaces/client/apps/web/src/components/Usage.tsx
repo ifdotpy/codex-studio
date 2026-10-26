@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import { useSubscription } from "../sync/subscriptions";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../usage/accountUsage";
@@ -13,13 +14,14 @@ import {
   CircleDollarSign,
 } from "lucide-react";
 import type { Agent, Json, JsonValue } from "../types";
-import { errorText, type GetResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { GetResult } from "../api";
 import { useServerSessionCosts } from "../servers/ServerServicesContext";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { useLimitEligibility } from "../usage/useLimitEligibility";
 import { limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
+import { useServerSync } from "../servers/ServerServicesContext";
 export { limitRecovery } from "../usage/limitRecovery";
 import "./Usage.css";
 import { remainingLimitColor } from "./accountLimitColor";
@@ -187,6 +189,7 @@ export default function Usage({
   onChange,
   limitsLoading,
   accounts = [],
+  visible = true,
 }: {
   agent: Agent;
   stateDir: string;
@@ -197,10 +200,11 @@ export default function Usage({
   onChange?: (opened: boolean) => void;
   limitsLoading?: boolean;
   accounts?: UsageAccount[];
+  visible?: boolean;
 }) {
   const { peekSessionCost, storeSessionCost } = useServerSessionCosts();
-  const watchResourceReads = useServerResourceReads();
-  const { get, post } = useServerApi();
+  const { subscribeStateProjection } = useServerSync();
+  const { post } = useServerApi();
 
   const [localOpened, setLocalOpened] = useState(false);
   const limitsOpened = opened ?? localOpened;
@@ -325,6 +329,8 @@ export default function Usage({
     (Partial<GetResult<"/api/costs">> & { error?: string | null }) | null
   >(null);
   const rootId = agent.rootId || agent.id;
+  useSubscription(visible ? { kind: "session-cost", agentId: rootId } : null);
+  useSubscription(visible && limitsOpened ? { kind: "costs" } : null);
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;
@@ -341,104 +347,33 @@ export default function Usage({
       : peekSessionCost(stateDir, rootId);
   const sessionCostUpdating =
     sessionCostState.scope !== costScope || sessionCostState.updating;
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      setSessionCostState((previous) =>
-        previous.scope === costScope
-          ? { ...previous, updating: true }
-          : {
-              scope: costScope,
-              value: peekSessionCost(stateDir, rootId),
-              updating: true,
-            },
-      );
-      try {
-        const value = await get("/api/session-cost", {
-          query: { agent: agent.id },
-          timeoutMs: 5000,
-        });
-        if (!active) return;
-        if (value.pricingState === "loading") {
-          setSessionCostState((previous) => {
-            const cached =
-              previous.scope === costScope
-                ? previous.value
-                : peekSessionCost(stateDir, rootId);
-            return {
-              scope: costScope,
-              value: cached || value,
-              updating: Boolean(cached),
-            };
-          });
-        } else {
+  useEffect(
+    () =>
+      subscribeStateProjection(
+        (snapshot) => {
+          const value = snapshot?.runtime.sessionCostsByAgent?.[rootId];
+          if (!value) return;
           const cached = storeSessionCost(stateDir, rootId, value);
           setSessionCostState({
             scope: costScope,
             value: cached || value,
             updating: Boolean(value.refreshing),
           });
-        }
-      } catch (error) {
-        if (active)
-          setSessionCostState((previous) => ({
-            scope: costScope,
-            value:
-              previous.scope === costScope
-                ? previous.value
-                : peekSessionCost(stateDir, rootId),
-            updating: false,
-          }));
-        throw error;
-      }
-    };
-    const stop = watchResourceReads(
-      { kind: "session-cost", agentId: agent.id },
-      load,
-      () => {
-        // Keep the cached value while the session cost service is unavailable.
-      },
-    );
-    return () => {
-      active = false;
-      stop();
-    };
-  }, [agent.id, costScope, rootId, stateDir, watchResourceReads]);
+        },
+        () => {},
+      ),
+    [costScope, rootId, stateDir, subscribeStateProjection],
+  );
   useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const result = await get("/api/costs", {
-          query: { account_key: accountKey },
-          timeoutMs: 15000,
-        });
-        if (!active) return;
-        if (result.accountKey !== accountKey)
-          throw new Error("Cost account mismatch");
-        setCosts(result);
-      } catch (error) {
-        if (active) {
-          setCosts((previous) => ({
-            ...previous,
-            error: "Local costs unavailable",
-          }));
-        }
-        throw error;
-      }
-    };
     setCosts(null);
-    const stop = watchResourceReads({ kind: "costs" }, load, () => {
-      if (active)
-        setCosts((previous) => ({
-          ...previous,
-          error: "Local costs unavailable",
-        }));
-    });
-    return () => {
-      active = false;
-      stop();
-    };
-  }, [accountKey, watchResourceReads]);
+    return subscribeStateProjection(
+      (snapshot) => {
+        const value = snapshot?.runtime.accountCostsByAccount?.[accountKey];
+        if (value) setCosts(value);
+      },
+      () => {},
+    );
+  }, [accountKey, subscribeStateProjection]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);

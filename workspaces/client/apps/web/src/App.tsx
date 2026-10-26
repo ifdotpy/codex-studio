@@ -1,19 +1,26 @@
 import { randomUUID } from "./uuid";
+import { useSubscription } from "./sync/subscriptions";
+import { submitRename, watchRenameResult } from "./renameRequest";
 import {
   StudioErrorsScope,
   useStudioErrorsState,
 } from "./components/StudioErrors";
 import SidebarWarnings from "./components/SidebarWarnings";
+import PreferenceSyncStatus from "./components/PreferenceSyncStatus";
 import { ModelWhitelistSettings } from "./components/models/ModelWhitelistSettings";
 import Disclosure from "./components/ui/Disclosure";
+import { useToast } from "./components/ui/useToast";
+import { focusAfterRender } from "./components/ui/focusAfterRender";
 import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
 import { useRetainedWorktrees } from "./components/agents/RetainedWorktrees";
 import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
   useServerApi,
+  useServerSync,
   useServerStorage,
-  useServerStorageEventKey,
+  useServerPreferenceEvents,
+  useServerAppPreferences,
   useServerChatCreations,
   useServerResources,
   useServerAccountLimits,
@@ -23,8 +30,6 @@ import {
 } from "./servers/ServerServicesContext";
 import { useServerFileDialogs } from "./servers/ServerServicesContext";
 import { onDesktopNavigate } from "./native/notifications";
-import { writePreferenceEdit } from "./sync/uiPreferenceStore";
-import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
 import {
   StudioSettingsLayout,
@@ -38,17 +43,11 @@ import { useServerFrame } from "./servers/frameBridge";
 import { serverParentOrigin } from "./servers/environment";
 import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
-import {
-  localServer,
-  viewServer,
-  readServerAliases,
-  SERVER_REGISTRY_EVENT,
-} from "./servers/registry";
+import { localServer, viewServer, readServerAliases } from "./servers/registry";
 import {
   useServerAliases,
   DEFAULT_LOCAL_SERVER_ALIAS,
 } from "./servers/serverAliases";
-import { serverLocalStorage as localStorage } from "./servers/storage";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "./generated/sharedValues";
 import SearchOverlay from "./components/shell/SearchOverlay";
 import { SettingsRow } from "./components/ui/primitives";
@@ -70,11 +69,9 @@ import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import {
   accountLimits,
   limitsReadSucceeded,
-  limitsSnapshotIsFresh,
   shouldReplaceLimitsSnapshot,
-} from "./usage/accountUsage";
-import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
-import type { AccountLimitsSnapshot } from "./usage/accountUsage";
+} from "./usage/accountUsageCache";
+import type { AccountLimitsSnapshot } from "./usage/accountUsageCache";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
@@ -123,7 +120,9 @@ import {
   Suspense,
   type ReactNode,
 } from "react";
-import { ApiError, errorText, type PostBody, untilAnswered } from "./api";
+import { ApiError } from "./apiErrors";
+import { errorText, untilAnswered } from "./apiPresentation";
+import type { PostBody } from "./api";
 import {
   useSnapshot,
   useChatSnapshot,
@@ -215,11 +214,6 @@ import {
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
-import { useServerResourceReads } from "./servers/ServerServicesContext";
-import {
-  limitsBaselineReader,
-  type LimitsBaselineHydration,
-} from "./usage/limitsBaseline";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -265,9 +259,9 @@ export default function App({ active = true }: { active?: boolean }) {
     dismissChatCreation,
   } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
-  const { watchResourceChanges, watchResourceConnection } =
-    useServerResources();
-  const watchResourceReads = useServerResourceReads();
+  const { refreshProjection: recoverRenameProjection } = useServerSync();
+  const renameEvents = useServerResources();
+  const { watchResourceConnection } = renameEvents;
   const sidebarServices = useServerSidebarServices();
   const serverAliases = useServerAliases(readServerAliases);
   const {
@@ -292,7 +286,8 @@ export default function App({ active = true }: { active?: boolean }) {
     automaticallyUpdateRenderer,
   } = useServerApi();
 
-  const serverStorageEventKey = useServerStorageEventKey();
+  const preferenceEvents = useServerPreferenceEvents();
+  const appPreferences = useServerAppPreferences();
   const projectStorage = useServerStorage();
   const projectApi = useServerApi();
   const projectServices = { ...projectApi, storage: projectStorage };
@@ -405,7 +400,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const preferenceLoad = useMemo(() => {
     try {
-      const stored = localStorage.getItem(studioPreferencesStorageKey);
+      const stored = projectStorage.getItem(studioPreferencesStorageKey);
       if (!stored)
         return {
           value: { ...defaultStudioPreferences, theme: colorScheme },
@@ -424,20 +419,18 @@ export default function App({ active = true }: { active?: boolean }) {
       return {
         value: { ...defaultStudioPreferences, theme: colorScheme },
         error:
-          "Studio preferences could not be read. Changes may not persist in this browser.",
+          "Studio preferences could not be read. Changes may not be saved.",
       };
     }
-  }, []);
-  const preferenceBridge = useMemo(
-    () => createUiPreferenceBridge(projectStorage, projectApi.syncPost),
-    [projectStorage, projectApi.syncPost],
-  );
+  }, [projectStorage]);
+  const preferenceBridge = appPreferences.projectionBridge;
   const receiveUiPreferences = useCallback(
     (preferences: UiPreferenceProjection) =>
-      preferenceBridge.receiveProjection(preferences),
+      preferenceBridge?.receiveProjection(preferences),
     [preferenceBridge],
   );
   useEffect(() => {
+    if (!preferenceBridge) return;
     const stopBridge = preferenceBridge.start();
     const stopConnection = watchResourceConnection((status) => {
       if (status === "live") preferenceBridge.retryPendingWrites();
@@ -465,14 +458,14 @@ export default function App({ active = true }: { active?: boolean }) {
   const updateStudioPreferences = useCallback(
     (next: StudioPreferences) => {
       try {
-        const value = writePreferenceEdit(
+        const value = appPreferences.editPreference(
           studioPreferencesStorageKey,
           { ...studioPreferences },
           { ...next },
         );
         setStudioPreferences(value);
         if (value.theme !== colorScheme) setColorScheme(value.theme);
-        window.dispatchEvent(new Event("studio-preferences-change"));
+        appPreferences.announceStudioPreferences?.();
         if (isServerView)
           postToShell(
             { kind: "studio-server-preferences", preferences: value },
@@ -480,12 +473,10 @@ export default function App({ active = true }: { active?: boolean }) {
           );
         setStudioPreferencesError("");
       } catch {
-        setStudioPreferencesError(
-          "Studio preferences could not be saved in this browser.",
-        );
+        setStudioPreferencesError("Studio preferences could not be saved.");
       }
     },
-    [colorScheme, setColorScheme, studioPreferences],
+    [appPreferences, colorScheme, setColorScheme, studioPreferences],
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     saved("codex-sidebar-collapsed", false),
@@ -500,28 +491,30 @@ export default function App({ active = true }: { active?: boolean }) {
   }, [studioPreferences, active]);
   useEffect(() => {
     const preferences = (event: Event) => {
-      if (
-        event instanceof StorageEvent &&
-        (event.key !== studioPreferencesStorageKey || !event.newValue)
-      )
-        return;
       try {
         const next = parseStudioPreferences(
-          event instanceof StorageEvent
-            ? event.newValue!
-            : JSON.stringify((event as CustomEvent).detail),
+          JSON.stringify((event as CustomEvent).detail),
         );
         setStudioPreferences(next);
         setColorScheme(next.theme);
       } catch {}
     };
-    window.addEventListener("storage", preferences);
+    const stopPreferences = preferenceEvents.subscribe((key) => {
+      if (key !== null && key !== studioPreferencesStorageKey) return;
+      try {
+        const raw = projectStorage.getItem(studioPreferencesStorageKey);
+        if (!raw) return;
+        const next = parseStudioPreferences(raw);
+        setStudioPreferences(next);
+        setColorScheme(next.theme);
+      } catch {}
+    });
     window.addEventListener("studio-shell-preferences", preferences);
     return () => {
-      window.removeEventListener("storage", preferences);
+      stopPreferences();
       window.removeEventListener("studio-shell-preferences", preferences);
     };
-  }, []);
+  }, [preferenceEvents, projectStorage, setColorScheme]);
   const toggleSidebar = useCallback(() => {
     if (isServerView && !isClassicServerView) {
       postToShell(
@@ -613,7 +606,7 @@ export default function App({ active = true }: { active?: boolean }) {
       rememberCreated,
       forgetCreated,
       creationScope,
-    } = useSnapshot(receiveUiPreferences),
+    } = useSnapshot(preferenceBridge ? receiveUiPreferences : undefined),
     [opened, setOpened] = useState<string | null>(null),
     [roomContext, setRoomContext] = useState<string | null>(null),
     [sidebar, setSidebar] = useState(false),
@@ -630,18 +623,15 @@ export default function App({ active = true }: { active?: boolean }) {
     [sharedCreate, setSharedCreate] = useState<{ path?: string } | null>(null),
     [creating, setCreating] = useState(false),
     [sending, setSending] = useState(false),
-    [toast, setToast] = useState(""),
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     );
   useEffect(() => {
     if (!workspaceId) return;
-    const key = `studio-server-workspace-id:${serverViewId || "local"}`;
-    if (globalThis.localStorage.getItem(key) === workspaceId) return;
-    globalThis.localStorage.setItem(key, workspaceId);
-    window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
-  }, [workspaceId, serverViewId]);
+    appPreferences.publishWorkspace(workspaceId);
+  }, [appPreferences, workspaceId]);
   const dataRef = useRef(data);
+  const [toast, setToast, notify] = useToast();
   dataRef.current = data;
   const [pendingConversationDelete, setPendingConversationDelete] =
     useState<PendingConversationDelete | null>(null);
@@ -674,12 +664,6 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [cachedLimitsByAccount, cacheAccountLimits],
   );
-  useEffect(() => {
-    if (mobileClient || !data?.stateDir) return;
-    // Include terminals in the first typed subscription set; TerminalDock can
-    // mount later, and its watcher then shares this resource without a reopen.
-    return watchResourceChanges({ kind: "terminals" }, () => {});
-  }, [mobileClient, data?.stateDir]);
   useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});
@@ -804,9 +788,13 @@ export default function App({ active = true }: { active?: boolean }) {
     sendingLock = useRef<symbol | null>(null),
     latestSend = useRef<Record<string, symbol>>({}),
     creationLock = useRef(false),
-    renameRequests = useRef<Record<string, { text: string; id: string }>>({}),
-    toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    renameRequests = useRef<Record<string, { text: string; id: string }>>({});
   const pendingSendKey = `studio-pending-sends:${data?.stateDir || ""}`;
+  const [renameVersion, setRenameVersion] = useState(0);
+  const persistRenames = () => {
+    save(pendingRenameKey, renameRequests.current);
+    setRenameVersion((version) => version + 1);
+  };
   const pendingRenameKey = `studio-pending-renames:${data?.stateDir || ""}`;
   useEffect(() => {
     if (data?.stateDir) sends.current = saved(pendingSendKey, {});
@@ -814,6 +802,20 @@ export default function App({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (data?.stateDir) renameRequests.current = saved(pendingRenameKey, {});
   }, [pendingRenameKey, data?.stateDir]);
+  useEffect(() => {
+    if (!data?.stateDir) return;
+    const stops = Object.entries(renameRequests.current).map(
+      ([agentId, request]) =>
+        watchRenameResult(renameEvents, agentId, request.id, (receipt) => {
+          if (renameRequests.current[agentId]?.id !== request.id) return;
+          delete renameRequests.current[agentId];
+          persistRenames();
+          if (receipt.status === "failed")
+            notify(receipt.error || "The title could not be generated.");
+        }),
+    );
+    return () => stops.forEach((stop) => stop());
+  }, [pendingRenameKey, renameVersion, renameEvents]);
   const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
@@ -825,23 +827,17 @@ export default function App({ active = true }: { active?: boolean }) {
       }
     };
     load();
-    const stored = (event: StorageEvent) => {
+    const stored = (key: string | null) => {
       if (
-        serverStorageEventKey(event) === null ||
-        serverStorageEventKey(event) === creationKey ||
-        serverStorageEventKey(event)?.startsWith(`${creationKey}:request:`)
+        key === null ||
+        key === creationKey ||
+        key.startsWith(`${creationKey}:request:`)
       ) {
         load();
       }
     };
-    window.addEventListener("storage", stored);
-    return () => window.removeEventListener("storage", stored);
-  }, [creationKey, data?.stateDir]);
-  const notify = useCallback((s: string) => {
-    setToast(s);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(""), 5000);
-  }, []);
+    return preferenceEvents.subscribe(stored);
+  }, [creationKey, data?.stateDir, preferenceEvents]);
   const nativeActions = useNativeAction(data?.stateDir, workspaceId, notify);
   useDesktopNotifications(data, opened, !isServerView);
   const submitNativeAction = async (
@@ -862,6 +858,11 @@ export default function App({ active = true }: { active?: boolean }) {
   const catalog = appCatalogSelector(agents);
   const leads = catalog.leads;
   const agent = catalog.byId.get(opened || "");
+  useSubscription(
+    active && agent && !(mobileClient && sidebar)
+      ? { kind: "agentDetail", agentId: agent.id }
+      : null,
+  );
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];
@@ -1133,13 +1134,6 @@ export default function App({ active = true }: { active?: boolean }) {
   }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
-  const limitsWatchers = useRef(new Map<string, () => void>());
-  const limitsCacheHydrations = useRef(
-    new Map<
-      string,
-      { token: object; promise: Promise<LimitsBaselineHydration> }
-    >(),
-  );
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
@@ -1310,140 +1304,6 @@ export default function App({ active = true }: { active?: boolean }) {
     reloadLimitsFor,
   ]);
   const usageAccounts = useRetainedUsageAccounts(nextUsageAccounts);
-  // Only accounts that take part in this chat team get a dot and a cache read.
-  const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
-  const usageAccountConnectionKey = usageConnectionKey(
-    usageAccountKeys,
-    accounts.data.accounts,
-  );
-  useEffect(() => {
-    if (!data?.stateDir || !usageAccountKeys) return;
-    for (const key of usageAccountKeys.split("\n")) {
-      const account = accountsForLimits.current.find((item) => item.id === key);
-      if (account?.disconnected) {
-        limitsCacheHydrations.current.delete(key);
-        continue;
-      }
-      if (limitsCacheHydrations.current.has(key)) continue;
-      const token = {};
-      const hydration = get("/api/limits", {
-        query: { account_key: key, cached: "1" },
-      })
-        .then((result) => {
-          if (limitsCacheHydrations.current.get(key)?.token !== token)
-            return false;
-          const currentAccount = accountsForLimits.current.find(
-            (item) => item.id === key,
-          );
-          const snapshot = accountLimits(
-            result,
-            key,
-            currentAccount?.accountId,
-          );
-          if (
-            currentAccount?.disconnected ||
-            !snapshot ||
-            !limitsSnapshotIsFresh(snapshot, key, currentAccount?.accountId)
-          )
-            return false;
-          const previousCurrent = accountLimits(
-            limitsCache.current[key],
-            key,
-            currentAccount?.accountId,
-          );
-          if (
-            !previousCurrent ||
-            (previousCurrent.at || 0) < (snapshot.at || 0)
-          )
-            limitsCache.current = {
-              ...limitsCache.current,
-              [key]: { ...snapshot, accountKey: key },
-            };
-          setLimitsByAccount((old) => {
-            const previous = accountLimits(
-              old[key],
-              key,
-              currentAccount?.accountId,
-            );
-            if (previous && (previous.at || 0) >= (snapshot.at || 0))
-              return old;
-            return { ...old, [key]: snapshot };
-          });
-          return { snapshot };
-        })
-        .catch(() => false);
-      limitsCacheHydrations.current.set(key, { token, promise: hydration });
-    }
-    // Account metadata validates this key through the ref above; the request
-    // identity depends only on workspace + usageAccountKeys. Replacing the
-    // accounts array during its initial load must not repeat the same read.
-  }, [data?.stateDir, usageAccountKeys, usageAccountConnectionKey]);
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    return () => {
-      for (const stop of limitsWatchers.current.values()) stop();
-      limitsWatchers.current.clear();
-      limitsCacheHydrations.current.clear();
-    };
-  }, [data?.stateDir]);
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    const keys = new Set(
-      active
-        ? [accountKey, ...usageAccountKeys.split("\n").filter(Boolean)]
-        : [],
-    );
-    for (const [key, stop] of limitsWatchers.current) {
-      if (keys.has(key)) continue;
-      stop();
-      limitsWatchers.current.delete(key);
-    }
-    for (const key of keys) {
-      if (limitsWatchers.current.has(key)) continue;
-      let active = true;
-      const stopWatching = watchResourceReads(
-        { kind: "limits", accountKey: key },
-        limitsBaselineReader(
-          () =>
-            limitsCacheHydrations.current.get(key)?.promise ??
-            Promise.resolve(false),
-          // A same-version reconnect baseline is covered by hydration; a newer
-          // resource version still forces a read despite a fresh cache entry.
-          () => reloadLimitsForRef.current(key, true),
-          () => {
-            const account = accountsForLimits.current.find(
-              (item) => item.id === key,
-            );
-            return active && !account?.disconnected;
-          },
-          (snapshot) => {
-            const account = accountsForLimits.current.find(
-              (item) => item.id === key,
-            );
-            return limitsSnapshotIsFresh(
-              snapshot ?? limitsCache.current[key],
-              key,
-              account?.accountId,
-            );
-          },
-        ),
-        () => {
-          // reloadLimitsFor stores errors in visible account state.
-        },
-      );
-      const stop = () => {
-        active = false;
-        stopWatching();
-      };
-      limitsWatchers.current.set(key, stop);
-    }
-  }, [
-    data?.stateDir,
-    accountKey,
-    usageAccountKeys,
-    watchResourceReads,
-    active,
-  ]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };
@@ -1798,42 +1658,25 @@ export default function App({ active = true }: { active?: boolean }) {
             throw new Error("A name must have 1 to 80 characters.");
           if (renameRequests.current[id]?.text !== text) {
             renameRequests.current[id] = { text, id: randomUUID() };
-            save(pendingRenameKey, renameRequests.current);
+            persistRenames();
           }
           const request_id = renameRequests.current[id].id;
           const body = { id, name, request_id };
-          const result = await post("/api/rename", body);
-          const finishRename = async (receipt: typeof result, attempts = 0) => {
-            if (receipt.status === "pending") {
-              if (attempts >= 90) {
-                notify(
-                  "The rename outcome is unknown. Use /rename again to check this request.",
-                );
-                return;
-              }
-              window.setTimeout(async () => {
-                try {
-                  await finishRename(
-                    await post("/api/rename", body),
-                    attempts + 1,
-                  );
-                } catch (error) {
-                  notify(errorText(error));
-                }
-              }, 1000);
-              return;
-            }
-            if (receipt.status === "failed") {
-              delete renameRequests.current[id];
-              save(pendingRenameKey, renameRequests.current);
-              notify(receipt.error || "The title could not be generated.");
-              return;
-            }
+          const result = await submitRename(body, post, () =>
+            recoverRenameProjection(),
+          );
+          if (result.status === "failed") {
             delete renameRequests.current[id];
-            save(pendingRenameKey, renameRequests.current);
-            await refresh();
-          };
-          void finishRename(result);
+            persistRenames();
+            notify(result.error || "The title could not be generated.");
+          } else if (result.status !== "pending") {
+            delete renameRequests.current[id];
+            persistRenames();
+          } else if (renameRequests.current[id]?.id === request_id) {
+            notify(
+              "Rename requested. Waiting for live updates. Use /rename again to check this request.",
+            );
+          }
         } else if (command === "/stop" || command === "/stop-team")
           await post("/api/stop", {
             id: command === "/stop-team" ? (agent.rootId ?? id) : id,
@@ -2002,13 +1845,7 @@ export default function App({ active = true }: { active?: boolean }) {
     setSidebar(true);
     setSidebarCollapsed(false);
     save("codex-sidebar-collapsed", false);
-    requestAnimationFrame(() =>
-      document
-        .querySelector<HTMLInputElement>(
-          '#sidebar [aria-label="Filter projects and chats"]',
-        )
-        ?.focus(),
-    );
+    focusAfterRender('#sidebar [aria-label="Filter projects and chats"]');
   }, []);
   const rename = async (id: string, name: string) => {
     try {
@@ -2240,7 +2077,6 @@ export default function App({ active = true }: { active?: boolean }) {
           onSelect={async (path, server) => {
             await registerProject(path, server, randomUUID(), projectServices);
             setModal(null);
-            await refresh();
           }}
         />
       ),
@@ -2458,7 +2294,7 @@ export default function App({ active = true }: { active?: boolean }) {
     publicAccounts,
     creating,
   );
-  const studioErrors = useStudioErrorsState(!!data);
+  const studioErrors = useStudioErrorsState(data?.runtime.studioErrors);
   if (!active) return null;
   // A server contract gate must not cover navigation to other server owners.
   if (screen && schemaMismatch)
@@ -2528,6 +2364,7 @@ export default function App({ active = true }: { active?: boolean }) {
     <StudioErrorsScope value={studioErrors}>
       {active && (
         <SidebarWarnings
+          visible={!(mobileClient && sidebar)}
           data={data}
           agent={agent}
           opened={opened}
@@ -3060,6 +2897,7 @@ export default function App({ active = true }: { active?: boolean }) {
               </div>
             ) : room?.radio ? (
               <RadioChat
+                visible={!(mobileClient && sidebar)}
                 key={room.id}
                 room={room}
                 data={data}
@@ -3071,6 +2909,7 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                visible={!(mobileClient && sidebar)}
                 projectName={projectName}
                 recentChats={
                   agent?.empty
@@ -3199,15 +3038,12 @@ export default function App({ active = true }: { active?: boolean }) {
             initialFocus={taskFocus}
             close={() => setTasksOpen(false)}
             afterClose={() =>
-              requestAnimationFrame(() => {
-                const source =
-                  taskFocus && taskFocus.leadId === lead?.id
-                    ? document.querySelector<HTMLButtonElement>(
-                        `[data-activity-id="${CSS.escape(taskFocus.id)}"]`,
-                      )
-                    : null;
-                (source || chatActionsButton.current)?.focus();
-              })
+              focusAfterRender(
+                taskFocus && taskFocus.leadId === lead?.id
+                  ? `[data-activity-id="${CSS.escape(taskFocus.id)}"]`
+                  : null,
+                chatActionsButton,
+              )
             }
             data={chatData!}
             leadId={lead?.id}
@@ -3268,7 +3104,12 @@ export default function App({ active = true }: { active?: boolean }) {
                 <ServerAccessSettings active={studioSettingsOpen} />
               )}
             </Tabs.Panel>
-            <Tabs.Panel value="models" pt="md" keepMounted={false}>
+            <Tabs.Panel
+              value="models"
+              className="model-whitelist-panel"
+              pt="md"
+              keepMounted={false}
+            >
               <ModelWhitelistSettings />
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
@@ -3721,6 +3562,7 @@ export default function App({ active = true }: { active?: boolean }) {
               </section>
             </Tabs.Panel>
           </StudioSettingsLayout>
+          <PreferenceSyncStatus storage={projectStorage} scope="user" />
           {studioPreferencesError && (
             <p className="studio-preferences-error" role="alert">
               {studioPreferencesError}

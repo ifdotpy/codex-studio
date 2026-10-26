@@ -60,6 +60,11 @@ fn hold_reasons() -> Vec<&'static str> {
     reasons
 }
 
+/// Only the account readiness owner can release these holds.
+pub(crate) fn is_hold_reason(reason: &str) -> bool {
+    hold_reasons().contains(&reason)
+}
+
 fn same_selected_account(selected: &Value, current: &Value) -> bool {
     PIN_FIELDS.iter().all(|key| {
         let old = selected.get(*key).unwrap_or(&Value::Null);

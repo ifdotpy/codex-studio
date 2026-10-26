@@ -9,7 +9,7 @@ import ErrorDescription from "../ErrorDescription";
 import { Button } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { errorText } from "../../api";
+import { errorText } from "../../apiPresentation";
 import { requestDraftsForStorage } from "./requestDrafts";
 import type { components } from "../../generated/api";
 import type { Json, JsonValue, Agent } from "../../types";

@@ -291,6 +291,8 @@ async fn lazy_first_native_thread_preparation_moves_history_or_reports_error() {
             project_server_id: None,
             launcher_alive: true,
             empty_lead: false,
+            has_question: false,
+            has_approval: false,
             latest_work_result_file: None,
             command_progress: vec![],
             stall: None,

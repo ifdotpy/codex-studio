@@ -1,11 +1,11 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
-import {
-  errorText,
-  type ApiGetPath,
-  type ApiReadMetadata,
-  type GetOptions,
-  type GetResult,
+import { errorText } from "../apiPresentation";
+import type {
+  ApiGetPath,
+  ApiReadMetadata,
+  GetOptions,
+  GetResult,
 } from "../api";
 
 type ResourceOptions<Path extends ApiGetPath> = Pick<

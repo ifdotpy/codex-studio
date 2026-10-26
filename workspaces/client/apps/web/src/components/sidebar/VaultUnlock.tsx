@@ -1,6 +1,6 @@
 import { Button, Group, Modal, Stack, Text, Textarea } from "@mantine/core";
 import { useState } from "react";
-import { errorText } from "../../api";
+import { errorText } from "../../apiPresentation";
 import type { SidebarBackend } from "./services";
 import type { VaultEntry } from "./Vault";
 

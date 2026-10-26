@@ -1,0 +1,22 @@
+{
+  "proofVersion": 1,
+  "migrateMethod": "service.migrate_storage",
+  "verifyMethod": "service.verify_cutover",
+  "statusMethod": "client_storage.host_capture_status",
+  "finishMethod": "client_storage.host_capture_finish",
+  "ownerInventoryMethod": "client_storage.legacy_owners",
+  "nativeSourceMethod": "client_storage.native_legacy_source",
+  "nativeImportMethod": "client_storage.import_native_legacy",
+  "runtimeStateMethod": "client_storage.migration_runtime_state",
+  "admitMethod": "client_storage.admit_host_capture",
+  "nativeDraftDevice": "native-legacy",
+  "nativeDraftIdPrefix": "native-legacy:",
+  "fileMetadataField": "nativeLegacyFile",
+  "captureWorld": "studio-native-legacy-storage-v1",
+  "legacyMutationStoragePrefix": "studio-server-write:",
+  "capturePageRows": 32,
+  "capturePageBytes": 8388608,
+  "captureRecordBytes": 67108864,
+  "captureResponseBytes": 75497472,
+  "captureDeadlineMs": 15000
+}

@@ -1,5 +1,11 @@
 import { expect, it, vi } from "vitest";
-import { NativeDraftState, type DraftView } from "./draftState";
+import { NativeDraftState as State, type DraftView } from "./draftState";
+let sequence = 0;
+class NativeDraftState extends State {
+  constructor(...args: ConstructorParameters<typeof State>) {
+    super(args[0], args[1], args[2], () => `fixture:${++sequence}`);
+  }
+}
 const view = (text: string, revision: number): DraftView => ({
   drafts: { room: text },
   conflicts: [],
@@ -15,6 +21,32 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+it("uses a native UUID once before a draft commit and retains it after an unknown reply", async () => {
+  let lost = true;
+  const invoke = vi.fn(async (method: string) => {
+    if (method === "system.uuid") return "native-draft-id";
+    if (lost) {
+      lost = false;
+      throw new Error("lost reply");
+    }
+    return view("keep", 1);
+  });
+  const state = new State("workspace", invoke as any);
+  state.edit({ room: "keep" });
+  await vi.waitFor(() =>
+    expect(state.getSnapshot().localError).toBe("lost reply"),
+  );
+  await state.retry();
+  expect(
+    invoke.mock.calls.filter(([method]) => method === "system.uuid"),
+  ).toHaveLength(1);
+  const writes = invoke.mock.calls.filter(
+    ([method]) => method === "drafts.edit",
+  );
+  expect(writes).toHaveLength(2);
+  expect(writes[0]).toEqual(writes[1]);
+  expect(state.getSnapshot().pending).toBe(false);
+});
 it("keeps newer input pending when an older edit is acknowledged", async () => {
   const first = deferred<DraftView>();
   const second = deferred<DraftView>();

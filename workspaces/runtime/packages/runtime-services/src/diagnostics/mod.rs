@@ -38,8 +38,10 @@ mod allocator;
 mod host;
 mod http;
 mod sqlite;
+mod stages;
 mod startup;
 mod store;
+mod sync;
 
 /// Write one diagnostic line without turning a failed stderr sink into a runtime failure.
 pub fn log_stderr(message: Arguments<'_>) {
@@ -61,24 +63,28 @@ fn runtime_stage_timings_enabled() -> bool {
     })
 }
 
+/// Sole owner of the slow-stage logging threshold. Unit: milliseconds.
+const RUNTIME_STAGE_SLOW_THRESHOLD_MS: u128 = 100;
+
 /// The only writer of the `runtime_stage` line. Unit for `elapsed_ms`: milliseconds.
-fn log_runtime_stage(name: &'static str, started: Instant) {
+fn log_runtime_stage(name: &'static str, elapsed: std::time::Duration) {
+    let elapsed_ms = elapsed.as_millis();
     log_stderr(format_args!(
-        "runtime_stage name={name} elapsed_ms={}",
-        started.elapsed().as_millis()
+        "runtime_stage name={name} elapsed_ms={elapsed_ms}"
     ));
 }
 
-/// Record one fixed-name runtime stage duration only when explicitly enabled.
-/// The flag is evaluated once; measurements contain no request, account, or
-/// record identities. Unit for `elapsed_ms`: milliseconds.
+/// Record every fixed-name stage duration and emit lines only for slow stages,
+/// unless explicit diagnostic timings are enabled. Values contain no request,
+/// account, or record identities. Unit for `elapsed_ms`: milliseconds.
 pub(crate) fn measure_runtime_stage<T>(name: &'static str, operation: impl FnOnce() -> T) -> T {
-    if !runtime_stage_timings_enabled() {
-        return operation();
-    }
     let started = Instant::now();
     let result = operation();
-    log_runtime_stage(name, started);
+    let elapsed = started.elapsed();
+    record_runtime_stage(name, elapsed);
+    if runtime_stage_timings_enabled() || elapsed.as_millis() >= RUNTIME_STAGE_SLOW_THRESHOLD_MS {
+        log_runtime_stage(name, elapsed);
+    }
     result
 }
 
@@ -88,12 +94,13 @@ pub(crate) async fn measure_runtime_stage_async<T>(
     name: &'static str,
     operation: impl Future<Output = T>,
 ) -> T {
-    if !runtime_stage_timings_enabled() {
-        return operation.await;
-    }
     let started = Instant::now();
     let result = operation.await;
-    log_runtime_stage(name, started);
+    let elapsed = started.elapsed();
+    record_runtime_stage(name, elapsed);
+    if runtime_stage_timings_enabled() || elapsed.as_millis() >= RUNTIME_STAGE_SLOW_THRESHOLD_MS {
+        log_runtime_stage(name, elapsed);
+    }
     result
 }
 
@@ -108,8 +115,10 @@ pub use sqlite::{
     record_wal_checkpoint, runtime_lock_operations, runtime_lock_samples, sqlite_contention,
     sqlite_history,
 };
+pub use stages::{record_runtime_stage, runtime_stage_metrics};
 pub use startup::{StartupMemoryMark, mark_startup_memory, startup_memory_marks};
 pub use store::{durable_input_pending, execution_ledger, migration_status};
+pub use sync::{SyncRecoveryKind, record_sync_recovery, sync_recovery_counters};
 
 pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)

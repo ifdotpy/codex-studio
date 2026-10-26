@@ -5,7 +5,8 @@ import {
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
 import { Button, NumberInput } from "@mantine/core";
-import { errorText, type GetResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { GetResult } from "../api";
 import {
   CHILD_RESULT_COALESCE_MAX_SECONDS,
   CHILD_RESULT_COALESCE_MIN_SECONDS,

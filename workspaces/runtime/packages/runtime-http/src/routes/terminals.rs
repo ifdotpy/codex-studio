@@ -307,7 +307,7 @@ fn terminal_body_error(error: TerminalError) -> ApiError {
     }
 }
 
-fn terminal_error(error: TerminalError) -> ApiError {
+pub(super) fn terminal_error(error: TerminalError) -> ApiError {
     match error {
         TerminalError::InvalidRequest
         | TerminalError::InvalidCursor

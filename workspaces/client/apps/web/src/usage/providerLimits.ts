@@ -1,6 +1,6 @@
 import type { components } from "../generated/api";
 import type { JsonValue } from "../types";
-import { jsonObject } from "./accountUsage";
+import { jsonObject } from "./accountUsageCache";
 
 type UsageLimitsData = components["schemas"]["UsageLimitsData"];
 type RateLimitsDataDto = components["schemas"]["RateLimitsDataDto"];

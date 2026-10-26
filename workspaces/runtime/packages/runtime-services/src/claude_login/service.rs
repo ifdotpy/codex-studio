@@ -277,6 +277,14 @@ impl LoginService {
         let entry = self.jobs.entry(id)?;
         Ok(public(&*entry.lock().await))
     }
+    /// Current transient progress for a subscribed stream. This read performs
+    /// no recovery, account writes, or receipt persistence.
+    pub async fn progress(&self, id: &str) -> Result<Value, LoginError> {
+        self.available()?;
+        request_id(id)?;
+        let entry = self.jobs.entry(id)?;
+        Ok(public(&*entry.lock().await))
+    }
     pub async fn start(
         self: &Arc<Self>,
         id: String,

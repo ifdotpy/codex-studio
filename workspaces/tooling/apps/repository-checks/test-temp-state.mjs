@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 // Fixture path strings predate this guard. Exact lines are grandfathered rather
@@ -69,7 +69,7 @@ export function repositoryTemporaryStateFindings(root) {
     encoding: "utf8",
   })
     .split("\0")
-    .filter(Boolean);
+    .filter((file) => file && existsSync(path.join(root, file)));
   return files.flatMap((file) => {
     if (!/\.(rs|py|mjs|[cm]?[jt]sx?|sh)$/.test(file)) return [];
     const source = readFileSync(path.join(root, file), "utf8");

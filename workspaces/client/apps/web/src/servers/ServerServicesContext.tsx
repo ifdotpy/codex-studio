@@ -1,5 +1,6 @@
 import * as defaultSessionCosts from "../usage/sessionCostCache";
 import * as defaultUploads from "../sync/uploads";
+import { defaultAttachmentSelections } from "../browserAttachmentSelection";
 import { defaultServerAudio } from "../native/serverAudio";
 import * as defaultRecordings from "../dictation/storage";
 import * as defaultLocalDrafts from "../sync/localDraft";
@@ -8,7 +9,7 @@ import * as defaultChatCreations from "../chatCreation";
 import { serverLocalStorage } from "./storage";
 import * as defaultFileActions from "../fileActions";
 import * as defaultFileDialogs from "../native/fileDialogs";
-import { watchResourceReads } from "../components/watchResourceReads";
+import { watchResourceReads } from "../sync/subscriptions/reads";
 import * as defaultAccountLimits from "../usage/accountUsage";
 import * as defaultActivity from "./activity";
 import { useSyncedDrafts } from "../sync/drafts";
@@ -17,6 +18,7 @@ import {
   createContext,
   useContext,
   useMemo,
+  useState,
   Fragment,
   type ReactNode,
 } from "react";
@@ -27,10 +29,17 @@ import {
 import { serverSidebarBackend } from "./serverSidebarBackend";
 import * as defaultApi from "../api";
 import * as defaultSync from "../sync/client";
-import * as defaultResources from "../sync/resourceEvents";
+import { defaultSubscriptions as defaultResources } from "../sync/subscriptions/events";
 import * as defaultTranscripts from "../sync/transcriptCache";
 import * as defaultTokenRates from "../usage/tokenRate";
 import type { ServerServices } from "./serverServices";
+import { preferenceEvent } from "../sync/uiPreferenceMerge";
+import { createBrowserAppPreferences } from "./browserAppPreferences";
+import { serverViewId } from "./environment";
+import { studioPreferencesStorageKey } from "../studioPreferences";
+import { viewServer } from "./registry";
+export const useServerAttachmentSelections = () =>
+  useServerServices()?.attachmentSelections ?? defaultAttachmentSelections;
 
 const Context = createContext<ServerServices | null>(null);
 
@@ -49,6 +58,7 @@ export function ServerServicesProvider({
           services.owner.id,
           services.owner.origin,
           services.owner.credentialId,
+          services.owner.workspaceId,
         ])}
       >
         {children}
@@ -57,6 +67,18 @@ export function ServerServicesProvider({
   );
 }
 export const useServerServices = () => useContext(Context);
+export function useServerOwner() {
+  const services = useServerServices();
+  const [fallback] = useState(() =>
+    services
+      ? undefined
+      : Object.freeze({ ...viewServer(serverViewId || "local") }),
+  );
+  const owner = services?.owner ?? fallback;
+  if (!owner)
+    throw new Error("The server service owner changed. Open this view again.");
+  return owner;
+}
 export const useServerApi = () => useServerServices()?.api ?? defaultApi;
 export function useServerSidebarServices() {
   const services = useServerServices();
@@ -102,6 +124,20 @@ export const useServerFileActions = () =>
 export const useServerStorage = () =>
   useServerServices()?.storage ?? serverLocalStorage;
 
+export function useServerAppPreferences() {
+  const services = useServerServices();
+  return useMemo(
+    () =>
+      services?.appPreferences ??
+      createBrowserAppPreferences(
+        serverViewId || "local",
+        serverLocalStorage,
+        defaultApi.syncPost,
+      ),
+    [services],
+  );
+}
+
 export const useServerChatCreations = () =>
   useServerServices()?.chatCreations ?? defaultChatCreations;
 
@@ -110,6 +146,50 @@ export const useServerLocalDrafts = () =>
 
 export const useServerStorageEventKey = () =>
   useServerServices()?.storageEventKey ?? serverStorageEventKey;
+
+/** Expose logical changes from this owner's storage, not another server's keys. */
+export function useServerPreferenceEvents() {
+  const services = useServerServices();
+  const storage = services?.storage ?? serverLocalStorage;
+  const eventKey = services?.storageEventKey ?? serverStorageEventKey;
+  return useMemo(
+    () => ({
+      subscribe(listener: (key: string | null) => void) {
+        const seen = new Map<string, string | null>();
+        for (let index = 0; index < storage.length; index++) {
+          const key = storage.key(index);
+          if (key !== null) seen.set(key, storage.getItem(key));
+        }
+        const receive = (event: StorageEvent) => {
+          const key =
+            event.key === studioPreferencesStorageKey
+              ? event.key
+              : eventKey(event);
+          if (key !== undefined) listener(key);
+        };
+        const preference = (event: Event) => {
+          if (
+            !(event instanceof CustomEvent) ||
+            typeof event.detail !== "string"
+          )
+            return;
+          const key = event.detail;
+          const raw = storage.getItem(key);
+          if ((seen.get(key) ?? null) === raw) return;
+          seen.set(key, raw);
+          listener(key);
+        };
+        window.addEventListener("storage", receive);
+        window.addEventListener(preferenceEvent, preference);
+        return () => {
+          window.removeEventListener("storage", receive);
+          window.removeEventListener(preferenceEvent, preference);
+        };
+      },
+    }),
+    [storage, eventKey],
+  );
+}
 
 export const useServerRecordings = () =>
   useServerServices()?.recordings ?? defaultRecordings;

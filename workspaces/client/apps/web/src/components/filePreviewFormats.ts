@@ -1,16 +1,5 @@
 import DOMPurify from "dompurify";
-import type { LocalFileLink } from "./fileLinks";
-
-export function relativeToDocument(
-  target: LocalFileLink,
-  basePath?: string,
-): LocalFileLink {
-  if (!basePath || target.path.startsWith("/")) return target;
-  const slash = basePath.lastIndexOf("/");
-  return slash < 0
-    ? target
-    : { ...target, path: basePath.slice(0, slash + 1) + target.path };
-}
+export { relativeToDocument } from "./fileLinks";
 
 export function fileFormat(name: string, mime: string) {
   const ext = name.split(".").at(-1)?.toLowerCase();

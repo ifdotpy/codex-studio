@@ -2,30 +2,31 @@ import { randomUUID } from "../uuid";
 import { sha256Hex } from "../sha256";
 import { serverViewId } from "./environment";
 import { serverLocalStorage } from "./storage";
+import journalContract from "../../../../contracts/mutation-journal.json";
+import migrationContract from "../../../../contracts/native-migration.json";
 import {
   createMonitorInputStore,
   type MonitorInputEntry,
   type MonitorInputStore,
 } from "./monitorInputStore";
-const MONITOR_INPUT_PATH = "/api/monitor/input";
-const UNCERTAIN_RESPONSE_CODES = new Set([
-  "remote_timeout",
-  "remote_unavailable",
-  "remote_response",
-  "response_size",
-  "access_unavailable",
-  "outcome_unknown",
-  "request_pending",
-  "receipt_expired",
-  "request_conflict",
-]);
+const MONITOR_INPUT_PATH = journalContract.monitorInputPath;
+const UNCERTAIN_RESPONSE_CODES = new Set(journalContract.uncertainCodes);
 
-type MonitorJournalOwner = { readonly monitorInput: MonitorInputStore };
+type MonitorJournalOwner =
+  | { readonly monitorInput: MonitorInputStore }
+  | {
+      readonly nativeMonitorInput: {
+        pending(monitorId: string): Promise<MonitorInputEntry | null>;
+        settle(monitorId: string, requestId: string): Promise<boolean>;
+      };
+    };
 
 export async function pendingMonitorInput(
   journal: MonitorJournalOwner,
   monitorId: string,
 ): Promise<{ requestId: string } | null> {
+  if ("nativeMonitorInput" in journal)
+    return journal.nativeMonitorInput.pending(monitorId);
   return journal.monitorInput.transition(monitorId, (entry) => ({
     entry,
     result: entry ? { requestId: entry.requestId } : null,
@@ -38,6 +39,8 @@ export async function finishMonitorInput(
   monitorId: string,
   requestId: string,
 ): Promise<boolean> {
+  if ("nativeMonitorInput" in journal)
+    return journal.nativeMonitorInput.settle(monitorId, requestId);
   return journal.monitorInput.transition(monitorId, (entry) => {
     const matches = entry?.requestId === requestId;
     return { entry: matches ? undefined : entry, result: matches };
@@ -48,7 +51,11 @@ export function serverMutationResponseIsUncertain(
   status: number,
   body: unknown,
 ) {
-  if (status >= 500 || status === 408 || status === 429) return true;
+  if (
+    status >= journalContract.uncertainHttpStatusFloor ||
+    journalContract.uncertainHttpStatuses.includes(status)
+  )
+    return true;
   const code =
     body && typeof body === "object"
       ? String((body as Record<string, unknown>).code || "")
@@ -171,7 +178,7 @@ export function createMutationJournal(
     const hash = await sha256Hex(
       new TextEncoder().encode(path + "\n" + JSON.stringify(body)),
     );
-    const key = `studio-server-write:${hash}`;
+    const key = `${migrationContract.legacyMutationStoragePrefix}${hash}`;
     const existing = storage.getItem(key);
     let saved: { requestId: string; uncertain: boolean } | undefined;
     if (existing) {

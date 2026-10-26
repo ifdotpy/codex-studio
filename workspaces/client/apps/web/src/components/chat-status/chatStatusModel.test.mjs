@@ -11,6 +11,49 @@ import {
 
 import { it } from "vitest";
 
+it("keeps unread and attention indicators correct with summaries and empty panels", () => {
+  const summary = {
+    id: "chat",
+    name: "Chat",
+    source: "managed",
+    isLead: true,
+    status: "completed",
+    threadId: "thread",
+    lastCompletedTurn: "turn",
+    lastCompletedTurnStatus: "completed",
+  };
+  const snapshot = (agent) => ({
+    threads: [agent],
+    runtime: { tasks: [], monitors: [], requests: [] },
+  });
+  assert.equal(chatIndicators(snapshot(summary)).get("chat").kind, "unread");
+  assert.equal(
+    chatIndicators(snapshot({ ...summary, hasQuestion: true })).get("chat")
+      .kind,
+    "answer",
+  );
+  assert.equal(
+    chatIndicators(
+      snapshot({ ...summary, status: "waiting", hasBackgroundWork: true }),
+    ).get("chat").kind,
+    "working",
+  );
+  assert.equal(
+    chatIndicators(
+      snapshot({
+        ...summary,
+        readState: {
+          threadId: "thread",
+          turnId: "turn",
+          read: true,
+          revision: 1,
+        },
+      }),
+    ).get("chat").kind,
+    "none",
+  );
+});
+
 it("classifies unread, work, answer, error and paused states from current runtime data", () => {
   const lead = {
     id: "lead",

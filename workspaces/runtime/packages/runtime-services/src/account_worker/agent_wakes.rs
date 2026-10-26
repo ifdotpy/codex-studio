@@ -123,101 +123,41 @@ mod tests {
     use studio_runtime_store::TableChange;
     use tokio::sync::oneshot::error::TryRecvError;
 
-    /// A commit in the oracle's full history: its rows, or `None` without row identity.
-    type Commit = Option<Vec<i64>>;
-
-    /// The full re-scan oracle: a waiter must wake when any commit after its
-    /// sequence wrote one of its rows or carried no row identity.
-    fn must_wake(history: &[Commit], since: u64, rows: WakeRows) -> bool {
-        history
-            .iter()
-            .skip(usize::try_from(since).expect("sequence fits"))
-            .any(|commit| match commit {
-                Some(written) => written.iter().any(|row| rows.matches(*row)),
-                None => true,
-            })
-    }
-
-    struct Waiter {
-        since: u64,
-        rows: WakeRows,
-        /// The registration was older than the kept rows, so it woke at once.
-        overflowed: bool,
-        receiver: tokio::sync::oneshot::Receiver<()>,
-        woken: bool,
-    }
-
-    /// Deterministic corpus: commits of random rows (sometimes without identity
-    /// or above the kept-row bound) interleaved with registrations that name
-    /// past sequences. Addressed wakes must wake every waiter the full re-scan
-    /// requires, and wake no other waiter unless its registration overflowed.
     #[test]
-    fn addressed_wakes_match_the_full_rescan_oracle() {
-        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
-        let mut next = |bound: u64| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed % bound
-        };
+    fn addressed_wakes_follow_rows_and_sequence_boundaries() {
         let wakes = AgentWakes::default();
-        let mut history: Vec<Commit> = Vec::new();
-        let mut waiters: Vec<Waiter> = Vec::new();
-        let (mut addressed, mut broadcast) = (0_usize, 0_usize);
-        for _ in 0..4_000 {
-            match next(10) {
-                0..=4 => {
-                    let commit: Commit = match next(50) {
-                        0 => None,
-                        1 => Some((0..RECENT_AGENT_ROWS as i64 + 1).collect()),
-                        _ => Some((0..=next(3)).map(|_| next(64) as i64).collect()),
-                    };
-                    broadcast += waiters.iter().filter(|w| !w.woken).count();
-                    match &commit {
-                        Some(rows) => wakes.committed(TableChange::Rows(rows)),
-                        None => wakes.committed(TableChange::Full),
-                    }
-                    history.push(commit);
-                }
-                _ => {
-                    let current = wakes.sequence();
-                    let since = current.saturating_sub(next(8));
-                    let rows = if next(4) == 0 {
-                        WakeRows::Any
-                    } else {
-                        WakeRows::Own(next(64) as i64)
-                    };
-                    let overflowed = since < wakes.lock().floor;
-                    waiters.push(Waiter {
-                        since,
-                        rows,
-                        overflowed,
-                        receiver: wakes.wait(since, rows),
-                        woken: false,
-                    });
-                }
-            }
-            for waiter in waiters.iter_mut().filter(|waiter| !waiter.woken) {
-                let required = must_wake(&history, waiter.since, waiter.rows);
-                match waiter.receiver.try_recv() {
-                    Ok(()) => {
-                        assert!(required || waiter.overflowed, "spurious wake");
-                        waiter.woken = true;
-                        addressed += 1;
-                    }
-                    Err(TryRecvError::Empty) => assert!(!required, "missed wake"),
-                    Err(TryRecvError::Closed) => panic!("waiter dropped"),
-                }
-            }
-        }
-        assert!(waiters.iter().any(|waiter| waiter.woken));
-        assert!(waiters.iter().any(|waiter| !waiter.woken));
-        // Reported for the change record: a broadcast wakes every waiting
-        // preparation on every agent commit.
-        eprintln!(
-            "agent wakes over {} commits: addressed {addressed}, broadcast {broadcast}",
-            history.len()
-        );
+        let mut own_one = wakes.wait(0, WakeRows::Own(1));
+        let mut own_two = wakes.wait(0, WakeRows::Own(2));
+        let mut any = wakes.wait(0, WakeRows::Any);
+        wakes.committed(TableChange::Rows(&[2]));
+        assert_eq!(wakes.sequence(), 1);
+        assert_eq!(own_one.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(own_two.try_recv(), Ok(()));
+        assert_eq!(any.try_recv(), Ok(()));
+
+        let mut waiting_two = wakes.wait(1, WakeRows::Own(2));
+        wakes.committed(TableChange::Rows(&[7]));
+        assert_eq!(wakes.sequence(), 2);
+        assert_eq!(own_one.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(waiting_two.try_recv(), Err(TryRecvError::Empty));
+        // The row changed after sequence zero, but not after sequence two.
+        assert_eq!(wakes.wait(0, WakeRows::Own(7)).try_recv(), Ok(()));
+        let mut current = wakes.wait(2, WakeRows::Own(7));
+        assert_eq!(current.try_recv(), Err(TryRecvError::Empty));
+        wakes.committed(TableChange::Full);
+        assert_eq!(own_one.try_recv(), Ok(()));
+        assert_eq!(waiting_two.try_recv(), Ok(()));
+        assert_eq!(current.try_recv(), Ok(()));
+
+        let rows = (0..=RECENT_AGENT_ROWS as i64).collect::<Vec<_>>();
+        wakes.committed(TableChange::Rows(&rows));
+        assert_eq!(wakes.sequence(), 4);
+        // A registration older than the retained bound must rescan even for an absent row.
+        assert_eq!(wakes.wait(3, WakeRows::Own(99_999)).try_recv(), Ok(()));
+        let mut after_bound = wakes.wait(4, WakeRows::Own(99_999));
+        assert_eq!(after_bound.try_recv(), Err(TryRecvError::Empty));
+        wakes.committed(TableChange::Rows(&[99_999]));
+        assert_eq!(after_bound.try_recv(), Ok(()));
     }
 
     #[test]

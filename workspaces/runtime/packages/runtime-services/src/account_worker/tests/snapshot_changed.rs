@@ -225,13 +225,9 @@ async fn a_lead_whose_state_changes_before_every_commit_fails_naming_the_change(
             state.bridge.faults.release.notify_one();
         }
     }
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        while state.record().await["status"] != "failed" {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the start fails after its returns are used up");
+    state
+        .wait_record(|record| record["status"] == "failed")
+        .await;
     let record = state.record().await;
     assert_eq!(
         record["error"],

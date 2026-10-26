@@ -15,10 +15,21 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
+base64.workspace = true
 tauri = { version = "=2.12.5", features = [] }
 studio-client-core = { path = "../../../packages/client-core" }
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sha1 = "=0.10.7"
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSDictionary", "NSError", "NSArray", "NSBundle", "NSObject", "NSPathUtilities", "NSUUID", "block2"] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "objc2-app-kit", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKContentWorld", "WKFrameInfo", "block2"] }
+block2 = "=0.6.2"

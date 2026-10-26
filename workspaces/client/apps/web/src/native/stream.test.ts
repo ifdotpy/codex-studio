@@ -27,8 +27,17 @@ function setup() {
     closed();
     return { id: request.id, result: { closed: true } };
   });
+  let identity = 0;
   vi.stubGlobal("__TAURI__", {
-    core: { invoke },
+    core: {
+      invoke: async (command: string, args: any) =>
+        args.request.method === "system.uuid"
+          ? {
+              id: args.request.id,
+              result: `00000000-0000-4000-8000-${String(++identity).padStart(12, "0")}`,
+            }
+          : invoke(command, args),
+    },
     event: {
       listen: async (_name: string, callback: typeof emit) => {
         emit = callback;

@@ -1,5 +1,3 @@
-import { importLegacyDrafts } from "./legacyDrafts";
-import { nativeDraftJournal } from "./draftJournal";
 import {
   useCallback,
   useEffect,
@@ -12,13 +10,23 @@ import { onResume } from "../sync/resume";
 import {
   watchResourceChanges,
   watchResourceConnection,
-} from "../sync/resourceEvents";
-import { nativeRequest } from "./client";
+} from "../sync/subscriptions/events";
+import { nativeRequest, type NativeServerContext } from "./client";
 import { guardNativeClose } from "./closeState";
 import { NativeDraftState, type DraftView } from "./draftState";
 
 type Drafts = Record<string, string>;
-export function useNativeDrafts() {
+type DraftContext = Pick<
+  NativeServerContext,
+  "workspaceId" | "request" | "subscribe"
+>;
+export function createNativeDrafts(context: DraftContext) {
+  return function useContextDrafts() {
+    return useNativeDrafts(context);
+  };
+}
+export function useNativeDrafts(context?: DraftContext) {
+  const invoke = context?.request ?? nativeRequest;
   const controller = useRef<NativeDraftState | null>(null);
   const current = useRef<Drafts>({});
   const early = useRef<Drafts>({});
@@ -92,22 +100,14 @@ export function useNativeDrafts() {
         if (!controller.current) {
           // Recover local drafts before contacting the server. A server outage
           // must not hide already committed text or prevent another local edit.
-          const cached = await nativeRequest<{ workspaceId: string } | null>(
-            "identity.get",
-            {},
-          );
+          const cached = context
+            ? { workspaceId: context.workspaceId }
+            : await invoke<{ workspaceId: string } | null>("identity.get", {});
           const identity =
-            cached ??
-            (await nativeRequest<{ workspaceId: string }>("sync.open", {}));
+            cached ?? (await invoke<{ workspaceId: string }>("sync.open", {}));
           if (stopped) return;
-          await importLegacyDrafts(identity.workspaceId, nativeRequest);
-          if (stopped) return;
-          const state = new NativeDraftState(
-            identity.workspaceId,
-            nativeRequest,
-            nativeDraftJournal(identity.workspaceId),
-          );
-          const view = await nativeRequest<DraftView>("drafts.view", {
+          const state = new NativeDraftState(identity.workspaceId, invoke);
+          const view = await invoke<DraftView>("drafts.view", {
             workspace: identity.workspaceId,
           });
           if (stopped) return;
@@ -122,7 +122,7 @@ export function useNativeDrafts() {
           await state.retry();
         }
         const state = controller.current;
-        const view = await nativeRequest<DraftView>("drafts.refresh", {
+        const view = await invoke<DraftView>("drafts.refresh", {
           workspace: state.workspace,
         });
         if (!stopped) state.accept(view);
@@ -139,17 +139,44 @@ export function useNativeDrafts() {
     refreshDrafts.current = () => {
       void refresh();
     };
-    const stopChanges = watchResourceChanges(
-      { kind: "drafts" },
-      refreshDrafts.current,
-    );
+    let stopNative = () => {};
+    if (context)
+      void context
+        .subscribe<DraftView>(
+          "drafts",
+          { workspace: context.workspaceId },
+          (event) => {
+            if (stopped) return;
+            if (event.error) setError(event.error.message);
+            else if (event.value && controller.current)
+              controller.current.accept(event.value);
+          },
+        )
+        .then((stop) => {
+          if (stopped) void stop();
+          else
+            stopNative = () => {
+              void stop();
+            };
+        })
+        .catch((failure) => {
+          if (!stopped)
+            setError(
+              failure instanceof Error ? failure.message : String(failure),
+            );
+        });
+    const stopChanges = context
+      ? () => {}
+      : watchResourceChanges({ kind: "drafts" }, refreshDrafts.current);
     void refresh();
     let connected = false;
-    const stopConnection = watchResourceConnection((status) => {
-      const live = status === "live";
-      if (live && !connected) void refresh();
-      connected = live;
-    });
+    const stopConnection = context
+      ? () => {}
+      : watchResourceConnection((status) => {
+          const live = status === "live";
+          if (live && !connected) void refresh();
+          connected = live;
+        });
     const resume = onResume(() => {
       void controller.current?.retry();
       void refresh();
@@ -158,13 +185,14 @@ export function useNativeDrafts() {
       stopped = true;
       unguard();
       stopChanges();
+      stopNative();
       stopConnection();
       refreshDrafts.current = () => {};
       resume();
       unsubscribe();
       controller.current = null;
     };
-  }, [publish]);
+  }, [publish, context, invoke]);
   const setDrafts = useCallback(
     (action: SetStateAction<Drafts>) => {
       const next =
@@ -185,22 +213,27 @@ export function useNativeDrafts() {
     },
     [publish],
   );
-  const dismissDraft = useCallback((version: DraftVersion) => {
-    const state = controller.current;
-    if (!state) return;
-    // TODO(attar-sync): Return to synchronous core.commit for this local write.
-    void nativeRequest<DraftView>("drafts.dismiss", {
-      workspace: state.workspace,
-      version,
-    })
-      .then((view) => {
-        state.accept(view);
-        refreshDrafts.current();
+  const dismissDraft = useCallback(
+    (version: DraftVersion) => {
+      const state = controller.current;
+      if (!state) return;
+      // TODO(attar-sync): Return to synchronous core.commit for this local write.
+      void invoke<DraftView>("drafts.dismiss", {
+        workspace: state.workspace,
+        version,
       })
-      .catch((failure) =>
-        setError(failure instanceof Error ? failure.message : String(failure)),
-      );
-  }, []);
+        .then((view) => {
+          state.accept(view);
+          refreshDrafts.current();
+        })
+        .catch((failure) =>
+          setError(
+            failure instanceof Error ? failure.message : String(failure),
+          ),
+        );
+    },
+    [invoke],
+  );
   return {
     get drafts() {
       return current.current;

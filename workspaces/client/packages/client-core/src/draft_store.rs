@@ -293,6 +293,93 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
     }
 }
 
+// The migration transaction owns rollback and exact command receipts. Reuse the
+// normal draft rules instead of constructing branch rows in the importer.
+pub(crate) fn apply_migration(db: &Connection, request: &Request) -> Result<Value, String> {
+    if !matches!(request.method.as_str(), "drafts.import" | "drafts.edit") {
+        return Err("This draft operation is unavailable during migration.".into());
+    }
+    execute(db, request)
+}
+
+/// Browser documents are local intentions, not server acknowledgements. Keep
+/// exact payload bytes and tombstones; an equal native row keeps its own proof.
+pub(crate) fn import_documents(
+    db: &Connection,
+    workspace: &str,
+    documents: &[Document],
+) -> Result<(), String> {
+    if !crate::projections::valid_workspace(workspace) {
+        return Err("Invalid imported draft workspace.".into());
+    }
+    for incoming in documents {
+        decode(incoming)?;
+        if incoming.seq > studio_client_domain::MAX_SAFE_INTEGER as u64 {
+            return Err("Invalid imported draft sequence.".into());
+        }
+        if let Some((local, _, _)) = keyed_row(db, workspace, &incoming.id)? {
+            if local.payload != incoming.payload
+                || local.seq != incoming.seq
+                || local.deleted != incoming.deleted
+            {
+                return Err(
+                    "The saved draft conflicts with native data. Both sources were preserved."
+                        .into(),
+                );
+            }
+        } else {
+            save(db, workspace, incoming, None, true)?;
+        }
+    }
+    revision(db, workspace)
+}
+
+/// Apply an SSE draft interval inside its caller's projection/cursor transaction.
+/// Stored master payload bytes remain unchanged, including legacy draft fields.
+pub(crate) fn apply_in_transaction(
+    db: &Connection,
+    workspace: &str,
+    batch: &Value,
+) -> Result<Value, String> {
+    if let Some((path, detail)) = studio_runtime_schema::first_error("DraftChangeBatch", batch)? {
+        return Err(format!("Invalid draft interval at {path}: {detail}"));
+    }
+    let after = batch["after"]
+        .as_u64()
+        .ok_or("Missing draft interval start.")?;
+    let through = batch["through"]
+        .as_u64()
+        .filter(|through| *through >= after)
+        .ok_or("Invalid draft interval end.")?;
+    let mut previous = after;
+    let mut ids = BTreeSet::new();
+    for document in batch["documents"]
+        .as_array()
+        .ok_or("Missing draft documents.")?
+    {
+        let sequence = document["seq"]
+            .as_u64()
+            .filter(|seq| *seq > previous && *seq <= through)
+            .ok_or("Draft document is outside its interval.")?;
+        if !ids.insert(
+            document["id"]
+                .as_str()
+                .ok_or("Missing draft document identity.")?,
+        ) {
+            return Err("Duplicate draft document identity.".into());
+        }
+        previous = sequence;
+    }
+    execute(
+        db,
+        &Request {
+            id: "subscription-draft-interval".into(),
+            method: "drafts.receive".into(),
+            params: json!({"workspace":workspace,"documents":batch["documents"],"checkpoint":through}),
+        },
+    )
+}
+
 pub fn dispatch(db: &mut Connection, request: &Request) -> Response {
     let mut run = || -> Result<Response, String> {
         let transaction =

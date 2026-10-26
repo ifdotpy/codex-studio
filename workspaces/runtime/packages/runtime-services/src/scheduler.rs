@@ -282,12 +282,12 @@ fn project_changed_agents(
                     id: row_id.clone(),
                 }
             })?;
-        studio_runtime_store::SyncDocumentsRepository::put_entity(
+        crate::sync_policy::publish_agent_projection(
             tx,
-            "agent",
             &row_id,
             projection,
             crate::event_write::truthy(agent.get("deletedAt")),
+            &|_, _, _, _| true,
         )?;
     }
     crate::sync_policy::publish_entity_changes(tx, &changes, server_id, &|_, _, _, _| true)

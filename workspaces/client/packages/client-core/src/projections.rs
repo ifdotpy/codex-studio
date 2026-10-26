@@ -20,14 +20,23 @@ const ENTITY_CACHE_VERSION: i64 = 4;
 // Largest local projection key, measured in UTF-8 bytes.
 const MAX_PROJECTION_SCOPE_BYTES: usize = 512;
 
-pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
-    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
-    transaction.execute_batch("CREATE TABLE IF NOT EXISTS client_projections (
+fn initialize_schema(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS client_projections (
         workspace TEXT NOT NULL, scope TEXT NOT NULL, document TEXT NOT NULL,
         seq INTEGER NOT NULL, PRIMARY KEY(workspace,scope));
         CREATE TABLE IF NOT EXISTS client_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS client_projection_cache_version (
-            singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL);")?;
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL);")
+}
+pub(crate) fn initialize_for_migration(connection: &Connection) -> rusqlite::Result<()> {
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    initialize_schema(&transaction)?;
+    crate::subscription_store::initialize(&transaction)?;
+    transaction.commit()
+}
+pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    initialize_schema(&transaction)?;
     let version: Option<i64> = transaction
         .query_row(
             "SELECT version FROM client_projection_cache_version WHERE singleton=1",
@@ -41,10 +50,11 @@ pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         transaction.execute("DELETE FROM client_projections WHERE scope LIKE 'entity:%' OR scope LIKE 'state:entities:%' OR scope='state'", [])?;
         transaction.execute("INSERT INTO client_projection_cache_version VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version", [ENTITY_CACHE_VERSION])?;
     }
+    crate::subscription_store::initialize(&transaction)?;
     transaction.commit()
 }
 
-fn entity_scope(change: &Value) -> Result<String, String> {
+pub(crate) fn entity_scope(change: &Value) -> Result<String, String> {
     let collection = change["collection"]
         .as_str()
         .ok_or("Missing entity collection.")?;
@@ -69,7 +79,11 @@ fn entity_scope(change: &Value) -> Result<String, String> {
     Ok(scope)
 }
 
-fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<Value>, String> {
+pub(crate) fn get(
+    connection: &Connection,
+    workspace: &str,
+    scope: &str,
+) -> Result<Option<Value>, String> {
     let encoded: Option<String> = connection
         .query_row(
             "SELECT document FROM client_projections WHERE workspace=?1 AND scope=?2",
@@ -83,7 +97,7 @@ fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<V
         .transpose()
 }
 
-fn entities(connection: &Connection, workspace: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn entities(connection: &Connection, workspace: &str) -> Result<Vec<Value>, String> {
     let mut statement = connection
         .prepare("SELECT document FROM client_projections WHERE workspace=?1 AND scope LIKE 'entity:%' ORDER BY scope")
         .map_err(|e| e.to_string())?;
@@ -129,7 +143,28 @@ fn entity_snapshot(rows: &[Value]) -> Value {
                 .collect(),
         )
     };
-    let agents = list("agent");
+    let agents = if rows.iter().any(|row| row["collection"] == "agentSummary") {
+        let summaries = collections.get("agentSummary").cloned().unwrap_or_default();
+        Value::Array(
+            summaries
+                .iter()
+                .map(|(id, summary)| {
+                    let mut agent = collections
+                        .get("agentDetail")
+                        .and_then(|details| details.get(id))
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    if let Some(fields) = summary.as_object() {
+                        agent.extend(fields.clone());
+                    }
+                    Value::Object(agent)
+                })
+                .collect(),
+        )
+    } else {
+        list("agent")
+    };
     let chats = list("chat");
     let mut nodes = agents.as_array().cloned().unwrap_or_default();
     nodes.extend(chats.as_array().cloned().unwrap_or_default());
@@ -142,7 +177,45 @@ fn entity_snapshot(rows: &[Value]) -> Value {
     if let (Some(target), Some(extra)) = (runtime.as_object_mut(), workspace_entity.as_object()) {
         target.extend(extra.clone());
     }
+    let mut errors = list("studioError");
+    if let Some(rows) = errors.as_array_mut() {
+        rows.sort_by(|a, b| {
+            b["at"]
+                .as_f64()
+                .unwrap_or(0.0)
+                .total_cmp(&a["at"].as_f64().unwrap_or(0.0))
+                .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+        });
+    }
+    runtime["studioErrors"] = errors;
     let edges = list("edge");
+    for (collection, field) in [("accounts", "accountsSummary"), ("desktop", "desktop")] {
+        runtime[field] = collections
+            .get(collection)
+            .and_then(|rows| rows.get("current"))
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
+    runtime["terminals"] = list("terminal");
+    for (collection, field) in [
+        ("accountCost", "accountCostsByAccount"),
+        ("sessionCost", "sessionCostsByAgent"),
+    ] {
+        runtime[field] = Value::Object(
+            collections
+                .remove(collection)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        );
+    }
+    runtime["queuesByAgent"] = Value::Object(
+        collections
+            .remove("queue")
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
+    );
     let limits = collections.remove("rateLimit").unwrap_or_default();
     runtime["rateLimits"] = limits.get("default").cloned().unwrap_or(Value::Null);
     runtime["rateLimitsByAccount"] = Value::Object(limits.into_iter().collect());
@@ -151,6 +224,40 @@ fn entity_snapshot(rows: &[Value]) -> Value {
         .cloned()
         .unwrap_or_else(|| json!(""));
     json!({"token":"","stateDir":state_dir,"threads":agents,"chats":chats,"nodes":nodes,"edges":edges,"runtime":runtime})
+}
+
+/// Refresh the legacy state view inside the caller's entity transaction.
+pub(crate) fn refresh_entity_state(connection: &Connection, workspace: &str) -> Result<(), String> {
+    let previous = get(connection, workspace, "state")?.unwrap_or(Value::Null);
+    let payload = serialize_state(&entity_snapshot(&entities(connection, workspace)?))
+        .map_err(|error| error.message)?;
+    if previous["payload"].as_str() == Some(&payload) {
+        return Ok(());
+    }
+    let seq = previous["seq"]
+        .as_u64()
+        .unwrap_or(0)
+        .checked_add(1)
+        .filter(|seq| *seq <= MAX_SAFE_INTEGER as u64)
+        .ok_or("Entity state revision exhausted.")?;
+    let document = Document {
+        id: "state".into(),
+        payload,
+        seq,
+        deleted: false,
+    };
+    connection
+        .execute(
+            "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,'state',?2,?3)
+        ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq",
+            params![
+                workspace,
+                serde_json::to_string(&document).map_err(|error| error.to_string())?,
+                seq as i64
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(crate) fn serialize_state(snapshot: &Value) -> Result<String, crate::protocol::CommandError> {
@@ -301,6 +408,35 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
     if !valid_workspace(workspace) {
         return Err("Invalid projection identity.".into());
     }
+    if matches!(
+        request.method.as_str(),
+        "projection.applySubscription"
+            | "projection.readSubscription"
+            | "projection.stageSubscriptionFragment"
+    ) {
+        return crate::subscription_store::execute(connection, workspace, request);
+    }
+    if request.method == "projection.stateSnapshot" {
+        let Some(document) = get(connection, workspace, "state")? else {
+            return Ok(Value::Null);
+        };
+        if document["_deleted"] == true {
+            return Ok(Value::Null);
+        }
+        let payload = document["payload"]
+            .as_str()
+            .ok_or("Invalid stored state payload.")?;
+        if let Some(error) = crate::sync::projection_error(payload) {
+            return Err(error.message);
+        }
+        let mut snapshot: Value =
+            serde_json::from_str(payload).map_err(|error| error.to_string())?;
+        snapshot
+            .as_object_mut()
+            .ok_or("Invalid stored state payload.")?
+            .remove("token");
+        return Ok(snapshot);
+    }
     if request.method == "projection.applyEntities" {
         return apply_entities(connection, workspace, &request.params);
     }
@@ -357,6 +493,46 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_summary_renders_without_detail_and_owns_list_fields() {
+        let summary = json!({"op":"upsert","collection":"agentSummary","id":"a","value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}});
+        let snapshot = entity_snapshot(std::slice::from_ref(&summary));
+        assert_eq!(snapshot["threads"][0]["name"], "Current");
+        assert!(snapshot["threads"][0].get("lastAnswer").is_none());
+        let detail = json!({"op":"upsert","collection":"agentDetail","id":"a","value":{"id":"a","lastAnswer":"Answer"}});
+        let snapshot = entity_snapshot(&[summary, detail]);
+        assert_eq!(snapshot["threads"][0]["lastAnswer"], "Answer");
+        assert_eq!(snapshot["threads"][0]["name"], "Current");
+    }
+
+    #[test]
+    fn studio_error_entities_reach_native_state_and_dismissal_removes_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let workspace = "a".repeat(32);
+        let apply = |changes| Request {
+            id: "studio-errors".into(),
+            method: "projection.applyEntities".into(),
+            params: json!({"workspace":workspace,"changes":changes,"replace":false}),
+        };
+        let item = json!({"id":"event:one","agentId":"one","at":100});
+        let first = store.dispatch(apply(json!([
+            {"op":"upsert","collection":"studioError","id":"event:one","seq":1,"value":item}
+        ])));
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let snapshot: Value =
+            serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["studioErrors"], json!([item]));
+        let removed = store.dispatch(apply(json!([
+            {"op":"delete","collection":"studioError","id":"event:one","seq":2}
+        ])));
+        assert!(removed.error.is_none(), "{:?}", removed.error);
+        let snapshot: Value =
+            serde_json::from_str(removed.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["studioErrors"], json!([]));
+    }
+
     #[test]
     fn entity_batch_rolls_back_rows_cursors_and_state_on_failure() {
         let directory = tempfile::tempdir().unwrap();

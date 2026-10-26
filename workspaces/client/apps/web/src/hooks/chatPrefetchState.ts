@@ -1,4 +1,4 @@
-import type { ResourceVersion } from "../sync/resourceEvents";
+import type { ResourceVersion } from "../sync/subscriptions/events";
 
 export function foregroundTranscriptPending(
   foregroundId: string | null,

@@ -35,6 +35,29 @@ use webrtc::{
     rtp_transceiver::RtpSender,
 };
 
+#[path = "voice_lifecycle.rs"]
+mod lifecycle;
+#[cfg(test)]
+pub(crate) use lifecycle::test_owned_session;
+#[path = "voice_view.rs"]
+mod view;
+pub use lifecycle::{
+    apply_session, close_context, initialize, stored, transport_closed, watch_session,
+};
+pub use view::apply_records;
+
+pub async fn dispatch_with_backend(
+    backend: &crate::backend::Backend,
+    store: &crate::delivery::StoreSender,
+    request: crate::protocol::Request,
+) -> crate::protocol::Response {
+    if request.method.starts_with("voice.session") {
+        lifecycle::dispatch(backend, store, request).await
+    } else {
+        dispatch(request).await
+    }
+}
+
 pub const RATE: usize = 48_000;
 pub const FRAME: usize = RATE / 50; // 20 ms
 const GATHER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -420,16 +443,19 @@ pub fn attach(session: &Value) -> Result<mpsc::Receiver<Value>, String> {
     Ok(receiver)
 }
 
-async fn stop(active: Active) {
+async fn stop(active: Active) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    {
+    let device_result = {
         let session = active.session.clone();
-        let _ =
-            crate::media::mac::on_main(move || Ok(crate::voice_audio::mac::stop(&session))).await;
-    }
+        crate::media::mac::on_main(move || Ok(crate::voice_audio::mac::stop(&session))).await
+    };
     if let Some(peer) = active.peer {
         peer.close().await;
     }
+    #[cfg(target_os = "macos")]
+    device_result?;
+    crate::media::release_capture(&active.session);
+    Ok(())
 }
 
 async fn create(params: &Value) -> Result<Value, String> {
@@ -449,6 +475,7 @@ async fn create(params: &Value) -> Result<Value, String> {
         .filter(|s| !s.is_closed())
         .ok_or("Subscribe to the voice session before it starts.")?;
     let muted = Arc::new(AtomicBool::new(params["muted"].as_bool().unwrap_or(false)));
+    crate::media::claim_capture(&session)?;
     // Reserve the session before any await, so a second start cannot pass.
     state.active = Some(Active {
         session: session.clone(),
@@ -514,7 +541,7 @@ async fn create(params: &Value) -> Result<Value, String> {
         Err(error) => {
             if let Some(active) = state.active.take_if(|a| a.session == session) {
                 drop(state);
-                stop(active).await;
+                let _ = stop(active).await;
             }
             Err(error)
         }
@@ -563,7 +590,7 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
                     .take_if(|a| a.session == session);
                 let closed = active.is_some();
                 if let Some(active) = active {
-                    stop(active).await;
+                    stop(active).await?;
                 }
                 Ok(Value::Bool(closed))
             }
@@ -586,8 +613,13 @@ pub async fn close_all() {
         service().lock().await.active.take()
     };
     if let Some(active) = active {
-        stop(active).await;
+        let _ = stop(active).await;
     }
+}
+
+/// The host checks this only after an awaited exact Close or failed Start.
+pub(crate) async fn audio_idle() -> bool {
+    service().lock().await.active.is_none() && lifecycle::audio_idle().await
 }
 
 fn rand_ssrc() -> Result<u32, String> {
@@ -602,9 +634,52 @@ fn rand_ssrc() -> Result<u32, String> {
 mod tests {
     use super::*;
     use bytes::BytesMut;
-    use std::sync::Mutex;
     use webrtc::data_channel::DataChannel;
     use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
+
+    #[tokio::test]
+    async fn native_voice_lifecycle_has_a_read_only_idle_state() {
+        let backend = crate::backend::Backend::new("http://127.0.0.1:1").unwrap();
+        let (store, _receive) = tokio::sync::mpsc::channel(1);
+        let response = dispatch_with_backend(
+            &backend,
+            &store,
+            crate::protocol::Request {
+                id: "voice-state".into(),
+                method: "voice.sessionState".into(),
+                params: json!({"agent":"chat-a"}),
+            },
+        )
+        .await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.result.unwrap()["active"], false);
+    }
+
+    #[test]
+    fn native_voice_start_claim_survives_restart_and_refuses_changed_scope() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite");
+        let request = || crate::protocol::Request {
+            id: "original-voice-start".into(),
+            method: "voice_journal.begin".into(),
+            params: json!({"agent":"chat-a","muted":false}),
+        };
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let first = store.dispatch(request());
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let first = first.result.unwrap();
+        assert_eq!(first["fresh"], true);
+        let session = first["row"]["sessionId"].clone();
+        assert!(session.as_str().is_some_and(|id| !id.is_empty()));
+        drop(store);
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let replay = store.dispatch(request()).result.unwrap();
+        assert_eq!(replay["fresh"], false);
+        assert_eq!(replay["row"]["sessionId"], session);
+        let mut changed = request();
+        changed.params["agent"] = json!("chat-b");
+        assert!(store.dispatch(changed).error.is_some());
+    }
 
     fn tone(frequency: f64, samples: usize, start: usize) -> Vec<f32> {
         (start..start + samples)
@@ -686,18 +761,17 @@ mod tests {
     }
 
     /// A local peer plays the realtime service: it reflects audio and starts the session.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test]
     async fn loopback_peer_exchanges_audio_and_events() {
         let (events, mut event_receiver) = mpsc::channel(256);
         let (microphone, microphone_receiver) = mpsc::channel(64);
-        let heard = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let sink = heard.clone();
+        let (audio, mut reflected) = mpsc::unbounded_channel();
         let muted = Arc::new(AtomicBool::new(false));
         let (peer, offer) = Peer::create(
             "127.0.0.1:0",
             events,
             microphone_receiver,
-            Arc::new(move |samples: &[f32]| sink.lock().unwrap().extend_from_slice(samples)),
+            Arc::new(move |samples: &[f32]| audio.send(samples.to_vec()).unwrap()),
             muted.clone(),
         )
         .await
@@ -763,24 +837,28 @@ mod tests {
             .unwrap();
         assert!(peer.answer("bad".into()).await.is_err());
 
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let (mut connected, mut started) = (false, false);
-        let mut position = 0;
-        while Instant::now() < deadline
-            && !(connected && started && heard.lock().unwrap().len() >= RATE)
-        {
-            let _ = microphone.try_send(tone(440.0, FRAME, position));
-            position += FRAME;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            while let Ok(event) = event_receiver.try_recv() {
+        let audio = tokio::time::timeout(Duration::from_secs(20), async {
+            let (mut connected, mut started) = (false, false);
+            while !(connected && started) {
+                let event = event_receiver
+                    .recv()
+                    .await
+                    .expect("peer events remain open");
                 connected |= event == json!({"type":"state","state":"connected"});
                 started |=
                     event["type"] == "message" && event["data"] == r#"{"type":"session.started"}"#;
             }
-        }
-        assert!(connected, "peer connected");
-        assert!(started, "data channel delivered the service event");
-        let audio = heard.lock().unwrap().clone();
+            // The returned samples acknowledge each real RTP exchange. Microphone
+            // capture owns production pacing; transport tests need no wall-clock delay.
+            let mut audio = Vec::new();
+            for position in (0..RATE).step_by(FRAME) {
+                microphone.send(tone(440.0, FRAME, position)).await.unwrap();
+                audio.extend(reflected.recv().await.expect("the peer reflects audio"));
+            }
+            audio
+        })
+        .await
+        .expect("negotiation and reflected audio complete");
         assert!(audio.len() >= RATE, "heard {} samples", audio.len());
         let tail = &audio[audio.len() - RATE / 2..];
         let crossings = tail
@@ -792,15 +870,23 @@ mod tests {
             "reflected tone crossings {crossings}"
         );
 
-        // Muted frames keep timing and carry silence.
+        // The same acknowledged exchanges carry silence after muting.
         muted.store(true, Ordering::Relaxed);
-        heard.lock().unwrap().clear();
-        for _ in 0..60 {
-            let _ = microphone.try_send(tone(440.0, FRAME, position));
-            position += FRAME;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let quiet = heard.lock().unwrap().clone();
+        let quiet = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut quiet = Vec::new();
+            for position in (RATE..RATE + 60 * FRAME).step_by(FRAME) {
+                microphone.send(tone(440.0, FRAME, position)).await.unwrap();
+                quiet.extend(
+                    reflected
+                        .recv()
+                        .await
+                        .expect("the peer reflects muted audio"),
+                );
+            }
+            quiet
+        })
+        .await
+        .expect("muted audio completes");
         let tail = &quiet[quiet.len().saturating_sub(RATE / 4)..];
         assert!(
             !tail.is_empty() && tail.iter().all(|s| s.abs() < 0.02),

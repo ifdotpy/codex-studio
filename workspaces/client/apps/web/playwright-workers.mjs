@@ -21,8 +21,6 @@ const workerCpuSafetyFactor = 2.5;
 // an idle 32-CPU host. Competing runnable work is subtracted from the 30% CPU
 // budget before planning.
 const maximumWorkerCpuFraction = 0.3;
-const runnableSampleCount = 11;
-const runnableSampleIntervalMs = 500;
 
 function memoryStateDirectory(environment = process.env) {
   return join(
@@ -299,33 +297,18 @@ function cgroupCpuLimit() {
 
 export function sampleCompetingRunnableProcesses({
   readProcStat = () => readText("/proc/stat"),
-  pause = (milliseconds) => {
-    const sleeper = new Int32Array(
-      new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
-    );
-    Atomics.wait(sleeper, 0, 0, milliseconds);
-  },
 } = {}) {
-  const samples = [];
-  for (let index = 0; index < runnableSampleCount; index += 1) {
-    if (index > 0) pause(runnableSampleIntervalMs);
-    const line = readProcStat()
-      ?.split("\n")
-      .find((row) => row.startsWith("procs_running "));
-    const running = Number(line?.split(/\s+/)[1]);
-    // procs_running can include this process while it reads /proc/stat.
-    samples.push(
-      Number.isSafeInteger(running) && running >= 0
-        ? Math.max(0, running - 1)
-        : 0,
-    );
-  }
-  const orderedSamples = [...samples].sort((left, right) => left - right);
-  return {
-    samples,
-    competingRunnable:
-      orderedSamples[Math.floor(orderedSamples.length / 2)] ?? 0,
-  };
+  const line = readProcStat()
+    ?.split("\n")
+    .find((row) => row.startsWith("procs_running "));
+  const running = Number(line?.split(/\s+/)[1]);
+  // Read current contention once. The CPU fraction and memory reserve provide
+  // headroom; worker selection must not add a sampling delay to every launch.
+  const competingRunnable =
+    Number.isSafeInteger(running) && running >= 0
+      ? Math.max(0, running - 1)
+      : 0;
+  return { samples: [competingRunnable], competingRunnable };
 }
 
 export function choosePlaywrightWorkerCount({

@@ -104,7 +104,11 @@ async fn installed_binary_starts_without_python_or_a_source_tree() {
     .unwrap();
     fs::write(bridge.join("bridge.mjs"), "export {};\n").unwrap();
     let binary = binary_dir.join("studio-runtime-server");
-    fs::copy(env!("CARGO_BIN_EXE_studio-runtime-server"), &binary).unwrap();
+    let source = env!("CARGO_BIN_EXE_studio-runtime-server");
+    if let Err(error) = fs::hard_link(source, &binary) {
+        assert_eq!(error.kind(), std::io::ErrorKind::CrossesDevices);
+        fs::copy(source, &binary).expect("cross-device binary copy");
+    }
     assert!(
         !workspace
             .join("workspaces/runtime/apps/server/src")

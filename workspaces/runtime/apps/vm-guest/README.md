@@ -14,13 +14,16 @@ from the repository root.
 `just test-fast` runs the whole suite with `node workspaces/runtime/apps/vm-guest/run-guest-suite.mjs`
 after `cargo build -p studio-process-supervisor --locked`. The runner needs Python 3.11 or newer
 (`STUDIO_GUEST_PYTHON` selects one), sets `STUDIO_SUPERVISOR_BINARY` to the built supervisor,
-and runs discovered modules in bounded stdlib worker processes. It prints each module's output
-in discovery order with elapsed time. `STUDIO_GUEST_WORKERS` selects the process budget;
+and runs discovered test cases in bounded stdlib worker processes, so one large module
+cannot hold up the suite. It prints case timings in discovery order and retains
+output for failures and skips. `STUDIO_GUEST_WORKERS` selects the process budget;
 [guest_suite.py](guest_suite.py) owns its default and bound. Ordinary discovery clears
 `LAYR_E2E_ROOT` and refuses host account-management commands; opt-in root checks run directly.
 Upload contract workers inject a no-op durability callable through
 [guest_test_worker.py](guest_test_worker.py); production keeps `os.sync()` and its sanitized
-worker environment. On macOS the runner gives the suite a short temporary folder, because a
+worker environment. Native event readiness uses the supervisor's blocking batch
+action; the service's separate chunked-response limit remains checked through real
+guest sockets. On macOS the runner gives the suite a short temporary folder, because a
 macOS Unix socket path has at most 104 bytes. After the suite, also after a failure or a timeout, it stops every process that
 still names the suite's folder or works in it, and fails the run: a test must stop what it
 starts. Use it for a full run on a Mac. The native supervisor tests run on Linux only: the

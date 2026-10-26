@@ -10,8 +10,6 @@ use crate::startup_recovery::{
 
 /// Agent statuses whose turn may still be starting or running.
 const ACTIVE_AGENT_STATUSES: &str = "'queued','starting','running','approval'";
-/// Queue event statuses whose input is not yet settled by a finished turn.
-const UNSETTLED_EVENT_STATUSES: &str = "'pending','reserved','dispatching','uncertain'";
 /// Context repair phases that still read or replace the agent's thread.
 const ACTIVE_CONTEXT_REPAIR_PHASES: &str = "'preparing','submitted','unknown','ready'";
 /// Context repair source cleanup phases that still own the source thread.

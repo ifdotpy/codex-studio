@@ -4,7 +4,7 @@ import {
   useServerStorage,
 } from "./servers/ServerServicesContext";
 import { useState } from "react";
-import { ApiError } from "./api";
+import { ApiError } from "./apiErrors";
 import type { PostBody } from "./api";
 import type { Agent } from "./types";
 type Request = Omit<PostBody<"/api/action">, "action"> & {

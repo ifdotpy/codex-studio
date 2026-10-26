@@ -1,7 +1,8 @@
+import MarkdownImageView from "./MarkdownImageView";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import PreviewModal from "./PreviewModal";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
 import ImageViewer from "./ImageViewer";
 import { relativeToDocument, safeSvg } from "./filePreviewFormats";
@@ -100,55 +101,20 @@ export default function MarkdownImage({
   }, [src, target, remote, attempt]);
   const image = loaded || (remoteAllowed ? src : "");
   return (
-    <span className="markdown-image">
-      {image && !error ? (
-        <button
-          type="button"
-          className="image-preview-button"
-          aria-label={`Preview ${alt || "image"}`}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setPreview(true);
-          }}
-        >
-          <img
-            src={image}
-            alt={alt}
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            onError={() => setError("Cannot load this image.")}
-          />
-        </button>
-      ) : (
-        <span className="markdown-image-placeholder">
-          <span>{alt || "Image"}</span>
-          {error ? (
-            <>
-              <span role="alert">{error}</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setError("");
-                  if (remote) setRemoteAllowed(true);
-                  else setAttempt(attempt + 1);
-                }}
-              >
-                Retry image
-              </button>
-            </>
-          ) : remote ? (
-            <>
-              <span>External image. Load it to contact {remoteHost}.</span>
-              <button type="button" onClick={() => setRemoteAllowed(true)}>
-                Load image
-              </button>
-            </>
-          ) : (
-            <span role="status">Load image…</span>
-          )}
-        </span>
-      )}
+    <MarkdownImageView
+      image={image}
+      error={error}
+      alt={alt}
+      remoteHost={remote ? remoteHost : ""}
+      onPreview={() => setPreview(true)}
+      onError={() => setError("Cannot load this image.")}
+      onRetry={() => {
+        setError("");
+        if (remote) setRemoteAllowed(true);
+        else setAttempt(attempt + 1);
+      }}
+      onLoad={() => setRemoteAllowed(true)}
+    >
       {target ? (
         <FilePreview
           target={preview ? target : null}
@@ -170,6 +136,6 @@ export default function MarkdownImage({
           )}
         </PreviewModal>
       )}
-    </span>
+    </MarkdownImageView>
   );
 }

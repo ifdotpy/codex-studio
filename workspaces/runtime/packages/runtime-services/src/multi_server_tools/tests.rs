@@ -1374,23 +1374,40 @@ async fn wait_for_status(
     handle: &str,
     name: &str,
 ) -> Value {
-    for attempt in 0..250 {
-        let read = call_tool(
-            store,
-            lead,
-            &format!("{name}-{attempt}"),
-            &format!("call-{name}-{attempt}"),
-            &json!({"action": "exec_read", "handle": handle}),
-            Some(Arc::clone(tools)),
-        )
-        .await;
-        let value = parsed(&read)["value"].clone();
-        if !matches!(value["status"].as_str(), Some("starting" | "running")) {
-            return value;
+    let committed = Arc::new(tokio::sync::Notify::new());
+    store.add_commit_observer({
+        let committed = Arc::clone(&committed);
+        move || committed.notify_one()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let status: String = store
+                .test_reader()
+                .unwrap()
+                .query_row(
+                    "SELECT json_extract(record,'$.status') FROM runtime_server_exec WHERE id=?1",
+                    [handle],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if !matches!(status.as_str(), "starting" | "running") {
+                break;
+            }
+            committed.notified().await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-    }
-    panic!("{name}: the command did not finish");
+    })
+    .await
+    .expect("command commits its final state");
+    let read = call_tool(
+        store,
+        lead,
+        name,
+        &format!("call-{name}"),
+        &json!({"action": "exec_read", "handle": handle}),
+        Some(Arc::clone(tools)),
+    )
+    .await;
+    parsed(&read)["value"].clone()
 }
 
 fn exit_events(store: &RuntimeStore) -> Vec<Value> {
@@ -1626,10 +1643,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
         })
         .unwrap();
     let notice: Value = serde_json::from_str(&notice).unwrap();
-    assert_eq!(
-        notice["requestId"],
-        crate::projects::cross_server_identity(&["command-exit", "peer-exec-1", "completed"])
-    );
+    assert_eq!(notice["requestId"], "b75e85fe-064e-5373-9c79-ff2454f3c4e1");
     assert_eq!(notice["payload"]["actor"], "peer-lead");
     assert_eq!(notice["payload"]["handle"], "peer-exec-1");
     assert_eq!(notice["payload"]["record"]["exitCode"], 0);

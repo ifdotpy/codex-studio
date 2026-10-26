@@ -1,3 +1,4 @@
+/// <reference lib="es2024.promise" />
 import { expect, it, vi } from "vitest";
 import {
   AutomaticUiAccess,
@@ -176,15 +177,17 @@ it("pins the invitation public key to the local peer snapshot", async () => {
 
 it("rechecks revocation before pairing an invitation returned late", async () => {
   const s = setup();
+  const entered = Promise.withResolvers<void>();
   let finish!: (value: typeof invitation) => void;
   s.adapter.invite.mockImplementationOnce(
     () =>
       new Promise((resolve) => {
         finish = resolve;
+        entered.resolve();
       }),
   );
   const active = s.controller.reconcile(snapshot);
-  await vi.waitFor(() => expect(s.adapter.invite).toHaveBeenCalledOnce());
+  await entered.promise;
   const revoked = {
     ...snapshot,
     servers: [
@@ -198,15 +201,17 @@ it("rechecks revocation before pairing an invitation returned late", async () =>
 });
 it("does not register UI access after its controller stops", async () => {
   const s = setup();
+  const entered = Promise.withResolvers<void>();
   let finish!: (value: typeof server) => void;
   s.adapter.pair.mockImplementationOnce(
     () =>
       new Promise((resolve) => {
         finish = resolve;
+        entered.resolve();
       }),
   );
   const active = s.controller.reconcile(snapshot);
-  await vi.waitFor(() => expect(s.adapter.pair).toHaveBeenCalledOnce());
+  await entered.promise;
   s.controller.stop();
   finish(server);
   await active;
@@ -273,15 +278,17 @@ it("does not add a peer revoked while pairing was in flight", async () => {
 });
 it("cancels a held invitation immediately when this UI revokes the peer", async () => {
   const s = setup();
+  const entered = Promise.withResolvers<void>();
   let finish!: (value: typeof invitation) => void;
   s.adapter.invite.mockImplementationOnce(
     () =>
       new Promise((resolve) => {
         finish = resolve;
+        entered.resolve();
       }),
   );
   const active = s.controller.reconcile(snapshot);
-  await vi.waitFor(() => expect(s.adapter.invite).toHaveBeenCalledOnce());
+  await entered.promise;
   s.controller.cancel("remote");
   finish(invitation);
   await active;

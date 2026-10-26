@@ -21,8 +21,8 @@
   sourced only from `src/sync_schema.sql`.
   Python persisted models and the OpenAPI document own the schemas.
 - **Invariants:** One exclusive runtime lock, one serialized Canvas writer
-  using `BEGIN IMMEDIATE`, independent query-only read connections, WAL and
-  FULL synchronous writes, and fail-closed checks for required tables, columns,
+  using `BEGIN IMMEDIATE`, independent query-only read connections, WAL with
+  `synchronous=NORMAL` and a periodic flush (`sqlite_durability`), and fail-closed checks for required tables, columns,
   triggers and migration-marker meaning. `Table<R>` validates records against
   their named schemas on reads and writes, checks declared key modes, and
   reports invalid records with one table/key error while preserving extension
@@ -87,8 +87,9 @@ Python connection behavior reproduced in this slice:
 | Startup WAL setup for the primary DB                                                                                             | `codex_runtime.py:1597`                                                        |
 | `synchronous=FULL` observed on both DBs by the fresh-start snapshot; Python does not explicitly set it in these connection paths | `codex_runtime.py:2017, 2686`; `codex_analytics.py` has no SQLite PRAGMA calls |
 
-Rust checks the expected WAL/FULL values before opening the writer, then sets
-`synchronous=FULL` on that connection. Reads are opened read-only and set
+Rust checks WAL before opening the writer, then sets `synchronous=NORMAL` on the
+writer and analytics connections and refuses either without it; see
+[the flush decision](../../../../docs/decisions/2026-10-24-sqlite-normal-with-periodic-flush.md). Reads are opened read-only and set
 `query_only=ON`. Its standard busy timeout is 15 seconds. Event sync triggers
 depend on Python's connection-local `sync_entity_payload` and
 `sync_entity_hash` functions; the writer registers compatible event projections

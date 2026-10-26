@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "owner": "workspaces/client/packages/client-domain/src/preferences.rs",
+  "legacyConsumers": [
+    "workspaces/client/apps/web/src/sync/uiPreferenceMerge.ts",
+    "workspaces/client/apps/web/src/sync/uiPreferenceStore.ts"
+  ],
+  "scopes": [
+    { "key": "codex-studio-preferences-v1", "expected": "user" },
+    { "key": "server-order", "expected": "user" },
+    { "key": "server-alias:workspace", "expected": "user" },
+    { "key": "studio-logical-project-collapsed", "expected": "user" },
+    { "key": "studio-logical-project-compact", "expected": "user" },
+    { "key": "studio-server-project-compact-v1", "expected": "user" },
+    { "key": "codex-project-tree:/state", "expected": "server" },
+    { "key": "codex-project-compact:/state", "expected": "server" },
+    { "key": "studio-prompt-bookmarks:chat", "expected": "server" },
+    { "key": "codex-worker-disclosures", "expected": "server" },
+    { "key": "$modelWhitelistKey", "expected": "server" },
+    { "key": "codex.terminal.height", "expected": null },
+    { "key": "studio-turns:/state:chat:tools-v3", "expected": null }
+  ],
+  "storage": [
+    { "key": "choice", "raw": null, "expected": {} },
+    { "key": "choice", "raw": "null", "expected": {} },
+    { "key": "choice", "raw": "not JSON", "expected": {} },
+    { "key": "choice", "raw": "false", "expected": { "[\"choice\"]": false } },
+    { "key": "choice", "raw": "[]", "expected": { "[\"choice\"]": [] } },
+    { "key": "choice", "raw": "{}", "expected": {} },
+    {
+      "key": "choice",
+      "raw": "{\"a\":true,\"b\":null}",
+      "expected": { "[\"choice\",\"a\"]": true, "[\"choice\",\"b\"]": null }
+    }
+  ],
+  "merges": [
+    {
+      "name": "newer independent fields survive an older update",
+      "prior": { "a": { "value": true, "timestamp": 3, "writer": "a" } },
+      "incoming": {
+        "a": { "value": false, "timestamp": 2, "writer": "z" },
+        "b": { "value": false, "timestamp": 1, "writer": "a" }
+      },
+      "expected": {
+        "a": { "value": true, "timestamp": 3, "writer": "a" },
+        "b": { "value": false, "timestamp": 1, "writer": "a" }
+      }
+    },
+    {
+      "name": "writer resolves equal timestamps",
+      "prior": { "a": { "value": true, "timestamp": 3, "writer": "a" } },
+      "incoming": { "a": { "value": false, "timestamp": 3, "writer": "b" } },
+      "expected": { "a": { "value": false, "timestamp": 3, "writer": "b" } }
+    },
+    {
+      "name": "writer order uses JavaScript UTF-16 units",
+      "prior": { "a": { "value": false, "timestamp": 3, "writer": "🦀" } },
+      "incoming": { "a": { "value": true, "timestamp": 3, "writer": "" } },
+      "expected": { "a": { "value": true, "timestamp": 3, "writer": "" } }
+    },
+    {
+      "name": "canonical value resolves an equal writer and timestamp",
+      "prior": {
+        "a": { "value": { "z": false, "a": 1 }, "timestamp": 3, "writer": "a" }
+      },
+      "incoming": {
+        "a": { "value": { "a": 2, "z": false }, "timestamp": 3, "writer": "a" }
+      },
+      "expected": {
+        "a": { "value": { "a": 2, "z": false }, "timestamp": 3, "writer": "a" }
+      }
+    },
+    {
+      "name": "invalid clocks and writers do not replace valid fields",
+      "prior": { "a": { "value": true, "timestamp": 3, "writer": "a" } },
+      "incoming": {
+        "a": { "value": false, "timestamp": -1, "writer": "z" },
+        "fraction": { "value": true, "timestamp": 1.5, "writer": "a" },
+        "unsafe": {
+          "value": true,
+          "timestamp": 9007199254740992,
+          "writer": "a"
+        },
+        "empty": { "value": true, "timestamp": 4, "writer": "" }
+      },
+      "expected": { "a": { "value": true, "timestamp": 3, "writer": "a" } }
+    },
+    {
+      "name": "a null tombstone replaces an older value",
+      "prior": { "a": { "value": true, "timestamp": 3, "writer": "a" } },
+      "incoming": { "a": { "value": null, "timestamp": 4, "writer": "a" } },
+      "expected": { "a": { "value": null, "timestamp": 4, "writer": "a" } }
+    }
+  ],
+  "edits": [
+    {
+      "previous": { "a": false, "b": false },
+      "next": { "a": true, "b": false },
+      "latest": { "a": false, "b": true },
+      "expected": { "a": true, "b": true }
+    },
+    {
+      "previous": { "a": true },
+      "next": {},
+      "latest": { "a": true, "b": true },
+      "expected": { "b": true }
+    },
+    {
+      "previous": { "a": true },
+      "next": { "a": true },
+      "latest": { "a": false, "b": true },
+      "expected": { "a": false, "b": true }
+    },
+    {
+      "previous": {},
+      "next": { "a": false },
+      "latest": { "b": true },
+      "expected": { "a": false, "b": true }
+    }
+  ],
+  "acknowledgements": [
+    {
+      "name": "adopt an authenticated competing winner",
+      "current": { "a": { "value": true, "timestamp": 2, "writer": "local" } },
+      "submitted": {
+        "a": { "value": true, "timestamp": 2, "writer": "local" }
+      },
+      "accepted": {
+        "a": { "value": false, "timestamp": 3, "writer": "remote" }
+      },
+      "expected": {
+        "a": { "value": false, "timestamp": 3, "writer": "remote" }
+      }
+    },
+    {
+      "name": "remove an exact submitted field omitted from the complete map",
+      "current": { "a": { "value": true, "timestamp": 2, "writer": "local" } },
+      "submitted": {
+        "a": { "value": true, "timestamp": 2, "writer": "local" }
+      },
+      "accepted": {},
+      "expected": {}
+    },
+    {
+      "name": "a newer local edit survives a higher clock in an old ACK",
+      "current": { "a": { "value": false, "timestamp": 3, "writer": "local" } },
+      "submitted": {
+        "a": { "value": true, "timestamp": 2, "writer": "local" }
+      },
+      "accepted": {
+        "a": { "value": true, "timestamp": 4, "writer": "remote" }
+      },
+      "expected": { "a": { "value": false, "timestamp": 3, "writer": "local" } }
+    },
+    {
+      "name": "a field removed after submission stays removed",
+      "current": {},
+      "submitted": {
+        "a": { "value": true, "timestamp": 2, "writer": "local" }
+      },
+      "accepted": { "a": { "value": true, "timestamp": 2, "writer": "local" } },
+      "expected": {}
+    },
+    {
+      "name": "new unrelated local fields survive an old full map",
+      "current": {
+        "a": { "value": true, "timestamp": 2, "writer": "local" },
+        "b": { "value": false, "timestamp": 3, "writer": "local" }
+      },
+      "submitted": {
+        "a": { "value": true, "timestamp": 2, "writer": "local" }
+      },
+      "accepted": {
+        "a": { "value": true, "timestamp": 1, "writer": "server-clock" },
+        "b": { "value": true, "timestamp": 4, "writer": "remote" },
+        "c": { "value": true, "timestamp": 4, "writer": "remote" }
+      },
+      "expected": {
+        "a": { "value": true, "timestamp": 1, "writer": "server-clock" },
+        "b": { "value": false, "timestamp": 3, "writer": "local" },
+        "c": { "value": true, "timestamp": 4, "writer": "remote" }
+      }
+    }
+  ],
+  "prune": {
+    "itemCount": 3002,
+    "protected": {
+      "[\"codex-studio-preferences-v1\",\"theme\"]": {
+        "value": "dark",
+        "timestamp": 0,
+        "writer": "a"
+      },
+      "[\"server-alias:workspace\"]": {
+        "value": "ABC",
+        "timestamp": 0,
+        "writer": "a"
+      }
+    },
+    "ignored": {
+      "[\"studio-turns:/state:chat:tools-v3\",\"turn\"]": {
+        "value": true,
+        "timestamp": 9999,
+        "writer": "a"
+      }
+    },
+    "expectedCount": 3002,
+    "oldestRetained": 2,
+    "newestRetained": 3001
+  }
+}

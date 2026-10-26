@@ -2,7 +2,8 @@ import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Group, Modal, Stack } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { errorText, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
 import type { Account } from "./Accounts";
 import { ClaudeAuthorizationCodeForm } from "./ClaudeAuthorizationCodeForm";
@@ -12,7 +13,9 @@ import {
   codeVerificationPending,
   currentClaudeLoginReadMatches,
 } from "./claudeCodeSubmission";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
+import { useServerResources } from "../servers/ServerServicesContext";
+
+import { subscribeProgress } from "../sync/progressSubscription";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
 type LoginAction = "start" | "code" | "cancel";
@@ -49,7 +52,7 @@ export default function ClaudeSignIn({
   onReady: () => unknown;
   serverLabel?: string;
 }) {
-  const watchResourceReads = useServerResourceReads();
+  const resources = useServerResources();
   const { clearStableRequestId, get, post, save, saved, stableRequestId } =
     useServerApi();
 
@@ -134,8 +137,22 @@ export default function ClaudeSignIn({
           throw failure;
       }
     };
-    const stop = watchResourceReads(
-      { kind: "accounts" },
+    const stop = subscribeProgress(
+      resources,
+      { kind: "auth-progress", requestId },
+      (progress) => {
+        if (
+          progress.resource.kind !== "auth-progress" ||
+          !progress.value ||
+          typeof progress.value !== "object" ||
+          !live ||
+          lock.current ||
+          currentRequestId.current !== requestId
+        )
+          return;
+        statusReadGeneration.current += 1;
+        store(progress.value, requestId, true);
+      },
       readStatus,
       (failure) => {
         if (live) setError(errorText(failure));
@@ -143,13 +160,12 @@ export default function ClaudeSignIn({
     );
     const refresh = stop.refresh;
     refreshStatus.current = refresh;
-    refresh();
     return () => {
       live = false;
       stop();
       if (refreshStatus.current === refresh) refreshStatus.current = () => {};
     };
-  }, [busy, requestId, receipt?.status, watchResourceReads]);
+  }, [busy, requestId, receipt?.status, resources]);
   const run = async (action: LoginAction) => {
     if (lock.current) return;
     statusReadGeneration.current += 1;
@@ -177,7 +193,7 @@ export default function ClaudeSignIn({
       const mutationKey = `${storageKey}:${id}:${action}`;
       const requestOptions = {
         timeoutMs: 30000,
-        requestId: stableRequestId(mutationKey),
+        requestId: await stableRequestId(mutationKey),
       };
       const result =
         action === "start"
@@ -197,7 +213,7 @@ export default function ClaudeSignIn({
                 { login_id: id },
                 requestOptions,
               );
-      clearStableRequestId(mutationKey);
+      await clearStableRequestId(mutationKey);
       if (action === "code") {
         setCode("");
         setCodeSubmissionUnknown(!codeSubmissionResolved(result));

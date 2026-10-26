@@ -1,132 +1,42 @@
 import { hasNativeClient } from "../native/client";
 import { isolatedServerView, serverParentOrigin } from "./environment";
 import {
-  defaultServerAlias,
   DEFAULT_LOCAL_SERVER_ALIAS,
   LOCAL_ALIAS_KEY,
-  validateServerAlias,
-} from "./serverAliases";
-export type StudioServer = {
-  id: string;
-  label: string;
-  origin: string;
-  credentialId?: string;
-  workspaceId?: string;
-  alias?: string;
-};
-export function serverResourceScope(server?: Pick<StudioServer, "id">) {
-  return !server || server.id === "current" ? "local" : server.id;
-}
-export const LOCAL_NAME_KEY = "studio-local-server-name-v1";
-export const SERVER_REGISTRY_KEY = "studio-paired-servers-v1";
-export const SERVER_REGISTRY_EVENT = "studio-server-registry";
-export function serveOrigin(value: string) {
-  const url = new URL(value.trim());
-  if (
-    url.protocol !== "https:" ||
-    !url.hostname.endsWith(".ts.net") ||
-    url.username ||
-    url.password ||
-    url.port === "0" ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  )
-    throw new Error(
-      "Enter the Tailscale Serve HTTPS address, such as https://computer.tailnet.ts.net.",
-    );
-  return url.origin;
-}
+} from "./serverAliasModel";
+import {
+  LOCAL_NAME_KEY,
+  SERVER_REGISTRY_KEY,
+  SERVER_REGISTRY_EVENT,
+  readRegistryServers,
+  normalizeServerAliases,
+  localServerMetadata,
+  serveOrigin,
+  type StudioServer,
+} from "./registryModel";
+export * from "./registryModel";
 export function readServers(storage = globalThis.localStorage): StudioServer[] {
-  const value: unknown = JSON.parse(
-    storage.getItem(SERVER_REGISTRY_KEY) || "[]",
-  );
-  if (!Array.isArray(value))
-    throw new Error("The saved server list is invalid.");
-  const ids = new Set<string>();
-  const localAlias =
-    storage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS;
-  const aliases = new Set<string>([localAlias]);
-  for (const item of value) {
-    if (item?.alias !== undefined) {
-      validateServerAlias(item.alias, aliases);
-      aliases.add(item.alias);
-    }
-  }
-  return value.map((item) => {
-    if (
-      !item ||
-      typeof item.id !== "string" ||
-      !/^[a-zA-Z0-9_-]{1,128}$/.test(item.id) ||
-      item.id === "local" ||
-      typeof item.label !== "string" ||
-      !item.label.trim() ||
-      item.label.length > 128 ||
-      typeof item.credentialId !== "string" ||
-      !item.credentialId ||
-      ids.has(item.id)
-    )
-      throw new Error("The saved server list is invalid.");
-    ids.add(item.id);
-    const alias = item.alias || defaultServerAlias(item, aliases);
-    aliases.add(alias);
-    return {
-      id: item.id,
-      label: item.label,
-      origin: serveOrigin(item.origin),
-      credentialId: item.credentialId,
-      alias,
-      ...(typeof item.workspaceId === "string"
-        ? { workspaceId: item.workspaceId }
-        : {}),
-    };
-  });
+  return readRegistryServers(storage);
 }
-/** Keep each unchanged server object, and the list itself when nothing changed. A reread
- * of the same saved list must not look like a new server to open dialogs and connections. */
-export function shareServers(
-  previous: readonly StudioServer[],
-  next: StudioServer[],
-): StudioServer[] {
-  const prior = new Map(previous.map((server) => [server.id, server]));
-  const shared = next.map((server) => {
-    const old = prior.get(server.id);
-    return old && JSON.stringify(old) === JSON.stringify(server) ? old : server;
-  });
-  return shared.length === previous.length &&
-    shared.every((server, index) => server === previous[index])
-    ? (previous as StudioServer[])
-    : shared;
-}
+export { shareServers } from "./registrySharing";
 export function writeServers(
   servers: StudioServer[],
   storage = globalThis.localStorage,
 ) {
-  const aliases = new Set([
+  const normalized = normalizeServerAliases(
+    servers,
     storage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
-  ]);
-  for (const server of servers) {
-    if (server.alias) {
-      validateServerAlias(server.alias, aliases);
-      aliases.add(server.alias);
-    }
-  }
-  const normalized = servers.map((server) => {
-    const alias = server.alias || defaultServerAlias(server, aliases);
-    aliases.add(alias);
-    return { ...server, alias };
-  });
+  );
   storage.setItem(SERVER_REGISTRY_KEY, JSON.stringify(normalized));
   if (typeof window !== "undefined")
     window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
 }
 export function localServer(): StudioServer {
-  return {
-    id: "local",
+  return localServerMetadata({
     label: localStorage.getItem(LOCAL_NAME_KEY) || "This computer",
     origin: hasNativeClient() ? "http://localhost" : location.origin,
     alias: localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
-  };
+  });
 }
 export function readServerAliases(): Record<string, string> {
   try {

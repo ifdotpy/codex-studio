@@ -9,7 +9,8 @@ import {
 } from "@mantine/core";
 import { Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { errorText, type GetResult } from "../../api";
+import { errorText } from "../../apiPresentation";
+import type { GetResult } from "../../api";
 import type { Snapshot } from "../../types";
 import { useWorkspaceResource as useResource } from "../useWorkspaceResource";
 import "./Workspace.css";

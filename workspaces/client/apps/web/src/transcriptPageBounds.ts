@@ -1,9 +1,18 @@
 import type { Message } from "./types";
 
-export const MAX_TRANSCRIPT_PAGE_ITEMS = 240;
-export const MAX_TRANSCRIPT_PAGE_BYTES = 4_000_000;
-export const MAX_TRANSCRIPT_CACHE_ITEMS = 1_200;
-export const MAX_TRANSCRIPT_CACHE_BYTES = 12_000_000;
+import {
+  MAX_TRANSCRIPT_PAGE_ITEMS,
+  MAX_TRANSCRIPT_PAGE_MEMORY_BYTES as MAX_TRANSCRIPT_PAGE_BYTES,
+  MAX_TRANSCRIPT_CACHE_ITEMS,
+  MAX_TRANSCRIPT_CACHE_MEMORY_BYTES as MAX_TRANSCRIPT_CACHE_BYTES,
+  MAX_TRANSCRIPT_CACHE_SCOPES,
+} from "./generated/sharedValues";
+export {
+  MAX_TRANSCRIPT_PAGE_ITEMS,
+  MAX_TRANSCRIPT_PAGE_BYTES,
+  MAX_TRANSCRIPT_CACHE_ITEMS,
+  MAX_TRANSCRIPT_CACHE_BYTES,
+};
 
 export function mergeTranscript(
   earlier: Message[],
@@ -121,7 +130,10 @@ export function boundTranscriptItems(
     anchorIndex >= 0
       ? Math.max(
           0,
-          Math.min(anchorIndex - 120, items.length - MAX_TRANSCRIPT_PAGE_ITEMS),
+          Math.min(
+            anchorIndex - Math.floor(MAX_TRANSCRIPT_PAGE_ITEMS / 2),
+            items.length - MAX_TRANSCRIPT_PAGE_ITEMS,
+          ),
         )
       : keep === "oldest"
         ? 0
@@ -168,7 +180,7 @@ export function trimTranscriptPageCache<
     bytes += page.size;
   }
   while (
-    pages.size > 12 ||
+    pages.size > MAX_TRANSCRIPT_CACHE_SCOPES ||
     items > MAX_TRANSCRIPT_CACHE_ITEMS ||
     bytes > MAX_TRANSCRIPT_CACHE_BYTES
   ) {

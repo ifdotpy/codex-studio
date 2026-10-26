@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../api", () => ({
   refreshSession: mocks.sessionRead,
   syncPost: mocks.syncPost,
+  errorText: (error: unknown) =>
+    error instanceof Error ? error.message : String(error),
 }));
 vi.mock("./resume", () => ({ onResume: mocks.resume }));
 vi.mock("./uiPreferenceStore", () => ({
@@ -150,7 +152,8 @@ describe("UI preference projection bridge", () => {
         : {},
     );
     changed();
-    await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.syncPost).toHaveBeenCalledOnce();
     expect(mocks.syncPost.mock.calls[0][0]).toBe("/api/sync/preferences");
     expect(mocks.syncPost.mock.calls[0][2]).toHaveProperty("requestId");
     expect(mocks.transportWrite).toHaveBeenCalledOnce();
@@ -190,7 +193,6 @@ describe("UI preference projection bridge", () => {
     bridge.receiveProjection({});
     changed();
 
-    await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.syncPost).toHaveBeenCalledOnce();
     stop();
@@ -214,7 +216,8 @@ describe("UI preference projection bridge", () => {
     const bridge = createUiPreferenceBridge(pairedStorage, pairedPost);
     const stop = bridge.start();
     bridge.receiveProjection({});
-    await vi.waitFor(() => expect(pairedPost).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pairedPost).toHaveBeenCalledOnce();
     expect(mocks.syncPost).not.toHaveBeenCalled();
     expect(mocks.read).toHaveBeenCalledWith("server", pairedStorage);
     stop();
@@ -280,7 +283,8 @@ describe("UI preference projection bridge", () => {
     bridge.start();
     bridge.receiveProjection({});
     changed();
-    await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.syncPost).toHaveBeenCalledOnce();
     expect(mocks.transportWrite).not.toHaveBeenCalled();
   });
 });

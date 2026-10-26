@@ -1,6 +1,12 @@
 import { expect, it, vi } from "vitest";
 import { DraftJournal } from "./draftJournal";
-import { NativeDraftState, type DraftView } from "./draftState";
+import { NativeDraftState as State, type DraftView } from "./draftState";
+let sequence = 0;
+class NativeDraftState extends State {
+  constructor(...args: ConstructorParameters<typeof State>) {
+    super(args[0], args[1], args[2], () => `fixture:${++sequence}`);
+  }
+}
 
 function memory(): Storage {
   const data = new Map<string, string>();

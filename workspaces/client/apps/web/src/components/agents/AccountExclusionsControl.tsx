@@ -2,7 +2,7 @@ import { useServerApi } from "../../servers/ServerServicesContext";
 import { Badge, Checkbox, Group, Text, VisuallyHidden } from "@mantine/core";
 import { useId, useState } from "react";
 import { accountDisplayName } from "../../accountName";
-import { errorText } from "../../api";
+import { errorText } from "../../apiPresentation";
 import type { Agent } from "../../types";
 import {
   AccountRemainingBar,

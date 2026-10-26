@@ -1,8 +1,156 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ModelCatalogReader,
+  readWorkerModels,
   supportsDaybreakMode,
+  useModelCatalogReader,
   type WorkerModelInfo,
 } from "./WorkerModelPicker";
+
+const boundary = vi.hoisted(() => ({
+  browserImports: [] as string[],
+  services: undefined as unknown,
+}));
+
+vi.mock("../../api", async () => {
+  boundary.browserImports.push("api");
+  return {
+    ...(await import("../../apiErrors")),
+    get: vi.fn(async () => ({ data: [] })),
+    errorText: (error: unknown) => String(error),
+  };
+});
+vi.mock("../../sync/client", () => {
+  boundary.browserImports.push("sync/client");
+  return { subscribeStateProjection: vi.fn(() => vi.fn()) };
+});
+vi.mock("../../servers/registry", () => {
+  boundary.browserImports.push("servers/registry");
+  return { serverResourceScope: () => "forbidden-local-fallback" };
+});
+vi.mock("../../servers/ServerServicesContext", () => {
+  const required = () => {
+    if (!boundary.services)
+      throw new Error("The native screen requires its own server services.");
+    return boundary.services as ReturnType<typeof services>;
+  };
+  return {
+    useServerServices: () => boundary.services,
+    useServerOwner: () => required().owner,
+    useServerApi: () => required().api,
+    useServerSync: () => required().sync,
+  };
+});
+
+type Reader = ReturnType<typeof useModelCatalogReader>;
+type Projection = Parameters<Parameters<Reader["subscribeState"]>[0]>[0];
+
+function services(id: string, credentialId: string | null = "credential") {
+  let accept: ((snapshot: Projection | null) => void) | undefined;
+  const stop = vi.fn();
+  return {
+    owner: Object.freeze({
+      id,
+      origin: `https://${id}.example.test`,
+      credentialId,
+    }),
+    api: { get: vi.fn(async () => ({ data: [] })) },
+    sync: {
+      subscribeStateProjection: vi.fn((next: typeof accept) => {
+        accept = next;
+        return stop;
+      }),
+    },
+    emit(snapshot: Projection) {
+      if (!accept) throw new Error("The captured catalog has no subscriber.");
+      accept(snapshot);
+    },
+    stop,
+  };
+}
+
+function renderReader(override?: Reader) {
+  let reader!: Reader;
+  function Probe() {
+    reader = useModelCatalogReader();
+    return null;
+  }
+  renderToStaticMarkup(
+    override
+      ? createElement(
+          ModelCatalogReader.Provider,
+          { value: override },
+          createElement(Probe),
+        )
+      : createElement(Probe),
+  );
+  return reader;
+}
+
+beforeEach(() => {
+  boundary.services = services("selected");
+});
+
+it("imports the picker without evaluating browser API, sync, or registry owners", () => {
+  expect(boundary.browserImports).toEqual([]);
+});
+
+it("keeps catalog reads and projection subscriptions on their captured owner", async () => {
+  const first = services("first");
+  boundary.services = first;
+  const reader = renderReader();
+  const second = services("second", null);
+  boundary.services = second;
+  const replacement = renderReader();
+  expect(reader.scope).toBe(
+    JSON.stringify([first.owner.id, first.owner.origin, "credential"]),
+  );
+  expect(replacement.scope).toBe(
+    JSON.stringify([second.owner.id, second.owner.origin, null]),
+  );
+  expect(reader.cacheOwner).toBe(first.sync);
+  expect(replacement.cacheOwner).toBe(second.sync);
+  await reader.read({ query: { account_key: "account" } });
+  expect(first.api.get).toHaveBeenCalledExactlyOnceWith("/api/models", {
+    query: { account_key: "account" },
+  });
+  expect(second.api.get).not.toHaveBeenCalled();
+  const models = readWorkerModels(reader, "account");
+  first.emit({
+    entitiesComplete: true,
+    runtime: {
+      modelsByAccount: {
+        account: [
+          {
+            model: "captured-model",
+            provider: "codex",
+            accountKey: "account",
+            catalogPosition: 0,
+          },
+        ],
+      },
+    },
+  });
+  expect((await models).map((row) => row.model)).toEqual(["captured-model"]);
+  expect(first.stop).toHaveBeenCalledOnce();
+  expect(second.sync.subscribeStateProjection).not.toHaveBeenCalled();
+});
+
+it("preserves an explicit catalog reader instead of replacing its identity", () => {
+  const override: Reader = {
+    scope: "explicit-catalog",
+    read: vi.fn(async () => ({ data: [] })),
+    subscribeState: vi.fn(() => vi.fn()),
+  };
+  expect(renderReader(override)).toBe(override);
+});
+
+it("refuses missing injected services instead of acquiring a local catalog", () => {
+  boundary.services = undefined;
+  expect(() => renderReader()).toThrow("requires its own server services");
+});
 
 const modelInfo = (...args: [] | [unknown]): WorkerModelInfo => {
   const base = {

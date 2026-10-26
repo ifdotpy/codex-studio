@@ -264,6 +264,8 @@ enum RegistryTrigger {
     Hinted,
     Retry,
     Ensure(EnsureRequest),
+    /// A commit requested a WAL flush while none was pending.
+    FlushRequested,
     WorkerExited(String, u64),
     CommandCapacityAvailable(String, bool),
 }
@@ -1072,7 +1074,21 @@ impl AccountRegistry {
         pending_agents: Vec<(String, i64, Option<String>)>,
         shutdown: Option<&Shutdown>,
     ) -> Result<AccountPageDispatch, WorkerError> {
-        if !allow_dormant_reconcile(&mut self.idle_dormant, account, !pending_agents.is_empty()) {
+        let callback_demand = if pending_agents.is_empty() && self.idle_dormant.contains(account) {
+            let account = account.to_owned();
+            self.store
+                .read_async("runtime-server/account_registry", move |db| {
+                    studio_runtime_services::account_worker::has_callback_reply_demand(db, &account)
+                })
+                .await?
+        } else {
+            false
+        };
+        if !allow_dormant_reconcile(
+            &mut self.idle_dormant,
+            account,
+            !pending_agents.is_empty() || callback_demand,
+        ) {
             self.after_agent.remove(account);
             return Ok(AccountPageDispatch::Exhausted);
         }
@@ -1298,13 +1314,21 @@ impl AccountRegistry {
                 "runtime-server/account_registry",
                 move |db| -> Result<AccountTargetPage, WorkerError> {
                     let accounts = changed_accounts(db, &changes)?;
-                    SchedulerRepository::account_wake_for_accounts(
+                    let mut targets = SchedulerRepository::account_wake_for_accounts(
                         db,
                         accounts.iter().map(String::as_str),
                         WAKE_PAGE,
                         event_time(),
                     )
-                    .map_err(Into::into)
+                    .map_err(WorkerError::from)?;
+                    for account in accounts {
+                        if studio_runtime_services::account_worker::has_callback_reply_demand(
+                            db, &account,
+                        )? {
+                            targets.entry(account).or_default();
+                        }
+                    }
+                    Ok(targets)
                 },
             )
             .await?;
@@ -1475,6 +1499,7 @@ impl AccountRegistry {
                     },
                     _ = wake.notified() => Some(RegistryTrigger::Wake),
                     () = self.hints.notified() => Some(RegistryTrigger::Hinted),
+                    () = self.store.wal_flush_requested() => Some(RegistryTrigger::FlushRequested),
                     request = self.ensure_requests.recv() => request.map(RegistryTrigger::Ensure),
                     _ = async {
                         match retry_at {
@@ -1603,6 +1628,27 @@ impl AccountRegistry {
                     }
                     continue;
                 }
+                Some(RegistryTrigger::FlushRequested) => {
+                    // Arm the flush on the registry's one retry timer. Commits
+                    // that wake no scheduler are flushed this way too.
+                    match self.store.wal_checkpoint_retry_after() {
+                        Ok(Some(delay)) => {
+                            let flush_at = tokio::time::Instant::now() + delay;
+                            retry_at =
+                                Some(retry_at.map_or(flush_at, |current| current.min(flush_at)));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            studio_runtime_services::diagnostics::log_stderr(format_args!(
+                                "account registry WAL flush deadline read deferred: {error}"
+                            ));
+                            let flush_at = tokio::time::Instant::now() + RETRY_DELAY;
+                            retry_at =
+                                Some(retry_at.map_or(flush_at, |current| current.min(flush_at)));
+                        }
+                    }
+                    continue;
+                }
                 Some(RegistryTrigger::Wake | RegistryTrigger::Hinted)
                     if defer_wake(
                         last_reconcile_error.as_deref(),
@@ -1657,7 +1703,11 @@ impl AccountRegistry {
                         ));
                         last_reconcile_error = Some(message);
                     }
-                    retry_at = Some(tokio::time::Instant::now() + retry_delay);
+                    // A pending WAL flush keeps its deadline during reconcile backoff.
+                    let reconcile_retry_at = tokio::time::Instant::now() + retry_delay;
+                    retry_at = checkpoint_retry_at.map_or(Some(reconcile_retry_at), |flush_at| {
+                        Some(reconcile_retry_at.min(flush_at))
+                    });
                     retry_delay = next_retry_delay(retry_delay);
                 }
                 Ok(()) => {
@@ -1871,7 +1921,7 @@ pub fn target_page(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page(
+    let targets = SchedulerRepository::account_wake_page(
         db,
         after_account,
         after_agent,
@@ -1879,7 +1929,26 @@ pub fn target_page(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
+}
+
+fn with_callback_reply_targets(
+    db: &rusqlite::Connection,
+    mut targets: AccountTargetPage,
+    after_account: &str,
+) -> Result<AccountTargetPage, WorkerError> {
+    for account in studio_runtime_services::account_worker::callback_reply_accounts(
+        db,
+        after_account,
+        MAX_ACCOUNTS,
+    )? {
+        targets.entry(account).or_default();
+    }
+    while targets.len() > MAX_ACCOUNTS {
+        targets.pop_last();
+    }
+    Ok(targets)
 }
 
 fn target_page_after(
@@ -1887,7 +1956,7 @@ fn target_page_after(
     after_account: &str,
     after_agent: &BTreeMap<String, String>,
 ) -> Result<AccountTargetPage, WorkerError> {
-    SchedulerRepository::account_wake_page_after(
+    let targets = SchedulerRepository::account_wake_page_after(
         db,
         after_account,
         after_agent,
@@ -1895,7 +1964,8 @@ fn target_page_after(
         WAKE_PAGE,
         event_time(),
     )
-    .map_err(Into::into)
+    .map_err(WorkerError::from)?;
+    with_callback_reply_targets(db, targets, after_account)
 }
 
 struct RuntimeRadioIngress;
@@ -2544,7 +2614,7 @@ mod tests {
     #[test]
     fn deferred_checkpoint_keeps_registry_asleep_until_its_deadline() {
         let now = tokio::time::Instant::now();
-        let checkpoint_retry_at = now + studio_runtime_store::WAL_CHECKPOINT_CADENCE;
+        let checkpoint_retry_at = now + studio_runtime_store::WAL_FLUSH_INTERVAL;
         assert_eq!(
             next_registry_retry_at(None, Some(checkpoint_retry_at), &BTreeMap::new()),
             Some(checkpoint_retry_at),
@@ -2555,7 +2625,7 @@ mod tests {
     #[test]
     fn command_capacity_wake_preserves_deferred_checkpoint_deadline() {
         let now = tokio::time::Instant::now();
-        let checkpoint_retry_at = now + studio_runtime_store::WAL_CHECKPOINT_CADENCE;
+        let checkpoint_retry_at = now + studio_runtime_store::WAL_FLUSH_INTERVAL;
 
         // Capacity events skip checkpoint I/O but must retain the existing retry
         // deadline when the next scheduler wait is assembled.

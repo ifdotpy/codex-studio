@@ -88,7 +88,7 @@ fn connections(
     }
     Ok(connections)
 }
-async fn read_listing(state: HttpState, scope: String) -> Result<Value, ApiError> {
+pub(super) async fn read_listing(state: HttpState, scope: String) -> Result<Value, ApiError> {
     let store = store(&state)?;
     let proof = held_response_proof(&state, &scope).await;
     store

@@ -14,13 +14,14 @@ export const storageNameForServer = (owner: string | null, name: string) =>
 export const serverStorageName = (name: string) =>
   storageNameForServer(serverViewId, name);
 
-export const serverDatabaseSuffix =
-  serverViewId && serverViewId !== "local"
+export const databaseSuffixForServer = (owner: string | null) =>
+  owner && owner !== "local"
     ? "server" +
-      Array.from(new TextEncoder().encode(serverViewId), (byte) =>
+      Array.from(new TextEncoder().encode(owner), (byte) =>
         byte.toString(16).padStart(2, "0"),
       ).join("")
     : "";
+export const serverDatabaseSuffix = databaseSuffixForServer(serverViewId);
 
 export const serverParentOrigin =
   typeof location === "undefined"

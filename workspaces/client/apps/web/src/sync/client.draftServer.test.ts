@@ -8,8 +8,12 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import fixture from "../../../../contracts/draft-replication.json";
 import type { RxDatabase } from "rxdb";
+import { firstValueFrom, ReplaySubject, filter, skip } from "rxjs";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
-import type { ResourceChangeEvent, ResourceVersion } from "./resourceEvents";
+import type {
+  ResourceChangeEvent,
+  ResourceVersion,
+} from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
   databases: [] as RxDatabase[],
@@ -67,9 +71,8 @@ vi.mock("../api", () => ({
   setWorkspace: vi.fn(),
   isApiSchemaMismatch: () => false,
   onMatchingApiSchemaResponse: () => () => {},
-  registerSyncEntityPersister: vi.fn(),
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceConnection: () => () => {},
   watchResourceChanges: (
@@ -184,21 +187,27 @@ it.each(fixture.orders)(
       removeEventListener: vi.fn(),
     });
     vi.stubGlobal("navigator", { onLine: true });
+    const pulled = barrier<void>();
     mocks.syncGet.mockImplementation(
-      (path: string, options?: { query?: Record<string, string> }) =>
-        request(
+      async (path: string, options?: { query?: Record<string, string> }) => {
+        const value = await request(
           `${path}${options?.query ? `?${new URLSearchParams(options.query)}` : ""}`,
-        ),
+        );
+        if (path === "/api/sync/pull") pulled.resolve();
+        return value;
+      },
     );
     const client = await import("./client");
     const { encodeDraftPayload } = await import("./draftPayload");
     const accepted = barrier<void>();
+    const secondPost = barrier<void>();
     const release = barrier<void>();
     const posts: { body: PushRequest; conflicts: SyncDocument[] }[] = [];
     mocks.syncPost.mockImplementation(
       async (_path: string, body: PushRequest) => {
         const conflicts = await request("/api/sync/drafts", body);
         posts.push({ body: structuredClone(body), conflicts });
+        if (posts.length === 2) secondPost.resolve();
         if (posts.length === 1) {
           accepted.resolve();
           await release.promise;
@@ -225,6 +234,8 @@ it.each(fixture.orders)(
     expect(response.ok).toBe(true);
     const reader = response.body!.getReader();
     const frames: ResourceChangeEvent[] = [];
+    const received = new ReplaySubject<ResourceChangeEvent>();
+    let forwardFrames = false;
     const pump = (async () => {
       let buffer = "";
       const decoder = new TextDecoder();
@@ -240,13 +251,18 @@ it.each(fixture.orders)(
           const data = frame
             .split("\n")
             .find((line) => line.startsWith("data: "));
-          if (data) frames.push(JSON.parse(data.slice(6)));
+          if (data) {
+            const value: ResourceChangeEvent = JSON.parse(data.slice(6));
+            frames.push(value);
+            if (forwardFrames) deliver(value);
+            received.next(value);
+          }
         }
       }
     })().catch((error) => {
       if (!controller.signal.aborted) throw error;
     });
-    const deliver = (frame: ResourceChangeEvent) => {
+    function deliver(frame: ResourceChangeEvent) {
       const version = frame.resourceVersions[0];
       mocks.invalidate?.({
         epoch: frame.epoch,
@@ -254,15 +270,14 @@ it.each(fixture.orders)(
         revision: version.revision,
         draftChanges: version.draftChanges ?? undefined,
       });
-    };
+    }
     try {
-      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
-      deliver(frames[0]);
-      await vi.waitFor(() =>
-        expect(
-          mocks.syncGet.mock.calls.some(([path]) => path === "/api/sync/pull"),
-        ).toBe(true),
-      );
+      deliver(await firstValueFrom(received));
+      await pulled.promise;
+      await mocks.replications[0].awaitInSync();
+      expect(
+        mocks.syncGet.mock.calls.some(([path]) => path === "/api/sync/pull"),
+      ).toBe(true);
       const id = `phone:writer:${order}`;
       const edit = async (updated: number) => {
         const payload = encodeDraftPayload({
@@ -278,29 +293,23 @@ it.each(fixture.orders)(
         if (current) await current.incrementalPatch({ payload });
         else await db.drafts.insert({ id, seq: 0, payload, _deleted: false });
       };
-      await mocks.replications[0].awaitInitialReplication();
       await edit(1);
       await accepted.promise;
       await edit(2); // A local edit arrives while the first HTTP result is held.
-      const echo = async () => {
-        await vi.waitFor(() =>
-          expect(
-            frames.some((frame) =>
-              frame.resourceVersions[0].draftChanges?.documents.some(
-                (doc) => doc.id === id,
+      const echo = async () =>
+        deliver(
+          await firstValueFrom(
+            received.pipe(
+              filter(
+                (frame) =>
+                  !!frame.resourceVersions[0].draftChanges?.documents.some(
+                    (doc) => doc.id === id,
+                  ),
               ),
             ),
-          ).toBe(true),
+          ),
         );
-        deliver(
-          frames.find((frame) =>
-            frame.resourceVersions[0].draftChanges?.documents.some(
-              (doc) => doc.id === id,
-            ),
-          )!,
-        );
-      };
-      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(1));
+      await firstValueFrom(received.pipe(skip(1)));
       const acknowledged = barrier<void>();
       const subscription = mocks.replications[0].sent$.subscribe(() =>
         acknowledged.resolve(),
@@ -329,7 +338,8 @@ it.each(fixture.orders)(
       if (order === "ack-first" || order === "late-echo") {
         await acknowledged.promise;
         if (order === "late-echo") {
-          await vi.waitFor(() => expect(posts.length).toBe(2));
+          await secondPost.promise;
+          expect(posts).toHaveLength(2);
           await mocks.replications[0].awaitInSync();
         }
         await echo();
@@ -339,35 +349,44 @@ it.each(fixture.orders)(
       }
       await edit(3);
       subscription.unsubscribe();
-      // Release every complete master echo, including those from later writes.
-      let delivered = 1;
-      await vi.waitFor(
-        async () => {
-          while (delivered < frames.length) deliver(frames[delivered++]);
-          const page = await request("/api/sync/pull?scope=drafts");
-          const current = page.documents.find(
-            (doc: SyncDocument) => doc.id === id,
-          );
-          expect(current && JSON.parse(current.payload).text).toBe(
-            order === "second-writer" ? "other writer" : "edit-3",
-          );
-          if (order === "second-writer")
-            expect(JSON.parse(current.payload).alternatives).toContain(
-              "edit-3",
-            );
-        },
-        { timeout: 10000 },
+      // Forward later master echoes as they arrive, after the controlled ordering.
+      forwardFrames = true;
+      for (const frame of frames.slice(1)) deliver(frame);
+      const expectedText =
+        order === "second-writer" ? "other writer" : "edit-3";
+      await firstValueFrom(
+        received.pipe(
+          filter(
+            (frame) =>
+              !!frame.resourceVersions[0].draftChanges?.documents.some(
+                (doc) => {
+                  if (doc.id !== id) return false;
+                  const payload = JSON.parse(doc.payload);
+                  return (
+                    payload.text === expectedText &&
+                    (order !== "second-writer" ||
+                      payload.alternatives?.includes("edit-3"))
+                  );
+                },
+              ),
+          ),
+        ),
       );
-      await vi.waitFor(async () => {
-        while (delivered < frames.length) deliver(frames[delivered++]);
-        expect((await db.drafts.findOne(id).exec())?.payload).toContain(
-          "edit-3",
-        );
-        expect(posts.at(-1)?.body.rows[0].newDocumentState.payload).toContain(
-          "edit-3",
-        );
-      });
       await mocks.replications[0].awaitInSync();
+      const page = await request("/api/sync/pull?scope=drafts");
+      const current = page.documents.find((doc: SyncDocument) => doc.id === id);
+      expect(JSON.parse(current.payload).text).toBe(expectedText);
+      if (order === "second-writer")
+        expect(JSON.parse(current.payload).alternatives).toContain("edit-3");
+      const local = await firstValueFrom(
+        db.drafts
+          .findOne(id)
+          .$.pipe(filter((doc) => !!doc?.payload.includes("edit-3"))),
+      );
+      expect(local?.payload).toContain("edit-3");
+      expect(posts.at(-1)?.body.rows[0].newDocumentState.payload).toContain(
+        "edit-3",
+      );
       console.log(
         JSON.stringify({
           order,
@@ -489,11 +508,11 @@ it.each([false, true])(
       },
     });
     await mocks.replications[0].awaitInSync();
-    await vi.waitFor(async () => {
-      const local = await db.drafts.findOne(id).exec();
-      expect(local?.payload).toBe(master.payload);
-      expect(local?.seq).toBe(master.seq);
-    });
+    const local = await firstValueFrom(
+      db.drafts.findOne(id).$.pipe(filter((doc) => doc?.seq === master.seq)),
+    );
+    expect(local?.payload).toBe(master.payload);
+    expect(local?.seq).toBe(master.seq);
   },
 );
 
@@ -529,10 +548,8 @@ it.each(fixture.legacy.map(({ session }) => session))(
       return conflicts;
     });
     stop = await client.startDraftReplication(() => {});
-    await vi.waitFor(() =>
-      expect(posts).toHaveLength(session === "legacy-conflict" ? 2 : 1),
-    );
     await mocks.replications[0].awaitInSync();
+    expect(posts).toHaveLength(session === "legacy-conflict" ? 2 : 1);
     const latest = (
       await request("/api/sync/pull?scope=drafts")
     ).documents.find((doc: SyncDocument) => doc.id === id);

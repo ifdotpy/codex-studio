@@ -1,7 +1,8 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useId, useState } from "react";
 import { Button, NumberInput } from "@mantine/core";
-import { errorText, type GetResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { GetResult } from "../api";
 import { SettingsRow } from "./ui/primitives";
 
 type Configuration = GetResult<"/api/linux-vm/settings">;

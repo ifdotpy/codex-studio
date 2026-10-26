@@ -1,7 +1,7 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import type { Agent } from "../types";
 import { nativeThreadError } from "../nativeErrors";
 import {

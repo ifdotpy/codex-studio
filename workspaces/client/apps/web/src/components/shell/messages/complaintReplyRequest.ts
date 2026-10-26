@@ -15,10 +15,10 @@ export type UserComplaintResponse = Omit<
 
 export async function submitComplaintResponse(
   payload: UserComplaintResponse,
-  sessionToken: string,
+  sessionToken: string | undefined,
   postResponse: (
     request: UserComplaintResponse,
-    token: string,
+    token: string | undefined,
   ) => Promise<unknown>,
   readDetail: (id: string) => Promise<ComplaintDetail>,
 ): Promise<{ detail: ComplaintDetail } | { reloadError: unknown }> {

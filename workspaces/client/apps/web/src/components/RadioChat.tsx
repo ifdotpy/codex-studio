@@ -2,7 +2,9 @@ import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Select, Textarea } from "@mantine/core";
 import { useRef, useState } from "react";
-import { ApiError, errorText, type PostBody } from "../api";
+import { ApiError } from "../apiErrors";
+import { errorText } from "../apiPresentation";
+import type { PostBody } from "../api";
 import { useMessages } from "../hooks";
 import type { Room, Snapshot } from "../types";
 import AgentAvatar from "./agents/AgentAvatar";
@@ -40,6 +42,7 @@ export default function RadioChat({
   setDraft,
   refresh,
   notify,
+  visible = true,
 }: {
   room: Room;
   data: Snapshot;
@@ -48,6 +51,7 @@ export default function RadioChat({
   setDraft: (text: string) => void;
   refresh: () => Promise<void>;
   notify: (message: string) => void;
+  visible?: boolean;
 }) {
   const { post, save, saved } = useServerApi();
 
@@ -64,7 +68,14 @@ export default function RadioChat({
   const members = (room.members || [])
     .map((id) => data.threads.find((a) => a.id === id))
     .filter((a) => !!a);
-  const messages = useMessages(room.id, "room", false, data.stateDir);
+  const messages = useMessages(
+    room.id,
+    "room",
+    false,
+    data.stateDir,
+    "",
+    visible,
+  );
   const { scroll, content, onScroll } = useConversationScroll(
     room.id,
     messages.loaded,

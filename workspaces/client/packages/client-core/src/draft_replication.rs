@@ -68,6 +68,12 @@ async fn replicate(backend: &Backend, store: &StoreSender, workspace: &str) -> R
             break;
         }
     }
+    push(backend, store, workspace).await
+}
+
+// Native SSE owns incoming drafts. A local commit can push pending branches
+// once, without starting a snapshot poll or claiming an incoming acknowledgement.
+async fn push(backend: &Backend, store: &StoreSender, workspace: &str) -> Result<(), String> {
     let pending = state(store, "drafts.pending", json!({"workspace":workspace})).await?;
     let rows = pending["rows"]
         .as_array()
@@ -75,8 +81,13 @@ async fn replicate(backend: &Backend, store: &StoreSender, workspace: &str) -> R
     if rows.is_empty() {
         return Ok(());
     }
-    let response=backend.dispatch(Request{id:"core-draft-push".into(),method:"api.request".into(),params:json!({
-        "path":"/api/sync/drafts","body":{"rows":wire_rows(rows)},"workspaceId":workspace,"timeoutMs":15000
+    let body = json!({"rows":wire_rows(rows)});
+    let request_id = format!(
+        "drafts:{}",
+        crate::mutation_journal::digest(format!("{workspace}\n{body}").as_bytes())
+    );
+    let response=backend.dispatch(Request{id:request_id.clone(),method:"api.request".into(),params:json!({
+        "path":"/api/sync/drafts","body":body,"requestId":request_id,"workspaceId":workspace,"timeoutMs":15000
     })}).await;
     let value = response.result.ok_or_else(|| {
         response
@@ -149,7 +160,17 @@ pub async fn dispatch(
         if identity["workspaceId"] != workspace {
             return Err("The draft workspace is not the opened workspace.".to_owned());
         }
-        refresh(backend, store).await;
+        if request.method == "drafts.push" {
+            let result = push(backend, store, workspace).await;
+            state(
+                store,
+                "drafts.sync_status",
+                json!({"workspace":workspace,"error":result.err().unwrap_or_default()}),
+            )
+            .await?;
+        } else {
+            refresh(backend, store).await;
+        }
         state(store, "drafts.view", json!({"workspace":workspace})).await
     }
     .await;

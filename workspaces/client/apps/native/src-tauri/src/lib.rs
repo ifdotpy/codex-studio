@@ -1,20 +1,28 @@
+mod archive_import;
+#[cfg(feature = "native-check")]
+mod attachment_event_privacy;
 mod close;
 #[cfg(desktop)]
 mod desktop_menu;
 #[cfg(desktop)]
 mod desktop_recovery;
 mod frame_assets;
+mod legacy_capture;
 mod local_backend;
+mod migration_host;
 #[cfg(feature = "native-check")]
 mod native_check;
+mod native_origin_inventory;
+mod native_registry;
 mod profile;
+mod service_context;
+mod ui_events;
 #[cfg(desktop)]
 mod window_state;
 
 use std::sync::Arc;
 use studio_client_core::{
     client::Client,
-    native::ConnectionConfig,
     protocol::{Request, Response},
 };
 use tauri::{Emitter, Manager, State, WebviewWindow};
@@ -22,7 +30,16 @@ use tokio::sync::Mutex;
 
 #[derive(Default)]
 struct Clients {
+    contexts: Mutex<service_context::Contexts>,
+    migration: migration_host::MigrationHost,
+    cutovers: Mutex<service_context::Cutovers>,
+    legacy_write_admission: Mutex<bool>,
+    archive_preparation: Mutex<()>,
     local: Mutex<Option<Arc<Client>>>,
+    local_backend: Mutex<Option<studio_client_core::backend::Backend>>,
+    sources: Mutex<
+        std::collections::HashMap<String, (Arc<Client>, studio_client_core::backend::Backend)>,
+    >,
     #[cfg(target_os = "macos")]
     remote: Mutex<Option<Arc<studio_client_core::server_transport::RemoteClient>>>,
     backend_verified: Mutex<bool>,
@@ -30,7 +47,11 @@ struct Clients {
 }
 
 // Held for the entire host lifetime, including before local client creation.
-struct ProfileLock(#[allow(dead_code)] std::fs::File);
+struct ProfileLock {
+    #[allow(dead_code)]
+    file: std::fs::File,
+    directory: std::path::PathBuf,
+}
 fn lock_profile(directory: &std::path::Path) -> Result<ProfileLock, String> {
     use std::os::fd::AsRawFd;
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
@@ -46,11 +67,159 @@ fn lock_profile(directory: &std::path::Path) -> Result<ProfileLock, String> {
             "The native profile is already open. Close its desktop before importing keys.".into(),
         );
     }
-    Ok(ProfileLock(file))
+    Ok(ProfileLock {
+        file,
+        directory: directory.canonicalize().map_err(|e| e.to_string())?,
+    })
+}
+
+async fn cutover_source(
+    window: &WebviewWindow,
+    state: &Clients,
+    server: &str,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    trusted(window)?;
+    if window.app_handle().webview_windows().len() != 1 {
+        return Err("Close other native WebViews before the storage cutover.".into());
+    }
+    let lock = window
+        .app_handle()
+        .try_state::<ProfileLock>()
+        .ok_or("The native profile lock is not held.")?;
+    let pairing = if server == "local" {
+        "local".into()
+    } else {
+        #[cfg(not(target_os = "macos"))]
+        return Err("The native server key store is unavailable on this platform.".into());
+        #[cfg(target_os = "macos")]
+        remote_client(window, state)
+            .await?
+            .bind(server)?
+            .storage_key()
+    };
+    let owner = if server == "local" {
+        "root".to_owned()
+    } else {
+        format!("server:{server}")
+    };
+    let archive = profile::seal_identity(&owner)?;
+    let bytes = serde_json::to_vec(&(
+        &lock.directory,
+        server,
+        pairing,
+        &archive["id"],
+        &archive["sha256"],
+    ))
+    .map_err(|e| e.to_string())?;
+    Ok(Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+/// Select a Store without a network request or a renderer-selected path. Keep
+/// the Client alive so a status read and later context share one file lock.
+async fn service_source(
+    window: &WebviewWindow,
+    state: State<'_, Clients>,
+    server: &str,
+) -> Result<(Arc<Client>, Option<studio_client_core::backend::Backend>), String> {
+    if server == "local" {
+        Box::pin(client_request(
+            window.clone(),
+            state.clone(),
+            Request {
+                id: studio_client_core::server_keys::random_id()?,
+                method: "preferences.raw_all".into(),
+                params: serde_json::json!({}),
+            },
+        ))
+        .await?;
+        return Ok((
+            state
+                .local
+                .lock()
+                .await
+                .as_ref()
+                .cloned()
+                .ok_or("The native Store is unavailable.")?,
+            Some(
+                state
+                    .local_backend
+                    .lock()
+                    .await
+                    .as_ref()
+                    .cloned()
+                    .ok_or("The local transport identity is unavailable.")?,
+            ),
+        ));
+    }
+    #[cfg(not(target_os = "macos"))]
+    return Err("The native server key store is unavailable on this platform.".into());
+    #[cfg(target_os = "macos")]
+    {
+        let mut sources = state.sources.lock().await;
+        if let Some((client, backend)) = sources.get(server) {
+            backend.validate_identity()?;
+            return Ok((client.clone(), Some(backend.clone())));
+        }
+        let binding = remote_client(window, &state).await?.bind(server)?;
+        let directory = native_profile_directory(window)?
+            .join("client/servers")
+            .join(binding.storage_key());
+        let backend = studio_client_core::backend::Backend::from_remote(binding)?;
+        let events = window.clone();
+        let client = Arc::new(Client::open_with_backend(
+            directory,
+            backend.clone(),
+            move |event| {
+                let _ = events.emit("studio-client-event", event);
+            },
+        )?);
+        sources.insert(server.into(), (client.clone(), backend.clone()));
+        Ok((client, Some(backend)))
+    }
 }
 
 fn draft_workspace_allowed(verified: Option<&str>, params: &serde_json::Value) -> bool {
     verified.is_some() && verified == params["workspace"].as_str()
+}
+
+fn native_profile_directory(window: &WebviewWindow) -> Result<std::path::PathBuf, String> {
+    match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
+        Some(path) => Ok(std::path::PathBuf::from(path)),
+        None => window
+            .app_handle()
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn remote_client(
+    window: &WebviewWindow,
+    state: &Clients,
+) -> Result<Arc<studio_client_core::server_transport::RemoteClient>, String> {
+    let mut remote = state.remote.lock().await;
+    if remote.is_none() {
+        let directory = native_profile_directory(window)?;
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        let account = directory
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned();
+        let vault = studio_client_core::server_keys::KeychainVault { account };
+        *remote = Some(Arc::new(
+            studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
+        ));
+    }
+    Ok(remote
+        .as_ref()
+        .ok_or("The native server transport is unavailable.")?
+        .clone())
 }
 
 fn packaged_shell(url: &tauri::Url) -> bool {
@@ -177,6 +346,422 @@ async fn client_request(
     #[cfg(feature = "native-check")]
     eprintln!("Hidden native command: {}", request.method);
     trusted(&window)?;
+    #[cfg(feature = "native-check")]
+    if let Some(response) = attachment_event_privacy::dispatch(&window, &request).await? {
+        return Ok(response);
+    }
+    if request.method == ui_events::CONNECT_METHOD {
+        return ui_events::connect(&window, &request.params)
+            .map(|value| Response::success(request.id, value));
+    }
+    if request.method == ui_events::DISCONNECT_METHOD {
+        return ui_events::disconnect(&window, &request.params)
+            .map(|value| Response::success(request.id, value));
+    }
+    // Drain compatibility effects with the same gate as old storage writers.
+    // Private bootstrap reads never enter this path.
+    let _legacy_effect = if let Some(server) = service_context::legacy_effect_scope(&request) {
+        let admission = state.legacy_write_admission.lock().await;
+        if *admission {
+            let source = cutover_source(&window, &state, server).await?;
+            state.cutovers.lock().await.verify(server, None, &source)?;
+            let owner = if server == "local" {
+                "root".to_owned()
+            } else {
+                format!("server:{server}")
+            };
+            if !profile::seal_identity(&owner)?.is_null() {
+                return Err("The sealed archive needs privileged source inventory verification before native effects can start.".into());
+            }
+            let (client, _) = service_source(&window, state.clone(), server).await?;
+            let status = client
+                .request(Request {
+                    id: studio_client_core::server_keys::random_id()?,
+                    method: "client_storage.cutover_status".into(),
+                    params: serde_json::json!({"sourceIdentity":source,"serverId":server}),
+                })
+                .await?;
+            if !status
+                .result
+                .as_ref()
+                .is_some_and(|value| value["complete"] == true)
+            {
+                return Err(
+                    "Native storage migration is incomplete. Legacy effects remain disabled."
+                        .into(),
+                );
+            }
+        }
+        Some(admission)
+    } else {
+        None
+    };
+    let _legacy_write = if matches!(
+        request.method.as_str(),
+        "preferences.raw_set"
+            | "preferences.raw_remove"
+            | "preferences.import"
+            | "preferences.set"
+            | "draft.set"
+            | "drafts.import"
+            | "drafts.edit"
+            | "drafts.dismiss"
+            | "drafts.refresh"
+    ) {
+        let admission = state.legacy_write_admission.lock().await;
+        if *admission {
+            return Err("The native storage cutover closed legacy writes. Keep the original pending request for migration.".into());
+        }
+        Some(admission)
+    } else {
+        None
+    };
+    if matches!(
+        request.method.as_str(),
+        "system.info" | "system.uuid" | "system.uuidBatch" | "system.sha256"
+    ) {
+        return Ok(studio_client_core::platform::dispatch(&request));
+    }
+    if request.method == "service.storage_cutover" {
+        let selected: service_context::Open = serde_json::from_value(request.params)
+            .map_err(|_| "Invalid native storage cutover selector.")?;
+        let source = cutover_source(&window, &state, &selected.server_id).await?;
+        // This gate drains every already admitted legacy native write.
+        let mut admission = state.legacy_write_admission.lock().await;
+        *admission = true;
+        let mut receipt = state
+            .cutovers
+            .lock()
+            .await
+            .begin(&selected.server_id, &source)?;
+        let owner = if selected.server_id == "local" {
+            "root".to_owned()
+        } else {
+            format!("server:{}", selected.server_id)
+        };
+        receipt["archive"] = profile::seal_identity(&owner)?;
+        // A process restart needs a fresh private source capture. Reading this
+        // guard must not open a writable Store or promote a legacy completion.
+        receipt["migrationComplete"] = false.into();
+        return Ok(Response::success(request.id, receipt));
+    }
+    if request.method == "service.verify_cutover" {
+        let selected: service_context::CutoverCheck = serde_json::from_value(request.params)
+            .map_err(|_| "Invalid native storage cutover proof.")?;
+        let source = cutover_source(&window, &state, &selected.server_id).await?;
+        state
+            .cutovers
+            .lock()
+            .await
+            .verify(&selected.server_id, Some(&selected.token), &source)?;
+        return Ok(Response::success(
+            request.id,
+            serde_json::json!({"verified":true}),
+        ));
+    }
+    if request.method == "service.prepare_archive" {
+        let selected: service_context::CutoverCheck = serde_json::from_value(request.params)
+            .map_err(|_| "Invalid native archive preparation selector.")?;
+        let _preparing = state.archive_preparation.lock().await;
+        let source = cutover_source(&window, &state, &selected.server_id).await?;
+        state
+            .cutovers
+            .lock()
+            .await
+            .verify(&selected.server_id, Some(&selected.token), &source)?;
+        let context = state
+            .contexts
+            .lock()
+            .await
+            .existing(&selected.server_id)
+            .map(|(_, context)| context)
+            .ok_or("Open the exact server context before archive preparation.")?;
+        if context.source_identity != source {
+            return Err("The archive destination identity changed.".into());
+        }
+        let owner = if selected.server_id == "local" {
+            "root".into()
+        } else {
+            format!("server:{}", selected.server_id)
+        };
+        let archive = profile::sealed(&owner)?;
+        let prepared = archive_import::prepare(&context, &archive).await?;
+        let after = cutover_source(&window, &state, &selected.server_id).await?;
+        state
+            .cutovers
+            .lock()
+            .await
+            .verify(&selected.server_id, Some(&selected.token), &after)?;
+        return Ok(Response::success(request.id, prepared));
+    }
+    if request.method == "service.finish_cutover" {
+        return Err(
+            "Only the private host source capture can complete native storage migration.".into(),
+        );
+    }
+    if request.method == "service.legacy_preferences" {
+        let legacy: service_context::LegacyPreferences = serde_json::from_value(request.params)
+            .map_err(|_| "Invalid native preference recovery source.")?;
+        let source = cutover_source(&window, &state, &legacy.server_id).await?;
+        state
+            .cutovers
+            .lock()
+            .await
+            .verify(&legacy.server_id, None, &source)?;
+        let contexts = state.contexts.lock().await;
+        if (legacy.server_id == "local" && !contexts.is_empty())
+            || contexts.existing(&legacy.server_id).is_some()
+        {
+            return Err(
+                "Recover the original preference journal before opening server services.".into(),
+            );
+        }
+        if legacy.server_id != "local" {
+            #[cfg(not(target_os = "macos"))]
+            return Err("The native server key store is unavailable on this platform.".into());
+            #[cfg(target_os = "macos")]
+            remote_client(&window, &state)
+                .await?
+                .bind(&legacy.server_id)?
+                .validate()?;
+        }
+        Box::pin(client_request(
+            window.clone(),
+            state.clone(),
+            Request {
+                id: studio_client_core::server_keys::random_id()?,
+                method: "preferences.raw_all".into(),
+                params: serde_json::json!({}),
+            },
+        ))
+        .await?;
+        let client = state
+            .local
+            .lock()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or("The original native preference store is unavailable.")?;
+        let scope = if legacy.server_id == "local" {
+            "root".to_owned()
+        } else {
+            format!("server:{}", legacy.server_id)
+        };
+        return client
+            .request(Request {
+                id: request.id,
+                method: "client_storage.replay_preferences".into(),
+                params: serde_json::json!({"scope":scope,"writes":legacy.writes}),
+            })
+            .await;
+    }
+    if request.method == "service.open" {
+        let selected: service_context::Open = serde_json::from_value(request.params.clone())
+            .map_err(|_| "Invalid native server selector.")?;
+        let source = cutover_source(&window, &state, &selected.server_id).await?;
+        state
+            .cutovers
+            .lock()
+            .await
+            .verify(&selected.server_id, None, &source)?;
+        let mut contexts = state.contexts.lock().await;
+        if let Some((handle, context)) = contexts.existing(&selected.server_id) {
+            if let Some(backend) = &context.backend {
+                backend.validate_identity()?;
+            }
+            return Ok(Response::success(request.id, context.descriptor(&handle)));
+        }
+        // Only the old local Store supplies native preference receipts.
+        Box::pin(client_request(
+            window.clone(),
+            state.clone(),
+            Request {
+                id: studio_client_core::server_keys::random_id()?,
+                method: "preferences.raw_all".into(),
+                params: serde_json::json!({}),
+            },
+        ))
+        .await?;
+        let local = state
+            .local
+            .lock()
+            .await
+            .as_ref()
+            .cloned()
+            .ok_or("The local client is unavailable.")?;
+        let (client, backend) = service_source(&window, state.clone(), &selected.server_id).await?;
+        let workspace = if selected.server_id == "local" {
+            let mut identity = Box::pin(client_request(
+                window.clone(),
+                state.clone(),
+                Request {
+                    id: studio_client_core::server_keys::random_id()?,
+                    method: "identity.get".into(),
+                    params: serde_json::json!({}),
+                },
+            ))
+            .await?;
+            if identity
+                .result
+                .as_ref()
+                .is_some_and(serde_json::Value::is_null)
+            {
+                identity = Box::pin(client_request(
+                    window.clone(),
+                    state.clone(),
+                    Request {
+                        id: studio_client_core::server_keys::random_id()?,
+                        method: "sync.open".into(),
+                        params: serde_json::json!({}),
+                    },
+                ))
+                .await?;
+            }
+            let local_identity = identity.result.ok_or_else(|| {
+                identity
+                    .error
+                    .map(|e| e.message)
+                    .unwrap_or_else(|| "The local client workspace is unavailable.".into())
+            })?;
+            local_identity
+        } else {
+            #[cfg(not(target_os = "macos"))]
+            return Err("Paired native service contexts are unavailable on this platform.".into());
+            #[cfg(target_os = "macos")]
+            {
+                let mut identity = client
+                    .request(Request {
+                        id: studio_client_core::server_keys::random_id()?,
+                        method: "identity.get".into(),
+                        params: serde_json::json!({}),
+                    })
+                    .await?;
+                if identity
+                    .result
+                    .as_ref()
+                    .is_some_and(serde_json::Value::is_null)
+                {
+                    identity = client
+                        .request(Request {
+                            id: studio_client_core::server_keys::random_id()?,
+                            method: "sync.open".into(),
+                            params: serde_json::json!({}),
+                        })
+                        .await?;
+                }
+                let identity = identity.result.ok_or_else(|| {
+                    identity
+                        .error
+                        .map(|e| e.message)
+                        .unwrap_or_else(|| "The paired workspace is unavailable.".into())
+                })?;
+                identity
+            }
+        };
+        let workspace_id = workspace["workspaceId"]
+            .as_str()
+            .filter(|value| studio_client_core::projections::valid_workspace(value))
+            .ok_or("Invalid native workspace identity.")?
+            .to_owned();
+        let scope = if selected.server_id == "local" {
+            "root".to_owned()
+        } else {
+            format!("server:{}", selected.server_id)
+        };
+        let exported = local
+            .request(Request {
+                id: studio_client_core::server_keys::random_id()?,
+                method: "client_storage.export_preferences".into(),
+                params: serde_json::json!({"scope":scope}),
+            })
+            .await?;
+        let exported = exported.result.ok_or_else(|| {
+            exported.error.map(|e| e.message).unwrap_or_else(|| {
+                "The existing native preference receipts could not be read.".into()
+            })
+        })?;
+        let serialized_preferences = serde_json::to_string(&exported).map_err(|e| e.to_string())?;
+        let imported = client.request(Request { id: studio_client_core::server_keys::random_id()?, method: "client_storage.import".into(), params: serde_json::json!({"manifestId":format!("legacy-native-preferences:{scope}"),"serializedSource":serialized_preferences}) }).await?;
+        if let Some(error) = imported.error {
+            return Err(error.message);
+        }
+        let descriptor = contexts.insert(service_context::Context {
+            server_id: selected.server_id,
+            workspace_id,
+            client,
+            backend,
+            source_identity: source,
+            migration_complete: Default::default(),
+            archive_hold: !profile::seal_identity(&scope)?.is_null(),
+        })?;
+        return Ok(Response::success(request.id, descriptor));
+    }
+    if request.method == "service.request" {
+        let call: service_context::Call = serde_json::from_value(request.params.clone())
+            .map_err(|_| "Invalid native service request.")?;
+        let context = state.contexts.lock().await.get(&call.handle)?;
+        let mut scoped = context.admission(request.id, call)?;
+        context.ensure_ready(&scoped).await?;
+        // Capture the host gesture before any verification or network wait.
+        if matches!(
+            scoped.method.as_str(),
+            "desktop.pickFiles"
+                | "desktop.pickDirectory"
+                | "desktop.revealPath"
+                | "desktop.showVaultKeys"
+                | "desktop.fileAction"
+                | "desktop.requestMicrophone"
+                | "desktop.prepareTranscription"
+                | "desktop.saveRecording"
+                | "desktop.downloadAndSave"
+                | "desktop.saveText"
+        ) {
+            let params = scoped
+                .params
+                .as_object_mut()
+                .ok_or("Invalid native picker parameters.")?;
+            params.remove("permit");
+            let (send, receive) = tokio::sync::oneshot::channel();
+            let method = scoped.method.clone();
+            window
+                .run_on_main_thread(move || {
+                    let _ = send.send(studio_client_core::desktop::gesture_for_method(&method));
+                })
+                .map_err(|e| e.to_string())?;
+            let permit = receive
+                .await
+                .map_err(|_| "The native picker was cancelled.")?;
+            if permit == 0 {
+                return Err("Use a desktop button or keyboard action.".into());
+            }
+            params.insert("permit".into(), permit.into());
+        }
+        let backend_verified = *state.backend_verified.lock().await;
+        if context.server_id == "local"
+            && service_context::needs_network(&scoped)
+            && !backend_verified
+        {
+            let verified = Box::pin(client_request(
+                window.clone(),
+                state.clone(),
+                Request {
+                    id: studio_client_core::server_keys::random_id()?,
+                    method: "sync.open".into(),
+                    params: serde_json::json!({}),
+                },
+            ))
+            .await?;
+            if verified
+                .result
+                .as_ref()
+                .and_then(|value| value["workspaceId"].as_str())
+                != Some(context.workspace_id.as_str())
+            {
+                return Err("The configured backend does not match this server context.".into());
+            }
+        }
+        return context.send(scoped).await;
+    }
     if request.method.starts_with("servers.") {
         #[cfg(not(target_os = "macos"))]
         return Err("The native server key store is unavailable on this platform.".into());
@@ -245,31 +830,7 @@ async fn client_request(
                     read(serde_json::json!({"path":"/api/multi-server","method":"GET"})).await?;
                 approved_peer(&after, p)?;
             }
-            let client = {
-                let mut remote = state.remote.lock().await;
-                if remote.is_none() {
-                    let directory =
-                        match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
-                            Some(path) => std::path::PathBuf::from(path),
-                            None => window
-                                .app_handle()
-                                .path()
-                                .app_data_dir()
-                                .map_err(|e| e.to_string())?,
-                        };
-                    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-                    let account = directory
-                        .canonicalize()
-                        .map_err(|e| e.to_string())?
-                        .to_string_lossy()
-                        .into_owned();
-                    let vault = studio_client_core::server_keys::KeychainVault { account };
-                    *remote = Some(Arc::new(
-                        studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
-                    ));
-                }
-                remote.as_ref().unwrap().clone()
-            };
+            let client = remote_client(&window, &state).await?;
             return match client.dispatch(&request.method, &request.params).await {
                 Ok(value) => Ok(Response::success(request.id, value)),
                 Err(error) => Ok(Response::failure(request.id, "server_error", error)),
@@ -435,6 +996,9 @@ async fn client_request(
             let allow_start = allow_start && native_check::directory().is_none();
             local_backend::verify(&origin, &resources, allow_start).await?;
             *verified = true;
+            if let Some(backend) = state.local_backend.lock().await.as_ref() {
+                backend.authorize();
+            }
         }
     }
     let client = {
@@ -453,11 +1017,14 @@ async fn client_request(
             #[cfg(feature = "native-check")]
             let directory = native_check::directory().unwrap_or(directory);
             let events_window = window.clone();
-            *local = Some(Arc::new(Client::open(
-                ConnectionConfig {
-                    state_directory: directory,
-                    backend_origin: origin,
-                },
+            let backend = studio_client_core::backend::Backend::desktop_client(&origin)?;
+            if *state.backend_verified.lock().await {
+                backend.authorize();
+            }
+            *state.local_backend.lock().await = Some(backend.clone());
+            *local = Some(Arc::new(Client::open_with_backend(
+                directory,
+                backend,
                 move |event| {
                     let _ = events_window.emit("studio-client-event", event);
                 },
@@ -508,6 +1075,7 @@ pub fn run() {
     tauri::Builder::default()
         .register_uri_scheme_protocol("studio-view", frame_assets::respond)
         .manage(Clients::default())
+        .manage(ui_events::UiEvents::default())
         .manage(close::CloseState::default())
         .invoke_handler(tauri::generate_handler![
             client_request,
@@ -515,6 +1083,11 @@ pub fn run() {
             close::close_response
         ])
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Err(error) = ui_events::retire_window(window.app_handle(), window.label()) {
+                    eprintln!("{error}");
+                }
+            }
             #[cfg(desktop)]
             window_state::event(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event
@@ -523,6 +1096,11 @@ pub fn run() {
                 }
         })
         .on_page_load(|window, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                if let Err(error) = ui_events::retire_window(window.app_handle(), window.label()) {
+                    eprintln!("{error}");
+                }
+            }
             #[cfg(feature = "native-check")]
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 native_check::loaded(window);
@@ -628,6 +1206,17 @@ pub fn run() {
                 }
                 "#)
             } else { window };
+            #[cfg(feature = "native-check")]
+            let window = if native_check::directory().is_some()
+                && std::env::var("STUDIO_NATIVE_CHECK_MODE").as_deref()
+                    == Ok(attachment_event_privacy::MODE)
+            {
+                window.initialization_script_for_all_frames(
+                    attachment_event_privacy::frame_initialization_script(),
+                )
+            } else {
+                window
+            };
             #[cfg(desktop)]
             let window = window.focused(!hidden);
             let window = window.build()?;

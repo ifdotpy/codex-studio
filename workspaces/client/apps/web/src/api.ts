@@ -26,9 +26,7 @@ import type {
   PathsWithMethod,
 } from "openapi-typescript-helpers";
 
-import type { components, paths } from "./generated/api";
-
-import { SYNC_ENTITY_SCOPE } from "./generated/api";
+import type { paths } from "./generated/api";
 
 import {
   API_SCHEMA_HASH,
@@ -46,9 +44,19 @@ import type {
 
 import { onResume } from "./sync/resume";
 
-import { displayError } from "./errorPresentation";
-
-import { getEntitySequenceCheckpointForWorkspace } from "./sync/entitySequence";
+export { errorText, untilAnswered } from "./apiPresentation";
+import {
+  ApiError,
+  ApiSchemaMismatchError,
+  NetworkTimeoutError,
+} from "./apiErrors";
+export {
+  ApiError,
+  ApiSchemaMismatchError,
+  NetworkTimeoutError,
+} from "./apiErrors";
+import { READ_DEADLINE_MS, MUTATION_DEADLINE_MS } from "./apiPolicy";
+export { READ_DEADLINE_MS } from "./apiPolicy";
 
 type Method = "get" | "post";
 
@@ -143,9 +151,6 @@ export type PostBody<Path extends PathsFor<"post">> = NonNullable<
   OperationRequestBodyContent<Operation<Path, "post">>
 >;
 
-/** A read waits this long for a slow server. Only a lost connection should end it. */
-export const READ_DEADLINE_MS = 120_000;
-
 const deadlines = new Map<
   AbortController,
   { at: number; expire: () => void }
@@ -209,51 +214,6 @@ export function isApiSchemaMismatchResponse(
   );
 }
 
-export class ApiError extends Error {
-  public readonly outcome?: string;
-  public readonly catalogPending?: boolean;
-
-  constructor(
-    message: unknown,
-    public status: number,
-    public readonly response: unknown = message,
-    public readonly location?: string[],
-  ) {
-    super(displayError(message) || `Request failed (${status})`);
-    if (isRecord(response)) {
-      if (typeof response.outcome === "string") this.outcome = response.outcome;
-      if (typeof response.catalogPending === "boolean")
-        this.catalogPending = response.catalogPending;
-    }
-  }
-}
-
-export class ApiSchemaMismatchError extends ApiError {
-  constructor(public readonly markedResponse = false) {
-    super("Studio must be updated before using this tab.", 426);
-    this.name = "ApiSchemaMismatchError";
-  }
-}
-
-export class NetworkTimeoutError extends TypeError {
-  constructor() {
-    super("The server did not respond in time.");
-    this.name = "NetworkTimeoutError";
-  }
-}
-
-/** Send one exact write until the server answers it. A timeout means a slow server, not
- * a failure: each attempt has the same request identity, so the server applies it once. */
-export async function untilAnswered<T>(send: () => Promise<T>): Promise<T> {
-  for (;;) {
-    try {
-      return await send();
-    } catch (error) {
-      if (!(error instanceof NetworkTimeoutError)) throw error;
-    }
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -300,22 +260,6 @@ function requestController(options: ApiOptions, timeoutMs: number | undefined) {
   };
 }
 
-type SyncEnvelope = {
-  _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-  _syncEntitiesAfter?: number | null;
-};
-
-type SyncEntityDocument = components["schemas"]["SyncEntity"];
-
-type SyncEntityPersister = (
-  workspaceId: string,
-  documents: SyncEntityDocument[],
-  syncEntitiesAfter: number | null | undefined,
-  isPersistenceCurrent: () => boolean,
-) => Promise<void>;
-
-const SYNC_ENTITY_PERSIST_TIMEOUT_MS = 250;
-
 // Only reads and operations with a durable request identity use this deadline.
 type SyncGetOptions<Path extends PathsFor<"get">> = Omit<
   GetOptions<Path>,
@@ -326,16 +270,6 @@ export type QueueView = GetResult<"/api/queue">;
 
 export type QueueItemDto = QueueView["items"][number];
 
-export function errorText(error: unknown) {
-  if (error instanceof ApiSchemaMismatchError) return "";
-  if (
-    error instanceof ApiError &&
-    error.message === "Invalid request" &&
-    error.location?.length
-  )
-    return `Invalid request (${error.location.join(".")}).`;
-  return displayError(error);
-}
 /** Each instance owns one server's session, schema gate, workspace and persistence. */
 export type ApiScopeOptions = {
   origin: string;
@@ -344,7 +278,6 @@ export type ApiScopeOptions = {
   sessionStorage: Storage;
   beginMutation: typeof beginServerMutation;
   beginActivity: typeof beginServerActivity;
-  entityCheckpoint: typeof getEntitySequenceCheckpointForWorkspace;
 };
 export function createApiScope(options: ApiScopeOptions) {
   const { localStorage, sessionStorage } = options;
@@ -352,7 +285,6 @@ export function createApiScope(options: ApiScopeOptions) {
   const serverFetch = options.fetch;
   const beginServerMutation = options.beginMutation;
   const beginServerActivity = options.beginActivity;
-  const getEntitySequenceCheckpointForWorkspace = options.entityCheckpoint;
 
   let token = "";
 
@@ -541,7 +473,7 @@ export function createApiScope(options: ApiScopeOptions) {
       markApiSchemaMismatch(serverHash);
       await response.body?.cancel().catch(() => {});
       // Do not let a response from another contract reach a projection or
-      // mutation persister. The update gate is still raised before rejection.
+      // caller. The update gate is still raised before rejection.
       throw new ApiSchemaMismatchError(true);
     } else if (serverHash === API_SCHEMA_HASH) {
       matchingSchemaResponseGeneration++;
@@ -635,87 +567,6 @@ export function createApiScope(options: ApiScopeOptions) {
     token = value;
   }
 
-  let syncEntityPersister: SyncEntityPersister | undefined;
-
-  function registerSyncEntityPersister(
-    persist: SyncEntityPersister,
-  ): () => void {
-    syncEntityPersister = persist;
-    return () => {
-      if (syncEntityPersister === persist) syncEntityPersister = undefined;
-    };
-  }
-
-  async function syncDocuments(
-    value: SyncEnvelope | null | undefined,
-    workspaceId: string | undefined,
-  ): Promise<void> {
-    if (!value?._syncEntities?.length || typeof window === "undefined") return;
-    const targetWorkspaceId = workspaceId ?? workspace;
-    if (syncEntityPersister) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let persistenceCurrent = true;
-      try {
-        await Promise.race([
-          syncEntityPersister(
-            targetWorkspaceId,
-            value._syncEntities,
-            value._syncEntitiesAfter,
-            () => persistenceCurrent,
-          ),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => {
-              persistenceCurrent = false;
-              reject(new Error("IndexedDB persistence timed out"));
-            }, SYNC_ENTITY_PERSIST_TIMEOUT_MS);
-          }),
-        ]);
-      } catch (error) {
-        persistenceCurrent = false;
-        console.error("Mutation entity persistence failed", {
-          workspaceId: targetWorkspaceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-  }
-
-  function beginMutationEntityCoverage(
-    value: SyncEnvelope | null | undefined,
-    targetWorkspaceId: string,
-  ):
-    | {
-        checkpoint: NonNullable<
-          ReturnType<typeof getEntitySequenceCheckpointForWorkspace>
-        >;
-        token: number;
-      }
-    | undefined {
-    const rows = value?._syncEntities;
-    const after = value?._syncEntitiesAfter;
-    if (
-      !rows?.length ||
-      !syncEntityPersister ||
-      typeof after !== "number" ||
-      !Number.isSafeInteger(after) ||
-      typeof window === "undefined"
-    )
-      return undefined;
-    const entities = rows;
-    if (entities.length === 0) return undefined;
-    const through = Math.max(...entities.map((document) => document.seq));
-    const checkpoint = getEntitySequenceCheckpointForWorkspace(
-      targetWorkspaceId,
-      SYNC_ENTITY_SCOPE,
-      API_SCHEMA_HASH,
-    );
-    if (!checkpoint) return undefined;
-    const token = checkpoint.beginInFlightCoverage(after, through);
-    return token === undefined ? undefined : { checkpoint, token };
-  }
-
   async function performGet<Path extends PathsFor<"get">>(
     path: Path,
     options?: InternalGetOptions<Path>,
@@ -793,7 +644,8 @@ export function createApiScope(options: ApiScopeOptions) {
     const targetWorkspaceId = options.workspaceId ?? workspace;
     const sessionToken = options.sessionToken ?? token;
     const mutation = await beginServerMutation(path, body, options.requestId);
-    const timeoutMs = options.timeoutMs ?? (mutation ? 15000 : undefined);
+    const timeoutMs =
+      options.timeoutMs ?? (mutation ? MUTATION_DEADLINE_MS : undefined);
     const controller = requestController(options, timeoutMs);
     let responseRejected = false;
     const stopActivity = beginServerActivity();
@@ -833,16 +685,6 @@ export function createApiScope(options: ApiScopeOptions) {
       if (result.data === null)
         throw new Error("Successful response did not contain a body.");
       const data = result.data as PostResult<Path>;
-      const coverage = beginMutationEntityCoverage(
-        data as SyncEnvelope,
-        targetWorkspaceId,
-      );
-      try {
-        await syncDocuments(data as SyncEnvelope, targetWorkspaceId);
-      } finally {
-        if (coverage)
-          coverage.checkpoint.settleInFlightCoverage(coverage.token);
-      }
       await mutation?.finish();
       return data;
     } catch (error) {
@@ -933,7 +775,7 @@ export function createApiScope(options: ApiScopeOptions) {
     path: Path,
     body: PostBody<Path>,
     options?: Omit<PostOptions, "timeoutMs">,
-  ) => post(path, body, { ...options, timeoutMs: 15000 });
+  ) => post(path, body, { ...options, timeoutMs: MUTATION_DEADLINE_MS });
 
   async function refreshSession(): Promise<GetResult<"/api/session">> {
     const generation = ++sessionGeneration;
@@ -1044,7 +886,6 @@ export function createApiScope(options: ApiScopeOptions) {
     serverAccess,
     setWorkspace,
     setToken,
-    registerSyncEntityPersister,
     get,
     post,
     apiDownload,
@@ -1065,7 +906,6 @@ const defaultApi = createApiScope({
   sessionStorage,
   beginMutation: beginServerMutation,
   beginActivity: beginServerActivity,
-  entityCheckpoint: getEntitySequenceCheckpointForWorkspace,
 });
 export const {
   pendingMonitorInput,
@@ -1084,7 +924,6 @@ export const {
   serverAccess,
   setWorkspace,
   setToken,
-  registerSyncEntityPersister,
   get,
   post,
   apiDownload,
@@ -1096,4 +935,28 @@ export const {
   stableRequestId,
   clearStableRequestId,
 } = defaultApi;
-export type ServerApi = ReturnType<typeof createApiScope>;
+export type NativeDownloadResult = {
+  nativeHandle: string;
+  name: string;
+  type: string;
+  size: number;
+  truncated: boolean;
+  saved: boolean;
+};
+export type ApiDownloadResult =
+  | { blob: Blob; name: string; truncated: boolean }
+  | NativeDownloadResult;
+type DownloadPort = {
+  <Path extends PathsWithRequiredQuery>(
+    path: Path,
+    query: QueryOfPath<Path>,
+  ): Promise<ApiDownloadResult>;
+  <Path extends Exclude<PathsFor<"get">, PathsWithRequiredQuery>>(
+    path: Path,
+    query?: QueryOfPath<Path>,
+  ): Promise<ApiDownloadResult>;
+};
+export type ServerApi = Omit<
+  ReturnType<typeof createApiScope>,
+  "apiDownload"
+> & { apiDownload: DownloadPort };

@@ -262,10 +262,7 @@ fn claimed_native_action_is_correlated_by_the_scheduler_before_handoff() {
     assert_eq!(attempt["connectionGeneration"], ticket().generation);
     assert_eq!(
         attempt["requestTicket"],
-        format!(
-            "retained:default:{}",
-            studio_runtime_store::sha256_hex(ticket().operation.as_bytes())
-        )
+        "retained:default:c7ce66d0fb14e3c2d4d920918cc6cc7e488668b08dddeb7b85e44de3b9f3eb01"
     );
 }
 #[test]

@@ -105,7 +105,7 @@ async fn resolve(
     let notifications = state.sync_changes.clone();
     let root =
         studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
-    let guest = UnixGuestRpc::for_runtime_state(std::path::Path::new(&state.state_dir));
+    let guest = UnixGuestRpc::new(state.vm_state_dir.clone());
     let project_id = body.project_id;
     let resolve_project_id = project_id.clone();
     let path = body.path;
@@ -281,8 +281,9 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use serde_json::json;
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+    use tokio_util::task::AbortOnDropHandle;
     use tower::ServiceExt;
 
     #[tokio::test]
@@ -291,7 +292,7 @@ mod tests {
         // The VM state directory owns the layr project records, as on a real install.
         let project = state_dir.path().join("linux-vm/layr-projects/p1");
         let folder = state_dir.path().join("mac-folder");
-        let socket_dir = state_dir.path().join("linux-vm");
+        let socket_dir = state_dir.path().join("private-vm");
         std::fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
         std::fs::create_dir_all(&folder).expect("fixture operation succeeds");
         std::fs::create_dir_all(&socket_dir).expect("fixture operation succeeds");
@@ -309,20 +310,19 @@ mod tests {
         std::fs::write(folder.join("file.txt"), b"mac").expect("fixture operation succeeds");
         let listener =
             UnixListener::bind(socket_dir.join("guest.sock")).expect("fixture operation succeeds");
-        let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (stream, _) = listener.accept().expect("fixture operation succeeds");
+        let server = AbortOnDropHandle::new(tokio::spawn(async move {
+            for method in ["sync.mac.head", "sync.mac.read"] {
+                let (stream, _) = listener.accept().await.expect("fixture operation succeeds");
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
                 reader
                     .read_line(&mut line)
+                    .await
                     .expect("fixture operation succeeds");
                 let request: Value =
                     serde_json::from_str(&line).expect("fixture operation succeeds");
-                let result = match request["method"]
-                    .as_str()
-                    .expect("fixture operation succeeds")
-                {
+                assert_eq!(request["method"], method);
+                let result = match method {
                     "sync.mac.head" => json!({"mainStateId":"main-1"}),
                     "sync.mac.read" => {
                         json!({"kind":"file","mode":420,"data":"Z3Vlc3Q=","eof":true})
@@ -330,10 +330,14 @@ mod tests {
                     other => panic!("unexpected guest method: {other}"),
                 };
                 let mut stream = reader.into_inner();
-                writeln!(stream, "{}", json!({"id":request["id"],"result":result}))
-                    .expect("fixture operation succeeds");
+                stream
+                    .write_all(
+                        format!("{}\n", json!({"id":request["id"],"result":result})).as_bytes(),
+                    )
+                    .await
+                    .expect("fake guest sends response");
             }
-        });
+        }));
         let state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
@@ -342,7 +346,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .with_vm_state_dir(state_dir.path().join("private-vm"));
         let app = crate::router::router(state).expect("fixture operation succeeds");
         let request = axum::http::Request::builder()
             .method("POST")
@@ -378,7 +383,10 @@ mod tests {
             std::fs::read(folder.join("file.txt")).expect("fixture operation succeeds"),
             b"guest"
         );
-        server.join().expect("fixture operation succeeds");
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("socket responder stops")
+            .expect("socket responder succeeds");
     }
 
     #[tokio::test]
@@ -408,7 +416,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .with_vm_state_dir(state_dir.path().join("private-vm"));
         let app = crate::router::router(state).expect("fixture operation succeeds");
         let request = |uri: &'static str, body: Value| {
             axum::http::Request::builder()

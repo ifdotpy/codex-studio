@@ -32,6 +32,11 @@ use tokio::{
 /// not count: that journal is finite, and counting it could hold back the
 /// frames the current generation needs to become ready.
 pub const MAX_UNSETTLED: usize = 64;
+/// Provider journal entries the session receives after it requested the
+/// provider's shutdown, beyond those its bounded lane already holds; unit:
+/// entries. They join the undelivered tail of the session exit. The adapter's
+/// drain grace bounds the tail in time; this bounds its memory.
+const SHUTDOWN_TAIL_ENTRIES: usize = 4096;
 const MAX_TIMEOUT_MS: u64 = u32::MAX as u64;
 
 pub struct SessionTaskConfig {
@@ -103,6 +108,7 @@ impl PreparedRequest {
 pub struct PreparedFrame {
     write: PreparedWrite,
     operation: OperationId,
+    callback_reply: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +174,34 @@ pub struct SessionStatus {
     pub generation: Generation,
     pub initialization: InitializationStatus,
     pub attachment: AttachmentStatus,
+    /// Reply from this generation's exact initialize request, including a
+    /// supervisor-cached reply from the retained process, not installed source.
+    pub initialize_result: Option<Arc<Value>>,
+    /// Transport-owned proof, never a provider-reported initialize capability.
+    pub supervisor_write_deduplication: bool,
+}
+
+impl SessionStatus {
+    /// A capability belongs to the ready, exact account handle and generation.
+    /// Missing metadata, an old reply, and non-boolean values grant nothing.
+    pub(crate) fn has_capability(
+        &self,
+        handle: &ProviderHandle,
+        generation: Generation,
+        capability: &str,
+    ) -> bool {
+        self.generation == generation
+            && self.initialization == InitializationStatus::Ready
+            && self.attachment.initialization == InitializationStatus::Ready
+            && self.attachment.handle == *handle
+            && self.attachment.info.as_ref().is_some_and(|info| {
+                info.handle == *handle && info.generation == generation && info.pid > 0
+            })
+            && self.initialize_result.as_ref().is_some_and(|result| {
+                result.get("capabilities").and_then(|value| value.get(capability))
+                    == Some(&Value::Bool(true))
+            })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -330,6 +364,8 @@ impl SessionHandle {
         let (status, observed) = watch::channel(SessionStatus {
             generation: config.generation,
             initialization: InitializationStatus::AwaitingReply,
+            initialize_result: None,
+            supervisor_write_deduplication: false,
             attachment: AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: false,
@@ -468,7 +504,23 @@ impl SessionControl {
         Ok(PreparedFrame {
             write: PreparedWrite::new(operation.clone(), frame)?,
             operation,
+            callback_reply: false,
         })
+    }
+
+    /// The account callback owner opts into conservative duplicate receipts.
+    /// Other frames and requests keep their existing receipt semantics.
+    pub(crate) fn prepare_callback_reply(
+        &self,
+        operation: OperationId,
+        frame: &Frame,
+    ) -> Result<PreparedFrame, SessionTaskError> {
+        if !matches!(frame, Frame::Response { .. }) {
+            return Err(SessionTaskError::Invalid);
+        }
+        let mut prepared = self.prepare_frame(operation, frame)?;
+        prepared.callback_reply = true;
+        Ok(prepared)
     }
 
     pub async fn submit_frame(&self, prepared: PreparedFrame) -> Result<(), SessionTaskError> {
@@ -607,6 +659,7 @@ struct PendingWrite {
     operation: OperationId,
     ticket: Option<RequestTicket>,
     initialized: bool,
+    callback_reply: bool,
 }
 #[derive(Clone)]
 enum Flight {
@@ -615,6 +668,7 @@ enum Flight {
         operation: OperationId,
         ticket: Option<RequestTicket>,
         initialized: bool,
+        callback_reply: bool,
     },
     Ack(EventCursor),
 }
@@ -690,7 +744,9 @@ impl SessionTask {
         }
         self.settled.close();
         self.stop.cancel();
-        let exit = adapter.shutdown().await;
+        // The account may have stopped consuming events, so every lane can be
+        // full. Keep the provider's exit tail, such as a final turn/completed.
+        let (exit, tail) = adapter.shutdown_retaining_tail(SHUTDOWN_TAIL_ENTRIES).await;
         if let Some(future) = flight {
             self.retained.receipt = Some(future.await);
             self.retained.receipt_reported = false;
@@ -710,11 +766,13 @@ impl SessionTask {
                 );
             }
         }
+        // The pending event was received before every entry of the tail.
         let mut undelivered: Vec<_> = self.retained.pending.take().into_iter().collect();
-        while let Ok(journal) = adapter.journal.try_recv() {
+        for journal in tail {
+            let outcomes = self.tail_reply(&journal).into_iter().collect();
             undelivered.push(SessionEvent {
                 journal: Some(journal),
-                outcomes: vec![],
+                outcomes,
             });
         }
         let mut outcomes = self
@@ -741,6 +799,36 @@ impl SessionTask {
             outcomes,
             pending_acknowledgement: self.pending_ack(),
         }
+    }
+
+    /// Correlates a response in the exit tail with its request, as
+    /// `process_journal` does for a delivered entry. Without the reply, the
+    /// account applied the tail's notifications, such as `turn/started`, and
+    /// then settled the request as unknown: a start whose reply was in the tail
+    /// was neither accepted nor unknown, and a server restart could not recover
+    /// it. Only the reply is kept; the terminal path writes nothing, so a
+    /// request this reply would release stays queued and is reported unsent.
+    fn tail_reply(&mut self, entry: &JournalEntry) -> Option<SessionOutcome> {
+        let JournalPayload::Frame(frame @ Frame::Response { .. }) = &entry.payload else {
+            return None;
+        };
+        if entry.generation.0 != self.state.generation() {
+            return None;
+        }
+        let actions = self
+            .state
+            .receive_at(frame.clone(), entry.received_at_ms)
+            .ok()?;
+        actions.into_iter().find_map(|action| match action {
+            Action::Resolve {
+                ticket,
+                outcome: outcome @ RequestOutcome::Reply { .. },
+            } => self
+                .records
+                .remove(&ticket.id)
+                .map(|_| SessionOutcome::Resolved { ticket, outcome }),
+            _ => None,
+        })
     }
 
     fn finish_without_adapter(&mut self, result: Result<(), SessionTaskError>) -> SessionExit {
@@ -872,6 +960,7 @@ impl SessionTask {
                             operation: record.operation.clone(),
                             ticket: Some(record.ticket.clone()),
                             initialized: false,
+                            callback_reply: false,
                         })
                     } else {
                         queued.try_recv().ok()
@@ -897,6 +986,7 @@ impl SessionTask {
                             operation: write.operation,
                             ticket: write.ticket,
                             initialized: write.initialized,
+                            callback_reply: write.callback_reply,
                         };
                         let (command, receipt) = AdapterCommand::write(write.write);
                         *flight = Some(send_once(adapter.commands.clone(), command, receipt, kind));
@@ -1033,6 +1123,8 @@ impl SessionTask {
         self.status.send_if_modified(|status| {
             let attachment = adapter.status.borrow().clone();
             let changed = status.initialization != self.state.initialization_status()
+                || status.supervisor_write_deduplication
+                    != adapter.supervisor_write_deduplication()
                 || status.attachment.info.is_none() != attachment.info.is_none()
                 || status.attachment.initialization != attachment.initialization
                 || status.attachment.open_attempted != attachment.open_attempted
@@ -1044,6 +1136,7 @@ impl SessionTask {
                     != attachment.info.as_ref().map(|info| info.acknowledged);
             status.initialization = self.state.initialization_status();
             status.attachment = attachment;
+            status.supervisor_write_deduplication = adapter.supervisor_write_deduplication();
             changed
         });
     }
@@ -1099,6 +1192,7 @@ impl SessionTask {
                                 operation: prepared.operation,
                                 ticket: None,
                                 initialized: false,
+                                callback_reply: prepared.callback_reply,
                             })
                             .map_err(|_| SessionTaskError::Closed)
                     });
@@ -1185,6 +1279,7 @@ impl SessionTask {
                             operation,
                             ticket: None,
                             initialized: true,
+                            callback_reply: false,
                         });
                     }
                     _ => return Err(SessionTaskError::Invalid),
@@ -1192,6 +1287,16 @@ impl SessionTask {
                 Action::Resolve { ticket, outcome } => {
                     let ticket = ticket.clone();
                     let outcome = outcome.clone();
+                    if ticket.method == Method::Initialize
+                        && ticket.generation == self.state.generation()
+                    {
+                        self.status.send_modify(|status| {
+                            status.initialize_result = match &outcome {
+                                RequestOutcome::Reply { body: ResponseBody::Result(value), .. } => Some(Arc::new(value.clone())),
+                                _ => None,
+                            };
+                        });
+                    }
                     if self.retain_resolution(
                         ticket.clone(),
                         outcome,
@@ -1293,6 +1398,7 @@ impl SessionTask {
                 ticket,
                 initialized,
                 recovery,
+                callback_reply,
             },
             receipt,
         )) = self.retained.receipt.as_ref()
@@ -1307,6 +1413,12 @@ impl SessionTask {
             return;
         }
         let outcome = match receipt {
+            // A supervisor duplicate proves acceptance, not the earlier stdin
+            // write. Keep this conservative rule local to callback responses;
+            // request and monitor recovery retain their existing semantics.
+            CommandReceipt::Written {
+                duplicate: true, ..
+            } if *callback_reply => WriteOutcome::Unknown,
             CommandReceipt::Written { .. } => WriteOutcome::Written,
             CommandReceipt::NotSent => WriteOutcome::NotSent,
             CommandReceipt::WriteInterrupted { bytes_written } => {

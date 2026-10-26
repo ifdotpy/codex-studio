@@ -4,6 +4,30 @@ import { MantineProvider } from "@mantine/core";
 import { expect, test, vi } from "vitest";
 import { ExecutionSettings } from "./ExecutionSettings";
 
+const scope = vi.hoisted(() => ({
+  owner: Object.freeze({
+    id: "settings-fixture",
+    origin: "https://settings.example.test",
+    credentialId: "settings-fixture-credential",
+  }),
+  api: {
+    saved: (_key: string, fallback: unknown) => fallback,
+    save: vi.fn(),
+    get: vi.fn(),
+    post: vi.fn(),
+  },
+  sync: { subscribeStateProjection: vi.fn(() => () => {}) },
+}));
+
+// Layout fixtures use the same explicit owner/API/sync seams as a screen.
+// They must not acquire the browser's local-storage fallback during SSR.
+vi.mock("../../servers/ServerServicesContext", async (load) => ({
+  ...(await load<typeof import("../../servers/ServerServicesContext")>()),
+  useServerOwner: () => scope.owner,
+  useServerApi: () => scope.api,
+  useServerSync: () => scope.sync,
+}));
+
 vi.mock("../models/modelWhitelist", async (load) => ({
   ...(await load<typeof import("../models/modelWhitelist")>()),
   useModelWhitelist: () => null,

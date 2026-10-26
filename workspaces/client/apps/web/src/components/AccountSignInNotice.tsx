@@ -1,6 +1,6 @@
 import { organizationLabel } from "./ClaudeOrganization";
 import { Button } from "@mantine/core";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import type { Account } from "./Accounts";
 
 export default function AccountSignInNotice({

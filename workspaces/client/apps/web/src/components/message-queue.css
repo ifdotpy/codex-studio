@@ -68,7 +68,6 @@
   max-height: 34dvh;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 .message-queue-body[hidden] {
   display: none;

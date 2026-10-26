@@ -1,23 +1,16 @@
 import assert from "node:assert/strict";
-import vm from "node:vm";
-import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { afterEach, it, vi } from "vitest";
+import { captureAudio } from "./capture";
 
-import { it } from "vitest";
+vi.mock("../native/client", () => ({ hasNativeClient: () => false }));
+vi.mock("../native/dictation", () => ({ captureNativeAudio: vi.fn() }));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 it("cleans up audio resources after construction, worklet and flush failures", async () => {
-  const ts = createRequire(new URL("../../package.json", import.meta.url))(
-    "typescript",
-  );
-  const source = (
-    await readFile(new URL("./capture.ts", import.meta.url), "utf8")
-  ).replace(/^import workletURL[^\n]+/m, 'const workletURL="fixture.js";');
-  const code = ts.transpileModule(source, {
-    compilerOptions: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.CommonJS,
-    },
-  }).outputText;
+  vi.useFakeTimers();
   for (const mode of [
     "constructor-failure",
     "worklet-failure",
@@ -62,57 +55,36 @@ it("cleans up audio resources after construction, worklet and flush failures", a
       }
       disconnect() {}
     }
-    const context = {
-      exports: {},
-      require(name) {
-        if (name === "../native/client")
-          return { hasNativeClient: () => false };
-        if (name === "../native/dictation")
-          return {
-            captureNativeAudio() {
-              throw Error("Unexpected native capture in browser fixture");
-            },
-          };
-        throw Error(`Unexpected capture dependency: ${name}`);
-      },
-      navigator: {
-        mediaDevices: {
-          getUserMedia: async () => ({
-            getTracks: () => [
-              {
-                stop() {
-                  stopped++;
-                },
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia: async () => ({
+          getTracks: () => [
+            {
+              stop() {
+                stopped++;
               },
-            ],
-          }),
-        },
+            },
+          ],
+        }),
       },
-      AudioContext,
-      AudioWorkletNode,
-      setTimeout: (fn) => {
-        setImmediate(fn);
-      },
-      Promise,
-      Error,
-      queueMicrotask,
-    };
-    vm.runInNewContext(code, context);
+    });
+    vi.stubGlobal("AudioContext", AudioContext);
+    vi.stubGlobal("AudioWorkletNode", AudioWorkletNode);
     if (mode.endsWith("failure") && mode !== "flush-failure")
       await assert.rejects(
-        context.exports.captureAudio(() => {}),
+        captureAudio(() => {}),
         /unavailable/,
       );
     else {
-      const capture = await context.exports.captureAudio(() => {});
-      if (mode === "flush-failure")
-        await assert.rejects(capture.stop(), /final audio chunk/);
-      else await capture.stop();
+      const capture = await captureAudio(() => {});
+      const stopped = capture.stop();
+      if (mode === "flush-failure") {
+        const rejected = assert.rejects(stopped, /final audio chunk/);
+        await vi.advanceTimersByTimeAsync(500);
+        await rejected;
+      } else await stopped;
     }
     assert.equal(stopped, 1);
     assert.equal(closed, mode === "constructor-failure" ? 0 : 1);
   }
-  console.log(
-    "PASS: actual capture code closes microphone on context/worklet failure; flush timeout reports incomplete tail and still closes stream/context; acknowledged stop succeeds.",
-  );
 });

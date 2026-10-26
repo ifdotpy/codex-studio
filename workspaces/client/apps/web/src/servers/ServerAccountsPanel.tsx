@@ -32,7 +32,7 @@ import {
 } from "./ServerAccountLimits";
 import { AccountCapacityView, type Account } from "../components/Accounts";
 import { accountLimitView, ProviderMark } from "../components/AccountTiles";
-import type { ServerServices } from "./serverServices";
+import type { AccountServices } from "./accountServices";
 
 type AccountAction = Extract<ServerCommand, { action: "account-action" }>;
 type StartAccount = (
@@ -46,7 +46,7 @@ export function accountSources(
   row: ServerAccountRow,
   servers: StudioServer[],
   fullAccounts: Record<string, Account[]>,
-  servicesFor?: (serverId: string) => ServerServices | undefined,
+  servicesFor?: (serverId: string) => AccountServices | undefined,
 ): AccountSource[] {
   return servers.flatMap((server) => {
     const listed = row.byServer[server.id];
@@ -81,7 +81,7 @@ export default function ServerAccountsPanel({
   accountAction: (serverId: string, command: AccountAction) => void;
   onDiscover?: () => void;
   /** The API of each server; without it the default API serves every server. */
-  servicesFor?: (serverId: string) => ServerServices | undefined;
+  servicesFor?: (serverId: string) => AccountServices | undefined;
 }) {
   const [fullAccounts, setFullAccounts] = useServerFullAccounts(
     servers.map((server) => server.id),

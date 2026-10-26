@@ -1,6 +1,6 @@
 import { get, post, refreshSession } from "../api";
 import { serverLocalStorage } from "./storage";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import { readServers, type StudioServer } from "./registry";
 
 export type ProjectLocation = {
@@ -100,9 +100,17 @@ export class ProjectReceiptRefused extends Error {}
 
 type ProjectMutationServices = {
   post: typeof post<"/api/projects">;
-  refreshSession: typeof refreshSession;
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">;
-};
+} & ({prepareSession:()=>Promise<unknown>;refreshSession?:never} | {prepareSession?:undefined;refreshSession:typeof refreshSession});
+
+async function prepareProjectSession(services:ProjectMutationServices) {
+  if (services.prepareSession) {
+    await services.prepareSession();
+    return {};
+  }
+  const session = await services.refreshSession();
+  return {sessionToken:session.token};
+}
 export async function saveProjectLocation(
   body: {
     action: "add_location" | "remove_location";
@@ -117,14 +125,14 @@ export async function saveProjectLocation(
     storage: serverLocalStorage,
   },
 ) {
-  const session = await services.refreshSession();
+  const sessionOptions = await prepareProjectSession(services);
   const { request_id: proposed, ...content } = body;
   const request = durableProjectRequest(content, proposed, services.storage);
   const result = await services
     .post(
       "/api/projects",
       { ...content, request_id: request.id },
-      { sessionToken: session.token },
+      sessionOptions,
     )
     .catch((error: unknown) => {
       request.reject(error);
@@ -154,7 +162,7 @@ export async function registerProject(
     storage: serverLocalStorage,
   },
 ) {
-  const session = await services.refreshSession();
+  const sessionOptions = await prepareProjectSession(services);
   const content = { path, ...(server !== "local" ? { server } : {}) };
   const request = durableProjectRequest(content, requestId, services.storage);
   const result = await services
@@ -164,7 +172,7 @@ export async function registerProject(
         ...content,
         ...(server !== "local" ? { request_id: request.id } : {}),
       },
-      { sessionToken: session.token },
+      sessionOptions,
     )
     .catch((error: unknown) => {
       request.reject(error);

@@ -1,20 +1,17 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.mjs";
 
 test("draft pushes coalesce at the production replication boundary", async ({
   context,
 }) => {
   test.setTimeout(60_000);
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
   const workspaceId = "f".repeat(32);
   const pushes = [];
   const pushTimes = [];
   const messages = [];
   let failNextPush = false;
-  const server = await createServer({
+  const server = await createFixtureViteServer({
     configFile: false,
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
@@ -36,8 +33,8 @@ test("draft pushes coalesce at the production replication boundary", async ({
       }),
     );
     await page.route("**/api/sync/drafts", async (route) => {
+      pushTimes.push(await page.evaluate(() => Date.now()));
       pushes.push(route.request().postDataJSON().rows);
-      pushTimes.push(Date.now());
       if (failNextPush) {
         failNextPush = false;
         await route.fulfill({ status: 503, body: "temporarily unavailable" });
@@ -57,6 +54,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
     });
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     await page.goto(`${origin}/check`);
+    await page.clock.install();
     const timing = await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       return client.DRAFT_SYNC_TIMING_MS;
@@ -83,7 +81,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
       );
     });
     await page.waitForFunction(() => !!window.draft);
-    await page.waitForTimeout(300);
+    await page.clock.runFor(300);
 
     const edit = async (text) => {
       await page.evaluate((text) => {
@@ -112,7 +110,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
     const burstSize = 10;
     for (let index = 0; index < burstSize; index++) {
       await edit(`typing ${index}`);
-      if (index + 1 < burstSize) await page.waitForTimeout(35);
+      if (index + 1 < burstSize) await page.clock.runFor(35);
     }
     const recovery = await page.evaluate(() => window.lastRecoverySnapshot);
     assert.ok(
@@ -120,13 +118,9 @@ test("draft pushes coalesce at the production replication boundary", async ({
         recovery.local === `typing ${burstSize - 1}`,
       "The latest recovery value is written synchronously before replication settles",
     );
-    await page.waitForTimeout(700);
+    await page.clock.runFor(700);
+    await expect.poll(() => pushes.length).toBe(before + 1);
     const burst = pushes.slice(before);
-    console.log(`typing burst measured POST count: ${burst.length}`);
-    assert.ok(
-      burst.length <= 1,
-      `A ${burstSize}-edit burst should send at most one draft POST; observed ${burst.length}`,
-    );
     assert.equal(
       JSON.parse(burst.at(-1)?.[0]?.newDocumentState?.payload || "{}").text,
       `typing ${burstSize - 1}`,
@@ -135,7 +129,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
 
     const identicalBefore = pushes.length;
     await edit(`typing ${burstSize - 1}`);
-    await page.waitForTimeout(450);
+    await page.clock.runFor(450);
     assert.equal(
       pushes.length,
       identicalBefore,
@@ -145,15 +139,11 @@ test("draft pushes coalesce at the production replication boundary", async ({
     const retryBefore = pushes.length;
     failNextPush = true;
     await edit("Latest draft after a failed POST");
-    const waitForPushCount = async (count) => {
-      const deadline = Date.now() + 8_000;
-      while (pushes.length < count && Date.now() < deadline)
-        await page.waitForTimeout(50);
-      assert.ok(
-        pushes.length >= count,
-        `Expected at least ${count} draft POSTs`,
-      );
-    };
+    const waitForPushCount = (count) =>
+      expect.poll(() => pushes.length).toBe(count);
+    await page.clock.runFor(timing.pushQuietWait);
+    await waitForPushCount(retryBefore + 1);
+    await page.clock.runFor(timing.pushRetry + timing.pushQuietWait);
     await waitForPushCount(retryBefore + 2);
     assert.equal(
       JSON.parse(pushes.at(-1)?.[0]?.newDocumentState?.payload || "{}").text,
@@ -161,13 +151,13 @@ test("draft pushes coalesce at the production replication boundary", async ({
       "A rejected push retries and converges to the latest version",
     );
 
-    const maxWaitStart = Date.now();
+    const maxWaitStart = await page.evaluate(() => Date.now());
     const maxWaitPushIndex = pushes.length;
     let pushedDuringTyping = false;
-    for (let index = 0; index < 60; index++) {
+    for (let index = 0; index < 24; index++) {
       await edit(`continuous ${index}`);
       if (pushes.length > maxWaitPushIndex) pushedDuringTyping = true;
-      if (index < 59) await page.waitForTimeout(100);
+      if (index < 23) await page.clock.runFor(100);
     }
     assert.ok(
       pushedDuringTyping,
@@ -182,14 +172,14 @@ test("draft pushes coalesce at the production replication boundary", async ({
         timing.pushMaxWait - timing.pushQuietWait - 200,
       "A quiet-period push must not satisfy the maximum-wait assertion",
     );
-    await page.waitForTimeout(400);
-    const continuous = pushes.slice(maxWaitPushIndex);
-    assert.equal(
-      JSON.parse(continuous.at(-1)?.[0]?.newDocumentState?.payload || "{}")
-        .text,
-      "continuous 59",
-      "The quiet-period push after continuous typing carries its final value",
-    );
+    await page.clock.runFor(400);
+    await expect
+      .poll(
+        () =>
+          JSON.parse(pushes.at(-1)?.[0]?.newDocumentState?.payload || "{}")
+            .text,
+      )
+      .toBe("continuous 23");
 
     await edit("Send this before the draft push timer");
     const sendResult = await page.evaluate(async () => {
@@ -209,12 +199,14 @@ test("draft pushes coalesce at the production replication boundary", async ({
     assert.equal(sendResult.body.text, "Send this before the draft push timer");
     assert.equal(messages.at(-1)?.text, sendResult.body.text);
     assert.equal(sendResult.result.id, "draft-coalescing-message");
-    await page.waitForTimeout(400);
-    assert.equal(
-      JSON.parse(pushes.at(-1)?.[0]?.newDocumentState?.payload || "{}").text,
-      "",
-      "The clear after durable send still propagates upstream",
-    );
+    await page.clock.runFor(400);
+    await expect
+      .poll(
+        () =>
+          JSON.parse(pushes.at(-1)?.[0]?.newDocumentState?.payload || "{}")
+            .text,
+      )
+      .toBe("");
     assert.deepEqual(errors, []);
     console.log("production draft replication coalescing contract passed");
   } finally {

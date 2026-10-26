@@ -2,7 +2,8 @@ import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, NumberInput, Stack } from "@mantine/core";
 import { useRef, useState } from "react";
-import { errorText, type PostBody, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostBody, PostResult } from "../api";
 import {
   ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE,
   ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX,

@@ -1,9 +1,22 @@
-"""Test-only helper commands: real CLI/deadline processes with injected durability.
+"""Test-only worker commands and native event synchronization.
 
 Never selected by Service's production command factory.
 """
 from pathlib import Path
 import sys
+
+
+async def wait_native_event(native, provider, payload=""):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from common import MAX_LINE
+
+    # The Rust blocking batch action uses numeric request IDs, unlike legacy calls.
+    # Its raw payload can exceed the guest's chunked-response line limit.
+    with patch("native.uuid.uuid4", return_value=SimpleNamespace(hex=1)), \
+            patch("native.MAX_LINE", MAX_LINE + len(payload.encode())):
+        return await native.call("nextBatch", handle=provider["handle"],
+                                 generation=provider["generation"], cursor=0, limit=1)
 
 
 def worker_command(script):

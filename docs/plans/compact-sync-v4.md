@@ -64,6 +64,94 @@ the stream with its full set and cursors, the v3 recovery path. Set changes are
 coalesced on the client. If the resource set changes before a session is announced,
 the client also reopens the stream with its full set and cursors.
 
+## Read ownership and recovery
+
+The no-polling rule is owned by [Rule: no polling, only SSE events](../sync-protocol.md#rule-no-polling-only-sse-events).
+
+Mutation responses contain only their operation result and durable request
+identity. Entity state is delivered through the entity stream; no HTTP mutation
+response carries entity deltas or cursor watermarks. Lost-response recovery keeps
+the exact request identity.
+
+Recovery reads share one finite budget (`READ_RECOVERY_MAX_ATTEMPTS`, owned by
+[`readRetry.ts`](../../workspaces/client/apps/web/src/sync/readRetry.ts));
+exhaustion is visible; it resets on a newer version, reconnect, or explicit user
+retry.
+
+`rateLimit` is the existing streamed per-account limits collection. `studioError`
+is the streamed Studio Errors collection: `studio_errors::publish` is its named
+publication owner, invoked by the transaction entity publisher. It derives rows from
+the server-owned error sources in the source transaction, publishes upserts and
+tombstones. `studio_errors::publish_changes` skips the rebuild when no changed
+source row can change the published rows. Startup seeds existing source rows before serving clients; the
+initial subscription snapshot supplies the current list. Server-owned time refreshes
+keep the stuck-input threshold and history window current; equal refreshes do
+not allocate a sequence. The native client and local combined sidebar project
+the same collection with the original action identities. App errors remain in
+the sidebar Warnings dialog, including atomic bulk dismissal and lost-response
+readback without repeating a dismissal. The
+Studio Errors GET remains available for explicit recovery only. User refresh of
+limits may make one explicit read; no idle limits hydration or watcher is used.
+
+Receipt summaries are persisted `messageReceipt` entities published from
+event/meta/item writes and reconciled into visible and hidden outbox entries.
+Plan summaries and annotations are `plan`/`annotation` entities published at
+source writes and deletes. Bounded task cards come from `task`/`monitor`
+entities; task output and details are explicit-open reads. Workspace
+plan/annotation sections read projections; file diffs, checkpoints/history and
+search stay explicit-open bounded reads.
+
+Server discovery snapshots and voice record batches (at most
+`SYNC_VOICE_STREAM_MAX_RECORDS`) travel as transient typed payloads in the
+stream; HTTP remains for recovery and explicit management.
+
+Bounded summaries are entity collections published by their server source owner:
+`accountsSummary` (current; excludes login receipts), `accountCost` (per account),
+`sessionCost` (per lead), `desktop` (current), `queue` (per agent), `terminal`
+(per live terminal). OpenAPI owns the value DTOs. The stream initializes and
+updates projections; GETs remain only for explicit and recovery reads. Login
+progress is T22's transient auth-progress.
+
+The following inventory records the client read paths found during the T17 audit.
+The table names the implementation owner for work delivered alongside T17. These
+assignments describe the integration contract; they do not claim that T17 verifies
+the other tasks.
+
+| Resource / caller                                                         | Read or behavior                                                                                                                                                           | Disposition                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Limits (`App.tsx`, `useAccountLimits.ts`, `useLimitEligibility.ts`)       | `/api/limits` hydration and resource watcher                                                                                                                               | `rateLimit` entities; explicit user refresh only.                                                                                                                                                                    |
+| Studio Errors (`StudioErrors.tsx`)                                        | `/api/studio-errors` on mount, every 120 s, open, and after actions                                                                                                        | `studioError` initial snapshot/upserts/tombstones; GET only for explicit recovery.                                                                                                                                   |
+| Accounts (`Accounts.tsx`)                                                 | `/api/accounts` after account resource changes                                                                                                                             | T18 bounded account entities; interactive Claude login progress and its POST workflow remain explicit.                                                                                                               |
+| Models (`WorkerModelPicker.tsx`, New Chat settings)                       | `/api/models` on model resource changes                                                                                                                                    | T19 per-model entities. `/api/models` remains an explicit recovery/read path; startup before a default account/catalog exists returns HTTP 503 with `catalogPending`; unknown explicit account keys remain HTTP 400. |
+| Account login (`ClaudeSignIn.tsx`, `ClaudeAddSignIn.tsx`)                 | `/api/accounts/claude/login` during interactive sign-in                                                                                                                    | T22 typed transient `AuthProgressResource{requestId}` frames; HTTP login-status reads only for recovery or explicit refresh.                                                                                         |
+| Costs and session cost (`Usage.tsx`)                                      | `/api/costs`, session-cost resource read                                                                                                                                   | T18 bounded costs/session-cost entities.                                                                                                                                                                             |
+| Desktop state (`SupervisorRecoveryNotice.tsx`, `NativeRuntimeStatus.tsx`) | `/api/desktop` after desktop resource changes                                                                                                                              | T18 bounded desktop entities.                                                                                                                                                                                        |
+| Queue (`useMessageQueue.ts`)                                              | `/api/queue` after queue resource changes                                                                                                                                  | T18 queue entities; preserve durable request identity and uncertain-send reconciliation.                                                                                                                             |
+| Terminal summary (`TerminalDock.tsx`)                                     | `/api/terminals` after terminal resource changes                                                                                                                           | T18 bounded terminal-summary entities.                                                                                                                                                                               |
+| Terminal output (`TerminalDock.tsx`)                                      | `/api/terminals/output(offset)`                                                                                                                                            | Explicit open/pagination and recovery read; output is unbounded and needs cursor/size bounds. Terminal input, resize, and media stay on their interactive protocols.                                                 |
+| Message receipts (`useMessageReceipts.ts`)                                | `/api/messages/receipts` in requested-ID chunks of 100                                                                                                                     | T24 receipt resource events; explicit receipt lookup/recovery keeps a bounded requested-ID set.                                                                                                                      |
+| Voice status (`RealtimeVoice.tsx`)                                        | POST `/api/voice/records` after voice resource changes                                                                                                                     | T25 typed transient voice progress; start/end POSTs and media lifecycle remain explicit.                                                                                                                             |
+| Retained-worktree costs (`RetainedWorktrees.tsx`)                         | `/api/retained-worktrees(agent)` after costs changes                                                                                                                       | T24 bounded retained-worktree resource updates; oversized details require recovery reads.                                                                                                                            |
+| Background task detail (`BackgroundTasks.tsx`)                            | `/api/task` when a task is opened                                                                                                                                          | T24 bounded task resource updates; unbounded detail remains explicit-open pagination.                                                                                                                                |
+| Workspace (`Workspace.tsx`)                                               | `/api/changes`, `/workspace`, `/plan`, `/checkpoints`, `/capabilities` after workspace changes                                                                             | T24 bounded workspace metadata frames; unbounded filesystem diffs remain explicit-open bounded-page reads.                                                                                                           |
+| Server discovery (`useServerDiscovery.ts`)                                | Re-load discovery after multi-server changes                                                                                                                               | T25 discovery stream owner; explicit discovery actions and reconnect recovery may read HTTP.                                                                                                                         |
+| Vault setup (`VaultSetup.tsx`)                                            | POST `/api/vault/setup/facts` every 2 s after the user reveals keys                                                                                                        | T22 `VaultReadinessResource{prefix}` transient readiness frames; no polling.                                                                                                                                         |
+| Server account limits (`ServerAccountLimits.tsx`)                         | Full account GET on settings selection; local age timer                                                                                                                    | Explicit settings selection; local age display timer is not a network read.                                                                                                                                          |
+| Non-network timers                                                        | Account sign-in, native notice, capacity retry, agent progress, session activity, usage age, reasoning duration, sign-in card, background-task progress, dictation elapsed | Local display/progress timers; keep local.                                                                                                                                                                           |
+| Draft sync interval                                                       | Drains locally queued draft writes                                                                                                                                         | Local write scheduling, not a state refetch; keep.                                                                                                                                                                   |
+| Resource-event peer heartbeat                                             | BroadcastChannel coordination                                                                                                                                              | Local cross-tab coordination, not HTTP polling; keep.                                                                                                                                                                |
+| Resource watcher `.refresh()` handlers                                    | Handler-dependent                                                                                                                                                          | Audit the handler's owner; do not make an HTTP read on a revision hint. Explicit user refresh remains allowed.                                                                                                       |
+
+VaultSetup no longer polls. While awaiting a paper key it subscribes
+`VaultReadinessResource{prefix}`; a notify-owned OS watcher wakes the sync stream,
+which sends a typed transient resource-progress frame with key-presence metadata
+after the subscription ack and on change. ClaudeSignIn/ClaudeAddSignIn subscribe
+`AuthProgressResource{requestId}`; the public login receipt travels only in
+transient resource-progress frames and is never persisted to SQLite or RxDB.
+HTTP login-status/facts reads remain for recovery or explicit refresh. Removing
+the last subscriber removes the source. The listener flush timer is removed;
+listeners publish once per event.
+
 ## Ordering invariants (unchanged from v3)
 
 Startup moves legacy workspace rate-limit snapshots to per-account entities and

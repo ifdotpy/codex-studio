@@ -69,12 +69,13 @@ fn cards(state: &State) -> Vec<Value> {
 /// Wait for the card of `rpc`. The provider must not get an answer first.
 async fn card_of(state: &State, peer: &mut Peer, rpc: impl Into<Value>) -> Value {
     let rpc = rpc.into();
+    let mut changes = state.commits();
     let card = async {
         loop {
             if let Some(card) = cards(state).into_iter().find(|card| card["rpcId"] == rpc) {
                 return card;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            changes.changed().await.expect("native card commit");
         }
     };
     tokio::select! {

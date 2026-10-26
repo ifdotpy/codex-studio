@@ -19,23 +19,42 @@ impl EntityPublisher for DefaultPublisher {
         let changes = crate::sync_policy::EntityChanges {
             agents: pending.agents.clone(),
             requests: pending.requests.clone(),
+            work: pending.work.clone(),
+            source_work_changes: Some(pending.work_changes.clone()),
+            work_refusal_owners: pending.work_refusal_owners.clone(),
             ..Default::default()
         };
         let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
+        for id in &pending.terminals {
+            crate::terminal_driver::publish_terminal(transaction, id)?;
+        }
+        for id in &pending.queues {
+            crate::queue_write::publish_queue(transaction, id)?;
+        }
         crate::sync_policy::publish_entity_changes(
             transaction,
             &changes,
             server_id.as_deref(),
             &|_, _, _, _| true,
-        )
+        )?;
+        crate::sync_policy::publish_summary_changes(transaction, pending)?;
+        if !pending.studio_errors.is_empty() {
+            crate::studio_errors::publish_changes(transaction, &pending.studio_errors)?;
+        }
+        Ok(())
     }
 }
 
 /// Make every later writer transaction of `store` publish the client entities of the
 /// agent and request rows it changed. The server calls it once, right after it opens
 /// the store.
-pub fn install(store: &RuntimeStore) {
+pub async fn install(store: &RuntimeStore) -> StoreResult<()> {
     store.install_entity_publisher(Arc::new(DefaultPublisher));
+    store
+        .transaction(crate::sync_policy::seed_work_details)
+        .await?;
+    // Upgrades may have source errors but no studioError entities yet.
+    crate::studio_errors::refresh(store).await
 }
 
 #[cfg(test)]
@@ -50,7 +69,9 @@ pub(crate) mod test_support {
         let store = RuntimeStore::open(Some(dir.path()))
             .await
             .expect("runtime store opens");
-        super::install(&store);
+        super::install(&store)
+            .await
+            .expect("initial error projection");
         (dir, store)
     }
 

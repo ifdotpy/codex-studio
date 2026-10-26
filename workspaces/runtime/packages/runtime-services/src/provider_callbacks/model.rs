@@ -93,7 +93,7 @@ impl CallbackSnapshot {
     pub(super) fn context(&self) -> &CallbackContext {
         &self.context
     }
-    pub(super) fn active(&self) -> Result<(), CallbackError> {
+    pub(crate) fn active(&self) -> Result<(), CallbackError> {
         if self.actor["autoWake"] != true
             || studio_runtime_store::truthy(self.actor.get("deletedAt"))
         {

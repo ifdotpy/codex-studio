@@ -341,16 +341,13 @@ mod tests {
     #[test]
     fn parsed_messages_resolve_timing_without_a_serialization_round_trip() {
         use serde_json::json;
-        for importance in ["progress", "question", "message"] {
+        for (importance, expected) in [
+            ("progress", DeliveryMoment::NextTurn),
+            ("question", DeliveryMoment::CurrentTurn),
+            ("message", DeliveryMoment::CurrentTurn),
+        ] {
             let mut args = json!({"importance":importance,"text":"hello","extra":{"rich":true}});
-            assert_eq!(
-                DeliveryMoment::for_message(&args),
-                Ok(if importance == "progress" {
-                    DeliveryMoment::NextTurn
-                } else {
-                    DeliveryMoment::CurrentTurn
-                })
-            );
+            assert_eq!(DeliveryMoment::for_message(&args), Ok(expected));
             for (value, expected) in DeliveryMoment::ALL
                 .map(|moment| (moment.as_str(), moment))
                 .into_iter()

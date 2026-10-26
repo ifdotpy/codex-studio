@@ -1,6 +1,6 @@
-import { randomUUID } from "../uuid";
 import { audioFrameMethod, bindAudioFrames } from "./audioFrames";
-import { preferenceScope } from "./preferenceState";
+import { preferenceScope } from "./preferenceScope";
+import { NativeCommandError } from "./commandError";
 
 const REQUEST = "studio-native-frame-request";
 const RESPONSE = "studio-native-frame-response";
@@ -12,14 +12,19 @@ export function isNativeFrame() {
 // TODO(attar-sync): Replace this postMessage request/reply hop with Attar's
 // synchronous, owner-scoped native bridge for local commits. Preserve server
 // isolation and the original request ID; do not make network calls synchronous.
-export function frameRequest<T>(
+let bootstrapSequence = 0;
+export async function frameRequest<T>(
   method: string,
   params: unknown,
-  id: string = randomUUID(),
+  id?: string,
 ): Promise<T> {
+  id ??= await frameRequest<string>(
+    "system.uuid",
+    {},
+    `frame-bootstrap:${++bootstrapSequence}`,
+  );
   return new Promise((resolve, reject) => {
     const cleanup = () => {
-      clearTimeout(timeout);
       window.removeEventListener("message", receive);
       window.removeEventListener("pagehide", closed);
     };
@@ -40,24 +45,14 @@ export function frameRequest<T>(
       )
         return;
       cleanup();
-      if (event.data.error) reject(new Error(event.data.error));
-      else resolve(event.data.result as T);
-    };
-    const timeout = setTimeout(
-      () => {
-        cleanup();
+      if (event.data.error)
         reject(
-          new Error(
-            "The native service did not respond. The request was not repeated.",
+          new NativeCommandError(
+            event.data.errorDetails ?? { message: event.data.error },
           ),
         );
-      },
-      method === "speech.transcribe"
-        ? 76 * 60_000
-        : method === "desktop.requestMicrophone"
-          ? 5 * 60_000
-          : 30_000,
-    );
+      else resolve(event.data.result as T);
+    };
     window.addEventListener("message", receive);
     window.addEventListener("pagehide", closed, { once: true });
     window.parent.postMessage(
@@ -75,6 +70,25 @@ export function bindNativeFrames(
   const audio = bindAudioFrames(invoke, listen);
   const active = new Map<HTMLIFrameElement, Set<string>>();
   const saves = new Map<string, HTMLIFrameElement>();
+  const contexts = new Map<
+    string,
+    { frame: HTMLIFrameElement; owner: string }
+  >();
+  const cutovers = new Map<
+    string,
+    { frame: HTMLIFrameElement; owner: string }
+  >();
+  const subscriptions = new Map<
+    string,
+    {
+      frame: HTMLIFrameElement;
+      owner: string;
+      origin: string;
+      handle: string;
+      subscription: string;
+    }
+  >();
+  let serviceEvents: Promise<() => void> | undefined;
   let disposed = false;
   const receive = async (event: MessageEvent) => {
     if (event.data?.kind !== REQUEST) return;
@@ -92,7 +106,19 @@ export function bindNativeFrames(
     const [owner, frame] = entry;
     const { id, method, params } = event.data;
     if (typeof id !== "string" || !id || id.length > 128) return;
-    const reply = (value: { result: unknown } | { error: string }) => {
+    const reply = (
+      value:
+        | { result: unknown }
+        | {
+            error: string;
+            errorDetails?: {
+              message: string;
+              code?: string;
+              status?: number;
+              details?: unknown;
+            };
+          },
+    ) => {
       if (!disposed && frame.isConnected && frames.get(owner) === frame)
         frame.contentWindow?.postMessage(
           { kind: RESPONSE, id, ...value },
@@ -139,10 +165,35 @@ export function bindNativeFrames(
       method !== "browser.preferences" &&
       method !== "browser.profile" &&
       method !== "browser.profileChunk" &&
+      method !== "system.uuid" &&
+      method !== "system.uuidBatch" &&
+      method !== "service.open" &&
+      method !== "service.legacy_preferences" &&
+      method !== "service.storage_cutover" &&
+      method !== "service.verify_cutover" &&
+      method !== "service.finish_cutover" &&
+      method !== "service.request" &&
       !localService
     )
       return reply({
         error: "This native service is not available to server views.",
+      });
+    if (
+      method === "service.request" &&
+      (contexts.get(params?.handle)?.frame !== frame ||
+        contexts.get(params?.handle)?.owner !== owner)
+    )
+      return reply({
+        error: "This native context belongs to another server view.",
+      });
+    if (
+      (method === "service.verify_cutover" ||
+        method === "service.finish_cutover") &&
+      (cutovers.get(params?.token)?.frame !== frame ||
+        cutovers.get(params?.token)?.owner !== owner)
+    )
+      return reply({
+        error: "This native storage proof belongs to another server view.",
       });
     if (
       method === "desktop.openSignIn" &&
@@ -159,34 +210,114 @@ export function bindNativeFrames(
     active.set(frame, pending);
     pending.add(id);
     try {
-      const result = audioMethod
-        ? await audio.request(method, params, id, {
-            frame,
-            origin: event.origin,
-            live: () =>
-              !disposed && frame.isConnected && frames.get(owner) === frame,
-          })
-        : method === "browser.profileChunk"
-          ? await invoke(
-              "profile.chunk",
-              { owner: `server:${owner}`, sha256: params?.sha256 },
-              id,
-            )
-          : method === "browser.profile"
-            ? await invoke("profile.snapshot", { owner: `server:${owner}` }, id)
-            : method === "browser.preferences"
-              ? await preferenceScope(invoke, `server:${owner}`)(
-                  params?.method,
-                  params?.params,
+      if (method === "service.request" && params?.method === "view.subscribe") {
+        if (!listen) throw new Error("Native service events are unavailable.");
+        serviceEvents ??= listen((input: any) => {
+          const row = subscriptions.get(input?.event);
+          if (
+            !row ||
+            disposed ||
+            !row.frame.isConnected ||
+            frames.get(row.owner) !== row.frame
+          )
+            return;
+          row.frame.contentWindow?.postMessage(
+            { kind: "studio-native-service-event", ...input },
+            row.origin,
+          );
+        });
+        await serviceEvents;
+        const subscription = params?.params?.subscription;
+        if (typeof subscription !== "string" || !subscription)
+          throw new Error("Invalid native subscription identity.");
+        subscriptions.set(`${params.handle}:${subscription}`, {
+          frame,
+          owner,
+          origin: event.origin,
+          handle: params.handle,
+          subscription,
+        });
+      }
+      const result =
+        method === "service.storage_cutover"
+          ? await invoke(method, { serverId: owner }, id)
+          : method === "service.verify_cutover"
+            ? await invoke(
+                method,
+                { serverId: owner, token: params?.token },
+                id,
+              )
+            : method === "service.finish_cutover"
+              ? await invoke(
+                  method,
+                  {
+                    serverId: owner,
+                    token: params?.token,
+                    metadata: params?.metadata,
+                    bytes: params?.bytes,
+                  },
                   id,
                 )
-              : await invoke(
-                  method,
-                  method === "desktop.openSignIn"
-                    ? { value: params?.value, signInOwner: owner }
-                    : params,
-                  id,
-                );
+              : method === "service.legacy_preferences"
+                ? await invoke(
+                    method,
+                    { serverId: owner, writes: params?.writes },
+                    id,
+                  )
+                : method === "service.open"
+                  ? await invoke(method, { serverId: owner }, id)
+                  : audioMethod
+                    ? await audio.request(method, params, id, {
+                        frame,
+                        origin: event.origin,
+                        live: () =>
+                          !disposed &&
+                          frame.isConnected &&
+                          frames.get(owner) === frame,
+                      })
+                    : method === "browser.profileChunk"
+                      ? await invoke(
+                          "profile.chunk",
+                          { owner: `server:${owner}`, sha256: params?.sha256 },
+                          id,
+                        )
+                      : method === "browser.profile"
+                        ? await invoke(
+                            "profile.snapshot",
+                            { owner: `server:${owner}` },
+                            id,
+                          )
+                        : method === "browser.preferences"
+                          ? await preferenceScope(invoke, `server:${owner}`)(
+                              params?.method,
+                              params?.params,
+                              id,
+                            )
+                          : await invoke(
+                              method,
+                              method === "desktop.openSignIn"
+                                ? { value: params?.value, signInOwner: owner }
+                                : params,
+                              id,
+                            );
+      if (method === "service.open") {
+        const handle = (result as { handle?: string })?.handle;
+        if (typeof handle !== "string" || !handle)
+          throw new Error("Invalid native server context.");
+        if (!disposed && frame.isConnected && frames.get(owner) === frame)
+          contexts.set(handle, { frame, owner });
+      }
+      if (method === "service.storage_cutover") {
+        const token = (result as { token?: string })?.token;
+        if (typeof token !== "string" || !token)
+          throw new Error("Invalid native storage proof.");
+        if (!disposed && frame.isConnected && frames.get(owner) === frame)
+          cutovers.set(token, { frame, owner });
+      }
+      if (method === "service.request" && params?.method === "view.unsubscribe")
+        subscriptions.delete(
+          `${params.handle}:${params?.params?.subscription}`,
+        );
       if (method === "desktop.saveBegin") {
         const transfer = (result as { transfer?: string })?.transfer;
         if (typeof transfer !== "string")
@@ -197,7 +328,23 @@ export function bindNativeFrames(
       }
       reply({ result });
     } catch (error) {
-      reply({ error: error instanceof Error ? error.message : String(error) });
+      if (method === "service.request" && params?.method === "view.subscribe")
+        subscriptions.delete(
+          `${params.handle}:${params?.params?.subscription}`,
+        );
+      reply({
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof NativeCommandError
+          ? {
+              errorDetails: {
+                message: error.message,
+                code: error.code,
+                status: error.status,
+                details: error.details,
+              },
+            }
+          : {}),
+      });
     } finally {
       if (method === "desktop.saveFinish" || method === "desktop.saveCancel")
         saves.delete(params?.value?.transfer);
@@ -206,8 +353,49 @@ export function bindNativeFrames(
     }
   };
   window.addEventListener("message", receive);
+  const pruneServices = () => {
+    for (const [id, row] of subscriptions)
+      if (
+        disposed ||
+        !row.frame.isConnected ||
+        frames.get(row.owner) !== row.frame
+      ) {
+        subscriptions.delete(id);
+        void invoke("service.request", {
+          handle: row.handle,
+          method: "view.unsubscribe",
+          params: { subscription: row.subscription },
+        }).catch(() => {});
+      }
+    for (const [handle, row] of contexts)
+      if (
+        disposed ||
+        !row.frame.isConnected ||
+        frames.get(row.owner) !== row.frame
+      )
+        contexts.delete(handle);
+    for (const [token, row] of cutovers)
+      if (
+        disposed ||
+        !row.frame.isConnected ||
+        frames.get(row.owner) !== row.frame
+      )
+        cutovers.delete(token);
+  };
+  const observer =
+    typeof MutationObserver === "function"
+      ? new MutationObserver(pruneServices)
+      : undefined;
+  if (observer && typeof document !== "undefined")
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
   return () => {
     disposed = true;
+    observer?.disconnect();
+    pruneServices();
+    void serviceEvents?.then((stop) => stop());
     audio.dispose();
     for (const transfer of saves.keys())
       void invoke("desktop.saveCancel", { value: { transfer } }).catch(

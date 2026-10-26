@@ -167,6 +167,9 @@ impl DiskGate {
         {
             state.free = (self.sampler)(&self.root);
             state.sampled_at = Some(now);
+            crate::resource_notify::publish_bounded_source(
+                crate::resource_notify::BoundedSource::Desktop,
+            );
         }
         let free = state.free?;
         let observed = state.observed_until.is_some_and(|until| now < until);
@@ -188,6 +191,9 @@ impl DiskGate {
         state.full = true;
         state.observed_until = Some(now + RECHECK);
         state.sampled_at = None;
+        crate::resource_notify::publish_bounded_source(
+            crate::resource_notify::BoundedSource::Desktop,
+        );
     }
 
     /// The `/api/desktop` `diskSpace` object.

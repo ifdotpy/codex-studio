@@ -548,6 +548,12 @@ fn run_claude_status(
     run_claude_status_with_timeout(binary, options, CLAUDE_TIMEOUT)
 }
 
+// Expire only after the real leader exit and inherited-pipe handshake.
+#[cfg(test)]
+thread_local! {
+    static EXPIRE_CLAUDE_STATUS_AFTER_LEADER_EXIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "auth probes execute on account-driver blocking workers"
@@ -602,7 +608,10 @@ fn run_claude_status_with_timeout(
                 .map_err(|_| "spawn")?
                 .ok_or("spawn")?;
         }
-        if started.elapsed() >= timeout {
+        let expired = started.elapsed() >= timeout;
+        #[cfg(test)]
+        let expired = expired || (exited && EXPIRE_CLAUDE_STATUS_AFTER_LEADER_EXIT.replace(false));
+        if expired {
             terminate_claude_process_group(child);
             return Err("timeout");
         }
@@ -3243,19 +3252,22 @@ ionice -p $$
         let directory = tempfile::tempdir().expect("create Claude command fixture");
         let command = directory.path().join("claude");
         let pid_file = directory.path().join("descendant-pid");
+        let ready = directory.path().join("ready");
         let script = format!(
-            "#!/bin/sh\n(exec sleep 30) &\necho $! > '{}'\nexit 0\n",
+            "#!/bin/sh\nmkfifo '{ready}'\n(echo ready > '{ready}'; read -r release < '{ready}') &\necho $! > '{}'\nread -r ready < '{ready}'\nexit 0\n",
             pid_file.display(),
+            ready = ready.display(),
         );
         fs::write(&command, script).expect("write Claude command fixture");
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
             .expect("make Claude command executable");
 
+        EXPIRE_CLAUDE_STATUS_AFTER_LEADER_EXIT.set(true);
         assert!(matches!(
             run_claude_status_with_timeout(
                 command.to_str().expect("fixture path is UTF-8"),
                 None,
-                Duration::from_millis(500),
+                Duration::from_secs(30),
             ),
             Err("timeout")
         ));
@@ -3269,20 +3281,10 @@ ionice -p $$
             .parse()
             .expect("valid descendant pid");
         let pid = rustix::process::Pid::from_raw(descendant_pid).expect("valid pid");
-        let exited = match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
-            Ok(pidfd) => {
-                let timeout = rustix::event::Timespec::try_from(Duration::from_secs(2))
-                    .expect("two second pidfd wait fits timespec");
-                let mut poll_fd = rustix::event::PollFd::new(&pidfd, rustix::event::PollFlags::IN);
-                rustix::event::poll(std::slice::from_mut(&mut poll_fd), Some(&timeout))
-                    .expect("wait for descendant pidfd")
-                    == 1
-                    && poll_fd.revents().contains(rustix::event::PollFlags::IN)
-            }
-            Err(rustix::io::Errno::SRCH) => true,
-            Err(error) => panic!("open descendant pidfd: {error}"),
-        };
-        assert!(exited, "group descendant exited after timeout cleanup");
+        assert!(
+            wait_for_pid_exit(pid),
+            "group descendant exited after timeout cleanup"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -3293,25 +3295,26 @@ ionice -p $$
         let directory = tempfile::tempdir().expect("create Claude command fixture");
         let command = directory.path().join("claude");
         let pid_file = directory.path().join("escaped-pid");
+        let ready = directory.path().join("ready");
         let script = format!(
             r#"#!/bin/sh
-(setsid sh -c 'echo $$ > "{}"; exec sleep 30') &
+mkfifo '{ready}'
+setsid sh -c 'echo $$ > "$1"; echo ready > "$2"; read -r release < "$2"' fixture '{}' '{ready}' &
+read -r ready < '{ready}'
 exit 0
 "#,
             pid_file.display(),
+            ready = ready.display(),
         );
         fs::write(&command, script).expect("write Claude command fixture");
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
             .expect("make Claude command executable");
-        let started = Instant::now();
-        assert!(matches!(
-            run_claude_status_with_timeout(
-                command.to_str().expect("fixture path is UTF-8"),
-                None,
-                Duration::from_secs(2),
-            ),
-            Err("timeout")
-        ));
+        EXPIRE_CLAUDE_STATUS_AFTER_LEADER_EXIT.set(true);
+        let result = run_claude_status_with_timeout(
+            command.to_str().expect("fixture path is UTF-8"),
+            None,
+            Duration::from_secs(30),
+        );
         assert!(pid_file.is_file(), "escaped child started");
         let escaped_pid: i32 = fs::read_to_string(&pid_file)
             .expect("read escaped pid")
@@ -3319,29 +3322,30 @@ exit 0
             .parse()
             .expect("valid escaped pid");
         let pid = rustix::process::Pid::from_raw(escaped_pid).expect("valid pid");
-        assert!(
-            started.elapsed() < Duration::from_secs(4),
-            "timeout cleanup is bounded"
-        );
-        assert!(
-            rustix::process::test_kill_process(pid).is_ok(),
-            "escaped group is not signalled"
-        );
-        let _cleanup_result = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while process_is_running(pid) && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(!process_is_running(pid), "fixture child cleaned up");
+        // Clean the escaped helper before assertions can unwind the fixture.
+        let alive = rustix::process::test_kill_process(pid).is_ok();
+        let cleanup = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        assert!(wait_for_pid_exit(pid), "fixture child cleaned up");
+        assert!(matches!(result, Err("timeout")), "{result:?}");
+        assert!(alive, "escaped group is not signalled");
+        assert!(cleanup.is_ok());
     }
 
     #[cfg(target_os = "linux")]
-    fn process_is_running(pid: rustix::process::Pid) -> bool {
-        fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_pid()))
-            .ok()
-            .and_then(|status| status.rsplit_once(')').map(|(_, status)| status.to_owned()))
-            .and_then(|status| status.trim_start().chars().next())
-            .is_some_and(|state| state != 'Z')
+    fn wait_for_pid_exit(pid: rustix::process::Pid) -> bool {
+        match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
+            Ok(pidfd) => {
+                let timeout = rustix::event::Timespec::try_from(Duration::from_secs(2))
+                    .expect("pidfd wait fits timespec");
+                let mut fd = rustix::event::PollFd::new(&pidfd, rustix::event::PollFlags::IN);
+                rustix::event::poll(std::slice::from_mut(&mut fd), Some(&timeout))
+                    .expect("wait for descendant exit")
+                    == 1
+                    && fd.revents().contains(rustix::event::PollFlags::IN)
+            }
+            Err(rustix::io::Errno::SRCH) => true,
+            Err(error) => panic!("open descendant pidfd: {error}"),
+        }
     }
 
     struct FakeReader(AuthMetadata);

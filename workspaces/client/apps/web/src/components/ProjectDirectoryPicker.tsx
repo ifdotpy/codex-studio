@@ -10,7 +10,7 @@ import {
 } from "@mantine/core";
 import { ArrowUp, ChevronRight, Folder, Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import type { paths } from "../generated/api";
 import {
   readProjectServers,

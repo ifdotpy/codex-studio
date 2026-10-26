@@ -48,14 +48,10 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
-import {
-  isCyberPolicyRefusal,
-  nativeErrorKind,
-  nativeThreadError,
-} from "../nativeErrors";
+import { isCyberPolicyRefusal, nativeThreadError } from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -71,12 +67,16 @@ import {
   mergeQueueOrder,
 } from "./message-delivery/messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
-import { isSendingMessage } from "./removeSendingMessages";
+import { isSendingMessage } from "./removeSendingMessagesCore";
 
-import { useConversationScroll } from "./useConversationScroll";
+import {
+  useConversationScroll,
+  TRANSCRIPT_HISTORY_START_PX,
+} from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
-import { useServerUploads } from "../servers/ServerServicesContext";
+import { useServerAttachmentSelections } from "../servers/ServerServicesContext";
+import type { AttachmentSelectionBatch } from "../attachmentSelection";
 import {
   type Agent,
   type Json,
@@ -115,7 +115,7 @@ import { LiveAgentPhase } from "./agents/AgentPhase";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
-import type { useAccounts } from "./Accounts";
+import { AccountTransferChip, type useAccounts } from "./Accounts";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -223,6 +223,7 @@ function useCompactHeaderTools() {
 
 export default function Conversation(p: {
   id: string | null;
+  visible?: boolean;
   projectName?: string;
   recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
@@ -267,7 +268,7 @@ export default function Conversation(p: {
   reloadLimits: () => void;
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();
-  const { queueUploads } = useServerUploads();
+  const attachmentSelections = useServerAttachmentSelections();
   const { get, post } = useServerApi();
   const { changeOutbox } = useServerOutbox();
 
@@ -375,6 +376,7 @@ export default function Conversation(p: {
     p.agent?.source === "managed",
     p.data.stateDir,
     p.syncWorkspaceId,
+    p.visible ?? true,
   );
   const outgoing = (p.outgoing || []).filter(
     (entry) => entry.body.room === p.id,
@@ -497,10 +499,24 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     hasRecentScrollInput,
+    consumeHistoryScrollInput,
     remember,
     revealRequest,
     getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  const loadOlderAtStart = () => {
+    if (
+      !before ||
+      pageLoading ||
+      !scroll.current ||
+      scroll.current.scrollTop > TRANSCRIPT_HISTORY_START_PX ||
+      !consumeHistoryScrollInput()
+    )
+      return;
+    setFollow(false);
+    setPageAnchor(getAnchorId());
+    void older().catch((error) => p.notify(errorText(error)));
+  };
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
   const handledJump = useRef("");
@@ -590,7 +606,6 @@ export default function Conversation(p: {
   const uploading = addingFiles || pendingFiles.length > 0;
   useServerActivity(addingFiles || uploadRecovery.pending.length > 0);
   const [limitsOpen, setLimitsOpen] = useState(false);
-  const refreshedFailure = useRef("");
   const sendLock = useRef<symbol | null>(null);
   const latestSend = useRef<Record<string, symbol>>({});
   const branchLock = useRef(false);
@@ -632,19 +647,6 @@ export default function Conversation(p: {
   );
   const threadBlock = nativeThreadError(agent);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
-  const errorKind = nativeErrorKind(agent?.error);
-  const failureKey = [
-    p.id,
-    agent?.nativeTurnError?.turnId || agent?.turnId || agent?.lastCompletedTurn,
-    errorKind,
-  ].join(":");
-  useEffect(() => {
-    if (!["usageLimitExceeded", "rateLimitExceeded"].includes(errorKind))
-      return;
-    if (refreshedFailure.current === failureKey) return;
-    refreshedFailure.current = failureKey;
-    p.reloadLimits();
-  }, [errorKind, failureKey, p.reloadLimits]);
   const displayPhase = useDisplayPhase(
     p.id,
     agent?.activity?.phase || "thinking",
@@ -695,6 +697,7 @@ export default function Conversation(p: {
       >
         <UnifiedAgentSettings
           key={p.agent.id}
+          showTransferStatus={false}
           state={p.accountsState}
           notify={p.notify}
           agent={p.agent}
@@ -705,10 +708,10 @@ export default function Conversation(p: {
           openRequest={
             modelCommandRequest.id === p.id ? modelCommandRequest.serial : 0
           }
-          renderTrigger={({ opened, ref, onClick }) => (
+          renderTrigger={({ agent, opened, ref, onClick }) => (
             <ExecutionSummaryTrigger
               ref={ref}
-              agent={p.agent!}
+              agent={agent}
               lead={p.lead}
               team={p.data.runtime?.agents || []}
               aria-expanded={opened}
@@ -783,14 +786,14 @@ export default function Conversation(p: {
     }
     return { queue: shown, sending: held };
   }, [queued]);
-  const addFiles = async (files: globalThis.File[]) => {
+  const addFiles = async (files: AttachmentSelectionBatch) => {
     if (!p.id || !managed)
       throw new Error("Select a managed chat before attaching files.");
     if (uploadLock.current)
       throw new Error("Wait for the selected files to be saved, then retry.");
-    if (!files.length) throw new Error("Select at least one file.");
+    if (!files.files.length) throw new Error("Select at least one file.");
     if (
-      files.length + assets.length + pendingFiles.length >
+      files.files.length + assets.length + pendingFiles.length >
       MAX_TURN_ATTACHMENTS
     )
       throw new Error(`Attach at most ${MAX_TURN_ATTACHMENTS} files.`);
@@ -799,7 +802,14 @@ export default function Conversation(p: {
     setUploading(true);
     try {
       uploadRecovery.include(
-        await queueUploads(p.data.stateDir, id, files, p.syncWorkspaceId || ""),
+        await attachmentSelections.enqueue(
+          {
+            stateDir: p.data.stateDir,
+            agent: id,
+            workspace: p.syncWorkspaceId || "",
+          },
+          files,
+        ),
       );
       uploadRecovery.retry();
     } finally {
@@ -903,11 +913,20 @@ export default function Conversation(p: {
     setUploading(true);
     try {
       uploadRecovery.include(
-        await queueUploads(
-          p.data.stateDir,
-          id,
-          [new File([text], "message.txt", { type: "text/plain" })],
-          p.syncWorkspaceId || "",
+        await attachmentSelections.enqueue(
+          {
+            stateDir: p.data.stateDir,
+            agent: id,
+            workspace: p.syncWorkspaceId || "",
+          },
+          await attachmentSelections.text(
+            {
+              stateDir: p.data.stateDir,
+              agent: id,
+              workspace: p.syncWorkspaceId || "",
+            },
+            text,
+          ),
         ),
       );
       uploadRecovery.retry();
@@ -1196,12 +1215,19 @@ export default function Conversation(p: {
     }));
     input.current?.focus({ preventScroll: true });
   });
-  const removeMessage = useMessageAction((m: Message) => {
+  const removeMessage = useMessageAction(async (m: Message) => {
     try {
-      removed.remove(m);
+      await removed.remove(m);
       p.notify("Message removed from this device. Delivery was not cancelled.");
     } catch (error) {
       p.notify(`Could not remove this message: ${errorText(error)}`);
+    }
+  });
+  const restoreRemoved = useMessageAction(async () => {
+    try {
+      await removed.restore();
+    } catch (error) {
+      p.notify(`Could not restore these messages: ${errorText(error)}`);
     }
   });
   const renderMessage = (m: Message) => (
@@ -1600,11 +1626,15 @@ export default function Conversation(p: {
         onScroll={() => {
           onScroll();
           if (!getFollow()) setPageAnchor(getAnchorId());
+          loadOlderAtStart();
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) loadOlderAtStart();
         }}
       >
         <div ref={content} className="message-content">
           {removed.hasRemoved && (
-            <Button size="compact-xs" onClick={() => removed.restore()}>
+            <Button size="compact-xs" onClick={() => restoreRemoved()}>
               Restore removed messages
             </Button>
           )}
@@ -1820,9 +1850,10 @@ export default function Conversation(p: {
             onDrop={(event) => {
               event.preventDefault();
               setDragging(false);
-              void addFiles(Array.from(event.dataTransfer.files)).catch(
-                (error) => p.notify(errorText(error)),
-              );
+              void attachmentSelections
+                .drop(event)
+                .then((selection) => selection && addFiles(selection))
+                .catch((error) => p.notify(errorText(error)));
             }}
             onSubmit={(e) => {
               e.preventDefault();
@@ -1889,6 +1920,13 @@ export default function Conversation(p: {
                 );
               return (
                 <>
+                  {managed &&
+                    p.agent?.isLead &&
+                    p.agent.accountTransfer?.scope !== "subagents" && (
+                      <AccountTransferChip
+                        transfer={p.agent.accountTransfer ?? undefined}
+                      />
+                    )}
                   <PromptInput
                     value={draft}
                     session={p.id || "new"}
@@ -1913,6 +1951,7 @@ export default function Conversation(p: {
                         p.notify(errorText(error)),
                       )
                     }
+                    onPasteError={(error) => p.notify(errorText(error))}
                     onSend={() => void submit()}
                     onQueue={() => void submit(DeliveryMoment.NextTurn)}
                     onRecallKeyDown={promptRecall.onKeyDown}
@@ -1966,18 +2005,20 @@ export default function Conversation(p: {
                     </div>
                   )}
                   <div className="composer-bar">
-                    <DraftVersions
-                      key={`drafts:${p.id || "new"}`}
-                      versions={p.draftConflicts || []}
-                      useVersion={(version, mode) =>
-                        p.setDraft((current) =>
-                          mode === "append" && current
-                            ? `${current}\n\n${version.text}`
-                            : version.text,
-                        )
-                      }
-                      dismiss={(version) => p.dismissDraft?.(version)}
-                    />
+                    <div className="composer-draft-control">
+                      <DraftVersions
+                        key={`drafts:${p.id || "new"}`}
+                        versions={p.draftConflicts || []}
+                        useVersion={(version, mode) =>
+                          p.setDraft((current) =>
+                            mode === "append" && current
+                              ? `${current}\n\n${version.text}`
+                              : version.text,
+                          )
+                        }
+                        dismiss={(version) => p.dismissDraft?.(version)}
+                      />
+                    </div>
                     <div className="composer-tools">
                       {attachTool}
                       <div className="composer-tools-inline">{voiceTool}</div>
@@ -2154,6 +2195,7 @@ export default function Conversation(p: {
             {agent?.source === "managed" && (
               <Usage
                 key={p.agent?.accountKey || "default"}
+                visible={p.visible ?? true}
                 agent={{
                   ...agent,
                   accountKey: p.agent?.accountKey || "default",

@@ -136,29 +136,25 @@ mod tests {
             .ok()
             .and_then(Pid::from_raw)
             .expect("owned group");
-        // A Darwin group whose only member exited but is not reaped answers EPERM.
-        let exited_by = Instant::now() + Duration::from_secs(10);
-        while test_kill_process_group(group) != Err(Errno::PERM) {
-            assert!(Instant::now() < exited_by, "the owned child exits");
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+        // Observe real child exit without reaping before testing the timer policy.
+        super::exited_unreaped(child.id())
+            .await
+            .expect("owned child exits");
+        assert_eq!(test_kill_process_group(group), Err(Errno::PERM));
         let denied = std::io::Error::from_raw_os_error(Errno::PERM.raw_os_error());
         assert!(
             !vanished_after_reap(pid, &denied),
             "one probe of the unreaped group refuses"
         );
+        tokio::time::pause();
         assert!(
             !vanishes_after_reap(pid, &denied, Instant::now() + Duration::from_millis(20)).await,
             "an unreaped group does not vanish by the deadline"
         );
-        let (vanished, reaped) = tokio::join!(
-            vanishes_after_reap(pid, &denied, Instant::now() + Duration::from_secs(10)),
-            async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                child.wait()
-            }
-        );
-        reaped.expect("reap owned child");
+        tokio::time::resume();
+        child.wait().expect("reap owned child");
+        let vanished =
+            vanishes_after_reap(pid, &denied, Instant::now() + Duration::from_secs(10)).await;
         assert!(vanished, "the group vanishes once its member is reaped");
     }
 }

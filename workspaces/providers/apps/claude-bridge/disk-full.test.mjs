@@ -172,7 +172,7 @@ export const tool=(name,description,schema,call)=>({name,description,schema,call
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
-const until=async(file,signal)=>{while(!fs.existsSync(file)&&!signal.aborted)await new Promise(r=>setTimeout(r,5));};
+const until=(file,signal)=>waitForFile(file,{signal}).catch(()=>{});
 const usage={input_tokens:10,output_tokens:2};
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;

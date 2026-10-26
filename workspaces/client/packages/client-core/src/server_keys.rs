@@ -9,10 +9,186 @@ use ring::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 pub trait Vault: Send + Sync {
     fn read(&self) -> Result<Value, String>;
     fn write(&self, state: &Value) -> Result<(), String>;
+    /// Internal identity only. Persistent vaults override this for all handles to one owner.
+    fn registry_owner(&self) -> String {
+        format!("{:p}", self)
+    }
+}
+
+/// One process serializes every maintained vault mutation. The host ProfileLock
+/// excludes another native writer process before import or renderer admission.
+#[derive(Default)]
+struct RegistryOwner {
+    observers: std::collections::HashMap<String, Weak<RegistryEvents>>,
+}
+fn registry_owner() -> &'static Mutex<RegistryOwner> {
+    static OWNER: OnceLock<Mutex<RegistryOwner>> = OnceLock::new();
+    OWNER.get_or_init(Default::default)
+}
+pub(crate) struct RegistryEvents(tokio::sync::watch::Sender<String>);
+impl RegistryEvents {
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<String> {
+        self.0.subscribe()
+    }
+}
+pub(crate) fn observe_registry(vault: &dyn Vault) -> Result<Arc<RegistryEvents>, String> {
+    let mut owner = registry_owner()
+        .lock()
+        .map_err(|_| "The server registry stopped.")?;
+    owner
+        .observers
+        .retain(|_, observer| observer.strong_count() != 0);
+    let id = vault.registry_owner();
+    if let Some(observer) = owner.observers.get(&id).and_then(Weak::upgrade) {
+        return Ok(observer);
+    }
+    let revision = registry_revision(&vault.read()?)?;
+    let (sender, _) = tokio::sync::watch::channel(revision.to_string());
+    let observer = Arc::new(RegistryEvents(sender));
+    owner.observers.insert(id, Arc::downgrade(&observer));
+    Ok(observer)
+}
+fn registry_revision(state: &Value) -> Result<u64, String> {
+    let name = registry_contract()["revision"]["vaultField"]
+        .as_str()
+        .expect("registry field");
+    if state.get(name).is_none() {
+        return Ok(0);
+    }
+    let value = state[name]
+        .as_str()
+        .ok_or("Invalid server registry revision.")?;
+    let maximum = registry_contract()["revision"]["maximum"]
+        .as_str()
+        .expect("registry maximum")
+        .parse::<u64>()
+        .expect("registry revision bound");
+    let revision = value
+        .parse::<u64>()
+        .map_err(|_| "Invalid server registry revision.")?;
+    if revision > maximum || revision.to_string() != value {
+        return Err("Invalid server registry revision.".into());
+    }
+    Ok(revision)
+}
+
+/// Commit a fresh read, authority change and decimal revision in one vault write.
+/// Draft and receipt changes do not advance the public authority revision.
+pub(crate) fn mutate<T>(
+    vault: &dyn Vault,
+    change: impl FnOnce(&mut Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let owner = registry_owner()
+        .lock()
+        .map_err(|_| "The server registry stopped.")?;
+    let mut state = vault.read()?;
+    let before = state.clone();
+    let revision = registry_revision(&state)?;
+    if !state["servers"].is_object() || !state["drafts"].is_object() {
+        return Err("Invalid server key store.".into());
+    }
+    let result = change(&mut state)?;
+    if state == before {
+        return Ok(result);
+    }
+    let changed = state["servers"] != before["servers"]
+        || state["forgottenServers"] != before["forgottenServers"];
+    let next = if changed {
+        let maximum = registry_contract()["revision"]["maximum"]
+            .as_str()
+            .expect("registry maximum")
+            .parse::<u64>()
+            .expect("registry revision bound");
+        revision
+            .checked_add(1)
+            .filter(|next| *next <= maximum)
+            .ok_or("The server registry revision is exhausted.")?
+    } else {
+        revision
+    };
+    let field = registry_contract()["revision"]["vaultField"]
+        .as_str()
+        .expect("registry field");
+    state[field] = json!(next.to_string());
+    vault.write(&state)?;
+    if changed
+        && let Some(observer) = owner
+            .observers
+            .get(&vault.registry_owner())
+            .and_then(Weak::upgrade)
+    {
+        observer.0.send_replace(next.to_string());
+    }
+    Ok(result)
+}
+
+pub(crate) fn public_registry(vault: &dyn Vault) -> Result<Value, String> {
+    let _owner = registry_owner()
+        .lock()
+        .map_err(|_| "The server registry stopped.")?;
+    let state = vault.read()?;
+    let revision = registry_revision(&state)?;
+    let rows = state["servers"]
+        .as_object()
+        .ok_or("Invalid server key store.")?;
+    let mut servers = Vec::with_capacity(rows.len());
+    for (id, row) in rows {
+        if !selector(id) || field(row, "serverId")? != id {
+            return Err("Invalid paired server identity.".into());
+        }
+        key(row)?;
+        let origin = origin(field(row, "origin")?)?;
+        let credential = field(row, "clientId")?;
+        let maximum = registry_contract()["labelMaximumCharacters"]
+            .as_u64()
+            .expect("registry label bound") as usize;
+        let label = row["label"]
+            .as_str()
+            .filter(|label| {
+                !label.trim().is_empty()
+                    && label.encode_utf16().count() <= maximum
+                    && !label.chars().any(char::is_control)
+            })
+            .unwrap_or(id);
+        servers.push(json!({"id":id,"label":label,"origin":origin,"credentialId":credential}));
+    }
+    servers.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    Ok(json!({"revision":revision.to_string(),"servers":servers}))
+}
+pub(crate) fn selector(value: &str) -> bool {
+    !value.is_empty()
+        && value != "local"
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|v| v.is_ascii_alphanumeric() || matches!(v, b'_' | b'-'))
+}
+pub(crate) fn request_identity(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+}
+
+/// Exact private JSON identity. The digest never enters a public registry row.
+pub(crate) fn private_digest(value: &Value) -> Result<String, String> {
+    Ok(
+        Sha256::digest(serde_json::to_vec(value).map_err(|_| "Invalid private server record.")?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+/// Public registry protocol. Its authority revision has its own purpose and bound.
+pub fn registry_contract() -> &'static Value {
+    static CONTRACT: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    CONTRACT.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../contracts/native-registry.json"))
+            .expect("valid native registry contract")
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -21,6 +197,9 @@ pub struct KeychainVault {
 }
 #[cfg(target_os = "macos")]
 impl Vault for KeychainVault {
+    fn registry_owner(&self) -> String {
+        format!("native-server-keychain:{}", self.account)
+    }
     fn read(&self) -> Result<Value, String> {
         match security_framework::passwords::get_generic_password(
             "Codex Studio native server keys",
@@ -106,7 +285,10 @@ pub fn random_id() -> Result<String, String> {
     Ok(uuid::Uuid::from_bytes(bytes).to_string())
 }
 pub fn new_pair(invitation: &Value, request_id: &str) -> Result<Value, String> {
-    if invitation["protocol"] != 1 || field(invitation, "serverId")? == "local" {
+    if invitation["protocol"] != 1
+        || !selector(field(invitation, "serverId")?)
+        || !request_identity(request_id)
+    {
         return Err("Invalid server invitation.".into());
     }
     let origin = origin(field(invitation, "origin")?)?;
@@ -157,53 +339,67 @@ pub fn signature(
     Ok(STANDARD.encode(key(credential)?.sign(text.as_bytes()).as_ref()))
 }
 
-// The caller serializes vault mutations. Import is additive and refuses a
-// conflicting identity; retrying cannot replace keys created after migration.
+// Import shares the pairing mutation owner. Retries preserve later authority.
 pub fn import(vault: &dyn Vault, source: &Value) -> Result<(), String> {
     let fingerprint =
         Sha256::digest(serde_json::to_vec(source).map_err(|_| "Invalid server key archive.")?)
             .iter()
             .map(|v| format!("{v:02x}"))
             .collect::<String>();
-    let mut current = vault.read()?;
-    if current["imports"]
-        .as_array()
-        .is_some_and(|v| v.iter().any(|v| v == &fingerprint))
-    {
-        return Ok(());
-    }
+    mutate(vault, |current| {
+        if current["imports"]
+            .as_array()
+            .is_some_and(|v| v.iter().any(|v| v == &fingerprint))
+        {
+            return Ok(());
+        }
 
-    for group in ["drafts", "servers"] {
-        let incoming = source[group]
-            .as_object()
-            .ok_or("Invalid server key archive.")?;
-        let target = current[group]
-            .as_object_mut()
-            .ok_or("Invalid server key store.")?;
-        for (id, row) in incoming {
-            origin(field(row, "origin")?)?;
-            field(row, "serverId")?;
-            field(row, "clientId")?;
-            if group == "servers" || row.get("privateKey").is_some_and(|v| !v.is_null()) {
-                key(row)?;
-            }
-            if let Some(existing) = target.get(id) {
-                if existing != row {
-                    return Err("A different server credential already exists. The original profile was kept.".into());
+        let forgotten = match current.get("forgottenServers") {
+            None | Some(Value::Null) => serde_json::Map::new(),
+            Some(Value::Object(rows)) => rows.clone(),
+            _ => return Err("Invalid forgotten server identities.".into()),
+        };
+        for group in ["drafts", "servers"] {
+            let incoming = source[group]
+                .as_object()
+                .ok_or("Invalid server key archive.")?;
+            let target = current[group]
+                .as_object_mut()
+                .ok_or("Invalid server key store.")?;
+            for (id, row) in incoming {
+                if group == "servers" && forgotten.get(id) == Some(&Value::Bool(true)) {
+                    return Err(
+                        "A forgotten pairing cannot be restored by an older archive.".into(),
+                    );
                 }
-            } else {
-                target.insert(id.clone(), row.clone());
+                origin(field(row, "origin")?)?;
+                if !selector(field(row, "serverId")?)
+                    || (group == "servers" && row["serverId"] != *id)
+                {
+                    return Err("Invalid imported server identity.".into());
+                }
+                field(row, "clientId")?;
+                if group == "servers" || row.get("privateKey").is_some_and(|v| !v.is_null()) {
+                    key(row)?;
+                }
+                if let Some(existing) = target.get(id) {
+                    if existing != row {
+                        return Err("A different server credential already exists. The original profile was kept.".into());
+                    }
+                } else {
+                    target.insert(id.clone(), row.clone());
+                }
             }
         }
-    }
-    if current["imports"].is_null() {
-        current["imports"] = json!([]);
-    }
-    current["imports"]
-        .as_array_mut()
-        .ok_or("Invalid key import receipts.")?
-        .push(json!(fingerprint));
-    vault.write(&current)
+        if current["imports"].is_null() {
+            current["imports"] = json!([]);
+        }
+        current["imports"]
+            .as_array_mut()
+            .ok_or("Invalid key import receipts.")?
+            .push(json!(fingerprint));
+        Ok(())
+    })
 }
 
 #[cfg(test)]

@@ -72,7 +72,6 @@ export default function ConversationWarnings({
         title={`${title} (${count})`}
         onClick={() => {
           setOpenScope(scope);
-          errors.refresh();
         }}
       >
         {hasWarning ? (

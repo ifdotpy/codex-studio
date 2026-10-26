@@ -279,14 +279,15 @@ async function readFilesystemSnapshot(path) {
   };
 }
 
+// Studio places worker worktrees at <root>/codex-agents/<id>, where <root> is
+// <repository>/.worktrees or the configured worktree root
+// (runtime-services worktree_root.rs). Git registration proves ownership.
 function ownedWorktreeRoot(cwd, agentId) {
   let current = resolve(cwd);
   while (current !== dirname(current)) {
     if (
       current.split(sep).filter(Boolean).at(-1) === agentId &&
-      dirname(current).split(sep).filter(Boolean).at(-1) === "codex-agents" &&
-      dirname(dirname(current)).split(sep).filter(Boolean).at(-1) ===
-        ".worktrees"
+      dirname(current).split(sep).filter(Boolean).at(-1) === "codex-agents"
     )
       return current;
     current = dirname(current);
@@ -387,6 +388,7 @@ async function verifyOwnedWorktreeDisk({
     "Journal contains duplicate owned worktree paths.",
   );
   const projectInfo = await lstat(project);
+  const worktreeVolumes = new Set();
   for (const owner of worktreeOwners) {
     const root = ownedWorktreeRoot(owner.worktree.cwd, owner.id);
     owner.worktree.registeredRoot = root;
@@ -395,11 +397,8 @@ async function verifyOwnedWorktreeDisk({
       rootInfo.isDirectory(),
       `Owned worktree root is not a directory: ${root}`,
     );
-    assert.equal(
-      rootInfo.dev,
-      projectInfo.dev,
-      `Owned worktree root is on a different filesystem: ${root}`,
-    );
+    // A configured root may be on another volume; account for it separately.
+    if (rootInfo.dev !== projectInfo.dev) worktreeVolumes.add(dirname(root));
   }
   const estimatedBytesWith25PercentMargin = Math.ceil(
     trackedBytesPerWorktree * worktreeOwners.length * 1.25,
@@ -413,6 +412,13 @@ async function verifyOwnedWorktreeDisk({
     snapshot.availableBytes >= FREE_DISK_FLOOR_BYTES,
     `Free disk space fell below the ${FREE_DISK_FLOOR_BYTES}-byte floor.`,
   );
+  for (const volume of worktreeVolumes) {
+    const destination = await readFilesystemSnapshot(volume);
+    assert.ok(
+      destination.availableBytes >= FREE_DISK_FLOOR_BYTES,
+      `Free disk space on the worktree volume ${volume} fell below the ${FREE_DISK_FLOOR_BYTES}-byte floor.`,
+    );
+  }
   return {
     at: new Date().toISOString(),
     stageIds,
@@ -3278,11 +3284,7 @@ async function verifyOwnedWorktreesRemoved(
     });
     const owned = candidates.filter((item) => {
       const parts = item.path.split(sep).filter(Boolean);
-      return (
-        parts.at(-1) === owner.id &&
-        parts.at(-2) === "codex-agents" &&
-        parts.at(-3) === ".worktrees"
-      );
+      return parts.at(-1) === owner.id && parts.at(-2) === "codex-agents";
     });
     if (!owner.worktree.registeredRoot) {
       assert.equal(
@@ -3312,7 +3314,6 @@ async function verifyOwnedWorktreesRemoved(
     }
     assert.equal(rootParts(root, 0), owner.id);
     assert.equal(rootParts(root, 1), "codex-agents");
-    assert.equal(rootParts(root, 2), ".worktrees");
     const rootExists = async () => {
       try {
         await lstat(root);

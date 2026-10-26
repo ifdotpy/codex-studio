@@ -3,7 +3,8 @@ import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, NumberInput, Stack, Textarea, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
-import { errorText, type PostBody, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostBody, PostResult } from "../api";
 import type { Account } from "./Accounts";
 
 type ClaudeProfileOptions = PostBody<"/api/claude/profiles">["options"];

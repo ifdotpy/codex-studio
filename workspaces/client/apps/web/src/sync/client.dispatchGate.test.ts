@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -21,7 +21,6 @@ const mocks = vi.hoisted(() => ({
         after: number,
       ) => Record<string, unknown> | Promise<Record<string, unknown>>)
     | undefined,
-  mutationResponse: null as Record<string, unknown> | null,
   invalidate: undefined as
     | ((version?: {
         epoch: string;
@@ -44,7 +43,7 @@ vi.mock("rxdb/plugins/leader-election", () => ({
 vi.mock("rxdb/plugins/replication", () => ({
   replicateRxCollection: vi.fn(),
 }));
-vi.mock("./resourceEvents", () => ({
+vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceChanges: mocks.watchResourceChanges,
   watchResourceConnection: vi.fn((listener: (status: string) => void) => {
@@ -61,7 +60,6 @@ async function setup({ ready = true } = {}) {
   const workspaceId = "e".repeat(32);
   mocks.pulls = undefined;
   mocks.pullResponse = undefined;
-  mocks.mutationResponse = null;
   const rows = new Map<string, Record<string, unknown>>([
     [
       "state:entities:checkpoint",
@@ -171,17 +169,12 @@ async function setup({ ready = true } = {}) {
           { headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH } },
         );
       }
-      if (request.method === "POST" && url.pathname === "/api/sync/drafts")
-        return Response.json(mocks.mutationResponse ?? {}, {
-          headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
-        });
       throw new Error(
         `unexpected API request ${request.method} ${url.pathname}`,
       );
     }),
   );
   const client = await import("./client");
-  const api = await import("../api");
   const entitySequence = await import("./entitySequence");
   const failures: unknown[] = [];
   const accepted = vi.fn();
@@ -193,15 +186,11 @@ async function setup({ ready = true } = {}) {
       failureWaiters.clear();
     }
   });
-  await vi
-    .waitFor(() => expect(mocks.invalidate).toBeTypeOf("function"))
-    .catch(() => {
-      throw new Error(
-        `watch not installed: ${failures.map(String).join("; ")}`,
-      );
-    });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.invalidate, failures.map(String).join("; ")).toBeTypeOf(
+    "function",
+  );
   return {
-    api,
     accepted,
     client,
     entitySequence,
@@ -216,6 +205,81 @@ async function setup({ ready = true } = {}) {
 }
 
 describe("entity pull dispatch gate", () => {
+  it("applies a typed state interval overlapping a mutation's durable checkpoint", async () => {
+    const { client, rows, workspaceId, stop } = await setup();
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: async (_name: string, write: () => Promise<unknown>) =>
+          write(),
+      },
+    });
+    // A complete mutation response already applied the first part of this interval.
+    rows.set("state:entities:checkpoint", {
+      id: "state:entities:checkpoint",
+      payload: "{}",
+      seq: 101,
+    });
+    const value = {
+      id: "overlap",
+      name: "After mutation",
+      status: "idle" as const,
+      source: "managed" as const,
+    };
+    rows.set("entity:agentSummary:overlap", {
+      id: "entity:agentSummary:overlap",
+      payload: "",
+      seq: 101,
+      entity: { collection: "agentSummary", id: "overlap", value },
+    });
+    try {
+      await client.persistResourceEntityChanges(
+        {
+          protocol: 4,
+          workspaceId,
+          epoch: "overlap",
+          revision: 2,
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [
+            {
+              revision: 103,
+              cursor: { workspaceId, seq: 103 },
+              replyKind: "delta",
+              entityChanges: {
+                after: 100,
+                through: 103,
+                documents: [
+                  {
+                    op: "upsert",
+                    collection: "agentSummary",
+                    id: "overlap",
+                    seq: 101,
+                    value,
+                  },
+                  {
+                    op: "upsert",
+                    collection: "agentSummary",
+                    id: "later",
+                    seq: 102,
+                    value: { ...value, id: "later" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        () => true,
+      );
+      expect(rows.get("entity:agentSummary:later")?.seq).toBe(102);
+      expect(await client.readSubscriptionCursor({ kind: "state" })).toEqual({
+        workspaceId,
+        seq: 103,
+      });
+    } finally {
+      stop();
+    }
+  });
   it("applies a full streamed state batch before invalidation with zero new pulls", async () => {
     const { client, rows, workspaceId, stop, entitySequence } = await setup();
     mocks.pulls = [];
@@ -324,6 +388,8 @@ describe("entity pull dispatch gate", () => {
     stop();
   });
 
+  beforeEach(() => vi.useFakeTimers());
+
   afterEach(() => {
     vi.useRealTimers();
     vi.resetModules();
@@ -333,28 +399,10 @@ describe("entity pull dispatch gate", () => {
     mocks.watchResourceChanges.mockReset();
     mocks.pulls = undefined;
     mocks.pullResponse = undefined;
-    mocks.mutationResponse = null;
     mocks.invalidate = undefined;
     mocks.accountsBaseline = undefined;
     mocks.connectionListener = undefined;
   });
-
-  const installMutationResponse = () => {
-    const documents = [
-      {
-        op: "upsert",
-        collection: "agent",
-        id: "created",
-        value: { id: "created", name: "new" },
-        seq: 101,
-      },
-    ];
-    mocks.mutationResponse = {
-      _syncEntities: documents,
-      _syncEntitiesAfter: 100,
-    };
-    return documents;
-  };
 
   const configurePulls = (
     workspaceId: string,
@@ -420,7 +468,8 @@ describe("entity pull dispatch gate", () => {
     // Reconfiguring a live stream replays its current state baseline as an
     // initial frame. Its entity sequence is already covered locally.
     mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 1027 });
-    await vi.waitFor(() => expect(checkpoint.value).toBe(1027));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checkpoint.value).toBe(1027);
 
     expect(pulls).toEqual([]);
     stop();
@@ -437,7 +486,8 @@ describe("entity pull dispatch gate", () => {
     configurePulls(workspaceId, pulls);
 
     mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 101 });
-    await vi.waitFor(() => expect(pulls).toEqual([100]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toEqual([100]);
 
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(101);
     stop();
@@ -471,8 +521,8 @@ describe("entity pull dispatch gate", () => {
     });
 
     const refresh = client.refreshProjection();
-    await vi.waitFor(() => expect(pulls).toEqual([100]));
     await checkpointWrite;
+    expect(pulls).toEqual([100]);
 
     // The pull response has arrived, but its checkpoint write has not. The
     // initial frame will be covered once that in-flight write commits.
@@ -513,184 +563,25 @@ describe("entity pull dispatch gate", () => {
           };
     mocks.invalidate?.({ epoch: "server-epoch-b", entitySequence: 5 });
 
-    await vi.waitFor(() => expect(pulls).toHaveLength(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toHaveLength(2);
     expect(pulls).toEqual([2123, 0]);
     expect(checkpoint.value).toBe(5);
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(5);
     stop();
   });
 
-  it("dispatches a state-frame pull when the frame has no accounts revision", async () => {
+  it("dispatches a state-frame pull without an accounts watcher", async () => {
     const { stop, workspaceId } = await setup();
     const pulls: number[] = [];
     configurePulls(workspaceId, pulls);
 
-    // The state resource frame has no accounts entry or accounts revision.
-    expect(mocks.accountsBaseline).toBeTypeOf("function");
+    // Bounded accounts arrive through the entity stream, so no watcher is needed.
+    expect(mocks.accountsBaseline).toBeUndefined();
     mocks.invalidate?.({ epoch: "state-only-frame", entitySequence: 101 });
 
-    await vi.waitFor(() => expect(pulls).toEqual([100]));
-    stop();
-  });
-
-  it("runs a real post through the held persister and gates the real pull loop", async () => {
-    const { api, entitySequence, rows, storageInstance, stop, workspaceId } =
-      await setup();
-    const documents = installMutationResponse();
-    const pulls: number[] = [];
-    configurePulls(workspaceId, pulls, documents);
-    const checkpoint = entitySequence.getEntitySequenceCheckpoint(
-      "state:entities:v1",
-      API_SCHEMA_HASH,
-    );
-    let release!: () => void;
-    const hold = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let entered!: () => void;
-    const persisterEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (
-        writes.some(
-          ({ document }) =>
-            document.id ===
-            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
-        )
-      ) {
-        entered();
-        await hold;
-      }
-      for (const { document } of writes)
-        rows.set(String(document.id), document);
-      return { error: [] };
-    });
-
-    const post = api.post("/api/sync/drafts", { rows: [] });
-    await persisterEntered;
-    const readsBeforeFrame =
-      storageInstance.findDocumentsById.mock.calls.length;
-    mocks.invalidate?.({ epoch: "held", entitySequence: 101 });
-    await vi.waitFor(() =>
-      expect(
-        storageInstance.findDocumentsById.mock.calls.length,
-      ).toBeGreaterThan(readsBeforeFrame),
-    );
-    expect(pulls).toEqual([]);
-    release();
-    await post;
-    expect(pulls).toEqual([]);
-    expect(
-      rows.get(`entity:${documents[0]!.collection}:${documents[0]!.id}`),
-    ).toMatchObject({ seq: 101 });
-    expect(checkpoint.value).toBe(101);
-    stop();
-  });
-
-  it.each(["reject", "250ms timeout"] as const)(
-    "dispatches exactly one fallback pull when a real held persister %s",
-    async (mode) => {
-      const { api, rows, storageInstance, stop, workspaceId } = await setup();
-      vi.useFakeTimers();
-      const documents = installMutationResponse();
-      const pulls: number[] = [];
-      configurePulls(workspaceId, pulls, documents);
-      let release!: () => void;
-      let rejectWrite!: (error: Error) => void;
-      const hold = new Promise<void>((resolve, reject) => {
-        release = resolve;
-        rejectWrite = reject;
-      });
-      let entered!: () => void;
-      const persisterEntered = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
-      let held = false;
-      storageInstance.bulkWrite.mockImplementation(async (writes) => {
-        if (
-          !held &&
-          writes.some(
-            ({ document }) =>
-              document.id ===
-              `entity:${documents[0]?.collection}:${documents[0]?.id}`,
-          )
-        ) {
-          held = true;
-          entered();
-          await hold;
-        }
-        for (const { document } of writes)
-          rows.set(String(document.id), document);
-        return { error: [] };
-      });
-      const post = api.post("/api/sync/drafts", { rows: [] });
-      await persisterEntered;
-      const readsBeforeFrame =
-        storageInstance.findDocumentsById.mock.calls.length;
-      mocks.invalidate?.({ epoch: "held", entitySequence: 101 });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(
-        storageInstance.findDocumentsById.mock.calls.length,
-      ).toBeGreaterThan(readsBeforeFrame);
-      expect(pulls).toEqual([]);
-      if (mode === "reject") rejectWrite(new Error("test persistence failure"));
-      else {
-        await vi.advanceTimersByTimeAsync(249);
-        expect(pulls).toEqual([]);
-        await vi.advanceTimersByTimeAsync(1);
-      }
-      await post;
-      await vi.advanceTimersByTimeAsync(0);
-      expect(pulls).toHaveLength(1);
-      release();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(pulls).toHaveLength(1);
-      stop();
-    },
-  );
-
-  it("pulls once when a reset arrives during the real held persister", async () => {
-    const { api, entitySequence, rows, storageInstance, stop, workspaceId } =
-      await setup();
-    const documents = installMutationResponse();
-    const pulls: number[] = [];
-    configurePulls(workspaceId, pulls, documents);
-    let release!: () => void;
-    const hold = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let entered!: () => void;
-    const persisterEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (
-        writes.some(
-          ({ document }) =>
-            document.id ===
-            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
-        )
-      ) {
-        entered();
-        await hold;
-      }
-      for (const { document } of writes)
-        rows.set(String(document.id), document);
-      return { error: [] };
-    });
-    const post = api.post("/api/sync/drafts", { rows: [] });
-    await persisterEntered;
-    mocks.invalidate?.({ epoch: "reset", entitySequenceReset: true });
-    await vi.waitFor(() => expect(pulls).toHaveLength(1));
-    release();
-    await post;
-    expect(pulls).toHaveLength(1);
-    expect(
-      entitySequence
-        .getEntitySequenceCheckpoint("state:entities:v1", API_SCHEMA_HASH)
-        .effectiveCoverage(),
-    ).toBe(101);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toEqual([100]);
     stop();
   });
 
@@ -706,7 +597,8 @@ describe("entity pull dispatch gate", () => {
     const pulls: number[] = [];
     configurePulls(workspaceId, pulls);
     mocks.invalidate?.({ epoch: "validity", entitySequence: 100 });
-    await vi.waitFor(() => expect(pulls).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toHaveLength(1);
     expect(pulls).toHaveLength(1);
     stop();
   });
@@ -732,7 +624,8 @@ describe("entity pull dispatch gate", () => {
       };
     };
     mocks.invalidate?.({ epoch: "epoch", entitySequence: 101 });
-    await vi.waitFor(() => expect(pulls).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pulls).toHaveLength(1);
     mocks.invalidate?.();
     finishFirst({
       workspaceId: "e".repeat(32),
@@ -741,13 +634,9 @@ describe("entity pull dispatch gate", () => {
       maxSeq: 101,
       initialHigh: 100,
     });
-    await vi
-      .waitFor(() => expect(pulls).toHaveLength(2), { timeout: 3000 })
-      .catch(() => {
-        throw new Error(
-          `pagination pulls=${JSON.stringify(pulls)} failures=${String(failures.at(-1))}`,
-        );
-      });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failures.at(-1)).toBeNull();
+    expect(pulls).toHaveLength(2);
     expect(pulls).toEqual([100, 101]);
     stop();
   });
@@ -786,13 +675,9 @@ describe("entity pull dispatch gate", () => {
       };
     };
     mocks.invalidate?.({ epoch: "epoch", entitySequence: 500 });
-    await vi
-      .waitFor(() => expect(pulls).toHaveLength(2), { timeout: 3000 })
-      .catch(() => {
-        throw new Error(
-          `pagination pulls=${JSON.stringify(pulls)} failures=${String(failures.at(-1))}`,
-        );
-      });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failures.at(-1)).toBeNull();
+    expect(pulls).toHaveLength(2);
     expect(pulls).toEqual([100, 600]);
     stop();
   });
@@ -874,7 +759,8 @@ describe("entity pull dispatch gate", () => {
     const pulls: number[] = [];
     const { accepted, failures, stop } = await setup();
     try {
-      await vi.waitFor(() => expect(accepted).toHaveBeenCalled());
+      await vi.advanceTimersToNextTimerAsync();
+      expect(accepted).toHaveBeenCalled();
       mocks.connectionListener?.("live");
       mocks.pulls = pulls;
       mocks.pullResponse = (after) => {

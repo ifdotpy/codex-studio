@@ -229,6 +229,192 @@ fn account_wake_pending_agents_query() -> String {
 }
 
 impl SchedulerRepository {
+    /// Prove that a failed preparation returned this exact pending batch unsent.
+    /// This grants no native permission. The ordinary preparation still owns admission.
+    pub fn proven_unsent_pending_batch(
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+        target: &str,
+    ) -> StoreResult<bool> {
+        if agent.status != AgentStatus::Failed
+            || agent.extra.get("autoWake") != Some(&json!(true))
+            || agent.extra.get("inFlight") != Some(&json!(false))
+            || !continuation_allowed(agent)
+            || ["startAttempt", "turnId"]
+                .iter()
+                .any(|key| agent.extra.get(*key).is_some_and(|value| !value.is_null()))
+            || [
+                "capacityRetry",
+                "usageResume",
+                "startOutcomeHold",
+                "manualRecoveryDeliveryHold",
+                "nativeSafetyBuffering",
+                "restartRecovery",
+                "disconnectRecovery",
+                "remoteWorker",
+                "remoteAnchor",
+                studio_runtime_schema::agent_progress::START_WAIT_FIELD,
+            ]
+            .iter()
+            .any(|key| agent.extra.get(*key).is_some_and(truthy))
+            || agent
+                .extra
+                .get("nativeRelease")
+                .is_some_and(|value| value.get("resetPending").is_some_and(truthy))
+        {
+            return Ok(false);
+        }
+        let Some(thread) = agent
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(false);
+        };
+        let account = agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        let Some(run) = ExecutionHistoryRepository::latest_run(tx, &agent.id.0)? else {
+            return Ok(false);
+        };
+        if run["status"] != "unsent"
+            || run["epoch"] != agent.epoch
+            || run["accountKey"] != account
+            || run["threadId"] != thread
+            || !run["turnId"].is_null()
+            || !run["rootAttemptId"].is_null()
+        {
+            return Ok(false);
+        }
+        let Some(id) = run["latestAttemptId"].as_str() else {
+            return Ok(false);
+        };
+        let Some(saved) = ExecutionHistoryRepository::attempt(tx, id)? else {
+            return Ok(false);
+        };
+        if saved["runId"] != run["id"]
+            || saved["epoch"] != agent.epoch
+            || saved["accountKey"] != account
+            || saved["submission"] != "unsent"
+            || saved["executionOutcome"] != "unsent"
+            || saved["submitted"] != false
+            || saved["activeAtReservation"] != false
+            || ["turnId", "observedTurnId", "nativeOperationId", "action"]
+                .iter()
+                .any(|key| saved.get(*key).is_some_and(|value| !value.is_null()))
+            || saved["receipts"].get("unknown").is_some()
+        {
+            return Ok(false);
+        }
+        let receipt = &saved["receipts"]["startResult"];
+        let Some(reason) = receipt["input"]["input"]["reason"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(false);
+        };
+        if receipt["result"] != true
+            || receipt["input"]["agent"] != agent.id.0
+            || receipt["input"]["epoch"] != agent.epoch
+            || !matches!(
+                receipt["input"]["input"]["outcome"].as_str(),
+                Some("held" | "pending")
+            )
+            || agent.extra.get("error") != Some(&json!(reason))
+        {
+            return Ok(false);
+        }
+        let original: AgentRecord = serde_json::from_value(saved["claimResult"]["agent"].clone())
+            .map_err(|_| {
+            ExecutionHistoryRepository::invalid("runtime_execution_attempts", id)
+        })?;
+        if original.id != agent.id
+            || original.root_id != agent.root_id
+            || original.epoch != agent.epoch
+            || !same_native_scope(&original, agent)
+            || [
+                "provider",
+                "parentId",
+                "isLead",
+                "role",
+                "executionMode",
+                "workspaceMode",
+                "cwd",
+                "realCwd",
+            ]
+            .iter()
+            .any(|key| original.extra.get(*key) != agent.extra.get(*key))
+            || original.extra.get("startAttempt").is_none_or(|attempt| {
+                attempt["id"] != id
+                    || attempt["events"] != saved["events"]
+                    || attempt["submitted"] != false
+            })
+        {
+            return Ok(false);
+        }
+        let Some(ids) = saved["events"].as_array() else {
+            return Ok(false);
+        };
+        let Some(identity) = saved["inputIdentity"].as_array() else {
+            return Ok(false);
+        };
+        let ids = ids.iter().map(Value::as_str).collect::<Option<Vec<_>>>();
+        let Some(ids) = ids.filter(|ids| !ids.is_empty() && ids.contains(&target)) else {
+            return Ok(false);
+        };
+        if ids.len() != identity.len()
+            || ids.iter().copied().collect::<BTreeSet<_>>().len() != ids.len()
+        {
+            return Ok(false);
+        }
+        let pending=tx.prepare_cached("SELECT id FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid")?.query_map(params![agent.id.0,agent.epoch],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+        let unsettled=tx.query_row_cached(
+            &format!("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ({UNSETTLED_EVENT_STATUSES}) AND status<>'pending')"),
+            params![agent.id.0,agent.epoch],|row|row.get::<_,bool>(0),
+        )?;
+        if pending.iter().map(String::as_str).collect::<Vec<_>>() != ids || unsettled {
+            return Ok(false);
+        }
+        let mut events = Vec::with_capacity(ids.len());
+        let mut metadata = BTreeMap::new();
+        for (index, id) in ids.iter().enumerate() {
+            let Some(mut event) =
+                crate::QueueEventRepository::get(tx, &crate::QueueEventId::from(*id))?
+            else {
+                return Ok(false);
+            };
+            if event.agent != agent.id
+                || event.epoch != agent.epoch
+                || event.status != "pending"
+                || event.turn_id.is_some()
+                || event.error.as_deref() != Some(reason)
+                || identity[index]["id"] != *id
+            {
+                return Ok(false);
+            }
+            if *id == target && event.kind != "user" {
+                return Ok(false);
+            }
+            let meta = crate::QueueWriteRepository::metadata(tx, id)?.unwrap_or(json!({}));
+            event.text = Self::claimed_event_text(&event.text, &meta);
+            // Settlement changes only the delivery error. Compare the original
+            // business identity with that one server-owned field restored.
+            event.error =
+                serde_json::from_value(identity[index]["error"].clone()).map_err(|_| {
+                    ExecutionHistoryRepository::invalid(
+                        "runtime_execution_attempts",
+                        saved["id"].as_str().unwrap_or("unknown"),
+                    )
+                })?;
+            metadata.insert((*id).to_owned(), meta);
+            events.push(event);
+        }
+        Ok(input_identity(&events, &metadata) == saved["inputIdentity"])
+    }
+
     /// Install the candidate index used by worker reconciliation. This index
     /// deliberately contains only agent-record predicates; pending-event and
     /// invalid-agent-hold receipt checks remain in the consuming queries.

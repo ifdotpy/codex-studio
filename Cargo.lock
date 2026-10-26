@@ -3215,6 +3215,19 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-foundation",
+ "objc2-quartz-core",
+]
+
+[[package]]
+name = "objc2-av-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b375b013b8a710c67770ca8b45993f0fc22ad7a4ff88e95101b1efbc0b7de4"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-av-foundation",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -5422,6 +5435,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-av-foundation",
+ "objc2-av-kit",
  "objc2-avf-audio",
  "objc2-core-audio-types",
  "objc2-core-foundation",
@@ -5443,6 +5457,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "studio-client-domain",
+ "studio-runtime-schema",
  "tempfile",
  "tokio",
  "unicode-segmentation",
@@ -5487,13 +5502,20 @@ dependencies = [
 name = "studio-native-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "block2",
  "libc",
+ "objc2",
+ "objc2-foundation",
+ "objc2-web-kit",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.11.1",
  "studio-client-core",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
 ]
 
@@ -5521,6 +5543,7 @@ dependencies = [
 name = "studio-process-supervisor"
 version = "0.1.0"
 dependencies = [
+ "notify",
  "rusqlite",
  "rustix",
  "serde_json",
@@ -5585,6 +5608,7 @@ dependencies = [
  "chrono",
  "command-fds",
  "file-rotate",
+ "notify",
  "process-wrap",
  "pty-process",
  "rustix",

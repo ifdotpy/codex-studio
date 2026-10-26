@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { once } from "node:events";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { startRustBackend } from "./rust-ui-fixture.mjs";
@@ -29,7 +30,7 @@ test(
     await withBackendScript("process.exit(7);", async (state) => {
       await assert.rejects(
         startRustBackend(state),
-        /studio-runtime-server exited 7/,
+        /studio-runtime-server fixture exited.*code 7/,
       );
     });
   },
@@ -44,7 +45,7 @@ test(
       async (state) => {
         await assert.rejects(
           startRustBackend(state),
-          /studio-runtime-server exited SIGTERM/,
+          /studio-runtime-server fixture exited.*signal SIGTERM/,
         );
       },
     );
@@ -77,7 +78,7 @@ process.exit(hidden && node.status === 0 ? 0 : 9);`,
         async (state) => {
           await assert.rejects(
             startRustBackend(state),
-            /studio-runtime-server exited 0/,
+            /studio-runtime-server fixture exited.*code 0/,
           );
         },
       );
@@ -85,5 +86,35 @@ process.exit(hidden && node.status === 0 ? 0 : 9);`,
       process.env.PATH = previous;
       await rm(host, { recursive: true, force: true });
     }
+  },
+);
+
+test(
+  "backend startup uses the bound port announcement without HTTP polling",
+  { timeout: 5000 },
+  async () => {
+    await withBackendScript(
+      `
+const assert = require("node:assert/strict");
+assert.deepEqual(process.argv.slice(2), ["--port", "0"]);
+const server = require("node:http").createServer((request, response) => {
+  response.setHeader("Content-Type", "application/json");
+  response.end(JSON.stringify({ token: "fixture-token" }));
+});
+server.listen(0, "127.0.0.1", () => {
+  console.log("Codex Canvas: http://127.0.0.1:" + server.address().port);
+});`,
+      async (state) => {
+        const backend = await startRustBackend(state);
+        try {
+          assert.equal(backend.origin, `http://127.0.0.1:${backend.port}`);
+          assert.equal(backend.token, "fixture-token");
+        } finally {
+          const closed = once(backend.child, "close");
+          backend.child.kill();
+          await closed;
+        }
+      },
+    );
   },
 );

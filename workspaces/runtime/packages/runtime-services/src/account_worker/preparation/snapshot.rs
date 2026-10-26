@@ -805,10 +805,8 @@ fn catalog_source(record: &Value) -> Result<thread::CatalogSource, WorkerError> 
     )
 }
 
-/// The definitions an agent's tools come from (Python `Runtime.tool_definitions`):
-/// those of its catalog source, except that a VM agent always gets the
-/// current catalog, also on a thread that Python started with legacy tools.
-/// The legacy catalog lacks tools of VM agents, such as `orchestration_sign_in`.
+/// VM agents and providers that resend tools each turn use current definitions.
+/// Other agents retain their saved catalog source. Callers apply frozen overrides.
 fn catalog_definitions<'a>(
     resources: &'a PreparationResources,
     record: &Value,
@@ -816,6 +814,11 @@ fn catalog_definitions<'a>(
     Ok(
         if catalog_source(record)? == thread::CatalogSource::Legacy
             && record["executionMode"] != "vm"
+            && !crate::provider_adapter::adapter(
+                ProviderKind::of_record(record).map_err(|_| invalid("agent/provider"))?,
+            )
+            .capabilities()
+            .tools_on_every_turn
         {
             &resources.legacy_tools
         } else {
@@ -1460,6 +1463,46 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 
 #[cfg(test)]
 mod resource_tests {
+    #[test]
+    fn native_release_phases_hold_only_unsettled_releases() {
+        for (patch, held) in [
+            (
+                json!({"phase":"blocked", "connectionId":"earlier", "error":"native background command is active"}),
+                false,
+            ),
+            (json!({"phase":"blocked"}), false),
+            (json!({"phase":null, "inspectionPhase":"superseded"}), false),
+            (json!({"phase":"released"}), false),
+            (json!({"phase":"resumed"}), false),
+            (json!({"phase":"pending"}), false),
+            (json!({"phase":"released", "resetPending":true}), true),
+            (json!({"phase":"unsubscribing"}), true),
+            (
+                json!({"phase":"unsubscribing", "connectionId":"earlier"}),
+                false,
+            ),
+            (json!({"phase":"unknown"}), true),
+            (json!({"phase":"checking"}), true),
+            (
+                json!({"phase":"checking", "inspectionPhase":"inspecting"}),
+                false,
+            ),
+            (
+                json!({"phase":"unsubscribing", "resetActorEpoch":0, "submittedAt":101}),
+                true,
+            ),
+        ] {
+            let mut record = json!({"threadId":"thread", "nativeRelease":{
+                "threadId":"thread", "connectionId":"1"
+            }});
+            record["nativeRelease"]
+                .as_object_mut()
+                .expect("release object")
+                .extend(patch.as_object().expect("patch object").clone());
+            assert_eq!(native_release_held(&record, "1"), held, "{patch}");
+        }
+    }
+
     fn guidance(
         resources: &super::PreparationResources,
         record: &serde_json::Value,
@@ -1527,6 +1570,33 @@ mod resource_tests {
             }
             Ok::<_, WorkerError>(())
         }).await.expect("invalid error shapes remain rejected");
+    }
+
+    #[test]
+    fn reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources");
+        for tools in [&resources.tools, &resources.legacy_tools] {
+            let spawn = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_spawn")
+                .expect("spawn tool");
+            assert!(
+                spawn.description.contains("review defaults"),
+                "{}",
+                spawn.description
+            );
+            assert!(!spawn.description.contains("Default: gpt-6-luna"));
+        }
+        for record in [
+            json!({"id":"new", "isLead":true}),
+            json!({"id":"native", "isLead":true, "threadId":"thread", "nativeTeleportTool":"orchestration_teleport"}),
+            json!({"id":"legacy", "isLead":true, "threadId":"thread"}),
+        ] {
+            let text = role_guidance(&resources, &record).expect("emitted role guidance");
+            assert!(text.contains("review defaults"), "{text}");
+            assert!(!text.contains("Use `gpt-6-luna`"), "{text}");
+        }
     }
 
     /// igor-mbp rehearsal 2026-10-22: two moved Claude agents carried Python's
@@ -1694,8 +1764,10 @@ mod resource_tests {
                 let names = |tools: Vec<thread::ToolDefinition>| {
                     tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>()
                 };
-                for mode in ["vm", "native"] {
-                    let vm = mode == "vm";
+                for (mode, expected_tools, vm) in [
+                    ("vm", &resources.tools, true),
+                    ("native", &resources.legacy_tools, false),
+                ] {
                     // An old thread without a saved source, and a new thread
                     // of an agent whose saved source is legacy.
                     for (thread_id, source) in [(Some("thread-old"), None), (None, Some("legacy"))]
@@ -1728,12 +1800,7 @@ mod resource_tests {
                             thread::CatalogSource::Legacy,
                             "{case}"
                         );
-                        let expected = if vm {
-                            &resources.tools
-                        } else {
-                            &resources.legacy_tools
-                        };
-                        assert_eq!(&snapshot.catalog.definitions, expected, "{case}");
+                        assert_eq!(&snapshot.catalog.definitions, expected_tools, "{case}");
                         let tools = names(thread::tool_definitions(&snapshot).expect("tools"));
                         assert_eq!(
                             tools.iter().any(|name| name == "orchestration_sign_in"),
@@ -1768,6 +1835,109 @@ mod resource_tests {
             })
             .await
             .expect("a VM agent keeps its tools");
+    }
+
+    /// Claude resends its tools on each turn. Old host threads need the current
+    /// catalog without changing their saved source or exact moved tool list.
+    #[tokio::test]
+    async fn an_unfrozen_native_claude_on_an_old_thread_gets_the_current_catalog() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources")
+            .capture_filesystem(None);
+        store
+            .transaction_with(move |tx| {
+                let failed = |error: WorkerError| StoreError::SchemaMismatch(error.to_string());
+                for mode in ["native", "vm"] {
+                    for (thread_id, source) in [
+                        (Some("thread-old"), None),
+                        (Some("thread-old"), Some("legacy")),
+                        (None, None),
+                    ] {
+                        let mut record = json!({"id":"claude", "rootId":"claude", "epoch":1,
+                            "status":"running", "isLead":true, "name":"Lead", "provider":"claude",
+                            "accountKey":"default", "executionMode":mode, "cwd":"/line"});
+                        if let Some(thread_id) = thread_id {
+                            record["threadId"] = json!(thread_id);
+                        }
+                        if let Some(source) = source {
+                            record["nativeToolSource"] = json!(source);
+                        }
+                        AgentRepository::put(
+                            tx,
+                            &AgentRecord::from_value(record.clone()).expect("agent"),
+                        )?;
+                        let snapshot = thread_snapshot(
+                            tx,
+                            &resources,
+                            &record,
+                            "connection",
+                            Path::new("/state"),
+                            None,
+                        )
+                        .map_err(failed)?;
+                        let case = format!("{mode} {thread_id:?} {source:?}");
+                        let expected_source = if thread_id.is_some() {
+                            thread::CatalogSource::Legacy
+                        } else {
+                            thread::CatalogSource::Current
+                        };
+                        assert_eq!(snapshot.catalog.source, expected_source, "{case}");
+                        let tools = thread::tool_definitions(&snapshot).expect("tools");
+                        assert!(
+                            tools.iter().any(|tool| tool.name == crate::sign_in::TOOL),
+                            "{case}: Claude must receive the sign-in tool"
+                        );
+                        assert_eq!(snapshot.catalog.definitions, resources.tools, "{case}");
+                        assert_eq!(
+                            actor_tool_definitions(tx, &resources, &record).map_err(failed)?,
+                            json!(tools),
+                            "{case}: the context tool reports the same catalog"
+                        );
+                        let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
+                                attempt
+                            }
+                            other => panic!("{case}: {other:?}"),
+                        };
+                        assert_eq!(
+                            attempt.before_submit.set["nativeToolSource"],
+                            json!(expected_source),
+                            "{case}"
+                        );
+                        assert_eq!(attempt.params["dynamicTools"], json!(tools), "{case}");
+
+                        let mut frozen = snapshot;
+                        let saved_tools = resources
+                            .legacy_tools
+                            .iter()
+                            .filter(|tool| tool.name == "orchestration_title")
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        assert_eq!(saved_tools.len(), 1);
+                        let saved = json!({"baseInstructions":"saved base", "developerInstructions":"saved role",
+                            "model":"default", "dynamicTools":saved_tools});
+                        record["frozenNativeParams"] = saved;
+                        frozen.frozen = frozen_params(&record).map_err(failed)?;
+                        assert_eq!(
+                            thread::tool_definitions(&frozen).expect("exact frozen tools"),
+                            saved_tools,
+                            "{case}: moved tool snapshots stay exact"
+                        );
+                        assert_eq!(
+                            actor_tool_definitions(tx, &resources, &record).map_err(failed)?,
+                            json!(saved_tools),
+                            "{case}: frozen context tools stay exact"
+                        );
+                    }
+                }
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("Claude keeps current tools and exact frozen boundaries");
     }
 
     #[test]
@@ -2098,15 +2268,15 @@ mod workspace_fence_tests {
             let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
             AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
-            for (mode, provider, role, ready, fenced) in [
-                ("worktree", "claude", "implementer", true, true),
-                ("image", "claude", "implementer", true, true),
-                ("shared", "claude", "implementer", true, false),
-                ("worktree", "claude", "reviewer", true, false),
-                ("image", "claude", "reviewer", true, false),
-                ("worktree", "claude", "implementer", false, false),
-                ("image", "claude", "implementer", false, false),
-                ("worktree", "codex", "implementer", true, false),
+            for (mode, provider, role, ready, fenced, expected_sandbox) in [
+                ("worktree", "claude", "implementer", true, true, "danger-full-access"),
+                ("image", "claude", "implementer", true, true, "danger-full-access"),
+                ("shared", "claude", "implementer", true, false, "danger-full-access"),
+                ("worktree", "claude", "reviewer", true, false, "read-only"),
+                ("image", "claude", "reviewer", true, false, "read-only"),
+                ("worktree", "claude", "implementer", false, false, "danger-full-access"),
+                ("image", "claude", "implementer", false, false, "danger-full-access"),
+                ("worktree", "codex", "implementer", true, false, "danger-full-access"),
             ] {
                 let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
@@ -2160,11 +2330,7 @@ mod workspace_fence_tests {
                     } else {
                         assert!(options.get("env").is_none(), "{mode}/{provider}/{role}/{ready}: {options}");
                     }
-                    assert_eq!(attempt.params["sandbox"], if provider == "claude" && role == "reviewer" {
-                        "read-only"
-                    } else {
-                        "danger-full-access"
-                    });
+                    assert_eq!(attempt.params["sandbox"], expected_sandbox);
                 }
             }
             Ok::<_, WorkerError>(())

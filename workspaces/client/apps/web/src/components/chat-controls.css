@@ -237,12 +237,6 @@
   color: var(--warning, #e3b761);
 }
 
-/* Keyboard hints mean nothing on touch screens. */
-@media (hover: none) {
-  #sidebar .sidebar-search kbd {
-    display: none;
-  }
-}
 /* A panel header without help text aligns its action with the title. */
 .conversation-results .ui-panel-header {
   align-items: center;

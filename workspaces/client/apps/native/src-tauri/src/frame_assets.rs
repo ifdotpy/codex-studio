@@ -31,6 +31,12 @@ pub(crate) fn respond_with_app<R: Runtime>(
         return fail(400);
     }
     let path = request.uri().path();
+    #[cfg(feature = "native-check")]
+    if let Some(response) =
+        crate::attachment_event_privacy::frame_asset(path, request.method().as_str() == "HEAD")
+    {
+        return response;
+    }
     // Only immutable build assets and the entry point are exposed. There is no
     // filesystem or API forwarding, and no SPA fallback for arbitrary paths.
     if !(matches!(path, "/" | "/index.html") || path.starts_with("/assets/"))

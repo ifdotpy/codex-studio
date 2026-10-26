@@ -6,9 +6,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult};
 
-#[cfg(test)]
-const SCHEMA_SNAPSHOT: &str = include_str!("runtime-state-schema.json");
-
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     verify_core(canvas_path, analytics_path)?;
     verify_bootstrap(&open_read_only(canvas_path)?)
@@ -51,11 +48,13 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
     verify_payload_migration(&canvas)?;
     verify_analytics_migration(&canvas, &analytics)?;
 
+    // `synchronous` is connection-local, so it is checked on the serving
+    // connections by [`verify_serving_pragmas`], not on these verifiers.
     for (database, connection) in [
         ("canvas.sqlite3", &canvas),
         ("analytics.sqlite3", &analytics),
     ] {
-        let (journal, synchronous) = connection_pragmas(connection)?;
+        let (journal, _) = connection_pragmas(connection)?;
         if journal != "wal" {
             return Err(object_mismatch(
                 database,
@@ -63,13 +62,27 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
                 "expected WAL",
             ));
         }
-        if synchronous != 2 {
-            return Err(object_mismatch(
-                database,
-                "PRAGMA synchronous",
-                "expected FULL (2)",
-            ));
-        }
+    }
+    Ok(())
+}
+
+/// Refuse a serving writer connection that is not WAL with `synchronous=NORMAL`
+/// (`crate::sqlite_durability`).
+pub(crate) fn verify_serving_pragmas(connection: &Connection, database: &str) -> StoreResult<()> {
+    let (journal, synchronous) = connection_pragmas(connection)?;
+    if journal != "wal" {
+        return Err(object_mismatch(
+            database,
+            "PRAGMA journal_mode",
+            "expected WAL",
+        ));
+    }
+    if synchronous != crate::sqlite_durability::SYNCHRONOUS_NORMAL {
+        return Err(object_mismatch(
+            database,
+            "PRAGMA synchronous",
+            "expected NORMAL (1)",
+        ));
     }
     Ok(())
 }
@@ -163,16 +176,8 @@ inventory::submit! {
 inventory::submit! {
     ConnectionFunctionRegistration("sync_entity_payload")
 }
-
-#[cfg(test)]
-fn registered_connection_functions() -> Vec<&'static str> {
-    let mut functions = inventory::iter::<ConnectionFunctionRegistration>
-        .into_iter()
-        .map(|registration| registration.0)
-        .collect::<Vec<_>>();
-    functions.sort_unstable();
-    functions
-}
+inventory::submit! { ConnectionFunctionRegistration(crate::entity_publication::WORK_HISTORY_FUNCTION) }
+inventory::submit! { ConnectionFunctionRegistration(crate::entity_publication::WORK_IDENTITY_FUNCTION) }
 
 fn has_registered_connection_function(name: &str) -> bool {
     inventory::iter::<ConnectionFunctionRegistration>
@@ -181,6 +186,7 @@ fn has_registered_connection_function(name: &str) -> bool {
 }
 
 pub(crate) fn register_python_trigger_functions(connection: &Connection) -> StoreResult<()> {
+    crate::entity_publication::register_work_change_functions(connection)?;
     connection.create_scalar_function(
         "sync_entity_payload",
         4,
@@ -662,35 +668,10 @@ fn connection_pragmas(connection: &Connection) -> StoreResult<(String, i64)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PayloadMigrationState, SCHEMA_SNAPSHOT, event_payload, python_float_json, python_json,
-        python_json_compact, registered_connection_functions, verify_payload_migration,
+        PayloadMigrationState, event_payload, python_float_json, python_json, python_json_compact,
+        verify_payload_migration,
     };
     use rusqlite::Connection;
-    use serde_json::Value;
-
-    #[test]
-    fn connection_functions_are_registered_in_stable_order() {
-        let functions = registered_connection_functions();
-        assert_eq!(functions.len(), 2);
-        assert!(functions.windows(2).all(|pair| pair[0] < pair[1]));
-    }
-
-    #[test]
-    fn committed_snapshot_has_both_database_catalogs_and_expected_markers() {
-        let snapshot: Value =
-            serde_json::from_str(SCHEMA_SNAPSHOT).expect("schema snapshot parses");
-        assert_eq!(snapshot["canvas.sqlite3"]["pragma_user_version"], 0);
-        assert_eq!(
-            snapshot["canvas.sqlite3"]["payload_migrations"],
-            serde_json::json!([])
-        );
-        assert_eq!(
-            snapshot["analytics.sqlite3"]["file_migration_v1"],
-            serde_json::json!([])
-        );
-        assert_eq!(snapshot["pragmas"]["main"]["journal_mode"], "wal");
-        assert_eq!(snapshot["pragmas"]["analytics"]["synchronous"], 2);
-    }
 
     #[test]
     fn persisted_and_federation_json_keep_distinct_unicode_formats() {

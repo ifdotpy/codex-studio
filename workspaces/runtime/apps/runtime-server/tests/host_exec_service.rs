@@ -5,14 +5,19 @@
 //! `studio-runtime-server host-exec-service` process, its start and its
 //! replacement, and the unchanged guest broker against it.
 
-use std::cell::RefCell;
-use std::io::Write;
+use std::cell::{Cell, RefCell};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use studio_runtime_services::host_exec_service::lifecycle::{ensure_service, service_call};
+use studio_runtime_services::host_exec_service::{
+    LEASE_FILE, SERVICE_READY_LINE,
+    lifecycle::{ensure_service, service_call},
+};
 
 const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /// Only guards against a hang; a passing run never waits this long.
@@ -30,6 +35,10 @@ struct State {
     _temp: tempfile::TempDir,
     path: PathBuf,
     children: RefCell<Vec<Child>>,
+    owner: Option<UnixListener>,
+    channels: RefCell<Vec<UnixStream>>,
+    launches: RefCell<Vec<PathBuf>>,
+    command_possible: Cell<bool>,
 }
 
 impl State {
@@ -38,15 +47,69 @@ impl State {
         let path = std::fs::canonicalize(temp.path()).unwrap().join("linux-vm");
         std::fs::create_dir(&path).unwrap();
         std::fs::write(path.join("host-exec-token"), TOKEN).unwrap();
+        let owner = UnixListener::bind(temp.path().join("owner.sock")).unwrap();
+        std::fs::set_permissions(
+            temp.path().join("owner.sock"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        owner.set_nonblocking(true).unwrap();
         Self {
             _temp: temp,
             path,
             children: RefCell::default(),
+            owner: Some(owner),
+            channels: RefCell::default(),
+            launches: RefCell::default(),
+            command_possible: Cell::new(false),
         }
     }
 
+    fn token(&self) -> String {
+        std::fs::read_to_string(self.path.join("host-exec-token")).unwrap()
+    }
+
+    fn collect_channels(&self) {
+        if let Some(owner) = &self.owner {
+            while let Ok((stream, _)) = owner.accept() {
+                self.channels.borrow_mut().push(stream);
+            }
+        }
+    }
+
+    fn ensure(&self, build: &str, browser_host: Option<&Path>) -> Result<String, String> {
+        let root = self.path.parent().unwrap();
+        let index = self.launches.borrow().len();
+        let receipt = root.join(format!("service-child-{index}.json"));
+        let launcher = root.join(format!("service-launcher-{index}"));
+        let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+        let script = repository()
+            .join("workspaces/runtime/apps/runtime-server/tests/fixtures/host_exec_child.py");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nexec python3 {} {} {} {} {} \"$@\"\n",
+                quote(&script),
+                quote(&root.join("owner.sock")),
+                quote(&receipt),
+                HANG_GUARD.as_secs(),
+                quote(&binary()),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        self.launches.borrow_mut().push(receipt);
+        let result = ensure_service(&self.path, &launcher, build, browser_host);
+        self.collect_channels();
+        result
+    }
+
     fn call(&self, method: &str, params: Option<&Value>) -> Value {
-        service_call(&self.path, TOKEN, method, params)
+        // A lost run reply does not prove that the command never started.
+        if method == "run" {
+            self.command_possible.set(true);
+        }
+        service_call(&self.path, &self.token(), method, params)
             .unwrap_or_else(|error| panic!("{method}: {error:?}"))
     }
 
@@ -55,67 +118,113 @@ impl State {
     }
 
     fn start(&self, build: &str) -> u32 {
-        let child = Command::new(binary())
+        let mut child = Command::new(binary())
             .args(["host-exec-service"])
             .arg(&self.path)
             .args(["--build", build])
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
             .spawn()
             .unwrap();
         let pid = child.id();
+        let stdout = child.stdout.take().unwrap();
         self.children.borrow_mut().push(child);
-        let deadline = Instant::now() + HANG_GUARD;
-        while service_call(&self.path, TOKEN, "health", None).is_err() {
-            assert!(Instant::now() < deadline, "the service did not start");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let mut ready = String::new();
+        BufReader::new(stdout).read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim_end(), SERVICE_READY_LINE);
+        assert_eq!(self.health()["pid"], pid);
         pid
     }
 
     fn wait_idle(&self) {
-        let deadline = Instant::now() + HANG_GUARD;
-        while self.health()["activeCommands"] != 0 {
-            assert!(Instant::now() < deadline, "a command did not end");
-            std::thread::sleep(Duration::from_millis(20));
+        let mut after = 0;
+        loop {
+            let attached = self.call(
+                "attach",
+                Some(&json!({
+                    "operationId":"upgrade-operation", "agentId":"agent",
+                    "afterSeq":after, "waitSeconds":HANG_GUARD.as_secs()
+                })),
+            );
+            let events = attached["events"].as_array().unwrap();
+            if let Some(event) = events.last() {
+                after = event["seq"].as_i64().unwrap();
+            }
+            if attached["status"]["state"] != "running" && events.is_empty() {
+                break;
+            }
         }
     }
 
     fn wait_child(&self, pid: u32) -> ExitStatus {
-        let mut children = self.children.borrow_mut();
-        let child = children.iter_mut().find(|child| child.id() == pid).unwrap();
-        let deadline = Instant::now() + HANG_GUARD;
-        loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                return status;
-            }
-            if Instant::now() >= deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("owned service {pid} did not exit after retirement");
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        self.children
+            .borrow_mut()
+            .iter_mut()
+            .find(|child| child.id() == pid)
+            .unwrap()
+            .wait()
+            .unwrap()
     }
 
     /// Reap owned children directly; detached replacements can be zombies until
     /// their OS parent reaps them. A live service at the watchdog is a failure.
     fn retire(&self) {
-        if let Ok(health) = service_call(&self.path, TOKEN, "health", None) {
+        assert!(self.cancel_command(), "fixture command cleanup is unproved");
+        let token = self.token();
+        if let Ok(health) = service_call(&self.path, &token, "health", None) {
             let params = json!({"buildId": health["buildId"], "pid": health["pid"]});
-            service_call(&self.path, TOKEN, "service.retire", Some(&params)).unwrap();
+            service_call(&self.path, &token, "service.retire", Some(&params)).unwrap();
             let pid = u32::try_from(health["pid"].as_u64().unwrap()).unwrap();
             if self.children.borrow().iter().any(|child| child.id() == pid) {
                 assert!(self.wait_child(pid).success());
             } else {
-                let deadline = Instant::now() + HANG_GUARD;
-                while service_is_live(pid) {
-                    assert!(
-                        Instant::now() < deadline,
-                        "detached service {pid} did not retire"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                self.wait_for_released_state();
             }
+        }
+    }
+
+    fn wait_for_released_state(&self) {
+        let lease = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(self.path.join(LEASE_FILE))
+            .unwrap();
+        lease.lock().unwrap();
+    }
+
+    fn cancel_command(&self) -> bool {
+        if !self.command_possible.get() {
+            return true;
+        }
+        let Ok(token) = std::fs::read_to_string(self.path.join("host-exec-token")) else {
+            return false;
+        };
+        let params = json!({"operationId":"upgrade-operation","agentId":"agent"});
+        if service_call(&self.path, &token, "cancel", Some(&params)).is_err() {
+            return false;
+        }
+        let deadline = Instant::now() + HANG_GUARD;
+        loop {
+            let Ok(status) = service_call(&self.path, &token, "status", Some(&params)) else {
+                return false;
+            };
+            let Ok(health) = service_call(&self.path, &token, "health", None) else {
+                return false;
+            };
+            if matches!(
+                status["state"].as_str(),
+                Some("leased" | "released" | "exited")
+            ) && health["activeCommands"] == 0
+                && health["activeRequests"] == 0
+                && health["busy"] == false
+            {
+                self.command_possible.set(false);
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -132,31 +241,93 @@ impl State {
 
 impl Drop for State {
     fn drop(&mut self) {
-        self.retire();
-        for child in self.children.get_mut() {
-            if child.try_wait().unwrap().is_none() {
-                child.kill().unwrap();
-                child.wait().unwrap();
+        // Cleanup must also run while an earlier assertion unwinds.
+        let command_stopped = self.cancel_command();
+        if command_stopped
+            && let Ok(token) = std::fs::read_to_string(self.path.join("host-exec-token"))
+            && let Ok(health) = service_call(&self.path, &token, "health", None)
+        {
+            let params = json!({"buildId":health["buildId"],"pid":health["pid"]});
+            let _result = service_call(&self.path, &token, "service.retire", Some(&params));
+        }
+        self.collect_channels();
+        let owners = self.channels.get_mut().len();
+        drop(self.owner.take());
+        let mut cleanup_unproved = !command_stopped;
+        if command_stopped {
+            for channel in self.channels.get_mut().iter_mut() {
+                // An already retired child can close first. Its receipt proves exit.
+                let _result = channel.write_all(b"C");
             }
         }
+        self.channels.get_mut().clear();
+        let deadline = Instant::now() + HANG_GUARD;
+        loop {
+            let records = self
+                .launches
+                .get_mut()
+                .iter()
+                .filter_map(|path| {
+                    std::fs::read(path)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                })
+                .collect::<Vec<_>>();
+            let pending =
+                records.len() < owners || records.iter().any(|record| record["phase"] == "running");
+            if !pending {
+                break;
+            }
+            if Instant::now() >= deadline {
+                cleanup_unproved = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for path in self.launches.get_mut() {
+            if let Ok(bytes) = std::fs::read(path)
+                && let Ok(record) = serde_json::from_slice::<Value>(&bytes)
+            {
+                if record["phase"] != "exited" {
+                    cleanup_unproved = true;
+                }
+                if cleanup_unproved || std::thread::panicking() {
+                    eprintln!(
+                        "host_exec fixture cleanup identity: {}",
+                        String::from_utf8_lossy(&bytes)
+                    );
+                }
+            }
+        }
+        if (cleanup_unproved || std::thread::panicking())
+            && let Ok(log) = std::fs::read(self.path.join("host-exec.log"))
+        {
+            eprintln!(
+                "host_exec fixture failure log: {}",
+                String::from_utf8_lossy(&log)
+            );
+        }
+        if !command_stopped {
+            eprintln!(
+                "host_exec fixture cleanup_unknown: upgrade-operation/agent cancellation or idle proof is missing; the service is not stopped"
+            );
+        }
+        for child in self.children.get_mut() {
+            if command_stopped && !matches!(child.try_wait(), Ok(Some(_))) {
+                let killed = child.kill();
+                let waited = child.wait();
+                cleanup_unproved |= killed.is_err() || waited.is_err();
+            }
+        }
+        assert!(
+            !cleanup_unproved || std::thread::panicking(),
+            "owned host_exec fixture cleanup is unproved"
+        );
     }
 }
 
-fn service_is_live(pid: u32) -> bool {
-    let status = Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
-        .output()
-        .unwrap();
-    assert!(
-        status.status.success() || status.status.code() == Some(1),
-        "ps failed"
-    );
-    let state = String::from_utf8(status.stdout).unwrap();
-    let state = state.trim();
-    !state.is_empty() && !state.starts_with('Z')
-}
-
 #[test]
+#[ignore = "manual process tier: just test-host-exec-processes"]
 fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() {
     let state = State::new();
     let old = state.start("old-build");
@@ -168,7 +339,7 @@ fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() 
         .unwrap()
         .join("lease.json");
     let lease_bytes = std::fs::read(&lease).unwrap();
-    let token = ensure_service(&state.path, &binary(), "new-build", None).unwrap();
+    let token = state.ensure("new-build", None).unwrap();
     assert_eq!(token, TOKEN);
     let after = state.health();
     assert_eq!(after["buildId"], "new-build");
@@ -185,11 +356,12 @@ fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() 
         op
     );
     // The current build stays as it is.
-    ensure_service(&state.path, &binary(), "new-build", None).unwrap();
+    state.ensure("new-build", None).unwrap();
     assert_eq!(state.health()["pid"], after["pid"]);
 }
 
 #[test]
+#[ignore = "manual process tier: just test-host-exec-processes"]
 fn a_busy_service_of_another_build_stays_with_its_command() {
     let state = State::new();
     let old = state.start("old-build");
@@ -216,7 +388,7 @@ fn a_busy_service_of_another_build_stays_with_its_command() {
                      "argv": ["/bin/sh", "-c", "read release < \"$1\"", "busy-holder", pipe], "manifestSha256": empty, "timeoutSeconds": 60}),
         ),
     );
-    ensure_service(&state.path, &binary(), "new-build", None).unwrap();
+    state.ensure("new-build", None).unwrap();
     assert_eq!(state.health()["pid"], before["pid"]);
     assert_eq!(state.health()["buildId"], "old-build");
     assert!(
@@ -250,11 +422,12 @@ fn a_busy_service_of_another_build_stays_with_its_command() {
 }
 
 #[test]
+#[ignore = "manual process tier: just test-host-exec-processes"]
 fn a_new_state_gets_a_token_and_a_service() {
     let state = State::new();
     std::fs::remove_file(state.path.join("host-exec-token")).unwrap();
     let path = &state.path;
-    let token = ensure_service(path, &binary(), "fresh-build", None).unwrap();
+    let token = state.ensure("fresh-build", None).unwrap();
     assert_eq!(token.len(), 64);
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
@@ -269,22 +442,21 @@ fn a_new_state_gets_a_token_and_a_service() {
     assert_eq!(health["buildId"], "fresh-build");
     let params = json!({"buildId": "fresh-build", "pid": health["pid"]});
     service_call(path, &token, "service.retire", Some(&params)).unwrap();
-    let deadline = Instant::now() + HANG_GUARD;
-    while service_is_live(health["pid"].as_u64().unwrap() as u32) {
-        assert!(Instant::now() < deadline, "fresh service did not retire");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    state.wait_for_released_state();
 }
 
 /// The guest broker of the VM (`vm-guest/host_exec.py`) runs unchanged against
 /// the service process (`vm-guest/host_exec_mac_contract.py`).
 #[test]
+#[ignore = "manual process tier: just test-host-exec-processes"]
 fn the_guest_broker_runs_against_the_mac_service() {
     let script = repository().join("workspaces/runtime/apps/vm-guest/host_exec_mac_contract.py");
     let output = Command::new("python3")
         .arg("-B")
         .arg(&script)
+        .arg("Contract.test_source_return_artifact_file_and_warm_path")
         .env("HOST_EXEC_SERVICE_BINARY", binary())
+        .env("HOST_EXEC_SERVICE_READY_LINE", SERVICE_READY_LINE)
         .output()
         .expect("python3 3.11 or newer runs the guest broker");
     assert!(
@@ -301,6 +473,7 @@ fn the_guest_broker_runs_against_the_mac_service() {
 /// decides, and a busy service of another build stays
 /// (`a_busy_service_of_another_build_stays_with_its_command`).
 #[test]
+#[ignore = "manual process tier: just test-host-exec-processes"]
 fn an_idle_service_without_the_browser_folder_is_replaced_and_its_commands_get_the_launcher() {
     let state = State::new();
     let old = state.start("old-build");
@@ -309,7 +482,7 @@ fn an_idle_service_without_the_browser_folder_is_replaced_and_its_commands_get_t
     std::fs::create_dir(&browser_host).unwrap();
     let launcher = browser_host.join("studio-browser");
     std::fs::write(&launcher, "#!/bin/sh\n").unwrap();
-    ensure_service(&state.path, &binary(), "new-build", Some(&browser_host)).unwrap();
+    state.ensure("new-build", Some(&browser_host)).unwrap();
     let after = state.health();
     assert_eq!(after["buildId"], "new-build");
     assert_ne!(after["pid"], before["pid"]);

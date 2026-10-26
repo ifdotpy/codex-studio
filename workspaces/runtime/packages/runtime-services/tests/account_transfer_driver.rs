@@ -10,7 +10,7 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 const OP: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
-pub(crate) async fn state() -> tempfile::TempDir {
+pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore) {
     let root = tempfile::tempdir().expect("isolated state");
     let path = root.path().display().to_string();
     let store = RuntimeStore::open(Some(root.path())).await.expect("open");
@@ -30,8 +30,7 @@ pub(crate) async fn state() -> tempfile::TempDir {
         })
         .await
         .expect("seed transfer state");
-    drop(store);
-    root
+    (root, store)
 }
 fn ticket() -> Ticket {
     Ticket {
@@ -89,8 +88,7 @@ impl TransferTransport for Native<'_> {
     }
 }
 async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
-    let root = state().await;
-    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+    let (root, store) = state().await;
     driver::begin_read(&store, OP, "lead", 10.0)
         .await
         .expect("prepare");
@@ -182,8 +180,7 @@ async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
     assert_eq!(operation(&store)["updated"], 14.0);
 }
 async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
-    let root = state().await;
-    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+    let (root, store) = state().await;
     let tables = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
         vec![
             "runtime_account_transfers",
@@ -242,8 +239,7 @@ async fn transaction_failpoints_roll_back_operation_agents_and_sync() {
 }
 
 async fn replay_and_conflict_have_no_writes() {
-    let root = state().await;
-    let store = RuntimeStore::open(Some(root.path())).await.expect("open");
+    let (_root, store) = state().await;
     let before = operation(&store);
     driver::request(&store, OP, "lead", "target", "team", "codex", 2.0)
         .await
@@ -273,34 +269,9 @@ async fn replay_and_conflict_have_no_writes() {
 
 #[tokio::test]
 async fn durable_adapter_failpoint_matrix() {
+    transaction_failpoints_roll_back_operation_agents_and_sync().await;
     if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
         durable_reservation_precedes_native_and_unknown_is_never_resent().await;
-        transaction_failpoints_roll_back_operation_agents_and_sync().await;
         replay_and_conflict_have_no_writes().await;
-    } else {
-        // The default witness checks transaction rollback without a filesystem;
-        // real fsync/restart and publication failpoints run in the full corpus.
-        let mut db = rusqlite::Connection::open_in_memory().expect("SQLite");
-        db.execute_batch(
-            "CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
-        )
-        .expect("Python table shape");
-        let raw = json!({"id":OP,"leadId":"lead","targetAccountKey":"target","status":"pending","created":1.0,"members":{}}).to_string();
-        {
-            let tx = db.transaction().expect("transaction");
-            AccountTransferRepository::put(&tx, OP, &raw).expect("validated write");
-        }
-        assert!(
-            AccountTransferRepository::get(&db, OP)
-                .expect("read after rollback")
-                .is_none()
-        );
-        let tx = db.transaction().expect("transaction");
-        AccountTransferRepository::put(&tx, OP, &raw).expect("validated write");
-        tx.commit().expect("commit");
-        assert_eq!(
-            AccountTransferRepository::get(&db, OP).expect("read committed row"),
-            Some(raw)
-        );
     }
 }

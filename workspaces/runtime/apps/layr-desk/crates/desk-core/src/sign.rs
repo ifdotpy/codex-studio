@@ -177,10 +177,7 @@ mod tests {
         let canonical = b"{\"files\":{}}";
         assert_eq!(
             message("proj", &header(), canonical),
-            format!(
-                "layr-desk tree v1\nproj\n12\n0a1b2c3d\nst1\n1791700000\ndelta\n11.99887766\n{}",
-                hex::encode(Sha256::digest(canonical))
-            )
+            "layr-desk tree v1\nproj\n12\n0a1b2c3d\nst1\n1791700000\ndelta\n11.99887766\naae5a71db7cd42382ef749f87ca847684d9d4a517cc8235f53ea31bd492c3577"
         );
         let full = Header {
             tree: "full".into(),

@@ -2,7 +2,8 @@ import { randomUUID } from "../uuid";
 import ClaudeFileBackups from "./ClaudeFileBackups";
 import { Button, NativeSelect } from "@mantine/core";
 import { useEffect, useState } from "react";
-import { errorText, type PostResult } from "../api";
+import { errorText } from "../apiPresentation";
+import type { PostResult } from "../api";
 import type { Agent } from "../types";
 import {
   useServerApi,
@@ -10,6 +11,15 @@ import {
 } from "../servers/ServerServicesContext";
 
 type State = Extract<PostResult<"/api/claude/session">, { turns: unknown[] }>;
+
+function isState(value: unknown): value is State {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "turns" in value &&
+    Array.isArray(value.turns)
+  );
+}
 
 export default function ClaudeCheckpointRestore({
   agent,
@@ -32,7 +42,7 @@ export default function ClaudeCheckpointRestore({
     setError("");
     post("/api/claude/session", { id: agent.id, action: "state" })
       .then((value) => {
-        if (current && "turns" in value) setState(value);
+        if (current && isState(value)) setState(value);
       })
       .catch((failure) => current && setError(errorText(failure)));
     return () => {

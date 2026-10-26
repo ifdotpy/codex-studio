@@ -1,8 +1,12 @@
 import type { components } from "./generated/api";
+import preferenceStorageContract from "../../../contracts/preference-storage.json";
 
-export const studioPreferencesStorageKey = "codex-studio-preferences-v1";
-export const DEFAULT_HIDE_OLD_CHATS_THRESHOLD = 3;
-export const DEFAULT_CHECK_PROVIDER_UPDATES = true;
+export const studioPreferencesStorageKey =
+  preferenceStorageContract.appearance.storageKey;
+export const DEFAULT_HIDE_OLD_CHATS_THRESHOLD =
+  preferenceStorageContract.appearance.defaults.hideOldChatsThreshold;
+export const DEFAULT_CHECK_PROVIDER_UPDATES =
+  preferenceStorageContract.appearance.defaults.checkProviderUpdates;
 export const MIN_HIDE_OLD_CHATS_THRESHOLD = 1;
 export const MAX_HIDE_OLD_CHATS_THRESHOLD = 50;
 
@@ -21,20 +25,6 @@ export type StudioPreferences = Required<
   components["schemas"]["AppearancePreferences"]
 >;
 export type StudioFontFamily = StudioPreferences["fontFamily"];
-
-export const defaultStudioPreferences: StudioPreferences = {
-  theme: "auto",
-  typography: "custom",
-  contentLayout: "custom",
-  sidebarFontSize: 14,
-  mainFontSize: 14,
-  fontFamily: "system",
-  contentWidth: 100,
-  sidebarShortcut: `${navigator.platform.toLowerCase().includes("mac") ? "Meta" : "Control"}+b`,
-  showMessageAvatars: false,
-  hideOldChatsThreshold: DEFAULT_HIDE_OLD_CHATS_THRESHOLD,
-  checkProviderUpdates: DEFAULT_CHECK_PROVIDER_UPDATES,
-};
 
 const validThemes = new Set(["auto", "light", "dark"]);
 const validFonts = new Set<string>(Object.keys(fontFamilies));
@@ -97,6 +87,19 @@ export function parseStudioPreferences(value: string): StudioPreferences {
         : DEFAULT_CHECK_PROVIDER_UPDATES,
   };
 }
+
+// Native and legacy consumers materialize the same shared defaults. The
+// existing parser checks the contract before the application can use it.
+export const defaultStudioPreferences: StudioPreferences =
+  parseStudioPreferences(
+    JSON.stringify({
+      ...preferenceStorageContract.appearance.defaults,
+      sidebarShortcut:
+        preferenceStorageContract.appearance.sidebarShortcut[
+          navigator.platform.toLowerCase().includes("mac") ? "mac" : "other"
+        ],
+    }),
+  );
 
 export function parseSidebarShortcut(value: string): {
   key: string;

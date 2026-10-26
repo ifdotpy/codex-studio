@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod attachment_selections;
 pub mod backend;
 pub mod client;
 pub mod delivery;
@@ -14,9 +15,13 @@ pub mod file_preview;
 pub mod file_save;
 pub use studio_client_domain::markdown;
 pub mod media;
+mod mutation_journal;
 pub mod native;
 pub mod notifications;
 mod ordered_json;
+mod preference_replication;
+mod preferences;
+pub use studio_client_domain::preferences::reserved_metadata_key as reserved_preference_metadata_key;
 pub mod outbox;
 mod pdf;
 pub mod platform;
@@ -30,12 +35,18 @@ pub mod server_transport;
 pub mod speech;
 pub mod startup;
 pub mod store;
+mod subscription_store;
+pub mod subscriptions;
 pub mod sync;
 pub mod terminal;
 mod tls;
+pub mod transcript_views;
 pub mod uploads;
 pub mod views;
 pub mod voice;
 pub mod voice_audio;
 
 mod vault_keys;
+
+#[cfg(test)]
+mod preference_tests;

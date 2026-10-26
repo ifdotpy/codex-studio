@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { errorText } from "../api";
+import { errorText } from "../apiPresentation";
 import { onResume } from "../sync/resume";
 import { retryableReadError } from "../sync/readRetry";
 import {

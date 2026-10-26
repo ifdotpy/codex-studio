@@ -576,10 +576,17 @@ pub(crate) async fn spawn_agents(
         let workspace_admission =
             environment.prepare_workspace(store, &actor_record, spec, request_id)?;
         let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
+        let review_settings = (role == "reviewer")
+            .then(|| crate::native_review::execution_settings(&parent_value, &root_value, spec));
         let requested_model = spec
             .get("model")
             .and_then(Value::as_str)
             .or(profile_model)
+            .or_else(|| {
+                review_settings
+                    .as_ref()
+                    .and_then(|(model, _)| model.as_str())
+            })
             .or_else(|| defaults.get("model").and_then(Value::as_str))
             .or_else(|| root_value.get("model").and_then(Value::as_str))
             .unwrap_or("gpt-6-astra");
@@ -665,6 +672,8 @@ pub(crate) async fn spawn_agents(
                 studio_runtime_store::ReasoningEffort::Max => "max",
                 studio_runtime_store::ReasoningEffort::Ultra => "ultra",
             })
+        } else if let Some((_, effort)) = &review_settings {
+            effort.as_str()
         } else {
             defaults.get("effort").and_then(Value::as_str)
         };

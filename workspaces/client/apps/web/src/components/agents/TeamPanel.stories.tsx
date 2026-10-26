@@ -129,6 +129,7 @@ const snapshot: Snapshot = {
     peerTeams: [],
     events: [],
     work: [],
+    studioErrors: [],
   },
 };
 const indicators = chatIndicators(snapshot);

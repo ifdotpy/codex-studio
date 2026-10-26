@@ -1,4 +1,5 @@
-//! The supervisor's independent FULL-sync journal. Never opens the runtime DB.
+//! The supervisor's independent journal. Never opens the runtime DB. It follows
+//! the shared durability policy of [`crate::sqlite_durability`].
 use crate::{python_json, python_json_with_separators, sha256_hex};
 use rusqlite::{
     Connection, OptionalExtension, Transaction, params,
@@ -8,7 +9,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use studio_runtime_providers::supervisor_protocol::{
     HANDLE_LIMIT, HandleSnapshot, NativeId, ReceiptSnapshot, Refusal, WriteDecision,
@@ -32,7 +33,8 @@ pub type Result<T> = std::result::Result<T, JournalError>;
 /// is unknown for such a row, so a later open of the handle may proceed.
 pub const START_FAILED_REASON: &str = "Native child failed to start; no child process remains";
 pub struct SupervisorJournal {
-    db: Mutex<Connection>,
+    /// Shared with the periodic WAL flush thread, which ends when the journal drops.
+    db: Arc<Mutex<Connection>>,
     buffered_by_handle: Mutex<HashMap<String, u64>>,
 }
 
@@ -124,9 +126,8 @@ impl SupervisorJournal {
     pub fn open(root: &Path) -> Result<Self> {
         let db = Connection::open(root.join("supervisor.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=100;",
-        )?;
+        crate::sqlite_durability::configure_writer(&db)?;
+        db.execute_batch("PRAGMA wal_autocheckpoint=100;")?;
         let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| {
             r.get::<_, u32>(0).map(u64::from)
         })?;
@@ -139,9 +140,16 @@ impl SupervisorJournal {
         migrate(&db)?;
         let buffered_by_handle = buffered_sizes(&db)?;
         let journal = Self {
-            db: Mutex::new(db),
+            db: Arc::new(Mutex::new(db)),
             buffered_by_handle: Mutex::new(buffered_by_handle),
         };
+        if let Err(error) = crate::sqlite_durability::spawn_periodic_flush(
+            "supervisor-journal",
+            Arc::downgrade(&journal.db),
+        ) {
+            // Automatic checkpoints and the close checkpoint still flush the journal.
+            eprintln!("supervisor journal periodic WAL flush did not start: {error}");
+        }
         // Check every existing handle before any process effects.
         journal.handles(false)?;
         journal.validate_rows()?;
@@ -284,7 +292,7 @@ impl SupervisorJournal {
             Ok((snapshot(tx,handle)?.generation(), None))
         })
     }
-    /// FULL-sync commit is the only admission point. The caller sends only Accept, once.
+    /// This commit is the only admission point. The caller sends only Accept, once.
     pub fn accept(
         &self,
         handle: &str,

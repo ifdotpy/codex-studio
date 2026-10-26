@@ -1640,11 +1640,11 @@
   "pragmas": {
     "analytics": {
       "journal_mode": "wal",
-      "synchronous": 2
+      "synchronous": 1
     },
     "main": {
       "journal_mode": "wal",
-      "synchronous": 2
+      "synchronous": 1
     }
   }
 }

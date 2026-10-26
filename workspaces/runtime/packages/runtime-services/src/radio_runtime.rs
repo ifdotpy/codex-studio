@@ -313,7 +313,7 @@ pub async fn create_with(
             AgentRepository::put(db, draft)?;
             let context=crate::sync_entity_context::agent_view_context(db,&value,prepared.server().ok())?;
             let view=crate::sync_views::agent_entity_view(&value,&context).ok_or(ProjectsError::Invalid("draft projection unavailable"))?;
-            SyncDocumentsRepository::put_entity(db,"agent",id,view,false)?;
+            crate::sync_policy::publish_agent_projection(db,id,view,false, &|_, _, _, _| true)?;
         }
         let now=crate::projects::now_seconds();
         let mut room=Room::checked(json!({"id":room_id,"kind":"private","members":ids,"projectPath":path,"customName":name,"created":now,"userHidden":false,"radio":{"direct":true,"teamId":namespace.to_string(),"revision":0,"status":"idle","speaker":null,"next":[],"active":null,"error":null,"seen":{}}}))?;

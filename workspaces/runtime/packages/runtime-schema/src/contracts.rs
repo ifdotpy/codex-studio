@@ -56,8 +56,64 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "REMOVED_SEND_STORAGE_PREFIX",
+                json_string(values::REMOVED_SEND_STORAGE_PREFIX),
+            ),
+            (
+                "MODEL_WHITELIST_PREFERENCE_KEY",
+                json_string(values::MODEL_WHITELIST_PREFERENCE_KEY),
+            ),
+            (
+                "MODEL_WHITELIST_MAX_KEYS",
+                values::MODEL_WHITELIST_MAX_KEYS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_MAX_CODEPOINTS",
+                values::MODEL_WHITELIST_KEY_MAX_CODEPOINTS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_PATTERN",
+                json_string(values::MODEL_WHITELIST_KEY_PATTERN),
+            ),
+            (
+                "SYNC_TERMINAL_STREAM_MAX_CHARS",
+                values::SYNC_TERMINAL_STREAM_MAX_CHARS.to_string(),
+            ),
+            (
+                "MAX_SYNC_RESOURCE_COUNT",
+                values::MAX_SYNC_RESOURCE_COUNT.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS",
+                values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS.to_string(),
+            ),
+            (
                 "STUDIO_ERRORS_DISMISS_MAX_IDS",
                 values::STUDIO_ERRORS_DISMISS_MAX_IDS.to_string(),
+            ),
+            (
+                "SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS",
+                values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS.to_string(),
+            ),
+            (
+                "MAX_TRANSCRIPT_PAGE_ITEMS",
+                values::MAX_TRANSCRIPT_PAGE_ITEMS.to_string(),
+            ),
+            (
+                "MAX_TRANSCRIPT_PAGE_MEMORY_BYTES",
+                values::MAX_TRANSCRIPT_PAGE_MEMORY_BYTES.to_string(),
+            ),
+            (
+                "MAX_TRANSCRIPT_CACHE_ITEMS",
+                values::MAX_TRANSCRIPT_CACHE_ITEMS.to_string(),
+            ),
+            (
+                "MAX_TRANSCRIPT_CACHE_MEMORY_BYTES",
+                values::MAX_TRANSCRIPT_CACHE_MEMORY_BYTES.to_string(),
+            ),
+            (
+                "MAX_TRANSCRIPT_CACHE_SCOPES",
+                values::MAX_TRANSCRIPT_CACHE_SCOPES.to_string(),
             ),
             (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
@@ -74,6 +130,10 @@ fn shared_values_ts() -> String {
             (
                 "SYNC_DRAFT_STREAM_MAX_DOCUMENTS",
                 values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS.to_string(),
+            ),
+            (
+                "MAX_VOICE_IDENTITY_CHARS",
+                values::MAX_VOICE_IDENTITY_CHARS.to_string(),
             ),
             (
                 "MAX_USER_ATTACHMENT_BYTES",
@@ -393,6 +453,14 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
+    for field in ["id", "session", "item_id", "previous_item_id"] {
+        expect_number(
+            openapi,
+            &format!("/components/schemas/VoiceRecordResponse/properties/{field}/maxLength"),
+            values::MAX_VOICE_IDENTITY_CHARS as i64,
+        )
+        .map_err(|error| format!("shared_values::MAX_VOICE_IDENTITY_CHARS: {error}"))?;
+    }
     expect_number(
         openapi,
         "/components/schemas/StudioErrorsDismissRequest/properties/ids/maxItems",
@@ -405,8 +473,23 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     )?;
     expect_number(
         openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/transferId/maxLength",
+        values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/data/maxLength",
+        values::SYNC_STREAM_EVENT_MAX_BYTES as i64,
+    )?;
+    expect_number(
+        openapi,
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/VoiceRecordBatch/properties/records/maxItems",
+        values::SYNC_VOICE_STREAM_MAX_RECORDS,
     )?;
     for field in ["items", "removed", "order"] {
         expect_number(
@@ -417,7 +500,12 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     }
     expect_number(
         openapi,
-        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
+        "/components/schemas/TranscriptResource/properties/tail/default",
+        values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptResource/properties/tail/maximum",
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     check_delivery_parity(openapi)?;
@@ -530,6 +618,10 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "ResourceChangeEvent",
         "ResourceHeartbeatEvent",
         "ResourceTokenRatesEvent",
+        "AuthProgressEvent",
+        "RenameProgressEvent",
+        "VaultReadinessEvent",
+        "VaultJobProgressEvent",
     ] {
         for bound in ["const", "minimum", "maximum"] {
             expect_number(
@@ -537,6 +629,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
                 &format!("/components/schemas/{owner}/properties/protocol/{bound}"),
                 version,
             )?;
+        }
+    }
+    for (owner, consumer) in [("id", "agentId"), ("request_id/anyOf/0", "requestId")] {
+        let source = openapi.pointer(&format!(
+            "/components/schemas/RenameRequest/properties/{owner}"
+        ));
+        let target = openapi.pointer(&format!(
+            "/components/schemas/RenameProgressResource/properties/{consumer}"
+        ));
+        if source != target {
+            return Err(format!(
+                "RenameRequest owns rename selector bounds; RenameProgressResource.{consumer} differs"
+            ));
         }
     }
     for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
@@ -672,9 +777,71 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
     Ok(body)
 }
 
+fn subscription_scopes_ts(
+    scopes: &std::collections::BTreeMap<String, crate::sync_protocol::SubscriptionEntityScope>,
+    print_width: usize,
+) -> String {
+    let mut text = format!("// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {{\n");
+    for (kind, scope) in scopes {
+        let key = if kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            kind.clone()
+        } else {
+            json_string(kind)
+        };
+        writeln!(text, "  {key}: {{").expect("String write");
+        let inline = format!(
+            "    collections: [{}],",
+            scope
+                .collections
+                .iter()
+                .map(|collection| json_string(collection))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if inline.chars().count() <= print_width {
+            writeln!(text, "{inline}").expect("String write");
+        } else {
+            text.push_str("    collections: [\n");
+            for collection in &scope.collections {
+                writeln!(text, "      {},", json_string(collection)).expect("String write");
+            }
+            text.push_str("    ],\n");
+        }
+        for (field, value) in [
+            ("idField", &scope.id_field),
+            ("agentField", &scope.agent_field),
+        ] {
+            writeln!(
+                text,
+                "    {field}: {},",
+                value
+                    .as_deref()
+                    .map(json_string)
+                    .unwrap_or_else(|| "null".into())
+            )
+            .expect("String write");
+        }
+        writeln!(
+            text,
+            "    includeTeamMembers: {},",
+            scope.include_team_members
+        )
+        .expect("String write");
+        text.push_str("  },\n");
+    }
+    text.push_str("} as const;\n");
+    text
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    for field in ["id", "session", "item_id", "previous_item_id"] {
+        openapi
+            .pointer_mut(&format!("/components/schemas/VoiceRecordResponse/properties/{field}"))
+            .ok_or_else(|| format!("OpenAPI is missing voice identity field {field}"))?["maxLength"] =
+            serde_json::json!(values::MAX_VOICE_IDENTITY_CHARS);
+    }
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
@@ -707,7 +874,18 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         }
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
+    let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("subscriptionEntities.ts"),
+            text: subscription_scopes_ts(
+                &scopes,
+                read_json(root, ".oxfmtrc.json")?["printWidth"]
+                    .as_u64()
+                    .and_then(|width| usize::try_from(width).ok())
+                    .ok_or("root Oxfmt printWidth is missing")?,
+            ),
+        },
         Rendered {
             path: web("taskReview.ts"),
             text: format!(
@@ -733,6 +911,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
                 "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
                 json_string(crate::provider_input::ProviderInputOrigin::Human.as_str()),
                 json_string(crate::provider_input::ProviderInputOrigin::StudioEvent.as_str()),
+            ),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/lifecycle-capabilities.generated.mjs".into(),
+            text: format!(
+                "// {HEADER}\nexport const CLAUDE_STEER_COMPLETION_RECEIPTS = {};\n",
+                json_string(crate::provider_lifecycle::CLAUDE_STEER_COMPLETION_RECEIPTS),
             ),
         },
         Rendered {
@@ -778,13 +963,23 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .into_generator();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
+        generator.subschema_for::<studio_client_domain::protocol::PlaybackReceipt>();
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},
             "paths":{}, "components":{"schemas":generator.take_definitions(true)}
         });
         rendered.push(Rendered {
             path: web("rustOwned.ts"),
-            text: api_types(root, &document, "--rust-owned")?,
+            text: format!(
+                "{}\nexport const NATIVE_PLAYBACK_STATUSES = [\n{}] as const;\n",
+                api_types(root, &document, "--rust-owned")?,
+                studio_client_domain::protocol::PlaybackStatus::ALL
+                    .iter()
+                    .map(|status| serde_json::to_string(status)
+                        .map(|value| format!("  {value},\n")))
+                    .collect::<Result<String, _>>()
+                    .map_err(|error| error.to_string())?,
+            ),
         });
         rendered.push(Rendered {
             path: web("api.ts"),
@@ -880,6 +1075,25 @@ mod tests {
         let error = check_schema_parity(&openapi, &account_transfer)
             .expect_err("a changed team limit is rejected");
         assert!(error.contains("maxAgents/maximum"), "{error}");
+    }
+
+    #[test]
+    fn voice_identity_parity_rejects_drift_in_each_record_field() {
+        let root = repository_root();
+        let openapi = read_json(&root, OPENAPI_PATH).expect("OpenAPI document");
+        let account_transfer =
+            read_json(&root, ACCOUNT_TRANSFER_SCHEMA_PATH).expect("account transfer schema");
+        check_schema_parity(&openapi, &account_transfer).expect("baseline contracts agree");
+        for field in ["id", "session", "item_id", "previous_item_id"] {
+            let path = format!("/components/schemas/VoiceRecordResponse/properties/{field}");
+            let mut drifted = openapi.clone();
+            drifted.pointer_mut(&path).expect("voice identity field")["maxLength"] =
+                serde_json::json!(241);
+            let error = check_schema_parity(&drifted, &account_transfer)
+                .expect_err("each voice identity must keep its source bound");
+            assert!(error.contains(&path), "{error}");
+            assert!(error.contains("MAX_VOICE_IDENTITY_CHARS"), "{error}");
+        }
     }
 
     #[test]

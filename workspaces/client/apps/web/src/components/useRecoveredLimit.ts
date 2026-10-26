@@ -1,6 +1,5 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef } from "react";
-import "../api";
 import { limitRecovered } from "../usage/limitRecovery";
 import type { Agent, Json } from "../types";
 

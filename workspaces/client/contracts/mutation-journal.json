@@ -1,0 +1,17 @@
+{
+  "monitorInputPath": "/api/monitor/input",
+  "uncertainHttpStatusFloor": 500,
+  "uncertainHttpStatuses": [408, 429],
+  "uncertainCodes": [
+    "remote_timeout",
+    "remote_unavailable",
+    "remote_response",
+    "response_size",
+    "access_unavailable",
+    "outcome_unknown",
+    "request_pending",
+    "receipt_expired",
+    "request_conflict"
+  ],
+  "maxPayloadBytes": 8388608
+}

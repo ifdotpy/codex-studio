@@ -683,57 +683,51 @@ mod tests {
     /// A write that changes only volatile fields leaves `runtime_agents`
     /// untouched; an absent field keeps its value; an unchanged write writes
     /// nothing.
-    #[tokio::test]
-    async fn volatile_only_writes_leave_the_indexed_record_alone() {
-        let root = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("store opens");
-        store
-            .transaction(|tx| {
-                let mut agent = agents()[0].clone();
-                put(tx, "a", &agent, false)?;
-                tx.execute_batch(
-                    "CREATE TEMP TABLE probe(n INTEGER); INSERT INTO probe VALUES(0);
+    #[test]
+    fn volatile_only_writes_leave_the_indexed_record_alone() -> crate::StoreResult<()> {
+        let mut connection = crate::fresh_state::test_canvas();
+        let transaction = connection.transaction().expect("write transaction");
+        let tx = &transaction;
+        let mut agent = agents()[0].clone();
+        put(tx, "a", &agent, false)?;
+        tx.execute_batch(
+            "CREATE TEMP TABLE probe(n INTEGER); INSERT INTO probe VALUES(0);
                      CREATE TEMP TRIGGER probe_agents AFTER UPDATE ON main.runtime_agents
                      BEGIN UPDATE probe SET n=n+1; END;",
-                )?;
-                let revision = |tx: &Transaction<'_>| -> rusqlite::Result<i64> {
-                    tx.query_row(
-                        "SELECT revision FROM runtime_transcript_revisions WHERE agent='a'",
-                        [],
-                        |row| row.get(0),
-                    )
-                };
-                let revision_before = revision(tx)?;
-                agent["events"] = json!(8);
-                agent["tail"] = json!("longer answer tail");
-                assert!(update(tx, "a", &agent)?);
-                let agent_updates: i64 =
-                    tx.query_row("SELECT n FROM probe", [], |row| row.get(0))?;
-                assert_eq!(agent_updates, 0, "runtime_agents is not written");
-                assert_eq!(
-                    revision(tx)?,
-                    revision_before + 1,
-                    "the transcript revision advances"
-                );
-                let mut partial = agent.clone();
-                let object = partial.as_object_mut().expect("object");
-                object.remove("lastAnswer");
-                let before = tx.total_changes();
-                assert!(update(tx, "a", &partial)?);
-                assert_eq!(
-                    tx.total_changes(),
-                    before,
-                    "an unchanged write writes nothing"
-                );
-                let mut read = Value::Object(stored_record_object(tx, "a"));
-                merge(tx, "a", &mut read)?;
-                assert_eq!(read, agent);
-                Ok(())
-            })
-            .await
-            .expect("writes");
+        )?;
+        let revision = |tx: &Transaction<'_>| -> rusqlite::Result<i64> {
+            tx.query_row(
+                "SELECT revision FROM runtime_transcript_revisions WHERE agent='a'",
+                [],
+                |row| row.get(0),
+            )
+        };
+        let revision_before = revision(tx)?;
+        agent["events"] = json!(8);
+        agent["tail"] = json!("longer answer tail");
+        assert!(update(tx, "a", &agent)?);
+        let agent_updates: i64 = tx.query_row("SELECT n FROM probe", [], |row| row.get(0))?;
+        assert_eq!(agent_updates, 0, "runtime_agents is not written");
+        assert_eq!(
+            revision(tx)?,
+            revision_before + 1,
+            "the transcript revision advances"
+        );
+        let mut partial = agent.clone();
+        let object = partial.as_object_mut().expect("object");
+        object.remove("lastAnswer");
+        let before = tx.total_changes();
+        assert!(update(tx, "a", &partial)?);
+        assert_eq!(
+            tx.total_changes(),
+            before,
+            "an unchanged write writes nothing"
+        );
+        let mut read = Value::Object(stored_record_object(tx, "a"));
+        merge(tx, "a", &mut read)?;
+        assert_eq!(read, agent);
+        transaction.commit().expect("writes commit");
+        Ok(())
     }
 
     fn stored_record_object(connection: &Connection, id: &str) -> Map<String, Value> {

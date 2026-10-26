@@ -33,8 +33,11 @@ per_provider!(
 
 /// An accepted, running turn of a `provider` agent with queued input.
 async fn running_turn(provider: &'static str) -> (State, Peer, AccountHandle) {
+    running_turn_with_peer(provider, Peer::new()).await
+}
+
+async fn running_turn_with_peer(provider: &'static str, mut peer: Peer) -> (State, Peer, AccountHandle) {
     let state = State::new().await;
-    let mut peer = Peer::new();
     let worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
     peer.accepted(&start).await;
@@ -62,6 +65,40 @@ async fn running_turn(provider: &'static str) -> (State, Peer, AccountHandle) {
         .await
         .unwrap();
     (state, peer, worker)
+}
+
+#[tokio::test]
+async fn legacy_claude_keeps_original_input_pending_until_the_next_turn() {
+    let peer = Peer::identity_with_initialize_result("default", 1, None, None, false, false, json!({}));
+    let (state, mut peer, mut worker) = running_turn_with_peer("claude", peer).await;
+    state.wake(&worker).await;
+    tokio::select! {
+        wire = peer.writes.recv() => panic!("Legacy Claude must not receive busy-turn input: {:?}", wire.map(|wire| wire.value)),
+        () = worker_barrier(&worker) => {}
+    }
+    assert_eq!(input(&state).await, ("pending".into(), None, None));
+    assert_eq!(transcript(&state).await, 0);
+    assert_eq!(state.record().await["autoWake"], true);
+    *state.bridge.faults.pause_operation.lock().unwrap() = Some("claim".into());
+    frame(&mut peer, finished(&[])).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), state.bridge.faults.paused.notified())
+        .await.expect("native completion wakes the ordinary next-turn claim");
+    assert_eq!(state.record().await["provider"], "claude");
+    assert_eq!(input(&state).await, ("pending".into(), None, None));
+    let intent = store::claim(state.bridge.store.clone(), "default", &state.agent, state.epoch)
+        .await.unwrap().expect("the ordinary Claude claim remains available");
+    assert_eq!(intent.provider, studio_runtime_providers::ProviderKind::Claude);
+    assert_eq!(intent.events.iter().map(|event| event.id.as_str()).collect::<Vec<_>>(), [INPUT]);
+    assert_eq!(input(&state).await.0, "reserved");
+    assert_eq!(state.record().await["startAttempt"]["submitted"], false);
+    assert!(matches!(
+        peer.writes.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    worker.cancel();
+    *state.bridge.faults.pause_operation.lock().unwrap() = None;
+    state.bridge.faults.release.notify_one();
+    worker.completion().await.unwrap();
 }
 
 async fn set_provider(state: &State, provider: &'static str) {
@@ -637,14 +674,19 @@ async fn foreign_notification_fails_visibly_while_valid_current_input_is_sent() 
     worker.shutdown().await.unwrap();
 }
 
-async fn thousand_inputs(state: &State) {
+/// Synthetic events whose combined wrappers cross the production input budget.
+const SPILL_EVENTS: usize = 3;
+
+async fn overflowing_inputs(state: &State) {
     let (agent, epoch) = (state.agent.clone(), state.epoch);
     state.bridge.run(move |store| async move {
         store.transaction_with(move |tx| {
             tx.execute("UPDATE runtime_events SET created=1000 WHERE agent=?1 AND kind='user'",[&agent])?;
-            for i in 0..999 {
+            for i in 0..SPILL_EVENTS {
+                let marker = format!("decision-{i:04}");
+                let text = format!("{marker}{}", "x".repeat(crate::turn_prepare::STUDIO_INPUT_BYTES / SPILL_EVENTS - marker.len()));
                 tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'work_decision',?3,'pending',?4,?5)",
-                    rusqlite::params![format!("small-{i:04}"),agent,format!("decision-{i:04}"),i as f64,epoch])?;
+                    rusqlite::params![format!("small-{i:04}"),agent,text,i as f64,epoch])?;
             }
             Ok::<_,WorkerError>(())
         }).await
@@ -652,7 +694,7 @@ async fn thousand_inputs(state: &State) {
 }
 
 /// Overflow remains readable before acknowledgement can mark any event delivered.
-async fn assert_thousand_events_readable(state: &State, text: &str) {
+async fn assert_overflow_events_readable(state: &State, text: &str) {
     assert!(text.len().saturating_sub(TEXT.len()) <= crate::turn_prepare::STUDIO_INPUT_BYTES);
     let metadata = state
         .bridge
@@ -678,9 +720,9 @@ async fn assert_thousand_events_readable(state: &State, text: &str) {
     let full = String::from_utf8(bytes).unwrap();
     assert_eq!(
         full.matches("[Orchestration event: work_decision]").count(),
-        999
+        SPILL_EVENTS
     );
-    for i in 0..999 {
+    for i in 0..SPILL_EVENTS {
         assert!(
             full.contains(&format!("decision-{i:04}")),
             "missing event {i}"
@@ -689,24 +731,24 @@ async fn assert_thousand_events_readable(state: &State, text: &str) {
 }
 
 #[tokio::test]
-async fn one_thousand_small_events_share_one_compiled_busy_submission() {
+async fn overflow_events_share_one_compiled_busy_submission() {
     let (state, mut peer, mut worker) = running_turn("codex").await;
-    thousand_inputs(&state).await;
+    overflowing_inputs(&state).await;
     let request = steer(&state, &mut peer, &worker).await;
     assert_eq!(request["params"]["clientUserMessageId"], "small-0000");
     let text = request["params"]["input"][0]["text"].as_str().unwrap();
-    assert_thousand_events_readable(&state, text).await;
+    assert_overflow_events_readable(&state, text).await;
     assert!(text.contains(TEXT));
     frame(&mut peer,json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn",
         "item":{"id":"small-0000","type":"userMessage","clientId":"small-0000","delivery":"steer","content":request["params"]["input"]}}})).await;
     let agent = state.agent.clone();
     state.bridge.run(move |store| async move {
- store.read_async("test/account_worker_steer/one_thousand_small_events_share_one_compiled_busy_submission", move |db| {
+ store.read_async("test/account_worker_steer/overflow_events_share_one_compiled_busy_submission", move |db| {
 
         let delivered:i64=db.query_row("SELECT count(*) FROM runtime_events WHERE agent=?1 AND status='delivered' AND id<>'annotation:input'",[&agent],|r|r.get(0))?;
-        assert_eq!(delivered,1000);
+        assert_eq!(delivered, (SPILL_EVENTS + 1) as i64);
         let count:i64=db.query_row("SELECT json_array_length(record,'$.inputs') FROM runtime_items WHERE id=?1",[format!("{agent}:small-0000")],|r|r.get(0))?;
-        assert_eq!(count,1000);
+        assert_eq!(count, (SPILL_EVENTS + 1) as i64);
         Ok(())
 
  }).await
@@ -716,31 +758,34 @@ async fn one_thousand_small_events_share_one_compiled_busy_submission() {
 }
 
 #[tokio::test]
-async fn one_thousand_small_events_share_one_idle_turn_submission() {
+async fn overflow_events_share_one_idle_turn_submission() {
     let state = State::new().await;
-    thousand_inputs(&state).await;
+    overflowing_inputs(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let turn = state.start(&mut peer, &worker).await;
     let text = turn["params"]["input"][0]["text"].as_str().unwrap();
-    assert_thousand_events_readable(&state, text).await;
+    assert_overflow_events_readable(&state, text).await;
     peer.accepted(&turn).await;
     let agent = state.agent.clone();
     state
         .bridge
         .run(move |store| async move {
- store.read_async("test/account_worker_steer/one_thousand_small_events_share_one_idle_turn_submission", move |db| {
-
-            let count: i64 = db.query_row(
+            store
+                .read_async(
+                    "test/account_worker_steer/overflow_events_share_one_idle_turn_submission",
+                    move |db| {
+                        let count: i64 = db.query_row(
                 "SELECT count(*) FROM runtime_events WHERE agent=?1 AND status='delivered'",
                 [agent],
                 |r| r.get(0),
             )?;
-            assert_eq!(count, 1000);
-            Ok(())
-
- }).await
-})
+                        assert_eq!(count, (SPILL_EVENTS + 1) as i64);
+                        Ok(())
+                    },
+                )
+                .await
+        })
         .await
         .unwrap();
     no_write(&mut peer).await;

@@ -1,10 +1,28 @@
 import { expect, it } from "vitest";
+import preferenceStorageContract from "../../../contracts/preference-storage.json";
 import {
   DEFAULT_CHECK_PROVIDER_UPDATES,
   DEFAULT_HIDE_OLD_CHATS_THRESHOLD,
   defaultStudioPreferences,
   parseStudioPreferences,
 } from "./studioPreferences";
+
+it("uses validated shared native appearance defaults", () => {
+  const defaults = {
+    ...preferenceStorageContract.appearance.defaults,
+    sidebarShortcut:
+      preferenceStorageContract.appearance.sidebarShortcut[
+        navigator.platform.toLowerCase().includes("mac") ? "mac" : "other"
+      ],
+  };
+  expect(defaultStudioPreferences).toEqual(defaults);
+  expect(parseStudioPreferences(JSON.stringify(defaults))).toEqual(defaults);
+  expect(() =>
+    parseStudioPreferences(
+      JSON.stringify({ ...defaults, theme: "unsupported" }),
+    ),
+  ).toThrow("Invalid preferences");
+});
 
 it("defaults the hide-old threshold for previously saved preferences", () => {
   const { hideOldChatsThreshold: _, ...legacy } = defaultStudioPreferences;

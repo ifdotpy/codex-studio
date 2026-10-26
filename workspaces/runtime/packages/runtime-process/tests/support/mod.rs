@@ -6,8 +6,7 @@ use std::fs::File;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use studio_runtime_store::path_identity::CanonicalPath;
 
 use studio_runtime_process::{
@@ -15,7 +14,7 @@ use studio_runtime_process::{
     SupervisorHandle,
 };
 mod supervisor_ready;
-pub(crate) use supervisor_ready::HANG_GUARD;
+pub(crate) use supervisor_ready::{HANG_GUARD, watch_changes};
 
 const SOCKET: &str = "supervisor.sock";
 #[cfg(target_os = "linux")]
@@ -217,17 +216,6 @@ impl Drop for SupervisorProcess {
     }
 }
 
-pub(crate) fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + HANG_GUARD;
-    while Instant::now() < deadline {
-        if ready() {
-            return;
-        }
-        thread::park_timeout(Duration::from_millis(1));
-    }
-    panic!("timed out waiting for {label}");
-}
-
 pub(crate) fn connect_client(
     state: &DisposableState,
 ) -> SupervisorClient<std::os::unix::net::UnixStream> {
@@ -261,6 +249,7 @@ pub(crate) fn poll_event(
     cursor: EventCursor,
     predicate: impl Fn(&studio_runtime_process::SupervisorEvent) -> bool,
 ) -> studio_runtime_process::SupervisorEvent {
+    let (_watcher, changes) = watch_changes(&client.backend_identity().state_dir);
     let deadline = Instant::now() + HANG_GUARD;
     let mut current = cursor;
     while Instant::now() < deadline {
@@ -276,6 +265,11 @@ pub(crate) fn poll_event(
             if predicate(&event) {
                 return event;
             }
+        } else {
+            changes
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("supervisor journal changes before the hang guard")
+                .expect("supervisor journal watcher remains healthy");
         }
     }
     panic!(

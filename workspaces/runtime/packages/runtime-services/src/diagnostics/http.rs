@@ -11,6 +11,7 @@ const ROUTE_MAX_BYTES: usize = 160;
 #[derive(Debug)]
 struct RouteSamples {
     count: u64,
+    statuses: BTreeMap<u16, u64>,
     latency_ns: Ring,
     response_bytes: Ring,
 }
@@ -19,6 +20,7 @@ impl RouteSamples {
     fn new() -> Self {
         Self {
             count: 0,
+            statuses: BTreeMap::new(),
             latency_ns: Ring::new(ROUTE_SAMPLE_LIMIT),
             response_bytes: Ring::new(ROUTE_SAMPLE_LIMIT),
         }
@@ -45,6 +47,7 @@ pub fn record_http_request(
     route_template: &str,
     elapsed: Duration,
     response_bytes: usize,
+    status: u16,
 ) {
     let valid_method = matches!(
         method,
@@ -59,7 +62,7 @@ pub fn record_http_request(
     }
     let key = (method.to_owned(), route_template.to_owned());
     let recorded = try_with_state(state(), |state| {
-        record_route(state, key, elapsed, response_bytes);
+        record_route(state, key, elapsed, response_bytes, status);
     });
     if !recorded {
         let _ = try_with_state(state(), |state| {
@@ -82,6 +85,7 @@ fn record_route(
     key: (String, String),
     elapsed: Duration,
     response_bytes: usize,
+    status: u16,
 ) {
     if !state.routes.contains_key(&key) && state.routes.len() >= SITE_LIMIT {
         state.untracked = state.untracked.saturating_add(1);
@@ -89,6 +93,8 @@ fn record_route(
     }
     let samples = state.routes.entry(key).or_insert_with(RouteSamples::new);
     samples.count = samples.count.saturating_add(1);
+    let status_count = samples.statuses.entry(status).or_default();
+    *status_count = status_count.saturating_add(1);
     samples
         .latency_ns
         .record(elapsed.as_nanos().min(u128::from(u64::MAX)) as u64);
@@ -114,6 +120,7 @@ pub fn http_request_metrics() -> Value {
                     "method": method,
                     "route": route,
                     "count": samples.count,
+                    "statusCounts": samples.statuses,
                     "latencyMs": quantiles(&latency, true, 1_000_000.0),
                     "responseBytes": quantiles(&sizes, true, 1.0),
                 })
@@ -157,9 +164,27 @@ mod tests {
                 ("GET".to_owned(), format!("/route-{index}")),
                 Duration::from_millis(1),
                 8,
+                200,
             );
         }
         assert_eq!(state.routes.len(), SITE_LIMIT);
         assert_eq!(state.untracked, 1);
+    }
+
+    #[test]
+    fn route_samples_count_http_statuses_without_values() {
+        let mut state = HttpState::default();
+        let key = ("GET".to_owned(), "/api/sync".to_owned());
+        record_route(&mut state, key.clone(), Duration::ZERO, 0, 410);
+        record_route(&mut state, key.clone(), Duration::ZERO, 0, 409);
+        record_route(&mut state, key, Duration::ZERO, 0, 410);
+        assert_eq!(
+            state.routes[&("GET".to_owned(), "/api/sync".to_owned())].statuses[&410],
+            2
+        );
+        assert_eq!(
+            state.routes[&("GET".to_owned(), "/api/sync".to_owned())].statuses[&409],
+            1
+        );
     }
 }

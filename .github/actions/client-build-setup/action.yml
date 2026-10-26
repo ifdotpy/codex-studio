@@ -8,7 +8,7 @@ inputs:
     description: >-
       With native, also run the API drift check and the TypeScript check of the
       renderer build. A job that only embeds the bundle sets "false"; the same
-      checks still run in the jobs that keep the default.
+      checks run separately in CI's Rust checks and non-Rust remainder jobs.
     default: "true"
 runs:
   using: composite

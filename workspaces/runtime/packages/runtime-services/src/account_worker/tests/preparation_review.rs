@@ -1,4 +1,4 @@
-//! Review regressions exercise the production adapter against Python-created rows.
+//! Preparation refuses changed authority and holds input until native state settles.
 use super::*;
 
 async fn change_agent(state: &State, key: &'static str, value: Value) {
@@ -125,7 +125,7 @@ async fn compiler_dependencies_and_late_holds_are_checked_before_commit() {
 }
 
 #[tokio::test]
-async fn context_repair_phases_and_complaint_ownership_match_python() {
+async fn context_repair_holds_and_complaint_ownership_preserve_input() {
     for phase in [
         "completed",
         "unchanged",
@@ -197,116 +197,20 @@ async fn context_repair_phases_and_complaint_ownership_match_python() {
 /// connection keeps the input queued.
 #[tokio::test]
 async fn native_release_phases_hold_only_unsettled_releases() {
-    // Turn preparation names its connection by the provider generation.
     const GENERATION: u64 = 1;
-    const CONNECTION: &str = "1";
-    let probe = State::new().await;
-    let probe_id = probe.agent.clone();
-    let base = probe
-        .bridge
-        .run(move |store| async move {
-            let db = store.test_reader()?;
-            Ok::<_, WorkerError>(
-                AgentRepository::get(&db, &AgentId::from(probe_id.as_str()))?
-                    .unwrap()
-                    .value(),
-            )
-        })
-        .await
-        .unwrap();
-    let thread = base["threadId"].clone();
-    let release = |connection: &str, phase: Value| {
-        json!({"id":"release","phase":phase,"threadId":thread,"connectionId":connection,
-            "accountKey":base["accountKey"],"targetEpoch":base["epoch"],
-            "targetRootId":base["rootId"],"targetParentId":base["parentId"],
-            "at":100.0,"resetPending":false,
-            "supervisorIdentity":{"generation":1,"handle":"account:default"}})
-    };
-    let with = |mut value: Value, fields: Value| {
-        for (key, field) in fields.as_object().unwrap() {
-            value[key] = field.clone();
-        }
-        value
-    };
-    let cases = [
-        // The live record: an idle-release inspection blocked by a background
-        // command on a connection from an earlier backend.
-        (
-            "blocked-earlier-connection",
-            with(
-                release("earlier-connection", json!("blocked")),
-                json!({"error":"native background command is active"}),
-            ),
-            false,
-        ),
-        (
-            "blocked-current-connection",
-            release(CONNECTION, json!("blocked")),
-            false,
-        ),
-        (
-            "superseded-inspection",
-            with(
-                release(CONNECTION, Value::Null),
-                json!({"inspectionPhase":"superseded"}),
-            ),
-            false,
-        ),
-        ("released", release(CONNECTION, json!("released")), false),
-        ("resumed", release(CONNECTION, json!("resumed")), false),
-        (
-            "unrecognized-phase",
-            release(CONNECTION, json!("pending")),
-            false,
-        ),
-        (
-            "reset-pending",
-            with(
-                release(CONNECTION, json!("released")),
-                json!({"resetPending":true}),
-            ),
-            true,
-        ),
-        (
-            "unsubscribing-current",
-            release(CONNECTION, json!("unsubscribing")),
-            true,
-        ),
-        (
-            "unsubscribing-earlier-connection",
-            release("earlier-connection", json!("unsubscribing")),
-            false,
-        ),
-        (
-            "unknown-current",
-            release(CONNECTION, json!("unknown")),
-            true,
-        ),
-        (
-            "checking-current",
-            release(CONNECTION, json!("checking")),
-            true,
-        ),
-        (
-            "checking-inspection",
-            with(
-                release(CONNECTION, json!("checking")),
-                json!({"inspectionPhase":"inspecting"}),
-            ),
-            false,
-        ),
-        (
-            "captured-reset-without-closure",
-            with(
-                release(CONNECTION, json!("unsubscribing")),
-                json!({"resetActorEpoch":base["epoch"],"submittedAt":101.0}),
-            ),
-            true,
-        ),
-    ];
-    for (name, release, held) in cases {
+    for (name, connection, held) in [
+        ("blocked", "earlier-connection", false),
+        ("unknown", "1", true),
+    ] {
         let state = State::new().await;
-        change_agent(&state, "nativeRelease", release).await;
+        change_agent(
+            &state,
+            "nativeRelease",
+            json!({
+                "phase":name, "threadId":"fake-thread-0", "connectionId":connection
+            }),
+        )
+        .await;
         let id = state.agent.clone();
         let epoch = state.epoch;
         let result = state

@@ -1,5 +1,5 @@
 import type { Agent } from "./types";
-import { ApiError } from "./api";
+import { ApiError } from "./apiErrors";
 import { serverMutationResponseIsUncertain } from "./servers/mutationIdentity";
 
 export type PendingConversationDelete = {

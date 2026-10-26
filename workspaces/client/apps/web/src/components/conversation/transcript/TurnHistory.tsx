@@ -16,7 +16,7 @@ import {
   LoaderCircle,
   Wrench,
 } from "lucide-react";
-import { save, saved } from "../../../api";
+import { useServerApi } from "../../../servers/ServerServicesContext";
 import type { Agent, Message } from "../../../types";
 import { useTurnErrors } from "../../useTurnErrors";
 import Activity, {
@@ -167,6 +167,7 @@ const WorkBlock = memo(function WorkBlock({
   agentId?: string;
   active: boolean;
 }) {
+  const { save, saved } = useServerApi();
   const key = `${storageKey}:tools-v3`;
   const tools = items.filter((item) => ["tool", "output"].includes(item.role));
   const id = storageIds[0] || items[0].id;
