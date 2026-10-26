@@ -57,6 +57,8 @@ export default {
       "src/verifyRustChatLifecycle.test.ts",
       "src/components/agents/AgentProgress.test.ts",
       "src/components/agents/ExecutionSettings.receipt.test.ts",
+      "src/components/agents/ExecutionSettings.test.ts",
+      "src/components/newChatSettings.test.ts",
       "src/components/models/modelOption.test.ts",
       "src/components/chat-status/chatStatusModel.test.ts",
       "src/sync/outboxWriteFailure.test.ts",
