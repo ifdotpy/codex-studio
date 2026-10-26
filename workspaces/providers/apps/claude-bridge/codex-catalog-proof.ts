@@ -1,6 +1,6 @@
 // Read MCP initialization metadata. Tool calls and model input are not sent.
 import { createHash } from "node:crypto";
-import { readExternalInstructions } from "./move-external.mjs";
+import { readExternalInstructions } from "./move-external.ts";
 let input = "";
 for await (const chunk of process.stdin) {
   input += chunk;

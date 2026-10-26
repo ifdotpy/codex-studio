@@ -14,7 +14,7 @@ import {
 } from "../history-index.mjs";
 import { forkAtTurn, rollbackSession } from "../controls.mjs";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
-import { InputQueue } from "../features.mjs";
+import { InputQueue } from "../features.ts";
 import {
   persistNativeSession,
   guardNativeSessionInput,
