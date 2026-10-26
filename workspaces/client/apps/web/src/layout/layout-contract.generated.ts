@@ -970,6 +970,30 @@ export const layoutTokens = {
     kind: "spacing",
     purpose: "Duo transcript bottom fade before the passive usage row",
   },
+  "panePath.contentMin": {
+    value: 320,
+    unit: "px",
+    kind: "dimension",
+    purpose:
+      "Minimum Duo pane-path conversation or side panel width in a two-pane pair",
+  },
+  "panePath.portraitSidebar": {
+    value: 250,
+    unit: "px",
+    kind: "dimension",
+    purpose: "Preferred Duo portrait sidebar width before the conversation",
+  },
+  "panePath.splitRatio": {
+    value: 0.5,
+    unit: "ratio",
+    purpose:
+      "Equal conversation and side panel fraction when no native hinge divides the row",
+  },
+  "panePath.motionDuration": {
+    value: 250,
+    unit: "ms",
+    purpose: "Horizontal pane path move duration, disabled with reduced motion",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -1276,6 +1300,12 @@ export const layoutValues = {
     titleOpacity: 0.82,
     titleBlur: 12,
     transcriptFade: 16,
+  },
+  panePath: {
+    contentMin: 320,
+    portraitSidebar: 250,
+    splitRatio: 0.5,
+    motionDuration: 250,
   },
 } as const;
 export const layoutQueries = {

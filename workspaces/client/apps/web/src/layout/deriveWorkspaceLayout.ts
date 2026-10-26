@@ -23,6 +23,29 @@ export interface PanelLayout {
   maxWidth: number;
   rootFontSize: number;
 }
+export type PaneName = "sidebar" | "conversation" | "panel";
+export type PanePathInput = {
+  primaryCoarse: boolean;
+  panel: "workspace" | "team" | null;
+  sidebarOverride: boolean;
+  fullScreen: boolean;
+  /** Native hinge division coordinates in CSS pixels, including the status strip. */
+  hinge?: {
+    status: "closed" | "partial" | "open" | "unknown";
+    left?: number;
+    width?: number;
+  };
+  /** The app content frame before either navigation or side panels take space. */
+  available?: LayoutRect;
+  preferredSidebarWidth?: number;
+};
+export type PanePathLayout = {
+  mode: "single" | "pair";
+  visible: PaneName[];
+  panes: Record<PaneName, LayoutRect | null>;
+  divider: LayoutRect | null;
+  panelKind: PanePathInput["panel"];
+};
 export interface WorkspaceLayoutInput {
   /** The common row already excludes any sidebar owned by its parent. */
   host: LayoutRect;
@@ -34,6 +57,7 @@ export interface WorkspaceLayoutInput {
   workspaceOpen?: boolean;
   teamPreferred?: boolean;
   duo?: boolean;
+  panePath?: PanePathInput;
 }
 /** Measured Duo shell and PWA sizes share one landscape proportions rule. */
 export function isDuoLayout(input: {
@@ -79,6 +103,99 @@ export function isCompactTools(containerWidth: number, mainFontPx: number) {
     containerWidth < layoutValues.tools.compactContainerMax ||
     mainFontPx >= layoutValues.tools.compactFontMin
   );
+}
+/** One path, with its last screen or last pair visible. Native division regions
+ * replace the ordinary pair boundary, never the screen order. */
+function derivePanePath(
+  input: WorkspaceLayoutInput,
+  usable: LayoutRect,
+  rootFontSize: number,
+): PanePathLayout | null {
+  const state = input.panePath;
+  if (
+    !state ||
+    !isDuoLayout({
+      width: Math.max(input.viewport.width, input.viewport.height),
+      height: Math.min(input.viewport.width, input.viewport.height),
+      primaryCoarse: state.primaryCoarse,
+    })
+  )
+    return null;
+  const frame = state.available ?? usable;
+  const portrait = input.viewport.width < input.viewport.height;
+  const hasPanel = !!state.panel && !state.sidebarOverride;
+  const visible: PaneName[] = hasPanel
+    ? ["conversation", "panel"]
+    : ["sidebar", "conversation"];
+  const contentMin = layoutValues.panePath.contentMin;
+  const sidebarMin = resolveLayoutLength("sidebar.min", rootFontSize);
+  const conversationMin = portrait
+    ? contentMin
+    : resolveLayoutLength("duo.conversationMin", rootFontSize);
+  let leftWidth = hasPanel
+    ? frame.width * layoutValues.panePath.splitRatio
+    : Math.max(
+        sidebarMin,
+        Math.min(
+          portrait
+            ? layoutValues.panePath.portraitSidebar
+            : finiteNonnegative(
+                state.preferredSidebarWidth ?? NaN,
+                resolveLayoutLength("sidebar.preferred", rootFontSize),
+              ),
+          frame.width - conversationMin,
+        ),
+      );
+  let gap = 0;
+  const partial = state.hinge?.status === "partial";
+  if (partial) {
+    const hingeLeft = finiteNonnegative(
+      state.hinge?.left ?? NaN,
+      input.viewport.width * layoutValues.panePath.splitRatio,
+    );
+    const hingeWidth = finiteNonnegative(state.hinge?.width ?? 0);
+    const left = Math.max(frame.x, Math.min(frame.x + frame.width, hingeLeft));
+    const right = Math.max(
+      left,
+      Math.min(frame.x + frame.width, hingeLeft + hingeWidth),
+    );
+    leftWidth = left - frame.x;
+    gap = right - left;
+  }
+  const rightWidth = frame.width - leftWidth - gap;
+  const fits =
+    leftWidth >= (hasPanel ? contentMin : sidebarMin) &&
+    rightWidth >= (partial || hasPanel ? contentMin : conversationMin);
+  const pair = !state.fullScreen && state.hinge?.status !== "closed" && fits;
+  const panes: PanePathLayout["panes"] = {
+    sidebar: null,
+    conversation: null,
+    panel: null,
+  };
+  if (pair) {
+    panes[visible[0]] = { ...frame, width: leftWidth };
+    panes[visible[1]] = {
+      ...frame,
+      x: frame.x + leftWidth + gap,
+      width: rightWidth,
+    };
+  } else {
+    const last: PaneName = state.sidebarOverride
+      ? "sidebar"
+      : state.panel
+        ? "panel"
+        : "conversation";
+    visible.splice(0, visible.length, last);
+    panes[last] = { ...frame };
+  }
+  return {
+    mode: pair ? "pair" : "single",
+    visible,
+    panes,
+    divider:
+      pair && partial ? { ...frame, x: frame.x + leftWidth, width: gap } : null,
+    panelKind: state.panel,
+  };
 }
 export function deriveWorkspaceLayout(input: WorkspaceLayoutInput) {
   const rootFontSize =
@@ -135,6 +252,7 @@ export function deriveWorkspaceLayout(input: WorkspaceLayoutInput) {
     remaining >= conversationMinWidth + length("team.preferred");
   const teamInline = !!input.teamPreferred && teamCanInline;
   return {
+    panePath: derivePanePath(input, usable, rootFontSize),
     usable,
     rootFontSize,
     teamCanInline,

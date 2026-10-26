@@ -173,4 +173,8 @@
   --layout-duo-title-opacity: 0.82;
   --layout-duo-title-blur: 12px;
   --layout-duo-transcript-fade: 16px;
+  --layout-pane-path-content-min: 320px;
+  --layout-pane-path-portrait-sidebar: 250px;
+  --layout-pane-path-split-ratio: 0.5;
+  --layout-pane-path-motion-duration: 250ms;
 }
