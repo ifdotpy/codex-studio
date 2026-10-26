@@ -10,7 +10,7 @@ import {
 
 const [input, output] = process.argv.slice(2);
 if (!input || !output)
-  throw new Error("usage: replay-view-scoped.mjs <recorded.sse> <report.json>");
+  throw new Error("usage: replay-view-scoped.ts <recorded.sse> <report.json>");
 const schema = JSON.parse(
   await readFile(
     new URL(
