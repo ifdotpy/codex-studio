@@ -1,21 +1,15 @@
+import type { components } from "../../src/generated/api.ts";
+import type {
+  SyncIdentityResponse,
+  SyncPullResponse,
+  SyncEntity,
+} from "../playwright.ts";
+import type {} from "./mobile-sync.fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { fixtureServerOrigin } from "./browser-fixture.ts";
 import type { ServerResponse } from "node:http";
-import type { Snapshot } from "../../src/types.ts";
 import type { ResourceRef } from "../playwright.ts";
-declare global {
-  interface Window {
-    mobileSync: {
-      values: { state?: Snapshot | null } & Record<string, unknown>;
-      stops: (() => void)[];
-      resumeCalls: number;
-      stopResume: () => void;
-      value: Snapshot | null;
-      stopCompact: () => void;
-      revision: (scope: string) => unknown;
-    };
-  }
-}
+
 // Real RxDB and EventSource, with an isolated server and simulated PWA lifecycle.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -100,18 +94,26 @@ test("mobile sync browser", async ({ page }) => {
     const pulls: (string | null)[] = [];
     const pullCursors: { scope: string | null; after: number }[] = [];
     await page.route("**/check", (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
+      route.fulfill({
+        contentType: "text/html",
+        body: '<!doctype html><script type="module" src="/tests/mobile/mobile-sync.fixture.ts"></script>',
+      }),
     );
     await page.route("**/api/sync/identity", (route) => {
       identities++;
       return route.fulfill({
-        json: { workspaceId },
+        // Legacy fixture omits the protocol field; preserved for baseline comparison.
+        json: { workspaceId } satisfies Pick<
+          SyncIdentityResponse,
+          "workspaceId"
+        >,
         headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       });
     });
     await page.route("**/api/sync/pull?*", (route) => {
       const url = new URL(route.request().url());
       const scope = url.searchParams.get("scope");
+      assert.ok(scope);
       const after = Number(url.searchParams.get("after"));
       pulls.push(scope);
       pullCursors.push({ scope, after });
@@ -149,45 +151,21 @@ test("mobile sync browser", async ({ page }) => {
                 maxSeq: revision,
               }
             : {}),
+        } satisfies Omit<SyncPullResponse, "generation" | "documents"> & {
+          documents: (
+            | Omit<components["schemas"]["SyncDocument"], "_deleted">
+            | SyncEntity
+          )[];
         },
       });
     });
     await page.route("**/api/sync/drafts", (route) =>
       route.fulfill({ json: [] }),
     );
-    await page.addInitScript(() => {
-      window.mobileSync = {
-        values: {},
-        stops: [],
-        resumeCalls: 0,
-        stopResume: () => {},
-        value: null,
-        stopCompact: () => {},
-        revision(scope) {
-          const value = window.mobileSync.values[scope];
-          return value && typeof value === "object" && "revision" in value
-            ? value.revision
-            : undefined;
-        },
-      };
-    });
-    await page.goto(fixtureServerOrigin(server) + "/check");
+    await page.goto(fixtureServerOrigin(server) + "check");
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.mobileSync = {
-        values: {},
-        stops: [],
-        resumeCalls: 0,
-        stopResume: () => {},
-        value: null,
-        stopCompact: () => {},
-        revision(scope) {
-          const value = window.mobileSync.values[scope];
-          return value && typeof value === "object" && "revision" in value
-            ? value.revision
-            : undefined;
-        },
-      };
+      window.mobileSync.values = {};
       window.mobileSync.stops = ["state", "team", "history:lead", "state"].map(
         (scope) => {
           const accept = (value: unknown) => {
@@ -401,7 +379,7 @@ test("mobile sync browser", async ({ page }) => {
       return {
         ready: (await db.projections.findOne("state:entities:ready").exec())
           ?.payload,
-        entity: JSON.parse(
+        entity: window.mobileSync.readCachedEntity(
           (await db.projections.findOne("entity:agent:lead").exec())?.payload ??
             "null",
         ),
@@ -434,7 +412,7 @@ test("mobile sync browser", async ({ page }) => {
       ).syncDatabase();
       return {
         workspaceId,
-        value: JSON.parse(
+        value: window.mobileSync.readCachedEntity(
           (await db.projections.findOne("entity:agent:lead").exec())?.payload ??
             "null",
         ),

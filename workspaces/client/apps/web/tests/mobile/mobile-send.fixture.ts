@@ -6,6 +6,7 @@ declare global {
       storage: Awaited<ReturnType<typeof syncDatabase>>;
       queued: () => Promise<OutboxEntry[]>;
       insertStarted: boolean;
+      readIntention: typeof readIntention;
       releaseInsert: () => void;
       httpSend: ReturnType<typeof durableSend>;
     };
@@ -23,6 +24,7 @@ window.mobileSend = {
       ...readIntention(doc.getLatest().payload),
     })),
   insertStarted: false,
+  readIntention,
   releaseInsert: () => {
     throw new Error("No held insert");
   },

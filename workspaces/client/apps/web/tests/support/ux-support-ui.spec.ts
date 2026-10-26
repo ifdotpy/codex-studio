@@ -1,4 +1,5 @@
 import type {} from "../fixtures/ux-support.tsx";
+import type { GetResult } from "../../src/apiTypes.ts";
 import type { WorkspaceTask } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -126,7 +127,12 @@ test("ux support ui", async ({ page: runnerPage }) => {
       if (request.method() === "POST")
         writes.push({ path, body: request.postDataJSON() });
       if (path === "/api/processes")
-        return route.fulfill({ json: { processes: [], responseTarget: null } });
+        return route.fulfill({
+          json: {
+            processes: [],
+            responseTarget: null,
+          } satisfies components["schemas"]["ProcessList"],
+        });
       if (path === "/api/workspace/tasks") {
         const agent = new URL(request.url()).searchParams.get("agent");
         const tasks = workspaceTasks[agent ?? ""] || [];
@@ -142,7 +148,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
             hasMoreChanges: false,
             nextBefore: null,
             reset: false,
-          },
+          } satisfies components["schemas"]["WorkspaceTaskFeed"],
         });
       }
       if (path === "/api/task") {
@@ -156,7 +162,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
             ...summary,
             arguments: JSON.stringify({ fixture: true }),
             tail: `${id} output`,
-          },
+          } satisfies GetResult<"/api/task">,
         });
       }
       const result =

@@ -1,3 +1,4 @@
+import type { components } from "../../src/generated/api.ts";
 import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import type { BrowserAccessSnapshot } from "./browser-access-notice-ui.fixture.tsx";
@@ -57,7 +58,12 @@ test("Browser access notice ui", async ({
                 "The Chrome plugin is disabled in this account's Codex configuration",
             }
           : { enabled: true, reason: null };
-      await route.fulfill({ json: { browser: browserStatus } });
+      await route.fulfill({
+        json: { browser: browserStatus } satisfies Pick<
+          components["schemas"]["DesktopResponse"],
+          "browser"
+        >,
+      });
     });
     await page.goto(fixtureServerOrigin(server));
     await page.waitForFunction(

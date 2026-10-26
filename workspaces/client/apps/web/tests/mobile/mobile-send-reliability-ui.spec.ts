@@ -8,7 +8,7 @@ import {
 import { waitForFixturePort } from "../fixture-readiness.ts";
 import type { ViteDevServer } from "vite";
 import type { BrowserContext, Route } from "@playwright/test";
-import type { PostBody } from "../../src/apiTypes.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 
 import {
   readTestState,
@@ -72,13 +72,19 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const errors: string[] = [],
       posts: PostBody<"/api/messages">[] = [],
       pending: Route[] = [];
-    let replyStatus = "hold";
+    let replyStatus: "hold" | PostResult<"/api/messages">["status"] = "hold";
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/messages", (route) => {
       const body = fixturePostBody<"/api/messages">(route.request());
       posts.push(body);
       if (replyStatus === "hold") pending.push(route);
-      else return route.fulfill({ json: { id: body.id, status: replyStatus } });
+      else
+        return route.fulfill({
+          json: {
+            id: body.id,
+            status: replyStatus,
+          } satisfies PostResult<"/api/messages">,
+        });
     });
     await page.goto(fixtureServerOrigin(server));
     const waitUntil = (check: () => boolean | Promise<boolean>) =>
@@ -227,10 +233,8 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       );
       window.mobileSend.storage.db.outbox.insert = async (...args) => {
         if (
-          JSON.parse(
-            args[0] instanceof Object && "payload" in args[0]
-              ? String(args[0].payload)
-              : "null",
+          window.mobileSend.readIntention(
+            "payload" in args[0] ? String(args[0].payload) : "null",
           ).body.text === "Newer durable write"
         ) {
           window.mobileSend.insertStarted = true;
@@ -390,8 +394,13 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const beforeExplicitRetry = posts.length;
     await send.click();
     await page.waitForFunction(
-      ({ pendingKey, room }) =>
-        !JSON.parse(localStorage.getItem(pendingKey) || "{}")[room],
+      ({ pendingKey, room }) => {
+        // The renderer wrote this pending-send map.
+        const pending: Record<string, PostBody<"/api/messages">> = JSON.parse(
+          localStorage.getItem(pendingKey) || "{}",
+        );
+        return !pending[room];
+      },
       { pendingKey, room: failedBody.room },
     );
     await waitUntil(() => posts.length === beforeExplicitRetry + 1);

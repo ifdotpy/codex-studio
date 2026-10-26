@@ -1,17 +1,9 @@
+import type { SyncIdentityResponse, SyncPullResponse } from "../playwright.ts";
+import type {} from "./mobile-sync.fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { fixtureServerOrigin } from "./browser-fixture.ts";
 import type { BrowserContext, TestInfo, Route } from "@playwright/test";
-import type { Snapshot } from "../../src/types.ts";
-declare global {
-  interface Window {
-    mobileCached: {
-      syncErrors: string[];
-      stopState: () => void;
-      stopDrafts: () => void;
-      state: Snapshot | null;
-    };
-  }
-}
+
 // Cached UI appears while an online Mac is unreachable; identity gates replication.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -59,7 +51,10 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     }[] = [];
     let streamCalls = 0;
     await page.route("**/check", (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
+      route.fulfill({
+        contentType: "text/html",
+        body: '<!doctype html><script type="module" src="/tests/mobile/mobile-sync.fixture.ts"></script>',
+      }),
     );
     await page.route("**/api/sync/identity", (route) => {
       identityCalls++;
@@ -68,7 +63,10 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
         return;
       }
       return route.fulfill({
-        json: { workspaceId: currentWorkspace, chatState: true },
+        json: { workspaceId: currentWorkspace, chatState: true } satisfies Pick<
+          SyncIdentityResponse,
+          "workspaceId"
+        > & { chatState: boolean },
       });
     });
     await page.route("**/api/sync/stream*", (route) => {
@@ -107,14 +105,14 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
           checkpoint: { seq: 2 },
           initialHigh: 2,
           maxSeq: 2,
-        },
+        } satisfies Omit<SyncPullResponse, "generation">,
       });
     });
     await page.route("**/api/sync/drafts", (route) => {
       pushCount++;
       return route.fulfill({ json: [] });
     });
-    await page.goto(fixtureServerOrigin(server) + "/check");
+    await page.goto(fixtureServerOrigin(server) + "check");
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.projections.insert({
@@ -153,12 +151,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     const startWatchers = () =>
       page.evaluate(async () => {
         const client = await import("/src/sync/client.ts");
-        window.mobileCached = {
-          syncErrors: [],
-          stopState: () => {},
-          stopDrafts: () => {},
-          state: null,
-        };
+        window.mobileCached.syncErrors = [];
         window.mobileCached.stopState = client.subscribeStateProjection(
           (value) => (window.mobileCached.state = value),
           (error) => {
@@ -198,7 +191,10 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     holdIdentity = false;
     currentWorkspace = "a".repeat(32);
     await identity.route.fulfill({
-      json: { workspaceId: "a".repeat(32), chatState: true },
+      json: { workspaceId: "a".repeat(32), chatState: true } satisfies Pick<
+        SyncIdentityResponse,
+        "workspaceId"
+      > & { chatState: boolean },
     });
     await page.waitForFunction(() =>
       window.mobileCached.syncErrors.some((error) =>
@@ -263,7 +259,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
                 .map((row) => [
                   row.id,
                   row.seq,
-                  JSON.parse(row.payload).value?.name,
+                  window.mobileSync.readCachedEntity(row.payload).value?.name,
                 ]),
               ready: (
                 await db.projections.findOne("state:entities:ready").exec()

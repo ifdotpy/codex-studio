@@ -1,3 +1,4 @@
+import { fixturePostBody } from "../mobile/browser-fixture.ts";
 import type { components } from "../../src/generated/api.ts";
 import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -44,12 +45,11 @@ test("claude login ui", async ({ page: runnerPage }) => {
     await page.route("**/api/**", async (route) => {
       const req = route.request();
       const url = new URL(req.url());
-      const body = req.method() === "POST" ? req.postDataJSON() : {};
       if (url.pathname === "/api/sync/identity")
         return route.fulfill({ status: 404, json: {} });
       if (url.pathname === "/api/accounts/claude/login") {
         if (req.method() === "POST") {
-          assert.equal(typeof body.login_id, "string");
+          const body = fixturePostBody<"/api/accounts/claude/login">(req);
           starts.push(body.login_id);
           receipt = {
             requestId: body.login_id,
@@ -76,6 +76,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
       }
       if (url.pathname.endsWith("/code")) {
         assert.ok(receipt);
+        const body = fixturePostBody<"/api/accounts/claude/login/code">(req);
         codes.push(body.code);
         receipt = failNextCode
           ? {
@@ -98,6 +99,8 @@ test("claude login ui", async ({ page: runnerPage }) => {
           accounts: [
             {
               id: "claude",
+              home: "/fixture",
+              source: "fixture",
               label: "Personal",
               email: "me@example.com",
               provider: "claude",
@@ -105,7 +108,12 @@ test("claude login ui", async ({ page: runnerPage }) => {
             },
           ],
           defaultAccountKey: "claude",
-        },
+          archivedAccounts: [],
+          defaultAccountGroups: [],
+          logins: [],
+          supportsDelete: false,
+          supportsDisconnect: false,
+        } satisfies components["schemas"]["AccountsResponse"],
       });
     });
     const open = async () => {
@@ -127,7 +135,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
       localStorage.removeItem("claude-add-sign-in:fixture");
       sessionStorage.setItem("claude-login-ui-reset", token);
     }, resetToken);
-    await page.goto(fixtureServerOrigin(server) + "/check");
+    await page.goto(fixtureServerOrigin(server) + "check");
     await page
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .click();
