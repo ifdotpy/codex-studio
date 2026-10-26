@@ -155,7 +155,13 @@ export async function readFixtureResponse(
   return response.json();
 }
 
-export function fixtureAgentEntity(documents: FixtureEntity[], id: string) {
+export function fixtureAgentEntity(
+  documents: Exclude<
+    ReturnType<typeof import("../playwright.ts").entityPullFixture>,
+    { reset: true }
+  >["documents"],
+  id: string,
+) {
   return documents
     .filter(
       (document): document is Extract<FixtureEntity, { op: "upsert" }> =>

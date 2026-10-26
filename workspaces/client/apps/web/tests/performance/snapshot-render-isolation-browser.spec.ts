@@ -3,7 +3,6 @@ import { fixturePostBody } from "../mobile/browser-fixture.ts";
 import type { Request } from "@playwright/test";
 import type { Agent } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
-import { required } from "./performance-fixture.ts";
 import {
   apiSchemaHeaders,
   readTestState,
@@ -26,24 +25,22 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     stdio: ["pipe", "pipe", "pipe"],
   });
   let log = "";
-  required(fixture.stderr).on("data", (data) => (log += data));
+  fixture.stderr!.on("data", (data) => (log += data));
   const port = await new Promise((resolve, reject) => {
-    required(fixture.stdout).once("data", (data) =>
+    fixture.stdout!.once("data", (data) =>
       resolve(Number(String(data).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
   const snapshot = await readTestState(origin);
-  const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
+  const lead = snapshot.threads.find((agent) => agent.name === "Release lead")!;
   const other = snapshot.threads.find(
     (agent) => agent.name === "Other project",
-  );
-  if (!lead || !other) throw new Error("Missing fixture chats");
+  )!;
   const workers = snapshot.threads.filter(
     (agent) => agent.rootId === lead.id && !agent.isLead,
   );
-  const firstWorker = required(workers[0]);
   const page = await browser.newPage({
     viewport: { width: 1600, height: 1000 },
   });
@@ -69,39 +66,37 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     const readEvent = (
       text: string,
     ): components["schemas"]["ResourceChangeEvent"] => JSON.parse(text);
-    window.snapshotPerformanceResourceFrames = [];
+    window.resourceFrames = [];
     let resourceStreamSequence = 0;
-    window.snapshotPerformanceActiveResourceStreamId = 0;
+    window.activeResourceStreamId = 0;
     const NativeEventSource = window.EventSource;
     window.EventSource = class extends NativeEventSource {
       constructor(...args: ConstructorParameters<typeof EventSource>) {
         super(...args);
         const streamId = ++resourceStreamSequence;
-        window.snapshotPerformanceActiveResourceStream = this;
-        window.snapshotPerformanceActiveResourceStreamId = streamId;
+        window.activeResourceStream = this;
+        window.activeResourceStreamId = streamId;
         this.addEventListener("resources", (event) => {
-          window.snapshotPerformanceResourceFrames.push({
+          window.resourceFrames.push({
             ...readEvent(event.data),
             streamId,
           });
-          window.snapshotPerformanceLatestResourceFrameSource = this;
+          window.latestResourceFrameSource = this;
         });
       }
     };
-    window.snapshotPerformanceRenderCounts = {};
-    window.snapshotPerformanceModelWork = {};
+    window.renderCounts = {};
+    window.modelWork = {};
     window.__studioSidebarModelProbe = (kind, count) => {
-      window.snapshotPerformanceModelWork[kind] =
-        (window.snapshotPerformanceModelWork[kind] || 0) + count;
+      window.modelWork[kind] = (window.modelWork[kind] || 0) + count;
     };
     window.__studioPromptComposerRenderProbe = (component, id) => {
       const key = id ? `${component}:${id}` : component;
-      window.snapshotPerformanceRenderCounts[key] =
-        (window.snapshotPerformanceRenderCounts[key] || 0) + 1;
+      window.renderCounts[key] = (window.renderCounts[key] || 0) + 1;
     };
   });
   const rename = async (agent: Agent, name: string) => {
-    required(fixture.stdin).write(
+    fixture.stdin!.write(
       JSON.stringify({
         id: `rename:${agent.id}:${name}`,
         method: "fixture/entity-change",
@@ -114,23 +109,20 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
         .first(),
     ).toContainText(name);
   };
-  const counts = () =>
-    page.evaluate(() => ({ ...window.snapshotPerformanceRenderCounts }));
-  const frames = () =>
-    page.evaluate(() => window.snapshotPerformanceResourceFrames);
-  const modelWork = () =>
-    page.evaluate(() => ({ ...window.snapshotPerformanceModelWork }));
+  const counts = () => page.evaluate(() => ({ ...window.renderCounts }));
+  const frames = () => page.evaluate(() => window.resourceFrames);
+  const modelWork = () => page.evaluate(() => ({ ...window.modelWork }));
   const reset = () =>
     page.evaluate(() => {
-      window.snapshotPerformanceRenderCounts = {};
-      window.snapshotPerformanceModelWork = {};
+      window.renderCounts = {};
+      window.modelWork = {};
     });
   try {
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
-    if (!(await page.locator(`[data-worker="${firstWorker.id}"]`).isVisible()))
+    if (!(await page.locator(`[data-worker="${workers[0].id}"]`).isVisible()))
       await page.locator("#team-toggle").click();
-    await page.locator(`[data-worker="${firstWorker.id}"]`).waitFor();
+    await page.locator(`[data-worker="${workers[0].id}"]`).waitFor();
     await page
       .locator("#message")
       .fill("Keep this draft while other agents update.");
@@ -143,16 +135,15 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
       .poll(() =>
         page.evaluate(
           (ids) => {
-            const streamId = window.snapshotPerformanceActiveResourceStreamId;
-            const event = [...window.snapshotPerformanceResourceFrames]
+            const streamId = window.activeResourceStreamId;
+            const event = [...window.resourceFrames]
               .reverse()
               .find(
                 (frame) =>
                   frame.streamId === streamId && frame.reason === "initial",
               );
             return (
-              window.snapshotPerformanceActiveResourceStream?.readyState ===
-                EventSource.OPEN &&
+              window.activeResourceStream?.readyState === EventSource.OPEN &&
               event !== undefined &&
               ids.every((id) =>
                 event.resources.some(
@@ -218,13 +209,13 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
       "Keep this draft while other agents update.",
     );
     await reset();
-    await rename(firstWorker, "Worker changed");
+    await rename(workers[0], "Worker changed");
     const affected = await counts();
     const workerModelWork = await modelWork();
     expect(workerModelWork["catalog-row"]).toBeGreaterThan(0);
     expect(workerModelWork["order-compare"] || 0).toBe(0);
     expect(workerModelWork["search-row"] || 0).toBe(0);
-    expect(affected[`team-row:${firstWorker.id}`]).toBeGreaterThan(0);
+    expect(affected[`team-row:${workers[0].id}`]).toBeGreaterThan(0);
     for (const worker of workers.slice(1))
       expect(affected[`team-row:${worker.id}`] || 0).toBe(0);
     await reset();
@@ -249,7 +240,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await page.context().setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await expect(page.locator("#error")).toHaveCount(0);
-    await page.locator(`[data-worker="${firstWorker.id}"]`).click();
+    await page.locator(`[data-worker="${workers[0].id}"]`).click();
     await expect(page.locator("#conversation-title")).toContainText(
       "Worker changed",
     );
@@ -270,7 +261,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     );
     await page.locator("#send").click();
     const submitted = fixturePostBody<"/api/messages">(await sent);
-    expect(submitted.room).toBe(firstWorker.id);
+    expect(submitted.room).toBe(workers[0].id);
     expect(submitted.text).toBe("Instruction for the selected worker.");
     await expect(page.locator("#message")).toHaveValue("");
     await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -307,13 +298,13 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
 
 declare global {
   interface Window {
-    snapshotPerformanceResourceFrames: (components["schemas"]["ResourceChangeEvent"] & {
+    resourceFrames: (components["schemas"]["ResourceChangeEvent"] & {
       streamId: number;
     })[];
-    snapshotPerformanceActiveResourceStreamId: number;
-    snapshotPerformanceActiveResourceStream: EventSource;
-    snapshotPerformanceLatestResourceFrameSource: EventSource;
-    snapshotPerformanceRenderCounts: Record<string, number>;
-    snapshotPerformanceModelWork: Record<string, number>;
+    activeResourceStreamId: number;
+    activeResourceStream: EventSource;
+    latestResourceFrameSource: EventSource;
+    renderCounts: Record<string, number>;
+    modelWork: Record<string, number>;
   }
 }
