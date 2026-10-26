@@ -138,11 +138,8 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
       } else await route.fulfill({ json: user });
     });
     await page.goto(server.resolvedUrls!.local[0] + "check");
-    await page.waitForFunction(() => !!window.ownershipSetRecords);
-    await page.evaluate(
-      (records) => window.ownershipSetRecords(records),
-      records,
-    );
+    await page.waitForFunction(() => !!window.setRecords);
+    await page.evaluate((records) => window.setRecords(records), records);
     const card = (id: string) => page.locator(`[data-complaint="${id}"]`);
     const open = async (id: string) => {
       await card(id)
@@ -234,7 +231,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
     assert.notEqual(attempts[3].id, attempts[2].id);
     assert.equal(attempts[3].status, "in_progress");
     await close("owner");
-    await page.evaluate(() => window.ownershipSetTarget("lead"));
+    await page.evaluate(() => window.setTarget("lead"));
     await card("worker-request").waitFor();
     assert.equal(
       await card("worker-request")
@@ -243,7 +240,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
       0,
       "messages addressed to the lead do not expose the user's reply form",
     );
-    await page.evaluate(() => window.ownershipSetTarget("user"));
+    await page.evaluate(() => window.setTarget("user"));
     for (const status of [200, 409]) {
       await open("owner");
       await card("owner")
@@ -260,16 +257,16 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
       await close("owner");
       await open("history");
       await page.evaluate((forbidden) => {
-        window.ownershipWrongMessage = false;
-        window.ownershipObserver = new MutationObserver(() => {
+        window.wrongMessage = false;
+        window.observer = new MutationObserver(() => {
           if (
             document
               .querySelector('[data-complaint="history"]')
               ?.textContent.includes(forbidden)
           )
-            window.ownershipWrongMessage = true;
+            window.wrongMessage = true;
         });
-        window.ownershipObserver.observe(document.body, {
+        window.observer.observe(document.body, {
           childList: true,
           subtree: true,
           characterData: true,
@@ -294,17 +291,14 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
         await new Promise(requestAnimationFrame);
         await new Promise(requestAnimationFrame);
       });
-      assert.equal(
-        await page.evaluate(() => window.ownershipWrongMessage),
-        false,
-      );
+      assert.equal(await page.evaluate(() => window.wrongMessage), false);
       await historyCard.getByText(history.text, { exact: true }).waitFor();
       assert.equal(
         await historyCard.locator(".complaint-reply").count(),
         1,
         "Current historical records permit a user reply",
       );
-      await page.evaluate(() => window.ownershipObserver.disconnect());
+      await page.evaluate(() => window.observer.disconnect());
       await close("history");
     }
     await page.setViewportSize({ width: 390, height: 844 });

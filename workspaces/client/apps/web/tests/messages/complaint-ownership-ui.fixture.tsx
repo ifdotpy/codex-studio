@@ -32,20 +32,20 @@ const render = () => {
     ),
   );
 };
-window.ownershipSetRecords = (value) => {
+window.setRecords = (value) => {
   records = value;
   render();
 };
-window.ownershipSetTarget = (value) => {
+window.setTarget = (value) => {
   target = value;
   render();
 };
 
 declare global {
   interface Window {
-    ownershipSetRecords: (value: Complaint[]) => void;
-    ownershipSetTarget: (value: "user" | "lead") => void;
-    ownershipWrongMessage: boolean;
-    ownershipObserver: MutationObserver;
+    setRecords: (value: Complaint[]) => void;
+    setTarget: (value: "user" | "lead") => void;
+    wrongMessage: boolean;
+    observer: MutationObserver;
   }
 }

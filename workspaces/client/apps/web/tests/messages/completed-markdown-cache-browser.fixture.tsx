@@ -6,11 +6,11 @@ import { MantineProvider } from "@mantine/core";
 import StreamingText from "../../src/components/conversation/transcript/StreamingText.tsx";
 import ConversationResults from "../../src/components/conversation/transcript/ConversationResults.tsx";
 import { completedMarkdown } from "../../src/native/markdownCache.ts";
-window.markdownCache = completedMarkdown;
-window.markdownCompilations = 0;
+window.cache = completedMarkdown;
+window.compilations = 0;
 const save = completedMarkdown.set.bind(completedMarkdown);
 completedMarkdown.set = (...args) => {
-  window.markdownCompilations++;
+  window.compilations++;
   return save(...args);
 };
 const initial = Array.from({ length: 2 }, (_, i) => ({
@@ -34,13 +34,13 @@ function Harness() {
     [agent, setAgent] = useState("first"),
     [streaming, setStreaming] = useState(false),
     [results, setResults] = useState(false);
-  window.markdownResults = () => flushSync(() => setResults(true));
-  window.markdownChat = (otherChat) =>
+  window.results = () => flushSync(() => setResults(true));
+  window.chat = (otherChat) =>
     flushSync(() => setItems(otherChat ? other : initial));
-  window.markdownHide = () => flushSync(() => setShown(false));
-  window.markdownShow = () => flushSync(() => setShown(true));
-  window.markdownAgent = (id) => flushSync(() => setAgent(id));
-  window.markdownText = (text, stream = false) =>
+  window.hide = () => flushSync(() => setShown(false));
+  window.show = () => flushSync(() => setShown(true));
+  window.agent = (id) => flushSync(() => setAgent(id));
+  window.text = (text, stream = false) =>
     flushSync(() => {
       setItems([{ id: "only", role: "assistant", text }]);
       setStreaming(stream);
@@ -84,13 +84,13 @@ function Harness() {
 createRoot(document.getElementById("root")!).render(<Harness />);
 declare global {
   interface Window {
-    markdownCache: typeof completedMarkdown;
-    markdownCompilations: number;
-    markdownResults: () => void;
-    markdownChat: (otherChat: boolean) => void;
-    markdownHide: () => void;
-    markdownShow: () => void;
-    markdownAgent: (id: string) => void;
-    markdownText: (text: string, stream?: boolean) => void;
+    cache: typeof completedMarkdown;
+    compilations: number;
+    results: () => void;
+    chat: (otherChat: boolean) => void;
+    hide: () => void;
+    show: () => void;
+    agent: (id: string) => void;
+    text: (text: string, stream?: boolean) => void;
   }
 }

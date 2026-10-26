@@ -271,12 +271,11 @@ test("messages focused ui", async ({ browser: _browser }) => {
     await empty.waitFor();
     await stable.evaluate(() => {
       const empty = document.querySelector(".team-chat-empty")!;
-      window.messagesFocusedStability = { empty, failures: [] };
-      window.messagesFocusedObserver = new MutationObserver(() => {
-        if (!empty.isConnected)
-          window.messagesFocusedStability.failures.push("empty removed");
+      window.stability = { empty, failures: [] };
+      window.observer = new MutationObserver(() => {
+        if (!empty.isConnected) window.stability.failures.push("empty removed");
       });
-      window.messagesFocusedObserver.observe(
+      window.observer.observe(
         document.querySelector(".workspace-message-body")!,
         {
           childList: true,
@@ -291,10 +290,10 @@ test("messages focused ui", async ({ browser: _browser }) => {
       "Messages uses the existing snapshot, not the full workspace API",
     );
     assert.deepEqual(
-      await stable.evaluate(() => window.messagesFocusedStability.failures),
+      await stable.evaluate(() => window.stability.failures),
       [],
     );
-    await stable.evaluate(() => window.messagesFocusedObserver.disconnect());
+    await stable.evaluate(() => window.observer.disconnect());
     quietState.runtime.requests = [
       {
         id: "stability-request",
@@ -423,7 +422,6 @@ test("messages focused ui", async ({ browser: _browser }) => {
 
 declare global {
   interface Window {
-    messagesFocusedStability: { empty: Element | null; failures: string[] };
-    messagesFocusedObserver: MutationObserver;
+    stability: { empty: Element | null; failures: string[] };
   }
 }

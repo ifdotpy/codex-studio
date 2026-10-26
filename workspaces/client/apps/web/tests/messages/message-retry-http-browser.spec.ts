@@ -100,7 +100,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
         url: "/tests/messages/message-retry-http-browser.fixture.tsx",
       });
       await page.evaluate(() => window.retrySendInitialize());
-      await page.waitForFunction(() => !!window.retrySendOutbox);
+      await page.waitForFunction(() => !!window.outbox);
     };
     await mount();
     const id = crypto.randomUUID();
@@ -113,20 +113,20 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     };
     await page.clock.install();
     await page.evaluate((body) => {
-      window.retrySendSendResult = window.retrySendSend(body);
+      window.sendResult = window.retrySendSend(body);
     }, body);
     await committed;
     await page.clock.setSystemTime(
       (await page.evaluate(() => Date.now())) + 16_000,
     );
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
-    const result = await page.evaluate(() => window.retrySendSendResult);
+    const result = await page.evaluate(() => window.sendResult);
     assert.equal(result.queued, true, "A missing response remains pending");
     release();
     await mount();
     await page.waitForFunction(
       (id) =>
-        window.retrySendOutbox.entries.some(
+        window.outbox.entries.some(
           (entry) => entry.id === id && entry.status === "accepted",
         ),
       id,

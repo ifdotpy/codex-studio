@@ -9,7 +9,7 @@ const initialize = async () => {
   document.body.appendChild(node);
   createRoot(node).render(
     React.createElement(function Harness() {
-      window.retrySendOutbox = send.useOutbox();
+      window.outbox = send.useOutbox();
       return null;
     }),
   );
@@ -20,12 +20,7 @@ declare global {
   interface Window {
     retrySendInitialize: typeof initialize;
     retrySendSend: typeof import("../../src/sync/send.ts").durableSend;
-    retrySendOutbox: ReturnType<
-      typeof import("../../src/sync/send.ts").useOutbox
-    >;
-    retrySendSendResult: ReturnType<
-      typeof import("../../src/sync/send.ts").durableSend
-    >;
+    sendResult: ReturnType<typeof import("../../src/sync/send.ts").durableSend>;
   }
 }
 export {};

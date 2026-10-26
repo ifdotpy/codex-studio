@@ -53,35 +53,33 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       { waitUntil: "commit" },
     );
     await expect(page.locator("article a")).toHaveCount(2);
-    assert.equal(await page.evaluate(() => window.markdownCompilations), 2);
-    await page.evaluate(() => window.markdownChat(true));
+    assert.equal(await page.evaluate(() => window.compilations), 2);
+    await page.evaluate(() => window.chat(true));
     await expect(page.locator("article").first()).toContainText("Other chat");
-    await expect
-      .poll(() => page.evaluate(() => window.markdownCompilations))
-      .toBe(4);
+    await expect.poll(() => page.evaluate(() => window.compilations)).toBe(4);
     await page.evaluate(() => {
-      window.markdownHide();
-      window.markdownChat(false);
-      window.markdownCompilations = 0;
-      window.markdownShow();
+      window.hide();
+      window.chat(false);
+      window.compilations = 0;
+      window.show();
     });
     await expect(page.locator("article a")).toHaveCount(2);
     assert.equal(
-      await page.evaluate(() => window.markdownCompilations),
+      await page.evaluate(() => window.compilations),
       0,
       "Completed exact text survives component remount without parsing again",
     );
     await page.evaluate(() =>
-      window.markdownText("[Changed report][r].\n\n[r]: ./changed.md"),
+      window.text("[Changed report][r].\n\n[r]: ./changed.md"),
     );
     await expect(
       page.getByRole("link", { name: "Changed report" }),
     ).toBeVisible();
-    assert.equal(await page.evaluate(() => window.markdownCompilations), 1);
+    assert.equal(await page.evaluate(() => window.compilations), 1);
     await page.evaluate(() => {
-      window.markdownHide();
-      window.markdownAgent("second");
-      window.markdownShow();
+      window.hide();
+      window.agent("second");
+      window.show();
     });
     await page.getByRole("link", { name: "Changed report" }).click();
     await page.getByText("Current workspace file.", { exact: true }).waitFor();
@@ -91,9 +89,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       "Cached links use the current agent",
     );
     await page.keyboard.press("Escape");
-    await page.evaluate(() =>
-      window.markdownText("[Remote](file://remote/report.md)"),
-    );
+    await page.evaluate(() => window.text("[Remote](file://remote/report.md)"));
     for (let attempt = 0; attempt < 2; attempt++) {
       const trigger = page.getByRole("link", { name: "Remote" });
       await trigger.focus();
@@ -110,7 +106,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
         { timeout: 3000 },
       );
     }
-    await page.evaluate(() => window.markdownResults());
+    await page.evaluate(() => window.results());
     for (let attempt = 0; attempt < 2; attempt++) {
       const trigger = page.getByRole("button", { name: "file.txt Patch" });
       await trigger.focus();
@@ -127,26 +123,20 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       );
     }
     const streamingText = "Streaming-only **prefix**.";
-    await page.evaluate(
-      (text) => window.markdownText(text, true),
-      streamingText,
-    );
+    await page.evaluate((text) => window.text(text, true), streamingText);
     await expect(page.locator("article strong")).toHaveText("prefix");
     await page.evaluate(() => {
-      window.markdownHide();
-      window.markdownShow();
+      window.hide();
+      window.show();
     });
     await expect(page.locator("article strong")).toHaveText("prefix");
     assert.equal(
-      await page.evaluate(
-        (text) => window.markdownCache.get(text),
-        streamingText,
-      ),
+      await page.evaluate((text) => window.cache.get(text), streamingText),
       undefined,
       "Streaming-only text is never shared in the completed cache",
     );
     await page.evaluate(() =>
-      window.markdownText(
+      window.text(
         'Safe <img src="bad" onerror="window.executed=true"> [unsafe](javascript:alert(1))',
       ),
     );

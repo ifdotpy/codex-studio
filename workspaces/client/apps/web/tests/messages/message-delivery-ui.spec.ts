@@ -200,7 +200,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       page.on("pageerror", (error) => errors.push((error as Error).message));
       await page.addInitScript(
         ({ workspaceId, schemaHandshake }) => {
-          window.messageDeliveryStreams = [];
+          window.deliveryStreams = [];
           (
             window as {
               EventSource: new (
@@ -215,27 +215,26 @@ test("message delivery ui", async ({ browser: _browser }) => {
             constructor(url: string) {
               super();
               this.url = url;
-              window.messageDeliveryStreams.push(this);
+              window.deliveryStreams.push(this);
               queueMicrotask(() => {
                 this.dispatchEvent(
                   new MessageEvent("api-schema", {
                     data: JSON.stringify(schemaHandshake),
                   }),
                 );
-                window.messagePublishDelivery("initial", 0);
+                window.publishDelivery("initial", 0);
               });
             }
             close() {
-              window.messageDeliveryStreams =
-                window.messageDeliveryStreams.filter(
-                  (stream) => stream !== this,
-                );
+              window.deliveryStreams = window.deliveryStreams.filter(
+                (stream) => stream !== this,
+              );
             }
           };
           let generation = Date.now();
-          window.messagePublishDelivery = (_id, _revision) => {
+          window.publishDelivery = (_id, _revision) => {
             const revision = ++generation;
-            for (const stream of window.messageDeliveryStreams) {
+            for (const stream of window.deliveryStreams) {
               const url = new URL(stream.url, location.href);
               const scope = url.searchParams.get("scope");
               if (scope?.startsWith("transcript:"))
@@ -374,7 +373,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
         history.set(id, payload);
         revisions.set(id, revisions.get(id)! + 1);
         await page.evaluate(
-          ({ id, revision }) => window.messagePublishDelivery(id, revision),
+          ({ id, revision }) => window.publishDelivery(id, revision),
           { id, revision: revisions.get(id)! },
         );
       };
@@ -855,7 +854,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       revisions.set(a.id, revisions.get(a.id)! + 1);
       queuedItems.set(a.id, []);
       await page.evaluate(
-        ({ id, revision }) => window.messagePublishDelivery(id, revision),
+        ({ id, revision }) => window.publishDelivery(id, revision),
         { id: a.id, revision: revisions.get(a.id)! },
       );
       const postsBeforeReconcile = posts.length;
@@ -1083,7 +1082,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
 
 declare global {
   interface Window {
-    messageDeliveryStreams: Array<Pick<EventSource, "url" | "dispatchEvent">>;
-    messagePublishDelivery: (id: string, revision: number) => void;
+    deliveryStreams: Array<Pick<EventSource, "url" | "dispatchEvent">>;
+    publishDelivery: (id: string, revision: number) => void;
   }
 }
