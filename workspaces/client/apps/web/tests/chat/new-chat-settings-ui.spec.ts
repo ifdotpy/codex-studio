@@ -1,3 +1,6 @@
+import { waitForFixturePort } from "../playwright.ts";
+import { fixturePostBody, fixturePostResult } from "./http.ts";
+import assert from "node:assert/strict";
 import { test, expect, spawnFixture, rustUiFixture } from "../playwright.ts";
 import { chooseSetupValue } from "../fixtures/setup-controls.ts";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -16,16 +19,12 @@ test("new chat controls are inline, save settings and keep the compact composer 
     },
   });
   let log = "";
+  assert.ok(fixture.stderr && fixture.stdout);
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`http://127.0.0.1:${port}`);
     await page
@@ -60,8 +59,8 @@ test("new chat controls are inline, save settings and keep the compact composer 
     for (const [width, height] of [
       [1440, 900],
       [390, 844],
-    ]) {
-      for (const scheme of ["light", "dark"]) {
+    ] as const) {
+      for (const scheme of ["light", "dark"] as const) {
         await page.setViewportSize({ width, height });
         await page.emulateMedia({ colorScheme: scheme });
         await expect(page.locator("html")).toHaveAttribute(
@@ -71,15 +70,14 @@ test("new chat controls are inline, save settings and keep the compact composer 
         const geometry = await creation
           .getByRole("listbox")
           .evaluate((node) => {
+            const dialog = node.closest('[role="dialog"]');
+            const body = node.closest(".mantine-Modal-body");
+            if (!dialog || !body) throw new Error("Missing dialog geometry");
             const root = getComputedStyle(document.documentElement);
             return {
               picker: node.getBoundingClientRect().width,
-              dialog: node.closest('[role="dialog"]').getBoundingClientRect()
-                .width,
-              padding: parseFloat(
-                getComputedStyle(node.closest(".mantine-Modal-body"))
-                  .paddingInlineStart,
-              ),
+              dialog: dialog.getBoundingClientRect().width,
+              padding: parseFloat(getComputedStyle(body).paddingInlineStart),
               previous:
                 parseFloat(root.getPropertyValue("--studio-form-max")) *
                 parseFloat(root.fontSize),
@@ -168,11 +166,16 @@ test("new chat controls are inline, save settings and keep the compact composer 
       .click();
     const createdResponse = await startChat;
     expect(createdResponse.ok()).toBe(true);
-    expect(createdResponse.request().postDataJSON().review_defaults).toEqual({
+    expect(
+      fixturePostBody("/api/leads", createdResponse.request().postDataJSON())
+        .review_defaults,
+    ).toEqual({
       model: "gpt-6-astra",
       effort: "high",
     });
-    expect((await createdResponse.json()).reviewDefaults).toEqual({
+    expect(
+      (await fixturePostResult("/api/leads", createdResponse)).reviewDefaults,
+    ).toEqual({
       model: "gpt-6-astra",
       effort: "high",
     });
@@ -193,6 +196,10 @@ test("new chat controls are inline, save settings and keep the compact composer 
     const composerBounds = await page.locator("#composer").boundingBox();
     const rowBounds = await row.boundingBox();
     const startBounds = await page.locator(".conversation-start").boundingBox();
+    assert.ok(
+      startBounds && composerBounds && rowBounds,
+      "composer bounds exist",
+    );
     expect(Math.abs(startBounds.x - composerBounds.x)).toBeLessThanOrEqual(1);
     expect(
       Math.abs(startBounds.width - composerBounds.width),

@@ -1,6 +1,16 @@
+import type { ShellManifest } from "../../scripts/build-manifests.ts";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { test, expect } from "../playwright.ts";
+
+// The renderer build writes this manifest before this spec reads it.
+function readShellManifest(worker: string): ShellManifest {
+  const line = worker.split("\n", 1)[0];
+  if (!line) throw new Error("Missing worker shell manifest");
+  return JSON.parse(
+    line.slice("self.STUDIO_SHELL = ".length, -1),
+  ) as ShellManifest;
+}
 
 test("built PWA caches its exact Rust WASM module for offline use", async ({
   page,
@@ -8,14 +18,14 @@ test("built PWA caches its exact Rust WASM module for offline use", async ({
 }) => {
   const dist = new URL("../../dist/", import.meta.url);
   const worker = await readFile(new URL("studio-sw.js", dist), "utf8");
-  const manifest = JSON.parse(
-    worker.split("\n", 1)[0].slice("self.STUDIO_SHELL = ".length, -1),
-  );
+  const manifest = readShellManifest(worker);
   const wasm = manifest.initial.filter((path) => path.endsWith(".wasm"));
   expect(wasm).toHaveLength(1);
-  expect(manifest.allowed).toContain(wasm[0]);
+  const wasmPath = wasm[0];
+  if (!wasmPath) throw new Error("Missing offline WASM asset");
+  expect(manifest.allowed).toContain(wasmPath);
   const server = createServer(async (request, response) => {
-    const path = new URL(request.url, "http://localhost").pathname;
+    const path = new URL(request.url ?? "/", "http://localhost").pathname;
     response.setHeader(
       "Content-Security-Policy",
       "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'",
@@ -46,9 +56,12 @@ test("built PWA caches its exact Rust WASM module for offline use", async ({
       response.writeHead(404).end();
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("Missing offline fixture address");
   try {
-    await page.goto(`http://127.0.0.1:${server.address().port}/check`);
+    await page.goto(`http://127.0.0.1:${address.port}/check`);
     await page.evaluate(async () => {
       await navigator.serviceWorker.register("/studio-sw.js");
       await navigator.serviceWorker.ready;
@@ -64,7 +77,7 @@ test("built PWA caches its exact Rust WASM module for offline use", async ({
       if (!response.ok) throw new Error(`Offline WASM: ${response.status}`);
       const module = await WebAssembly.compileStreaming(response);
       return WebAssembly.Module.exports(module).map((item) => item.name);
-    }, wasm[0]);
+    }, wasmPath);
     expect(exports).toContain("parse_markdown");
   } finally {
     await context.setOffline(false);

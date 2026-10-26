@@ -1,3 +1,7 @@
+import { waitForFixturePort } from "../playwright.ts";
+import type { Route } from "@playwright/test";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { fixturePostBody, fixtureGetResult } from "./http.ts";
 import {
   readTestState,
   installApiSchemaFixtureHeaders,
@@ -21,23 +25,21 @@ test("Chat controls", async ({ page }) => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
+  assert.ok(fixture.stderr && fixture.stdout);
   fixture.stderr.on("data", (data) => (log += data));
-  const poll = async (fn, label) => {
+  const poll = async (fn: () => unknown | Promise<unknown>, label: string) => {
     for (let i = 0; i < 120; i++) {
       if (await fn()) return;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     throw Error(`${label}\n${log}`);
   };
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (data) => resolve(Number(String(data).trim())));
-    fixture.once("exit", () => reject(Error(log)));
-  });
+  const port = await waitForFixturePort(fixture, { diagnostics: () => log });
   const origin = `http://127.0.0.1:${port}`;
   const state = () => readTestState(origin);
   await page.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   // Durable attachments use the real workspace identity and sync store.
   installApiSchemaFixtureHeaders(page);
@@ -51,6 +53,7 @@ test("Chat controls", async ({ page }) => {
   await page.locator("[data-chat]").first().waitFor();
   const initial = await state();
   const lead = initial.threads.find((agent) => agent.name === "Other project");
+  assert.ok(lead, "fixture lead exists");
   const row = () => page.locator(`[data-chat="${lead.id}"]`);
   await row().click();
   const actions = () =>
@@ -112,7 +115,7 @@ test("Chat controls", async ({ page }) => {
   };
   await openActions();
   // The pin shows at once, before a slow entity pull arrives.
-  const slowState = async (route) => {
+  const slowState = async (route: Route) => {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     await route.continue().catch(() => {});
   };
@@ -126,7 +129,7 @@ test("Chat controls", async ({ page }) => {
   await page.unroute("**/api/sync/pull*", slowState);
   await poll(
     async () =>
-      (await state()).threads.find((agent) => agent.id === lead.id).pinned,
+      (await state()).threads.find((agent) => agent.id === lead.id)?.pinned,
     "pin is persisted",
   );
   const folder = join(root, "Release checks");
@@ -151,7 +154,7 @@ test("Chat controls", async ({ page }) => {
     async () =>
       (await state()).threads
         .find((a) => a.id === lead.id)
-        .cwd.endsWith("/Release checks"),
+        ?.cwd?.endsWith("/Release checks"),
     "project directory is persisted",
   );
   await page
@@ -257,16 +260,18 @@ test("Chat controls", async ({ page }) => {
     true,
     "attachment-only message is enabled",
   );
-  const attachmentPosts = [];
+  const attachmentPosts: PostBody<"/api/messages">[] = [];
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
       new URL(request.url()).pathname === "/api/messages"
     )
-      attachmentPosts.push(request.postDataJSON());
+      attachmentPosts.push(
+        fixturePostBody("/api/messages", request.postDataJSON()),
+      );
   });
   let failAttachments = true;
-  const failAttachmentSend = (route) =>
+  const failAttachmentSend = (route: Route) =>
     failAttachments
       ? route.fulfill({
           status: 503,
@@ -278,7 +283,7 @@ test("Chat controls", async ({ page }) => {
   await page.getByText("Test transport failure", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Stop retries", exact: true }).click();
   const firstAttempt = attachmentPosts[0];
-  assert.ok(firstAttempt.id, "Failed send has a durable message identity");
+  assert.ok(firstAttempt?.id, "Failed send has a durable message identity");
   const failedMessage = page.locator("#messages .message.user").filter({
     has: page.getByRole("button", { name: "evidence.txt", exact: true }),
   });
@@ -302,7 +307,7 @@ test("Chat controls", async ({ page }) => {
   );
   await poll(
     async () =>
-      (await state()).threads.find((agent) => agent.id === lead.id).status ===
+      (await state()).threads.find((agent) => agent.id === lead.id)?.status ===
       "running",
     "attachment starts actual fixture turn",
   );
@@ -335,12 +340,15 @@ test("Chat controls", async ({ page }) => {
     () =>
       page
         .locator('#messages img[alt="pasted.png"]')
-        .evaluate((image) => image.naturalWidth > 0),
+        .evaluate(
+          (image) =>
+            image instanceof HTMLImageElement && image.naturalWidth > 0,
+        ),
     "inline image decodes",
   );
   const queue = () =>
     fetch(`${origin}/api/queue?agent=${lead.id}`).then((response) =>
-      response.json(),
+      fixtureGetResult("/api/queue", response),
     );
   const queueAfterTurn = page.getByRole("button", {
     name: "Queue for next turn",
@@ -396,9 +404,12 @@ test("Chat controls", async ({ page }) => {
     .locator("#message")
     .fill("Steering failure keeps this instruction");
   const failedSteerText = "Steering failure keeps this instruction";
-  let failedSteerId;
-  const failSteerRequests = async (route) => {
-    const body = route.request().postDataJSON();
+  let failedSteerId: string | undefined;
+  const failSteerRequests = async (route: Route) => {
+    const body = fixturePostBody(
+      "/api/messages",
+      route.request().postDataJSON(),
+    );
     if (body?.text !== failedSteerText) return route.continue();
     if (failedSteerId) assert.equal(body.id, failedSteerId);
     else failedSteerId = body.id;
@@ -449,7 +460,7 @@ test("Chat controls", async ({ page }) => {
   );
   await page.locator("#message").press("Enter");
   assert.equal(
-    (await entered).postDataJSON().delivery,
+    fixturePostBody("/api/messages", (await entered).postDataJSON()).delivery,
     "current_turn",
     "Enter sends after-tool input",
   );

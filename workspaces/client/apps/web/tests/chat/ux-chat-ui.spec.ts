@@ -1,3 +1,11 @@
+import type { Server, ServerResponse } from "node:http";
+import type { ViteDevServer } from "vite";
+import type { Route } from "@playwright/test";
+import type { TranscriptPageResponse } from "../playwright.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { PendingUpload } from "../../src/sync/uploads.ts";
+import type { UxChatFixtureSendBody } from "../fixtures/ux-chat.tsx";
+import { fixturePostBody, fixtureResourceRefs } from "./http.ts";
 // Isolated component fixture. All API requests use local test responses.
 import { createServer } from "node:http";
 import assert from "node:assert/strict";
@@ -16,6 +24,13 @@ import {
   test,
 } from "../playwright.ts";
 
+// Posts here come from the generated branch route or this fixture's send callback.
+function readFixtureWrite(
+  body: unknown,
+): Partial<PostBody<"/api/branch"> & UxChatFixtureSendBody> {
+  return body as Partial<PostBody<"/api/branch"> & UxChatFixtureSendBody>;
+}
+
 test("Ux Chat Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -29,9 +44,9 @@ test("Ux Chat Ui", async ({
   const webRoot = join(repo, "workspaces/client/apps/web");
   const syncIdentity = syncIdentityFixture();
   const workspaceId = syncIdentity.workspaceId;
-  let server;
-  let vite;
-  const syncStreams = new Set();
+  let server: Server | undefined;
+  let vite: ViteDevServer | undefined;
+  const syncStreams = new Set<ServerResponse>();
   let syncRevision = 0;
   let transcriptSeq = 1;
   const publishTranscriptChange = () => {
@@ -73,10 +88,10 @@ test("Ux Chat Ui", async ({
     });
     server = createServer(async (request, response) => {
       try {
-        const path = new URL(request.url, "http://fixture").pathname;
-        const requestUrl = new URL(request.url, "http://fixture");
+        const path = new URL(request.url ?? "/", "http://fixture").pathname;
+        const requestUrl = new URL(request.url ?? "/", "http://fixture");
         if (path === "/api/sync/stream") {
-          const resources = JSON.parse(
+          const resources = fixtureResourceRefs(
             requestUrl.searchParams.get("resources") || "[]",
           );
           response.writeHead(200, {
@@ -110,11 +125,11 @@ test("Ux Chat Ui", async ({
           return;
         }
         if (path === "/api/fixture-live-update") {
-          latestItems = latestItems.map((item) =>
-            item.id === "item-13"
-              ? { ...item, text: "Latest message after live update" }
-              : item,
-          );
+          latestItems = latestItems.map((item) => {
+            if (item.id === "item-13")
+              item.text = "Latest message after live update";
+            return item;
+          });
           transcriptSeq++;
           publishTranscriptChange();
           response.statusCode = 204;
@@ -168,7 +183,7 @@ test("Ux Chat Ui", async ({
           );
           return;
         }
-        vite.middlewares(request, response, () => {
+        vite?.middlewares(request, response, () => {
           response.statusCode = 404;
           response.end("Not found");
         });
@@ -177,46 +192,64 @@ test("Ux Chat Ui", async ({
         response.end();
       }
     });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runningServer = server;
+    await new Promise<void>((resolve) =>
+      runningServer.listen(0, "127.0.0.1", resolve),
+    );
+    const address = runningServer.address();
+    assert.ok(address && typeof address !== "string");
     const page = testPage;
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.setViewportSize({ width: 1100, height: 800 });
     page.setDefaultTimeout(10000);
-    const records = Array.from({ length: 14 }, (_, index) => ({
-      id: `item-${index}`,
-      role: index % 2 ? "assistant" : "user",
-      at: index + 1,
-      turnId: `turn-${Math.floor(index / 2)}`,
-      turnStatus: "completed",
-      text:
-        index === 3
-          ? "Unique historical assistant evidence"
-          : `Message ${index}. ` + "Readable history. ".repeat(25),
-    }));
-    records[10].truncated = true;
-    records[10].text = "Clipped original prompt";
+    const records: TranscriptPageResponse["items"] = Array.from(
+      { length: 14 },
+      (_, index) => ({
+        id: `item-${index}`,
+        role: index % 2 ? "assistant" : "user",
+        at: index + 1,
+        turnId: `turn-${Math.floor(index / 2)}`,
+        turnStatus: "completed",
+        text:
+          index === 3
+            ? "Unique historical assistant evidence"
+            : `Message ${index}. ` + "Readable history. ".repeat(25),
+      }),
+    );
+    const clipped = records[10];
+    assert.ok(clipped);
+    clipped.truncated = true;
+    clipped.text = "Clipped original prompt";
     let latestItems = records.slice(10);
     let historyVersion = "version-1";
     let failBranch = true;
-    const writes = [];
-    const pageRequests = [];
-    let holdAround = false,
-      pendingAround,
-      resolveAroundStarted;
+    const writes: {
+      path: string;
+      body: Partial<PostBody<"/api/branch"> & UxChatFixtureSendBody>;
+    }[] = [];
+    const pageRequests: string[] = [];
+    let holdAround = false;
+    let pendingAround: (() => void) | undefined;
+    let resolveAroundStarted: (() => void) | undefined;
     let aroundStarted = Promise.resolve();
     const releaseAround = () => {
       pendingAround?.();
       pendingAround = undefined;
     };
-    const snapshot = (id) => ({
+    const snapshot = (
+      id: string | null | undefined,
+    ): TranscriptPageResponse => ({
       items: id === "lead" ? latestItems : [],
       nextCursor: id === "lead" ? "item-10" : null,
       historyVersion,
       truncated: id === "lead",
-      agent: { id, status: "idle" },
+      agent: { id: id ?? "", status: "idle" },
     });
-    const fulfillApi = (route, response) =>
+    const fulfillApi = (
+      route: Route,
+      response: NonNullable<Parameters<Route["fulfill"]>[0]>,
+    ) =>
       route.fulfill({
         ...response,
         headers: { ...apiSchemaHeaders(), ...response.headers },
@@ -230,7 +263,7 @@ test("Ux Chat Ui", async ({
       if (path === "/api/fixture-restore") return route.continue();
       if (path === "/api/fixture-live-update") return route.continue();
       if (request.method() === "POST")
-        writes.push({ path, body: request.postDataJSON() });
+        writes.push({ path, body: readFixtureWrite(request.postDataJSON()) });
       if (path === "/api/transcript/stream")
         return fulfillApi(route, {
           status: 503,
@@ -248,7 +281,7 @@ test("Ux Chat Ui", async ({
           },
         });
       if (path === "/api/transcript/search") {
-        const query = url.searchParams.get("q").toLowerCase();
+        const query = (url.searchParams.get("q") ?? "").toLowerCase();
         return fulfillApi(route, {
           json: {
             results: records.filter((record) =>
@@ -264,7 +297,7 @@ test("Ux Chat Ui", async ({
           nextAfterCursor = null;
         if (url.searchParams.has("around")) {
           if (holdAround) {
-            await new Promise((resolve) => {
+            await new Promise<void>((resolve) => {
               pendingAround = resolve;
               resolveAroundStarted?.();
             });
@@ -284,7 +317,12 @@ test("Ux Chat Ui", async ({
           nextCursor = null;
         }
         return fulfillApi(route, {
-          json: { items, nextCursor, nextAfterCursor, historyVersion },
+          json: {
+            items,
+            nextCursor,
+            nextAfterCursor,
+            historyVersion,
+          } satisfies Omit<TranscriptPageResponse, "truncated">,
         });
       }
       if (path === "/api/branch") {
@@ -295,7 +333,7 @@ test("Ux Chat Ui", async ({
             json: { error: "Lost branch response" },
           });
         }
-        const body = request.postDataJSON();
+        const body = fixturePostBody("/api/branch", request.postDataJSON());
         return fulfillApi(route, {
           json: {
             id: body.before ? "edited-branch" : "answer-branch",
@@ -304,21 +342,22 @@ test("Ux Chat Ui", async ({
               prefixText: body.before ? "Earlier user instruction" : "",
               assets: [],
             },
-          },
+          } satisfies Pick<PostResult<"/api/branch">, "id" | "draft">,
         });
       }
       if (path === "/api/queue")
         return fulfillApi(route, { json: { items: [] } });
       return fulfillApi(route, { json: { ok: true } });
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.goto(`http://127.0.0.1:${address.port}`);
     await page.locator('[data-message="item-10"]').waitFor();
     const composer = page.locator("#message");
     const sendSettled = () =>
       page.evaluate(
         () =>
-          new Promise((resolve) => {
+          new Promise<void>((resolve) => {
             const status = document.querySelector("#send-state");
+            if (!status) throw new Error("Missing send state");
             let active = !!status.textContent;
             const observer = new MutationObserver(() => {
               if (status.textContent) active = true;
@@ -343,16 +382,17 @@ test("Ux Chat Ui", async ({
     await firstSend;
     await firstSettled;
     await page.waitForFunction(
-      () => document.querySelector("#message").value === "",
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
     );
     assert.equal(
       await composer.evaluate((element) => element === document.activeElement),
       true,
     );
     assert.equal(writes.length, 1);
-    assert.equal(writes[0].path, "/api/fixture-send");
-    assert.equal(writes[0].body.text, "Draft must remain unsent");
-    assert.equal(writes[0].body.delivery, "next_turn");
+    assert.equal(writes[0]?.path, "/api/fixture-send");
+    assert.equal(writes[0]?.body.text, "Draft must remain unsent");
+    assert.equal(writes[0]?.body.delivery, "next_turn");
     await composer.fill("Send from button");
     const buttonSend = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/fixture-send",
@@ -362,11 +402,12 @@ test("Ux Chat Ui", async ({
     await buttonSend;
     await buttonSettled;
     await page.waitForFunction(
-      () => document.querySelector("#message").value === "",
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
     );
     assert.equal(writes.length, 2);
-    assert.equal(writes[1].body.delivery, "current_turn");
-    assert.equal(writes[1].body.text, "Send from button");
+    assert.equal(writes[1]?.body.delivery, "current_turn");
+    assert.equal(writes[1]?.body.text, "Send from button");
     const longDraft = "L".repeat(12050);
     await composer.fill(longDraft);
     assert.equal(await composer.inputValue(), longDraft);
@@ -388,41 +429,48 @@ test("Ux Chat Ui", async ({
     );
     await attach.click();
     await page.waitForFunction(
-      () => document.querySelector("#message").value === "",
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
     );
     await page
       .getByRole("button", { name: "Remove pending message.txt", exact: true })
       .waitFor();
     const savedUpload = await page.evaluate(
       () =>
-        new Promise((resolve, reject) => {
-          const request = indexedDB.open("codex-studio-uploads", 2);
-          request.onerror = () => reject(request.error);
-          request.onsuccess = () => {
-            const database = request.result;
-            const transaction = database.transaction(
-              ["uploads", "contents"],
-              "readonly",
-            );
-            const rows = transaction.objectStore("uploads").getAll();
-            rows.onerror = () => reject(rows.error);
-            rows.onsuccess = () => {
-              const row = rows.result.find(
-                (item) => item.name === "message.txt",
+        new Promise<{ name: string; bytes: number[] } | null>(
+          (resolve, reject) => {
+            const request = indexedDB.open("codex-studio-uploads", 2);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const database = request.result;
+              const transaction = database.transaction(
+                ["uploads", "contents"],
+                "readonly",
               );
-              if (!row) return resolve(null);
-              const content = transaction.objectStore("contents").get(row.id);
-              content.onerror = () => reject(content.error);
-              content.onsuccess = () => {
-                database.close();
-                resolve({
-                  name: row.name,
-                  bytes: Array.from(new Uint8Array(content.result.bytes)),
-                });
+              const rows = transaction.objectStore("uploads").getAll();
+              rows.onerror = () => reject(rows.error);
+              rows.onsuccess = () => {
+                // This database is written by the uploads owner in this renderer.
+                const uploads = rows.result as PendingUpload[];
+                const row = uploads.find((item) => item.name === "message.txt");
+                if (!row) return resolve(null);
+                const content = transaction.objectStore("contents").get(row.id);
+                content.onerror = () => reject(content.error);
+                content.onsuccess = () => {
+                  database.close();
+                  resolve({
+                    name: row.name,
+                    bytes: Array.from(
+                      new Uint8Array(
+                        (content.result as { bytes: ArrayBuffer }).bytes,
+                      ),
+                    ),
+                  });
+                };
               };
             };
-          };
-        }),
+          },
+        ),
     );
     assert.ok(savedUpload);
     assert.equal(savedUpload.name, "message.txt");
@@ -471,6 +519,7 @@ test("Ux Chat Ui", async ({
       .locator('[data-message="item-3"]')
       .evaluate((element) => {
         const root = document.querySelector("#messages");
+        if (!root) throw new Error("Missing messages");
         return (
           element.getBoundingClientRect().top - root.getBoundingClientRect().top
         );
@@ -509,7 +558,8 @@ test("Ux Chat Ui", async ({
     await composer.fill("Send while history loads");
     await page.locator("#send").click();
     await page.waitForFunction(
-      () => document.querySelector("#message").value === "",
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
     );
     const releasedAroundResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
@@ -583,13 +633,13 @@ test("Ux Chat Ui", async ({
     );
     const attempts = writes.filter((write) => write.path === "/api/branch");
     assert.equal(
-      attempts[0].body.id,
-      attempts[1].body.id,
+      attempts[0]?.body.id,
+      attempts[1]?.body.id,
       "retry preserves the native branch request identity",
     );
-    assert.equal(attempts[0].body.before, true);
+    assert.equal(attempts[0]?.body.before, true);
     assert.equal(
-      attempts[0].body.message_id,
+      attempts[0]?.body.message_id,
       "item-10",
       "edit preserves the selected input identity inside a native batch",
     );
@@ -638,7 +688,8 @@ test("Ux Chat Ui", async ({
       ],
     );
     assert.equal(
-      writes.filter((write) => write.path === "/api/branch").at(-1).body.before,
+      writes.filter((write) => write.path === "/api/branch").at(-1)?.body
+        .before,
       undefined,
     );
 
@@ -672,7 +723,12 @@ test("Ux Chat Ui", async ({
     );
   } finally {
     for (const stream of syncStreams) stream.destroy();
-    if (server) await new Promise((resolve) => server.close(resolve));
+    if (server) {
+      const runningServer = server;
+      await new Promise<void>((resolve) =>
+        runningServer.close(() => resolve()),
+      );
+    }
     await vite?.close();
   }
 });

@@ -1,3 +1,20 @@
+import { waitForFixturePort } from "../playwright.ts";
+import type { Page } from "@playwright/test";
+import type { ServerResponse } from "node:http";
+import type { components } from "../../src/generated/api.ts";
+import type {
+  ResourceRef,
+  ResourceChangeEvent,
+  TranscriptPageResponse,
+} from "../playwright.ts";
+import { fixturePostBody, fixtureResourceRefs } from "../chat/http.ts";
+
+declare global {
+  interface Window {
+    publishScrollUpdate: () => Promise<unknown>;
+  }
+}
+
 import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../../src/generated/sharedValues.ts";
 import {
   test,
@@ -29,7 +46,7 @@ let stopStreamFixture = async () => {};
 test.afterEach(async () => stopStreamFixture());
 
 function history() {
-  const items = [];
+  const items: TranscriptPageResponse["items"] = [];
   for (let turn = 0; turn < TURNS; turn++) {
     const turnId = `turn-${turn}`;
     items.push(
@@ -70,7 +87,7 @@ test("scroll-follow desktop and phone wheel, trackpad and content-growth races",
   await scrollFollow(page, true);
 });
 
-async function scrollFollow(page, full) {
+async function scrollFollow(page: Page, full: boolean) {
   test.setTimeout(150_000);
   page.setDefaultTimeout(15000);
   const dir = await mkdtemp(join(tmpdir(), "studio-scroll-follow-"));
@@ -79,15 +96,14 @@ async function scrollFollow(page, full) {
     env: { FIXTURE_WORKER_COUNT: "0" },
   });
   let log = "";
+  assert.ok(proc.stderr && proc.stdout);
   proc.stderr.on("data", (d) => (log += d));
-  const port = await new Promise((resolve, reject) => {
-    proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
-    proc.once("exit", () => reject(Error(log)));
-  });
+  const port = await waitForFixturePort(proc, { diagnostics: () => log });
   const origin = `http://127.0.0.1:${port}`;
   const state = await readTestState(origin);
   const syncContract = await readFixtureSyncContract(origin);
   const chat = state.threads.find((a) => a.name === "Other project");
+  assert.ok(chat, "fixture chat exists");
   const passes = full
     ? [
         { width: 1440, height: 900 },
@@ -97,36 +113,45 @@ async function scrollFollow(page, full) {
   const reset = () => ({
     items: history(),
     agent: {
-      ...chat,
+      id: chat.id,
       status: "running",
       inFlight: true,
-      turnId: "live-turn",
       activity: { phase: "writing" },
     },
   });
   const transcripts = new Map([[chat.id, reset()]]);
-  const transcript = (id, limit = SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS) => {
-    const { agent, items } = transcripts.get(id);
+  const transcript = (
+    id: string,
+    limit: number = SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
+  ): TranscriptPageResponse => {
+    const value = transcripts.get(id);
+    assert.ok(value, "fixture transcript exists");
+    const { agent, items } = value;
     const selected = items.slice(-limit);
     return {
       agent,
       items: selected,
       truncated: selected.length < items.length,
-      nextCursor: selected.length < items.length ? selected[0].id : null,
+      nextCursor:
+        selected.length < items.length ? (selected[0]?.id ?? null) : null,
       nextAfterCursor: null,
       historyVersion: "scroll-follow",
     };
   };
   let transcriptSeq = 1;
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   // The transcript map owns both pulled baselines and sparse stream deltas.
-  const syncStreams = new Map();
-  const sessions = new Map();
+  const syncStreams = new Map<ServerResponse, ResourceRef[]>();
+  const sessions = new Map<string, ServerResponse>();
   let subscriptionUpdates = 0;
   let streamRevision = 0;
   let transcriptPulls = 0;
-  const streamFrame = (resources, reason, batch) => ({
+  const streamFrame = (
+    resources: ResourceRef[],
+    reason: ResourceChangeEvent["reason"],
+    batch?: components["schemas"]["TranscriptChangeBatch"],
+  ): ResourceChangeEvent => ({
     protocol: 4,
     workspaceId: syncContract.identity.workspaceId,
     epoch: "scroll-follow-transcripts",
@@ -159,7 +184,10 @@ async function scrollFollow(page, full) {
     if (request.method === "POST") {
       let body = "";
       for await (const chunk of request) body += chunk;
-      const update = JSON.parse(body);
+      const update = fixturePostBody(
+        "/api/sync/subscriptions",
+        JSON.parse(body),
+      );
       const stream = sessions.get(update.sessionId);
       if (!stream) {
         response.writeHead(410).end();
@@ -167,6 +195,7 @@ async function scrollFollow(page, full) {
       }
       subscriptionUpdates++;
       const resources = syncStreams.get(stream);
+      assert.ok(resources, "subscription stream exists");
       const removed = new Set(
         update.remove.map((resource) => JSON.stringify(resource)),
       );
@@ -198,9 +227,10 @@ async function scrollFollow(page, full) {
       response.end(JSON.stringify({ gen: update.gen }));
       return;
     }
-    const resources = JSON.parse(
-      new URL(request.url, "http://fixture").searchParams.get("resources") ||
-        "[]",
+    const resources = fixtureResourceRefs(
+      new URL(request.url ?? "/", "http://fixture").searchParams.get(
+        "resources",
+      ) || "[]",
     );
     response.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -231,7 +261,14 @@ async function scrollFollow(page, full) {
       sessions.delete(sessionId);
     });
   });
-  await new Promise((resolve) => streamServer.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) =>
+    streamServer.listen(0, "127.0.0.1", resolve),
+  );
+  const streamAddress = streamServer.address();
+  assert.ok(
+    streamAddress && typeof streamAddress !== "string",
+    "stream TCP address exists",
+  );
   stopStreamFixture = async () => {
     for (const response of syncStreams.keys()) response.end();
     await new Promise((resolve) => streamServer.close(resolve));
@@ -243,19 +280,18 @@ async function scrollFollow(page, full) {
     page,
     {
       ...state,
-      threads: state.threads.map((a) => transcripts.get(a.id)?.agent || a),
       runtime: { ...state.runtime, requests: [] },
     },
     syncContract,
   );
   await page.route("**/api/sync/stream?*", (route) => {
     const url = new URL(route.request().url());
-    url.port = String(streamServer.address().port);
+    url.port = String(streamAddress.port);
     return route.continue({ url: url.href });
   });
   await page.route("**/api/sync/subscriptions", (route) => {
     const url = new URL(route.request().url());
-    url.port = String(streamServer.address().port);
+    url.port = String(streamAddress.port);
     return route.continue({ url: url.href });
   });
   await page.route("**/api/sync/pull?*", (route) => {
@@ -276,14 +312,14 @@ async function scrollFollow(page, full) {
     });
   });
   await page.route("**/api/transcript?*", (r) => {
-    const id = new URL(r.request().url()).searchParams.get("id");
+    const id = new URL(r.request().url()).searchParams.get("id") ?? "";
     return r.fulfill({
       json: transcripts.has(id) ? transcript(id) : { items: [] },
     });
   });
   await page.route("**/api/transcript/page?*", (route) => {
     const query = new URL(route.request().url()).searchParams;
-    const live = transcripts.get(query.get("id"));
+    const live = transcripts.get(query.get("id") ?? "");
     if (!live) return route.continue();
     const end = live.items.findIndex((item) => item.id === query.get("before"));
     const start = Math.max(0, end - Number(query.get("limit")));
@@ -291,17 +327,18 @@ async function scrollFollow(page, full) {
       json: {
         items: live.items.slice(start, end),
         truncated: start > 0,
-        nextCursor: start > 0 ? live.items[start].id : null,
+        nextCursor: start > 0 ? (live.items[start]?.id ?? null) : null,
         nextAfterCursor: live.items[end - 1]?.id || null,
         historyVersion: "scroll-follow",
       },
     });
   });
-  const publishedItems = new Map();
-  const notify = async (id) => {
+  const publishedItems = new Map<string, Map<string, string>>();
+  const notify = async (id: string) => {
     const after = transcriptSeq++;
     const live = transcripts.get(id);
-    const previous = publishedItems.get(id) || new Map();
+    assert.ok(live, "fixture transcript exists");
+    const previous = publishedItems.get(id) || new Map<string, string>();
     const current = new Map(
       live.items.map((item) => [item.id, JSON.stringify(item)]),
     );
@@ -315,7 +352,7 @@ async function scrollFollow(page, full) {
       order: live.items.map((item) => item.id),
       truncated: false,
       agent: live.agent,
-    };
+    } satisfies components["schemas"]["TranscriptStreamDelta"];
     publishedItems.set(id, current);
     for (const [response, resources] of syncStreams) {
       if (
@@ -347,7 +384,7 @@ async function scrollFollow(page, full) {
   const latest = page.locator("#conversation #jump-latest:visible");
   // While a stream runs, content below the reader keeps growing. Then only
   // the scroll position must settle.
-  const settle = (withHeight) =>
+  const settle = (withHeight: boolean) =>
     root.evaluate(
       (element, withHeight) =>
         new Promise((resolve) => {
@@ -372,7 +409,9 @@ async function scrollFollow(page, full) {
       gap: e.scrollHeight - e.scrollTop - e.clientHeight,
     }));
 
-  let publishUpdate;
+  let publishUpdate: () => Promise<unknown> = async () => {
+    throw new Error("Stream publisher not initialized");
+  };
   await page.exposeFunction("publishScrollUpdate", () => publishUpdate());
 
   for (const viewport of passes) {
@@ -462,13 +501,14 @@ async function scrollFollow(page, full) {
       new Map(
         transcripts
           .get(chat.id)
-          .items.map((item) => [item.id, JSON.stringify(item)]),
+          ?.items.map((item) => [item.id, JSON.stringify(item)]),
       ),
     );
     // One growing reply plus agent activity changes, as a running turn sends.
     let streamed = 0;
     const live = transcripts.get(chat.id);
-    const renderSentence = (sentence) =>
+    assert.ok(live, "live transcript exists");
+    const renderSentence = (sentence: string) =>
       page.waitForFunction(
         (sentence) =>
           [
@@ -501,7 +541,9 @@ async function scrollFollow(page, full) {
         await notify(chat.id);
         return `Streamed ${width} sentence ${streamed - 1} `;
       },
-      rendered: renderSentence,
+      rendered: async (sentence) => {
+        await renderSentence(sentence);
+      },
     });
     publishUpdate = nextRender;
     // The first paragraph whose top is inside the transcript viewport, else
@@ -509,7 +551,7 @@ async function scrollFollow(page, full) {
     const readingPoint = () =>
       root.evaluate((element) => {
         const bounds = element.getBoundingClientRect();
-        const inside = (node) => {
+        const inside = (node: Element) => {
           const box = node.getBoundingClientRect();
           return (
             box.height > 0 && box.top >= bounds.top && box.top < bounds.bottom
@@ -517,33 +559,44 @@ async function scrollFollow(page, full) {
         };
         const paragraph =
           [...element.querySelectorAll("[data-message] p")].find(inside) ||
-          [...element.querySelectorAll("[data-message]")].find(inside) ||
+          [...element.querySelectorAll<HTMLElement>("[data-message]")].find(
+            inside,
+          ) ||
           // One tall message can cover the whole phone viewport.
-          [...element.querySelectorAll("[data-message]")].find((node) => {
-            const box = node.getBoundingClientRect();
-            return (
-              box.height > 0 && box.top < bounds.top && box.bottom > bounds.top
-            );
-          });
-        const message = paragraph?.closest("[data-message]");
+          [...element.querySelectorAll<HTMLElement>("[data-message]")].find(
+            (node) => {
+              const box = node.getBoundingClientRect();
+              return (
+                box.height > 0 &&
+                box.top < bounds.top &&
+                box.bottom > bounds.top
+              );
+            },
+          );
+        const message = paragraph?.closest<HTMLElement>("[data-message]");
         return {
           scrollTop: element.scrollTop,
           gap: element.scrollHeight - element.scrollTop - element.clientHeight,
           message: message?.dataset.message,
           index: message
-            ? [...message.querySelectorAll("p")].indexOf(paragraph)
+            ? [...message.querySelectorAll("p")].findIndex(
+                (node) => node === paragraph,
+              )
             : -1,
           top: paragraph
             ? paragraph.getBoundingClientRect().top - bounds.top
             : 0,
         };
       });
-    const anchored = async (point, label) => {
+    const anchored = async (
+      point: Awaited<ReturnType<typeof readingPoint>>,
+      label: string,
+    ) => {
       const now = await root.evaluate((element, target) => {
         const bounds = element.getBoundingClientRect();
-        const message = [...element.querySelectorAll("[data-message]")].find(
-          (node) => node.dataset.message === target.message,
-        );
+        const message = [
+          ...element.querySelectorAll<HTMLElement>("[data-message]"),
+        ].find((node) => node.dataset.message === target.message);
         const paragraph =
           target.index < 0
             ? message
@@ -564,13 +617,23 @@ async function scrollFollow(page, full) {
     // Hold one wheel step's scroll event until a stream commit is observed.
     // This deterministically exercises scrollTop changing before its event,
     // including content growth above the reader, without retrying frame races.
-    const wheelStepInGap = async (deltaY, label, growAbove = 0) => {
+    const wheelStepInGap = async (
+      deltaY: number,
+      label: string,
+      growAbove = 0,
+    ) => {
       await settle(true);
       const sentence = `Streamed ${width} sentence ${streamed} `;
       const step = await root.evaluate(
         (element, { deltaY, growAbove, sentence }) =>
-          new Promise((resolve, reject) => {
-            const offset = (node) =>
+          new Promise<{
+            attempts: number;
+            before: number;
+            moved: { top: number; paragraph: number | null };
+            during: { top: number; gap: number; paragraph: number | null };
+            grown: boolean;
+          }>((resolve, reject) => {
+            const offset = (node: Element) =>
               node.getBoundingClientRect().top -
               element.getBoundingClientRect().top;
             const scrolled = () => element.dispatchEvent(new Event("scroll"));
@@ -585,13 +648,13 @@ async function scrollFollow(page, full) {
                 return;
               }
               const before = element.scrollTop;
-              const hold = (event) => {
+              const hold = (event: Event) => {
                 if (event.target === element) event.stopImmediatePropagation();
               };
               window.addEventListener("scroll", hold, true);
               element.dispatchEvent(new WheelEvent("wheel", { deltaY }));
               element.scrollTop = before + deltaY;
-              const inside = (node) =>
+              const inside = (node: Element) =>
                 node.getBoundingClientRect().height > 0 &&
                 offset(node) >= 0 &&
                 offset(node) < element.clientHeight;
@@ -599,16 +662,22 @@ async function scrollFollow(page, full) {
                 [...element.querySelectorAll("[data-message] p")].find(
                   inside,
                 ) ||
-                [...element.querySelectorAll("[data-message]")].find(inside) ||
+                [
+                  ...element.querySelectorAll<HTMLElement>("[data-message]"),
+                ].find(inside) ||
                 // One tall message can cover the whole phone viewport.
-                [...element.querySelectorAll("[data-message]")].find(
+                [
+                  ...element.querySelectorAll<HTMLElement>("[data-message]"),
+                ].find(
                   (node) =>
                     offset(node) < 0 &&
                     node.getBoundingClientRect().bottom >
                       element.getBoundingClientRect().top,
                 );
               const grown = growAbove
-                ? [...element.querySelectorAll("[data-message]")].findLast(
+                ? [
+                    ...element.querySelectorAll<HTMLElement>("[data-message]"),
+                  ].findLast(
                     (node) =>
                       node.getBoundingClientRect().bottom <
                       element.getBoundingClientRect().top,
@@ -619,12 +688,16 @@ async function scrollFollow(page, full) {
                 paragraph: paragraph ? offset(paragraph) : null,
               };
               if (grown) grown.style.paddingBottom = `${growAbove}px`;
-              let during = null;
+              let during: {
+                top: number;
+                gap: number;
+                paragraph: number | null;
+              } | null = null;
               const committed = new MutationObserver(() => {
                 const current = element.querySelector(
                   '[data-message="reply-live"]',
                 );
-                if (during || !current?.textContent.includes(sentence)) return;
+                if (during || !current?.textContent?.includes(sentence)) return;
                 during = {
                   top: element.scrollTop,
                   gap:
@@ -709,6 +782,7 @@ async function scrollFollow(page, full) {
 
         // Trackpad-sized wheel steps, then more stream updates.
         const box = await root.boundingBox();
+        assert.ok(box, "transcript bounds exist");
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
         for (let step = 0; step < 20; step++) {
           await page.mouse.wheel(0, -30);
@@ -748,15 +822,20 @@ async function scrollFollow(page, full) {
                 }
                 const top = element.getBoundingClientRect().top;
                 const above =
-                  [...element.querySelectorAll("[data-history-row]")].find(
-                    (row) => {
-                      const box = row.getBoundingClientRect();
-                      return box.top < top && box.bottom > top;
-                    },
-                  ) ||
-                  [...element.querySelectorAll("[data-message]")].findLast(
+                  [
+                    ...element.querySelectorAll<HTMLElement>(
+                      "[data-history-row]",
+                    ),
+                  ].find((row) => {
+                    const box = row.getBoundingClientRect();
+                    return box.top < top && box.bottom > top;
+                  }) ||
+                  [
+                    ...element.querySelectorAll<HTMLElement>("[data-message]"),
+                  ].findLast(
                     (node) => node.getBoundingClientRect().bottom < top,
                   );
+                if (!above) throw new Error("No row above reader");
                 above.style.paddingTop = "240px";
                 const observer = new MutationObserver(() => {
                   const current = element.querySelector(

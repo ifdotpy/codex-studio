@@ -26,3 +26,10 @@ export async function fixturePostResult<Path extends ApiPostPath>(
 ): Promise<PostResult<Path>> {
   return (await response.json()) as PostResult<Path>;
 }
+
+// Resource selectors are sent by the renderer to its fixture stream URL.
+export function fixtureResourceRefs(
+  value: string,
+): import("../playwright.ts").ResourceRef[] {
+  return JSON.parse(value) as import("../playwright.ts").ResourceRef[];
+}

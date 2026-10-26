@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
   test,
   expect,
@@ -15,10 +16,14 @@ test("conversation header stays compact and usage facts remain visible", async (
   const snapshot = await readTestState(readOnlyRust.origin);
   const contract = await readFixtureSyncContract(readOnlyRust.origin);
   const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
+  assert.ok(lead, "fixture lead exists");
   snapshot.runtime.sessionCostsByAgent = {
     [lead.id]: {
       rootId: lead.id,
       totalUSD: 0,
+      estimated: false,
+      pricedSamples: 0,
+      refreshing: false,
       pricingState: "ready",
       cacheAgeSeconds: 0,
       breakdown: { providers: {}, models: {} },
@@ -26,7 +31,7 @@ test("conversation header stays compact and usage facts remain visible", async (
     },
   };
   for (const width of [1440, 1024, 390, 320])
-    for (const scheme of ["light", "dark"]) {
+    for (const scheme of ["light", "dark"] as const) {
       const page = await browser.newPage({
         viewport: { width, height: 900 },
         isMobile: width < 760,
@@ -46,19 +51,11 @@ test("conversation header stays compact and usage facts remain visible", async (
         );
         await readOnlyRust.open(page);
         await page
-          .getByLabel(
-            page.viewportSize().width <= 760
-              ? "Back to chats"
-              : "Toggle conversations",
-          )
+          .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
           .waitFor();
         if (!(await page.locator("#sidebar").isVisible()))
           await page
-            .getByLabel(
-              page.viewportSize().width <= 760
-                ? "Back to chats"
-                : "Toggle conversations",
-            )
+            .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
             .click();
         await page
           .locator("[data-chat]")
@@ -124,8 +121,11 @@ test("conversation header stays compact and usage facts remain visible", async (
         );
         await page.evaluate(() => document.fonts.ready);
         const geometry = await page.evaluate(() => {
-          const rect = (s) =>
-            document.querySelector(s).getBoundingClientRect().toJSON();
+          const rect = (s: string) => {
+            const node = document.querySelector(s);
+            if (!node) throw new Error(`Missing geometry element ${s}`);
+            return node.getBoundingClientRect();
+          };
           return {
             header: rect(".simple-workspace-header"),
             title: rect("#conversation-title"),
@@ -135,7 +135,7 @@ test("conversation header stays compact and usage facts remain visible", async (
             dots: rect(".account-limits-dots"),
             dotTargets: [
               ...document.querySelectorAll(".account-limits-dot-target"),
-            ].map((element) => element.getBoundingClientRect().toJSON()),
+            ].map((element) => element.getBoundingClientRect()),
             limits: rect(".account-limits-toggle"),
             controls: [
               ...document.querySelectorAll(
@@ -147,7 +147,7 @@ test("conversation header stays compact and usage facts remain visible", async (
                   e.getClientRects().length &&
                   getComputedStyle(e).display !== "none",
               )
-              .map((e) => e.getBoundingClientRect().toJSON()),
+              .map((e) => e.getBoundingClientRect()),
             teamStrip: !!document.querySelector(".conversation-team-strip"),
             overflow: document.documentElement.scrollWidth > innerWidth,
           };
@@ -181,7 +181,19 @@ test("conversation header stays compact and usage facts remain visible", async (
     }
 });
 
-function assertGeometry(r) {
+function assertGeometry(r: {
+  width: number;
+  header: DOMRect;
+  title: DOMRect;
+  server: DOMRect;
+  limits: DOMRect;
+  dots: DOMRect;
+  dotTargets: DOMRect[];
+  estimate: DOMRect;
+  controls: DOMRect[];
+  teamStrip: boolean;
+  overflow: boolean;
+}) {
   expect(r.header.height, JSON.stringify(r)).toBeLessThanOrEqual(45);
   expect(r.teamStrip).toBe(false);
   expect(r.server.width).toBeGreaterThan(0);
@@ -206,8 +218,8 @@ function assertGeometry(r) {
   for (const [index, target] of r.dotTargets.entries()) {
     expect(target.width).toBeGreaterThanOrEqual(r.width < 760 ? 24 : 12);
     expect(target.height).toBeGreaterThanOrEqual(24);
-    if (index)
-      expect(target.left).toBeGreaterThanOrEqual(r.dotTargets[index - 1].right);
+    const previous = r.dotTargets[index - 1];
+    if (previous) expect(target.left).toBeGreaterThanOrEqual(previous.right);
   }
 
   expect(r.estimate.width).toBeGreaterThan(0);

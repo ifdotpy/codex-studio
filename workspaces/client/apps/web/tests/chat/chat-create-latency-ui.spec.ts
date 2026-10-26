@@ -1,4 +1,12 @@
-#!/usr/bin/env node
+import { waitForFixturePort } from "../playwright.ts";
+import type { Route } from "@playwright/test";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import {
+  fixturePostBody,
+  fixtureGetResult,
+  fixturePostResult,
+} from "./http.ts";
+import { assert } from "./assertions.ts";
 import {
   syncIdentityFixture,
   entityPullFixtureForRequest,
@@ -14,44 +22,37 @@ import {
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+function hasConfirmedChatCount(expected: number) {
+  const value: unknown = JSON.parse(
+    localStorage.getItem("codex-confirmed-chats") || "null",
+  );
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "agents" in value &&
+    Array.isArray(value.agents) &&
+    value.agents.length === expected
+  );
+}
+
 test("Chat Create Latency Ui @performance", async ({
   browser: _testBrowser,
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
   const evidence = await mkdtemp(join(tmpdir(), "studio-chat-create-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let page,
     log = "";
+  if (!fixture.stderr || !fixture.stdout)
+    throw new Error("Missing fixture output");
   fixture.stderr.on("data", (data) => {
     log += data;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (data) =>
-        resolve(Number(String(data).trim())),
-      );
-      fixture.once("exit", () => reject(Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
     const otherHome = join(evidence, "alternate-account");
@@ -71,7 +72,10 @@ test("Chat Create Latency Ui @performance", async ({
       body: JSON.stringify({ home: otherHome }),
     });
     assert.equal(registration.ok, true);
-    const registered = await registration.json();
+    const registered = await fixturePostResult(
+      "/api/accounts/register",
+      registration,
+    );
     const destination = registered.accounts.find(
       (account) => account.label === "alternate-account",
     );
@@ -79,11 +83,12 @@ test("Chat Create Latency Ui @performance", async ({
     page = testPage;
     await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const backendIdentity = await (
-      await fetch(`${origin}/api/sync/identity`)
-    ).json();
+    const backendIdentity = await fixtureGetResult(
+      "/api/sync/identity",
+      await fetch(`${origin}/api/sync/identity`),
+    );
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
     const workspaceId = identityResponse.workspaceId;
     await page.route("**/api/sync/identity", (route) =>
@@ -92,20 +97,22 @@ test("Chat Create Latency Ui @performance", async ({
         headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       }),
     );
-    const accountChanges = [];
-    const transfers = [];
+    const accountChanges: PostBody<"/api/agents/account">[] = [];
+    const transfers: unknown[] = [];
     page.on("request", (request) => {
       if (request.url().endsWith("/api/agents/account"))
-        accountChanges.push(request.postDataJSON());
+        accountChanges.push(
+          fixturePostBody("/api/agents/account", request.postDataJSON()),
+        );
       if (request.url().endsWith("/api/agents/account-transfer"))
         transfers.push(request.postDataJSON());
     });
     let hold = false,
-      stale = true,
-      confirmed,
-      request,
-      repliedAt;
-    const pending = [];
+      stale = true;
+    let confirmed: PostResult<"/api/leads"> | undefined;
+    let request: PostBody<"/api/leads"> | undefined;
+    let repliedAt: number | undefined;
+    const pending: Route[] = [];
     await page.route("**/api/sync/pull?*", (route) => {
       if (hold) {
         pending.push(route);
@@ -121,7 +128,7 @@ test("Chat Create Latency Ui @performance", async ({
         : route.continue();
     });
     await page.route("**/api/leads", async (route) => {
-      request = route.request().postDataJSON();
+      request = fixturePostBody("/api/leads", route.request().postDataJSON());
       assert.equal(
         Object.hasOwn(request, "model"),
         false,
@@ -129,7 +136,7 @@ test("Chat Create Latency Ui @performance", async ({
       );
       const response = await route.fetch();
       assert.equal(response.ok(), true);
-      confirmed = await response.json();
+      confirmed = await fixturePostResult("/api/leads", response);
       assert.equal(confirmed.model, "gpt-6-astra");
       assert.equal(
         confirmed.empty,
@@ -168,7 +175,7 @@ test("Chat Create Latency Ui @performance", async ({
     const selectionKey = `codex-desktop-opened:${initial.stateDir}`;
     await page.waitForFunction(
       ({ chatId, selectionKey }) => {
-        const selected = JSON.parse(
+        const selected: unknown = JSON.parse(
           localStorage.getItem(selectionKey) || "null",
         );
         const selectedRow = document.querySelector(`[data-chat="${chatId}"]`);
@@ -185,13 +192,14 @@ test("Chat Create Latency Ui @performance", async ({
     assert.equal(
       JSON.parse(
         await page.evaluate(
-          (selectionKey) => localStorage.getItem(selectionKey),
+          (selectionKey) => localStorage.getItem(selectionKey) || "null",
           `codex-desktop-opened:${initial.stateDir}`,
         ),
       ),
       confirmed.id,
       "the confirmed chat is selected",
     );
+    assert.ok(repliedAt !== undefined);
     const openedAfterMs = Date.now() - repliedAt;
     assert.ok(
       openedAfterMs < 1500,
@@ -230,13 +238,16 @@ test("Chat Create Latency Ui @performance", async ({
     await destinationAccount.click();
     const selectedResponse = await accountResponse;
     assert.equal(selectedResponse.ok(), true);
-    const selected = await selectedResponse.json();
+    const selected = await fixturePostResult(
+      "/api/agents/account",
+      selectedResponse,
+    );
     assert.equal(selected.empty, true);
     assert.equal(selected.threadId, null);
     const accountChangeMs = Date.now() - accountStartedAt;
     await expect(destinationAccount).toHaveAttribute("aria-pressed", "true");
     assert.equal(accountChanges.length, 1);
-    assert.equal(accountChanges[0].id, confirmed.id);
+    assert.equal(accountChanges[0]?.id, confirmed.id);
     assert.equal(
       transfers.length,
       0,
@@ -290,25 +301,17 @@ test("Chat Create Latency Ui @performance", async ({
     );
     const final = await readTestState(origin);
     assert.equal(
-      final.runtime.agents.filter((a) => a.id === request.id).length,
+      final.runtime.agents.filter((a) => a.id === request?.id).length,
       1,
     );
-    await page.waitForFunction(
-      () =>
-        JSON.parse(localStorage.getItem("codex-confirmed-chats")).agents
-          .length === 0,
-    );
+    await page.waitForFunction(hasConfirmedChatCount, 0);
     stale = true;
     await page.locator(".project-tree-heading").first().hover();
     await page
       .getByRole("button", { name: /^New chat in / })
       .first()
       .click();
-    await page.waitForFunction(
-      () =>
-        JSON.parse(localStorage.getItem("codex-confirmed-chats")).agents
-          .length === 1,
-    );
+    await page.waitForFunction(hasConfirmedChatCount, 1);
     const deletedId = confirmed.id;
     hold = false;
     for (const route of pending.splice(0)) {
