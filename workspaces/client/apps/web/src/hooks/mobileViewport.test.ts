@@ -519,3 +519,18 @@ it("follows native shell keyboard events with their UIKit timing and ignores the
   cleanup = undefined;
   expect(root.style.has("--keyboard-motion")).toBe(false);
 });
+it("leaves composer touches native in the native shell, which removes the keyboard pan", () => {
+  vi.stubGlobal("__studioNativeViewport", {
+    version: 1,
+    state: { insets: null, keyboard: null },
+  });
+  mount();
+  const textarea = new Textarea();
+  // A chat open focuses the composer without a keyboard; the tap must reach
+  // WebKit, because a programmatic refocus does not show the keyboard there.
+  documentMock.activeElement = textarea;
+  expect(gesture(textarea).defaultPrevented).toBe(false);
+  expect(gesture(textarea, "touchstart").defaultPrevented).toBe(false);
+  expect(textarea.blur).not.toHaveBeenCalled();
+  expect(textarea.focus).not.toHaveBeenCalled();
+});
