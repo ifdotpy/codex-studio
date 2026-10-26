@@ -157,19 +157,16 @@ pub struct Fixture {
     pub chats: Arc<Chats>,
     pub launcher: Arc<Launches>,
     pub changes: Arc<Notify>,
+    _temporary: tempfile::TempDir,
 }
 impl Fixture {
     #[allow(clippy::disallowed_methods)]
     pub fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!(
-            "claude-fixture-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("valid fixture")
-                .as_nanos()
-        ));
-        std::fs::create_dir(&directory).expect("valid fixture");
+        let temporary = tempfile::Builder::new()
+            .prefix("claude-fixture-")
+            .tempdir()
+            .expect("unique fixture directory");
+        let directory = temporary.path().to_owned();
         let registry = directory.join("registry.json");
         std::fs::write(&registry,serde_json::to_vec(&json!({"version":1,"logins":{},"accounts":{"default":{"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}},"defaultAccountKey":"default"})).expect("valid fixture")).expect("valid fixture");
         Self {
@@ -187,6 +184,7 @@ impl Fixture {
             launcher: Launches::new(),
             changes: Arc::new(Notify::new()),
             directory,
+            _temporary: temporary,
         }
     }
     pub async fn open(&self) -> Arc<LoginService> {
@@ -232,12 +230,6 @@ impl Fixture {
         .expect("valid fixture")
     }
 }
-impl Drop for Fixture {
-    #[allow(clippy::disallowed_methods)]
-    fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.directory));
-    }
-}
 pub const ID: &str = "e0166868-592a-4dca-8994-04d34a730af5";
 pub const URL: &str = "https://claude.com/cai/oauth/authorize?fixture=1";
 pub async fn link(f: &Fixture, s: &LoginService, child: &Script) {
@@ -251,7 +243,7 @@ pub async fn link(f: &Fixture, s: &LoginService, child: &Script) {
 pub async fn complete(f: &Fixture, s: &LoginService, child: &Script) -> Value {
     child
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
     let probe = f.launcher.next().await;
@@ -264,7 +256,7 @@ pub async fn complete(f: &Fixture, s: &LoginService, child: &Script) -> Value {
     probe.output.send(LoginEvent::Output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}"#.to_vec())).await.expect("valid fixture");
     probe
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
     f.status(s, ID, "ready").await

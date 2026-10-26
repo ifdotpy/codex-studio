@@ -188,7 +188,7 @@ async fn five_login_routes_drive_retained_actor_and_reauth_cancel() {
     );
     child
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
     let probe = f.launcher.next().await;
@@ -207,7 +207,7 @@ async fn five_login_routes_drive_retained_actor_and_reauth_cancel() {
     ready_gate.hold_next();
     probe
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
     tokio::time::timeout(
@@ -312,7 +312,7 @@ async fn inconclusive_status_probe_keeps_the_unknown_outcome() {
         .expect("code is accepted once");
     child
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
     let probe = f.launcher.next().await;
@@ -323,7 +323,7 @@ async fn inconclusive_status_probe_keeps_the_unknown_outcome() {
         .expect("valid fixture");
     probe
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
 
@@ -400,7 +400,7 @@ async fn confirmed_provider_rejection_has_safe_terminal_receipt() {
         .expect("valid fixture");
     child
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
     let probe = f.launcher.next().await;
@@ -411,7 +411,7 @@ async fn confirmed_provider_rejection_has_safe_terminal_receipt() {
         .expect("valid fixture");
     probe
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("valid fixture");
 

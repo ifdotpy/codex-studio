@@ -55,7 +55,11 @@ impl LoginChild for Child {
                     bytes,
                 } => LoginEvent::Diagnostic(bytes),
                 ChildEvent::Exited { code, reason } => {
-                    LoginEvent::Exited(code == Some(0) && reason == ExitReason::Completed)
+                    LoginEvent::Exited(if reason == ExitReason::Completed {
+                        code
+                    } else {
+                        None
+                    })
                 }
             }))
         })

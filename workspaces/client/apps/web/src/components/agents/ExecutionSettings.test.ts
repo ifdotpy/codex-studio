@@ -62,6 +62,12 @@ vi.mock("./WorkerModelPicker", async (load) => ({
         serviceTiers: [],
         supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
       },
+      {
+        model: "gpt-6-luna",
+        provider: "codex",
+        serviceTiers: [],
+        supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+      },
     ],
     loading: false,
     error: "",
@@ -174,10 +180,16 @@ const freshModels = {
       supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
       serviceTiers: [],
     },
+    {
+      model: "gpt-6-luna",
+      provider: "codex",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+      serviceTiers: [],
+    },
   ],
 };
 
-function futureWorkerChoice() {
+function futureWorkerChoice(automatic = false) {
   const agent = {
     id: "pm-installation",
     rootId: "pm-installation",
@@ -189,7 +201,7 @@ function futureWorkerChoice() {
     source: "managed",
     status: "waiting",
     workerDefaults: {
-      accountKey: "old-codex",
+      accountKey: automatic ? undefined : "old-codex",
       model: "gpt-6.1-sol",
       effort: "medium",
       fastMode: false,
@@ -322,6 +334,64 @@ test("the actual future-worker account preflight blocks duplicate choices", asyn
     await fixture.done.promise;
   }
   expect(choices.post).toHaveBeenCalledOnce();
+});
+
+test.each([false, true])(
+  "the actual future-worker model choice waits for fresh metadata with automatic=%s",
+  async (automatic) => {
+    const gate = deferred<typeof freshModels>();
+    choices.read.mockReturnValue(gate.promise);
+    const fixture = futureWorkerChoice(automatic);
+    fixture.picker.onModel("gpt-6-luna");
+    fixture.picker.onAccount("future-codex");
+    try {
+      expect(choices.read).toHaveBeenCalledExactlyOnceWith({
+        query: {
+          account_key: automatic ? "lead-claude" : "old-codex",
+          workers: automatic ? "1" : undefined,
+          fresh: "1",
+        },
+      });
+      expect(choices.post).not.toHaveBeenCalled();
+      expect(fixture.children).toEqual(fixture.originalChildren);
+    } finally {
+      gate.resolve(freshModels);
+      await fixture.done.promise;
+    }
+    expect(choices.post).toHaveBeenCalledOnce();
+    expect(choices.post.mock.calls[0]).toEqual([
+      "/api/conversation",
+      {
+        id: "pm-installation",
+        expected_account_key: "lead-claude",
+        worker_defaults: {
+          account_key: automatic ? null : "old-codex",
+          model: "gpt-6-luna",
+          effort: "medium",
+          fast_mode: false,
+          daybreak_enabled: false,
+          delegation_depth: 1,
+        },
+      },
+      { timeoutMs: 15000 },
+    ]);
+    expect(fixture.children).toEqual(fixture.originalChildren);
+  },
+);
+
+test("a fresh catalog cannot silently replace the requested future-worker model", async () => {
+  const gate = deferred<typeof freshModels>();
+  choices.read.mockReturnValue(gate.promise);
+  const fixture = futureWorkerChoice();
+  fixture.picker.onModel("gpt-6-luna");
+  gate.resolve({ data: [freshModels.data[0]] });
+  await fixture.done.promise;
+  expect(choices.post).not.toHaveBeenCalled();
+  expect(choices.states).toContain(
+    "This model is not available for the selected worker accounts.",
+  );
+  expect(fixture.agent.workerDefaults.model).toBe("gpt-6.1-sol");
+  expect(fixture.children).toEqual(fixture.originalChildren);
 });
 
 test.each([

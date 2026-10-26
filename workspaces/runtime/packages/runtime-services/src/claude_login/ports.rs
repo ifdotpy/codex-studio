@@ -28,7 +28,8 @@ pub struct ChildIdentity {
 pub enum LoginEvent {
     Output(Vec<u8>),
     Diagnostic(Vec<u8>),
-    Exited(bool),
+    /// Native exit code, or no code when cancellation, a signal, or I/O ended the child.
+    Exited(Option<i32>),
 }
 pub trait LoginChild: Send {
     fn identity(&self) -> FutureResult<'_, Option<ChildIdentity>> {

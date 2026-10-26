@@ -2,6 +2,249 @@ use crate::login_fixtures as fixture;
 use fixture::*;
 use std::sync::atomic::Ordering;
 use studio_runtime_services::claude_login::ports::LoginReceipts;
+
+#[tokio::test]
+async fn auth_repair_regression_native_signed_out_probe_settles_code_rejection() {
+    use studio_runtime_services::claude_login::{AUTHORIZATION_NOT_CONFIRMED, ports::LoginEvent};
+    let f = Fixture::new();
+    let service = f.open().await;
+    service
+        .start(ID.into(), None, None, None)
+        .await
+        .expect("login starts");
+    let login = f.launcher.next().await;
+    link(&f, &service, &login).await;
+    service
+        .code(ID, "fixture-code#fixture-state".into())
+        .await
+        .expect("code submitted once");
+    login
+        .output
+        .send(LoginEvent::Exited(Some(0)))
+        .await
+        .expect("login exits");
+    let probe = f.launcher.next().await;
+    assert_eq!(probe.command.args, vec!["auth", "status", "--json"]);
+    probe
+        .output
+        .send(LoginEvent::Output(
+            br#"{"loggedIn":false,"authMethod":"none"}"#.to_vec(),
+        ))
+        .await
+        .expect("native signed-out result");
+    probe
+        .output
+        .send(LoginEvent::Exited(Some(1)))
+        .await
+        .expect("native signed-out exit");
+    let result = f.status(&service, ID, "error").await;
+    service.shutdown().await.expect("actor and probe joined");
+    assert_eq!(
+        f.chats.0.load(Ordering::SeqCst),
+        0,
+        "a rejected login repairs no chats"
+    );
+    assert_eq!(login.writes.lock().expect("writes").len(), 1);
+    assert_eq!(
+        result["error"], AUTHORIZATION_NOT_CONFIRMED,
+        "the CLI's complete negative result must settle the submitted code"
+    );
+}
+
+#[tokio::test]
+async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation() {
+    use serde_json::json;
+    use std::{collections::BTreeMap, sync::Arc};
+    use studio_runtime_services::{
+        account_driver::claude::auth_metadata_from_output,
+        claude_login::{
+            chats::StoredChats,
+            service::{LoginConfig, LoginService},
+        },
+        monitor_policy::Operation,
+        monitor_runtime,
+    };
+    use studio_runtime_store::{
+        AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, SchedulerRepository, Table,
+    };
+
+    let f = Fixture::new();
+    let config = f.directory.join("existing-profile");
+    std::fs::create_dir(&config).expect("profile config");
+    let metadata = auth_metadata_from_output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"max"}"#, true);
+    let account = f
+        .accounts
+        .register_claude_verified(
+            json!({"binaryPath":"/fixture/scripted","configDir":config,"customModels":[]})
+                .as_object()
+                .unwrap()
+                .clone(),
+            "Fixture",
+            &f.directory,
+            &metadata,
+        )
+        .expect("existing profile");
+    let state_directory = f.directory.join("state");
+    std::fs::create_dir(&state_directory).expect("isolated state directory");
+    let store = Arc::new(
+        RuntimeStore::open(Some(&state_directory))
+            .await
+            .expect("isolated store"),
+    );
+    let key = account.clone();
+    store.transaction(move |tx| {
+        for id in ["auth", "stopped", "active", "restart", "unrelated", "deleted", "workspace"] {
+            let mut value = json!({
+                "id":id,"rootId":id,"epoch":1,"status":"failed","isLead":true,
+                "provider":"claude","accountKey":key,"threadId":format!("thread-{id}"),
+                "model":"claude-opus-4-6","cwd":"/fixture","autoWake":true,"inFlight":false,
+                "nativeFailureHold":true,"error":"OAuth session expired"
+            });
+            match id {
+                "stopped" => { value["status"] = json!("paused"); value["autoWake"] = json!(false); },
+                "active" => { value["inFlight"] = json!(true); },
+                "restart" => {
+                    value["autoWake"] = json!(false);
+                    value["restartRecovery"] = json!({"stage":"pending","epoch":1,"accountKey":key,"threadId":"thread-restart","autoWake":true});
+                },
+                "unrelated" => { value["error"] = json!("Provider event outcome is unknown"); },
+                "deleted" => { value["deletedAt"] = json!(1.0); },
+                "workspace" => { value["workspaceOperation"] = json!({"id":"fixture-workspace"}); },
+                _ => {},
+            }
+            AgentRepository::put(tx, &AgentRecord::from_value(value)?)?;
+        }
+        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES ('old-unknown','auth','monitor_exit','old receipt','uncertain',1,1,'old-turn',NULL)", [])?;
+        Ok(())
+    }).await.expect("seed auth failure and protected states");
+    let changed = f.changes.clone();
+    let service = LoginService::open(
+        LoginConfig {
+            directory: f.receipts.file.directory().into(),
+            program: "/fixture/scripted".into(),
+            cwd: f.directory.clone(),
+            environment: BTreeMap::new(),
+        },
+        f.accounts.clone(),
+        f.launcher.clone(),
+        f.receipts.clone(),
+        Arc::new(StoredChats(store.clone())),
+        Arc::new(move || changed.notify_one()),
+    )
+    .await
+    .expect("real post-login repair caller");
+    service
+        .start(ID.into(), Some(account), None, None)
+        .await
+        .expect("profile sign-in starts");
+    let login = f.launcher.next().await;
+    link(&f, &service, &login).await;
+    let ready = complete(&f, &service, &login).await;
+    assert_eq!(ready["chatsRefreshed"], true);
+    service.shutdown().await.expect("login actor joined");
+
+    let monitor_template = crate::monitor_fixtures::corpus(&f.directory)[0]["before"].clone();
+    let key = ready["accountKey"].clone();
+    store
+        .transaction_with(move |tx| {
+            for id in [
+                "auth",
+                "stopped",
+                "active",
+                "restart",
+                "unrelated",
+                "deleted",
+                "workspace",
+            ] {
+                let mut monitor = monitor_template.clone();
+                monitor["id"] = json!(format!("fresh-{id}"));
+                monitor["agent"] = json!(id);
+                monitor["epoch"] = json!(1);
+                monitor["created"] = json!(1.0);
+                monitor["activityAt"] = json!(1.0);
+                monitor["operation"]["agent"] = json!(id);
+                monitor["operation"]["epoch"] = json!(1);
+                monitor["operation"]["accountKey"] = key.clone();
+                let operation: Operation = serde_json::from_value(monitor["operation"].clone())
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let monitor = MonitorRecord::from_value(monitor)
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                Table::new(tx).put(&monitor)?;
+                monitor_runtime::finish_in_transaction(
+                    tx,
+                    &format!("fresh-{id}"),
+                    Some(&operation),
+                    Some(0),
+                    None,
+                    2.0,
+                )?;
+            }
+            Ok::<_, studio_runtime_services::monitor_policy::MonitorError>(())
+        })
+        .await
+        .expect("canonical monitor exits enter the normal queue");
+    for id in [
+        "stopped",
+        "active",
+        "restart",
+        "unrelated",
+        "deleted",
+        "workspace",
+    ] {
+        assert!(
+            store
+                .transaction(move |tx| SchedulerRepository::claim_for_preparation(
+                    tx,
+                    id,
+                    1,
+                    &format!("claim-{id}"),
+                    3.0,
+                    usize::MAX
+                ))
+                .await
+                .expect("protected claim")
+                .is_none(),
+            "{id} remains protected"
+        );
+    }
+    let db = store.test_reader().expect("reader");
+    let old: (String, String, String) = db
+        .query_row(
+            "SELECT status,turn_id,text FROM runtime_events WHERE id='old-unknown'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("old receipt remains");
+    assert_eq!(
+        old,
+        ("uncertain".into(), "old-turn".into(), "old receipt".into())
+    );
+    drop(db);
+    let claimed = store
+        .transaction(|tx| {
+            SchedulerRepository::claim_for_preparation(
+                tx,
+                "auth",
+                1,
+                "fresh-auth-claim",
+                3.0,
+                usize::MAX,
+            )
+        })
+        .await
+        .expect("the account worker's preparation claim");
+    let claimed =
+        claimed.expect("verified post-login repair must permit the next fresh continuation");
+    assert_eq!(
+        claimed
+            .events
+            .iter()
+            .map(|e| e.id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["monitor:fresh-auth"]
+    );
+}
+
 #[tokio::test]
 async fn add_replay_completion_and_restart_keep_identity_and_no_secrets() {
     let f = Fixture::new();
@@ -774,14 +1017,14 @@ async fn native_login_pins_uuid_and_reauth_refuses_another_organization() {
     write_profile("org-b");
     login
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("login exit event sends");
     let probe = f.launcher.next().await;
     probe.output.send(LoginEvent::Output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","orgId":"org-b","subscriptionType":"max"}"#.to_vec())).await.expect("status probe output sends");
     probe
         .output
-        .send(LoginEvent::Exited(true))
+        .send(LoginEvent::Exited(Some(0)))
         .await
         .expect("status probe exit sends");
     f.status(&s, SECOND, "error").await;

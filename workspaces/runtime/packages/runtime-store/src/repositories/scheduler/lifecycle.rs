@@ -488,6 +488,70 @@ impl SchedulerRepository {
         Ok(())
     }
 
+    /// Repair the caller's exact, classified authentication failure after verified sign-in.
+    /// Other lifecycle owners retain their holds. No historical input is changed.
+    pub fn repair_authenticated_failure(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        account: &str,
+        expected_error: &Value,
+    ) -> StoreResult<bool> {
+        let Some(mut agent) = load_agent(transaction, agent_id)? else {
+            return Ok(false);
+        };
+        if agent.epoch != epoch
+            || agent.status != AgentStatus::Failed
+            || agent.extra.get("accountKey").and_then(Value::as_str) != Some(account)
+            || agent.extra.get("error") != Some(expected_error)
+            || agent.extra.get("autoWake") != Some(&json!(true))
+            || [
+                "inFlight",
+                "activeTools",
+                "turnId",
+                "startOutcomeHold",
+                "manualRecoveryDeliveryHold",
+                "nativeSafetyBuffering",
+                "authWait",
+                "capacityRetry",
+                "usageResume",
+            ]
+            .iter()
+            .any(|key| agent.extra.get(*key).is_some_and(truthy))
+            || agent
+                .extra
+                .get("nativeRelease")
+                .is_some_and(|release| truthy(&release["resetPending"]))
+            || agent
+                .extra
+                .get("restartRecovery")
+                .is_some_and(|marker| restart_marker_open(marker) || marker["stage"] == "held")
+        {
+            return Ok(false);
+        }
+        if let Some(attempt) = agent
+            .extra
+            .get("startAttempt")
+            .filter(|attempt| !attempt.is_null())
+            && !settled_attempt(transaction, &agent, attempt)?
+        {
+            return Ok(false);
+        }
+        agent.extra.remove("nativeFailureHold");
+        if !continuation_allowed(&agent) {
+            return Ok(false);
+        }
+        agent.extra.insert("error".into(), Value::Null);
+        agent.extra.remove("nativeStatus");
+        agent.status = if Self::has_claimable_input(transaction, agent_id, epoch)? {
+            AgentStatus::Queued
+        } else {
+            AgentStatus::Idle
+        };
+        publish_agent(transaction, &agent)?;
+        Ok(true)
+    }
+
     /// Write uncertainty before transport admission: process restart cannot authorize a resend.
     pub fn prepare_interrupt(
         tx: &Transaction<'_>,

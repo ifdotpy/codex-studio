@@ -834,25 +834,32 @@ fn scope_rows(
             .query_map(params![root, agent], CostRow::from_sql)?
             .collect();
     }
+    if turns.is_empty() {
+        return Ok(Vec::new());
+    }
     // Every selected response must bring all its counterparts, including responses
     // merely sharing the touched turn; otherwise a suppressed legacy row can revive.
+    // Seek touched turns through the existing scope index, then scan this agent
+    // once for their response counterparts, not once for every receipt.
+    let requested = serde_json::to_string(turns)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     let mut statement = db.prepare_cached(&format!(
-        "WITH affected AS (
-            SELECT response FROM analytics_cost_rows WHERE root=?1 AND agent=?2
-            AND ((thread IS ?3 AND turn IS ?4) OR response=?5)
+        "WITH requested(thread,turn,response) AS MATERIALIZED (
+            SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),
+                   json_extract(value,'$[2]') FROM json_each(?3)
+         ), touched(id,response) AS MATERIALIZED (
+            SELECT c.id,c.response FROM requested t CROSS JOIN analytics_cost_rows c
+            WHERE c.root=?1 AND c.agent=?2 AND c.thread IS t.thread AND c.turn IS t.turn
+         ), affected(response) AS (
+            SELECT response FROM touched UNION SELECT response FROM requested
          )
          SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2
-         AND ((thread IS ?3 AND turn IS ?4) OR response IN (SELECT response FROM affected))"
+         AND (id IN (SELECT id FROM touched) OR response IN (SELECT response FROM affected))"
     ))?;
     let mut rows = BTreeMap::new();
-    for (thread, turn, response) in turns {
-        for row in statement.query_map(
-            params![root, agent, thread, turn, response],
-            CostRow::from_sql,
-        )? {
-            let row = row?;
-            rows.insert(row.id.clone(), row);
-        }
+    for row in statement.query_map(params![root, agent, requested], CostRow::from_sql)? {
+        let row = row?;
+        rows.insert(row.id.clone(), row);
     }
     Ok(rows.into_values().collect())
 }
@@ -1036,6 +1043,199 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
     use std::path::Path;
+
+    #[tokio::test]
+    async fn typed_usage_receipt_scope_batches_modeled_turns_without_repeated_agent_scans() {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let temp = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store
+            .analytics_transaction::<_, StoreError>(|tx, _| {
+                let write = |id: &str, root: &str, agent: &str, account: &str, index: usize, input: u64| {
+                    AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({
+                        "id":id,"agentId":agent,"rootId":root,"threadId":"thread",
+                        "turnId":format!("turn-{index}"),"at":1,"accountKey":account,
+                        "responseId":format!("r-{index}"),"model":"m","last":{},"total":{},
+                        "studioUsage":{"kind":"response","responseId":format!("r-{index}"),
+                            "model":"m","evidence":"legacy","tokens":{
+                                "uncachedInput":input,"cacheReadInput":3,"cacheWriteInput":2,"output":1}}
+                    }))
+                };
+                for index in 0..16 {
+                    write(&format!("row-{index}"), "root", "agent", "acct", index, 10)?;
+                }
+                let scope = |index| {
+                    (Some("thread".to_owned()), Some(format!("turn-{index}")), Some(format!("r-{index}")))
+                };
+                let steps = Arc::new(AtomicUsize::new(0));
+                let observed = Arc::clone(&steps);
+                tx.progress_handler(1, Some(move || {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                    false
+                })).expect("install fixture VM-step counter");
+                let single = super::scope_rows(tx, "root", "agent", &BTreeSet::from([scope(0)]))?;
+                let single_steps = steps.swap(0, Ordering::Relaxed);
+                let all = super::scope_rows(tx, "root", "agent", &(0..16).map(scope).collect())?;
+                let batch_steps = steps.load(Ordering::Relaxed);
+                tx.progress_handler(0, None::<fn() -> bool>).expect("remove fixture VM-step counter");
+                assert_eq!(single.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), vec!["row-0"]);
+                assert_eq!(all.iter().map(|row| row.id.clone()).collect::<BTreeSet<_>>(),
+                    (0..16).map(|index| format!("row-{index}")).collect());
+
+                // Receipt replacement must retain another account's contribution and another root.
+                write("foreign-account", "root", "foreign-agent", "foreign", 0, 20)?;
+                write("other-root", "other-root", "agent", "acct", 0, 30)?;
+                for (agent, account) in [("agent", "acct"), ("foreign-agent", "foreign")] {
+                    tx.execute("INSERT INTO analytics_agents(id,record) VALUES(?1,?2)",
+                        rusqlite::params![agent, json!({"id":agent,"accountKey":account,"threadId":"thread"}).to_string()])?;
+                }
+                let groups = super::cost_groups(tx, "root", &BTreeSet::from([
+                    ("acct".to_owned(), "thread".to_owned(), "r-0".to_owned())
+                ]))?;
+                assert_eq!(groups.len(), 2);
+                let own = groups.iter().find(|group| group.account_key == "acct").expect("own account");
+                let foreign = groups.iter().find(|group| group.account_key == "foreign").expect("other account");
+                assert_eq!(own.count, 15);
+                assert_eq!(foreign.count, 1);
+                assert_eq!(own.tokens, super::CostTokens {
+                    input_tokens: Some(10.0), cached_input_tokens: Some(3.0),
+                    cache_write_input_tokens: Some(2.0), cache_write_input_1h_tokens: None,
+                    output_tokens: Some(1.0),
+                });
+                assert_eq!(foreign.tokens.input_tokens, Some(20.0));
+                let other_root = super::cost_groups(tx, "other-root", &BTreeSet::new())?;
+                assert_eq!(other_root.len(), 1);
+                assert_eq!(other_root[0].count, 1);
+                assert_eq!(other_root[0].tokens.input_tokens, Some(30.0));
+                assert!(single_steps > 0);
+                assert!(batch_steps <= 6 * single_steps,
+                    "16 touched turns must batch the agent scan, not repeat it: single={single_steps}, batch={batch_steps}");
+                Ok(())
+            })
+            .await
+            .expect("bounded receipt scope");
+    }
+
+    #[test]
+    fn typed_usage_receipt_scope_preserves_nulls_duplicate_responses_and_unmodeled_fallback() {
+        use std::collections::BTreeSet;
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch(super::TABLES).expect("aggregate tables");
+        db.execute_batch(super::INDEXES)
+            .expect("existing aggregate indexes");
+        for (id, root, agent, thread, turn, response) in [
+            (
+                "seed",
+                "root",
+                "agent",
+                Some("thread"),
+                Some("turn"),
+                Some("r1"),
+            ),
+            (
+                "same-turn",
+                "root",
+                "agent",
+                Some("thread"),
+                Some("turn"),
+                Some("r2"),
+            ),
+            (
+                "duplicate",
+                "root",
+                "agent",
+                Some("other-thread"),
+                Some("other-turn"),
+                Some("r1"),
+            ),
+            ("peer-duplicate", "root", "agent", None, None, Some("r2")),
+            ("null-response", "root", "agent", None, None, None),
+            (
+                "unrelated",
+                "root",
+                "agent",
+                Some("elsewhere"),
+                Some("elsewhere"),
+                Some("r3"),
+            ),
+            (
+                "other-agent",
+                "root",
+                "other-agent",
+                Some("thread"),
+                Some("turn"),
+                Some("r1"),
+            ),
+            (
+                "other-root",
+                "other-root",
+                "agent",
+                Some("thread"),
+                Some("turn"),
+                Some("r1"),
+            ),
+        ] {
+            db.execute("INSERT INTO analytics_cost_rows(id,root,agent,thread,turn,seq,at,model,response,uncached,counted,final_evidence) VALUES(?1,?2,?3,?4,?5,1,1,'m',?6,1,0,0)",
+                rusqlite::params![id,root,agent,thread,turn,response]).expect("scope row");
+        }
+        let ids = |turns| {
+            super::scope_rows(&db, "root", "agent", &turns)
+                .expect("scope")
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            ids(BTreeSet::from([(
+                Some("thread".into()),
+                Some("turn".into()),
+                None
+            )])),
+            ["seed", "same-turn", "duplicate", "peer-duplicate"]
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            ids(BTreeSet::from([(None, None, None)])),
+            ["peer-duplicate", "null-response", "same-turn"]
+                .map(str::to_owned)
+                .into()
+        );
+        assert_eq!(
+            ids(BTreeSet::from([(
+                Some("missing".into()),
+                Some("missing".into()),
+                Some("r3".into())
+            )])),
+            ["unrelated"].map(str::to_owned).into()
+        );
+        assert!(ids(BTreeSet::new()).is_empty());
+        db.execute(
+            "UPDATE analytics_cost_rows SET model=NULL WHERE id='unrelated'",
+            [],
+        )
+        .expect("unmodeled evidence");
+        assert_eq!(
+            ids(BTreeSet::from([(
+                Some("thread".into()),
+                Some("turn".into()),
+                None
+            )])),
+            [
+                "seed",
+                "same-turn",
+                "duplicate",
+                "peer-duplicate",
+                "null-response",
+                "unrelated"
+            ]
+            .map(str::to_owned)
+            .into()
+        );
+    }
 
     #[tokio::test]
     async fn typed_usage_cache_write_1h_separates_cost_groups() {
