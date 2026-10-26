@@ -16,7 +16,7 @@ The Electron app opens the existing React workspace. The Rust backend owns agent
 
 ## Start
 
-Requirements: macOS on Apple silicon, Node.js 22.15 or later, Rust, Python 3.11 or later for the recovery helpers, and the installed Codex CLI with its existing sign-in.
+Requirements: macOS on Apple silicon, Node.js as specified in the [TypeScript requirements](../../../../docs/typescript.md), Rust, Python 3.11 or later for the recovery helpers, and the installed Codex CLI with its existing sign-in.
 
 Install dependencies once from the repository root with `pnpm install --frozen-lockfile`.
 Run package commands from this directory:
