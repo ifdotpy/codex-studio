@@ -112,7 +112,7 @@ function nativeParts(turn: Turn) {
 }
 function partPositions(turn: Turn, messages: SessionMessage[]) {
   const index = indexFor(messages);
-  const positions = index.positions(nativeParts(turn));
+  const positions: number[] | null = index.positions(nativeParts(turn));
   if (
     !positions ||
     positions.some((position) => {
