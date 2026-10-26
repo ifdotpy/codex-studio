@@ -21,7 +21,7 @@ if (
   !relative(repo, output).startsWith("..")
 )
   throw new Error(
-    "Usage: node tests/performance/build-interaction-variants.mjs BASELINE_COMMIT ABSOLUTE_OUTPUT_OUTSIDE_REPO",
+    "Usage: node tests/performance/build-interaction-variants.ts BASELINE_COMMIT ABSOLUTE_OUTPUT_OUTSIDE_REPO",
   );
 const commit = execFileSync(
   "git",

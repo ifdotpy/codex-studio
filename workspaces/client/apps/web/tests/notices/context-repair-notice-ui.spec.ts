@@ -1,7 +1,10 @@
+import type { Agent } from "../../src/types.ts";
+import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type {} from "./context-repair-notice-ui.fixture.tsx";
 import { test } from "../playwright.ts";
 // Render the actual banner: ordinary monitor waits are quiet, failures stay visible.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,30 +17,8 @@ test("Context repair notice ui", async ({
 }) => {
   test.setTimeout(180_000);
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
+
   const cache = await mkdtemp(join(tmpdir(), "context-repair-notice-vite-"));
-  const entry = join(
-    repo,
-    "workspaces/client/apps/web/__context-repair-notice-fixture.jsx",
-  );
-  const source = `
-  import React, {useState} from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import {NativeError} from '/src/components/NativeNotice.tsx';
-  function Fixture(){
-    const [snapshot,setSnapshot]=useState(null);
-    window.applySnapshot=setSnapshot;
-    return <MantineProvider><main data-case={snapshot?.label}>
-      {snapshot && <NativeError agent={snapshot.agent}/>}
-      <output>{JSON.stringify(snapshot?.agent)}</output>
-    </main></MantineProvider>;
-  }
-  createRoot(document.getElementById('root')).render(<Fixture/>);`;
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
@@ -46,18 +27,12 @@ test("Context repair notice ui", async ({
     plugins: [
       {
         name: "context-repair-notice-fixture",
-        resolveId(id) {
-          if (id === "/__context-repair-notice-fixture.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
         configureServer(vite) {
           vite.middlewares.use((req, res, next) => {
             if (req.url !== "/") return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/__context-repair-notice-fixture.jsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/notices/context-repair-notice-ui.fixture.tsx"></script>',
             );
           });
         },
@@ -67,23 +42,24 @@ test("Context repair notice ui", async ({
   try {
     await server.listen();
     const page = runnerPage;
-    const errors = [],
-      writes = [];
+    const errors: string[] = [],
+      writes: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/**", async (route) => {
       if (route.request().method() !== "GET")
         writes.push(route.request().url());
       await route.fulfill({ json: {} });
     });
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(fixtureServerOrigin(server));
     await page.waitForFunction(
-      () => typeof window.applySnapshot === "function",
+      () => typeof window.applyContextRepairSnapshot === "function",
     );
     const error =
       "Context repair waits for monitors: 3c403ca5-4143-5750-a061-dd19ab5aab5c";
-    const agent = {
+    const agent: Agent = {
       id: "fixture",
       name: "Fixture",
+      // @ts-expect-error Legacy source value is deliberately preserved by this presentation fixture.
       source: "native",
       status: "queued",
       model: "gpt-6-astra",
@@ -95,11 +71,19 @@ test("Context repair notice ui", async ({
       contextRepairWait: { scope: "local", error },
     };
     let cases = 0;
-    const check = async (label, value, visible, text) => {
-      await page.evaluate((snapshot) => window.applySnapshot(snapshot), {
-        label,
-        agent: value,
-      });
+    const check = async (
+      label: string,
+      value: Agent,
+      visible: boolean,
+      text?: RegExp,
+    ) => {
+      await page.evaluate(
+        (snapshot) => window.applyContextRepairSnapshot(snapshot),
+        JSON.stringify({
+          label,
+          agent: value,
+        }),
+      );
       await page.locator(`main[data-case="${label}"]`).waitFor();
       assert.equal(
         await page.locator(".native-error").count(),
@@ -128,6 +112,7 @@ test("Context repair notice ui", async ({
     );
     await check(
       "unknown-scope",
+      // @ts-expect-error Deliberately missing contextRepairWait.scope tests a legacy malformed notice.
       { ...agent, contextRepairWait: { error } },
       true,
     );
@@ -155,7 +140,7 @@ test("Context repair notice ui", async ({
       {
         ...agent,
         nativeThreadBlock: {
-          threadId: agent.threadId,
+          threadId: agent.threadId ?? null,
           error: {
             codexErrorInfo: "badRequest",
             message: "Native request rejected",
