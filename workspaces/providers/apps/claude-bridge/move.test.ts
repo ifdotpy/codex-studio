@@ -541,8 +541,9 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
     },
   ];
   const sorted = canonicalFixture(current);
-  assert.ok(sorted[0]);
-  assert.ok(sorted[1]);
+  const [first, second] = sorted;
+  assert.ok(first);
+  assert.ok(second);
   const proof = {
     inlineTools: false,
     tools: [{ name: "Bash", input_schema: { type: "object" } }],
@@ -555,7 +556,7 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
       verifyToolProof(
         {
           ...proof,
-          compiledTools: [{ ...sorted[0], description: "Changed" }, sorted[1]],
+          compiledTools: [{ ...first, description: "Changed" }, second],
         },
         current,
       ),
@@ -563,10 +564,7 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
   );
   assert.throws(
     () =>
-      verifyToolProof(
-        { ...proof, compiledTools: [sorted[1], sorted[0]] },
-        current,
-      ),
+      verifyToolProof({ ...proof, compiledTools: [second, first] }, current),
     /tool definitions differ/,
   );
 });
