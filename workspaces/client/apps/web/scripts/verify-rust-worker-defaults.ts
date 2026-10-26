@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { decodeLegacyAgentDocument } from "./scaleVerifierHelpers.ts";
+import { createRequire } from "node:module";
 import type { Page, Response } from "playwright";
 import type { components, AgentEntityDto } from "../src/generated/api.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type SettingsRequest = components["schemas"]["ConversationRequest"];
-type AgentSnapshot = { seq: number | null; agent: AgentEntityDto };
+type AgentSnapshot = { seq: number | null; agent: AgentEntityDto | null };
+export type LegacySyncPull = Omit<
+  components["schemas"]["SyncPullResponse"],
+  "documents"
+> & {
+  documents: (components["schemas"]["SyncPullResponse"]["documents"][number] &
+    Partial<components["schemas"]["SyncDocument"]>)[];
+};
 type Lead = ReturnType<typeof validateLead>;
 export type JournalBase = {
   version: number;
@@ -54,18 +61,6 @@ type Journal = JournalBase & {
   };
 };
 
-// The Rust route owns the generated response contract, checked by contracts:check.
-// JSON parsing retains the previous null-on-malformed-response behavior.
-export function parseApiJson<Key extends keyof components["schemas"]>(
-  text: string,
-): components["schemas"][Key] | null {
-  try {
-    return JSON.parse(text) as components["schemas"][Key];
-  } catch {
-    return null;
-  }
-}
-
 const LEAD_PROVIDER = "claude";
 const WORKER_MODEL = "gpt-6-luna";
 const WORKER_EFFORT = "high";
@@ -74,11 +69,19 @@ const NAVIGATION_TIMEOUT_MS = 45_000;
 const READBACK_TIMEOUT_MS = 30_000;
 
 export function parseArgs(argv: string[]) {
-  const options: {
-    values: Record<string, string>;
-    resume?: true;
-    help?: true;
-  } = { values: {} };
+  const options: Partial<
+    Record<
+      | "url"
+      | "project"
+      | "chromium"
+      | "profile-dir"
+      | "chat-id"
+      | "lead-account"
+      | "worker-account"
+      | "evidence-dir",
+      string
+    >
+  > & { resume?: true; help?: true } = {};
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--resume") {
@@ -89,13 +92,13 @@ export function parseArgs(argv: string[]) {
       options.help = true;
       continue;
     }
-    if (!value?.startsWith("--"))
+    if (!value.startsWith("--"))
       throw new Error(`Unexpected argument: ${value}`);
     const key = value.slice(2);
     const next = argv[index + 1];
     if (!next || next.startsWith("--"))
       throw new Error(`Missing value for --${key}`);
-    options.values[key] = next;
+    options[key as Exclude<keyof typeof options, "help" | "resume">] = next;
     index += 1;
   }
   return options;
@@ -117,10 +120,9 @@ export function readJournal<Journal>(path: string): Journal | null {
     // This journal is written only by this verifier; resume retains the recorded request identity.
     return JSON.parse(readFileSync(path, "utf8")) as Journal;
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      return null;
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
     throw new Error(
-      `Cannot read evidence journal: ${error instanceof Error ? error.message : String(error)}`,
+      `Cannot read evidence journal: ${(error as Error).message}`,
     );
   }
 }
@@ -222,17 +224,18 @@ async function readServerIdentity(page: Page, expectedOrigin: string) {
         cache: "no-store",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      const body = await response.text().catch(() => "null");
+      let body: components["schemas"]["AccessSnapshot"] | null = null;
+      try {
+        body = await response.json();
+      } catch {}
       return {
         origin: location.origin,
         status: response.status,
-        body,
+        serverId: body?.identity?.serverId,
       };
     },
     { origin: expectedOrigin, timeoutMs: READBACK_TIMEOUT_MS },
   );
-  const body = parseApiJson<"AccessSnapshot">(result.body);
-  const serverId = body?.identity?.serverId;
   assert.equal(
     result.origin,
     expectedOrigin,
@@ -240,10 +243,10 @@ async function readServerIdentity(page: Page, expectedOrigin: string) {
   );
   assert.equal(result.status, 200, "Could not read the local server identity.");
   assert.ok(
-    typeof serverId === "string" && serverId,
+    typeof result.serverId === "string" && result.serverId,
     "Local server identity has no server ID.",
   );
-  return serverId;
+  return result.serverId;
 }
 
 async function readAuthoritativeLead(
@@ -264,18 +267,10 @@ async function readAuthoritativeLead(
           signal: AbortSignal.timeout(timeoutMs),
         },
       );
-      const identity = parseIdentity(
-        await identityResponse.text().catch(() => "null"),
-      );
-      function parseIdentity(
-        text: string,
-      ): components["schemas"]["AccessSnapshot"] | null {
-        try {
-          return JSON.parse(text) as components["schemas"]["AccessSnapshot"];
-        } catch {
-          return null;
-        }
-      }
+      let identity: components["schemas"]["AccessSnapshot"] | null = null;
+      try {
+        identity = await identityResponse.json();
+      } catch {}
       if (
         identityResponse.status !== 200 ||
         identity?.identity?.serverId !== expectedServerId
@@ -291,12 +286,15 @@ async function readAuthoritativeLead(
         cache: "no-store",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      const body = await response.text().catch(() => "null");
+      let body: LegacySyncPull | null = null;
+      try {
+        body = await response.json();
+      } catch {}
       return {
         origin: url.origin,
-        serverId: identity?.identity.serverId,
+        serverId: identity!.identity.serverId,
         status: response.status,
-        body,
+        documents: body?.documents || [],
       };
     },
     {
@@ -313,24 +311,24 @@ async function readAuthoritativeLead(
     200,
     `Authoritative lead read returned HTTP ${result.status}.`,
   );
-  const body = parseApiJson<"SyncPullResponse">(result.body);
-  const document = body?.documents.find((item) => {
+  const document = result.documents.find((item) => {
     if (item.id === chatId || item.id?.endsWith(`:${chatId}`)) return true;
+    if (typeof item.payload !== "string") return false;
     try {
-      const entity = decodeLegacyAgentDocument(item);
+      const entity: components["schemas"]["SyncEntityPayload"] | null =
+        JSON.parse(item.payload);
       return entity?.collection === "agent" && entity.id === chatId;
     } catch {
       return false;
     }
   });
   assert.ok(document, "Authoritative read did not include the target lead.");
-  assert.ok("payload" in document, "Lead read has no legacy payload.");
   assert.equal(document._deleted, false, "The target lead is deleted.");
   assert.equal(typeof document.payload, "string", "Lead read has no payload.");
-  const entity = decodeLegacyAgentDocument(document);
-  assert.ok(entity, "Sync payload is not an agent.");
   return agentSnapshot({
-    ...entity,
+    ...(JSON.parse(
+      document.payload!,
+    ) as components["schemas"]["SyncEntityPayload"]),
     seq: document.seq,
   });
 }
@@ -345,38 +343,37 @@ function validateLead(
   > | null = null,
 ) {
   const agent = snapshot?.agent;
-  assert.ok(agent, "Lead snapshot is missing.");
   assert.equal(agent?.id, chatId, "Sync snapshot belongs to another chat.");
   assert.equal(agent?.isLead, true, "The selected chat is not its lead agent.");
   assert.equal(agent?.accountKey, leadAccountKey, "Lead account changed.");
   assert.equal(agent?.provider, LEAD_PROVIDER, "Lead provider changed.");
   assert.ok(
-    typeof agent.model === "string" && agent.model,
+    typeof agent!.model === "string" && agent!.model,
     "Lead model is missing.",
   );
   if (expected) {
     assert.equal(
-      agent.accountKey,
+      agent!.accountKey,
       expected.accountKey,
       "Lead account changed during verification.",
     );
     assert.equal(
-      agent.provider,
+      agent!.provider,
       expected.provider,
       "Lead provider changed during verification.",
     );
     assert.equal(
-      agent.model,
+      agent!.model,
       expected.model,
       "Lead model changed during verification.",
     );
   }
   return {
-    id: agent.id,
-    accountKey: agent.accountKey,
-    provider: agent.provider,
-    model: agent.model,
-    workerDefaults: agent.workerDefaults || null,
+    id: agent!.id,
+    accountKey: agent!.accountKey,
+    provider: agent!.provider,
+    model: agent!.model,
+    workerDefaults: agent!.workerDefaults || null,
   };
 }
 
@@ -450,12 +447,10 @@ function assertWritePreflight(
 }
 
 function expectedRequest(
-  body: SettingsRequest | null,
+  body: SettingsRequest,
   baseline: Journal["baseline"],
   chatId: string,
 ) {
-  assert.ok(body, "Missing settings request.");
-  assert.ok(baseline, "Missing preflight baseline.");
   assert.deepEqual(
     Object.keys(body).sort(),
     ["expected_account_key", "id", "worker_defaults"],
@@ -464,7 +459,7 @@ function expectedRequest(
   assert.equal(body?.id, chatId, "Settings request targets another chat.");
   assert.equal(
     body?.expected_account_key,
-    baseline.accountKey,
+    baseline!.accountKey,
     "Settings request lead guard changed.",
   );
   const defaults = body?.worker_defaults;
@@ -529,8 +524,7 @@ function matchesSettingsResponse(
       request.method() === "POST" &&
       url.origin === origin &&
       url.pathname === "/api/conversation" &&
-      parseApiJson<"ConversationRequest">(request.postData() || "null")?.id ===
-        chatId
+      request.postDataJSON()?.id === chatId
     );
   } catch {
     return false;
@@ -553,11 +547,11 @@ async function main() {
     process.stdout.write(`${usage()}\n`);
     return;
   }
-  assert.ok(options.values.url, "--url is required.");
-  assert.ok(options.values["chat-id"], "--chat-id is required.");
-  assert.ok(options.values["lead-account"], "--lead-account is required.");
-  const chatId = options.values["chat-id"];
-  const leadAccountKey = options.values["lead-account"];
+  assert.ok(options.url, "--url is required.");
+  assert.ok(options["chat-id"], "--chat-id is required.");
+  assert.ok(options["lead-account"], "--lead-account is required.");
+  const chatId = options["chat-id"];
+  const leadAccountKey = options["lead-account"];
   assert.match(
     chatId,
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
@@ -568,12 +562,12 @@ async function main() {
     /^[A-Za-z0-9._-]+$/,
     "--lead-account contains unsupported characters.",
   );
-  assert.ok(options.values["evidence-dir"], "--evidence-dir is required.");
+  assert.ok(options["evidence-dir"], "--evidence-dir is required.");
 
-  const origin = ensureHttps(options.values.url);
-  const evidenceDir = resolve(options.values["evidence-dir"]);
+  const origin = ensureHttps(options.url);
+  const evidenceDir = resolve(options["evidence-dir"]);
   const profileDir = resolve(
-    options.values["profile-dir"] || join(evidenceDir, "profile"),
+    options["profile-dir"] || join(evidenceDir, "profile"),
   );
   const journalPath = join(evidenceDir, `rust-worker-defaults-${chatId}.json`);
   const existing = readJournal<Journal>(journalPath);
@@ -608,11 +602,14 @@ async function main() {
 
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-  const { chromium } = await import("playwright");
+  const webPackage = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../package.json",
+  );
+  const { chromium }: typeof import("playwright") =
+    createRequire(webPackage)("playwright");
   const executablePath =
-    options.values.chromium ||
-    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
-    undefined;
+    options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: true,
     ...(executablePath ? { executablePath } : {}),
@@ -640,9 +637,7 @@ async function main() {
         "Settings update must target the requested server origin.",
       );
       const body = expectedRequest(
-        parseApiJson<"ConversationRequest">(
-          route.request().postData() || "null",
-        ),
+        route.request().postDataJSON() as SettingsRequest,
         journal.baseline,
         chatId,
       );
@@ -657,13 +652,13 @@ async function main() {
       saveJournal(journalPath, journal);
       await route.continue();
     } catch (error) {
-      blockedWrite = error instanceof Error ? error.message : String(error);
+      blockedWrite = (error as Error).message;
       journal.blockedAttempts ||= [];
       journal.blockedAttempts.push({
         operation: "settings",
         origin: new URL(route.request().url()).origin,
         path: new URL(route.request().url()).pathname,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: (error as Error).message,
         at: new Date().toISOString(),
       });
       saveJournal(journalPath, journal);
@@ -711,7 +706,7 @@ async function main() {
       origin,
       serverId,
     );
-    assert.ok(snapshot, "Authoritative lead snapshot is missing.");
+
     if (!existing?.serverId) saveJournal(journalPath, journal);
     const lead = validateLead(
       snapshot,
@@ -722,7 +717,7 @@ async function main() {
 
     if (!journal.baseline) {
       assertWritePreflight(lead.workerDefaults);
-      journal.baseline = { ...lead, seq: snapshot.seq };
+      journal.baseline = { ...lead, seq: snapshot!.seq };
       journal.write = { state: "not-sent" };
       journal.preflight =
         "Target lead identity and intended worker defaults confirmed before UI write.";
@@ -819,9 +814,8 @@ async function main() {
     const response = await responsePromise;
     assert.equal(blockedWrite, null, blockedWrite || undefined);
     assert.ok(postedBody, "No exact worker defaults request was recorded.");
-    const responseBody = parseApiJson<"AgentResponse">(
-      await response.text().catch(() => "null"),
-    );
+    const responseBody: components["schemas"]["AgentResponse"] | null =
+      await response.json().catch(() => null);
     journal.write = {
       state: response.status() === 200 ? "response-received" : "response-error",
       status: response.status(),
@@ -836,7 +830,7 @@ async function main() {
       `Settings save returned HTTP ${response.status()}; do not retry this write.`,
     );
     const canonical = validateLead(
-      responseBody ? { agent: responseBody, seq: null } : null,
+      { agent: responseBody, seq: null },
       chatId,
       leadAccountKey,
       journal.baseline,
@@ -852,7 +846,7 @@ async function main() {
       origin,
       serverId,
     );
-    assert.ok(refreshed, "Authoritative lead snapshot is missing.");
+
     const readbackLead = validateLead(
       refreshed,
       chatId,
@@ -862,7 +856,7 @@ async function main() {
     assertDesiredDefaults(readbackLead.workerDefaults);
     journal.readback = {
       state: "confirmed",
-      seq: refreshed.seq,
+      seq: refreshed!.seq,
       lead: readbackLead,
       at: new Date().toISOString(),
     };
@@ -872,7 +866,7 @@ async function main() {
     );
   } catch (error) {
     journal.failure = {
-      message: error instanceof Error ? error.message : String(error),
+      message: (error as Error).message,
       at: new Date().toISOString(),
     };
     saveJournal(journalPath, journal);
@@ -887,7 +881,7 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   main().catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.stack : error}\n`);
+    process.stderr.write(`${(error as Error).stack || error}\n`);
     process.exitCode = 1;
   });
 }
