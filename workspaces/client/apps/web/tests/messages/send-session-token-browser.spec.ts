@@ -1,7 +1,13 @@
+import { requestBody } from "./helpers.ts";
+import type { Route } from "@playwright/test";
+import type { PostBody } from "../../src/api.ts";
+import type { MessageRequest } from "./helpers.ts";
+import type { OutboxEntry } from "../../src/sync/send.ts";
+import { required } from "./helpers.ts";
+import { createFixtureViteServer } from "../playwright.ts";
 import { test } from "../playwright.ts";
 // Real RxDB and send callers with controlled session and claim delays.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,10 +20,7 @@ test("Send session token browser", async ({
 }) => {
   test.setTimeout(180_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
+  const createServer = createFixtureViteServer;
   const temporary = await mkdtemp(join(tmpdir(), "studio-send-session-token-"));
   const workspaceId = "c".repeat(32);
   const server = await createServer({
@@ -31,11 +34,15 @@ test("Send session token browser", async ({
   try {
     const page = runnerPage;
     page.setDefaultTimeout(5000);
-    const errors = [],
-      sessions = [],
-      posts = [],
-      tokenProbes = [],
-      uploads = [];
+    const errors: string[] = [],
+      sessions: Route[] = [],
+      posts: Array<{ body: MessageRequest; headers: Record<string, string> }> =
+        [],
+      tokenProbes: Array<string | undefined> = [],
+      uploads: Array<{
+        body: PostBody<"/api/assets">;
+        headers: Record<string, string>;
+      }> = [];
     let holdSessions = false;
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/check", (route) =>
@@ -45,15 +52,24 @@ test("Send session token browser", async ({
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          import("../playwright.ts").SyncIdentityResponse,
+          "workspaceId"
+        >,
+      }),
     );
     await page.route("**/api/session", (route) => {
       sessions.push(route);
       if (sessions.length !== 1 && !holdSessions)
-        return route.fulfill({ json: { token: "new-token" } });
+        return route.fulfill({
+          json: {
+            token: "new-token",
+          } satisfies import("../playwright.ts").SessionResponse,
+        });
     });
     await page.route("**/api/messages", (route) => {
-      const body = route.request().postDataJSON();
+      const body = requestBody<import("./helpers.ts").MessageRequest>(route);
       const headers = route.request().headers();
       posts.push({ body, headers });
       const current = headers["x-canvas-token"] === "new-token";
@@ -69,7 +85,8 @@ test("Send session token browser", async ({
       return route.fulfill({ json: { ok: true } });
     });
     await page.route("**/api/assets", (route) => {
-      const body = route.request().postDataJSON();
+      const body =
+        requestBody<import("../../src/api.ts").PostBody<"/api/assets">>(route);
       const headers = route.request().headers();
       uploads.push({ body, headers });
       const current = headers["x-canvas-token"] === "new-token";
@@ -80,45 +97,58 @@ test("Send session token browser", async ({
           : { error: "Old upload token" },
       });
     });
-    await page.goto(server.resolvedUrls.local[0] + "check");
+    await page.goto(required(server.resolvedUrls).local[0] + "check");
     await page.evaluate(async () => {
-      window.send = await import("/src/sync/send.ts");
-      window.api = await import("/src/api.ts");
-      window.storage = await (
+      window.tokenSendSend = await import("/src/sync/send.ts");
+      window.tokenSendApi = await import("/src/api.ts");
+      window.tokenSendProbe = (id, options) => {
+        return window.tokenSendApi.syncPost(
+          // @ts-expect-error fixture-only route /api/token-probe is served by this spec's fixture server, not the production API
+          "/api/token-probe",
+          { id },
+          options,
+        );
+      };
+      window.tokenSendStorage = await (
         await import("/src/sync/client.ts")
       ).syncDatabase();
-      window.claimWaiting = false;
-      window.claimGate = new Promise(
-        (resolve) => (window.releaseClaim = resolve),
+      window.tokenSendClaimWaiting = false;
+      window.tokenSendClaimGate = new Promise<void>(
+        (resolve) => (window.tokenSendReleaseClaim = resolve),
       );
-      window.start = (body, holdClaim = false) =>
-        window.send
+      window.tokenSendStart = (body, holdClaim = false) =>
+        window.tokenSendSend
           .durableSend(body, [], async () => {
             if (!holdClaim) return;
-            const doc = await window.storage.db.outbox.findOne(body.id).exec();
+            const doc = await window.tokenSendStorage.db.outbox
+              .findOne(body.id)
+              .exec();
+            if (!doc) throw new Error("Missing saved send");
             const modify = doc.incrementalModify.bind(doc);
             let hold = true;
             Object.defineProperty(doc, "incrementalModify", {
-              value: async (update) => {
+              value: async (update: Parameters<typeof modify>[0]) => {
                 if (hold) {
                   hold = false;
-                  window.claimWaiting = true;
-                  await window.claimGate;
+                  window.tokenSendClaimWaiting = true;
+                  await window.tokenSendClaimGate;
                 }
                 return modify(update);
               },
             });
           })
-          .catch((error) => {
-            window.sendError = error.message;
+          .catch((error: unknown) => {
+            if (!(error instanceof window.tokenSendApi.ApiError)) throw error;
+            window.tokenSendSendError = error.message;
             return { code: error.status, error: error.message };
           });
-      window.read = async (id) => {
-        const doc = await window.storage.db.outbox.findOne(id).exec();
+      window.tokenSendRead = async (id) => {
+        const doc = await window.tokenSendStorage.db.outbox.findOne(id).exec();
+        if (!doc) throw new Error("Missing saved send");
         return JSON.parse(doc.getLatest().payload);
       };
     });
-    const body = (id) => ({
+    const body = (id: string): MessageRequest => ({
       id,
       room: `chat-${id}`,
       text: `Exact message ${id}`,
@@ -126,7 +156,7 @@ test("Send session token browser", async ({
       delivery: "current_turn",
     });
     await page.evaluate((body) => {
-      window.resultA = window.start(body);
+      window.tokenSendResultA = window.tokenSendStart(body);
     }, body("old-session"));
     const deadline = Date.now() + 5000;
     while (sessions.length !== 1) {
@@ -134,13 +164,13 @@ test("Send session token browser", async ({
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     await page.evaluate((body) => {
-      window.resultB = window.start(body, true);
+      window.tokenSendResultB = window.tokenSendStart(body, true);
     }, body("current-session"));
     try {
-      await page.waitForFunction(() => window.claimWaiting);
+      await page.waitForFunction(() => window.tokenSendClaimWaiting);
     } catch (error) {
       console.error({
-        sendError: await page.evaluate(() => window.sendError),
+        sendError: await page.evaluate(() => window.tokenSendSendError),
         posts,
         errors,
       });
@@ -148,49 +178,50 @@ test("Send session token browser", async ({
     }
     assert.equal(sessions.length, 2);
     assert.equal(posts.length, 0);
-    await sessions[0].fulfill({ json: { token: "old-token" } });
+    await required(sessions[0]).fulfill({
+      json: {
+        token: "old-token",
+      } satisfies import("../playwright.ts").SessionResponse,
+    });
     assert.equal(
-      (await page.evaluate(() => window.resultA)).status,
+      (await page.evaluate(() => window.tokenSendResultA)).status,
       "delivered",
     );
     assert.equal(posts.length, 1);
-    assert.deepEqual(posts[0].body, body("old-session"));
-    assert.equal(posts[0].headers["x-canvas-token"], "new-token");
+    assert.deepEqual(required(posts[0]).body, body("old-session"));
+    assert.equal(required(posts[0]).headers["x-canvas-token"], "new-token");
     await page.evaluate(async (workspaceId) => {
-      await window.api.syncPost(
-        "/api/token-probe",
-        { id: "after-overlap" },
-        {
-          workspaceId,
-        },
-      );
+      await window.tokenSendProbe("after-overlap", {
+        workspaceId,
+      });
     }, workspaceId);
     assert.deepEqual(tokenProbes, ["new-token"]);
     await page.evaluate(() => {
       // Even an explicit token change after the claim cannot change B's request.
-      window.api.setToken("global-token");
-      window.releaseClaim();
+      window.tokenSendApi.setToken("global-token");
+      window.tokenSendReleaseClaim();
     });
     assert.equal(
-      (await page.evaluate(() => window.resultB)).status,
+      (await page.evaluate(() => window.tokenSendResultB)).status,
       "delivered",
     );
     assert.equal(posts.length, 2);
-    assert.deepEqual(posts[1].body, body("current-session"));
-    assert.equal(posts[1].headers["x-canvas-token"], "new-token");
-    assert.equal(posts[1].headers["x-canvas-workspace"], workspaceId);
+    assert.deepEqual(required(posts[1]).body, body("current-session"));
+    assert.equal(required(posts[1]).headers["x-canvas-token"], "new-token");
+    assert.equal(required(posts[1]).headers["x-canvas-workspace"], workspaceId);
     assert.equal(
-      (await page.evaluate(() => window.read("current-session"))).status,
+      (await page.evaluate(() => window.tokenSendRead("current-session")))
+        .status,
       "accepted",
     );
     assert.equal(
-      (await page.evaluate(() => window.read("old-session"))).status,
+      (await page.evaluate(() => window.tokenSendRead("old-session"))).status,
       "accepted",
     );
     assert.equal(
       (
         await page.evaluate(
-          (body) => window.start(body),
+          (body) => window.tokenSendStart(body),
           body("current-session"),
         )
       ).status,
@@ -199,19 +230,11 @@ test("Send session token browser", async ({
     assert.equal(posts.length, 2, "A confirmed message must not be sent again");
     assert.equal(sessions.length, 2);
     await page.evaluate(async (workspaceId) => {
-      await window.api.syncPost(
-        "/api/token-probe",
-        { id: "scoped" },
-        {
-          workspaceId,
-          sessionToken: "scoped-token",
-        },
-      );
-      await window.api.syncPost(
-        "/api/token-probe",
-        { id: "global" },
-        { workspaceId },
-      );
+      await window.tokenSendProbe("scoped", {
+        workspaceId,
+        sessionToken: "scoped-token",
+      });
+      await window.tokenSendProbe("global", { workspaceId });
     }, workspaceId);
     assert.deepEqual(tokenProbes, [
       "new-token",
@@ -222,36 +245,40 @@ test("Send session token browser", async ({
     // An older response cannot publish while a newer read is still pending.
     holdSessions = true;
     await page.evaluate(() => {
-      window.olderRead = window.api.refreshSession();
-      window.newerRead = window.api.refreshSession();
+      window.tokenSendOlderRead = window.tokenSendApi.refreshSession();
+      window.tokenSendNewerRead = window.tokenSendApi.refreshSession();
     });
     const nextDeadline = Date.now() + 5000;
     while (sessions.length !== 4) {
       assert.ok(Date.now() < nextDeadline, "Both session reads must start");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    await sessions[2].fulfill({ json: { token: "early-old-token" } });
-    assert.deepEqual(await page.evaluate(() => window.olderRead), {
+    await required(sessions[2]).fulfill({
+      json: {
+        token: "early-old-token",
+      } satisfies import("../playwright.ts").SessionResponse,
+    });
+    assert.deepEqual(await page.evaluate(() => window.tokenSendOlderRead), {
       token: "early-old-token",
     });
-    await page.evaluate(() =>
-      window.api.syncPost("/api/token-probe", { id: "newer-still-pending" }),
-    );
+    await page.evaluate(() => window.tokenSendProbe("newer-still-pending"));
     assert.equal(tokenProbes.at(-1), "global-token");
-    await sessions[3].fulfill({ json: { token: "latest-confirmed-token" } });
-    assert.deepEqual(await page.evaluate(() => window.newerRead), {
+    await required(sessions[3]).fulfill({
+      json: {
+        token: "latest-confirmed-token",
+      } satisfies import("../playwright.ts").SessionResponse,
+    });
+    assert.deepEqual(await page.evaluate(() => window.tokenSendNewerRead), {
       token: "latest-confirmed-token",
     });
-    await page.evaluate(() =>
-      window.api.syncPost("/api/token-probe", { id: "newer-confirmed" }),
-    );
+    await page.evaluate(() => window.tokenSendProbe("newer-confirmed"));
     assert.equal(tokenProbes.at(-1), "latest-confirmed-token");
 
     for (const order of ["newer-first", "older-first"]) {
       const before = sessions.length;
       await page.evaluate(() => {
-        window.olderRead = window.api.refreshSession();
-        window.newerRead = window.api
+        window.tokenSendOlderRead = window.tokenSendApi.refreshSession();
+        window.tokenSendNewerRead = window.tokenSendApi
           .refreshSession()
           .catch((error) => error.status);
       });
@@ -264,31 +291,33 @@ test("Send session token browser", async ({
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       const success = () =>
-        sessions[before].fulfill({ json: { token: `${order}-valid-token` } });
+        required(sessions[before]).fulfill({
+          json: {
+            token: `${order}-valid-token`,
+          } satisfies import("../playwright.ts").SessionResponse,
+        });
       const failure = () =>
-        sessions[before + 1].fulfill({
+        required(sessions[before + 1]).fulfill({
           status: 503,
           json: { error: "Session unavailable" },
         });
       if (order === "newer-first") {
         await failure();
-        assert.equal(await page.evaluate(() => window.newerRead), 503);
+        assert.equal(await page.evaluate(() => window.tokenSendNewerRead), 503);
         await success();
       } else {
         await success();
-        assert.deepEqual(await page.evaluate(() => window.olderRead), {
+        assert.deepEqual(await page.evaluate(() => window.tokenSendOlderRead), {
           token: `${order}-valid-token`,
         });
         await failure();
       }
-      assert.equal(await page.evaluate(() => window.newerRead), 503);
-      assert.deepEqual(await page.evaluate(() => window.olderRead), {
+      assert.equal(await page.evaluate(() => window.tokenSendNewerRead), 503);
+      assert.deepEqual(await page.evaluate(() => window.tokenSendOlderRead), {
         token: `${order}-valid-token`,
       });
       await page.evaluate(() =>
-        window.api.syncPost("/api/token-probe", {
-          id: "after-failed-newer-read",
-        }),
+        window.tokenSendProbe("after-failed-newer-read"),
       );
       assert.equal(tokenProbes.at(-1), `${order}-valid-token`);
     }
@@ -296,8 +325,8 @@ test("Send session token browser", async ({
     // Explicit initialization takes ownership from every earlier session read.
     const beforeManual = sessions.length;
     await page.evaluate(() => {
-      window.olderRead = window.api.refreshSession();
-      window.api.setToken("manual-owner-token");
+      window.tokenSendOlderRead = window.tokenSendApi.refreshSession();
+      window.tokenSendApi.setToken("manual-owner-token");
     });
     const manualDeadline = Date.now() + 5000;
     while (sessions.length !== beforeManual + 1) {
@@ -307,20 +336,20 @@ test("Send session token browser", async ({
       );
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    await sessions[beforeManual].fulfill({
-      json: { token: "late-before-initialization" },
+    await required(sessions[beforeManual]).fulfill({
+      json: {
+        token: "late-before-initialization",
+      } satisfies import("../playwright.ts").SessionResponse,
     });
-    await page.evaluate(() => window.olderRead);
-    await page.evaluate(() =>
-      window.api.syncPost("/api/token-probe", { id: "manual-owner" }),
-    );
+    await page.evaluate(() => window.tokenSendOlderRead);
+    await page.evaluate(() => window.tokenSendProbe("manual-owner"));
     assert.equal(tokenProbes.at(-1), "manual-owner-token");
     holdSessions = false;
 
     // Uploads keep their preflight token across the asynchronous local file read.
     await page.evaluate(async (workspaceId) => {
-      window.uploads = await import("/src/sync/uploads.ts");
-      [window.upload] = await window.uploads.queueUploads(
+      window.tokenSendUploads = await import("/src/sync/uploads.ts");
+      const [upload] = await window.tokenSendUploads.queueUploads(
         "token-fixture",
         "upload-chat",
         [
@@ -330,30 +359,37 @@ test("Send session token browser", async ({
         ],
         workspaceId,
       );
+      if (!upload) throw new Error("Missing fixture upload");
+      window.tokenSendUpload = upload;
       const read = FileReader.prototype.readAsDataURL;
       FileReader.prototype.readAsDataURL = function (blob) {
-        window.fileWaiting = true;
-        window.releaseFile = () => {
+        window.tokenSendFileWaiting = true;
+        window.tokenSendReleaseFile = () => {
           FileReader.prototype.readAsDataURL = read;
           read.call(this, blob);
         };
       };
-      window.uploadResult = window.uploads.deliverUpload(window.upload);
+      window.tokenSendUploadResult = window.tokenSendUploads.deliverUpload(
+        window.tokenSendUpload,
+      );
     }, workspaceId);
-    await page.waitForFunction(() => window.fileWaiting);
+    await page.waitForFunction(() => window.tokenSendFileWaiting);
     await page.evaluate(() => {
-      window.api.setToken("changed-during-file-read");
-      window.releaseFile();
+      window.tokenSendApi.setToken("changed-during-file-read");
+      window.tokenSendReleaseFile();
     });
     assert.equal(
-      (await page.evaluate(() => window.uploadResult)).id,
-      await page.evaluate(() => window.upload.id),
+      required(await page.evaluate(() => window.tokenSendUploadResult)).id,
+      await page.evaluate(() => window.tokenSendUpload.id),
     );
     assert.equal(uploads.length, 1);
-    assert.equal(uploads[0].headers["x-canvas-token"], "new-token");
-    assert.equal(uploads[0].headers["x-canvas-workspace"], workspaceId);
+    assert.equal(required(uploads[0]).headers["x-canvas-token"], "new-token");
     assert.equal(
-      uploads[0].body.base64,
+      required(uploads[0]).headers["x-canvas-workspace"],
+      workspaceId,
+    );
+    assert.equal(
+      required(uploads[0]).body.base64,
       Buffer.from("Exact file bytes").toString("base64"),
     );
     assert.deepEqual(errors, []);
@@ -371,3 +407,48 @@ test("Send session token browser", async ({
     await rm(temporary, { recursive: true, force: true });
   }
 });
+
+declare global {
+  interface Window {
+    tokenSendSend: typeof import("../../src/sync/send.ts");
+    tokenSendApi: typeof import("../../src/api.ts");
+    tokenSendProbe: (
+      id: string,
+      options?: Parameters<typeof import("../../src/api.ts").syncPost>[2],
+    ) => Promise<unknown>;
+    tokenSendStorage: Awaited<
+      ReturnType<typeof import("../../src/sync/client.ts").syncDatabase>
+    >;
+    tokenSendClaimWaiting: boolean;
+    tokenSendClaimGate: Promise<void>;
+    tokenSendReleaseClaim: () => void;
+    tokenSendStart: (
+      body: MessageRequest,
+      holdClaim?: boolean,
+    ) => Promise<
+      Partial<
+        Awaited<ReturnType<typeof import("../../src/sync/send.ts").durableSend>>
+      > & { code?: number | undefined }
+    >;
+    tokenSendSendError: string;
+    tokenSendRead: (id: string) => Promise<Omit<OutboxEntry, "id">>;
+    tokenSendResultA: ReturnType<Window["tokenSendStart"]>;
+    tokenSendResultB: ReturnType<Window["tokenSendStart"]>;
+    tokenSendOlderRead: ReturnType<
+      typeof import("../../src/api.ts").refreshSession
+    >;
+    tokenSendNewerRead: Promise<
+      | Awaited<ReturnType<typeof import("../../src/api.ts").refreshSession>>
+      | number
+    >;
+    tokenSendUploads: typeof import("../../src/sync/uploads.ts");
+    tokenSendUpload: Awaited<
+      ReturnType<typeof import("../../src/sync/uploads.ts").queueUploads>
+    >[number];
+    tokenSendFileWaiting: boolean;
+    tokenSendReleaseFile: () => void;
+    tokenSendUploadResult: ReturnType<
+      typeof import("../../src/sync/uploads.ts").deliverUpload
+    >;
+  }
+}

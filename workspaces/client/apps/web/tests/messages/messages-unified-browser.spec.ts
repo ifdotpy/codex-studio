@@ -1,3 +1,6 @@
+import { requestBody } from "./helpers.ts";
+import { required } from "./helpers.ts";
+import type { ComplaintBody } from "./helpers.ts";
 import {
   readTestState,
   test,
@@ -41,23 +44,27 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => (log += chunk));
+  required(fixture.stderr).on("data", (chunk) => (log += chunk));
   const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) =>
+    required(fixture.stdout).once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
   const data = await readTestState(origin);
-  const lead = data.threads.find((agent) => agent.name === "Release lead");
-  const message = data.runtime.complaints.find(
-    (item) => item.recipient === "user" && item.leadId === lead.id,
+  const lead = required(
+    data.threads.find((agent) => agent.name === "Release lead"),
+  );
+  const message = required(
+    data.runtime.complaints.find(
+      (item) => item.recipient === "user" && item.leadId === lead.id,
+    ),
   );
   assert.ok(message);
   const page = fixturePage;
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(origin);
   await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -90,7 +97,7 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
   const date = card.locator(":scope > time");
   assert.equal(
     await date.getAttribute("datetime"),
-    new Date(message.created * 1000).toISOString(),
+    new Date(required(message.created) * 1000).toISOString(),
   );
   assert.match(await date.innerText(), /\d{4}/);
   assert.match(await date.innerText(), /\d{2}:\d{2}/);
@@ -102,12 +109,14 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
   const questionDate = chats.locator(
     '[data-feed-item$=":question:async-question"] time',
   );
-  const question = data.runtime.requests.find((request) =>
-    request.id.endsWith(":question:async-question"),
+  const question = required(
+    data.runtime.requests.find((request) =>
+      request.id.endsWith(":question:async-question"),
+    ),
   );
   assert.equal(
     await questionDate.getAttribute("datetime"),
-    new Date(question.createdAt * 1000).toISOString(),
+    new Date(required(question.createdAt) * 1000).toISOString(),
   );
   assert.match(await questionDate.innerText(), /\d{4}/);
   assert.equal(
@@ -115,10 +124,10 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
     0,
     "Agent failures do not append status cards to Messages",
   );
-  const payloads = [];
+  const payloads: ComplaintBody[] = [];
   let lose = true;
   await page.route("**/api/complaints", async (route) => {
-    payloads.push(route.request().postDataJSON());
+    payloads.push(requestBody<import("./helpers.ts").ComplaintBody>(route));
     if (lose) {
       lose = false;
       await route.fetch();
@@ -150,8 +159,11 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
   assert.ok(
     await card.locator(".complaint-response time").getAttribute("datetime"),
   );
-  const room = data.runtime.rooms.find(
-    (item) => item.kind === "private" && item.members.includes(lead.id),
+  const room = required(
+    data.runtime.rooms.find(
+      (item) =>
+        item.kind === "private" && required(item.members).includes(lead.id),
+    ),
   );
   await chats.getByRole("textbox", { name: "Search chats" }).fill("Worker 39");
   await chats.locator(`[data-room="${room.id}"]`).click();

@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import type {} from "../fixtures/ux-chat.tsx";
+import { required } from "./helpers.ts";
 import path from "node:path";
 import {
   test,
@@ -25,10 +26,34 @@ test("Claude image refusal remains visible and preserves the draft", async ({
   const syncFixture = {
     workspaceId: identity.workspaceId,
     snapshot: {
+      chats: [],
+      edges: [],
       stateDir: "ux-chat-fixture",
-      threads: [],
       runtime: {
         agents: [],
+        rooms: [],
+        tasks: [],
+        monitors: [],
+        complaints: [],
+        projects: [],
+        events: [],
+        peerTeams: [],
+        requests: [],
+        rules: [],
+        work: [],
+        accountsSummary: {
+          accounts: [],
+          archivedAccounts: [],
+          defaultAccountKey: "default",
+          defaultAccountGroups: [],
+          logins: [],
+          supportsDelete: true,
+          supportsDisconnect: true,
+        },
+        nativeNotices: [],
+        sidebarOrder: { groups: null, revision: 0 },
+        rateLimits: null,
+        rateLimitsByAccount: {},
         queuesByAgent: {
           lead: {
             items: [],
@@ -39,19 +64,8 @@ test("Claude image refusal remains visible and preserves the draft", async ({
       },
     },
   };
-  const entry = path.join(web, "tests/fixtures/ux-chat.tsx");
   // Reuse the production Conversation fixture. Its send owner supplies a failed
   // receipt, exactly as App.send does. No backend or model request is needed.
-  const source = (await readFile(entry, "utf8"))
-    .replace(
-      "const [sending, setSending] = useState(false);",
-      "const [sending, setSending] = useState(false); const [outgoing,setOutgoing]=useState<any[]>([]);",
-    )
-    .replace("sending={sending}", "sending={sending} outgoing={outgoing}")
-    .replace(
-      'await fetch("/api/fixture-send", {',
-      `setOutgoing([{id:'image-refusal',body:{room:id,text:getDraft(id),assets:[],delivery:'queue'},status:'failed',created:Date.now(),error:${JSON.stringify(refusal)}}]); throw new Error(${JSON.stringify(refusal)}); await fetch("/api/fixture-send", {`,
-    );
   const server = await createFixtureViteServer({
     configFile: false,
     root: web,
@@ -61,14 +75,12 @@ test("Claude image refusal remains visible and preserves the draft", async ({
       {
         name: "image-refusal-conversation",
         enforce: "pre",
-        load(id) {
-          if (id === entry) return source;
-        },
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
             if (handleEntitySyncFixtureRequest(request, response, syncFixture))
               return;
-            if (!request.url.startsWith("/api/")) return next();
+            if (!required(required(request).url).startsWith("/api/"))
+              return next();
             for (const [key, value] of Object.entries(apiSchemaHeaders()))
               response.setHeader(key, value);
             response.setHeader("Content-Type", "application/json");
@@ -96,7 +108,10 @@ test("Claude image refusal remains visible and preserves the draft", async ({
             body: '<div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="/tests/fixtures/ux-chat.tsx"></script>',
           }),
         );
-        await page.goto(server.resolvedUrls.local[0] + "check");
+        await page.addInitScript((failure) => {
+          window.__uxChatSendFailure = failure;
+        }, refusal);
+        await page.goto(required(server.resolvedUrls).local[0] + "check");
         await page.locator("#message").fill("Read the attached image.");
         await page.locator("#send").click();
         await expect(page.locator(".message-delivery-error")).toContainText(

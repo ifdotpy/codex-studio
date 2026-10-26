@@ -346,7 +346,7 @@ Remaining risks:
 | Server  | `codex_runtime.py`, `studio_api/work/router.py`, `studio_api/work/models.py`                               | Tick and stop of the bridge; `answer(..., local_window=)`; `openUrl` in the answer result.                                  |
 | Server  | `test_codex_browser_bridge.py` (new)                                                                       | Server checks and the fake end-to-end flows.                                                                                |
 | Web     | `Requests.tsx`, `requestData.ts`, `openSignIn.ts`, `request-questions.css`, `desktop.ts`, `generated/api*` | The card, the open after the answer.                                                                                        |
-| Web     | `tests/questions/browser-open-approval-ui.spec.mjs`, `openSignIn.test.ts` (new), `requestData.test.ts`     | Card and open checks.                                                                                                       |
+| Web     | `tests/questions/browser-open-approval-ui.spec.ts`, `openSignIn.test.ts` (new), `requestData.test.ts`      | Card and open checks.                                                                                                       |
 | Desktop | `main.cjs`, `preload.cjs`, `bridge.d.ts`, `test.mjs`                                                       | The `openSignIn` action.                                                                                                    |
 | Helper  | `workspaces/client/apps/desktop/native/linux-vm/main.swift`                                                | No change.                                                                                                                  |
 | Docs    | `docs/linux-vm-workspaces.md`, `.agents/skills/codex-workspace/references/layr.md`                         | The method table, and one generic paragraph for agents.                                                                     |
@@ -422,7 +422,7 @@ What each check proves:
     shim installation and the socket folder.
 - `openSignIn.test.ts` (web): the desktop uses `openSignIn`, an older desktop falls back to
   `openExternal`, a plain browser opens a tab without an opener, and other schemes never open.
-- `requestData.test.ts` and `browser-open-approval-ui.spec.mjs` (web): the card shows the
+- `requestData.test.ts` and `browser-open-approval-ui.spec.ts` (web): the card shows the
   host, the client, the access, the port and the Linux user; it has no direct link; nothing
   opens before the approval; accept opens only the returned link with `openSignIn`; a server
   refusal (the remote window message) opens nothing and shows the error; decline sends one

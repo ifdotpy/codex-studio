@@ -1,4 +1,9 @@
-#!/usr/bin/env node
+import { listeningPort } from "./helpers.ts";
+import type { ViteDevServer } from "vite";
+import type { Server } from "node:http";
+import type { BrowserContext } from "@playwright/test";
+import { required } from "./helpers.ts";
+import { assert } from "../messages/assert.ts";
 // Actual queue component, isolated browser storage, no backend or model service.
 
 import {
@@ -9,68 +14,27 @@ import {
 import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test, expect } from "../playwright.ts";
+import { test } from "../playwright.ts";
 
 test("Message Queue Drafts Ui", async ({
   browser: testBrowser,
   context: _testContext,
   page: _testPage,
 }, testInfo) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
   const repo = join(import.meta.dirname, "../../..");
 
   const createViteServer = createFixtureViteServer;
   const root = await mkdtemp(
     join(playwrightScratchRoot, "message-queue-drafts-"),
   );
-  const entry = join(root, "entry.tsx");
-  const entryUrl = `/@fs${entry}`;
-  let vite;
+  const entryUrl = "/tests/messages/message-queue-drafts-ui.fixture.tsx";
+  let vite: ViteDevServer | undefined;
   let browser;
-  let server;
+  let server: Server | undefined;
   let quotaContext;
   let context;
-  const errors = [];
+  const errors: string[] = [];
   try {
-    await writeFile(
-      entry,
-      `
-import { useState } from "react";
-import { createRoot } from "react-dom/client";
-import MessageQueue from "/src/components/MessageQueue.tsx";
-function App() {
-  const [items, setItems] = useState([
-    {
-      id: "q1",
-      text: "Original message",
-      created: 1,
-      status: "pending",
-      kind: "user",
-    },
-  ]);
-  return <MessageQueue scope="journal-fixture" items={items} canReorder={true}
-    onEdit={async (item, text) => setItems([{ ...item, text }])}
-    onCancel={async () => setItems([])} onReorder={async () => {}} />;
-}
-createRoot(document.getElementById("root")!).render(<App />);
-`,
-    );
     await writeFile(
       join(root, "index.html"),
       `<div id="root"></div><script type="module" src="${entryUrl}"></script>`,
@@ -95,18 +59,18 @@ createRoot(document.getElementById("root")!).render(<App />);
         );
         return;
       }
-      vite.middlewares(request, response, () => {
+      required(vite).middlewares(request, response, () => {
         response.statusCode = 404;
         response.end("Not found");
       });
     });
-    await new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
+    await new Promise<void>((resolve, reject) => {
+      required(server).once("error", reject);
+      required(server).listen(0, "127.0.0.1", resolve);
     });
-    const url = `http://127.0.0.1:${server.address().port}`;
+    const url = `http://127.0.0.1:${listeningPort(required(server))}`;
     browser = testBrowser;
-    const observe = (context) => {
+    const observe = (context: BrowserContext) => {
       context.setDefaultTimeout(10000);
       context.on("page", (page) =>
         page.on("pageerror", (error) => errors.push(error.message)),
@@ -194,7 +158,7 @@ createRoot(document.getElementById("root")!).render(<App />);
     const records = await second.evaluate(() =>
       Object.keys(localStorage)
         .filter((k) => k.startsWith("codex-queue-edit:"))
-        .map((k) => JSON.parse(localStorage.getItem(k))),
+        .map((k) => JSON.parse(localStorage.getItem(k) ?? "null")),
     );
     assert.deepEqual(
       records.map((r) => r.text),
@@ -228,7 +192,7 @@ createRoot(document.getElementById("root")!).render(<App />);
     await quotaContext?.close();
     await context?.close();
     if (server?.listening)
-      await new Promise((resolve) => server.close(resolve));
+      await new Promise((resolve) => required(server).close(resolve));
     await vite?.close();
     if (!process.env.KEEP_TEST_ARTIFACTS)
       await rm(root, { recursive: true, force: true });

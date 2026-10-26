@@ -10,7 +10,7 @@ export const assert = {
     expect(actual, message).toEqual(expected),
   ok: (actual: unknown, message?: string) =>
     expect(actual, message).toBeTruthy(),
-  match: (actual: string, expected: RegExp, message?: string) =>
+  match: (actual: unknown, expected: RegExp, message?: string) =>
     expect(actual, message).toMatch(expected),
   doesNotMatch: (actual: string, expected: RegExp, message?: string) =>
     expect(actual, message).not.toMatch(expected),

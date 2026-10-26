@@ -1,3 +1,8 @@
+import { responseJson } from "./helpers.ts";
+import { requestBody } from "./helpers.ts";
+import { required } from "./helpers.ts";
+import type { ComplaintBody } from "./helpers.ts";
+import type { TestInfo, BrowserContext } from "@playwright/test";
 import {
   readTestState,
   stubEntityState,
@@ -13,7 +18,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -37,31 +42,39 @@ test("messages focused ui", async ({ browser: _browser }) => {
   let browser,
     page,
     log = "";
-  fixture.stderr.on("data", (data) => {
+  required(fixture.stderr).on("data", (data) => {
     log += data;
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (data) =>
+      required(fixture.stdout).once("data", (data) =>
         resolve(Number(String(data).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
-    const lead = state.threads.find((a) => a.name === "Release lead");
+    const lead = required(state.threads.find((a) => a.name === "Release lead"));
     const records = state.runtime.complaints;
     assert.equal(records.length, 2);
-    assert.equal(records.find((c) => c.author === lead.id).recipient, "user");
-    assert.equal(records.find((c) => c.author !== lead.id).recipient, "lead");
-    const leadMessage = records.find((c) => c.author === lead.id);
-    const direct = state.runtime.rooms.find(
-      (r) => r.kind === "private" && r.members.includes(lead.id),
+    assert.equal(
+      required(records.find((c) => c.author === lead.id)).recipient,
+      "user",
+    );
+    assert.equal(
+      required(records.find((c) => c.author !== lead.id)).recipient,
+      "lead",
+    );
+    const leadMessage = required(records.find((c) => c.author === lead.id));
+    const direct = required(
+      state.runtime.rooms.find(
+        (r) => r.kind === "private" && required(r.members).includes(lead.id),
+      ),
     );
     browser = _browser;
     page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     page.setDefaultTimeout(10000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(origin);
     const leadChat = page.locator(`[data-chat="${lead.id}"]`);
@@ -101,9 +114,9 @@ test("messages focused ui", async ({ browser: _browser }) => {
       await complaint.getByLabel("Reply", { exact: true }).inputValue(),
       "Unsent reply\nwith two lines",
     );
-    const attempts = [];
+    const attempts: ComplaintBody[] = [];
     await page.route("**/api/complaints", async (route) => {
-      attempts.push(route.request().postDataJSON());
+      attempts.push(requestBody<import("./helpers.ts").ComplaintBody>(route));
       const response = await route.fetch();
       assert.equal(response.status(), 200);
       if (attempts.length === 1) await route.abort("failed");
@@ -143,27 +156,32 @@ test("messages focused ui", async ({ browser: _browser }) => {
       attempts[0],
       "retry preserves the request after drawer unmount",
     );
-    const saved = await (
-      await fetch(origin + "/api/complaint?id=" + leadMessage.id)
-    ).json();
+    const saved = await responseJson<import("./helpers.ts").ComplaintDetail>(
+      await fetch(origin + "/api/complaint?id=" + leadMessage.id),
+    );
     assert.equal(saved.responses.length, 1);
-    assert.equal(saved.responses[0].id, `user:${attempts[0].id}`);
-    assert.equal(saved.responses[0].author, "user");
+    assert.equal(
+      required(saved.responses[0]).id,
+      `user:${required(attempts[0]).id}`,
+    );
+    assert.equal(required(saved.responses[0]).author, "user");
     const delivery = queryFixtureDatabase(
       root,
       "select * from runtime_events where kind='complaint_response'",
     );
     assert.equal(delivery.length, 1);
     assert.equal(
-      delivery[0].agent,
+      required(delivery[0]).agent,
       leadMessage.author,
       "response reaches the lead who sent the message",
     );
     await complaint
       .getByRole("button", { name: "Close reply", exact: true })
       .click();
-    const broadcast = state.runtime.rooms.find(
-      (room) => room.kind === "broadcast" && room.rootId === lead.id,
+    const broadcast = required(
+      state.runtime.rooms.find(
+        (room) => room.kind === "broadcast" && room.rootId === lead.id,
+      ),
     );
     assert.ok(broadcast);
     if (!(await drawer.locator(`[data-room="${broadcast.id}"]`).count()))
@@ -212,7 +230,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
       assert.equal(await youRow.getAttribute("aria-pressed"), "true");
       const row = await youRow.boundingBox();
       assert.ok(
-        row.x >= 0 && row.x + row.width <= width,
+        required(row).x >= 0 && required(row).x + required(row).width <= width,
         `selected conversation visible at ${width}`,
       );
       assert.ok(
@@ -238,7 +256,6 @@ test("messages focused ui", async ({ browser: _browser }) => {
       quietState,
       await readFixtureSyncContract(origin),
     );
-    quietState.runtime.userTasks = [];
     quietState.runtime.work = [];
     quietState.runtime.monitors = [];
     quietState.runtime.rules = [];
@@ -268,17 +285,18 @@ test("messages focused ui", async ({ browser: _browser }) => {
     await empty.waitFor();
     await stable.evaluate(() => {
       const empty = document.querySelector(".team-chat-empty");
-      window.stability = { empty, failures: [] };
-      window.observer = new MutationObserver(() => {
-        if (!empty.isConnected) window.stability.failures.push("empty removed");
+      if (!empty) throw new Error("Missing empty messages fixture");
+      window.messagesFocusedStability = { empty, failures: [] };
+      window.messagesFocusedObserver = new MutationObserver(() => {
+        if (!empty.isConnected)
+          window.messagesFocusedStability.failures.push("empty removed");
       });
-      window.observer.observe(
-        document.querySelector(".workspace-message-body"),
-        {
-          childList: true,
-          subtree: true,
-        },
-      );
+      const body = document.querySelector(".workspace-message-body");
+      if (!body) throw new Error("Missing message body");
+      window.messagesFocusedObserver.observe(body, {
+        childList: true,
+        subtree: true,
+      });
     });
     await stable.waitForTimeout(5500);
     assert.equal(
@@ -287,10 +305,10 @@ test("messages focused ui", async ({ browser: _browser }) => {
       "Messages uses the existing snapshot, not the full workspace API",
     );
     assert.deepEqual(
-      await stable.evaluate(() => window.stability.failures),
+      await stable.evaluate(() => window.messagesFocusedStability.failures),
       [],
     );
-    await stable.evaluate(() => window.observer.disconnect());
+    await stable.evaluate(() => window.messagesFocusedObserver.disconnect());
     quietState.runtime.requests = [
       {
         id: "stability-request",
@@ -304,7 +322,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
         },
       },
     ];
-    fixture.stdin.write(
+    required(fixture.stdin).write(
       JSON.stringify({
         method: "fixture/request",
         params: quietState.runtime.requests[0],
@@ -416,3 +434,10 @@ test("messages focused ui", async ({ browser: _browser }) => {
     fixture.stdin?.end();
   }
 });
+
+declare global {
+  interface Window {
+    messagesFocusedStability: { empty: Element | null; failures: string[] };
+    messagesFocusedObserver: MutationObserver;
+  }
+}

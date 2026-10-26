@@ -1,7 +1,10 @@
-#!/usr/bin/env node
+import { responseJson } from "./helpers.ts";
+import { requestBody } from "./helpers.ts";
+import { required } from "./helpers.ts";
+import type { ComplaintBody } from "./helpers.ts";
+import { assert } from "../messages/assert.ts";
 import {
   test,
-  expect,
   spawnFixture as spawn,
   readTestState,
   rustUiFixture,
@@ -16,23 +19,6 @@ test("Messages Ui", async ({
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
   const root = await mkdtemp(join(tmpdir(), "studio-messages-ui-"));
   const fixture = spawn(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -40,34 +26,45 @@ test("Messages Ui", async ({
   });
   let page,
     log = "";
-  fixture.stderr.on("data", (data) => {
+  required(fixture.stderr).on("data", (data) => {
     log += data;
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (data) =>
+      required(fixture.stdout).once("data", (data) =>
         resolve(Number(String(data).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
-    const lead = state.threads.find((a) => a.name === "Release lead");
+    const lead = required(state.threads.find((a) => a.name === "Release lead"));
     const records = state.runtime.complaints;
     assert.equal(records.length, 2);
-    assert.equal(records.find((c) => c.author === lead.id).recipient, "user");
-    assert.equal(records.find((c) => c.author !== lead.id).recipient, "lead");
-    const leadMessage = records.find((c) => c.author === lead.id);
-    const direct = state.runtime.rooms.find(
-      (r) => r.kind === "private" && r.members.includes(lead.id),
+    assert.equal(
+      required(records.find((c) => c.author === lead.id)).recipient,
+      "user",
     );
-    const directName = state.threads.find(
-      (agent) => direct.members.includes(agent.id) && agent.id !== lead.id,
+    assert.equal(
+      required(records.find((c) => c.author !== lead.id)).recipient,
+      "lead",
+    );
+    const leadMessage = required(records.find((c) => c.author === lead.id));
+    const direct = required(
+      state.runtime.rooms.find(
+        (r) => r.kind === "private" && required(r.members).includes(lead.id),
+      ),
+    );
+    const directName = required(
+      state.threads.find(
+        (agent) =>
+          required(direct.members).includes(agent.id) && agent.id !== lead.id,
+      ),
     ).name;
     page = testPage;
     await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -91,7 +88,7 @@ test("Messages Ui", async ({
       await drawer.locator(`[data-room="broadcast:${lead.id}"]`).count(),
       1,
     );
-    await roomSearch.fill(directName);
+    await roomSearch.fill(required(directName));
     await drawer.locator(`[data-room="${direct.id}"]`).waitFor();
     assert.equal(await drawer.locator(`[data-room="${direct.id}"]`).count(), 1);
     assert.equal(
@@ -105,9 +102,9 @@ test("Messages Ui", async ({
     await message.getByRole("button", { name: "Reply", exact: true }).click();
     const reply = message.getByLabel("Reply", { exact: true });
     await reply.fill("The review account is ready.");
-    const attempts = [];
+    const attempts: ComplaintBody[] = [];
     await page.route("**/api/complaints", async (route) => {
-      attempts.push(route.request().postDataJSON());
+      attempts.push(requestBody<import("./helpers.ts").ComplaintBody>(route));
       const response = await route.fetch();
       assert.equal(response.status(), 200);
       if (attempts.length === 1) await route.abort("failed");
@@ -144,23 +141,26 @@ test("Messages Ui", async ({
       attempts[0],
       "retry preserves the request after drawer unmount",
     );
-    const saved = await (
-      await fetch(origin + "/api/complaint?id=" + leadMessage.id)
-    ).json();
+    const saved = await responseJson<import("./helpers.ts").ComplaintDetail>(
+      await fetch(origin + "/api/complaint?id=" + leadMessage.id),
+    );
     assert.equal(saved.responses.length, 1);
-    assert.equal(saved.responses[0].id, `user:${attempts[0].id}`);
-    assert.equal(saved.responses[0].author, "user");
+    assert.equal(
+      required(saved.responses[0]).id,
+      `user:${required(attempts[0]).id}`,
+    );
+    assert.equal(required(saved.responses[0]).author, "user");
     const delivery = queryFixtureDatabase(
       root,
       "select * from runtime_events where kind='complaint_response'",
     );
     assert.equal(delivery.length, 1);
     assert.equal(
-      delivery[0].agent,
+      required(delivery[0]).agent,
       leadMessage.author,
       "response reaches the lead who sent the message",
     );
-    await roomSearch.fill(directName);
+    await roomSearch.fill(required(directName));
     await drawer.locator(`[data-room="${direct.id}"]`).click();
     await drawer
       .locator(".team-message")

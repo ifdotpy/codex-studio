@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+import { responseJson } from "./helpers.ts";
+import { required } from "./helpers.ts";
 import {
   entityPullFixtureForRequest,
   installApiSchemaFixtureHeaders,
@@ -37,19 +38,28 @@ test("Turn History Ui", async ({
   });
   let page,
     log = "";
-  proc.stderr.on("data", (d) => (log += d));
+  required(proc.stderr).on("data", (d) => (log += d));
   try {
     const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
+      required(proc.stdout).once("data", (d) =>
+        resolve(Number(String(d).trim())),
+      );
       proc.once("exit", () => reject(Error(log)));
     });
     const url = `http://127.0.0.1:${port}`;
     const state = await readTestState(url);
-    const lead = state.runtime.agents.find((a) => a.name === "Release lead");
-    const initial = await (
-      await fetch(url + "/api/transcript?id=" + lead.id)
-    ).json();
-    const item = (id, role, text, extra = {}) => ({ id, role, text, ...extra });
+    const lead = required(
+      state.runtime.agents.find((a) => a.name === "Release lead"),
+    );
+    const initial = await responseJson<
+      import("../playwright.ts").TranscriptPageResponse
+    >(await fetch(url + "/api/transcript?id=" + lead.id));
+    const item = (
+      id: string,
+      role: import("../../src/types.ts").Message["role"],
+      text: string,
+      extra: Partial<import("../../src/types.ts").Message> = {},
+    ) => ({ id, role, text, ...extra });
     const items = [
       item("ask1", "user", "Check the build", {
         turnId: "one",
@@ -174,7 +184,16 @@ test("Turn History Ui", async ({
         turnId: "attachment",
         turnStatus: "completed",
         assets: [
-          { id: "report-asset", name: "worker-report.txt", image: false },
+          {
+            id: "report-asset",
+            name: "worker-report.txt",
+            image: false,
+            agent: lead.id,
+            created: 0,
+            hash: "",
+            mime: "text/plain",
+            size: 0,
+          },
         ],
       }),
     );
@@ -193,7 +212,7 @@ test("Turn History Ui", async ({
     };
     page = testPage;
     await page.setViewportSize({ width: 1440, height: 1000 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.on("requestfailed", (request) => {
       if (new URL(request.url()).pathname.startsWith("/assets/"))
@@ -256,7 +275,10 @@ test("Turn History Ui", async ({
         json: {
           workspaceId: syncContract.identity.workspaceId,
           ...entityPullFixtureForRequest(state, requestUrl),
-        },
+        } satisfies Pick<
+          import("../playwright.ts").SyncIdentityResponse,
+          "workspaceId"
+        >,
       });
     });
     await page.goto(url);
@@ -426,7 +448,7 @@ test("Turn History Ui", async ({
       .click();
     await activeWork.locator(":scope > summary").click();
     assert.equal(await activeWork.getAttribute("open"), null);
-    items.find((entry) => entry.id === "empty-live").text =
+    required(required(items).find((entry) => entry.id === "empty-live")).text =
       "The first text delta is visible.";
     transcriptSeq++;
     await page.reload();

@@ -1,3 +1,7 @@
+import type { TranscriptPageResponse } from "../playwright.ts";
+import type { Message } from "../../src/types.ts";
+import { responseJson } from "./helpers.ts";
+import { required } from "./helpers.ts";
 import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../../src/generated/sharedValues.ts";
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import {
@@ -22,8 +26,12 @@ import { fileURLToPath } from "node:url";
 const LATER_TRANSCRIPT_ITEMS = 225;
 
 async function runMessageReceiptScenario(
-  { browser: testBrowser, context: runnerContext },
-  observedFirst,
+  {
+    browser: testBrowser,
+    context: runnerContext,
+  }: Pick<import("@playwright/test").PlaywrightTestArgs, "context"> &
+    Pick<import("@playwright/test").PlaywrightWorkerArgs, "browser">,
+  observedFirst: boolean,
 ) {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
@@ -51,17 +59,22 @@ async function runMessageReceiptScenario(
     },
   );
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  required(fixture.stderr).on("data", (chunk) => {
     log = (log + chunk).slice(-8000);
   });
   let server;
-  const posts = [];
-  const receiptRequests = [];
-  const errors = [];
-  let latest;
+  const posts: string[] = [];
+  const receiptRequests: Array<{ agent: string | null; ids: string[] }> = [];
+  const errors: string[] = [];
+  let latest: TranscriptPageResponse;
   let releaseFreshTranscript = () => {};
 
-  const changeFixture = async (agent, phase, target, token) => {
+  const changeFixture = async (
+    agent: string,
+    phase: string,
+    target: string,
+    token: string,
+  ) => {
     const value = { id, uncertainId, text, uncertainText, observedFirst };
     const db = new DatabaseSync(
       join(rustFixtureStateDirectory(temporary), "canvas.sqlite3"),
@@ -85,7 +98,14 @@ async function runMessageReceiptScenario(
     const insertItem = db.prepare(
       "INSERT OR REPLACE INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)",
     );
-    const userItem = (key, itemText, at, status, pending, materialized) => ({
+    const userItem = (
+      key: string,
+      itemText: string,
+      at: number,
+      status: Message["deliveryStatus"],
+      pending: boolean,
+      materialized: boolean,
+    ): Message & { at: number } => ({
       id: agent + ":" + key,
       role: "user",
       title: "You",
@@ -97,7 +117,7 @@ async function runMessageReceiptScenario(
       pending,
       materialized,
     });
-    const putItem = (item) =>
+    const putItem = (item: Message & { at: number }) =>
       insertItem.run(item.id, agent, JSON.stringify(item), item.at);
     try {
       db.exec("BEGIN IMMEDIATE");
@@ -107,8 +127,8 @@ async function runMessageReceiptScenario(
         ).run(agent);
         const now = Date.now() / 1000;
         for (const [key, status, itemText] of [
-          [value.id, "pending", value.text],
-          [value.uncertainId, "uncertain", value.uncertainText],
+          [value.id, "pending", value.text] as const,
+          [value.uncertainId, "uncertain", value.uncertainText] as const,
         ]) {
           db.prepare(
             "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'user',?,?,?,0)",
@@ -211,16 +231,18 @@ async function runMessageReceiptScenario(
           id: messageId,
           value,
         });
-        const seq = db
-          .prepare(
-            "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
-          )
-          .get().seq;
+        const seq = required(
+          required(db)
+            .prepare(
+              "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
+            )
+            .get(),
+        ).seq;
         db.prepare(
           "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('messageReceipt',?,?,?,?,0) ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=0",
         ).run(
           messageId,
-          seq,
+          required(seq),
           createHash("sha256").update(payload).digest("hex"),
           payload,
         );
@@ -228,8 +250,13 @@ async function runMessageReceiptScenario(
       // This external writer also owns its queue summary; a notification does
       // not ask the server to reconstruct values from an event hint.
       const epoch = JSON.parse(
-        db.prepare("SELECT record FROM runtime_agents WHERE id=?").get(agent)
-          .record,
+        String(
+          required(
+            db
+              .prepare("SELECT record FROM runtime_agents WHERE id=?")
+              .get(agent),
+          ).record,
+        ),
       ).epoch;
       const queueItems = db
         .prepare(
@@ -255,16 +282,18 @@ async function runMessageReceiptScenario(
         id: agent,
         value: queueValue,
       });
-      const queueSeq = db
-        .prepare(
-          "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
-        )
-        .get().seq;
+      const queueSeq = required(
+        required(db)
+          .prepare(
+            "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
+          )
+          .get(),
+      ).seq;
       db.prepare(
         "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('queue',?,?,?,?,0) ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=0",
       ).run(
         agent,
-        queueSeq,
+        required(queueSeq),
         createHash("sha256").update(queuePayload).digest("hex"),
         queuePayload,
       );
@@ -295,7 +324,11 @@ async function runMessageReceiptScenario(
     }
   };
 
-  const until = async (check, label, timeout = 10000) => {
+  const until = async (
+    check: () => boolean | Promise<boolean>,
+    label: string,
+    timeout = 10000,
+  ) => {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       if (await check()) return;
@@ -312,7 +345,7 @@ async function runMessageReceiptScenario(
         // Keep fixture setup separate from the delivery assertions below.
         60000,
       );
-      fixture.stdout.once("data", (chunk) => {
+      required(fixture.stdout).once("data", (chunk) => {
         clearTimeout(timer);
         const value = Number(String(chunk).trim());
         if (!Number.isInteger(value))
@@ -325,7 +358,7 @@ async function runMessageReceiptScenario(
       });
     });
     const target = `http://127.0.0.1:${port}`;
-    const get = async (path) => {
+    const get = async <T>(path: string): Promise<T> => {
       const response = await fetch(target + path, {
         signal: AbortSignal.timeout(5000),
       });
@@ -334,7 +367,7 @@ async function runMessageReceiptScenario(
         200,
         path + ": " + (await response.clone().text()).slice(0, 300),
       );
-      return response.json();
+      return responseJson<T>(response);
     };
     const state = await readTestState(target);
     // Wait for the fixture's canonical schema before the outbox flow.
@@ -361,7 +394,9 @@ async function runMessageReceiptScenario(
       "The private fixture API schema did not become ready: " + log,
       60000,
     );
-    const agent = state.threads.find((agent) => agent.name === "Release lead");
+    const agent = required(
+      state.threads.find((agent) => agent.name === "Release lead"),
+    );
     assert.ok(agent?.id);
     await changeFixture(agent.id, "initial", target, state.token);
 
@@ -391,12 +426,12 @@ async function runMessageReceiptScenario(
       },
     });
     await server.listen();
-    const origin = server.resolvedUrls.local[0];
+    const origin = required(server.resolvedUrls).local[0];
     const context = await testBrowser.newContext({
       viewport: { width: 1440, height: 960 },
       serviceWorkers: "block",
     });
-    await context.route(origin, (route) =>
+    await context.route(required(origin), (route) =>
       route.fulfill({ contentType: "text/html", body: index }),
     );
     await context.route(origin + "assets/**", async (route) => {
@@ -440,9 +475,9 @@ async function runMessageReceiptScenario(
         ).syncDatabase();
         window.receiptFixtureDb = db;
         for (const [key, message, status, receiptStatus] of [
-          [id, text, "accepted", "queued"],
-          [uncertainId, uncertainText, "uncertain", "uncertain"],
-          [missingId, missingText, "accepted", "queued"],
+          [id, text, "accepted", "queued"] as const,
+          [uncertainId, uncertainText, "uncertain", "uncertain"] as const,
+          [missingId, missingText, "accepted", "queued"] as const,
         ]) {
           await db.outbox.insert({
             id: key,
@@ -492,17 +527,17 @@ async function runMessageReceiptScenario(
       if (url.pathname === "/api/messages/receipts")
         receiptRequests.push({
           agent: url.searchParams.get("agent"),
-          ids: JSON.parse(url.searchParams.get("ids")),
+          ids: JSON.parse(url.searchParams.get("ids") ?? "null"),
         });
     });
-    await page.goto(origin);
+    await page.goto(required(origin));
     await page.locator("#message").waitFor();
-    const bubble = (message) =>
+    const bubble = (message: string) =>
       page.locator("#messages .message.user").filter({ hasText: message });
     // Keep the built renderer's runtime isolated from Vite's source dependencies.
     // The seed tab reads the same durable outbox without loading a second Dexie
     // version into the app tab.
-    const readOutboxReceipt = (key) =>
+    const readOutboxReceipt = (key: string) =>
       storage.evaluate(
         (messageId) => window.readReceiptFixture(messageId),
         key,
@@ -558,9 +593,9 @@ async function runMessageReceiptScenario(
         "The transcript did not retire the local copy before the delivered receipt",
       );
       const hiddenAccepted = await readOutboxReceipt(id);
-      assert.equal(hiddenAccepted.status, "accepted");
-      assert.equal(hiddenAccepted.receipt?.status, "dispatching");
-      assert.equal(hiddenAccepted.displayPending, false);
+      assert.equal(required(hiddenAccepted).status, "accepted");
+      assert.equal(required(hiddenAccepted).receipt?.status, "dispatching");
+      assert.equal(required(hiddenAccepted).displayPending, false);
       await bubble(text)
         .getByRole("status")
         .filter({ hasText: "Waiting for agent" })
@@ -594,23 +629,25 @@ async function runMessageReceiptScenario(
       // Read the committed IndexedDB rows independently of the seed tab's
       // RxDB instance; the built renderer owns the active projection writer.
       const name = `rxdb-dexie-${collection.database.name}--${collection.schema.version}--projections`;
-      const db = await new Promise((resolve, reject) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open(name);
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
-      const read = (id) =>
-        new Promise((resolve, reject) => {
-          const request = db
-            .transaction("docs", "readonly")
-            .objectStore("docs")
-            .get(id);
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        });
+      const read = (id: string) =>
+        new Promise<import("../../src/sync/client.ts").SyncDocument>(
+          (resolve, reject) => {
+            const request = db
+              .transaction("docs", "readonly")
+              .objectStore("docs")
+              .get(id);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          },
+        );
       try {
         const meta = await read(`transcript:${agentId}`);
-        const payload = JSON.parse(meta.payload);
+        const payload: { order: string[] } = JSON.parse(meta.payload);
         const items = await Promise.all(
           payload.order.map((key) => read(`transcript:item:${agentId}:${key}`)),
         );
@@ -624,11 +661,13 @@ async function runMessageReceiptScenario(
       }
     }, agent.id);
     assert.equal(
-      JSON.parse(shortCachedTranscript[0].payload).metadata.truncated,
+      JSON.parse(required(shortCachedTranscript[0]).payload).metadata.truncated,
       false,
     );
     await changeFixture(agent.id, "delivered", target, state.token);
-    latest = await get(`/api/transcript?id=${agent.id}`);
+    latest = await get<TranscriptPageResponse>(
+      `/api/transcript?id=${agent.id}`,
+    );
     assert.equal(latest.items.length, 120);
     assert.ok(
       !latest.items.some(
@@ -636,7 +675,14 @@ async function runMessageReceiptScenario(
           item.clientMessageId === id || item.id === `${agent.id}:${id}`,
       ),
     );
-    assert.deepEqual((await get(`/api/queue?agent=${agent.id}`)).items, []);
+    assert.deepEqual(
+      (
+        await get<import("../../src/api.ts").QueueView>(
+          `/api/queue?agent=${agent.id}`,
+        )
+      ).items,
+      [],
+    );
     assert.ok(
       !(await readTestState(target)).runtime.events.some(
         (event) => event.id === id,
@@ -652,6 +698,7 @@ async function runMessageReceiptScenario(
       }, "The exact delivered receipt did not reconcile an accepted message outside the latest 120 items");
     } catch (error) {
       const status = await bubble(text).getByRole("status").allTextContents();
+      if (!(error instanceof Error)) throw error;
       throw new Error(
         `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts, outboxReceipt: await readOutboxReceipt(id), durable: await storage.evaluate(async (key) => (await window.receiptFixtureDb.outbox.storageInstance.findDocumentsById([key], false)).map((doc) => JSON.parse(doc.payload)), id) })}`,
       );
@@ -682,18 +729,18 @@ async function runMessageReceiptScenario(
       (key) => window.readReceiptFixture(key),
       id,
     );
-    assert.equal(delivered.body.id, id);
-    assert.equal(delivered.body.text, text);
-    assert.equal(delivered.status, "accepted");
-    assert.equal(delivered.receipt.status, "delivered");
-    assert.equal(delivered.receipt.materialized, true);
-    assert.equal(delivered.displayPending, false);
+    assert.equal(required(delivered).body.id, id);
+    assert.equal(required(delivered).body.text, text);
+    assert.equal(required(delivered).status, "accepted");
+    assert.equal(required(required(delivered).receipt).status, "delivered");
+    assert.equal(required(required(delivered).receipt).materialized, true);
+    assert.equal(required(delivered).displayPending, false);
     const uncertain = await storage.evaluate(
       (key) => window.readReceiptFixture(key),
       uncertainId,
     );
-    assert.equal(uncertain.status, "uncertain");
-    assert.equal(uncertain.receipt.status, "uncertain");
+    assert.equal(required(uncertain).status, "uncertain");
+    assert.equal(required(required(uncertain).receipt).status, "uncertain");
     await bubble(uncertainText)
       .getByText("Delivery unconfirmed", { exact: true })
       .waitFor();
@@ -702,7 +749,7 @@ async function runMessageReceiptScenario(
       missingId,
     );
     assert.equal(
-      missing.receipt.status,
+      required(required(missing).receipt).status,
       "queued",
       "An omitted receipt must not become confirmed delivery",
     );
@@ -716,10 +763,12 @@ async function runMessageReceiptScenario(
     {
       await page.goto(origin + "check");
       await storage.evaluate(async (rows) => {
-        for (const row of [...rows.slice(1), rows[0]])
+        for (const row of [...rows.slice(1), rows[0]]) {
+          if (!row) throw new Error("Missing saved transcript row");
           await window.receiptFixtureDb.projections.incrementalUpsert(row);
+        }
       }, shortCachedTranscript);
-      const freshTranscriptGate = new Promise((resolve) => {
+      const freshTranscriptGate = new Promise<void>((resolve) => {
         releaseFreshTranscript = resolve;
       });
       await page.route("**/api/sync/**", async (route) => {
@@ -732,7 +781,7 @@ async function runMessageReceiptScenario(
           await freshTranscriptGate;
         await route.continue();
       });
-      await page.goto(origin);
+      await page.goto(required(origin));
       await bubble(text).waitFor();
       assert.equal(
         await page
@@ -839,3 +888,17 @@ test("delivered receipt reconciles a hidden accepted outbox entry", async ({
   test.setTimeout(30_000);
   await runMessageReceiptScenario({ browser, context }, true);
 });
+
+declare global {
+  interface Window {
+    receiptFixtureDb: Awaited<
+      ReturnType<typeof import("../../src/sync/client.ts").syncDatabase>
+    >["db"];
+    readReceiptFixture: (
+      key: string,
+    ) => Promise<Omit<
+      import("../../src/sync/send.ts").OutboxEntry,
+      "id"
+    > | null>;
+  }
+}

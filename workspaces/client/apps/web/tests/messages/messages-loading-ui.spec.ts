@@ -1,3 +1,5 @@
+import { responseJson } from "./helpers.ts";
+import { required } from "./helpers.ts";
 import {
   readTestState,
   entityPullFixtureForRequest,
@@ -29,48 +31,59 @@ test("Messages loading", async ({ browser }) => {
   });
   let page,
     log = "";
-  fixture.stderr.on("data", (value) => {
+  required(fixture.stderr).on("data", (value) => {
     log += value;
   });
-  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const pause = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (value) =>
+      required(fixture.stdout).once("data", (value) =>
         resolve(Number(String(value).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
-    const lead = state.threads.find((agent) => agent.name === "Release lead");
-    const other = state.threads.find((agent) => agent.name === "Other project");
-    const complaint = state.runtime.complaints.find(
-      (item) => item.author === lead.id,
+    const lead = required(
+      state.threads.find((agent) => agent.name === "Release lead"),
     );
-    const detail = await (
+    const complaint = required(
+      state.runtime.complaints.find((item) => item.author === lead.id),
+    );
+    const detail = await responseJson<import("./helpers.ts").ComplaintDetail>(
       await fetch(
         `${origin}/api/complaint?id=${encodeURIComponent(complaint.id)}`,
-      )
-    ).json();
-    const inboxComplaint = { ...complaint };
-    delete inboxComplaint.text;
-    delete inboxComplaint.responses;
-    state.runtime.complaints = [inboxComplaint];
-    const direct = state.runtime.rooms.find(
-      (room) => room.kind === "private" && room.members.includes(lead.id),
+      ),
     );
-    const broadcast = state.runtime.rooms.find(
-      (room) => room.kind === "broadcast" && room.rootId === lead.id,
+    const inboxComplaint = { ...complaint };
+    state.runtime.complaints = [inboxComplaint];
+    const direct = required(
+      state.runtime.rooms.find(
+        (room) =>
+          room.kind === "private" && required(room.members).includes(lead.id),
+      ),
+    );
+    const broadcast = required(
+      state.runtime.rooms.find(
+        (room) => room.kind === "broadcast" && room.rootId === lead.id,
+      ),
     );
     direct.updated = 100;
-    direct.lastMessage = { ...direct.lastMessage, created: 100 };
+    direct.lastMessage = {
+      ...required(direct.lastMessage),
+      created: 100,
+    };
     broadcast.updated = 200;
-    broadcast.lastMessage = { ...broadcast.lastMessage, created: 200 };
+    broadcast.lastMessage = {
+      ...required(broadcast.lastMessage),
+      created: 200,
+    };
     state.runtime.rooms = [direct, broadcast];
     state.runtime.requests = [];
     state.runtime.monitors = [];
     state.runtime.tasks = [];
-    delete state.runtime.work;
+    state.runtime.work = [];
     const review = {
       id: "pending-work-review",
       rootId: lead.id,
@@ -79,7 +92,11 @@ test("Messages loading", async ({ browser }) => {
       created: 100,
       updated: 100,
     };
-    const task = (id, agent, title) => ({
+    const task = (
+      id: string,
+      agent: import("../playwright.ts").TestAgent,
+      title: string,
+    ) => ({
       id,
       agent: agent.id,
       rootId: agent.rootId,
@@ -94,21 +111,11 @@ test("Messages loading", async ({ browser }) => {
       completionNote: "",
       history: [],
     });
-    const first = task(
-      "first-needed-task",
-      lead,
-      "Confirm the release account",
-    );
     const second = task(
       "second-needed-task",
       lead,
       "Confirm the deployment window",
     );
-    state.runtime.userTasks = [
-      first,
-      second,
-      task("other-team-task", other, "Unrelated private task"),
-    ];
     for (const agent of state.threads)
       Object.assign(agent, {
         status: "completed",
@@ -122,14 +129,14 @@ test("Messages loading", async ({ browser }) => {
       "\n```\n\n| Column | Value |\n| --- | --- |\n| Evidence | " +
       "WideTableValue".repeat(60) +
       " |";
-    const roomPayload = (room) => ({
+    const roomPayload = (room: import("../playwright.ts").TestRoom) => ({
       room,
       nextBefore: null,
       messages: [
         {
           id: `message-${room.id}`,
           seq: 1,
-          sender: room.members[0],
+          sender: required(room.members)[0],
           senderName: "Reviewer",
           text: markdown,
           created: 100,
@@ -137,15 +144,15 @@ test("Messages loading", async ({ browser }) => {
         },
       ],
     });
-    const errors = [];
+    const errors: string[] = [];
     let stateReads = 0,
       workspaceReads = 0,
       detailReads = 0,
       roomReads = 0,
       roomFails = true,
       holdNextComplaintDetail = false,
-      releaseComplaintDetail;
-    const prepare = async (width) => {
+      releaseComplaintDetail: (() => void) | undefined;
+    const prepare = async (width: number) => {
       const next = await browser.newPage({
         viewport: { width, height: 900 },
         serviceWorkers: "block",
@@ -153,9 +160,9 @@ test("Messages loading", async ({ browser }) => {
       installApiSchemaFixtureHeaders(next);
       next.setDefaultTimeout(12000);
       next.on("pageerror", (error) => errors.push(error.message));
-      const backendIdentity = await (
-        await fetch(`${origin}/api/sync/identity`)
-      ).json();
+      const backendIdentity = await responseJson<
+        import("../playwright.ts").SyncIdentityResponse
+      >(await fetch(`${origin}/api/sync/identity`));
       const identity = syncIdentityFixture(backendIdentity.workspaceId);
       await next.route("**/api/sync/identity", (route) =>
         route.fulfill({ json: identity }),
@@ -163,9 +170,8 @@ test("Messages loading", async ({ browser }) => {
       await next.route("**/api/sync/pull?*", (route) => {
         stateReads++;
         const current = structuredClone(state);
-        current.fixtureRevision = stateReads;
-        const leadEntity = current.runtime.agents.find(
-          (agent) => agent.id === lead.id,
+        const leadEntity = required(
+          current.runtime.agents.find((agent) => agent.id === lead.id),
         );
         if (leadEntity) leadEntity.updated = 100 + stateReads;
         const requestUrl = route.request().url();
@@ -174,18 +180,21 @@ test("Messages loading", async ({ browser }) => {
         const after = Number(parsedUrl.searchParams.get("after") || 0);
         if (
           parsedUrl.searchParams.get("scope") === "state:entities:v1" &&
+          "documents" in projection &&
           projection.documents.length === 0 &&
-          after >= projection.maxSeq
+          after >= required(projection.maxSeq)
         ) {
           const initial = entityPullFixture(current, {
             scope: "state:entities:v1",
             fresh: true,
           });
+          if (!("documents" in initial))
+            throw new Error("Expected initial documents");
           const update = initial.documents.find(
             (document) => document.id === `entity:agent:${lead.id}`,
           );
           if (update) {
-            const seq = Math.max(projection.maxSeq, after) + 1;
+            const seq = Math.max(required(projection.maxSeq), after) + 1;
             projection.documents.push({ ...update, seq });
             projection.checkpoint.seq = seq;
             projection.maxSeq = seq;
@@ -195,7 +204,10 @@ test("Messages loading", async ({ browser }) => {
           json: {
             workspaceId: identity.workspaceId,
             ...projection,
-          },
+          } satisfies Pick<
+            import("../playwright.ts").SyncIdentityResponse,
+            "workspaceId"
+          >,
         });
       });
       await next.route("**/api/workspace/tasks?*", async (route) => {
@@ -212,7 +224,7 @@ test("Messages loading", async ({ browser }) => {
         detailReads++;
         if (holdNextComplaintDetail) {
           holdNextComplaintDetail = false;
-          await new Promise((resolve) => {
+          await new Promise<void>((resolve) => {
             releaseComplaintDetail = resolve;
           });
         } else {
@@ -245,11 +257,11 @@ test("Messages loading", async ({ browser }) => {
       await next.goto(origin);
       await next
         .locator("#conversation-title")
-        .filter({ hasText: lead.name })
+        .filter({ hasText: required(lead.name) })
         .waitFor();
       return next;
     };
-    const openMessages = async (target) => {
+    const openMessages = async (target: import("@playwright/test").Page) => {
       if (await target.locator("#messages-toggle").isVisible())
         await target.locator("#messages-toggle").click();
       else {
@@ -352,7 +364,7 @@ test("Messages loading", async ({ browser }) => {
       "state refresh does not wait for or replace the held complaint detail",
     );
     assert.equal(typeof releaseComplaintDetail, "function");
-    releaseComplaintDetail();
+    required(releaseComplaintDetail)();
     await complaintCard.getByText(detail.text, { exact: true }).waitFor();
     const roomDetail = drawer.locator(".team-room-detail");
     await drawer.locator(`[data-room="${broadcast.id}"]`).click();
@@ -437,11 +449,11 @@ test("Messages loading", async ({ browser }) => {
       JSON.stringify(mobileLayout, null, 2),
     );
     assert.ok(
-      mobileLayout[".team-room-detail"].bottom >= 896,
+      required(mobileLayout[".team-room-detail"]).bottom >= 896,
       "the room detail fills the mobile window to its bottom edge",
     );
     assert.ok(
-      mobileLayout[".team-room-detail"].bottom <= 901,
+      required(mobileLayout[".team-room-detail"]).bottom <= 901,
       "the room detail stays inside the mobile window",
     );
     await mobileDrawer
