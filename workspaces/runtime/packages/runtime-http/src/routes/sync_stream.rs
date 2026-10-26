@@ -1557,6 +1557,7 @@ fn resource_changes_event(
                 entity_changes: entity_changes.map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
+                terminal_base_offset: None,
                 transcript_changes: None,
                 transcript_snapshot: None,
                 resource: None,
@@ -1726,6 +1727,7 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
     for entry in &mut payload.resource_versions {
         entry.cursor = None;
         entry.reply_kind = None;
+        entry.terminal_base_offset = None;
         entry.entity_changes = None;
         entry.transcript_changes = None;
         entry.transcript_snapshot = None;

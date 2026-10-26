@@ -42880,6 +42880,12 @@
             "title": "Revision",
             "type": "integer"
           },
+          "terminalBaseOffset": {
+            "description": "Required for terminal-output delta entries: the persisted base offset in Unicode scalars. The client applies the delta only when this equals its persisted terminal output offset. Omitted for snapshots.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
           "transcriptChanges": {
             "anyOf": [
               {

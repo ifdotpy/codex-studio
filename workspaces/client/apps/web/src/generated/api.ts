@@ -19262,6 +19262,8 @@ export interface components {
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
+      /** @description Required for terminal-output delta entries: the persisted base offset in Unicode scalars. The client applies the delta only when this equals its persisted terminal output offset. Omitted for snapshots. */
+      terminalBaseOffset?: number;
       transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
       /** @description Newest transcript history window sent immediately after a subscription acknowledgement, with older-history cursors. The server shrinks it to fit the stream event byte limit; a single oversized newest item requires scoped recovery. */
       transcriptSnapshot?:

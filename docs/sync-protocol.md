@@ -213,17 +213,26 @@ uses Unicode-scalar offsets. Each live subscription sends an initial snapshot,
 then only output since its last sent cursor, including status updates with no new
 text. Buffer loss, an output reset, or an oversized interval sends a bounded
 replacement snapshot. Removing a terminal selector releases its live cursor.
-The renderer merges intervals and stores retained output and its resume cursor
-under the projection write lock before notifying readers. A fresh transport or
-new stream owner always requests a bounded authoritative snapshot, even when an
-older output cursor is cached. A reconnect under the same owner reuses its
-proven applied base or receives a replacement snapshot. If a replacement snapshot
-cannot be persisted or is skipped during cancellation or overflow, later intervals
-retain only a recovery hint. Re-add and reconnect omit the saved cursor until a
-fresh snapshot commits, so stale output cannot become the new base. The stream
-owner shares its complete merged terminal view with followers as a snapshot only
-after cursor persistence succeeds; cached replay and ordinary appends require no
-terminal output GETs in those followers. Raw server intervals retain delta semantics.
+The renderer applies every resource frame through one FIFO per stream source,
+including hints and overflow frames. Each frame is persisted before dispatch;
+its reason does not select a persistence path. Terminal deltas declare
+`terminalBaseOffset` in the OpenAPI-owned resource entry, in Unicode scalars.
+Under the projection write lock, persistence compares that base with the saved
+output offset, then stores the merged output and cursor together. Entity and
+transcript deltas use their existing `after` bases. Reconnect and ownership
+changes read persisted cursors; they need no in-memory terminal baseline proof.
+Persisted terminal revisions prevent late snapshots from restoring pre-reset output.
+
+The reply-kind and cursor contract applies to entries carrying those fields.
+Legacy entity and transcript batches without them retain their existing
+persistence paths. Requiring cursors for those producers and removing the legacy
+paths is deferred work; frame reasons do not decide their validity.
+
+Persistence errors, deadlines, and exhausted queue capacity stop delivery and
+request recovery for the affected resources. Subscription removal strips only
+removed entries; source close silently drops pending frames. The stream owner
+shares its complete merged terminal view with followers as a snapshot only after
+persistence succeeds. Raw server intervals retain delta semantics.
 Saved terminal history and explicit retries remain user actions.
 
 The existing native EventSource transport and RxDB projection cache remain in

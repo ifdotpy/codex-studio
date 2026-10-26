@@ -294,6 +294,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     const delta = await waitRaw(3);
     expect(delta.resourceVersions[0]).toMatchObject({
       replyKind: "delta",
+      terminalBaseOffset: 2,
       viewSnapshot: { terminalOutput: { text: "中", offset: 3 } },
     });
     await waitApplied(3, "a🙂中");

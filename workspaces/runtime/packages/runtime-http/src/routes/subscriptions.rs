@@ -211,6 +211,7 @@ async fn view_initial(
         value["revision"] = serde_json::json!(offset);
         value["cursor"] = serde_json::json!({"workspaceId":state.workspace_id,"seq":offset});
         value["replyKind"] = serde_json::json!(if since
+            .as_ref()
             .is_some_and(|c| c.workspace_id == state.workspace_id && c.seq <= offset)
             && output["truncated"] == false
         {
@@ -218,6 +219,9 @@ async fn view_initial(
         } else {
             "snapshot"
         });
+        if value["replyKind"] == "delta" {
+            value["terminalBaseOffset"] = serde_json::json!(since.map(|cursor| cursor.seq));
+        }
     }
     if let Some(room) = snapshot.get("room") {
         let seq = room["messages"]
@@ -699,6 +703,7 @@ mod tests {
         assert_eq!(resumed["viewSnapshot"]["terminalOutput"]["text"], "中");
         assert_eq!(resumed["cursor"]["seq"], 3);
         assert_eq!(resumed["replyKind"], "delta");
+        assert_eq!(resumed["terminalBaseOffset"], 2);
         let future = initial_snapshot(
             state.clone(),
             resource.clone(),

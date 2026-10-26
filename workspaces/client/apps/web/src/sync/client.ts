@@ -668,9 +668,9 @@ export function createSyncClient(options: SyncClientOptions) {
     await withEntityProjectionWrite(db.projections.database.name, async () => {
       if (!isCurrent()) return;
       const applied = await readSubscriptionCursor(resource);
-      if (applied && applied.seq > cursor.seq) return;
-      // A mutation response or another tab may already cover the interval's
-      // prefix. Only a missing base or a forward gap requires recovery.
+      if (applied && applied.seq >= cursor.seq) return;
+      // Another tab or a mutation response may already cover an interval prefix.
+      // Entity writes are idempotent; only a missing base or forward gap fails.
       if (
         entry.replyKind !== "snapshot" &&
         (!applied || applied.seq < changes.after)
@@ -903,6 +903,17 @@ export function createSyncClient(options: SyncClientOptions) {
     event: import("./subscriptions/events").ResourceChangeEvent,
     isCurrent: () => boolean,
   ) {
+    // Hints participate in delivery ordering but have no durable projection data.
+    if (
+      !event.resourceVersions.some(
+        (entry) =>
+          entry.cursor ||
+          entry.entityChanges ||
+          entry.transcriptChanges ||
+          entry.transcriptSnapshot,
+      )
+    )
+      return;
     // Older browsers keep the existing pull path. Tab-local serialization cannot
     // protect a shared projection from another tab's reset.
     if (!canSerializeEntityProjectionWrites()) {
@@ -913,14 +924,7 @@ export function createSyncClient(options: SyncClientOptions) {
       return;
     }
     const { db, workspaceId } = await syncDatabase();
-    if (!isCurrent() || workspaceId !== event.workspaceId) {
-      // Returning without a terminal write must not grant ownership baseline proof.
-      for (const [index, entry] of event.resourceVersions.entries()) {
-        const resource = entry.resource ?? event.resources[index];
-        if (resource?.kind === "terminal-output") delete entry.cursor;
-      }
-      return;
-    }
+    if (!isCurrent() || workspaceId !== event.workspaceId) return;
     for (const [index, entry] of event.resourceVersions.entries()) {
       if (!isCurrent()) return;
       const resource = entry.resource ?? event.resources[index];
@@ -931,6 +935,10 @@ export function createSyncClient(options: SyncClientOptions) {
         (resource.kind === "terminal-output" || resource.kind === "room")
       ) {
         const cursor = entry.cursor;
+        if (entry.replyKind !== "snapshot" && entry.replyKind !== "delta")
+          throw new Error("View subscription has no reply kind");
+        if (resource.kind === "room" && entry.replyKind !== "snapshot")
+          throw new Error("Room subscription requires a complete snapshot");
         if (cursor.workspaceId !== workspaceId)
           throw new Error("Foreign view cursor");
         await withEntityProjectionWrite(
@@ -959,9 +967,10 @@ export function createSyncClient(options: SyncClientOptions) {
             if (
               snapshot.terminalOutput &&
               entry.replyKind === "delta" &&
-              previous?.workspaceId === workspaceId &&
-              previous.viewSnapshot?.terminalOutput?.offset >
-                snapshot.terminalOutput.offset
+              (previous?.workspaceId !== workspaceId ||
+                entry.terminalBaseOffset === undefined ||
+                entry.terminalBaseOffset !==
+                  previous.viewSnapshot?.terminalOutput?.offset)
             )
               throw new Error("Terminal output cursor has no local base");
             if (snapshot.terminalOutput)
@@ -1023,9 +1032,8 @@ export function createSyncClient(options: SyncClientOptions) {
 
       if (resource?.kind === "transcript" && entry.transcriptSnapshot) {
         if (
-          (event.reason !== "initial" && event.reason !== "reconnect") ||
           entry.transcriptSnapshot.items.length >
-            SYNC_TRANSCRIPT_STREAM_MAX_ITEMS
+          SYNC_TRANSCRIPT_STREAM_MAX_ITEMS
         )
           throw new TypeError("Invalid stream transcript snapshot");
         await persistTranscriptProjection(

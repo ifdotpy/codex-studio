@@ -219,6 +219,10 @@ async function setup() {
   const delivery = new ResourceEntityDelivery(
     client.persistResourceEntityChanges,
     dispatch,
+    () => {
+      connection("degraded", "connecting");
+      return true;
+    },
   );
   const frame = (
     seq: number,
@@ -419,6 +423,47 @@ it("does not use HTTP recovery to bypass a schema-mismatched stream", async () =
   expect(f.pulls()).toEqual([]);
   expect(f.snapshots).toEqual([]);
 });
+
+it.each([false, true])(
+  "applies an entity delta with an already persisted prefix (staged=%s)",
+  async (staged) => {
+    const f = await setup();
+    await f.client.persistResourceEntityChanges(f.frame(9), () => true);
+    const event = f.frame(11);
+    event.resourceVersions[0].replyKind = "delta";
+    event.resourceVersions[0].entityChanges!.after = 8;
+    if (staged) {
+      const { EntityTransferAssembler } = await import("./entityTransfer");
+      const assembler = new EntityTransferAssembler();
+      const interval = await assembler.receive({
+        protocol: event.protocol,
+        workspaceId: f.workspaceId,
+        epoch: event.epoch,
+        revision: event.revision,
+        reason: event.reason,
+        resource: { kind: "state" },
+        cursor: { workspaceId: f.workspaceId, seq: 11 },
+        replyKind: "delta",
+        transferId: "covered-prefix",
+        pageIndex: 0,
+        partIndex: 0,
+        partCount: 1,
+        complete: true,
+        data: JSON.stringify(event.resourceVersions[0].entityChanges),
+      });
+      try {
+        await f.client.persistStagedEntityTransfer(interval!, () => true);
+      } finally {
+        await interval?.dispose();
+        await assembler.invalidate();
+      }
+    } else await f.client.persistResourceEntityChanges(event, () => true);
+    expect(await f.client.readSubscriptionCursor({ kind: "state" })).toEqual({
+      workspaceId: f.workspaceId,
+      seq: 11,
+    });
+  },
+);
 
 it.each([false, true])(
   "snapshot staged=%s preserves a newer independently subscribed row and evicts only covered versions",
@@ -850,8 +895,8 @@ it.each([
   },
 );
 
-it.each(["overflow", "inline removal", "staged removal"])(
-  "the actual Work adapter recovers a still-active interval discarded by %s",
+it.each(["burst", "inline removal", "staged removal"])(
+  "the actual Work adapter preserves a still-active interval during %s",
   async (cause) => {
     const f = await setup();
     vi.stubGlobal("location", { origin: "http://studio.test" });
@@ -969,7 +1014,7 @@ it.each(["overflow", "inline removal", "staged removal"])(
       else source.emit("resources", frame);
       await started.promise;
       expect(held).toHaveBeenCalledOnce();
-      if (cause === "overflow") {
+      if (cause === "burst") {
         for (const [index, other] of others.entries())
           source.emit("resources", {
             protocol: frame.protocol,
@@ -989,18 +1034,15 @@ it.each(["overflow", "inline removal", "staged removal"])(
             ],
           });
       } else stopOthers[0]();
-      expect(source.closed).toBe(true);
+      expect(source.closed).toBe(false);
       finish();
-      // A replacement stream must not race the canceled write still owning RxDB.
       await held.mock.results[0].value;
       await vi.advanceTimersByTimeAsync(0);
-      await vi.waitFor(() => expect(mocks.sources).toHaveLength(2), {
-        timeout: 2500,
+      expect(mocks.sources).toHaveLength(1);
+      expect(await f.client.readSubscriptionCursor(ref)).toEqual({
+        workspaceId: f.workspaceId,
+        seq: 5,
       });
-      expect(await f.client.readSubscriptionCursor(ref)).toBeUndefined();
-      const replacement = mocks.sources[1];
-      replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
-      replacement.emit("resources", structuredClone(frame));
       await vi.waitFor(() =>
         expect(subscriptions.getSnapshot(ref)).toMatchObject({
           status: "live",
