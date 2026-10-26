@@ -3,6 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use studio_runtime_schema::complaints::ComplaintResponseStatus;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore,
     SyncDocumentsRepository, Transaction,
@@ -20,9 +21,6 @@ use crate::{
 
 const USER: &str = "user";
 const PENDING: &str = "pending";
-const IN_PROGRESS: &str = "in_progress";
-const RESOLVED: &str = "resolved";
-const DECLINED: &str = "declined";
 
 #[derive(Debug, Error)]
 pub enum QuestionsWriteError {
@@ -52,7 +50,7 @@ pub struct ComplaintResponseWrite<'a> {
     pub complaint_id: &'a str,
     pub request_id: &'a str,
     pub text: &'a str,
-    pub status: &'a str,
+    pub status: ComplaintResponseStatus,
     pub version: i64,
     pub signature: &'a str,
 }
@@ -605,7 +603,11 @@ pub fn respond_to_complaint(
             });
         let stopped = event_write::truthy(lead.extra.get("deletedAt"))
             || !event_write::truthy(lead.extra.get("autoWake"));
-        if !matches!(status, RESOLVED | DECLINED) || !(answered || stopped) {
+        let closing = match status {
+            ComplaintResponseStatus::InProgress => false,
+            ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,
+        };
+        if !closing || !(answered || stopped) {
             return Err(QuestionsWriteError::InvalidRequest(
                 "This complaint requires a response from its orchestrator",
             ));
@@ -617,10 +619,7 @@ pub fn respond_to_complaint(
         ));
     }
     let text = event_write::python_strip(text);
-    if text.is_empty()
-        || text.chars().count() > 12_000
-        || !matches!(status, IN_PROGRESS | RESOLVED | DECLINED)
-    {
+    if text.is_empty() || text.chars().count() > 12_000 {
         return Err(QuestionsWriteError::InvalidRequest(
             "Record an action or reason and select in_progress, resolved, or declined",
         ));

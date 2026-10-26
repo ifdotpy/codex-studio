@@ -28,6 +28,7 @@ export default {
       "src/servers/serverNames.test.ts",
       "src/servers/serverRows.test.ts",
       "src/renameRequest.test.ts",
+      "src/components/shell/messages/complaintReplyRequest.test.ts",
       "src/sync/drafts.publication.test.ts",
       "src/sync/transcriptCache.test.ts",
       "src/sync/entityProjectionObserver.test.ts",

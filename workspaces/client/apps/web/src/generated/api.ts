@@ -11216,7 +11216,10 @@ export interface components {
        * Status
        * @default null
        */
-      status?: ("in_progress" | "resolved" | "declined") | null | undefined;
+      status?:
+        | components["schemas"]["ComplaintResponseStatus"]
+        | null
+        | undefined;
       /** Text */
       text: string;
       /**
@@ -11434,6 +11437,8 @@ export interface components {
       /** Text */
       text: string;
     };
+    /** @enum {string} */
+    ComplaintResponseStatus: "in_progress" | "resolved" | "declined";
     /**
      * ComplaintStatus
      * @enum {string}

@@ -33,6 +33,15 @@ the owner's explicit serde compatibility codec, so malformed timing fails during
 deserialization and an omitted field keeps its default. Queue and transcript responses expose canonical timing. Persisted old
 events remain readable through boundary normalization without a migration.
 
+Complaint response status is owned by
+[`ComplaintResponseStatus`](../runtime-schema/src/complaints.rs), shared by the
+service and the generated OpenAPI and web types. The strict generated request
+DTO preserves optional and null fields for receipt signatures. The HTTP adapter
+immediately converts it into a complete submit or respond command, preserving
+the omitted-action default and existing validation locations. Transactions only
+receive fields required by their action; response retries retain the original
+wire signature and are replayed before version and recipient checks.
+
 The server removes only OpenAPI documentation metadata, sorts the documented
 schema unions and map keys explicitly, then hashes compact JSON with SHA-256.
 This is the Rust implementation of Python's canonicalizer-v3 rules, so editing

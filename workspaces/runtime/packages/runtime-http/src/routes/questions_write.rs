@@ -345,76 +345,106 @@ async fn delete_question(
     >(result)?))
 }
 
+/// The generated wire DTO retains absent/null fields for receipt signatures.
+/// Only complete action-specific commands cross into the write transaction.
+enum ComplaintCommand {
+    Submit {
+        lead: String,
+        id: String,
+        text: String,
+    },
+    Respond {
+        complaint_id: String,
+        id: String,
+        text: String,
+        status: studio_runtime_schema::complaints::ComplaintResponseStatus,
+        version: i64,
+        signature: String,
+    },
+}
+
+impl TryFrom<crate::generated::ComplaintBody> for ComplaintCommand {
+    type Error = ApiError;
+
+    fn try_from(body: crate::generated::ComplaintBody) -> Result<Self, Self::Error> {
+        use crate::generated::ComplaintBodyAction;
+
+        match body.action.as_ref().unwrap_or(&ComplaintBodyAction::Submit) {
+            ComplaintBodyAction::Submit => {
+                let lead = body
+                    .lead
+                    .flatten()
+                    .filter(|lead| !lead.trim().is_empty())
+                    .ok_or_else(|| ApiError::validation(vec![Value::String("body.lead".into())]))?;
+                Ok(Self::Submit {
+                    lead,
+                    id: body.id,
+                    text: body.text,
+                })
+            }
+            ComplaintBodyAction::Respond => {
+                // Serialize before consuming the wire DTO: omitted and explicit
+                // null fields must keep their historical receipt signatures.
+                let mut data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
+                data.as_object_mut()
+                    .ok_or_else(ApiError::internal)?
+                    .insert("operation".to_owned(), json!("complaint_response"));
+                let signature = studio_runtime_services::event_write::request_signature(&data);
+                let (Some(complaint_id), Some(status), Some(version)) = (
+                    body.complaint_id.flatten(),
+                    body.status.flatten(),
+                    body.version.flatten(),
+                ) else {
+                    return Err(ApiError::validation(vec![Value::String("body".into())]));
+                };
+                Ok(Self::Respond {
+                    complaint_id,
+                    id: body.id,
+                    text: body.text,
+                    status,
+                    version,
+                    signature,
+                })
+            }
+        }
+    }
+}
+
 async fn complaints(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ComplaintBody>,
 ) -> Result<Json<crate::generated::ComplaintRecordResponse>, ApiError> {
-    let request_id = body.id.clone();
-    let text = body.text.clone();
-    let action = body
-        .action
-        .as_ref()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| "submit".to_owned());
-    let lead_id = body.lead.clone().flatten().unwrap_or_default();
-    let complaint_id = body.complaint_id.clone().flatten().unwrap_or_default();
-    let status = body
-        .status
-        .clone()
-        .flatten()
-        .map(|value| value.to_string())
-        .unwrap_or_default();
-    let version = body.version.flatten().unwrap_or(-1);
     let validators = state.validators.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let command = ComplaintCommand::try_from(body)?;
     let event_inserted = Arc::new(AtomicBool::new(false));
     let inserted = event_inserted.clone();
-    let signature = match action.as_str() {
-        "submit" => {
-            if lead_id.trim().is_empty() {
-                return Err(ApiError::validation(vec![Value::String(
-                    "body.lead".into(),
-                )]));
-            }
-            String::new()
-        }
-        "respond" => {
-            if body
-                .complaint_id
-                .as_ref()
-                .and_then(Option::as_ref)
-                .is_none()
-                || body.status.as_ref().and_then(Option::as_ref).is_none()
-                || body.version.flatten().is_none()
-            {
-                return Err(ApiError::validation(vec![Value::String("body".into())]));
-            }
-            let mut data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
-            data.as_object_mut()
-                .ok_or_else(ApiError::internal)?
-                .insert("operation".to_owned(), json!("complaint_response"));
-            studio_runtime_services::event_write::request_signature(&data)
-        }
-        _ => return Err(ApiError::internal()),
-    };
     let result = write(store, move |transaction| {
-        let result = if action == "submit" {
-            questions_write::submit_complaint(transaction, &lead_id, &request_id, &text, |record| {
-                validators.validate_table_record("runtime_complaints", record)
-            })
-        } else {
-            questions_write::respond_to_complaint(
+        let result = match command {
+            ComplaintCommand::Submit { lead, id, text } => {
+                questions_write::submit_complaint(transaction, &lead, &id, &text, |record| {
+                    validators.validate_table_record("runtime_complaints", record)
+                })
+            }
+            ComplaintCommand::Respond {
+                complaint_id,
+                id,
+                text,
+                status,
+                version,
+                signature,
+            } => questions_write::respond_to_complaint(
                 transaction,
                 ComplaintResponseWrite {
                     complaint_id: &complaint_id,
-                    request_id: &request_id,
+                    request_id: &id,
                     text: &text,
-                    status: &status,
+                    status,
                     version,
                     signature: &signature,
                 },
                 |record| validators.validate_table_record("runtime_complaints", record),
-            )
+            ),
         }?;
         inserted.store(result.wake_event_worker, Ordering::Relaxed);
         Ok(result.record)

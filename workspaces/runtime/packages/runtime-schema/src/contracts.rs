@@ -500,6 +500,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::MAX_SAFE_INTEGER,
     )?;
     check_delivery_parity(openapi)?;
+    crate::complaints::check_schema_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
     for path in [
         "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
@@ -879,6 +880,9 @@ fn supervisor_handshake_schema() -> Value {
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     check_backend_kind_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    openapi["components"]["schemas"]["ComplaintResponseStatus"] = crate::complaints::schema();
+    openapi["components"]["schemas"]["ComplaintBody"]["properties"]["status"] =
+        crate::complaints::status_property();
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())

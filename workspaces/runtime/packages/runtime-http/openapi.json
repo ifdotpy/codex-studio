@@ -21634,12 +21634,7 @@
           "status": {
             "anyOf": [
               {
-                "enum": [
-                  "in_progress",
-                  "resolved",
-                  "declined"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/ComplaintResponseStatus"
               },
               {
                 "type": "null"
@@ -22245,6 +22240,14 @@
         ],
         "title": "ComplaintResponseDto",
         "type": "object"
+      },
+      "ComplaintResponseStatus": {
+        "enum": [
+          "in_progress",
+          "resolved",
+          "declined"
+        ],
+        "type": "string"
       },
       "ComplaintStatus": {
         "enum": [
