@@ -1,4 +1,4 @@
-import type {} from "./mobile-send.fixture.ts";
+import { installMobileSend } from "./mobile-send.fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import {
   fixtureServerOrigin,
@@ -89,14 +89,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     await page.goto(fixtureServerOrigin(server));
     const waitUntil = (check: () => boolean | Promise<boolean>) =>
       until(check, "Expected mobile send state did not arrive");
-    const origin = fixtureServerOrigin(server);
-    const installSendHarness = async () => {
-      await page.addScriptTag({
-        type: "module",
-        url: origin + "tests/mobile/mobile-send.fixture.ts",
-      });
-      await page.waitForFunction(() => Boolean(window.mobileSend));
-    };
+    const installSendHarness = () => page.evaluate(installMobileSend);
     const input = page.locator("#message"),
       send = page.locator("#send");
     await input.waitFor();
