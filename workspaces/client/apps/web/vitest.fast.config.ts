@@ -47,6 +47,12 @@ export default {
       "src/components/Conversation.limits.test.ts",
       // web unit safety witnesses
       "src/api.test.ts",
+      "src/types.test.ts",
+      "src/components/shell/WorkspaceBadge.test.ts",
+      "src/components/backgroundTaskModel.test.ts",
+      "src/components/shell/BackgroundTasks.test.ts",
+      "src/components/shell/MonitorRestart.test.ts",
+      "src/sync/outboxReceiptRecovery.test.ts",
       "src/playwrightWorkers.test.ts",
       "src/startWait.test.ts",
       "src/apiSchema.test.ts",
