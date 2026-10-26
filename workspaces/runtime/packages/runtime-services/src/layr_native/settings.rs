@@ -59,14 +59,18 @@ pub fn configure(state: &Path, root: Option<&Path>) -> Result<Value> {
 }
 
 pub(super) fn same_root(left: &Path, right: &Path) -> bool {
-    left.canonicalize().unwrap_or_else(|_| left.to_owned())
-        == right.canonicalize().unwrap_or_else(|_| right.to_owned())
+    CanonicalPath::existing(left)
+        .map(CanonicalPath::into_path_buf)
+        .unwrap_or_else(|_| left.to_owned())
+        == CanonicalPath::existing(right)
+            .map(CanonicalPath::into_path_buf)
+            .unwrap_or_else(|_| right.to_owned())
 }
 
 /// A link to an operator's store does not make that store Studio-owned.
 pub(super) fn owns_store(state: &Path, root: &Path) -> bool {
-    let expected = state
-        .canonicalize()
+    let expected = CanonicalPath::existing(state)
+        .map(CanonicalPath::into_path_buf)
         .unwrap_or_else(|_| state.to_owned())
         .join(NATIVE_LAYR_DIRECTORY)
         .join(STORE_DIRECTORY);

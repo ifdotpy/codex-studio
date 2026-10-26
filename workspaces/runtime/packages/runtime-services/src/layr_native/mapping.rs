@@ -48,10 +48,11 @@ fn origin(value: &str) -> String {
         .or_else(|| value.strip_prefix("ssh://"))
         .unwrap_or(value);
     let value = value.strip_prefix("git@").unwrap_or(value);
-    if let Some((host, path)) = value.split_once(':') {
-        if !host.contains('/') && !path.starts_with('/') {
-            return format!("{}/{path}", host.to_ascii_lowercase());
-        }
+    if let Some((host, path)) = value.split_once(':')
+        && !host.contains('/')
+        && !path.starts_with('/')
+    {
+        return format!("{}/{path}", host.to_ascii_lowercase());
     }
     value.to_owned()
 }
