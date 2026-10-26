@@ -76,6 +76,22 @@ pub const PROJECTION_CURSOR_KEY: &str = "canvasProjectionSeq";
 
 pub struct AnalyticsCaptureRepository;
 impl AnalyticsCaptureRepository {
+    /// Resolve legacy usage's explicit provenance or its referenced agent identity.
+    /// Missing owners and malformed explicit provenance never select a provider.
+    pub(crate) fn legacy_usage_provider(db: &Connection, row: &Value) -> StoreResult<ProviderKind> {
+        if let Some(provider) = row.get("provider") {
+            return ProviderKind::of_field(Some(provider))
+                .map_err(|error| StoreError::SchemaValidation(error.to_string()));
+        }
+        let owner = Self::read(
+            db,
+            CaptureTable::Agents,
+            row["agentId"].as_str().unwrap_or_default(),
+        )?
+        .ok_or_else(|| StoreError::SchemaValidation("unknown analytics usage provider".into()))?;
+        ProviderKind::of_record(&owner)
+            .map_err(|error| StoreError::SchemaValidation(error.to_string()))
+    }
     /// Append one analytics projection record (`NotificationPostCommit` JSON) in
     /// the caller's Canvas transaction, so it commits with the provider event.
     pub fn append_projection(canvas: &Connection, record: &str) -> StoreResult<()> {
@@ -198,11 +214,7 @@ impl AnalyticsCaptureRepository {
         let ledger = if value.get("studioUsage").is_some() {
             studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(&value)
         } else {
-            let record = Self::read(db, CaptureTable::Agents, agent)?.ok_or_else(|| {
-                StoreError::SchemaValidation("unknown analytics usage provider".into())
-            })?;
-            let provider = ProviderKind::of_record(&record)
-                .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
+            let provider = Self::legacy_usage_provider(db, &value)?;
             studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(provider, &value)
         };
         Ok(ledger
@@ -222,7 +234,6 @@ impl AnalyticsCaptureRepository {
             truncated: false,
         };
         let mut examined = 0;
-        let mut legacy_provider = None;
         while let Some(row) = source.next()? {
             examined += 1;
             if examined == limit {
@@ -233,17 +244,7 @@ impl AnalyticsCaptureRepository {
             let ledger = if value.get("studioUsage").is_some() {
                 UsageLedgerRow::from_typed_analytics(&value)
             } else {
-                let provider = if let Some(provider) = legacy_provider {
-                    provider
-                } else {
-                    let record = Self::read(db, CaptureTable::Agents, agent)?.ok_or_else(|| {
-                        StoreError::SchemaValidation("unknown analytics usage provider".into())
-                    })?;
-                    let provider = ProviderKind::of_record(&record)
-                        .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
-                    legacy_provider = Some(provider);
-                    provider
-                };
+                let provider = Self::legacy_usage_provider(db, &value)?;
                 UsageLedgerRow::from_analytics(provider, &value)
             };
             match ledger {

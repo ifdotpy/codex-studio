@@ -251,6 +251,49 @@ fn table_updates(
     Ok(updates)
 }
 
+fn legacy_orphan_usage_updates(db: &Connection) -> StoreResult<Vec<(i64, String)>> {
+    let mut statement = db.prepare(
+        "SELECT usage.rowid,usage.record FROM analytics_usage AS usage
+         WHERE json_type(usage.record,'$.studioUsage') IS NULL
+           AND NOT EXISTS (SELECT 1 FROM analytics_agents AS agent
+             WHERE agent.id=json_extract(usage.record,'$.agentId'))
+         ORDER BY usage.rowid",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut updates = Vec::new();
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let raw: String = row.get(1)?;
+        let value: Value = serde_json::from_str(&raw)?;
+        // Before this cutover the cost reader decoded ownerless rows as Codex.
+        // Complete evidence becomes neutral; sparse categories remain unknown.
+        let provider = match value.get("provider") {
+            Some(provider) => ProviderKind::of_field(Some(provider))
+                .map_err(|_| invalid("unknown analytics usage provider"))?,
+            None => ProviderKind::Codex,
+        };
+        let observation = studio_runtime_schema::usage::persisted::parse_analytics_cost_usage_row(
+            provider, &value,
+        )
+        .map_err(|error| invalid(&format!("analytics_usage rowid {id}: {error}")))?;
+        let updated = if let Some(observation) = observation {
+            db.query_row(
+                "SELECT json_set(?1,'$.studioUsage',json(?2))",
+                rusqlite::params![raw, serde_json::to_string(&observation)?],
+                |row| row.get(0),
+            )?
+        } else {
+            db.query_row(
+                "SELECT json_set(?1,'$.provider',?2)",
+                rusqlite::params![raw, provider.key()],
+                |row| row.get(0),
+            )?
+        };
+        updates.push((id, updated));
+    }
+    Ok(updates)
+}
+
 const CANVAS_TABLES: [&str; 3] = [
     "runtime_agents",
     "runtime_account_transfers",
@@ -276,6 +319,9 @@ pub(crate) fn validate_2026_10_26(root: &Path) -> StoreResult<Accounts> {
         }
         for table in tables {
             table_updates(&db, table, &accounts)?;
+        }
+        if database == "analytics.sqlite3" {
+            legacy_orphan_usage_updates(&db)?;
         }
     }
     Ok(accounts)
@@ -346,9 +392,17 @@ pub(crate) fn migrate_analytics_2026_10_26(
     if !analytics_needs_migration(tx)? {
         return Ok(());
     }
-    for (id, raw) in table_updates(tx, "analytics_agents", accounts)? {
+    let agents = table_updates(tx, "analytics_agents", accounts)?;
+    let usage = legacy_orphan_usage_updates(tx)?;
+    for (id, raw) in agents {
         tx.execute(
             "UPDATE analytics_agents SET record=?1 WHERE rowid=?2",
+            rusqlite::params![raw, id],
+        )?;
+    }
+    for (id, raw) in usage {
+        tx.execute(
+            "UPDATE analytics_usage SET record=?1 WHERE rowid=?2",
             rusqlite::params![raw, id],
         )?;
     }

@@ -129,14 +129,8 @@ fn cost_observation(
             .map(|ledger| Some(ledger.studio_usage))
             .map_err(|error| StoreError::SchemaValidation(error.to_string()));
     }
-    let owner = super::analytics_capture::AnalyticsCaptureRepository::read(
-        db,
-        super::analytics_capture::CaptureTable::Agents,
-        record["agentId"].as_str().unwrap_or_default(),
-    )?
-    .ok_or_else(|| StoreError::SchemaValidation("unknown analytics usage provider".into()))?;
-    let provider = ProviderKind::of_record(&owner)
-        .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
+    let provider =
+        super::analytics_capture::AnalyticsCaptureRepository::legacy_usage_provider(db, record)?;
     studio_runtime_schema::usage::persisted::parse_analytics_cost_usage_row(provider, record)
         .map_err(|error| StoreError::SchemaValidation(error.to_string()))
 }
