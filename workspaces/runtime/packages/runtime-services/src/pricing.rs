@@ -328,7 +328,7 @@ impl RawRates {
 }
 
 /// Anthropic one-hour cache-write USD per million as a ratio to the selected input rate.
-/// Other-language consumers: installed-smoke/usage.mjs, guarded by its owner parity test.
+/// Other-language consumers: installed-smoke/usage.ts, guarded by its owner parity test.
 pub const CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER: f64 = 2.0;
 
 /// Token counts of one priced sample; a missing count is `None`.

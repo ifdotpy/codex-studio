@@ -21,6 +21,9 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import {
   compareEvidence,
+  readEvidence,
+  pricingModels,
+  isRecord,
   usageTable,
   nativeEvidence,
   recordedUsage,
@@ -39,14 +42,84 @@ import {
   directoryIdentity,
   processStartIdentity,
   sqliteEvidence,
-} from "./usage.mjs";
+} from "./usage.ts";
+
+import assert from "node:assert/strict";
+import type {
+  Schema,
+  Provider,
+  Transcript,
+  Analytics,
+  Cost,
+  DirectoryIdentity,
+  Timing,
+  ProcessRow,
+  Evidence,
+  BridgeObservation,
+  Steer,
+  Optional,
+} from "./usage.ts";
+
+type Options = {
+  app: string;
+  url: string;
+  model: Record<string, string>;
+  usage?: boolean;
+  providers?: string[] | undefined;
+  "sqlite-ro-agent"?: string | undefined;
+};
+export type ReportRow = {
+  name: string;
+  status: "pass" | "FAIL" | "skip";
+  detail: string;
+  ms: number;
+};
+type Chat = {
+  id: string;
+  account?: string | undefined;
+  model?: string | undefined;
+  detail?: string | undefined;
+};
+type Probe<T> = { done?: unknown; value?: T; note?: string | undefined };
+
+type LiveEntity = Record<string, unknown> &
+  Optional<Schema["AgentDetailEntityDto"]> &
+  Optional<Pick<Schema["AgentSummaryEntityDto"], "turnId">> &
+  Cost &
+  Optional<Pick<Schema["MonitorEntityDto"], "agent" | "exitCode">> & {
+    status?:
+      | Schema["MonitorEntityDto"]["status"]
+      | Schema["RequestEntityDto"]["status"]
+      | Schema["EventEntityDto"]["status"]
+      | Schema["MessageReceiptEntityDto"]["status"];
+  };
+export type OwnedEntities = {
+  analytics: Analytics;
+  agent: Optional<
+    Pick<
+      Schema["AnalyticsAgentRecord"],
+      "id" | "accountKey" | "cwd" | "model" | "name" | "provider" | "threadId"
+    >
+  > &
+    Optional<Pick<Schema["AnalyticsAgentRecord"], "tokenUsageAccounting">> &
+    Optional<Schema["AgentDetailEntityDto"]>;
+  sessionCost: Cost;
+  publication: {
+    finalTurnId: string | null | undefined;
+    currentCost: Cost;
+    capturedAt: string;
+  };
+};
 
 const DEFAULT_APP =
   process.platform === "linux"
     ? path.join(os.homedir(), ".local/share/codex-studio/server/current")
     : "/Applications/Codex Studio.app";
 
-export function installationPaths(app, platform = process.platform) {
+export function installationPaths(
+  app: string,
+  platform: NodeJS.Platform = process.platform,
+) {
   const workspace =
     platform === "linux" ? app : path.join(app, "Contents/Resources/workspace");
   return {
@@ -93,8 +166,6 @@ const ARCHIVE_SHOWN_MS = 10_000;
 const URL_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 /** Pricing owner: the models.dev artifact that the backend reads in its state folder. */
 const PRICING_ARTIFACT = "model-pricing/models-dev-v1.json";
-/** models.dev provider names of the Studio providers. */
-const PRICING_PROVIDERS = { codex: "openai", claude: "anthropic" };
 const TERMINAL_STATUSES = new Set([
   "completed",
   "idle",
@@ -111,11 +182,12 @@ export class CheckFailed extends Error {}
 
 /** Results of the named checks, in order. */
 export class Report {
+  rows: ReportRow[];
   constructor() {
     this.rows = [];
   }
 
-  async run(name, check) {
+  async run(name: string, check: () => unknown | Promise<unknown>) {
     const started = Date.now();
     try {
       const detail = await check();
@@ -130,7 +202,7 @@ export class Report {
       const detail =
         error instanceof CheckFailed
           ? error.message
-          : String(error?.stack ?? error);
+          : String(error instanceof Error ? error.stack : error);
       this.rows.push({
         name,
         status: "FAIL",
@@ -141,7 +213,7 @@ export class Report {
     }
   }
 
-  skip(name, reason) {
+  skip(name: string, reason: string) {
     this.rows.push({ name, status: "skip", detail: reason, ms: 0 });
   }
 
@@ -161,7 +233,7 @@ export class Report {
 }
 
 /** Seconds in a ps `etime` value: [[dd-]hh:]mm:ss. */
-export function elapsedSeconds(value) {
+export function elapsedSeconds(value: string) {
   const match = /^\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*$/.exec(value);
   if (!match) {
     throw new CheckFailed(`cannot read process age "${value}"`);
@@ -177,16 +249,30 @@ export function elapsedSeconds(value) {
  * The cheapest offered model of `provider` by models.dev input plus output price.
  * `models` are `/api/models` rows; a Claude alias row prices by its `resolvedModel`.
  */
-export function cheapestModel(models, pricing, provider) {
-  const priced =
-    pricing?.catalog?.providers?.[PRICING_PROVIDERS[provider]]?.models ?? {};
+export function cheapestModel(
+  models: Schema["ProviderModel"][],
+  pricing: unknown,
+  provider: Provider,
+) {
+  const priced = pricingModels(pricing, provider);
   let best = null;
   for (const row of models) {
     if (row?.hidden || typeof row?.model !== "string") {
       continue;
     }
-    const cost = priced[row.model]?.cost ?? priced[row.resolvedModel]?.cost;
-    if (typeof cost?.input !== "number" || typeof cost?.output !== "number") {
+    const primary = priced[row.model];
+    const resolved =
+      typeof row.resolvedModel === "string"
+        ? priced[row.resolvedModel]
+        : undefined;
+    const cost =
+      (isRecord(primary) ? primary.cost : undefined) ??
+      (isRecord(resolved) ? resolved.cost : undefined);
+    if (
+      !isRecord(cost) ||
+      typeof cost.input !== "number" ||
+      typeof cost.output !== "number"
+    ) {
       continue;
     }
     const price = cost.input + cost.output;
@@ -194,7 +280,9 @@ export function cheapestModel(models, pricing, provider) {
       best = {
         model: row.model,
         price,
-        efforts: row.supportedReasoningEfforts ?? [],
+        efforts: Array.isArray(row.supportedReasoningEfforts)
+          ? row.supportedReasoningEfforts
+          : [],
       };
     }
   }
@@ -202,16 +290,20 @@ export function cheapestModel(models, pricing, provider) {
 }
 
 /** The lowest reasoning effort that a model row lists, or undefined. */
-export function lowestEffort(efforts) {
+export function lowestEffort(efforts: readonly Schema["JsonValue"][]) {
   const order = ["minimal", "low", "medium", "high"];
   const names = efforts.map((entry) =>
-    typeof entry === "string" ? entry : entry?.reasoningEffort,
+    typeof entry === "string"
+      ? entry
+      : entry && typeof entry === "object" && !Array.isArray(entry)
+        ? entry.reasoningEffort
+        : undefined,
   );
   return order.find((name) => names.includes(name));
 }
 
 /** Transcript items that carry the user message `id`. */
-export function messageItems(items, id) {
+export function messageItems(items: Transcript[], id: string) {
   return items.filter(
     (item) =>
       item?.role === "user" &&
@@ -226,7 +318,10 @@ export function messageItems(items, id) {
  * Item ids of a pulled transcript scope, in display order: a full page lists
  * its `items`; a stream delta lists the whole `order`.
  */
-export function syncTranscriptIds(documents, agent) {
+export function syncTranscriptIds(
+  documents: Optional<Schema["SyncDocument"]>[],
+  agent: string,
+) {
   const head = documents.find(
     (document) => document.id === `transcript:${agent}` && !document._deleted,
   );
@@ -235,7 +330,9 @@ export function syncTranscriptIds(documents, agent) {
       `the transcript pull has no document transcript:${agent}`,
     );
   }
-  const payload = JSON.parse(head.payload);
+  const payload: Schema["TranscriptStreamDelta"] = JSON.parse(
+    head.payload ?? "null",
+  );
   if (Array.isArray(payload.order)) {
     return payload.order;
   }
@@ -247,15 +344,15 @@ export function syncTranscriptIds(documents, agent) {
  * `browser_cards::card_id` in runtime-services: a UUID v5 in the URL namespace
  * of `studio-browser-open:<bridge id>`. A tooling test checks the owner.
  */
-export function browserCardId(bridgeId) {
+export function browserCardId(bridgeId: string) {
   const namespace = Buffer.from(URL_NAMESPACE.replaceAll("-", ""), "hex");
   const bytes = createHash("sha1")
     .update(namespace)
     .update(`studio-browser-open:${bridgeId}`)
     .digest()
     .subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return [
     hex.slice(0, 8),
@@ -271,7 +368,11 @@ export function browserCardId(bridgeId) {
  * a direct child of the temporary root with the run prefix and a marker that
  * holds this run id. Never by pattern.
  */
-export function removeRunRoot(root, runId, temporaryRoot) {
+export function removeRunRoot(
+  root: string,
+  runId: string,
+  temporaryRoot: string,
+) {
   const resolved = fs.realpathSync(root);
   const parent = fs.realpathSync(temporaryRoot);
   if (
@@ -280,7 +381,7 @@ export function removeRunRoot(root, runId, temporaryRoot) {
   ) {
     throw new CheckFailed(`${root} is not a run folder below ${parent}`);
   }
-  const marker = JSON.parse(
+  const marker: Pick<Evidence, "runId"> = JSON.parse(
     fs.readFileSync(path.join(resolved, RUN_MARKER), "utf8"),
   );
   if (marker.runId !== runId) {
@@ -292,11 +393,16 @@ export function removeRunRoot(root, runId, temporaryRoot) {
   return resolved;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-async function until(label, ms, probe, changed) {
+async function until<T>(
+  label: string,
+  ms: number,
+  probe: () => Promise<Probe<T>>,
+  changed?: ((ms: number) => Promise<void>) | undefined,
+): Promise<T | undefined> {
   const deadline = Date.now() + ms;
   let last;
   while (Date.now() < deadline) {
@@ -312,11 +418,11 @@ async function until(label, ms, probe, changed) {
   );
 }
 
-function sha256File(file) {
+function sha256File(file: string) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-function command(file, args) {
+function command(file: string, args: string[]) {
   return execFileSync(file, args, {
     encoding: "utf8",
     timeout: 10_000,
@@ -325,7 +431,7 @@ function command(file, args) {
 }
 
 /** PIDs of processes that have `file` open, by lsof; empty when none. */
-function lockHolders(file) {
+function lockHolders(file: string) {
   if (!fs.existsSync(file)) {
     return [];
   }
@@ -339,7 +445,12 @@ function lockHolders(file) {
       .map(Number);
   } catch (error) {
     // lsof exits 1 when no process has the file open.
-    if (error.status === 1) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "status" in error &&
+      error.status === 1
+    ) {
       return [];
     }
     throw error;
@@ -348,14 +459,23 @@ function lockHolders(file) {
 
 /** The live backend over HTTP, as the renderer reaches it from the loopback origin. */
 class Backend {
-  constructor(url) {
+  url: string;
+  token: string;
+  signal: AbortSignal | undefined;
+  analyticsTimings: Timing[];
+  constructor(url: string) {
     this.url = url.replace(/\/$/, "");
     this.token = "";
     this.analyticsTimings = [];
   }
 
-  async request(method, route, body, ms = REQUEST_MS) {
-    const headers = { accept: "application/json" };
+  async request<T>(
+    method: string,
+    route: string,
+    body?: unknown,
+    ms = REQUEST_MS,
+  ): Promise<T> {
+    const headers: Record<string, string> = { accept: "application/json" };
     if (body !== undefined) {
       headers["content-type"] = "application/json";
     }
@@ -365,7 +485,7 @@ class Backend {
       }
       headers["x-canvas-token"] = this.token;
     }
-    const init = {
+    const init: RequestInit = {
       method,
       headers,
       redirect: "manual",
@@ -393,24 +513,26 @@ class Backend {
         `${method} ${route}: HTTP ${response.status} ${text.slice(0, 300)}`,
       );
     }
-    return text ? JSON.parse(text) : null;
+    return JSON.parse(text || "null");
   }
 
-  async get(route, ms) {
+  async get<T>(route: string, ms?: number): Promise<T> {
     if (!route.startsWith("/api/analytics?"))
-      return this.request("GET", route, undefined, ms);
-    const timing = {
+      return this.request<T>("GET", route, undefined, ms);
+    const timing: Timing = {
       route,
       startedAt: new Date().toISOString(),
       timeoutMs: ms ?? REQUEST_MS,
     };
     const start = Date.now();
     try {
-      const value = await this.request("GET", route, undefined, ms);
+      const value = await this.request<T>("GET", route, undefined, ms);
       timing.outcome = "success";
       return value;
     } catch (error) {
-      timing.outcome = /timeout|timed out/i.test(error.message)
+      timing.outcome = /timeout|timed out/i.test(
+        error instanceof Error ? error.message : String(error),
+      )
         ? "timeout"
         : "error";
       throw error;
@@ -420,18 +542,35 @@ class Backend {
     }
   }
 
-  post(route, body, ms) {
-    return this.request("POST", route, body, ms);
+  post<T = Schema["JsonValue"]>(
+    route: string,
+    body: unknown,
+    ms?: number,
+  ): Promise<T> {
+    return this.request<T>("POST", route, body, ms);
   }
 }
 
 /** SSE invalidations drive all usage-scenario reads; no interval fetches. */
 export class LiveChanges {
+  controller: AbortController;
+  signal: AbortSignal | undefined;
+  connectMs: number;
+  version: number;
+  consumed: number;
+  waiters: Set<() => void>;
+  entities: Map<string, LiveEntity>;
+  ready: Promise<void>;
+  reader: Promise<void> | undefined;
+  error: unknown;
   constructor(
-    backend,
-    agent,
-    protocol,
-    { signal, connectMs = REQUEST_MS } = {},
+    backend: Pick<Backend, "url">,
+    agent: string,
+    protocol: number,
+    {
+      signal,
+      connectMs = REQUEST_MS,
+    }: { signal?: AbortSignal; connectMs?: number } = {},
   ) {
     this.controller = new AbortController();
     this.signal = signal;
@@ -443,7 +582,7 @@ export class LiveChanges {
     this.ready = this.read(backend, agent, protocol);
   }
 
-  async read(backend, agent, protocol) {
+  async read(backend: Pick<Backend, "url">, agent: string, protocol: number) {
     const resources = [
       { kind: "state" },
       { kind: "transcript", agentId: agent },
@@ -473,11 +612,11 @@ export class LiveChanges {
     this.reader = this.consume(response.body);
   }
 
-  async consume(body) {
+  async consume(body: ReadableStream<Uint8Array> | null) {
     let buffer = "";
     const decoder = new TextDecoder();
     try {
-      for await (const chunk of body) {
+      for await (const chunk of body ?? []) {
         buffer += decoder
           .decode(chunk, { stream: true })
           .replaceAll("\r\n", "\n");
@@ -491,10 +630,10 @@ export class LiveChanges {
             .map((line) => line.slice(5).trim())
             .join("\n");
           if (!data || !frame.includes("event: resources")) continue;
-          const event = JSON.parse(data);
+          const event: Schema["ResourceChangeEvent"] = JSON.parse(data);
           for (const entry of event.resourceVersions ?? []) {
             for (const doc of entry.entityChanges?.documents ?? []) {
-              if (doc.op !== "delete")
+              if (doc.op !== "delete" && "value" in doc)
                 this.entities.set(`${doc.collection}:${doc.id}`, doc.value);
             }
           }
@@ -510,14 +649,14 @@ export class LiveChanges {
     }
   }
 
-  async changed(ms) {
+  async changed(ms: number) {
     this.signal?.throwIfAborted();
     if (this.error) throw this.error;
     if (this.version > this.consumed) {
       this.consumed = this.version;
       return;
     }
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       const wake = () => {
         clearTimeout(timer);
         this.waiters.delete(wake);
@@ -539,12 +678,39 @@ export class LiveChanges {
   }
 }
 
-export function analyticsRoute(id) {
+export function analyticsRoute(id: string) {
   return `/api/analytics?agent=${encodeURIComponent(id)}&scope=agent&limit=500`;
 }
 
 export class Smoke {
-  constructor(options) {
+  cancel: AbortController;
+  app: string;
+  usage: boolean | undefined;
+  sqliteRoAgent: string | undefined;
+  usageEvidence: Evidence;
+  backend: Backend;
+  model: Record<string, string>;
+  providers: string[] | undefined;
+  report: Report;
+  runId: string;
+  temporaryRoot: string;
+  root: string | null;
+  rootIdentity: DirectoryIdentity | undefined;
+  projectRegistered: boolean;
+  chats: string[];
+  openCards: Map<string, string>;
+  ownerChats: Map<
+    string,
+    Optional<Pick<Schema["AgentSummaryEntityDto"], "name" | "archived">>
+  >;
+  desktop: Schema["DesktopResponse"] | null;
+  state: string | null;
+  live: Pick<LiveChanges, "entities" | "changed" | "close"> | null = null;
+  accountRecords = new Map<string, Schema["Account"]>();
+  accountsByProvider = new Map<Provider, string>();
+  evidencePath: string | undefined;
+  interrupted = false;
+  constructor(options: Options) {
     this.cancel = new AbortController();
     this.app = options.app;
     this.usage = options.usage;
@@ -577,7 +743,10 @@ export class Smoke {
     this.cancel.signal.throwIfAborted();
   }
 
-  async submitModel(route, body) {
+  async submitModel(
+    route: string,
+    body: { id: string; room?: string; [key: string]: unknown },
+  ) {
     this.checkActive();
     if (this.usage && this.root) {
       if (
@@ -600,8 +769,11 @@ export class Smoke {
     return this.backend.post(route, body);
   }
 
-  async bridgeObservation(accountKey) {
-    const desktop = await this.backend.get("/api/desktop");
+  async bridgeObservation(accountKey: string) {
+    assert.ok(this.state);
+    assert.ok(this.desktop);
+    const desktop =
+      await this.backend.get<Schema["DesktopResponse"]>("/api/desktop");
     if (desktop.stateDir !== this.state)
       throw new CheckFailed("Bridge observation changed state directory");
     const release = fs.realpathSync(this.workspace());
@@ -623,7 +795,11 @@ export class Smoke {
       accountKey === "default"
         ? this.state
         : path.join(this.state, "account-servers", accountKey);
-    const processes = command("/bin/ps", ["-axww", "-o", "pid=,ppid=,command="])
+    const processes: ProcessRow[] = command("/bin/ps", [
+      "-axww",
+      "-o",
+      "pid=,ppid=,command=",
+    ])
       .split("\n")
       .flatMap((line) => {
         const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
@@ -632,7 +808,7 @@ export class Smoke {
               {
                 pid: Number(match[1]),
                 ppid: Number(match[2]),
-                command: match[3],
+                command: match[3] ?? "",
               },
             ]
           : [];
@@ -657,7 +833,10 @@ export class Smoke {
       desktop.pid,
       {
         enabled: desktop.supervisorMode,
-        health: desktop.supervisor,
+        health:
+          desktop.supervisor && "stateDir" in desktop.supervisor
+            ? desktop.supervisor
+            : null,
         accountKey,
         stateDir: this.state,
       },
@@ -684,10 +863,12 @@ export class Smoke {
   }
 
   async preflight() {
-    const desktop = await this.backend.get("/api/desktop");
+    const desktop =
+      await this.backend.get<Schema["DesktopResponse"]>("/api/desktop");
     if (
       desktop?.application !== "codex-agents" ||
       desktop.protocol !== 1 ||
+      !("backendKind" in desktop) ||
       desktop.backendKind !== "rust"
     ) {
       throw new CheckFailed(
@@ -731,8 +912,8 @@ export class Smoke {
     const processes = command("/bin/ps", ["-axww", "-o", "pid=,command="])
       .split("\n")
       .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
-      .filter(Boolean)
-      .map(([, pid, line]) => ({ pid: Number(pid), line }));
+      .filter((match) => match !== null)
+      .map(([, pid, line]) => ({ pid: Number(pid), line: line ?? "" }));
     // A second backend of this bundle is starting, or waits for the runtime lock.
     const server = installationPaths(this.app).server;
     const others = processes.filter(
@@ -755,7 +936,8 @@ export class Smoke {
         `${instances.length} app instances run: pid ${instances.join(", ")}`,
       );
     }
-    const summary = await this.backend.get("/api/ui-summary");
+    const summary =
+      await this.backend.get<Schema["UiSummaryResponse"]>("/api/ui-summary");
     if (summary?.ready !== true) {
       throw new CheckFailed("the backend summary is not ready");
     }
@@ -771,6 +953,7 @@ export class Smoke {
   }
 
   async build() {
+    assert.ok(this.desktop);
     const server = installationPaths(this.app).server;
     const running =
       process.platform === "linux"
@@ -794,8 +977,10 @@ export class Smoke {
   }
 
   async renderer() {
-    const served = await this.backend.get("/studio-renderer.json");
-    const installed = JSON.parse(
+    const served = await this.backend.get<{ build: string; apiSchema: string }>(
+      "/studio-renderer.json",
+    );
+    const installed: { build: string; apiSchema: string } = JSON.parse(
       fs.readFileSync(installationPaths(this.app).renderer, "utf8"),
     );
     if (
@@ -811,12 +996,13 @@ export class Smoke {
 
   /** One ready account per provider, preferring the default account. */
   async accounts() {
-    const listing = await this.backend.get("/api/accounts");
+    const listing =
+      await this.backend.get<Schema["AccountsResponse"]>("/api/accounts");
     const ready = (listing.accounts ?? []).filter(
       (account) =>
         account.status === "ready" && !account.disconnected && !account.deleted,
     );
-    const chosen = new Map();
+    const chosen = new Map<Provider, string>();
     for (const account of ready) {
       const provider = account.provider ?? "codex";
       if (this.providers && !this.providers.includes(provider)) {
@@ -841,7 +1027,8 @@ export class Smoke {
   }
 
   async session() {
-    const session = await this.backend.get("/api/session");
+    const session =
+      await this.backend.get<Schema["SessionResponse"]>("/api/session");
     if (typeof session?.token !== "string" || !session.token) {
       throw new CheckFailed("the backend gave no session token");
     }
@@ -866,14 +1053,15 @@ export class Smoke {
     return this.root;
   }
 
-  async chooseModel(provider, account) {
+  async chooseModel(provider: Provider, account: string) {
+    assert.ok(this.state);
     if (this.model?.[provider]) {
       return { model: this.model[provider], efforts: [] };
     }
-    const pricing = JSON.parse(
+    const pricing: unknown = JSON.parse(
       fs.readFileSync(path.join(this.state, PRICING_ARTIFACT), "utf8"),
     );
-    const listing = await this.backend.get(
+    const listing = await this.backend.get<Schema["ModelCatalogResponse"]>(
       `/api/models?account_key=${encodeURIComponent(account)}`,
       60_000,
     );
@@ -886,20 +1074,21 @@ export class Smoke {
     return best;
   }
 
-  async transcript(agent) {
-    const page = await this.backend.get(
+  async transcript(agent: string) {
+    const page = await this.backend.get<Schema["TranscriptPageResponse"]>(
       `/api/transcript/page?id=${encodeURIComponent(agent)}&limit=200`,
     );
     return page?.items ?? [];
   }
 
-  async chatStatus(agent) {
-    const summary = await this.backend.get("/api/ui-summary");
+  async chatStatus(agent: string) {
+    const summary =
+      await this.backend.get<Schema["UiSummaryResponse"]>("/api/ui-summary");
     return (summary.chats ?? []).find((chat) => chat.id === agent);
   }
 
   /** Wait until the chat's turn ends and an assistant item contains `token`. */
-  async answered(agent, token, ms) {
+  async answered(agent: string, token: string, ms: number) {
     return until(
       `answer ${token}`,
       ms,
@@ -921,20 +1110,29 @@ export class Smoke {
           note: `status ${chat?.status}`,
         };
       },
-      this.live ? (ms) => this.live.changed(ms) : undefined,
+      this.live
+        ? (ms) => this.live?.changed(ms) ?? Promise.resolve()
+        : undefined,
     );
   }
 
-  permissionRecord(id) {
+  permissionRecord(id: string) {
+    assert.ok(this.state);
     return sqliteEvidence(this.state, id, this.runId).permissions;
   }
 
-  async analyticsSnapshot(id, ms) {
-    if (this.sqliteRoAgent === id)
+  async analyticsSnapshot(id: string, ms?: number) {
+    assert.ok(this.state || this.sqliteRoAgent !== id);
+    if (this.sqliteRoAgent === id) {
+      assert.ok(this.state);
       return sqliteEvidence(this.state, id, this.runId, true).analytics;
+    }
     const before = this.backend.analyticsTimings.length;
     try {
-      return await this.backend.get(analyticsRoute(id), ms);
+      return await this.backend.get<Schema["AnalyticsResponse"]>(
+        analyticsRoute(id),
+        ms,
+      );
     } finally {
       const timings = this.backend.analyticsTimings.slice(before);
       if (timings.length) {
@@ -947,8 +1145,12 @@ export class Smoke {
     }
   }
 
-  async turn(provider) {
+  async turn(provider: Provider) {
+    assert.ok(this.root);
+    assert.ok(this.rootIdentity);
+    const root = this.root;
     const account = this.accountsByProvider.get(provider);
+    assert.ok(account);
     const { model, efforts } = await this.chooseModel(provider, account);
     const id = randomUUID();
     const token = `SMOKE_${this.runId}_${provider.toUpperCase()}`;
@@ -964,24 +1166,31 @@ export class Smoke {
           await this.bridgeObservation(account);
         this.saveUsage();
       }
-      const protocol = await this.backend.get("/api/sync/protocol");
-      this.live = new LiveChanges(this.backend, id, protocol.protocolVersion, {
+      const protocol =
+        await this.backend.get<Schema["SyncProtocolResponse"]>(
+          "/api/sync/protocol",
+        );
+      const live = new LiveChanges(this.backend, id, protocol.protocolVersion, {
         signal: this.cancel.signal,
       });
-      await this.live.ready;
+      this.live = live;
+      await live.ready;
     }
     if (this.usage) {
       this.checkActive();
-      const created = await this.backend.post("/api/leads", {
-        id,
-        cwd: this.root,
-        account_key: account,
-        model,
-        ...(effort ? { effort } : {}),
-        workspaceMode: "worktree",
-        yolo_mode: false,
-        reuse_empty: false,
-      });
+      const created = await this.backend.post<Schema["AgentRecordResponse"]>(
+        "/api/leads",
+        {
+          id,
+          cwd: this.root,
+          account_key: account,
+          model,
+          ...(effort ? { effort } : {}),
+          workspaceMode: "worktree",
+          yolo_mode: false,
+          reuse_empty: false,
+        },
+      );
       this.projectRegistered = true;
       await this.backend.post("/api/rename", {
         id,
@@ -993,20 +1202,20 @@ export class Smoke {
         REQUEST_MS,
         async () => {
           this.checkActive();
-          const detail = this.live.entities.get(`agentDetail:${id}`);
+          const detail = this.live?.entities.get(`agentDetail:${id}`);
           return {
             done: Boolean(detail),
             value: detail
               ? verifiedPermissions(
                   { ...created, ...detail, ...this.permissionRecord(id) },
                   provider,
-                  this.root,
+                  root,
                   this.rootIdentity,
                 )
               : null,
           };
         },
-        (ms) => this.live.changed(ms),
+        (ms) => this.live?.changed(ms) ?? Promise.resolve(),
       );
       this.usageEvidence.permissions ??= {};
       this.usageEvidence.permissions[id] = permission;
@@ -1040,7 +1249,8 @@ export class Smoke {
     };
   }
 
-  async usageScenario(chat, provider) {
+  async usageScenario(chat: Chat, provider: Provider) {
+    assert.ok(this.root);
     this.checkActive();
     const { id } = chat;
     const token = `SMOKE_${this.runId}_${provider}_LONG`;
@@ -1057,7 +1267,7 @@ export class Smoke {
       delivery: "next_turn",
       text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one read-only file-read tool to read ${path.join(this.root, NOTES_FILE)} (if no file-read tool exists, run cat on that exact file). After that tool result write another 150 words about test cleanup. Do not read any other file, delegate, or create monitors. End with ${token}.`,
     });
-    let steer = null;
+    let steer: Steer | null = null;
     if (provider === "claude") {
       const activeTurnId = await until(
         "Claude turn 2 starts",
@@ -1065,7 +1275,7 @@ export class Smoke {
         async () => {
           this.checkActive();
           const status = await this.chatStatus(id);
-          const active = this.live.entities.get(`agentSummary:${id}`);
+          const active = this.live?.entities.get(`agentSummary:${id}`);
           return {
             done:
               status?.inFlight === true &&
@@ -1075,7 +1285,7 @@ export class Smoke {
             note: status?.status,
           };
         },
-        (ms) => this.live.changed(ms),
+        (ms) => this.live?.changed(ms) ?? Promise.resolve(),
       );
       steer = {
         id: randomUUID(),
@@ -1086,7 +1296,7 @@ export class Smoke {
       this.usageEvidence.scenarios[id] = { steer, inputId };
       this.saveUsage();
       steer.receipt = await this.submitModel("/api/messages", {
-        id: steer.id,
+        id: steer.id ?? "",
         room: id,
         delivery: "current_turn",
         text: "Keep going with the same requested 300-word answer and the single read-only note read; mention reproducibility. This is the usage-check steer, not a new task.",
@@ -1107,7 +1317,21 @@ export class Smoke {
     });
   }
 
-  async collectUsage(chat, provider, scenario = {}) {
+  async collectUsage(
+    chat: Chat,
+    provider: Provider,
+    scenario: {
+      entities?: OwnedEntities;
+      savedBridge?: BridgeObservation[] | undefined;
+      steer?: Steer | null;
+      longTurn?: { inputId: string; items: Transcript[] | undefined };
+    } = {},
+  ) {
+    assert.ok(this.state);
+    assert.ok(this.root);
+    assert.ok(chat.account);
+    const account = this.accountRecords.get(chat.account);
+    assert.ok(account);
     const { id } = chat;
     console.log(`Collecting ${provider} usage for ${id}`);
     const transcript = await this.transcript(id);
@@ -1116,12 +1340,13 @@ export class Smoke {
       .at(-1)?.turnId;
     const entities =
       scenario.entities ?? (await this.ownEntities(id, finalTurnId));
+    assert.ok(entities);
     const analytics = entities.analytics;
     const stored = { agent: entities.agent, history: analytics.history ?? [] };
     const truth = nativeEvidence(
       this.state,
       stored.agent,
-      this.accountRecords.get(chat.account),
+      account,
       stored.history,
     );
     Object.assign(
@@ -1137,11 +1362,16 @@ export class Smoke {
     const recorded = recordedUsage(analytics);
     let reconciliation = null;
     try {
-      reconciliation = await this.backend.get(
-        `/api/diagnostics/usage-reconciliation?agent=${id}`,
-      );
+      reconciliation = await this.backend.get<
+        Schema["UsageReconciliationResponse"]
+      >(`/api/diagnostics/usage-reconciliation?agent=${id}`);
     } catch (error) {
-      if (!error.message.includes("HTTP 404")) throw error;
+      if (
+        !(error instanceof Error ? error.message : String(error)).includes(
+          "HTTP 404",
+        )
+      )
+        throw error;
     }
     const displayedCost = entities.sessionCost;
     const previous = this.usageEvidence.providers.find(
@@ -1169,12 +1399,12 @@ export class Smoke {
       );
       const submitted = scenario.steer ??
         this.usageEvidence.scenarios?.[id]?.steer ?? {
-          id: input?.id,
+          id: input?.id ?? undefined,
           turnId: proof.longTurnId,
           association:
             "recovered from materialized current-turn input within turn-2 transcript window",
         };
-      const receipts = await this.backend.get(
+      const receipts = await this.backend.get<Schema["MessageReceipts"]>(
         `/api/messages/receipts?agent=${encodeURIComponent(id)}&ids=${encodeURIComponent(JSON.stringify([submitted.id]))}`,
       );
       const receipt = receipts.items?.find(
@@ -1188,7 +1418,7 @@ export class Smoke {
       const endedAt = Math.max(
         ...transcript
           .filter((item) => item.turnId === proof.longTurnId)
-          .map((item) => item.at),
+          .map((item) => Number(item.at)),
       );
       proof.steer = validateSteer(
         item,
@@ -1256,28 +1486,36 @@ export class Smoke {
   }
 
   /** Match the UI publication to a fresh cost generation containing final-turn usage. */
-  async ownEntities(id, finalTurnId) {
-    const protocol = await this.backend.get("/api/sync/protocol");
+  async ownEntities(
+    id: string,
+    finalTurnId?: string | null,
+  ): Promise<OwnedEntities> {
+    const protocol =
+      await this.backend.get<Schema["SyncProtocolResponse"]>(
+        "/api/sync/protocol",
+      );
     const stream = new LiveChanges(this.backend, id, protocol.protocolVersion, {
       signal: this.cancel.signal,
     });
     try {
       await stream.ready;
       const deadline = Date.now() + USAGE_SNAPSHOT_MS;
-      const read = (route) =>
-        route === analyticsRoute(id)
-          ? this.analyticsSnapshot(id, Math.max(1, deadline - Date.now()))
-          : this.backend.get(route, Math.max(1, deadline - Date.now()));
-      return await until(
+      const read = <T>(route: string) =>
+        this.backend.get<T>(route, Math.max(1, deadline - Date.now()));
+      const analyticsSnapshot = () =>
+        this.analyticsSnapshot(id, Math.max(1, deadline - Date.now()));
+      const result = await until<OwnedEntities>(
         "final-turn usage publication",
         USAGE_SNAPSHOT_MS,
         async () => {
           this.checkActive();
-          const analytics = await read(analyticsRoute(id));
+          const analytics = await analyticsSnapshot();
           const summary = (analytics.agents ?? []).find((row) => row.id === id);
           const detail = stream.entities.get(`agentDetail:${id}`);
           const sessionCost = stream.entities.get(`sessionCost:${id}`);
-          const currentCost = await read(`/api/session-cost?agent=${id}`);
+          const currentCost = await read<Schema["SessionCostResponse"]>(
+            `/api/session-cost?agent=${id}`,
+          );
           const final =
             finalTurnId ??
             (await this.transcript(id))
@@ -1286,13 +1524,14 @@ export class Smoke {
           if (
             !summary ||
             !detail ||
+            !sessionCost ||
             !publicationReady(sessionCost, currentCost, analytics, final)
           )
             return {
               done: false,
               note: `cost generation ${sessionCost?.generation}/${currentCost.generation}, state ${sessionCost?.pricingState}`,
             };
-          const after = await read(analyticsRoute(id));
+          const after = await analyticsSnapshot();
           return {
             done:
               JSON.stringify(after.timeline) ===
@@ -1311,29 +1550,35 @@ export class Smoke {
         },
         (ms) => stream.changed(ms),
       );
+      assert.ok(result);
+      return result;
     } finally {
       await stream.close();
     }
   }
 
   /** Recover evidence from an interrupted collector without submitting another model turn. */
-  async recover(file) {
-    const evidence = JSON.parse(fs.readFileSync(file, "utf8"));
+  async recover(file: string) {
+    const evidence = readEvidence(file);
     if (
       evidence.format !== "studio-live-usage-v1" ||
-      !/^[a-f0-9]{8}$/.test(evidence.runId) ||
+      !/^[a-f0-9]{8}$/.test(evidence.runId ?? "") ||
       !Array.isArray(evidence.chatIds)
     )
       throw new CheckFailed("Invalid usage evidence file");
     this.usageEvidence = evidence;
+    assert.ok(evidence.runId);
     this.runId = evidence.runId;
     this.chats = evidence.chatIds;
     if (this.sqliteRoAgent && !this.chats.includes(this.sqliteRoAgent))
       throw new CheckFailed(
         "SQLite analytics recovery must name a chat of this exact run",
       );
+    assert.ok(evidence.runFolder);
+    assert.ok(evidence.server);
     this.root = evidence.runFolder;
-    this.desktop = await this.backend.get("/api/desktop");
+    this.desktop =
+      await this.backend.get<Schema["DesktopResponse"]>("/api/desktop");
     this.state = this.desktop.stateDir;
     if (
       this.desktop.backendBuild !== evidence.server.sha256 ||
@@ -1343,7 +1588,8 @@ export class Smoke {
         "Recovery requires the same backend build and state directory",
       );
     preserveProvenance(this.usageEvidence, this.serverObservation(), true);
-    const accounts = await this.backend.get("/api/accounts");
+    const accounts =
+      await this.backend.get<Schema["AccountsResponse"]>("/api/accounts");
     this.accountRecords = new Map(
       accounts.accounts.map((account) => [account.id, account]),
     );
@@ -1356,11 +1602,14 @@ export class Smoke {
         publicationReady(
           completed.displayedCost,
           completed.publication.currentCost,
-          completed.analytics,
+          completed.analytics ?? {},
           completed.publication.finalTurnId,
         ) &&
         (completed.provider !== "claude" ||
-          completed.scenario?.steer?.receipt?.materialized)
+          (completed.scenario?.steer &&
+            "receipt" in completed.scenario.steer &&
+            isRecord(completed.scenario.steer.receipt) &&
+            completed.scenario.steer.receipt.materialized))
       ) {
         console.log(`Keeping completed usage snapshot for ${id}`);
         continue;
@@ -1368,11 +1617,13 @@ export class Smoke {
       console.log(`Recovering usage snapshot for ${id}`);
       const entities = await this.ownEntities(id);
       const { agent } = entities;
+      assert.ok(agent.accountKey);
+      assert.ok(agent.provider === "codex" || agent.provider === "claude");
       if (!agent.name?.startsWith(`Studio smoke ${this.runId} `))
         throw new CheckFailed(`Chat ${id} is not owned by run ${this.runId}`);
       this.checkActive();
       await this.collectUsage(
-        { id, account: agent.accountKey, model: agent.model },
+        { id, account: agent.accountKey, model: agent.model ?? undefined },
         agent.provider,
         {
           entities,
@@ -1389,6 +1640,7 @@ export class Smoke {
   }
 
   serverObservation() {
+    assert.ok(this.desktop);
     return {
       pid: this.desktop.pid,
       stateDir: this.state,
@@ -1398,7 +1650,7 @@ export class Smoke {
     };
   }
 
-  async currentBridgeProvenance(account, saved) {
+  async currentBridgeProvenance(account: string, saved?: BridgeObservation[]) {
     try {
       const observed = await this.bridgeObservation(account);
       return {
@@ -1411,7 +1663,7 @@ export class Smoke {
         serving: saved,
         current: {
           available: false,
-          reason: error.message,
+          reason: error instanceof Error ? error.message : String(error),
           at: new Date().toISOString(),
         },
       };
@@ -1436,7 +1688,7 @@ export class Smoke {
     atomicWriteJson(this.evidencePath, this.usageEvidence);
   }
 
-  async messageOnce(agent) {
+  async messageOnce(agent: string) {
     const id = randomUUID();
     const token = `SMOKE_${this.runId}_MESSAGE`;
     const message = {
@@ -1449,13 +1701,13 @@ export class Smoke {
     // An exact retry of the same id must not enqueue the message again.
     await this.submitModel("/api/messages", message);
     const items = await this.answered(agent, token, TURN_MS);
-    const copies = messageItems(items, id);
+    const copies = messageItems(items ?? [], id);
     if (copies.length !== 1) {
       throw new CheckFailed(
         `the transcript has ${copies.length} copies of message ${id}`,
       );
     }
-    const receipts = await this.backend.get(
+    const receipts = await this.backend.get<Schema["MessageReceipts"]>(
       `/api/messages/receipts?agent=${encodeURIComponent(agent)}&ids=${encodeURIComponent(JSON.stringify([id]))}`,
     );
     const receipt = (receipts?.items ?? []).find((item) => item.id === id);
@@ -1468,39 +1720,43 @@ export class Smoke {
   }
 
   async entitySeq() {
-    const page = await this.backend.get(
+    const page = await this.backend.get<Schema["SyncPullResponse"]>(
       "/api/sync/pull?scope=state:entities:v1&after=0&limit=1",
     );
     return page?.maxSeq ?? 0;
   }
 
   /** Entity documents of `collection` changed after `after` whose value matches `accept`. */
-  async changedEntities(after, collection, accept) {
+  async changedEntities(
+    after: number,
+    collection: string,
+    accept: (value: LiveEntity | undefined) => boolean,
+  ) {
     if (collection === "monitor" && this.live)
       return [...this.live.entities]
         .filter(([key, value]) => key.startsWith("monitor:") && accept(value))
         .map(([, value]) => value);
-    const found = [];
+    const found: LiveEntity[] = [];
     let cursor = after;
     for (;;) {
-      const page = await this.backend.get(
+      const page = await this.backend.get<Schema["SyncPullResponse"]>(
         `/api/sync/pull?scope=state:entities:v1&after=${cursor}`,
       );
       for (const document of page?.documents ?? []) {
         if (
           !(
-            document.collection === collection ||
+            ("collection" in document && document.collection === collection) ||
             document.id?.startsWith(`entity:${collection}:`)
           ) ||
-          document._deleted ||
-          document.op === "delete"
+          ("_deleted" in document && document._deleted) ||
+          ("op" in document && document.op === "delete")
         ) {
           continue;
         }
-        const payload =
-          document.value !== undefined
+        const payload: { value: LiveEntity } =
+          "value" in document
             ? { value: document.value }
-            : JSON.parse(document.payload);
+            : JSON.parse("payload" in document ? document.payload : "null");
         if (accept(payload.value)) {
           found.push(payload.value);
         }
@@ -1517,7 +1773,7 @@ export class Smoke {
     }
   }
 
-  async monitor(agent) {
+  async monitor(agent: string) {
     const after = await this.entitySeq();
     const token = `SMOKE_${this.runId}_MONITOR`;
     await this.submitModel("/api/messages", {
@@ -1542,15 +1798,20 @@ export class Smoke {
         `no completed monitor of the chat: ${JSON.stringify(monitors.map((value) => [value.status, value.exitCode]))}`,
       );
     }
-    return `monitor ${finished[0].id ?? "?"} completed with exit 0`;
+    return `monitor ${finished[0]?.id ?? "?"} completed with exit 0`;
   }
 
   /** Submit a sign-in card the way a command's $BROWSER does, then decline it at once. */
-  async signInCard(agent) {
+  async signInCard(agent: string) {
+    assert.ok(this.state);
     const socket = path.join(this.state, "browser-host", "open.sock");
     const after = await this.entitySeq();
     const submitted = Date.now();
-    const reply = await new Promise((resolve, reject) => {
+    const reply = await new Promise<{
+      ok?: boolean;
+      id?: string;
+      message?: string;
+    }>((resolve, reject) => {
       const connection = net.createConnection(socket);
       let data = "";
       connection.setTimeout(REQUEST_MS, () =>
@@ -1580,14 +1841,16 @@ export class Smoke {
     // The client shows a card through its pending request entity.
     let shown = false;
     try {
-      shown = await until("sign-in card", CARD_SHOWN_MS, async () => {
-        const cards = await this.changedEntities(
-          after,
-          "request",
-          (value) => value?.id === id && value.status === "pending",
-        );
-        return { done: cards.length > 0, value: true };
-      });
+      shown = Boolean(
+        await until("sign-in card", CARD_SHOWN_MS, async () => {
+          const cards = await this.changedEntities(
+            after,
+            "request",
+            (value) => value?.id === id && value.status === "pending",
+          );
+          return { done: cards.length > 0, value: true };
+        }),
+      );
     } catch (error) {
       if (!(error instanceof CheckFailed)) {
         throw error;
@@ -1612,11 +1875,14 @@ export class Smoke {
     return `card ${card} shown and declined ${declinedAfter} ms after submission`;
   }
 
-  async declineCard(id) {
-    const result = await this.backend.post("/api/answer", {
-      id,
-      decision: "decline",
-    });
+  async declineCard(id: string) {
+    const result = await this.backend.post<Schema["AnswerResult"]>(
+      "/api/answer",
+      {
+        id,
+        decision: "decline",
+      },
+    );
     if (result?.status !== "answered") {
       throw new CheckFailed(
         `the decline of card ${id.slice(0, 8)} returned ${JSON.stringify(result?.status)}`,
@@ -1626,7 +1892,7 @@ export class Smoke {
   }
 
   /** Wait until the chat has no pending event after `after` and no turn in flight. */
-  async settled(agent, after) {
+  async settled(agent: string, after: number) {
     return until(`chat ${agent.slice(0, 8)} settles`, TURN_MS, async () => {
       const chat = await this.chatStatus(agent);
       const pending = await this.changedEntities(
@@ -1636,7 +1902,7 @@ export class Smoke {
       );
       return {
         done:
-          Boolean(chat) &&
+          chat != null &&
           !chat.inFlight &&
           TERMINAL_STATUSES.has(chat.status) &&
           pending.length === 0,
@@ -1646,9 +1912,9 @@ export class Smoke {
     });
   }
 
-  async clientTranscript(agent) {
+  async clientTranscript(agent: string) {
     const items = await this.transcript(agent);
-    const pull = await this.backend.get(
+    const pull = await this.backend.get<Schema["SyncPullResponse"]>(
       `/api/sync/pull?scope=${encodeURIComponent(`transcript:${agent}`)}&after=0`,
     );
     const synced = syncTranscriptIds(pull?.documents ?? [], agent);
@@ -1664,7 +1930,8 @@ export class Smoke {
   }
 
   async ownerChatsUnchanged() {
-    const summary = await this.backend.get("/api/ui-summary");
+    const summary =
+      await this.backend.get<Schema["UiSummaryResponse"]>("/api/ui-summary");
     const now = new Map((summary.chats ?? []).map((chat) => [chat.id, chat]));
     const changed = [...this.ownerChats].filter(([id, before]) => {
       const after = now.get(id);
@@ -1676,14 +1943,14 @@ export class Smoke {
     });
     if (changed.length > 0) {
       throw new CheckFailed(
-        `${changed.length} owner chats changed name or archive state, first ${changed[0][0]}`,
+        `${changed.length} owner chats changed name or archive state, first ${changed[0]?.[0]}`,
       );
     }
     return `${this.ownerChats.size} owner chats unchanged`;
   }
 
   /** Stop the chat when a turn still runs, so that the archive is accepted. */
-  async idle(id) {
+  async idle(id: string) {
     const chat = await this.chatStatus(id);
     if (!chat?.inFlight) {
       return;
@@ -1709,29 +1976,39 @@ export class Smoke {
         // The decline wakes the chat; it must run while the folder exists.
         await this.settled(agent, after);
       } catch (error) {
-        problems.push(`card ${id}: ${error.message}`);
+        problems.push(
+          `card ${id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
-    const archived = [];
+    const archived: string[] = [];
     for (const id of this.chats) {
       try {
         await this.idle(id);
-        const agent = await this.backend.post("/api/organization", {
-          id,
-          archived: true,
-        });
+        const agent = await this.backend.post<Schema["AgentRecordResponse"]>(
+          "/api/organization",
+          {
+            id,
+            archived: true,
+          },
+        );
         if (agent?.archived !== true) {
           throw new CheckFailed("the server did not store the archive");
         }
         archived.push(id);
       } catch (error) {
-        problems.push(`archive ${id}: ${error.message}`);
+        problems.push(
+          `archive ${id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     try {
       // The owner sees the chat list through the client state, not the stored row.
       await until("archive in the client state", ARCHIVE_SHOWN_MS, async () => {
-        const summary = await this.backend.get("/api/ui-summary");
+        const summary =
+          await this.backend.get<Schema["UiSummaryResponse"]>(
+            "/api/ui-summary",
+          );
         const shown = new Map(
           (summary.chats ?? []).map((chat) => [chat.id, chat.archived]),
         );
@@ -1742,18 +2019,23 @@ export class Smoke {
         };
       });
     } catch (error) {
-      problems.push(error.message);
+      problems.push(error instanceof Error ? error.message : String(error));
     }
     if (!this.projectRegistered && this.root) {
       try {
-        const projects = await this.backend.get("/api/projects");
+        const projects =
+          await this.backend.get<Schema["ProjectReadResponse"]>(
+            "/api/projects",
+          );
         this.projectRegistered = (projects.items ?? []).some(
           (project) =>
             project.path === this.root ||
             project.locations?.some((location) => location.path === this.root),
         );
       } catch (error) {
-        problems.push(`recover project ${this.root}: ${error.message}`);
+        problems.push(
+          `recover project ${this.root}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     if (this.projectRegistered) {
@@ -1764,14 +2046,18 @@ export class Smoke {
           request_id: `smoke-remove-${this.runId}`,
         });
       } catch (error) {
-        problems.push(`project ${this.root}: ${error.message}`);
+        problems.push(
+          `project ${this.root}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     if (this.root) {
       try {
         removeRunRoot(this.root, this.runId, this.temporaryRoot);
       } catch (error) {
-        problems.push(`folder ${this.root}: ${error.message}`);
+        problems.push(
+          `folder ${this.root}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     if (problems.length > 0) {
@@ -1780,7 +2066,7 @@ export class Smoke {
     return `${this.chats.length} chats archived${this.root ? `, ${this.root} removed` : ""}`;
   }
 
-  async main(noModel) {
+  async main(noModel: boolean | undefined) {
     const report = this.report;
     if (!(await report.run("preflight", () => this.preflight()))) {
       return report;
@@ -1810,31 +2096,36 @@ export class Smoke {
       if (this.usage) this.saveUsage();
       let first = null;
       for (const provider of this.accountsByProvider.keys()) {
-        let chat = null;
+        const current: { chat?: Chat } = {};
         const passed = await report.run(`${provider} turn`, async () => {
-          chat = await this.turn(provider);
-          if (this.usage) return await this.usageScenario(chat, provider);
-          return chat.detail;
+          current.chat = await this.turn(provider);
+          if (this.usage)
+            return await this.usageScenario(current.chat, provider);
+          return current.chat.detail;
         });
         if (this.live) {
           await this.live.close();
           this.live = null;
         }
-        if (passed && !first) {
-          first = chat.id;
+        if (passed && !first && current.chat) {
+          first = current.chat.id;
         }
         if (this.interrupted) {
           break;
         }
       }
       if (first && !this.interrupted && !this.usage) {
-        const protocol = await this.backend.get("/api/sync/protocol");
-        this.live = new LiveChanges(
+        const protocol =
+          await this.backend.get<Schema["SyncProtocolResponse"]>(
+            "/api/sync/protocol",
+          );
+        const live = new LiveChanges(
           this.backend,
           first,
           protocol.protocolVersion,
         );
-        await this.live.ready;
+        this.live = live;
+        await live.ready;
         await report.run("message once", () => this.messageOnce(first));
         await report.run("monitor exit", () => this.monitor(first));
         await report.run("sign-in card", () => this.signInCard(first));
@@ -1867,7 +2158,7 @@ export class Smoke {
   }
 }
 
-function options(argv) {
+function options(argv: string[]) {
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -1883,7 +2174,7 @@ function options(argv) {
       help: { type: "boolean", default: false },
     },
   });
-  const model = {};
+  const model: Record<string, string> = {};
   for (const entry of values.model ?? []) {
     const [provider, id] = entry.split("=");
     if (!provider || !id) {
@@ -1907,7 +2198,8 @@ async function cli() {
       throw new CheckFailed("--compare requires <old.json> <new.json>");
     console.table(
       compareEvidence(
-        ...files.map((file) => JSON.parse(fs.readFileSync(file, "utf8"))),
+        readEvidence(files[0] ?? ""),
+        readEvidence(files[1] ?? ""),
       ),
     );
     return 0;

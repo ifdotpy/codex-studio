@@ -205,7 +205,7 @@ installed-build evidence.
 on this host, against its live backend. On Linux it checks the `codex-studio`
 user service and the delivered release under
 `~/.local/share/codex-studio/server/current`; macOS keeps the application bundle layout. Run it after an install. The
-[script](../workspaces/tooling/apps/installed-smoke/smoke.mjs) owns the steps and
+[script](../workspaces/tooling/apps/installed-smoke/smoke.ts) owns the steps and
 their time limits:
 
 1. Refuse to run while the backend is younger than 60 s, while another backend of
