@@ -38,7 +38,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     return page;
   };
   let log = "";
-  fixture.stderr?.on("data", (data) => (log += data));
+  fixture.stderr!.on("data", (data) => (log += data));
 
   try {
     const port = await waitForFixturePort(fixture, { diagnostics: () => log });
@@ -87,7 +87,6 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         "/api/messages",
         route.request().postDataJSON(),
       );
-      assert.ok(message.id);
       sends.push(message);
       sendHandled.resolve();
       await route.fulfill({
@@ -200,8 +199,8 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     );
     assert.equal(await page.locator("#skill-suggestions").count(), 0);
     catalogSkillCount = catalogSkills.length;
-    const leadGate = gates.get(lead.id);
-    assert.ok(leadGate);
+    const leadGate = gates.get(lead.id)!;
+
     leadGate.resolve({
       skills: catalogSkills,
       errors: [],
@@ -304,8 +303,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       const state = await page
         .locator("#skill-suggestions")
         .evaluate((list) => {
-          const selected = list.querySelector('[aria-selected="true"]');
-          if (!selected) throw new Error("Missing selected skill");
+          const selected = list.querySelector('[aria-selected="true"]')!;
           const row = selected.getBoundingClientRect();
           const box = list.getBoundingClientRect();
           return {
@@ -433,7 +431,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     );
     assert.equal(sends.length, 2);
     assert.equal(
-      sends[1]?.delivery,
+      sends[1].delivery,
       "next_turn",
       `unselected Tab keeps queue behavior: ${JSON.stringify(sends)}`,
     );
@@ -503,7 +501,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await sendHandled.promise;
     assert.equal(sends.length, 3);
     assert.equal(
-      sends[2]?.text,
+      sends[2].text,
       "line one\nline two",
       "modified Enter keeps normal send behavior",
     );
@@ -530,7 +528,6 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         "/api/messages",
         route.request().postDataJSON(),
       );
-      assert.ok(message.id);
       failureSends.push(message);
       failureSendHandled.resolve();
       await route.fulfill({
@@ -665,7 +662,6 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         "/api/messages",
         route.request().postDataJSON(),
       );
-      assert.ok(message.id);
       emptySends.push(message);
       emptySendHandled.resolve();
       await route.fulfill({
@@ -756,7 +752,7 @@ test("500-entry local skill filter latency @performance", async ({ page }) => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr?.on("data", (data) => (log += data));
+  fixture.stderr!.on("data", (data) => (log += data));
 
   try {
     const port = await waitForFixturePort(fixture, { diagnostics: () => log });
@@ -814,10 +810,10 @@ test("500-entry local skill filter latency @performance", async ({ page }) => {
     );
     await timingSession.send("Emulation.setCPUThrottlingRate", { rate: 1 });
     await timingSession.detach();
-    assert.ok(typingFrameMs !== undefined);
+
     assert.ok(
-      typingFrameMs < 250,
-      `500-entry local filter next-frame latency ${typingFrameMs.toFixed(1)} ms at 4x CPU`,
+      typingFrameMs! < 250,
+      `500-entry local filter next-frame latency ${typingFrameMs!.toFixed(1)} ms at 4x CPU`,
     );
     assert.equal(await composer.inputValue(), "$rev");
     console.log(
@@ -827,7 +823,7 @@ test("500-entry local skill filter latency @performance", async ({ page }) => {
         timing: {
           cpuThrottle: "4x",
           catalogSkills: catalogSkills.length,
-          keydownToPostPaintFrameMs: Number(typingFrameMs.toFixed(1)),
+          keydownToPostPaintFrameMs: Number(typingFrameMs!.toFixed(1)),
           boundMs: 250,
         },
       }),

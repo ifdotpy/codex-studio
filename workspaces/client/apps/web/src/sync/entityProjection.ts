@@ -186,7 +186,7 @@ function parseEntityPayload(parsed: unknown): SyncEntityPayload | null {
     Array.isArray(candidate.value)
   )
     return null;
-  return parsed as SyncEntityPayload;
+  return candidate as SyncEntityPayload;
 }
 
 function entityValues<C extends EntityCollection>(

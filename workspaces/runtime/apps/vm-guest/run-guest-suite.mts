@@ -58,7 +58,7 @@ function alive(pid: number) {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error instanceof Error && "code" in error && error.code === "EPERM";
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -112,7 +112,7 @@ export function suiteProcesses(folder: string) {
   const found = [];
   for (const line of listed.stdout.split("\n")) {
     const match = line.match(/^\s*(\d+)\s+(.*)$/);
-    if (!match?.[1] || match[2] === undefined) continue;
+    if (!match) continue;
     const pid = +match[1];
     if (pid === process.pid) continue;
     const command = match[2];

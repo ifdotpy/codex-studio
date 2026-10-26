@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   sdkMcpServers,
+  externalRefusal,
   externalAliases,
   externalCatalog,
   verifyExternalCatalog,
@@ -89,29 +90,22 @@ test("external proof lists only current server aliases and never transfers crede
   });
   assert.equal(called, 1);
   assert.deepEqual(
-    result.catalogs[0]?.tools.map((tool) => tool.name),
+    result.catalogs[0].tools.map((tool) => tool.name),
     ["mcp__anarlog__first", "mcp__anarlog__second"],
   );
   assert.ok(!JSON.stringify(result.catalogs).includes("credential-secret"));
-  assert.ok(result.configs.anarlog && "env" in result.configs.anarlog);
-  assert.equal(result.configs.anarlog.env?.PRIVATE_TOKEN, "credential-secret");
+  const localConfig = result.configs.anarlog as typeof config;
+  assert.equal(localConfig.env.PRIVATE_TOKEN, "credential-secret");
   verifyExternalCatalog(result.catalogs, structuredClone(result.catalogs));
   for (const mutate of [
-    (catalog: ExternalServer[]) => catalog[0]?.tools.reverse(),
+    (catalog: ExternalServer[]) => catalog[0].tools.reverse(),
+    (catalog: ExternalServer[]) =>
+      (catalog[0].tools[0].description = "Changed"),
     (catalog: ExternalServer[]) => {
-      const tool = catalog[0]?.tools[0];
-      assert.ok(tool);
-      tool.description = "Changed";
+      // @ts-expect-error type intentionally violates MCP's object schema contract.
+      (catalog[0].tools[0].input_schema as Tool["inputSchema"]).type = "array";
     },
-    (catalog: ExternalServer[]) => {
-      const schema = catalog[0]?.tools[0]?.input_schema;
-      assert.ok(schema && typeof schema === "object" && "type" in schema);
-      schema.type = "array";
-    },
-    (catalog: ExternalServer[]) => {
-      assert.ok(catalog[0]);
-      catalog[0].tools = [];
-    },
+    (catalog: ExternalServer[]) => (catalog[0].tools = []),
   ]) {
     const target = structuredClone(result.catalogs);
     mutate(target);
@@ -140,10 +134,10 @@ test("external server failure and missing schemas return only safe names", async
         listTools: listing,
       }),
       (error) => {
-        assert.ok(error instanceof Error && "data" in error);
+        const refusal = error as ReturnType<typeof externalRefusal>;
         return (
-          !JSON.stringify(error.data).includes("credential-secret") &&
-          !error.message.includes("credential-secret")
+          !JSON.stringify(refusal.data).includes("credential-secret") &&
+          !refusal.message.includes("credential-secret")
         );
       },
     );
@@ -239,7 +233,6 @@ test("without the connector token the account's connector catalog stands; local 
   const local = (
     await externalCatalog(statuses, "/source", ["anarlog"], dependencies)
   ).catalogs[0];
-  assert.ok(local);
   let read = 0;
   const result = await targetExternalCatalog("/target", [docs, local], {
     ...dependencies,

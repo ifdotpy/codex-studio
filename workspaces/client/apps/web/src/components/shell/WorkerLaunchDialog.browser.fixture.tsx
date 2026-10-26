@@ -22,8 +22,7 @@ declare global {
   }
 }
 const element = document.getElementById("root");
-if (!element) throw new Error("Missing worker launch root");
-const root = createRoot(element);
+const root = createRoot(element!);
 window.workerLaunchFixture = {
   submitted: null,
   launch(mode = "auto", provider = "claude", reviewer = false, yolo = false) {

@@ -88,10 +88,10 @@ export class NativePreferenceStorage implements Storage {
   private running: Promise<void> | undefined;
   private failed = false;
 
-  private journal: Storage;
-  private invoke: Invoke;
-  private report: (error: unknown) => void;
-  private scope: string;
+  declare private journal: Storage;
+  declare private invoke: Invoke;
+  declare private report: (error: unknown) => void;
+  declare private scope: string;
   private constructor(
     journal: Storage,
     invoke: Invoke,
@@ -192,7 +192,6 @@ export class NativePreferenceStorage implements Storage {
     const run = async () => {
       while (this.writes.length) {
         const write = this.writes[0];
-        if (!write) break;
         await this.invoke(write.method, write.params, write.id);
         const next = this.writes.slice(1);
         this.save(next);

@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import assert from "node:assert/strict";
 import type { JsonValue } from "../../../../../client/apps/web/src/generated/api.ts";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-const executable = process.argv[1];
-assert.ok(executable);
-const root = path.dirname(fs.realpathSync(executable));
+// Requests come from the parent Rust witness; retain its JSON payload unchanged.
+function parseFixtureRequest(line: string) {
+  return JSON.parse(line) as Record<string, JsonValue> & {
+    params?: Record<string, JsonValue> & {
+      clientInfo?: Record<string, JsonValue>;
+    };
+  };
+}
+const root = path.dirname(fs.realpathSync(process.argv[1]));
 let turnCount = 0;
 fs.writeFileSync(path.join(root, "startup-cwd"), process.cwd());
 async function reportSocket(socketPath: string, value: JsonValue) {
@@ -46,15 +51,10 @@ if (process.env.FIXTURE_CWD_SOCKET) {
   });
 }
 for await (const line of readline.createInterface({ input: process.stdin })) {
-  const request: { [key: string]: JsonValue } = JSON.parse(line);
-  const params = request.params ?? {};
-  assert.ok(params && typeof params === "object" && !Array.isArray(params));
+  const request = parseFixtureRequest(line);
   const method = request.method;
   const accountProvider =
-    params.clientInfo &&
-    typeof params.clientInfo === "object" &&
-    !Array.isArray(params.clientInfo) &&
-    params.clientInfo.name === "codex_agents_canvas";
+    request.params?.clientInfo?.name === "codex_agents_canvas";
   if (method === "initialize" && accountProvider) {
     const count = increment("account-launch-count");
     await report("launch", { pid: process.pid, count });
@@ -63,7 +63,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   }
   if (!Object.hasOwn(request, "id")) continue;
   let result = {};
-  if (method === "thread/resume") result = { thread: { id: params.threadId } };
+  if (method === "thread/resume")
+    result = { thread: { id: request.params!.threadId } };
   else if (method === "turn/start") {
     turnCount = increment("turn-count");
     await report("turn", {
@@ -108,11 +109,9 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     method === "turn/start" &&
     process.env.STUDIO_W7_P01_COMPLETE_TURN === "1"
   ) {
-    const threadId = params.threadId,
+    const threadId = request.params!.threadId,
       turnId = "fixture-turn",
       itemId = "fixture-assistant-item";
-    assert.equal(typeof threadId, "string");
-    assert.ok(threadId !== undefined);
     notify("turn/started", {
       threadId,
       turn: { id: turnId, status: "inProgress" },

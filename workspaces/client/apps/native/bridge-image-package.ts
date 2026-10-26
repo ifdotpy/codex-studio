@@ -1,23 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+// The deploy writes this manifest; dependency entries are used only by name.
+function readBridgeManifest(text: string): {
+  dependencies: Record<string, unknown>;
+} {
+  return JSON.parse(text);
+}
+
 // The bridge manifest owns the native package set. A deploy keeps every required
 // platform; the native app retains only the codecs its host can execute.
 export async function pruneBridgeImageCodecs(
   directory: string,
   { platform = process.platform, arch = process.arch } = {},
 ) {
-  const manifest: unknown = JSON.parse(
+  const manifest = readBridgeManifest(
     await fs.readFile(path.join(directory, "package.json"), "utf8"),
   );
-  if (
-    !manifest ||
-    typeof manifest !== "object" ||
-    !("dependencies" in manifest) ||
-    !manifest.dependencies ||
-    typeof manifest.dependencies !== "object"
-  )
-    throw new Error("The bridge manifest must provide its dependency map.");
   const names = Object.keys(manifest.dependencies).filter((name) =>
     /^@img\/sharp-(?:libvips-)?(?:darwin|linux)-/.test(name),
   );

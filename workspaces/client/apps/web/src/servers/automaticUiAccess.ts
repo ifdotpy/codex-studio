@@ -42,9 +42,9 @@ export class AutomaticUiAccess {
     string,
     { retryAt: number; delay: number; serverId: string; error: string }
   >();
-  private store: AutomaticAccessStore;
-  private adapter: AutomaticAccessAdapter;
-  private now: typeof Date.now;
+  declare private store: AutomaticAccessStore;
+  declare private adapter: AutomaticAccessAdapter;
+  declare private now: typeof Date.now;
   constructor(
     store: AutomaticAccessStore,
     adapter: AutomaticAccessAdapter,

@@ -1,10 +1,10 @@
+import type { ComponentProps } from "react";
 import type { Attachment } from "../../src/components/ComposerAttachments";
 import type { Message } from "../../src/types";
 declare global {
   interface Window {
     setText: (value: string) => void;
     setCount: (value: number) => void;
-    setStreaming: (value: boolean) => void;
     setTheme: (value: "light" | "dark") => void;
     retained: Element;
   }
@@ -46,6 +46,21 @@ function Harness() {
     }),
     createdAt: "2026-09-10",
   }));
+  // The preview fixture's no-op add callback omits its Promise result.
+  type AttachmentProps = ComponentProps<typeof ComposerAttachments>;
+  type PreviewAttachmentProps = Omit<AttachmentProps, "add"> & {
+    add: (
+      ...files: Parameters<AttachmentProps["add"]>
+    ) => ReturnType<AttachmentProps["add"]> | void;
+  };
+  const attachmentProps: PreviewAttachmentProps = {
+    notify: () => {},
+    assets: [asset],
+    uploading: false,
+    disabled: false,
+    add: () => {},
+    remove: () => {},
+  };
   return (
     <MantineProvider forceColorScheme={theme}>
       <main>
@@ -65,19 +80,11 @@ function Harness() {
             onJump={() => {}}
           />
         </div>
-        <ComposerAttachments
-          notify={() => {}}
-          assets={[asset]}
-          uploading={false}
-          disabled={false}
-          add={async () => {}}
-          remove={() => {}}
-        />
+        <ComposerAttachments {...(attachmentProps as AttachmentProps)} />
         <MessageAttachments assets={[asset]} notify={() => {}} />
       </main>
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing rendering fixture root");
+const root = document.getElementById("root")!;
 createRoot(root).render(<Harness />);

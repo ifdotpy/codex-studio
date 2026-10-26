@@ -1,14 +1,19 @@
-import { canonicalJson, isRecord } from "./move.ts";
+import { canonicalJson } from "./move.ts";
 import type {
   McpServerStatus,
   McpServerStatusConfig,
   McpClaudeAIProxyServerConfig,
   McpServerConfig,
+  McpHttpServerConfig,
   Options,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolProof, ProofTool } from "./move.ts";
-export type ExternalConfig = Exclude<McpServerStatusConfig, { type: "sdk" }>;
+export type ExternalConfig = Exclude<McpServerStatusConfig, { type: "sdk" }> &
+  Partial<
+    Pick<ConstructorParameters<typeof StdioClientTransport>[0], "env" | "cwd"> &
+      Pick<McpHttpServerConfig, "headers" | "url">
+  >;
 
 // The pinned SDK's sdk.mjs:155 documents claudeai-proxy through mcpServers,
 // and sdk.mjs:163 forwards every non-sdk config unchanged into --mcp-config.
@@ -34,7 +39,7 @@ type Status = Pick<McpServerStatus, "name"> & {
   config?: McpServerStatus["config"];
 };
 export type CatalogDependencies = {
-  localConfigs?: (cwd: string) => Promise<Record<string, unknown>>;
+  localConfigs?: (cwd: string) => Promise<Record<string, ExternalConfig>>;
   listTools?: (config: ExternalConfig) => Promise<Partial<Tool>[]>;
   proxyToken?: () => Promise<string>;
   transports?: Record<string, LocalConfig>;
@@ -96,7 +101,7 @@ export function externalAliases(proof: ToolProof) {
       ? proof.surfacedExternal
         ? (proof.deferredTools || []).map((tool) => tool.name)
         : proof.activeDeferredNames || []
-      : (proof.tools ?? []).map((tool) => tool.name);
+      : proof.tools!.map((tool) => tool.name);
   return [
     ...new Set(
       names
@@ -111,36 +116,6 @@ export function externalAliases(proof: ToolProof) {
 // User-authored MCP files have no generated wire contract. Narrow their transport
 // fields once, retaining the complete config (including credentials) locally.
 export function parseExternalConfig(value: unknown): ExternalConfig {
-  if (!isRecord(value)) throw new Error("Unsupported MCP transport");
-  if (value.type === undefined || value.type === "stdio") {
-    if (
-      typeof value.command !== "string" ||
-      (value.args !== undefined &&
-        (!Array.isArray(value.args) ||
-          !value.args.every((arg: unknown) => typeof arg === "string"))) ||
-      (value.env !== undefined &&
-        (!isRecord(value.env) ||
-          !Object.values(value.env).every(
-            (entry) => typeof entry === "string",
-          )))
-    )
-      throw new Error("Unsupported MCP transport");
-  } else if (value.type === "http" || value.type === "sse") {
-    if (
-      typeof value.url !== "string" ||
-      (value.headers !== undefined &&
-        (!isRecord(value.headers) ||
-          !Object.values(value.headers).every(
-            (entry) => typeof entry === "string",
-          )))
-    )
-      throw new Error("Unsupported MCP transport");
-  } else if (
-    value.type !== "claudeai-proxy" ||
-    typeof value.url !== "string" ||
-    typeof value.id !== "string"
-  )
-    throw new Error("Unsupported MCP transport");
   return value as ExternalConfig;
 }
 async function localConfigs(cwd: string) {
@@ -148,37 +123,26 @@ async function localConfigs(cwd: string) {
   const user = configured
     ? path.join(configured, ".claude.json")
     : path.join(os.homedir(), ".claude.json");
+  type Settings = {
+    mcpServers?: Record<string, ExternalConfig>;
+    projects?: Record<string, { mcpServers?: Record<string, ExternalConfig> }>;
+  };
   const read = async (file: string) => {
     try {
-      const settings: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+      const settings: Settings = JSON.parse(await fs.readFile(file, "utf8"));
       return settings;
     } catch (error) {
-      if (
-        (error && typeof error === "object" && "code" in error
-          ? error.code
-          : undefined) === "ENOENT"
-      )
-        return {};
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
       throw error;
     }
   };
   const settings = await read(user);
   const project = await read(path.join(cwd, ".mcp.json"));
-  const projects =
-    isRecord(settings) && isRecord(settings.projects) ? settings.projects : {};
-  const current = projects[cwd];
-  const combined = {
-    ...(isRecord(settings) && isRecord(settings.mcpServers)
-      ? settings.mcpServers
-      : {}),
-    ...(isRecord(project) && isRecord(project.mcpServers)
-      ? project.mcpServers
-      : {}),
-    ...(isRecord(current) && isRecord(current.mcpServers)
-      ? current.mcpServers
-      : {}),
+  return {
+    ...settings.mcpServers,
+    ...project.mcpServers,
+    ...settings.projects?.[cwd]?.mcpServers,
   };
-  return combined;
 }
 async function proxyToken() {
   const configured = process.env.CLAUDE_CONFIG_DIR;
@@ -215,18 +179,26 @@ async function proxyToken() {
     ),
     "utf8",
   );
-  const credentials: unknown = JSON.parse(bytes);
-  const token = isRecord(credentials) ? credentials.claudeAiOauth : undefined;
+  const credentials: {
+    claudeAiOauth?: { accessToken?: string; expiresAt?: number };
+  } = JSON.parse(bytes);
+  const token = credentials.claudeAiOauth;
   if (
-    !isRecord(token) ||
-    typeof token.accessToken !== "string" ||
-    !token.accessToken ||
-    typeof token.expiresAt !== "number" ||
+    !token?.accessToken ||
     !Number.isFinite(token.expiresAt) ||
-    token.expiresAt <= Date.now() + 30000
+    token.expiresAt! <= Date.now() + 30000
   )
     throw new Error("The local Claude proxy credential is unavailable");
   return token.accessToken;
+}
+// MCP client/stdio.js forwards env to cross-spawn; Node child_process.spawn
+// ignores undefined environment values. Preserve that runtime contract here.
+function stdioEnvironment(
+  env: NodeJS.ProcessEnv,
+): NonNullable<ConstructorParameters<typeof StdioClientTransport>[0]["env"]> {
+  return env as NonNullable<
+    ConstructorParameters<typeof StdioClientTransport>[0]["env"]
+  >;
 }
 async function readExternalServer(
   config: ExternalConfig,
@@ -238,18 +210,12 @@ async function readExternalServer(
   timer.unref();
   let transport;
   try {
-    if (config.type === "stdio" || config.type === undefined) {
+    if (config.type === "stdio" || !config.type) {
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args || [],
-        env: Object.fromEntries(
-          Object.entries({ ...process.env, ...config.env }).filter(
-            (entry): entry is [string, string] => typeof entry[1] === "string",
-          ),
-        ),
-        ...("cwd" in config && typeof config.cwd === "string"
-          ? { cwd: config.cwd }
-          : {}),
+        env: stdioEnvironment({ ...process.env, ...config.env }),
+        cwd: config.cwd,
         stderr: "ignore",
       });
     } else {
@@ -261,9 +227,7 @@ async function readExternalServer(
       const url = new URL(
         proxy
           ? "https://mcp-proxy.anthropic.com/v1/mcp/" + config.id
-          : "url" in config
-            ? config.url
-            : "",
+          : config.url!,
       );
       const headers = proxy
         ? {
@@ -271,11 +235,9 @@ async function readExternalServer(
             "Accept-Encoding": "identity",
             "X-Mcp-Client-Session-Id": randomUUID(),
           }
-        : "headers" in config
-          ? config.headers
-          : undefined;
+        : config.headers;
       const options = {
-        requestInit: headers === undefined ? {} : { headers },
+        requestInit: { headers },
         fetch: (url: string | URL | Request, init?: RequestInit) =>
           fetch(url, {
             ...init,
@@ -292,8 +254,7 @@ async function readExternalServer(
           ? new SSEClientTransport(url, options)
           : new StreamableHTTPClientTransport(url, options);
     }
-    const connection: Omit<typeof transport, "sessionId"> = transport;
-    await client.connect(connection, {
+    await client.connect(transport, {
       timeout: 10000,
       signal: controller.signal,
     });
@@ -345,34 +306,38 @@ export function transportIdentity(
       ? ["type", "id"]
       : ["type", "command", "args", "url"]
     )
-      .filter((key) => Reflect.get(config, key) !== undefined)
-      .map((key) => [key, Reflect.get(config, key)]),
+      .filter(
+        (key) =>
+          (config as ExternalConfig & Record<string, unknown>)[key] !==
+          undefined,
+      )
+      .map((key) => [
+        key,
+        (config as ExternalConfig & Record<string, unknown>)[key],
+      ]),
   );
 }
 
 const credentialFree = (config: ExternalConfig): config is LocalConfig =>
   config.type !== "claudeai-proxy" &&
-  !Object.keys("env" in config ? config.env || {} : {}).length &&
-  !Object.keys("headers" in config ? config.headers || {} : {}).length;
+  !Object.keys(config.env || {}).length &&
+  !Object.keys(config.headers || {}).length;
 // A moved chat keeps the MCP servers of its source. The target's own entry serves when it has
 // the same transport; otherwise the source's transport, which carries no credential, starts
 // the same server on the target.
 function movedConfig(
   server: ExternalServer,
-  own: unknown,
+  own: ExternalConfig | undefined,
   source: ExternalConfig | undefined,
 ) {
-  if (own) {
-    const config = parseExternalConfig(own);
-    if (hash(transportIdentity(config)) === server.configHash) return config;
-  }
+  if (own && hash(transportIdentity(own)) === server.configHash) return own;
   if (
     source &&
     credentialFree(source) &&
     hash(transportIdentity(source)) === server.configHash
   )
     return transportIdentity(source);
-  return own ? parseExternalConfig(own) : undefined;
+  return own;
 }
 export async function externalCatalog(
   statuses: Status[],
@@ -392,9 +357,8 @@ export async function externalCatalog(
         statuses.map((entry) => entry.name),
         [alias],
       );
-    const value =
+    const config =
       row.config.type === "claudeai-proxy" ? row.config : local[row.name];
-    const config = value ? parseExternalConfig(value) : undefined;
     if (!config) throw externalRefusal(aliases, [row.name], [row.name]);
     // Keep auth headers and process environment local. Compare the transport
     // identity and the actual ordered tools, rather than credential values.
@@ -442,8 +406,8 @@ export async function externalCatalog(
   );
   const failed = results.find((result) => result.status === "rejected");
   if (failed) throw failed.reason;
-  const catalogs = results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
+  const catalogs = results.map(
+    (result) => (result as PromiseFulfilledResult<ExternalServer>).value,
   );
   return {
     catalogs,
@@ -454,11 +418,12 @@ export async function externalCatalog(
     ),
     // What a move carries so that the target starts the same servers.
     transports: Object.fromEntries(
-      selected.flatMap((server) =>
-        credentialFree(server.config)
-          ? [[server.name, transportIdentity(server.config)]]
-          : [],
-      ),
+      selected
+        .filter((server) => credentialFree(server.config))
+        .map((server) => [
+          server.name,
+          transportIdentity(server.config as LocalConfig),
+        ]),
     ),
   };
 }
@@ -513,13 +478,13 @@ export async function targetExternalCatalog(
     const catalogs = expected.map((server) =>
       server.claudeAI
         ? structuredClone(server)
-        : (read.catalogs.find((row) => row.name === server.name) ?? server),
+        : read.catalogs.find((row) => row.name === server.name)!,
     );
     const configs: Parameters<typeof sdkMcpServers>[0] = { ...read.configs };
     for (const server of expected.filter((row) => row.claudeAI))
       configs[server.name] = {
         type: "claudeai-proxy",
-        id: server.proxyId ?? "",
+        id: server.proxyId!,
         url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
       };
     return {
@@ -545,12 +510,10 @@ export async function targetExternalCatalog(
     config: server.claudeAI
       ? {
           type: "claudeai-proxy",
-          id: server.proxyId ?? "",
+          id: server.proxyId!,
           url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
         }
-      : configured[server.name]
-        ? parseExternalConfig(configured[server.name])
-        : undefined,
+      : configured[server.name],
   }));
   const result = await externalCatalog(
     statuses,

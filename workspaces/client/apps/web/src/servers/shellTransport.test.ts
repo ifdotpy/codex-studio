@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { frameMessageOrigin } from "./frameOrigin";
 import { afterEach, expect, it, vi } from "vitest";
 import { bindShellTransport } from "./shellTransport";
@@ -88,7 +87,6 @@ it.each([
         ...event,
         data: { ...event.data, correlation: "replay" },
       });
-      assert.ok(replies[1] != null);
       expect(replies[1].error).toBe("Invalid server transport action.");
       expect(signal.aborted).toBe(false);
       frame.isConnected = false;

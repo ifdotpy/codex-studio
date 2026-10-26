@@ -18,11 +18,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 type Geometry = Pick<DOMRect, "x" | "y" | "width" | "height">;
 type Boxes = Record<string, Geometry>;
-const boxAt = (boxes: Boxes, selector: string) => {
-  const box = boxes[selector];
-  assert.ok(box, `Missing geometry for ${selector}`);
-  return box;
-};
 declare global {
   interface Window {
     composerGeometryFrame: string | null;
@@ -42,7 +37,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   });
   const pages = new Set<Page>();
   let log = "";
-  fixture.stderr?.on("data", (data) => (log += data));
+  fixture.stderr!.on("data", (data) => (log += data));
   try {
     const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
@@ -59,7 +54,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
     const measurements: { width: number; label: string; boxes: Boxes }[] = [];
     for (const width of [1440, 900, 390]) {
       const openedChat: TestAgent = width === 390 ? lead : emptyWorker;
-      assert.ok(openedChat.name);
+
       const originalTranscript = await fixtureGetResult(
         "/api/transcript",
         await fetch(`${origin}/api/transcript?id=${openedChat.id}`),
@@ -67,8 +62,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       const state = structuredClone(initial);
       const controlledAgent = state.runtime.agents.find(
         (agent) => agent.id === openedChat.id,
-      );
-      assert.ok(controlledAgent);
+      )!;
+
       Object.assign(controlledAgent, {
         empty: true,
         status: "completed",
@@ -79,7 +74,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       const transcript = {
         ...structuredClone(originalTranscript),
         agent: controlledAgent,
-        items: [],
+        items: [] as NonNullable<GetResult<"/api/transcript">["items"]>,
       } satisfies Omit<GetResult<"/api/transcript">, "agent"> & {
         agent: TestAgent;
       };
@@ -122,7 +117,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await page.route("**/api/transcript/stream?*", (route) =>
         route.fulfill({
           contentType: "text/event-stream",
-          body: `data: ${JSON.stringify({ ...transcript, items: transcript.items || [], order: [], replace: true })}\n\n`,
+          body: `data: ${JSON.stringify({ ...transcript, items: transcript.items || [], order: (transcript.items || []).map((item) => item.id), replace: true })}\n\n`,
         }),
       );
       await page.route("**/api/transcript?*", (route) =>
@@ -145,7 +140,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       if (width <= 760)
         await page
           .locator("[data-chat]")
-          .filter({ hasText: openedChat.name })
+          .filter({ hasText: openedChat.name! })
           .first()
           .click();
       await page.locator("#composer").waitFor();
@@ -174,7 +169,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         `${width}px fixture opened the explicitly selected chat`,
       );
       await expect(page.locator("#conversation-title")).toContainText(
-        openedChat.name,
+        openedChat.name!,
       );
       await page
         .locator(
@@ -194,7 +189,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           message?.value === "Check this task" &&
           send &&
           !send.disabled &&
-          !document.querySelector("#send-state")?.textContent
+          !document.querySelector("#send-state")!.textContent
         );
       });
       const boxes = () =>
@@ -210,8 +205,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
             "#send",
             ...(mobile ? [] : [".usage-footer"]),
           ]) {
-            const node = document.querySelector(selector);
-            if (!node) throw new Error(`Missing ${selector}`);
+            const node = document.querySelector(selector)!;
             const { x, y, width, height } = node.getBoundingClientRect();
             result[selector] = { x, y, width, height };
           }
@@ -234,8 +228,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         });
         await page.waitForFunction((selectors) => {
           const current = selectors.map((selector) => {
-            const node = document.querySelector(selector);
-            if (!node) throw new Error(`Missing ${selector}`);
+            const node = document.querySelector(selector)!;
             const rect = node.getBoundingClientRect();
             return [rect.x, rect.y, rect.width, rect.height].map(Math.round);
           });
@@ -279,8 +272,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
               continue;
             else
               assert.ok(
-                Math.abs(boxAt(current, selector)[key] - box[key]) <= 1,
-                `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${boxAt(current, selector)[key]}`,
+                Math.abs(current[selector][key] - box[key]) <= 1,
+                `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${current[selector][key]}`,
               );
         assert.equal(
           await page.evaluate(
@@ -289,22 +282,21 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           false,
           `${width}px no horizontal page overflow`,
         );
-        const form = boxAt(current, "#composer");
+        const form = current["#composer"];
         for (const selector of [
           ".attach-button",
           ...(width <= 760 ? [] : [".dictation-trigger"]),
           "#send",
         ])
           assert.ok(
-            boxAt(current, selector).x >= form.x &&
-              boxAt(current, selector).x + boxAt(current, selector).width <=
+            current[selector].x >= form.x &&
+              current[selector].x + current[selector].width <=
                 form.x + form.width + 1,
             `${selector} stays inside composer`,
           );
       };
       const updatePhase = async (next: TestAgent["status"]) => {
-        const active =
-          next === "starting" || next === "running" || next === "approval";
+        const active = ["starting", "running", "approval"].includes(next!);
         Object.assign(controlledAgent, {
           status: next,
           inFlight: active,
@@ -341,8 +333,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           window.composerTransitionSampling = true;
           const sample = () => {
             if (!window.composerTransitionSampling) return;
-            const composer = document.querySelector("#composer");
-            if (!composer) throw new Error("Missing composer");
+            const composer = document.querySelector("#composer")!;
             const box = composer.getBoundingClientRect();
             window.composerTransitionSamples.push({
               y: box.y,
@@ -382,12 +373,12 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         );
         assert.equal(
           positions[0],
-          Math.round(boxAt(baseline, "#composer").y),
+          Math.round(baseline["#composer"].y),
           "390px transition starts at the empty-chat composer position",
         );
         assert.equal(
           positions[0],
-          Math.round(boxAt(current, "#composer").y),
+          Math.round(current["#composer"].y),
           "390px transition ends at the non-empty composer position",
         );
         assert.equal(
@@ -428,8 +419,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           // e4ef04aa places prompt navigation in the header tools. That
           // navigation mounts after the first prompt, and the flexible title
           // yields width to its prompt history control once.
-          const latest = measurements.at(-1);
-          assert.ok(latest);
+          const latest = measurements.at(-1)!;
+
           baseline = latest.boxes;
         }
       }
@@ -437,7 +428,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         "/api/messages",
         firstSend.request().postDataJSON(),
       );
-      assert.ok(firstMessage.id);
+
       await firstSend.fulfill({
         json: {
           id: firstMessage.id,
@@ -445,7 +436,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         } satisfies PostResult<"/api/messages">,
       });
       await page.waitForFunction(
-        () => !document.querySelector<HTMLTextAreaElement>("#message")?.value,
+        () => !document.querySelector<HTMLTextAreaElement>("#message")!.value,
       );
       await page.waitForFunction(
         () => !document.querySelector("#send-state")?.textContent,
@@ -464,8 +455,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       if (emptyPhoneStart)
         for (const key of ["y", "height"] as const)
           assert.equal(
-            boxAt(measurements.at(-1)?.boxes ?? {}, "#composer")[key],
-            boxAt(baseline, "#composer")[key],
+            measurements.at(-1)!.boxes["#composer"][key],
+            baseline["#composer"][key],
             `390px subsequent non-empty send preserves composer ${key}`,
           );
       assert.equal(
@@ -507,7 +498,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         await page.locator(`[data-chat="${openedChat.id}"]`).first().click();
       await page.locator("#composer").waitFor();
       await expect(page.locator("#conversation-title")).toContainText(
-        openedChat.name,
+        openedChat.name!,
       );
       await queueRequested.promise;
       if (width > 760) await page.locator(".terminal-dock").waitFor();

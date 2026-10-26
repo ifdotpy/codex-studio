@@ -46,8 +46,8 @@ export function runLogged(
         else child.kill(sig);
         return true;
       } catch (err) {
-        if (!(err instanceof Error && "code" in err && err.code === "ESRCH"))
-          error = err instanceof Error ? err : new Error(String(err));
+        if ((err as NodeJS.ErrnoException).code !== "ESRCH")
+          error = err as Error;
         return false;
       }
     };
