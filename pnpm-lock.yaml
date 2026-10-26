@@ -173,6 +173,9 @@ importers:
 
   .:
     devDependencies:
+      '@types/node':
+        specifier: 26.6.5
+        version: 26.6.5
       openapi-typescript:
         specifier: 7.13.0
         version: 7.13.0(typescript@5.9.3)
@@ -191,6 +194,9 @@ importers:
       '@electron/packager':
         specifier: 20.3.0
         version: 20.3.0(supports-color@10.2.2)
+      '@types/node':
+        specifier: 26.6.5
+        version: 26.6.5
       electron:
         specifier: 44.9.3
         version: 44.9.3(supports-color@10.2.2)
@@ -206,6 +212,9 @@ importers:
       '@tauri-apps/cli':
         specifier: 2.12.4
         version: 2.12.4
+      '@types/node':
+        specifier: 26.6.5
+        version: 26.6.5
 
   workspaces/client/apps/web:
     dependencies:

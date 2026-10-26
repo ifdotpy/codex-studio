@@ -24,6 +24,7 @@
     "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/gates.test.mjs workspaces/tooling/apps/repository-checks/tests/facade.test.mjs workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs"
   },
   "devDependencies": {
+    "@types/node": "26.6.5",
     "openapi-typescript": "7.13.0",
     "oxfmt": "0.74.0",
     "oxlint": "1.89.0",
