@@ -14,7 +14,10 @@ export class EventStreamParser {
   private data: string[] = [];
   private type = "message";
   private first = true;
-  constructor(private emit: (type: string, data: string) => void) {}
+  private emit: (type: string, data: string) => void;
+  constructor(emit: (type: string, data: string) => void) {
+    this.emit = emit;
+  }
   push(value: string) {
     if (this.first && value.length) {
       this.first = false;
