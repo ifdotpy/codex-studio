@@ -19,6 +19,16 @@ for (const size of [
       if (!(await sidebar.isVisible()))
         await page.locator("#sidebar-toggle").click();
       await expect(sidebar).toBeVisible();
+      if (size.height > size.width) {
+        await expect(sidebar).toBeFocused();
+        await expect(sidebar).toHaveCSS("outline-style", "none");
+        await page.keyboard.press("Tab");
+        await expect(sidebar.locator(".brand")).toBeFocused();
+        await expect(sidebar.locator(".brand")).not.toHaveCSS(
+          "outline-style",
+          "none",
+        );
+      }
       const header = sidebar.locator(".sidebar-header");
       await expect(header.getByRole("button")).toHaveCount(1);
       const search = header.getByRole("button", { name: "Search chats" });
@@ -35,6 +45,9 @@ for (const size of [
       ).toHaveCount(0);
       const footer = sidebar.locator(".sidebar-utility-footer");
       await expect(footer.getByRole("button")).toHaveCount(1);
+      await page.screenshot({
+        path: test.info().outputPath("sidebar-header.png"),
+      });
       await footer
         .getByRole("button", { name: "Sidebar settings and warnings" })
         .click();
@@ -46,9 +59,6 @@ for (const size of [
         page.getByRole("dialog", { name: "Warnings", exact: true }),
       ).toBeVisible();
       await page.keyboard.press("Escape");
-      await page.screenshot({
-        path: test.info().outputPath("sidebar-header.png"),
-      });
     } finally {
       await fixture.close();
     }

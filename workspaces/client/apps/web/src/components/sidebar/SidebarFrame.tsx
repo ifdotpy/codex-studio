@@ -6,6 +6,7 @@ import {
 } from "../../layout/layout-contract.generated";
 import { resolveSidebarWidth, storedSidebarWidth } from "./sidebarWidth";
 import { useSidebarResize } from "./useSidebarResize";
+import { useDuoSurface } from "../../layout/useDuoSurface";
 import "./sidebar-frame.css";
 
 const widthContract = {
@@ -49,6 +50,7 @@ export type SidebarFrameProps = {
 };
 
 export function SidebarFrame(p: SidebarFrameProps) {
+  const duoSurface = useDuoSurface();
   const aside = useRef<HTMLElement | null>(null);
   const headerMinimum = useRef(0);
   const scrollTop = useRef(0);
@@ -254,6 +256,8 @@ export function SidebarFrame(p: SidebarFrameProps) {
       ref={aside}
       id="sidebar"
       className="sidebar-frame"
+      tabIndex={compact && duoSurface ? -1 : undefined}
+      data-autofocus={compact && duoSurface ? true : undefined}
       data-presentation={compact ? "drawer" : "inline"}
       data-probe={probing || undefined}
       inert={probing || undefined}
@@ -286,7 +290,10 @@ export function SidebarFrame(p: SidebarFrameProps) {
   return (
     <Drawer
       opened={p.opened}
-      onEnterTransitionEnd={p.onEntered}
+      onEnterTransitionEnd={() => {
+        if (duoSurface) aside.current?.focus({ preventScroll: true });
+        else p.onEntered?.();
+      }}
       onClose={close}
       zIndex={p.drawerZIndex}
       size={`min(${layoutValues.sidebar.drawerMax}rem, 100vw)`}

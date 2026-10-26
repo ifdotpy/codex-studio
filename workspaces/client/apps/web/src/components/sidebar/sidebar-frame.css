@@ -39,3 +39,8 @@
 #sidebar.sidebar-frame .sidebar-header {
   flex-wrap: wrap;
 }
+
+/* The drawer entry target is a container, not a keyboard action. */
+#sidebar[data-autofocus]:focus {
+  outline: none;
+}
