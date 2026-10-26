@@ -113,3 +113,39 @@
 :root[data-duo-proportions] #composer > .jump-slot .jump {
   bottom: var(--layout-duo-latest-gap);
 }
+
+/* The title overlays the rail-mode transcript. Its padding protects the first turn. */
+:root[data-duo-proportions] #conversation > .duo-transcript-bar {
+  box-sizing: border-box;
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--layout-duo-title-height);
+  padding: var(--layout-duo-title-inset) var(--layout-duo-column-gutter);
+  z-index: var(--layout-layers-app);
+  background: color-mix(
+    in srgb,
+    var(--surface) calc(var(--layout-duo-title-opacity) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--layout-duo-title-blur));
+  backdrop-filter: blur(var(--layout-duo-title-blur));
+}
+:root[data-duo-proportions] .duo-transcript-bar .conversation-heading {
+  height: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+}
+:root[data-duo-proportions] .duo-transcript-bar #conversation-title {
+  width: 100%;
+}
+:root[data-duo-proportions] .duo-transcript-bar .conversation-meta {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--studio-text-meta);
+}
+:root[data-duo-proportions] #conversation:has(> .duo-transcript-bar) #messages {
+  padding-top: calc(var(--layout-duo-title-height) + var(--mantine-spacing-lg));
+  scroll-padding-top: var(--layout-duo-title-height);
+}

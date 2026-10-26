@@ -1710,6 +1710,9 @@ export default function Conversation(p: {
           </details>,
           headerTools,
         )}
+      {p.duo && p.transcriptHeading && (
+        <header className="duo-transcript-bar">{p.transcriptHeading}</header>
+      )}
       <div
         id="messages"
         ref={scroll}
@@ -1723,7 +1726,7 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
-          {p.transcriptHeading && (
+          {!p.duo && p.transcriptHeading && (
             <div className="transcript-heading">{p.transcriptHeading}</div>
           )}
           {removed.hasRemoved && (

@@ -168,4 +168,8 @@
   --layout-duo-message-inset: 6px;
   --layout-duo-column-gutter: 20px;
   --layout-duo-latest-gap: 36px;
+  --layout-duo-title-height: 64px;
+  --layout-duo-title-inset: 12px;
+  --layout-duo-title-opacity: 0.82;
+  --layout-duo-title-blur: 12px;
 }

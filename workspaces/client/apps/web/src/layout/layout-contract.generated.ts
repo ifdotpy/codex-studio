@@ -939,6 +939,30 @@ export const layoutTokens = {
       "Duo Latest button gap above the composer outer top, clear of its context row",
     kind: "spacing",
   },
+  "duo.titleHeight": {
+    value: 64,
+    unit: "px",
+    kind: "dimension",
+    purpose: "Duo rail title and project bar height over the transcript",
+  },
+  "duo.titleInset": {
+    value: 12,
+    unit: "px",
+    kind: "spacing",
+    purpose: "Duo title bar vertical padding",
+  },
+  "duo.titleOpacity": {
+    value: 0.82,
+    unit: "ratio",
+    kind: "spacing",
+    purpose: "Duo title bar surface opacity over scrolling messages",
+  },
+  "duo.titleBlur": {
+    value: 12,
+    unit: "px",
+    kind: "spacing",
+    purpose: "Duo translucent title backdrop blur radius",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -1240,6 +1264,10 @@ export const layoutValues = {
     messageInset: 6,
     columnGutter: 20,
     latestGap: 36,
+    titleHeight: 64,
+    titleInset: 12,
+    titleOpacity: 0.82,
+    titleBlur: 12,
   },
 } as const;
 export const layoutQueries = {
