@@ -2,9 +2,6 @@ import { hasTouchCapability, touchPointerMedia } from "./touchCapability";
 import { useEffect } from "react";
 import { layoutValues } from "../layout/layout-contract.generated";
 
-/** Count of touch gestures intercepted by the active viewport owner, in gestures. */
-export const viewportGestureCountAttribute = "data-keyboard-gesture-count";
-
 const fullFrames = new WeakMap<Document, { height: number; width: number }>();
 
 /** Keep the full touch layout behind the keyboard while its composer follows the visible bottom. */
@@ -21,7 +18,6 @@ export function useMobileViewport(active: boolean, compact = false) {
     let composerClosing = false;
     let sampledGeometry = "";
     let interceptedTextarea: HTMLTextAreaElement | null = null;
-    let gestureCount = 0;
     const previousFrame = fullFrames.get(document);
     let fullHeight = previousFrame?.height || 0;
     let fullWidth = previousFrame?.width || 0;
@@ -38,7 +34,6 @@ export function useMobileViewport(active: boolean, compact = false) {
     };
     const clear = () => {
       resetComposer();
-      root.removeAttribute(viewportGestureCountAttribute);
       root.removeAttribute("data-viewport-surface");
       root.removeAttribute("data-viewport-keyboard");
       root.removeAttribute("data-viewport-keyboard-compact");
@@ -307,10 +302,6 @@ export function useMobileViewport(active: boolean, compact = false) {
       event.preventDefault();
       if (interceptedTextarea !== target) {
         interceptedTextarea = target;
-        root.setAttribute(
-          viewportGestureCountAttribute,
-          String(++gestureCount),
-        );
         if (focused) target.blur();
         target.focus({ preventScroll: true });
       }

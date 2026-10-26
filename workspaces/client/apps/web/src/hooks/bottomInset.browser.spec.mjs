@@ -24,11 +24,10 @@ test("Duo uses the bottom band for passive status and keeps every target above H
         import {MantineProvider} from '@mantine/core'; import {theme} from '/src/theme.ts';
         import {useMobileViewport} from '/src/hooks/mobileViewport.ts';
         import {BottomInsetBand,PassiveUsage} from '/src/hooks/BottomInsetBand.tsx';
-        import {LayoutDebug} from '/src/hooks/LayoutDebug.tsx';
         import '@mantine/core/styles.css'; import '/src/style.css'; import '/src/components/Usage.css';
         import '/src/hooks/viewport-surface.css'; import '/src/layout/layout-contract.generated.css';
         const e=React.createElement;
-        function Fixture(){ useMobileViewport(true); return e(MantineProvider,{theme},e(LayoutDebug),e(BottomInsetBand,null,
+        function Fixture(){ useMobileViewport(true); return e(MantineProvider,{theme},e(BottomInsetBand,null,
           e('aside',{id:'sidebar','data-presentation':'inline',style:{width:226,background:'var(--sidebar)'}},'Chats'),
           e('main',{className:'workspace',style:{display:'flex',flexDirection:'column',flex:1}},
             e('div',{style:{flex:1}},'Conversation'),
@@ -72,9 +71,6 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       await page.evaluate(() => matchMedia("(any-pointer: coarse)").matches),
     ).toBe(false);
     await expect(page.locator("#message")).toHaveCSS("font-size", "16px");
-    await expect(
-      page.locator(".layout-debug, .layout-debug-probe"),
-    ).toHaveCount(0);
     expect(
       await page.locator("#message").evaluate((n) => {
         const event = new PointerEvent("pointerdown", {
@@ -117,185 +113,6 @@ test("Duo uses the bottom band for passive status and keeps every target above H
     });
     await expect(band).toHaveCount(0);
     await expect(status).toBeVisible();
-    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
-      insets: { top: 0, right: 84, bottom: 34, left: 0 },
-    });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/bottom-check?layoutDebug=1`,
-    );
-    const debug = page.locator(".layout-debug");
-    await expect(debug).toBeVisible();
-    await expect(debug).toHaveCSS("pointer-events", "none");
-    expect(
-      await debug.evaluate((node) => getComputedStyle(node).zIndex),
-    ).not.toBe("auto");
-    await expect(debug).toContainText("pointer coarse: false");
-    await expect(debug).toContainText("any-pointer coarse: false");
-    await expect(debug).toContainText("maxTouchPoints: 5");
-    await expect(debug).toContainText("innerWidth: 951px");
-    await expect(debug).toContainText("visualViewport.width: 951px");
-    await expect(debug).toContainText("display-mode: browser");
-    await expect(debug).toContainText("innerHeight: 669px");
-    await expect(debug).toContainText(
-      "visualViewport: h 669, offTop 0, pageTop 0, scrollY 0",
-    );
-    await expect(debug).toContainText("root height: 669px");
-    await expect(debug).toContainText("sidebar moved frames: 0");
-    await expect(debug).toContainText("root moved frames: 0");
-    await expect(debug).toContainText("vv pan events this open: 0");
-    await expect(debug).toContainText("root rect top: 0px");
-    await expect(debug).toContainText("composer rect top/bottom:");
-    await expect(debug).toContainText(
-      "root padding T/R/B/L: 0px / 84px / 34px / 0px",
-    );
-    await expect(debug).toContainText(
-      "safe-area T/R/B/L: 0px / 84px / 34px / 0px",
-    );
-    await expect(debug).toContainText("data-viewport-surface: true");
-    expect(
-      await debug.locator("button,a,input,textarea,[tabindex]").count(),
-    ).toBe(0);
-    expect(
-      await debug.evaluate((node) => node.scrollWidth <= node.clientWidth),
-    ).toBe(true);
-    await page.screenshot({ path: test.info().outputPath("layout-debug.png") });
-    await page.evaluate(() => {
-      Object.defineProperty(window, "innerHeight", {
-        configurable: true,
-        value: 323,
-      });
-      Object.defineProperty(window, "scrollY", {
-        configurable: true,
-        value: 346,
-      });
-      for (const [key, value] of Object.entries({
-        height: 323,
-        offsetTop: 346,
-        pageTop: 346,
-      }))
-        Object.defineProperty(window.visualViewport, key, {
-          configurable: true,
-          value,
-        });
-      window.visualViewport.dispatchEvent(new Event("scroll"));
-      window.dispatchEvent(new Event("scroll"));
-    });
-    await expect(debug).toContainText("innerHeight: 323px");
-    await expect(debug).toContainText("vv pan events this open: 1");
-    await expect(debug).toContainText("root rect top: 346px");
-    const composerRect = await page.locator("#composer").evaluate((n) => {
-      const r = n.getBoundingClientRect();
-      return `composer rect top/bottom: ${r.top}px / ${r.bottom}px`;
-    });
-    await expect(debug).toContainText(composerRect);
-    await expect(debug).toContainText(
-      "visualViewport: h 323, offTop 346, pageTop 346, scrollY 346",
-    );
-    await expect
-      .poll(() =>
-        debug.evaluate(
-          (n) =>
-            n.getBoundingClientRect().top - window.visualViewport.offsetTop,
-        ),
-      )
-      .toBe(8);
-    await page
-      .locator("#sidebar")
-      .evaluate((n) => (n.style.transform = "translateY(10px)"));
-    await expect(debug).toContainText(/sidebar moved frames: [1-9]/);
-    await expect(debug).toContainText("last moved frame:");
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/bottom-check?kbdNoPan=1&layoutDebug=1`,
-    );
-    const intercepted = await page.locator("#message").evaluate((n) => {
-      const focus = n.focus.bind(n);
-      let options;
-      n.focus = (value) => {
-        options = value;
-        focus(value);
-      };
-      const event = new PointerEvent("pointerdown", {
-        bubbles: true,
-        cancelable: true,
-        pointerType: "touch",
-      });
-      n.dispatchEvent(event);
-      n.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-      document.documentElement.setAttribute("data-viewport-keyboard", "");
-      const again = new PointerEvent("pointerdown", {
-        bubbles: true,
-        cancelable: true,
-        pointerType: "touch",
-      });
-      n.dispatchEvent(again);
-      return {
-        prevented: event.defaultPrevented,
-        options,
-        focused: document.activeElement === n,
-        secondPrevented: again.defaultPrevented,
-      };
-    });
-    expect(intercepted).toEqual({
-      prevented: true,
-      options: { preventScroll: true },
-      focused: true,
-      secondPrevented: false,
-    });
-    await expect(page.locator(".layout-debug")).toContainText(
-      "keyboard gesture interception: product",
-    );
-    const frames = page.getByRole("textbox", {
-      name: "Keyboard frame samples",
-    });
-    await expect
-      .poll(async () => JSON.parse(await frames.inputValue()).length)
-      .toBeGreaterThan(0);
-    const recorded = JSON.parse(await frames.inputValue());
-    expect(
-      recorded.some(
-        (row) =>
-          row.phase === "focus" && row.height === 669 && row.offsetTop === 0,
-      ),
-    ).toBe(true);
-    await page.locator("#message").evaluate((n) => n.blur());
-    await expect
-      .poll(async () =>
-        JSON.parse(await frames.inputValue()).some(
-          (row) => row.phase === "blur",
-        ),
-      )
-      .toBe(true);
-    await expect(frames).toHaveAttribute("readonly", "");
-    await expect(frames).toHaveAttribute("tabindex", "-1");
-    const refocused = await page.locator("#message").evaluate((n) => {
-      document.documentElement.removeAttribute("data-viewport-keyboard");
-      n.focus();
-      let blurs = 0;
-      n.addEventListener("blur", () => blurs++, { once: true });
-      const event = new PointerEvent("pointerdown", {
-        bubbles: true,
-        cancelable: true,
-        pointerType: "touch",
-      });
-      n.dispatchEvent(event);
-      n.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-      return {
-        prevented: event.defaultPrevented,
-        blurs,
-        focused: document.activeElement === n,
-      };
-    });
-    expect(refocused).toEqual({ prevented: true, blurs: 1, focused: true });
-    await expect(page.locator(".layout-debug")).toContainText(
-      "intercepted gestures: 2",
-    );
-    await expect
-      .poll(async () =>
-        JSON.parse(await frames.inputValue()).some(
-          (row) => row.interceptedGestures === 2,
-        ),
-      )
-      .toBe(true);
   } finally {
     await page.close();
     await server.close();
