@@ -35,9 +35,7 @@ const delay = () => new Promise((resolve) => setTimeout(resolve, 10));
 const failures: string[] = [];
 // Unpatched RxDB leaves a rejected incremental write as an unhandled rejection.
 process.on("unhandledRejection", (error) => {
-  failures.push(
-    `unhandled rejection: ${error instanceof Error ? error.stack : error}`,
-  );
+  failures.push(`unhandled rejection: ${(error as Error)?.stack ?? error}`);
 });
 
 async function testEventCache(
@@ -48,20 +46,12 @@ async function testEventCache(
   >,
 ) {
   function makeBatch() {
-    const payload: RxDocumentData<{ payload: string }> = {
-      payload: "x".repeat(2 * 1024 * 1024),
-      _deleted: false,
-      _attachments: {},
-      _meta: { lwt: 1 },
-      _rev: "1-a",
-    };
-    const bulk: RxChangeEventBulk<{ payload: string }> = {
-      id: "fixture",
-      checkpoint: { id: "a", lwt: 1 },
-      context: "fixture",
-      databaseToken: "fixture",
-      storageToken: "fixture",
-      internal: false,
+    // The cache witness omits storage metadata; it only holds and releases these objects.
+    const payload = { payload: "x".repeat(2 * 1024 * 1024) } as RxDocumentData<{
+      payload: string;
+    }>;
+    // Identity and checkpoint fields are unused by the event-cache conversion.
+    const bulk = {
       collectionName: "projections",
       isLocal: false,
       events: [
@@ -72,7 +62,7 @@ async function testEventCache(
           previousDocumentData: payload,
         },
       ],
-    };
+    } as RxChangeEventBulk<{ payload: string }>;
     const first = implementation.rxChangeEventBulkToRxChangeEvents(bulk);
     assert.equal(
       implementation.rxChangeEventBulkToRxChangeEvents(bulk),
@@ -86,8 +76,7 @@ async function testEventCache(
   let released = false;
   for (let i = 0; i < 100; i++) {
     await delay();
-    assert.ok(global.gc);
-    global.gc();
+    global.gc!();
     await delay();
     if (refs.every((ref) => ref.deref() === undefined)) {
       released = true;
@@ -236,7 +225,7 @@ async function testIncrementalWriteFailure(format: string) {
       queue.addWrite(state, async (doc) => ({ ...doc, value: 1 })),
     );
     assert.equal(
-      failed.error instanceof Error ? failed.error.message : undefined,
+      (failed.error as Error | undefined)?.message,
       "disk full",
       `${format}: a rejected storage write rejects its caller`,
     );
@@ -270,9 +259,7 @@ for (const format of ["esm", "cjs"]) {
     try {
       await verify();
     } catch (error) {
-      failures.push(
-        `${format} ${name}: ${error instanceof Error ? error.stack : String(error)}`,
-      );
+      failures.push(`${format} ${name}: ${(error as Error).stack}`);
     }
   }
 }
