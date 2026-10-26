@@ -49,6 +49,18 @@ export function isDuoLayout(input: {
     input.width < layoutValues.duo.widthMax
   );
 }
+/** The same Duo device profile in either orientation; proportions stay landscape-only. */
+export function isDuoSurface(input: {
+  width: number;
+  height: number;
+  primaryCoarse: boolean;
+}) {
+  return isDuoLayout({
+    ...input,
+    width: Math.max(input.width, input.height),
+    height: Math.min(input.width, input.height),
+  });
+}
 export const finiteNonnegative = (value: number, fallback = 0) =>
   Number.isFinite(value) && value >= 0 ? value : fallback;
 export function resolveLayoutLength(key: LayoutLengthKey, rootFontPx: number) {

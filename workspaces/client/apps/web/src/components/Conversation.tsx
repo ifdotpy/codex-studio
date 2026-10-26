@@ -1,3 +1,4 @@
+import { TranscriptTitleBar } from "./TranscriptTitleBar";
 import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
 import {
@@ -1710,8 +1711,8 @@ export default function Conversation(p: {
           </details>,
           headerTools,
         )}
-      {p.duo && p.transcriptHeading && (
-        <header className="duo-transcript-bar">{p.transcriptHeading}</header>
+      {p.transcriptHeading && (
+        <TranscriptTitleBar>{p.transcriptHeading}</TranscriptTitleBar>
       )}
       <div
         id="messages"
@@ -1726,9 +1727,6 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
-          {!p.duo && p.transcriptHeading && (
-            <div className="transcript-heading">{p.transcriptHeading}</div>
-          )}
           {removed.hasRemoved && (
             <Button size="compact-xs" onClick={() => removed.restore()}>
               Restore removed messages

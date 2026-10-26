@@ -120,7 +120,7 @@
 }
 
 /* The title overlays the rail-mode transcript. Its padding protects the first turn. */
-:root[data-duo-proportions] #conversation > .duo-transcript-bar {
+:root #conversation > .duo-transcript-bar {
   box-sizing: border-box;
   position: absolute;
   inset: 0 0 auto;
@@ -135,22 +135,50 @@
   -webkit-backdrop-filter: blur(var(--layout-duo-title-blur));
   backdrop-filter: blur(var(--layout-duo-title-blur));
 }
-:root[data-duo-proportions] .duo-transcript-bar .conversation-heading {
+:root .duo-transcript-bar .conversation-heading {
   height: 100%;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
   gap: 0;
 }
-:root[data-duo-proportions] .duo-transcript-bar #conversation-title {
+:root .duo-transcript-bar #conversation-title {
   width: 100%;
 }
-:root[data-duo-proportions] .duo-transcript-bar .conversation-meta {
+:root .duo-transcript-bar .conversation-meta {
   max-width: 100%;
   overflow: hidden;
   font-size: var(--studio-text-meta);
 }
-:root[data-duo-proportions] #conversation:has(> .duo-transcript-bar) #messages {
+:root #conversation:has(> .duo-transcript-bar) #messages {
   padding-top: calc(var(--layout-duo-title-height) + var(--mantine-spacing-lg));
   scroll-padding-top: var(--layout-duo-title-height);
+}
+
+/* Duo chrome has one header row in either orientation. */
+:root[data-duo-ui] #sidebar .sidebar-header {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--layout-duo-header-gap);
+}
+:root[data-duo-ui] #sidebar .sidebar-header .brand {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+:root[data-duo-ui] #sidebar :is(.sidebar-search, .sidebar-utility-button) {
+  width: var(--layout-duo-header-control);
+  height: var(--layout-duo-header-control);
+  min-width: var(--layout-duo-header-control);
+  min-height: var(--layout-duo-header-control);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--raised) 75%, transparent);
+  -webkit-backdrop-filter: blur(var(--layout-duo-title-blur));
+  backdrop-filter: blur(var(--layout-duo-title-blur));
+}
+:root[data-duo-ui] .sidebar-utility-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding-top: var(--mantine-spacing-xs);
 }

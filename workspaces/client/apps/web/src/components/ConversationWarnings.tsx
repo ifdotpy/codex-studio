@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { ActionIcon, Badge, Modal, Tabs, Text } from "@mantine/core";
-import { CircleAlert, Info } from "lucide-react";
+import { ActionIcon, Badge, Modal, Tabs, Text, Menu } from "@mantine/core";
+import { CircleAlert, Info, Settings } from "lucide-react";
 import { displayError, errorDetails } from "../errorPresentation";
 import type { components } from "../generated/api";
 import type { Message } from "../types";
@@ -41,12 +41,16 @@ export default function ConversationWarnings({
   accountKey,
   messages,
   openAgent = () => {},
+  utility = false,
+  settings,
 }: {
   scope: string;
   notices?: NativeNotice[];
   accountKey: string;
   messages: Message[];
   openAgent?: (id: string) => void;
+  utility?: boolean | undefined;
+  settings?: (() => void) | undefined;
 }) {
   const errors = useStudioErrors();
   const [openScope, setOpenScope] = useState<string | null>(null);
@@ -64,31 +68,63 @@ export default function ConversationWarnings({
 
   return (
     <>
-      <ActionIcon
-        className={`conversation-warning-trigger${hasWarning ? "" : " conversation-info-trigger"}`}
-        variant="subtle"
-        color={hasWarning ? "orange" : "blue"}
-        aria-label={title}
-        title={`${title} (${count})`}
-        onClick={() => {
-          setOpenScope(scope);
-        }}
-      >
-        {hasWarning ? (
-          <CircleAlert size={18} aria-hidden="true" />
-        ) : (
-          <Info size={18} aria-hidden="true" />
-        )}
-        {count > 0 && (
-          <Badge
-            className="conversation-warning-count"
-            size="xs"
-            aria-label={`${count} notices and app errors`}
-          >
-            {count}
-          </Badge>
-        )}
-      </ActionIcon>
+      {utility ? (
+        <Menu withinPortal position="top-start">
+          <Menu.Target>
+            <ActionIcon
+              className="sidebar-utility-button conversation-warning-trigger"
+              aria-label="Sidebar settings and warnings"
+              variant="subtle"
+            >
+              <Settings size={20} />
+              {count > 0 && (
+                <Badge
+                  className="conversation-warning-count"
+                  size="xs"
+                  aria-label={`${count} notices and app errors`}
+                >
+                  {count}
+                </Badge>
+              )}
+            </ActionIcon>
+          </Menu.Target>
+          <Menu.Dropdown>
+            {settings && (
+              <Menu.Item onClick={settings}>Studio settings</Menu.Item>
+            )}
+            <Menu.Item onClick={() => setOpenScope(scope)}>
+              {title}
+              {count ? ` (${count})` : ""}
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
+      ) : (
+        <ActionIcon
+          className={`conversation-warning-trigger${hasWarning ? "" : " conversation-info-trigger"}`}
+          variant="subtle"
+          color={hasWarning ? "orange" : "blue"}
+          aria-label={title}
+          title={`${title} (${count})`}
+          onClick={() => {
+            setOpenScope(scope);
+          }}
+        >
+          {hasWarning ? (
+            <CircleAlert size={18} aria-hidden="true" />
+          ) : (
+            <Info size={18} aria-hidden="true" />
+          )}
+          {count > 0 && (
+            <Badge
+              className="conversation-warning-count"
+              size="xs"
+              aria-label={`${count} notices and app errors`}
+            >
+              {count}
+            </Badge>
+          )}
+        </ActionIcon>
+      )}
       <Modal
         key={scope}
         opened={opened}
