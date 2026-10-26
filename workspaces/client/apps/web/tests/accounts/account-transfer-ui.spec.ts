@@ -3,7 +3,6 @@ import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import type { AccountRateLimitsDto } from "../playwright.ts";
 
 import {
-  required,
   fixtureAccount,
   fixtureLead,
   fixtureSnapshot,
@@ -88,20 +87,32 @@ test("Account Transfer Ui", async ({
     ] satisfies Parameters<typeof fixtureAccount>[0][]
   ).map(fixtureAccount);
   let defaultAccountKey = "default";
-  const transferRequestIds = new Map<string, string[]>();
+
   const logins: AccountsState["logins"] = [];
+  type TransferAgent = Omit<
+    import("../../src/types.ts").Agent,
+    "accountTransfer"
+  > & {
+    accountTransfer?:
+      | (import("../../src/types.ts").Agent["accountTransfer"] & {
+          requestIds?: (string | undefined)[];
+        })
+      | null
+      | undefined;
+  };
   const makeLead = (
     id: string,
     name: string,
     accountKey: string,
     empty: boolean,
-  ) => fixtureLead(id, name, accountKey, empty, "/Users/igor/Projects/lumina");
+  ): TransferAgent =>
+    fixtureLead(id, name, accountKey, empty, "/Users/igor/Projects/lumina");
   const agents = [
     makeLead("started", "Started conversation", "default", false),
     makeLead("empty", "New conversation", "default", true),
   ];
   const bodies: FixtureRequest[] = [];
-  let _delayed: (() => void) | undefined;
+  let _delayed: (() => void) | null = null;
   let delayWork = false;
   let wrongLimitsAccount = false;
   let _discoverCount = 0;
@@ -179,7 +190,7 @@ test("Account Transfer Ui", async ({
   });
   const stateListeners = new Set<NotifyResources>();
   const server = createServer(async (req, res) => {
-    const url = new URL(required(req.url), "http://localhost");
+    const url = new URL(req.url!, "http://localhost");
     let rawBody: unknown = {};
     if (req.method === "POST") {
       let text = "";
@@ -187,7 +198,13 @@ test("Account Transfer Ui", async ({
       rawBody = JSON.parse(text || "{}");
       bodies.push(fixtureRequest(url.pathname, rawBody));
     }
-    const json = (data: Record<string, unknown>) => {
+    const json = (
+      data: Record<string, unknown> & {
+        _syncEntities?: ReturnType<
+          typeof entityMutationFixtureResponse
+        >["_syncEntities"];
+      },
+    ) => {
       res.setHeader("Content-Type", "application/json");
       res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
       const reply =
@@ -195,7 +212,7 @@ test("Account Transfer Ui", async ({
           ? entityMutationFixtureResponse(stateForEntities, data)
           : data;
       res.end(JSON.stringify(reply));
-      if (Array.isArray(reply._syncEntities) && reply._syncEntities.length) {
+      if (reply._syncEntities?.length) {
         for (const notify of stateListeners) notify([{ kind: "state" }]);
       }
     };
@@ -203,10 +220,8 @@ test("Account Transfer Ui", async ({
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
-        subscriptionUpdate:
-          url.pathname === "/api/sync/subscriptions"
-            ? fixtureRequest("/api/sync/subscriptions", rawBody).body
-            : undefined,
+        subscriptionUpdate: fixtureRequest("/api/sync/subscriptions", rawBody)
+          .body,
         onStreamReady: (notify) => {
           notifySync = notify;
           stateListeners.add(notify);
@@ -224,7 +239,7 @@ test("Account Transfer Ui", async ({
     ) {
       const body = fixtureRequest("/api/accounts/default", rawBody).body;
       if (url.pathname.endsWith("/default"))
-        defaultAccountKey = required(body.account_key);
+        defaultAccountKey = body.account_key!;
       if (url.pathname.endsWith("/discover")) _discoverCount++;
       for (const receipt of logins) {
         if (
@@ -238,22 +253,16 @@ test("Account Transfer Ui", async ({
     }
     if (url.pathname === "/api/agents/account-transfer") {
       const body = fixtureRequest("/api/agents/account-transfer", rawBody).body;
-      const a = required(agents.find((a) => a.id === (body.id || "started")));
-      if (body.action === "cancel")
-        required(a.accountTransfer).status = "cancelled";
+      const a = agents.find((a) => a.id === (body.id || "started"))!;
+      if (body.action === "cancel") a.accountTransfer!.status = "cancelled";
       else if (body.action === "retry")
-        required(a.accountTransfer).needsAttention = false;
+        a.accountTransfer!.needsAttention = false;
       else if (
         a.accountTransfer?.status === "pending" &&
         a.accountTransfer.targetAccountKey === body.account_key
       )
-        required(transferRequestIds.get(required(a.accountTransfer.id))).push(
-          body.request_id,
-        );
+        a.accountTransfer.requestIds!.push(body.request_id);
       else {
-        transferRequestIds.set(required(body.request_id), [
-          required(body.request_id),
-        ]);
         a.accountTransfer = {
           id: body.request_id,
           status: "pending",
@@ -262,6 +271,7 @@ test("Account Transfer Ui", async ({
           moved: 1,
           waitingCount: 5,
           total: 8,
+          requestIds: [body.request_id],
           waiting: "Waiting for the current turn",
           interrupted: [
             {
@@ -287,11 +297,11 @@ test("Account Transfer Ui", async ({
           ],
         };
       }
-      return json(required(a.accountTransfer));
+      return json(a.accountTransfer!);
     }
     if (url.pathname === "/api/agents/account") {
       const body = fixtureRequest("/api/agents/account", rawBody).body;
-      const agent = required(agents.find((a) => a.id === body.id));
+      const agent = agents.find((a) => a.id === body.id)!;
       agent.accountKey = body.account_key;
       notifySync?.([{ kind: "state" }]);
       return json(agent);
@@ -310,9 +320,7 @@ test("Account Transfer Ui", async ({
     if (url.pathname === "/api/limits/reset") return json({ outcome: "reset" });
     if (url.pathname === "/api/costs") {
       const accountKey = url.searchParams.get("account_key") || "default";
-      const todayUSD = required(
-        { default: 5, work: 12, other: 23 }[accountKey],
-      );
+      const todayUSD = { default: 5, work: 12, other: 23 }[accountKey]!;
       const reply = () =>
         json({ accountKey, data: { todayUSD, last30DaysUSD: todayUSD * 3 } });
       if (accountKey === "work" && delayCostWork) {
@@ -324,9 +332,9 @@ test("Account Transfer Ui", async ({
     if (url.pathname === "/api/leads") {
       const body = fixtureRequest("/api/leads", rawBody).body;
       const lead = makeLead(
-        required(body.id),
+        body.id!,
         "Created conversation",
-        required(body.account_key),
+        body.account_key!,
         true,
       );
       agents.push(lead);
@@ -358,9 +366,7 @@ test("Account Transfer Ui", async ({
     }
     if (url.pathname === "/api/accounts/login/cancel") {
       const body = fixtureRequest("/api/accounts/login/cancel", rawBody).body;
-      const receipt = required(
-        logins.find((r) => r.requestId === body.login_id),
-      );
+      const receipt = logins.find((r) => r.requestId === body.login_id)!;
       receipt.status = "cancelled";
       accounts.splice(
         accounts.findIndex((a) => a.id === receipt.accountKey),
@@ -431,10 +437,10 @@ test("Account Transfer Ui", async ({
         const popover = document.querySelector<HTMLElement>(
           ".execution-dropdown",
         );
-        if (!popover) throw new Error("Missing execution dropdown");
+
         return [
           modal ? getComputedStyle(modal).zIndex : null,
-          getComputedStyle(popover).zIndex,
+          getComputedStyle(popover!).zIndex,
         ];
       },
     );
@@ -484,9 +490,8 @@ test("Account Transfer Ui", async ({
     assert.ok(notifySync, "the real fixture resource stream is connected");
     const syncedTransferWaiting =
       "Waiting for the current turn (fixture stream applied)";
-    required(required(agents[0]).accountTransfer).waiting =
-      syncedTransferWaiting;
-    required(notifySync)([{ kind: "state" }]);
+    agents[0]!.accountTransfer!.waiting = syncedTransferWaiting;
+    notifySync!([{ kind: "state" }]);
     const agentSettings = page.locator(".execution-dropdown");
     if (!(await agentSettings.isVisible()))
       await page
@@ -503,8 +508,7 @@ test("Account Transfer Ui", async ({
       1,
     );
     assert.equal(
-      required(bodies.find((b) => b.path === "/api/agents/account-transfer"))
-        .body.id,
+      bodies.find((b) => b.path === "/api/agents/account-transfer")!.body.id,
       "started",
     );
     assert.equal(await accountGroup.getAttribute("data-value"), "default");
@@ -526,9 +530,9 @@ test("Account Transfer Ui", async ({
     await transferStatus
       .getByText(/Claude worker left on source \(claude\)/)
       .waitFor();
-    const firstRequestId = required(
-      bodies.find((b) => b.path === "/api/agents/account-transfer"),
-    ).body.request_id;
+    const firstRequestId = bodies.find(
+      (b) => b.path === "/api/agents/account-transfer",
+    )!.body.request_id;
     await accountTileButton(page, "Main agent account", "Work").click();
     const extension = page.getByRole("dialog", {
       name: "Add agents to this transfer",
@@ -593,16 +597,13 @@ test("Account Transfer Ui", async ({
       .getByRole("button", { name: "Cancel remaining", exact: true })
       .click();
     await cancelResponse;
-    required(notifySync)([{ kind: "state" }]);
+    notifySync!([{ kind: "state" }]);
     await transferStatus
       .getByRole("button", { name: "Cancel remaining", exact: true })
       .waitFor({ state: "hidden" });
-    assert.equal(
-      required(required(agents[0]).accountTransfer).status,
-      "cancelled",
-    );
-    assert.equal(required(agents[0]).accountKey, "default");
-    required(agents[0]).accountTransfer = {
+    assert.equal(agents[0]!.accountTransfer!.status, "cancelled");
+    assert.equal(agents[0]!.accountKey, "default");
+    agents[0]!.accountTransfer = {
       id: "failed-team-transfer",
       scope: "team",
       status: "cancelled",
@@ -656,7 +657,7 @@ test("Account Transfer Ui", async ({
     );
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
-    required(agents[0]).accountTransfer = {
+    agents[0]!.accountTransfer = {
       id: "blocked-lead-transfer",
       scope: "team",
       status: "pending",
@@ -706,14 +707,15 @@ test("Account Transfer Ui", async ({
     assert.ok(
       bodies.some(
         (b) =>
-          b.path === "/api/agents/account-transfer" &&
-          b.body.action === "retry" &&
-          b.body.request_id === "blocked-lead-transfer",
+          fixtureRequest("/api/agents/account-transfer", b.body).body.action ===
+            "retry" &&
+          fixtureRequest("/api/agents/account-transfer", b.body).body
+            .request_id === "blocked-lead-transfer",
       ),
       "chat settings explicitly retries the saved team transfer receipt",
     );
     await page.keyboard.press("Escape");
-    required(agents[0]).accountTransfer = {
+    agents[0]!.accountTransfer = {
       id: "saved-request",
       status: "pending",
       targetAccountKey: "work",
@@ -742,13 +744,14 @@ test("Account Transfer Ui", async ({
     assert.ok(
       bodies.some(
         (b) =>
-          b.path === "/api/agents/account-transfer" &&
-          b.body.action === "retry" &&
-          b.body.request_id === "saved-request",
+          fixtureRequest("/api/agents/account-transfer", b.body).body.action ===
+            "retry" &&
+          fixtureRequest("/api/agents/account-transfer", b.body).body
+            .request_id === "saved-request",
       ),
     );
-    required(agents[0]).accountKey = "work";
-    required(agents[0]).accountTransfer = {
+    agents[0]!.accountKey = "work";
+    agents[0]!.accountTransfer = {
       id: "lazy-history-request",
       status: "pending",
       targetAccountKey: "work",
@@ -779,30 +782,27 @@ test("Account Transfer Ui", async ({
         .count(),
       0,
     );
-    required(agents[0]).accountTransfer = {
-      ...required(agents[0]).accountTransfer,
+    agents[0]!.accountTransfer = {
+      ...agents[0]!.accountTransfer,
       status: "completed",
       completed: 1,
       nativeHistoryPending: 0,
     };
-    required(notifySync)([{ kind: "state" }]);
+    notifySync!([{ kind: "state" }]);
     await historyProgress.waitFor({ state: "hidden" });
     assert.equal(
       bodies.filter(
         (b) =>
-          b.path === "/api/agents/account-transfer" &&
-          b.body.action === "finish_history",
+          fixtureRequest("/api/agents/account-transfer", b.body).body.action ===
+          "finish_history",
       ).length,
       0,
       "history needs no extra action",
     );
-    assert.equal(
-      required(required(agents[0]).accountTransfer).status,
-      "completed",
-    );
-    required(agents[0]).accountKey = "work";
-    required(agents[0]).accountTransfer = {
-      ...required(agents[0]).accountTransfer,
+    assert.equal(agents[0]!.accountTransfer!.status, "completed");
+    agents[0]!.accountKey = "work";
+    agents[0]!.accountTransfer = {
+      ...agents[0]!.accountTransfer,
       status: "completed",
       completed: 8,
       moved: 7,

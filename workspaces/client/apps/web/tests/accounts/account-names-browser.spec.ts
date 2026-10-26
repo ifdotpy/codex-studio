@@ -1,7 +1,6 @@
 import type { Page } from "@playwright/test";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import {
-  required,
   fixtureUrl,
   fixtureAccount,
   fixtureAccounts,
@@ -58,9 +57,8 @@ async function fixture(page: Page) {
         route.request().postDataJSON(),
       ).body;
       bodies.push(body);
-      required(
-        accounts.find((account) => account.id === body.account_key),
-      ).label = body.label.trim();
+      accounts.find((account) => account.id === body.account_key)!.label =
+        body.label.trim();
       if (loseResponse) {
         loseResponse = false;
         return route.abort("failed");
@@ -197,10 +195,7 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
       ["light", 390],
     ] as const) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate(
-        (value) => window.accountNamesFixture.setTheme(value),
-        theme,
-      );
+      await page.evaluate((value) => window.setTheme(value), theme);
       await expect(page.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
         theme,

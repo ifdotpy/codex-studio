@@ -1,4 +1,3 @@
-import { required } from "./fixture-helpers.ts";
 import type { components } from "../../src/generated/api.ts";
 import { fixtureUrl } from "./fixture-helpers.ts";
 import type {} from "./idle-compaction-browser.fixture.tsx";
@@ -62,7 +61,7 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
       await page.setViewportSize({ width, height: 900 });
       await page.goto(url);
       const mode = page.getByLabel("Claude idle compaction", { exact: true });
-      await expect(mode).toHaveValue(required(settings.idleCompaction).mode);
+      await expect(mode).toHaveValue(settings.idleCompaction!.mode);
       await mode.selectOption("log");
       await page
         .getByRole("button", { name: "Save orchestration settings" })
