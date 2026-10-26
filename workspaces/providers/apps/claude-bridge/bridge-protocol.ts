@@ -10,6 +10,7 @@ import type {
   SDKTaskNotificationMessage,
   SDKBackgroundTasksChangedMessage,
   SDKRateLimitInfo,
+  SDKControlGetUsageResponse,
   Settings,
   SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -29,6 +30,8 @@ import type { UsageObservation } from "./usage-contract.generated.ts";
 import type {
   CacheReport,
   ToolDefinition,
+  RateLimitBucketDto,
+  RateLimitWindowDto,
 } from "./runtime-contract.generated.ts";
 import type {
   HUMAN_INPUT,
@@ -121,25 +124,39 @@ export type BridgeCommand = Required<
     "name" | "description" | "argumentHint" | "aliases" | "builtin"
   >
 >;
-export interface BridgeRateWindow {
-  usedPercent?: number | null | undefined;
-  resetsAt?: number | null | undefined;
-  windowDurationMins: number;
-}
-export interface BridgeRateBucket {
-  limitId: string;
-  limitName: string;
-  primary?: BridgeRateWindow | null | undefined;
-  secondary?: BridgeRateWindow | null | undefined;
-  claudeRateLimit?: SDKRateLimitInfo | undefined;
-}
+export type BridgeRateLimitInfo = Omit<
+  Partial<SDKRateLimitInfo>,
+  "rateLimitType" | "utilization"
+> & {
+  rateLimitType?: string | undefined;
+  utilization?: number | null | undefined;
+};
+export type BridgeRateWindow = Pick<
+  RateLimitWindowDto,
+  "usedPercent" | "resetsAt" | "windowDurationMins"
+>;
+export type BridgeRateBucket = Pick<
+  RateLimitBucketDto,
+  "primary" | "secondary"
+> & {
+  [K in "limitId" | "limitName"]: NonNullable<RateLimitBucketDto[K]>;
+} & { claudeRateLimit?: BridgeRateLimitInfo | undefined };
 export interface BridgeRateLimits {
   rateLimits: BridgeRateBucket;
   rateLimitsByLimitId: Record<string, BridgeRateBucket>;
-  subscriptionType?: string | undefined;
-  extraUsage?: unknown;
+  subscriptionType?:
+    | SDKControlGetUsageResponse["subscription_type"]
+    | undefined;
+  extraUsage?:
+    | Partial<
+        NonNullable<
+          NonNullable<SDKControlGetUsageResponse["rate_limits"]>["extra_usage"]
+        >
+      >
+    | null
+    | undefined;
   accountId?: string | undefined;
-  claudeRateLimit?: SDKRateLimitInfo | undefined;
+  claudeRateLimit?: BridgeRateLimitInfo | undefined;
 }
 export type BridgeModel = {
   id: ModelInfo["value"];
