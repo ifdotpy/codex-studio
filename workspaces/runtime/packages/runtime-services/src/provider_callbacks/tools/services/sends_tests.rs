@@ -1055,7 +1055,9 @@ async fn callback_blob_case(race: BlobRace) {
                 assert!(saved.get("result").is_none());
                 assert!(saved.get("_payloadBlobs").is_none());
             }
-            BlobRace::Unchanged | BlobRace::Abandoned | BlobRace::InlineExpiry | BlobRace::InvalidAction | BlobRace::Missing | BlobRace::Corrupt | BlobRace::Symlink => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
+            BlobRace::Unchanged | BlobRace::Abandoned | BlobRace::InlineExpiry | BlobRace::InvalidAction | BlobRace::Missing | BlobRace::Corrupt => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
+            #[cfg(unix)]
+            BlobRace::Symlink => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
         }
         Ok(())
     }).await
@@ -1084,8 +1086,12 @@ async fn callback_blob_case(race: BlobRace) {
             | BlobRace::InlineExpiry
             | BlobRace::InvalidAction
             | BlobRace::Missing
-            | BlobRace::Corrupt
-            | BlobRace::Symlink => assert!(
+            | BlobRace::Corrupt => assert!(
+                matches!(reply, Ok(CallbackDecision::Answer(_))),
+                "{reply:?}"
+            ),
+            #[cfg(unix)]
+            BlobRace::Symlink => assert!(
                 matches!(reply, Ok(CallbackDecision::Answer(_))),
                 "{reply:?}"
             ),
