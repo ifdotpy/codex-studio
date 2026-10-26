@@ -3,7 +3,7 @@ import {
   legacyMutationDocuments,
   fixtureProtocol,
   fixtureObject,
-  fixturePostBody,
+  fixtureRequestId,
 } from "./entity-fixture-protocol.ts";
 import type { Page, Route } from "@playwright/test";
 import type { SessionResponse, SyncPullResponse } from "../playwright.ts";
@@ -129,7 +129,7 @@ async function runSnapshotOrderUi(
     mutationSequences.set(revision, committed.seq);
     return route.fulfill({
       json: {
-        id: fixturePostBody<"/api/messages">(route.request().postDataJSON()).id,
+        id: fixtureRequestId(route.request().postDataJSON()),
         status: "sent",
       } satisfies PostResult<"/api/messages">,
     });
@@ -423,10 +423,7 @@ async function runSnapshotOrderUi(
       Math.abs(before[key] - during[key]) <= 1,
       `Loading label ${key} stays stable; before=${JSON.stringify(before)}, during=${JSON.stringify(during)}, frames=${JSON.stringify(geometryFrames)}`,
     );
-  const answerBody = fixturePostBody<"/api/answer">(
-    pendingAnswer.request().postDataJSON(),
-  );
-  const requestId = answerBody.id;
+  const requestId = fixtureRequestId(pendingAnswer.request().postDataJSON());
   const serverAnswer = await pendingAnswer.fetch();
   const answerResponse: PostResult<"/api/answer"> = await serverAnswer.json();
   assert.equal(serverAnswer.status(), 200);
