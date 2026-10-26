@@ -719,8 +719,12 @@ describe("scale verifier helpers", () => {
         spawn(
           process.execPath,
           [
-            "-e",
-            `const fs=require('node:fs');const fd=fs.openSync(process.argv[1],'r+');process.stdout.write('READY');const b=Buffer.alloc(64);const n=fs.readSync(fd,b,0,b.length,null);if(b.subarray(0,n).toString().trim()!==process.argv[2])process.exit(4);process.stdout.write('released');`,
+            fileURLToPath(
+              new URL(
+                "./scaleVerifierHelpers.fifo.fixture.ts",
+                import.meta.url,
+              ),
+            ),
             releasePath,
             tokens[index] ?? "",
           ],
