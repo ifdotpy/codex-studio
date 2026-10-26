@@ -485,6 +485,71 @@ for (const attachment of [
     expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
 
+test("a Claude 2.1.310 steer receipt after opaque rows in another directory is delivered", async () => {
+  const f = await fixture();
+  const opaqueId = randomUUID();
+  const steerId = randomUUID();
+  const moved = path.join(f.cwd, "src");
+  const rows = [
+    ...f.rows.slice(0, 3),
+    {
+      ...f.rows[2],
+      type: "attachment",
+      uuid: opaqueId,
+      parentUuid: f.ids[2],
+      cwd: moved,
+      message: undefined,
+      attachment: { type: "skill_listing", content: "- skill: description" },
+    },
+    {
+      ...f.rows[2],
+      type: "attachment",
+      uuid: randomUUID(),
+      parentUuid: opaqueId,
+      cwd: moved,
+      message: undefined,
+      attachment: {
+        type: "queued_command",
+        prompt: [{ type: "text", text: "steer" }],
+        source_uuid: steerId,
+        delivery_id: randomUUID(),
+        commandMode: "prompt",
+        origin: { kind: "unclassified" },
+        timestamp: new Date().toISOString(),
+        isMeta: true,
+      },
+    },
+  ];
+  await fs.writeFile(
+    f.file,
+    rows.map(JSON.stringify as (value: unknown) => string).join("\n") + "\n",
+  );
+  const index = await readHistoryIndex(f.session);
+  expect(index?.outcome([steerId], [f.ids[1]])).toBe("delivered");
+  expect(index?.outcome([randomUUID()], [f.ids[1]])).toBe("unknown");
+});
+
+test("native history controls refuse opaque records", async () => {
+  const f = await fixture();
+  const row = {
+    ...f.rows[5],
+    type: "attachment",
+    uuid: randomUUID(),
+    parentUuid: f.ids[5],
+    message: undefined,
+    attachment: { type: "skill_listing", content: "- skill: description" },
+  };
+  await fs.writeFile(
+    f.file,
+    [...f.rows, row]
+      .map(JSON.stringify as (value: unknown) => string)
+      .join("\n") + "\n",
+  );
+  await expect(verifiedHistoryIndex(f.session)).rejects.toThrow(
+    /incomplete or uncertain/,
+  );
+});
+
 test("a known output attachment with an input-shaped payload stays unknown", async () => {
   const f = await fixture();
   const row = {

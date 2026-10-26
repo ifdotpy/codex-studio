@@ -308,7 +308,8 @@ export async function readHistoryIndex(
  */
 export async function verifiedHistoryIndex(session: HistorySession) {
   const index = await readHistoryIndex(session);
-  if (!index)
+  // A native effect needs full input coverage; an opaque record may be input.
+  if (!index || index.records.some(({ kind }) => kind === "opaque"))
     throw new Error(
       "The Claude history is incomplete or uncertain; no native history operation was submitted",
     );
