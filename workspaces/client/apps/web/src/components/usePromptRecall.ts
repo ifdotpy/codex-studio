@@ -103,7 +103,9 @@ export function usePromptRecall(
             if (!earlier.length) continue;
             current.entries = [...earlier, ...current.entries];
             current.index = earlier.length - 1;
-            current.value = current.entries[current.index].text;
+            const entry = current.entries[current.index];
+            if (!entry) throw new Error("Missing recalled prompt");
+            current.value = entry.text;
             latest.current.setDraft(current.value);
             return;
           }

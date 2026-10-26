@@ -31,8 +31,8 @@ export interface ChatActivity {
   agentId: string;
   agentName: string;
   label: string;
-  command?: string;
-  created?: number;
+  command?: string | undefined;
+  created?: number | undefined;
   status: string;
   // Monitors and commands that outlive their turn. Only these appear above the chat.
   background?: boolean;
@@ -56,7 +56,7 @@ export interface ChatWaitState {
   agents: Agent[];
   commands: ChatActivity[];
   monitors: ChatActivity[];
-  event?: string;
+  event?: string | undefined;
   inputs: number;
 }
 

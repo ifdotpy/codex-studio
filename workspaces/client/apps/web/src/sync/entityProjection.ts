@@ -186,7 +186,7 @@ function parseEntityPayload(parsed: unknown): SyncEntityPayload | null {
     Array.isArray(candidate.value)
   )
     return null;
-  return candidate as unknown as SyncEntityPayload;
+  return parsed as SyncEntityPayload;
 }
 
 function entityValues<C extends EntityCollection>(
@@ -402,13 +402,23 @@ function retainTombstone(
 
 /** Apply explicit changes by ID. Absent rows remain present until a tombstone
  * arrives. Passing ready=false retains changes for one later publication. */
+type EntityProjectionRow = Readonly<
+  Pick<EntityRow, "id" | "seq" | "_deleted" | "evicted">
+> & { readonly entity?: unknown };
+
 export function applyEntityChanges(
   state: EntityProjection,
-  rows: Iterable<
-    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted" | "evicted">> & {
-      readonly entity?: unknown;
-    }
-  >,
+  rows: Iterable<EntityProjectionRow>,
+  ready: true,
+): Snapshot;
+export function applyEntityChanges(
+  state: EntityProjection,
+  rows: Iterable<EntityProjectionRow>,
+  ready: boolean,
+): Snapshot | null;
+export function applyEntityChanges(
+  state: EntityProjection,
+  rows: Iterable<EntityProjectionRow>,
   ready: boolean,
 ): Snapshot | null {
   const changed = state.changed;
@@ -612,7 +622,17 @@ export function applyEntityChanges(
 /** Reconcile a complete RxDB query, including rows omitted after a delete. */
 export function applyEntityRows(
   state: EntityProjection,
-  rows: EntityRow[],
+  rows: readonly EntityProjectionRow[],
+  ready: true,
+): Snapshot;
+export function applyEntityRows(
+  state: EntityProjection,
+  rows: readonly EntityProjectionRow[],
+  ready: boolean,
+): Snapshot | null;
+export function applyEntityRows(
+  state: EntityProjection,
+  rows: readonly EntityProjectionRow[],
   ready: boolean,
 ): Snapshot | null {
   applyEntityChanges(state, rows, false);

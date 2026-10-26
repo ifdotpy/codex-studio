@@ -9,8 +9,8 @@ export type RecentProjectChat = {
 export type ConversationStartProps = {
   projectName: string;
   location: string;
-  recentChats?: RecentProjectChat[];
-  onSelect?: (id: string) => void;
+  recentChats?: RecentProjectChat[] | undefined;
+  onSelect?: ((id: string) => void) | undefined;
 };
 
 export default function ConversationStart({

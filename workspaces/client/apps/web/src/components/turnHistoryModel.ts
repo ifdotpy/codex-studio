@@ -16,11 +16,11 @@ export function isEmptyAssistantMessage(item: Message): boolean {
 
 export interface HistoryGroup {
   id: string;
-  items: Message[];
-  outcome?: string;
-  result?: Message;
+  items: [Message, ...Message[]];
+  outcome?: string | undefined;
+  result?: Message | undefined;
   /** Native turn groups represented by this renderer-only presentation group. */
-  turns?: HistoryGroup[];
+  turns?: HistoryGroup[] | undefined;
 }
 
 function activityRow(item: Message): boolean {
@@ -76,9 +76,11 @@ export function historyPresentationGroups(
       continue;
     }
     const turns = [...priorTurns, group];
-    const items = turns.flatMap((turn) => turn.items);
+    const [first, ...rest] = turns.flatMap((turn) => turn.items);
+    if (!first) throw new Error("History presentation group has no messages");
+    const items: HistoryGroup["items"] = [first, ...rest];
     result[result.length - 1] = {
-      id: items[0].id,
+      id: first.id,
       items,
       outcome: turns.at(-1)?.outcome,
       result: turns.at(-1)?.result,
@@ -116,7 +118,7 @@ export function historyGroups(
       .map((item) => item.turnId),
   );
   for (const group of groups) {
-    const first = group.items[0];
+    const [first] = group.items;
     if (
       first.role === "user" &&
       first.turnId &&
@@ -194,7 +196,7 @@ export function incrementalHistoryGroups(
   currentTurn: string | undefined,
   prior: {
     items: Message[];
-    currentTurn?: string;
+    currentTurn?: string | undefined;
     groups: HistoryGroup[];
   } | null,
 ): HistoryGroup[] {
@@ -223,7 +225,9 @@ export function incrementalHistoryGroups(
   let prefixGroups = 0;
   let prefixItems = 0;
   while (prefixGroups < prior.groups.length) {
-    const length = prior.groups[prefixGroups].items.length;
+    const group = prior.groups[prefixGroups];
+    if (!group) throw new Error("Missing history prefix group");
+    const length = group.items.length;
     if (prefixItems + length > shared) break;
     prefixItems += length;
     prefixGroups++;
@@ -237,9 +241,10 @@ export function incrementalHistoryGroups(
   let oldOffset = 0;
   const suffixStart = prior.items.length - sharedSuffix;
   for (let index = 0; index < prior.groups.length; index++) {
-    oldOffset += prior.groups[index].items.length;
+    const boundary = prior.groups[index];
+    if (!boundary) throw new Error("Missing history boundary group");
+    oldOffset += boundary.items.length;
     if (oldOffset > suffixStart) {
-      const boundary = prior.groups[index];
       const boundaryStart = oldOffset - boundary.items.length;
       // User rows always start a group and cannot join an adjacent group.
       suffixGroups =

@@ -5,7 +5,7 @@
 Rust crates own runtime, state, provider, and protocol tests. Client packages own
 renderer and desktop behavior. Keep unit tests beside their source and browser
 scenarios in the web test feature folders. The root [Just recipes](../justfile),
-[package scripts](../package.json), and [facade](../workspaces/tooling/apps/repository-checks/facade.mjs)
+[package scripts](../package.json), and [facade](../workspaces/tooling/apps/repository-checks/facade.ts)
 own check selection; this page explains how to use those owners.
 
 Tests use disposable state and must not attach to an existing backend, send paid
@@ -140,7 +140,7 @@ smoke prepares itself; `just test-browser-smoke --prepared` consumes those input
 Fast Vitest witnesses live in each package's `vitest.fast.config.*`; each package
 runs once with `--project fast`. File isolation and the existing worker bounds
 remain enabled. The selected resource-event file includes the draft ordering
-witness, so it needs no second `-t` invocation. Main, API-contract and client-helper
+witness, so it needs no second `-t` invocation. The main renderer project also checks the API contract witnesses; client-helper
 TypeScript programs remain separate. Their `--incremental` build information is
 stored outside the checkout, with a separate cache file per program and a
 checkout-specific gate cache directory.
@@ -407,7 +407,7 @@ format and lint; it does not replace behavior tests.
 
 Keep temporary-directory owners alive until stores and child processes close.
 Use the platform temporary root and Playwright-managed screenshot output.
-The [temporary-state guard](../workspaces/tooling/apps/repository-checks/test-temp-state.mjs)
+The [temporary-state guard](../workspaces/tooling/apps/repository-checks/test-temp-state.ts)
 rejects cleanup-disabling calls and new hard-coded temporary paths. Browser and
 smoke fixtures clean up after success and failure; use their existing explicit
 artifact-retention controls only for debugging.

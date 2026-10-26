@@ -5,7 +5,7 @@ export type LogicalProject = LocationProject & {
   key: string;
   owner: string;
   /** Native registered project on the owner; inferred chat groups have no deletion target. */
-  deleteTarget?: string;
+  deleteTarget?: string | undefined;
   chats: (ServerNavigation["chats"][number] & { serverId: string })[];
 };
 const keyFor = (server: string, id: string) => JSON.stringify([server, id]);

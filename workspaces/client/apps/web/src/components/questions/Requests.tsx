@@ -30,7 +30,7 @@ import { openSignInPage } from "./openSignIn";
 import SignInCard from "./SignInCard";
 
 type Props = {
-  mainAgentId?: string;
+  mainAgentId?: string | undefined;
   showDates?: boolean;
   onAnswerOpen?: () => void;
   onAnswerPosition?: (node: HTMLElement) => void;
@@ -232,16 +232,21 @@ function AnswerForm({
           const v = answerList(question, values[key]);
           if (!required.has(key) && !v.some((answer) => answer.trim()))
             continue;
+          if (type === "array" && enumValues.length > 0) {
+            content[key] = v;
+            continue;
+          }
+          const [first] = v;
+          if (first === undefined)
+            throw new Error("Missing requested answer value");
           content[key] =
             type === "boolean"
-              ? v[0] === "true"
+              ? first === "true"
               : ["integer", "number"].includes(type)
-                ? Number(v[0])
-                : type === "array" && enumValues.length > 0
-                  ? v
-                  : ["object", "array"].includes(type)
-                    ? parseJson(v[0])
-                    : v[0];
+                ? Number(first)
+                : ["object", "array"].includes(type)
+                  ? parseJson(first)
+                  : first;
         }
         body = { decision: "accept", content };
       }
@@ -605,7 +610,7 @@ function RequestCard({
                 ref={trigger}
                 data-answer={r.id}
                 variant={open ? "subtle" : "filled"}
-                color={open ? "gray" : undefined}
+                {...(open ? { color: "gray" } : {})}
                 disabled={sending}
                 aria-expanded={open}
                 aria-controls={`answer-${r.id}`}

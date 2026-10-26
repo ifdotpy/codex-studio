@@ -20,6 +20,7 @@ import type {
 
 export type {
   JsonValue,
+  JsonInput,
   Json,
   KnownApiFields,
   TranscriptWireItem,

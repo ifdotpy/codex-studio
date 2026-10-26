@@ -7,7 +7,7 @@ export type AnswerQuestion = {
   isSecret?: boolean;
   isOther?: boolean;
   multiSelect?: boolean;
-  options?: { label: string; description?: string }[];
+  options?: { label: string; description?: string }[] | undefined;
 };
 
 export type AnswerValue = string | { selected: string[]; other: string };

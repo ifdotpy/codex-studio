@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { scrubAgentEnvironment } from "../../../tooling/apps/repository-checks/gate-config.mjs";
+import { scrubAgentEnvironment } from "../../../tooling/apps/repository-checks/gate-config.ts";
 
 scrubAgentEnvironment(process.env);
 

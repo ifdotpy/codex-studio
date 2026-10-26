@@ -20,8 +20,8 @@ export type SidebarTarget =
   | {
       kind: "project";
       path: string;
-      folder?: string;
-      team?: string;
+      folder?: string | undefined;
+      team?: string | undefined;
       chat?: string;
     }
   | { kind: "order"; group: string };

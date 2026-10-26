@@ -25,42 +25,7 @@ pub fn frame_prefix_payload_bytes(prefix: &[u8]) -> usize {
     prefix.strip_suffix(b"\r").unwrap_or(prefix).len()
 }
 
-/// Numeric Codex IDs and string Claude bridge IDs are distinct on the wire.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(untagged)]
-pub enum RequestId {
-    Number(u64),
-    String(String),
-}
-
-/// Decode an ID straight from the token, without the buffered `untagged`
-/// detour; any other JSON type, including negative numbers, is invalid.
-impl<'de> Deserialize<'de> for RequestId {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct IdVisitor;
-        impl serde::de::Visitor<'_> for IdVisitor {
-            type Value = RequestId;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a non-negative integer or string request id")
-            }
-            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<RequestId, E> {
-                Ok(RequestId::Number(value))
-            }
-            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<RequestId, E> {
-                u64::try_from(value)
-                    .map(RequestId::Number)
-                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Signed(value), &self))
-            }
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<RequestId, E> {
-                Ok(RequestId::String(value.to_owned()))
-            }
-            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<RequestId, E> {
-                Ok(RequestId::String(value))
-            }
-        }
-        deserializer.deserialize_any(IdVisitor)
-    }
-}
+pub use studio_runtime_schema::provider_input::RequestId;
 
 /// Define the single closed set of method names understood by this crate.
 /// Unknown methods are kept losslessly by [`Frame::UnknownMethod`].
@@ -409,15 +374,6 @@ impl WireObject<'_> {
                 fields,
             }),
         })
-    }
-}
-
-impl From<RequestId> for Value {
-    fn from(id: RequestId) -> Self {
-        match id {
-            RequestId::Number(number) => Self::from(number),
-            RequestId::String(text) => Self::String(text),
-        }
     }
 }
 

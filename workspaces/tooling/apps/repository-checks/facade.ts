@@ -13,8 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { runLogged } from "./owned-process.mjs";
-import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.mjs";
+import { runLogged } from "./owned-process.ts";
+import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.ts";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,7 +119,7 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "studio-claude-bridge",
     file: "vitest.config.mjs",
-    specifier: "../../../tooling/apps/repository-checks/gate-config.mjs",
+    specifier: "../../../tooling/apps/repository-checks/gate-config.ts",
     reason:
       "Bridge test configuration consumes the repository's ambient-agent environment policy.",
   },
@@ -160,14 +160,14 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-studio-tooling",
-    file: "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs",
+    file: "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts",
     specifier: "../../../../client/apps/**",
     reason:
       "The fast tier checks the release-binaries commit and SHA-256 manifest contract of the desktop packagers and the native package flow, which have no fast-tier test runner of their own.",
   },
   {
     importer: "codex-studio-tooling",
-    file: "workspaces/tooling/apps/repository-checks/tests/signing-check.test.mjs",
+    file: "workspaces/tooling/apps/repository-checks/tests/signing-check.test.ts",
     specifier: "../../../../client/apps/desktop/**",
     reason:
       "The fast tier checks the signing check and the unlock error contract of the desktop packager with a fake security tool, because the desktop package has no fast-tier test runner of its own.",
@@ -833,7 +833,7 @@ export function gateSteps(root, name) {
       "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
     ]),
     nodeTest("retired-server", "retired server action witness", [
-      "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.mjs",
+      "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
     ]),
     {
       id: "boundaries",
@@ -846,7 +846,7 @@ export function gateSteps(root, name) {
           [
             path.join(
               root,
-              "workspaces/tooling/apps/repository-checks/facade.mjs",
+              "workspaces/tooling/apps/repository-checks/facade.ts",
             ),
             "boundaries-check",
           ],
@@ -1483,7 +1483,7 @@ export async function execute(
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-heavy | test-browser | test-browser-smoke | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.ts packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-heavy | test-browser | test-browser-smoke | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
