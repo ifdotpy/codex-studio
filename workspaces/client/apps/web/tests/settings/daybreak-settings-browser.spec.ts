@@ -1,3 +1,4 @@
+import { fixtureUrl } from "./fixture-helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -110,7 +111,7 @@ test("Daybreak settings", async ({ context }) => {
     await server.listen();
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 700 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/sync/stream?**", (route) => {
       const resources = JSON.parse(
@@ -133,9 +134,7 @@ test("Daybreak settings", async ({ context }) => {
         },
       }),
     );
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureUrl(server, "check"));
     await page.waitForFunction(() => !!window.reset, undefined, {
       timeout: 5_000,
     });

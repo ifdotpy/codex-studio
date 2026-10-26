@@ -1,3 +1,8 @@
+declare global {
+  interface Window {
+    __workspaceBeforeSettingsNavigation: Element | null;
+  }
+}
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 

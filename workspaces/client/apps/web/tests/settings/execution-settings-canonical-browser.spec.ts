@@ -1,3 +1,4 @@
+import { fixtureUrl } from "./fixture-helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -87,7 +88,7 @@ test("execution settings canonical browser", async ({ page }) => {
   try {
     await server.listen();
     await page.setViewportSize({ width: 390, height: 700 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error.message);
@@ -112,9 +113,7 @@ test("execution settings canonical browser", async ({ page }) => {
         },
       }),
     );
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureUrl(server, "check"));
     await page.waitForFunction(() => !!window.reset);
     const reset = async (options) => {
       await page.evaluate((options) => {

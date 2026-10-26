@@ -1,3 +1,4 @@
+import { fixtureUrl } from "./fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -92,7 +93,7 @@ export function watchResourceConnection(listener){listener('live','open');return
     await server.listen();
     const page = await context.newPage();
     await page.setViewportSize({ width: 1100, height: 850 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error);
@@ -140,9 +141,7 @@ export function watchResourceConnection(listener){listener('live','open');return
       }
       return route.fulfill({ json: { accounts: [], data: null } });
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureUrl(server, "check"));
     await page.waitForFunction(() => !!window.setRuntimeOpen);
     await page.clock.install();
     await page.clock.runFor(12000);

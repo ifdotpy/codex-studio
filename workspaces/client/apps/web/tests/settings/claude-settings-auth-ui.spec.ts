@@ -1,5 +1,9 @@
+import type { BrowserContext, TestInfo } from "@playwright/test";
+import type { components } from "../../src/generated/api.ts";
+import type { PostBody, PostResult } from "../../src/api.ts";
+import { fixtureUrl } from "./fixture-helpers.ts";
+import type {} from "./claude-settings-auth-ui.fixture.tsx";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -13,7 +17,7 @@ import {
   test,
 } from "../playwright.ts";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -31,10 +35,8 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const root = resolve(import.meta.dirname, "../../");
   const workspaceId = "0123456789abcdef0123456789abcdef";
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const { createServer } = await import("vite");
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-settings-auth-"));
-  const entry = join(root, "claude-settings-auth-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -47,15 +49,16 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/claude-settings-auth-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/settings/claude-settings-auth-ui.fixture.tsx"></script>',
             );
           });
           server.middlewares.use("/api/sync/stream", (req, res) => {
-            const resources = JSON.parse(
-              new URL(req.url || "/", "http://localhost").searchParams.get(
-                "resources",
-              ) || "[]",
-            );
+            const resources: components["schemas"]["ResourceRef"][] =
+              JSON.parse(
+                new URL(req.url || "/", "http://localhost").searchParams.get(
+                  "resources",
+                ) || "[]",
+              );
             res.writeHead(200, {
               "Content-Type": "text/event-stream",
               "Cache-Control": "no-cache",
@@ -86,28 +89,6 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
             res.on("close", () => clearInterval(heartbeat));
           });
         },
-        resolveId(id) {
-          if (id === "/claude-settings-auth-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';
-          import {createRoot} from 'react-dom/client';
-          import {MantineProvider} from '@mantine/core';
-          import '@mantine/core/styles.css';
-          import {ClaudeSettings} from '/src/components/ClaudeSettings.tsx';
-          import ClaudeSignIn from '/src/components/ClaudeSignIn.tsx';
-          const agent={id:'chat',accountKey:'claude-work',provider:'claude',status:'idle',model:'sonnet'};
-          function Fixture(){
-            const [account,setAccount]=useState({id:'claude-work',label:'Work',email:'work@example.com',provider:'claude',status:'signedOut'});
-            const [login,setLogin]=useState(false);
-            return <MantineProvider>
-              <ClaudeSettings agent={agent} account={account} onSignIn={key=>{window.signInAccount=key;setLogin(true)}}/>
-              {login&&<ClaudeSignIn account={account} scope='settings-fixture' onClose={()=>setLogin(false)} onReady={()=>{setAccount({...account,status:'ready'});setLogin(false)}}/>}
-            </MantineProvider>;
-          }
-          createRoot(document.getElementById('root')).render(<Fixture/>);`;
-        },
       },
     ],
   });
@@ -118,19 +99,20 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
     const page = await browser.newPage({
       viewport: { width: 390, height: 844 },
     });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let authenticated = false;
-    let receipt;
+    let receipt: PostResult<"/api/accounts/claude/login"> | undefined;
     let settingsReads = 0;
     let modelReads = 0;
-    const loginStarts = [];
-    const mutations = [];
+    const loginStarts: PostBody<"/api/accounts/claude/login">[] = [];
+    const mutations: PostBody<"/api/claude/session">[] = [];
     await page.route("**/api/**", async (route) => {
       const req = route.request();
       const url = new URL(req.url());
-      const body = req.method() === "POST" ? req.postDataJSON() : {};
+
       if (url.pathname === "/api/claude/session") {
+        const body: PostBody<"/api/claude/session"> = req.postDataJSON();
         assert.equal(body.id, "chat");
         if (body.action !== "state") mutations.push(body);
         else settingsReads++;
@@ -154,6 +136,8 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       }
       if (url.pathname === "/api/accounts/claude/login") {
         if (req.method() === "POST") {
+          const body: PostBody<"/api/accounts/claude/login"> =
+            req.postDataJSON();
           loginStarts.push(body);
           receipt = {
             requestId: body.login_id,
@@ -174,6 +158,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       }
       if (url.pathname === "/api/accounts/claude/login/code") {
         authenticated = true;
+        assert.ok(receipt);
         receipt = { ...receipt, status: "ready", email: "work@example.com" };
         return route.fulfill({ json: receipt });
       }
@@ -193,9 +178,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
     );
     // The broad API fixture below must not turn the event stream into JSON.
     await page.route("**/api/sync/stream?*", (route) => route.fallback());
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureUrl(server, "check"));
     await page
       .getByRole("alert")
       .filter({ hasText: "Sign in to Claude to load these settings." })
@@ -208,7 +191,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .click();
     assert.equal(
-      await page.evaluate(() => window.signInAccount),
+      await page.evaluate(() => window.claudeSettingsAuthFixture.signInAccount),
       "claude-work",
     );
     await page
@@ -216,15 +199,16 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       .click();
     await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
     assert.equal(loginStarts.length, 1);
-    assert.equal(loginStarts[0].account_key, "claude-work");
+    assert.equal(loginStarts.at(0)?.account_key, "claude-work");
     await page.getByLabel("Final authorization response").fill("fixture-code");
     await page
       .getByRole("button", { name: "Submit authorization response" })
       .click();
     await page.waitForFunction(
       () =>
-        !document.querySelector('select[aria-label="Permission mode"]')
-          ?.disabled &&
+        !document.querySelector<HTMLSelectElement>(
+          'select[aria-label="Permission mode"]',
+        )?.disabled &&
         [...document.querySelectorAll("select")].some(
           (select) => select.value === "acceptEdits" && !select.disabled,
         ),
@@ -234,9 +218,11 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       "acceptEdits",
     );
     await page.waitForFunction(() =>
-      [...document.querySelectorAll('input[type="checkbox"]')].some(
-        (input) => !input.disabled,
-      ),
+      [
+        ...document.querySelectorAll<HTMLInputElement>(
+          'input[type="checkbox"]',
+        ),
+      ].some((input) => !input.disabled),
     );
     assert.equal(
       await page.getByLabel("Extended thinking").isDisabled(),
@@ -255,7 +241,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
 
     // A chat without a native thread can return stored settings after sign-out.
     const emptyChat = await browser.newPage();
-    const emptyChatRequests = [];
+    const emptyChatRequests: PostBody<"/api/claude/session">[] = [];
     await emptyChat.route("**/api/**", async (route) => {
       const req = route.request();
       const url = new URL(req.url());
@@ -271,9 +257,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       assert.notEqual(url.pathname, "/api/models");
       return route.fulfill({ json: {} });
     });
-    await emptyChat.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await emptyChat.goto(fixtureUrl(server, "check"));
     await emptyChat.waitForFunction(
       () =>
         document

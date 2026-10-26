@@ -1,3 +1,4 @@
+import { fixtureUrl } from "./fixture-helpers.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +69,7 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
         ),
       });
     });
-    const url = server.resolvedUrls.local[0] + "check";
+    const url = fixtureUrl(server, "check");
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(url);
     const modal = page.getByRole("dialog", {

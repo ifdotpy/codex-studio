@@ -1,3 +1,5 @@
+import { required } from "./fixture-helpers.ts";
+import { fixtureUrl } from "./fixture-helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -78,7 +80,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
   const contexts = [];
   try {
     await server.listen();
-    const url = server.resolvedUrls.local[0] + "check";
+    const url = fixtureUrl(server, "check");
     for (const [profile, width, scheme] of [
       ["dark", 1440, "dark"],
       ["light", 1440, "light"],
@@ -90,7 +92,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       });
       contexts.push(context);
       const page = await context.newPage();
-      const errors = [];
+      const errors: string[] = [];
       page.on("pageerror", (error) => {
         errors.push(error.message);
         console.error(error.message);
@@ -354,7 +356,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         [workersRow, "Worker"],
         [reviewRow, "Review"],
       ]) {
-        await row.click();
+        await required(row).click();
         await expect(
           page.getByRole("radio", { name: role, exact: true }),
         ).toBeChecked();

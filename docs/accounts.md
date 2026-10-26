@@ -68,7 +68,7 @@ codex-control create 'Task' --cwd /path/to/project --account ACCOUNT
 ```
 
 Checks: `workspaces/runtime/apps/server/tests/project-accounts-contract.py`, `workspaces/runtime/apps/server/tests/account-project-runtime.py`,
-`workspaces/runtime/apps/server/tests/runtime-accounts-contract.py`, and `workspaces/client/apps/web/tests/accounts/account-project-ui.spec.mjs`.
+`workspaces/runtime/apps/server/tests/runtime-accounts-contract.py`, and `workspaces/client/apps/web/tests/accounts/account-project-ui.spec.ts`.
 Fixture checks do not make paid model requests or redeem real reset credits.
 
 ## Add an account
@@ -93,7 +93,7 @@ request with an error. A request that is not finished by its deadline
 with an error, and a new sign-in can start.
 
 Checks: `workspaces/runtime/apps/server/tests/account-login-contract.py`, `workspaces/runtime/apps/server/tests/runtime-accounts-contract.py`,
-and `workspaces/client/apps/web/tests/accounts/accounts-ui-smoke.spec.mjs`. These checks use isolated fixtures.
+and `workspaces/client/apps/web/tests/accounts/accounts-ui-smoke.spec.ts`. These checks use isolated fixtures.
 
 ## Delete an account
 
@@ -152,5 +152,5 @@ same request ID with different content is rejected. `action` can be `retry` or
 The lead's `accountTransfer` field provides progress after a page reload.
 
 Checks: `workspaces/runtime/apps/server/tests/account-transfer-contract.py`, `workspaces/runtime/apps/server/tests/account-transfer-native.py`,
-and `workspaces/client/apps/web/tests/accounts/account-transfer-ui.spec.mjs`. The native test uses isolated profiles and a
+and `workspaces/client/apps/web/tests/accounts/account-transfer-ui.spec.ts`. The native test uses isolated profiles and a
 local Responses provider. It makes no cloud model requests.
