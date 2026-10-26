@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 import { inputText } from "./sdk-fixtures.ts";
 
@@ -35,7 +37,10 @@ export function query({ prompt, options }: FixtureQuery) {
       abort.abort();
     },
     interrupt: async () => abort.abort(),
-    async *[Symbol.asyncIterator]() {
+    async *[Symbol.asyncIterator](): AsyncGenerator<
+      SessionFixtureMessage,
+      void
+    > {
       const input = await prompt.next();
       if (input.done) return;
       const count = Number(inputText(input.value));
@@ -65,7 +70,7 @@ export function query({ prompt, options }: FixtureQuery) {
         }
       yield {
         type: "assistant",
-        uuid: "a-1",
+        uuid: randomUUID(),
         message: {
           id: "message-1",
           model: "claude-opus-5-5",

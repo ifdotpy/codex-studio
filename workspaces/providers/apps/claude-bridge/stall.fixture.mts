@@ -1,3 +1,4 @@
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile as waitForFileSignal } from "./testing/file-signals.ts";
 const waitForFile: typeof waitForFileSignal = (file, options) =>
   waitForFileSignal(file, { ...options, childIpc: true });
@@ -48,7 +49,7 @@ export function query({ prompt, options }: FixtureQuery) {
     id: "toolu_stall",
     name: "Bash",
     input: { command: "kubectl get cc", timeout: 100 },
-  };
+  } satisfies import("@anthropic-ai/claude-agent-sdk").SDKAssistantMessage["message"]["content"][number];
   // Hold a steer like the CLI queue: no echo until the turn ends.
   const hold = (value: SDKUserMessage) => {
     queued.push(value);
@@ -103,7 +104,10 @@ export function query({ prompt, options }: FixtureQuery) {
       interrupted();
       return Promise.resolve({ still_queued: queued.map((q) => q.uuid) });
     },
-    async *[Symbol.asyncIterator]() {
+    async *[Symbol.asyncIterator](): AsyncGenerator<
+      SessionFixtureMessage,
+      void
+    > {
       fs.mkdirSync(path.dirname(history), { recursive: true });
       while (!abort.signal.aborted) {
         const input = await read();
@@ -146,7 +150,7 @@ export function query({ prompt, options }: FixtureQuery) {
         if (text === "answer") {
           yield {
             type: "assistant",
-            uuid: "assistant-" + text,
+            uuid: randomUUID(),
             message: {
               id: "message-" + text,
               content: [{ type: "text", text: "done" }],
@@ -163,14 +167,14 @@ export function query({ prompt, options }: FixtureQuery) {
             ? options.canUseTool?.("Bash", tool.input, {
                 signal: abort.signal,
                 toolUseID: tool.id,
-                toolUseId: tool.id,
+                requestId: tool.id,
                 decisionReason: "[1mrm on a critical path[0m",
               })
             : null;
         asked?.catch(() => {});
         yield {
           type: "assistant",
-          uuid: "assistant-" + text,
+          uuid: randomUUID(),
           message: { id: "message-" + text, content: [tool], usage },
         };
         if (text === "heartbeat") {

@@ -1,3 +1,4 @@
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile as waitForFileSignal } from "./testing/file-signals.ts";
 const waitForFile: typeof waitForFileSignal = (file, options) =>
   waitForFileSignal(file, { ...options, childIpc: true });
@@ -60,7 +61,10 @@ export function query({ prompt, options }: FixtureQuery) {
       abort.abort();
     },
     interrupt: async () => ({ cancelled: [], still_queued: [] }),
-    async *[Symbol.asyncIterator]() {
+    async *[Symbol.asyncIterator](): AsyncGenerator<
+      SessionFixtureMessage,
+      void
+    > {
       while (!abort.signal.aborted) {
         const input = await prompt.next();
         if (input.done) return;

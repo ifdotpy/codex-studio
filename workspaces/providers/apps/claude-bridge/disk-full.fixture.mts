@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile as waitForFileSignal } from "./testing/file-signals.ts";
 const waitForFile: typeof waitForFileSignal = (file, options) =>
   waitForFileSignal(file, { ...options, childIpc: true });
@@ -59,7 +61,10 @@ export function query({ prompt, options }: FixtureQuery) {
       abort.abort();
     },
     interrupt: async () => abort.abort(),
-    async *[Symbol.asyncIterator]() {
+    async *[Symbol.asyncIterator](): AsyncGenerator<
+      SessionFixtureMessage,
+      void
+    > {
       const input = await prompt.next();
       if (input.done) return;
       fs.appendFileSync(cwd + "/.inputs", inputText(input.value) + "\n");
@@ -76,7 +81,7 @@ export function query({ prompt, options }: FixtureQuery) {
       };
       yield {
         type: "assistant",
-        uuid: "a-1",
+        uuid: randomUUID(),
         message: {
           id: "message-1",
           model: "claude-opus-5-5",

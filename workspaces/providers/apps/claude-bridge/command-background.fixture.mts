@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile as waitForFileSignal } from "./testing/file-signals.ts";
 const waitForFile: typeof waitForFileSignal = (file, options) =>
   waitForFileSignal(file, { ...options, childIpc: true });
@@ -51,7 +53,10 @@ export function query({ prompt, options }: FixtureQuery) {
       abort.abort();
     },
     interrupt: async () => abort.abort(),
-    async *[Symbol.asyncIterator]() {
+    async *[Symbol.asyncIterator](): AsyncGenerator<
+      SessionFixtureMessage,
+      void
+    > {
       const input = await prompt.next();
       if (input.done) return;
       yield { type: "user", isReplay: true, uuid: input.value.uuid };
@@ -66,7 +71,7 @@ export function query({ prompt, options }: FixtureQuery) {
       };
       yield {
         type: "assistant",
-        uuid: "a-1",
+        uuid: randomUUID(),
         message: {
           id: "message-1",
           model: "claude-opus-5-5",
@@ -92,7 +97,7 @@ export function query({ prompt, options }: FixtureQuery) {
         task_type: "local_bash",
         is_backgrounded: false,
         description: "sleep 600",
-        uuid: "s-1",
+        uuid: randomUUID(),
       };
       await movedPromise;
       yield {
@@ -100,11 +105,11 @@ export function query({ prompt, options }: FixtureQuery) {
         subtype: "task_updated",
         task_id: "bash-1",
         patch: { is_backgrounded: true },
-        uuid: "s-2",
+        uuid: randomUUID(),
       };
       yield {
         type: "user",
-        uuid: "u-1",
+        uuid: randomUUID(),
         message: {
           role: "user",
           content: [
@@ -135,7 +140,7 @@ export function query({ prompt, options }: FixtureQuery) {
         status: "completed",
         output_file: "/tmp/bash-1.output",
         summary: "Background command completed (exit code 0)",
-        uuid: "s-3",
+        uuid: randomUUID(),
       };
       await new Promise<void>((resolve) =>
         abort.signal.addEventListener("abort", () => resolve(), { once: true }),

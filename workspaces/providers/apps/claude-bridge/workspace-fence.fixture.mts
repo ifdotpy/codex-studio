@@ -1,3 +1,4 @@
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 
 import { writeFileSync } from "node:fs";
@@ -38,7 +39,10 @@ export function query({ prompt, options }: FixtureQuery) {
       abort.abort();
     },
     interrupt: async () => abort.abort(),
-    async *[Symbol.asyncIterator]() {
+    async *[Symbol.asyncIterator](): AsyncGenerator<
+      SessionFixtureMessage,
+      void
+    > {
       const input = await prompt.next();
       if (input.done) return;
       yield { type: "user", isReplay: true, uuid: input.value.uuid };

@@ -1,3 +1,10 @@
+import type { ControlDependencies } from "./controls.ts";
+import assert from "node:assert/strict";
+import type { Session, Turn, Item } from "./session-state.ts";
+import type {
+  SessionMessage,
+  SessionStoreEntry,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeNoteFor } from "./testing/bridge-harness.ts";
 import { afterEach, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
@@ -12,25 +19,38 @@ import { startBridge } from "./testing/bridge-harness.ts";
 import { fixtureSessionApi } from "./testing/history-fixture.ts";
 import { createSessionStore } from "./session-store.ts";
 
+const unusedFileControls = {
+  rewindFiles: async () => assert.fail("Unexpected file rewind"),
+  prepareFileRestore: async () => assert.fail("Unexpected file restore"),
+  verifyFileRestore: async () => assert.fail("Unexpected file verification"),
+} satisfies Pick<
+  ControlDependencies,
+  "rewindFiles" | "prepareFileRestore" | "verifyFileRestore"
+>;
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const inputId = "22222222-2222-4222-8222-222222222222";
 const replyId = "33333333-3333-4333-8333-333333333333";
 const steerId = "44444444-4444-4444-8444-444444444444";
-let root;
+let root: string | undefined;
 afterEach(async () => {
   vi.useRealTimers();
   if (root) await fs.rm(root, { recursive: true, force: true });
   root = undefined;
 });
 
-const message = (type, uuid: string) => ({
+const message = (
+  type: SessionMessage["type"],
+  uuid: string,
+): SessionMessage => ({
   type,
   uuid,
   message: { content: uuid },
   parent_tool_use_id: null,
+  parent_agent_id: null,
+  session_id: sessionId,
 });
-const turns = () => [
-  { id: "u1", status: "completed" },
+const turns = (): Turn[] => [
+  { id: "u1", status: "completed", items: [] },
   {
     id: "final2",
     status: "completed",
@@ -89,7 +109,7 @@ test.each([
 });
 
 test("fork stops before the next composite prefix and remaps retained parts", async () => {
-  const source = {
+  const source: Session = {
     id: "source",
     cwd: "/project",
     started: true,
@@ -97,9 +117,10 @@ test("fork stops before the next composite prefix and remaps retained parts", as
   };
   const fork = vi.fn(async () => ({ sessionId: "target" }));
   const deps = {
-    persist: vi.fn(),
+    ...unusedFileControls,
+    persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
     forkSession: fork,
-    getSessionMessages: vi.fn(async (id) =>
+    getSessionMessages: vi.fn(async (id: string) =>
       id === "source"
         ? messages()
         : messages()
@@ -130,7 +151,7 @@ test.each([
   root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-lifecycle-"));
   const session = { id: sessionId, cwd: root };
   const initial = { id: "initial", type: "userMessage", nativeId: inputId };
-  const steer = {
+  const steer: Item = {
     id: "steer",
     type: "userMessage",
     nativeId: steerId,
@@ -219,7 +240,7 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
   "restart promotes chain-proven receipts: %s",
   async (kind) => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-receipts-"));
-    const session = {
+    const session: Session = {
       id: sessionId,
       cwd: root,
       turns: [
@@ -247,7 +268,12 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
         },
       ],
     };
-    const row = (type, uuid: string, parentUuid: string, content) => ({
+    const row = (
+      type: SessionStoreEntry["type"],
+      uuid: string,
+      parentUuid: string | null,
+      content: unknown,
+    ): SessionStoreEntry => ({
       type,
       uuid,
       parentUuid,
@@ -274,15 +300,13 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
       rows.map((row) => JSON.stringify(row) + "\n").join(""),
     );
     if (kind === "partial initial")
-      session.turns[0].items[0].nativeIds = [
-        "66666666-6666-4666-8666-666666666666",
-        inputId,
-      ];
+      (
+        session.turns[0]?.items[0] ?? assert.fail("Missing initial item")
+      ).nativeIds = ["66666666-6666-4666-8666-666666666666", inputId];
     if (["partial steer", "reversed steer"].includes(kind))
-      session.turns[0].items[1].nativeIds = [
-        "66666666-6666-4666-8666-666666666666",
-        steerId,
-      ];
+      (
+        session.turns[0]?.items[1] ?? assert.fail("Missing steer item")
+      ).nativeIds = ["66666666-6666-4666-8666-666666666666", steerId];
     if (kind === "reversed steer") {
       const prefix = row(
         "user",
@@ -291,7 +315,8 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
         [{ type: "text", text: "prefix" }],
       );
       rows.splice(2, 0, prefix);
-      rows.at(-1).parentUuid = prefix.uuid;
+      (rows.at(-1) ?? assert.fail("Missing terminal row")).parentUuid =
+        prefix.uuid;
       await fs.writeFile(
         file,
         rows.map((row) => JSON.stringify(row) + "\n").join(""),
@@ -306,13 +331,13 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
       },
     });
     const restored = await store.get(sessionId);
-    expect(restored.turns[0].startOutcome).toBe(
+    expect(restored.turns[0]?.startOutcome).toBe(
       kind === "partial initial" ? "preparing" : "accepted",
     );
-    expect(restored.turns[0].items[1].deliveryStatus).toBe(
+    expect(restored.turns[0]?.items[1]?.deliveryStatus).toBe(
       kind === "complete" ? "delivered" : "submitted",
     );
-    expect(restored.turns[0].items[2].deliveryStatus).toBe("submitted");
+    expect(restored.turns[0]?.items[2]?.deliveryStatus).toBe("submitted");
     await store.persist(restored);
     expect(await createSessionStore(stateRoot).get(sessionId)).toEqual(
       restored,
@@ -332,7 +357,7 @@ test("rollback remaps every retained composite part and preserves checkpoint ide
     ],
   };
   const sourceMessages = [message("user", "prefix1"), ...messages()];
-  const session = {
+  const session: Session = {
     id: "source",
     cwd: "/project",
     nativeId: "native",
@@ -344,9 +369,10 @@ test("rollback remaps every retained composite part and preserves checkpoint ide
     session,
     { requestId: "rollback", turnId: "final2" },
     {
-      persist: vi.fn(),
+      ...unusedFileControls,
+      persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession: fork,
-      getSessionMessages: async (id) =>
+      getSessionMessages: async (id: string) =>
         id === "native"
           ? sourceMessages
           : sourceMessages
@@ -358,11 +384,11 @@ test("rollback remaps every retained composite part and preserves checkpoint ide
     dir: "/project",
     upToMessageId: "a1",
   });
-  expect(session.turns[0].nativeMessageId).toBe("fork0");
-  expect(session.turns[0].items[0].nativeIds).toEqual(["fork0", "fork1"]);
-  expect(session.turns[0].items[0].nativeId).toBe("fork1");
-  expect(session.turns[0].fileCheckpointMessageId).toBeUndefined();
-  expect(session.historyBranches[0].turns[0].fileCheckpointMessageId).toBe(
+  expect(session.turns[0]?.nativeMessageId).toBe("fork0");
+  expect(session.turns[0]?.items[0]?.nativeIds).toEqual(["fork0", "fork1"]);
+  expect(session.turns[0]?.items[0]?.nativeId).toBe("fork1");
+  expect(session.turns[0]?.fileCheckpointMessageId).toBeUndefined();
+  expect(session.historyBranches?.[0]?.turns[0]?.fileCheckpointMessageId).toBe(
     "u1",
   );
 });
@@ -371,57 +397,21 @@ test.each(["direct", "timer", "success"])(
   "real bridge finalization has one outcome: %s",
   async (mode) => {
     const bridge = await startBridge(
-      `const scenario = ${JSON.stringify(mode)};\n` +
-        String.raw`
-    import fs from "node:fs/promises";
-    let cwd;
-    const append = fs.appendFile;
-    fs.appendFile = async (file, data, ...args) => {
-      if (scenario !== "success" && String(file).includes("/sessions/") && String(data).includes('"value":"completed"')) {
-        await append(cwd + "/save-attempts", "x");
-        throw Object.assign(new Error("final save denied"), { code: "EACCES" });
-      }
-      return append(file, data, ...args);
-    };
-    export const tool = () => ({});
-    export const createSdkMcpServer = value => value;
-    export const forkSession = async () => { throw new Error("No fork expected"); };
-    export const getSessionMessages = async () => [];
-    export function query({ prompt, options }) {
-      cwd = options.cwd;
-      let closed = false;
-      return {
-        supportedModels: async () => [{ value: "default", displayName: "Default", resolvedModel: "claude-opus-5-5" }],
-        accountInfo: async () => ({ email: "test@example.test", subscriptionType: "Claude Max", apiProvider: "firstParty" }),
-        initializationResult: async () => ({ commands: [] }),
-        close() { closed = true; },
-        async *[Symbol.asyncIterator]() {
-          const first = await prompt.next();
-          if (first.done) return;
-          await fs.appendFile(options.cwd + "/inputs", "once\n");
-          yield { type: "user", isReplay: true, uuid: first.value.uuid };
-          yield { type: "system", subtype: "init" };
-          if (scenario === "timer") {
-            const steer = await prompt.next();
-            await fs.appendFile(cwd + "/inputs", steer.value.message.content[0].text + "\n");
-          }
-          yield { type: "result", subtype: "success", result: "done", usage: { input_tokens: 1, output_tokens: 1 }, modelUsage: { "claude-opus-5-5": { inputTokens: 1, outputTokens: 1, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, webSearchRequests: 0, costUSD: 0, contextWindow: 200000, maxOutputTokens: 64000 } } };
-          if (!closed) await prompt.next();
-        },
-      };
-    }
-  `,
+      new URL("./lifecycle-final-save.fixture.mts", import.meta.url),
       "claude-final-save-",
       {
         clock: true,
         env: {
+          STUDIO_FIXTURE_FINAL_SAVE: mode,
           STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "3",
           STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "3",
         },
       },
     );
     try {
-      const input = [{ type: "text", text: "run once" }];
+      const input: import("./bridge-protocol.ts").BridgeInput[] = [
+        { type: "text", text: "run once" },
+      ];
       const started = await bridge.call("turn/start", {
         threadId: bridge.thread,
         clientUserMessageId: "once",
@@ -442,7 +432,7 @@ test.each(["direct", "timer", "success"])(
         mode === "success" ? "completed" : "failed",
       );
       if (mode !== "success") {
-        expect(done.params.turn.error.message).toContain("final save denied");
+        expect(done.params.turn.error?.message).toContain("final save denied");
         expect(
           await fs.readFile(path.join(bridge.root, "save-attempts"), "utf8"),
         ).toBe("x");
@@ -462,6 +452,7 @@ test.each(["direct", "timer", "success"])(
           note.method === "thread/tokenUsage/updated",
       );
       expect(usage).toHaveLength(1);
+      assert.ok(usage[0]);
       expect(usage[0].params.studioUsage).toMatchObject({
         kind: "cumulative",
         scope: "claudeQuery",
@@ -472,7 +463,11 @@ test.each(["direct", "timer", "success"])(
           output: 1,
         },
       });
-      expect(usage[0].params.tokenUsage).toBeUndefined();
+      expect(
+        "tokenUsage" in usage[0].params
+          ? usage[0].params.tokenUsage
+          : undefined,
+      ).toBeUndefined();
       expect(
         bridge.notes.filter(
           (note): note is BridgeNoteFor<"turn/started"> =>
@@ -494,12 +489,13 @@ test.each(["direct", "timer", "success"])(
 test.each(["not_applied", "cancelled"])(
   "rollback preserves an unapplied steer receipt: %s",
   async (status) => {
-    const session = {
+    const session: Session = {
       id: "source",
       cwd: "/project",
       started: true,
       turns: turns(),
     };
+    assert.ok(session.turns[0]);
     session.turns[0].items = [
       { type: "userMessage", nativeId: "u1" },
       {
@@ -514,9 +510,10 @@ test.each(["not_applied", "cancelled"])(
       session,
       { requestId: "rollback", turnId: "final2" },
       {
-        persist: vi.fn(),
+        ...unusedFileControls,
+        persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
         forkSession,
-        getSessionMessages: async (id) =>
+        getSessionMessages: async (id: string) =>
           id === "source"
             ? messages()
             : messages()
@@ -525,13 +522,13 @@ test.each(["not_applied", "cancelled"])(
       },
     );
     expect(forkSession).toHaveBeenCalledTimes(1);
-    expect(session.controlRequests.rollback.status).toBe("completed");
-    expect(session.turns[0].items[1].deliveryStatus).toBe(status);
+    expect(session.controlRequests?.rollback?.status).toBe("completed");
+    expect(session.turns[0]?.items[1]?.deliveryStatus).toBe(status);
   },
 );
 
 test("fork accepts the authoritative boundary of a legacy remapped turn", async () => {
-  const source = {
+  const source: Session = {
     id: "source",
     cwd: "/project",
     started: true,
@@ -548,9 +545,10 @@ test("fork accepts the authoritative boundary of a legacy remapped turn", async 
     source,
     {},
     {
-      persist: vi.fn(),
+      ...unusedFileControls,
+      persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession: async () => ({ sessionId: "target" }),
-      getSessionMessages: async (id) =>
+      getSessionMessages: async (id: string) =>
         id === "source"
           ? messages().slice(0, 2)
           : messages()
@@ -558,12 +556,16 @@ test("fork accepts the authoritative boundary of a legacy remapped turn", async 
               .map((row, i) => ({ ...row, uuid: `fork${i}` })),
     },
   );
-  expect(target.turns[0].nativeMessageId).toBe("fork0");
-  expect(target.turns[0].items[0].nativeId).toBe("fork0");
+  expect(target.turns[0]?.nativeMessageId).toBe("fork0");
+  expect(target.turns[0]?.items[0]?.nativeId).toBe("fork0");
 });
 
 test("an unresolved middle parent keeps absent steer history unknown", () => {
-  const row = (type, uuid: string, parentUuid: string) => ({
+  const row = (
+    type: SessionStoreEntry["type"],
+    uuid: string,
+    parentUuid: string | null,
+  ) => ({
     type,
     uuid,
     parentUuid,
@@ -581,7 +583,7 @@ test("an unresolved middle parent keeps absent steer history unknown", () => {
 });
 
 test("a legacy delivered steer without provenance fails before native fork submission", async () => {
-  const source = {
+  const source: Session = {
     id: "legacy-fork",
     cwd: "/project",
     started: true,
@@ -614,9 +616,10 @@ test("a legacy delivered steer without provenance fails before native fork submi
       source,
       {},
       {
-        persist: vi.fn(),
+        ...unusedFileControls,
+        persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
         forkSession,
-        getSessionMessages: async (id) =>
+        getSessionMessages: async (id: string) =>
           id === "legacy-fork"
             ? rows
             : rows.map((row, i) => ({ ...row, uuid: `fork${i}` })),
@@ -628,33 +631,7 @@ test("a legacy delivered steer without provenance fails before native fork submi
 
 test("Stop finalizes a stuck SDK whose close throws without redelivering unknown input", async () => {
   const bridge = await startBridge(
-    String.raw`
-    import fs from "node:fs/promises";
-    export const tool = () => ({});
-    export const createSdkMcpServer = value => value;
-    export const forkSession = async () => { throw new Error("No fork expected"); };
-    export const getSessionMessages = async () => [];
-    export function query({ prompt, options }) {
-      let consumed = false, held;
-      return {
-        supportedModels: async () => [{ value: "default", displayName: "Default", resolvedModel: "claude-opus-5-5" }],
-        accountInfo: async () => ({ email: "test@example.test", subscriptionType: "Claude Max", apiProvider: "firstParty" }),
-        initializationResult: async () => ({ commands: [] }),
-        interrupt: async () => ({ cancelled: [], still_queued: held ? [held.uuid] : [] }),
-        close() { if (consumed) throw new Error("SDK close failed"); },
-        async *[Symbol.asyncIterator]() {
-          const first = await prompt.next();
-          if (first.done) return;
-          consumed = true;
-          yield { type: "user", isReplay: true, uuid: first.value.uuid };
-          yield { type: "system", subtype: "init" };
-          held = (await prompt.next()).value;
-          await fs.writeFile(options.cwd + "/steer-read", "read");
-          await new Promise(() => {});
-        },
-      };
-    }
-  `,
+    new URL("./lifecycle-close-failure.fixture.mts", import.meta.url),
     "claude-close-failure-",
     {
       clock: true,
@@ -686,7 +663,7 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
         note.method === "turn/completed",
     );
     expect(["failed", "interrupted"]).toContain(done.params.turn.status);
-    expect(done.params.turn.error.message).toMatch(
+    expect(done.params.turn.error?.message).toMatch(
       /close failed|did not end|did not stop/,
     );
     expect(done.params.turn.unappliedSteers).toBeUndefined();
@@ -703,9 +680,9 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
         includeTurns: true,
       })
     ).thread.turns[0];
-    expect(saved.items.find((item) => item.id === "held").deliveryStatus).toBe(
-      "submitted",
-    );
+    expect(
+      saved?.items.find((item) => item.id === "held")?.deliveryStatus,
+    ).toBe("submitted");
   } finally {
     await bridge.close();
   }
@@ -718,7 +695,12 @@ test.each([
   "sidechain duplicate",
   "non-conversation duplicate",
 ])("corrupt anchor ancestry stays unknown: %s", (kind) => {
-  const row = (type, uuid: string, parentUuid: string, extra = {}) => ({
+  const row = (
+    type: SessionStoreEntry["type"],
+    uuid: string,
+    parentUuid: string | null,
+    extra = {},
+  ) => ({
     type,
     uuid,
     parentUuid,
@@ -760,12 +742,13 @@ test.each(
 )(
   "%s refuses retained %s steer without native provenance before mutation",
   async (operation, status) => {
-    const source = {
+    const source: Session = {
       id: "source",
       cwd: "/project",
       started: true,
       turns: turns(),
     };
+    assert.ok(source.turns[0]);
     source.turns[0].items = [
       { type: "userMessage", nativeId: "u1" },
       {
@@ -777,9 +760,10 @@ test.each(
     ];
     const forkSession = vi.fn(async () => ({ sessionId: "target" }));
     const deps = {
-      persist: vi.fn(),
+      ...unusedFileControls,
+      persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession,
-      getSessionMessages: async (id) =>
+      getSessionMessages: async (id: string) =>
         id === "source"
           ? messages()
           : messages()
@@ -903,7 +887,12 @@ test.each([false, true])(
     root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-"));
     const rootId = "66666666-6666-4666-8666-666666666666";
     const resultId = "55555555-5555-4555-8555-555555555555";
-    const row = (type, uuid: string, parentUuid: string, content) => ({
+    const row = (
+      type: SessionStoreEntry["type"],
+      uuid: string,
+      parentUuid: string | null,
+      content: unknown,
+    ): SessionStoreEntry => ({
       type,
       uuid,
       parentUuid,
@@ -959,24 +948,22 @@ test.each([false, true])(
 
 test("an undefined command executor result becomes an explicit null bridge reply", async () => {
   const bridge = await startBridge(
-    `export const query = () => { throw new Error("No SDK call expected"); };
-     export { query as tool, query as createSdkMcpServer, query as forkSession, query as getSessionMessages };`,
+    new URL("./lifecycle-no-query.fixture.mts", import.meta.url),
     "claude-null-reply-",
-    { env: { CODEX_BIN: "./executor" } },
+    { env: { CODEX_BIN: "./executor.mts" } },
   );
   try {
     const home = path.join(bridge.root, "state/command-executor");
     await fs.mkdir(home, { recursive: true });
     await fs.writeFile(
-      path.join(home, "executor"),
-      `#!${process.execPath}
-const { createInterface } = require("node:readline");
-createInterface({ input: process.stdin }).on("line", line => {
-  const message = JSON.parse(line);
-  if (message.id !== undefined)
-    process.stdout.write(JSON.stringify({ id: message.id }) + "\\n");
-});
-`,
+      path.join(home, "executor.mts"),
+      "#!" +
+        process.execPath +
+        "\n" +
+        (await fs.readFile(
+          new URL("./lifecycle-executor.fixture.mts", import.meta.url),
+          "utf8",
+        )),
       { mode: 0o700 },
     );
     expect(await bridge.call("config/read", {})).toBeNull();

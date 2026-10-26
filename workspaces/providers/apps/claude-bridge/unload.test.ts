@@ -1,3 +1,4 @@
+import type { UnloadLog } from "./unload.fixture.mts";
 import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 // Idle unload through the real bridge with a scripted SDK: a settled turn's
 // thread/unsubscribe ends its CLI query, and the next turn starts a new query
@@ -10,37 +11,7 @@ import path from "node:path";
 import { startBridge } from "./testing/bridge-harness.ts";
 
 // Every query logs its start options, its inputs and its close to the cwd.
-const FAKE_SDK = String.raw`
-import fs from 'node:fs';
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-const usage={input_tokens:10,output_tokens:2};
-export function query({prompt,options}){
- const abort=new AbortController(),log=(event)=>fs.appendFileSync(options.cwd+'/.log',JSON.stringify(event)+'\n');
- log({query:{resume:options.resume??null,sessionId:options.sessionId??null}});
- return {
-  mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
-  supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
-  accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
-  initializationResult:async()=>({commands:[]}),
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
-  setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  close(){if(!abort.signal.aborted)log({close:true});abort.abort();},interrupt:async()=>abort.abort(),
-  async *[Symbol.asyncIterator](){
-   while(!abort.signal.aborted){
-    const input=await prompt.next();
-    if(input.done)return;
-    log({input:input.value.message.content[0].text});
-    yield {type:'user',isReplay:true,uuid:input.value.uuid};
-    yield {type:'system',subtype:'init'};
-    yield {type:'result',subtype:'success',usage,result:'done'};
-   }
-  }
- };
-}
-`;
+const FAKE_SDK = new URL("./unload.fixture.mts", import.meta.url);
 
 const bridges: BridgeHarness[] = [];
 afterEach(async () => {
@@ -66,7 +37,7 @@ async function log(bridge: BridgeHarness) {
   return raw
     .trim()
     .split("\n")
-    .map((line) => JSON.parse(line));
+    .map((line): UnloadLog => JSON.parse(line));
 }
 
 test("a settled turn's unload ends its CLI and the next turn resumes the session once", async () => {
@@ -93,6 +64,8 @@ test("a settled turn's unload ends its CLI and the next turn resumes the session
   assert.equal(second.params.turn.status, "completed");
   const events = await log(bridge);
   const [started, resumed] = events.filter((event) => event.query);
+  assert.ok(started?.query);
+  assert.ok(resumed?.query);
   assert.equal(started.query.resume, null);
   assert.ok(started.query.sessionId);
   assert.equal(
@@ -126,11 +99,7 @@ test("a repeated unload closes nothing more", async () => {
 
 // A scripted CLI that raises its resume_return dialog on the first input of a
 // resumed query, as the real one does for a long or large session.
-const DIALOG_SDK = FAKE_SDK.replace(
-  "log({input:input.value.message.content[0].text});",
-  `log({input:input.value.message.content[0].text});
-    if(options.resume&&!asked){asked=true;log({dialog:await options.onUserDialog({dialogKind:'resume_return',toolUseID:'dialog'},{requestId:'dialog',signal:abort.signal})});}`,
-).replace("log({query:", "let asked=false;log({query:");
+const DIALOG_SDK = new URL("./unload-dialog.fixture.mts", import.meta.url);
 
 const askedUser = (bridge: BridgeHarness) =>
   bridge.notes.some(

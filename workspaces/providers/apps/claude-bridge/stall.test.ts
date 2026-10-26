@@ -67,7 +67,11 @@ const acks = (bridge: BridgeHarness, id: string) =>
 // Start a scenario turn. Each steer in `steers` ([id, text] pairs) is in the
 // CLI queue before its tool call starts: the stall clock starts with the tool
 // call, so it cannot end the turn while a steer is still on its way.
-async function start(bridge: BridgeHarness, scenario: string, steers = []) {
+async function start(
+  bridge: BridgeHarness,
+  scenario: string,
+  steers: [string, string][] = [],
+) {
   const hold = path.join(bridge.root, ".hold");
   if (steers.length) await fs.writeFile(hold, "");
   const turn = (
@@ -79,7 +83,9 @@ async function start(bridge: BridgeHarness, scenario: string, steers = []) {
   ).turn.id;
   for (const [id, value] of steers) await steer(bridge, turn, id, value);
   if (steers.length) {
-    await read(bridge, steers.at(-1)[1]);
+    const last = steers.at(-1);
+    assert.ok(last);
+    await read(bridge, last[1]);
     await fs.rm(hold);
   }
   await bridge.note(
@@ -124,14 +130,22 @@ test("a tool stall closes a CLI with unconfirmed input without resending it", as
   ]);
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
-  assert.match(done.params.turn.error.message, /Bash call did not return/);
-  assert.equal(done.params.turn.error.data.claudeToolStall.tool, "Bash");
-  assert.equal(done.params.turn.error.data.claudeToolStall.timeoutMs, 100);
+  assert.match(
+    done.params.turn.error?.message ?? "",
+    /Bash call did not return/,
+  );
+  assert.partialDeepStrictEqual(done.params.turn.error?.data, {
+    claudeToolStall: { tool: "Bash" },
+  });
+  assert.partialDeepStrictEqual(done.params.turn.error?.data, {
+    claudeToolStall: { timeoutMs: 100 },
+  });
   assert.equal(done.params.turn.unappliedSteers, undefined);
   const tool = bridge.notes.find(
     (n): n is BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" && n.params.item.id === "toolu_stall",
   );
+  assert.ok(tool);
   assert.equal(tool.params.item.status, "failed");
   assert.equal(tool.params.item.stalled, true);
   // The CLI cannot retain ambiguous queued input after this turn. Without
@@ -144,9 +158,10 @@ test("a tool stall closes a CLI with unconfirmed input without resending it", as
   ]);
   const notice = bridge.notes.find(
     (n): n is BridgeNoteFor<"item/completed"> =>
-      n.method === "item/completed" && n.params.item.studioNotice,
+      n.method === "item/completed" && n.params.item.studioNotice === true,
   );
-  assert.match(notice.params.item.text, /Studio stopped this turn/);
+  assert.ok(notice);
+  assert.match(notice.params.item.text ?? "", /Studio stopped this turn/);
   assert.notEqual(notice.params.item.phase, "final_answer");
   // The bridge accepts a new turn afterwards.
   const next = (
@@ -167,7 +182,10 @@ test("a CLI that ignores the interrupt is closed and its steers are settled from
   ]);
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
-  assert.match(done.params.turn.error.message, /Studio stopped this turn/);
+  assert.match(
+    done.params.turn.error?.message ?? "",
+    /Studio stopped this turn/,
+  );
   assert.ok(existsSync(path.join(bridge.root, ".interrupts")));
   // Recorded input is delivered; unrecorded input returns to Studio once.
   assert.deepEqual(done.params.turn.unappliedSteers, ["steer-lost"]);
@@ -189,7 +207,10 @@ test("a CLI whose stream outlives its close still ends the stalled turn once", a
   const turn = await start(bridge, "deaf");
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
-  assert.match(done.params.turn.error.message, /Studio stopped this turn/);
+  assert.match(
+    done.params.turn.error?.message ?? "",
+    /Studio stopped this turn/,
+  );
   await bridge.advanceTime(200);
   assert.equal(
     bridge.notes.filter(
@@ -233,9 +254,14 @@ test("an unanswered approval is not a stall, and the tool budget restarts at the
   bridge.answer(approval.id, { decision: "accept" });
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
+  const stall = done.params.turn.error?.data?.claudeToolStall;
   assert.ok(
-    done.params.turn.error.data.claudeToolStall.elapsedMs >= 100 + GRACE_MS,
+    stall &&
+      typeof stall === "object" &&
+      "elapsedMs" in stall &&
+      typeof stall.elapsedMs === "number",
   );
+  assert.ok(stall.elapsedMs >= 100 + GRACE_MS);
   assert.equal(
     await fs.readFile(path.join(bridge.root, ".approved"), "utf8"),
     "allow",
@@ -280,7 +306,8 @@ test("an approval nobody answers in a no-approval agent is declined and its card
       n.method === "item/completed" &&
       n.params.item.id === "approval-expired:toolu_stall",
   );
-  assert.match(notice.params.item.text, /Studio declined it/);
+  assert.ok(notice);
+  assert.match(notice.params.item.text ?? "", /Studio declined it/);
   assert.equal(
     bridge.notes.find(
       (n): n is BridgeNoteFor<"item/completed"> =>
@@ -318,12 +345,12 @@ test("the stall rule needs both an elapsed budget and silence", () => {
   ]);
   assert.equal(findStall(clocks, 599, 0, limits), null);
   assert.equal(findStall(clocks, 700, 650, limits), null);
-  assert.equal(findStall(clocks, 700, 600, limits).id, "bash");
+  assert.equal(findStall(clocks, 700, 600, limits)?.id, "bash");
   const silent = new Map([
     ["mcp", { tool: "mcp__x__y", startedAt: 0, timeoutMs: null }],
   ]);
   assert.equal(findStall(silent, 999, 0, limits), null);
-  assert.equal(findStall(silent, 1_000, 0, limits).id, "mcp");
+  assert.equal(findStall(silent, 1_000, 0, limits)?.id, "mcp");
   assert.equal(bashTimeoutMs({}, {}), 120_000);
   assert.equal(bashTimeoutMs({ timeout: 9_999_999 }, {}), 600_000);
   assert.equal(
@@ -348,7 +375,7 @@ test("Stop bounds a running Claude that ignores its interrupt", async () => {
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(
-    done.params.turn.error.message,
+    done.params.turn.error?.message ?? "",
     /did not end the turn after Stop/,
   );
   assert.deepEqual(done.params.turn.unappliedSteers, ["stop-lost"]);
