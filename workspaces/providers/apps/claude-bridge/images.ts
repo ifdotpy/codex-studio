@@ -1,3 +1,4 @@
+import type { Metadata, ResizeOptions, PngOptions, JpegOptions } from "sharp";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -10,15 +11,27 @@ export const IMAGE_BYTE_BUDGET = 512_000;
 const JPEG_QUALITIES = [80, 60, 40, 20];
 const BYTE_BUDGET_PASSES = 5;
 const FINAL_IMAGE_WIDTH = 1000;
-const MEDIA_TYPES = new Map([
+const MEDIA_TYPES = new Map<string, string>([
   ["jpeg", "image/jpeg"],
   ["png", "image/png"],
   ["gif", "image/gif"],
   ["webp", "image/webp"],
 ]);
 
+export type ImageMetadata = Partial<
+  Pick<Metadata, "format" | "width" | "height">
+>;
+export type ImagePipeline = {
+  metadata(): Promise<ImageMetadata>;
+  resize(width: number, height: number, options: ResizeOptions): ImagePipeline;
+  png(options?: PngOptions): ImagePipeline;
+  jpeg(options?: JpegOptions): ImagePipeline;
+  toBuffer(): Promise<Buffer>;
+};
+export type ImageCodec = (bytes: Buffer) => ImagePipeline;
+
 class ImagePreparationError extends Error {
-  constructor(message, options) {
+  constructor(message: string, options?: ErrorOptions) {
     super("Cannot send image: " + message, options);
     this.name = "ImagePreparationError";
   }
@@ -36,10 +49,12 @@ async function loadSharp() {
   }
 }
 
-function dimensions(metadata) {
+function dimensions(metadata: ImageMetadata) {
   const { width, height } = metadata;
   if (
+    typeof width !== "number" ||
     !Number.isSafeInteger(width) ||
+    typeof height !== "number" ||
     !Number.isSafeInteger(height) ||
     width < 1 ||
     height < 1
@@ -50,7 +65,7 @@ function dimensions(metadata) {
   return { width, height };
 }
 
-function targetDimensions({ width, height }) {
+function targetDimensions({ width, height }: ReturnType<typeof dimensions>) {
   if (width > MAX_IMAGE_SIDE) {
     height = Math.max(1, Math.round((height * MAX_IMAGE_SIDE) / width));
     width = MAX_IMAGE_SIDE;
@@ -62,7 +77,11 @@ function targetDimensions({ width, height }) {
   return { width, height };
 }
 
-async function reduceImage(sharp, bytes, metadata) {
+async function reduceImage(
+  sharp: ImageCodec,
+  bytes: Buffer,
+  metadata: ImageMetadata,
+) {
   const original = dimensions(metadata);
   const target = targetDimensions(original);
   const resize =
@@ -111,11 +130,11 @@ async function reduceImage(sharp, bytes, metadata) {
 
 // Claude's secondary byte budget is best effort. Retain the smallest candidate if
 // no quality meets it. The API's hard byte and dimension limits are checked below.
-async function budgetImage(sharp, bytes) {
+async function budgetImage(sharp: ImageCodec, bytes: Buffer) {
   if (bytes.length <= IMAGE_BYTE_BUDGET) return bytes;
   let smallest = bytes;
   let upper = 90;
-  const encode = (quality) => sharp(bytes).jpeg({ quality }).toBuffer();
+  const encode = (quality: number) => sharp(bytes).jpeg({ quality }).toBuffer();
   if ((await sharp(bytes).metadata()).format !== "jpeg") {
     const jpeg = await encode(90);
     if (jpeg.length < smallest.length) smallest = jpeg;
@@ -138,13 +157,16 @@ async function budgetImage(sharp, bytes) {
 }
 
 /** Prepare bytes with portable codecs. A codec loader permits deterministic failure tests. */
-export async function prepareClaudeImage(bytes, codecLoader = loadSharp) {
+export async function prepareClaudeImage(
+  bytes: Buffer,
+  codecLoader: () => Promise<ImageCodec> = loadSharp,
+) {
   try {
     if (!bytes.length)
       throw new ImagePreparationError("the image file is empty.");
     const sharp = await codecLoader();
     const metadata = await sharp(bytes).metadata();
-    if (!MEDIA_TYPES.has(metadata.format))
+    if (!MEDIA_TYPES.has(metadata.format ?? ""))
       throw new ImagePreparationError(
         "the image format is unsupported. Use PNG, JPEG, GIF, or WebP.",
       );
@@ -154,7 +176,7 @@ export async function prepareClaudeImage(bytes, codecLoader = loadSharp) {
     );
     const final = await sharp(result).metadata();
     const { width, height } = dimensions(final);
-    const mediaType = MEDIA_TYPES.get(final.format);
+    const mediaType = MEDIA_TYPES.get(final.format ?? "");
     // Validate the actual final bytes, including base64 padding, after every encode.
     if (
       !mediaType ||
@@ -177,7 +199,7 @@ export async function prepareClaudeImage(bytes, codecLoader = loadSharp) {
 }
 
 /** The source file is never changed. Unchecked bytes never reach the SDK. */
-export async function claudeImage(file) {
+export async function claudeImage(file: string) {
   try {
     return await prepareClaudeImage(await fs.readFile(file));
   } catch (cause) {

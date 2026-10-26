@@ -73,7 +73,7 @@ export interface ActiveQuery {
   idleRequest?: { id: string; at: number };
 }
 
-import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
+import { ResponseUsage, cumulativeUsage } from "./usage.ts";
 import { isThreadSerialized } from "./provider-method-policy.generated.ts";
 import {
   cacheReport,
@@ -90,7 +90,7 @@ import {
   fileRestoreReason,
   rewindSessionFiles,
 } from "./file-checkpoints.ts";
-import { createAccountCheck } from "./account-identity.mjs";
+import { createAccountCheck } from "./account-identity.ts";
 import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
 import {
   persistNativeSession,
@@ -132,7 +132,7 @@ import {
   explicitNativeCommand,
   rollbackSession,
   forkAtTurn,
-} from "./controls.mjs";
+} from "./controls.ts";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -147,10 +147,10 @@ import {
   ephemeralSessionOptions,
   isDiskFull,
 } from "./session-store.mjs";
-import { claudeImage } from "./images.mjs";
+import { claudeImage } from "./images.ts";
 import { listSkills } from "./skills.ts";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
-import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
+import { createCatalogCache, loadCatalog } from "./catalog-cache.ts";
 import {
   declaredTimeoutMs,
   durationText,

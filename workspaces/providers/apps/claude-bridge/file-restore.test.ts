@@ -12,7 +12,7 @@ import {
   verifyFileRestore,
   MAX_BEFORE_RESTORE_BYTES,
 } from "./file-restore.ts";
-import { rollbackSession } from "./controls.mjs";
+import { rollbackSession } from "./controls.ts";
 
 async function fixture(
   run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,

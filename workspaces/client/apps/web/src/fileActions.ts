@@ -4,9 +4,9 @@ import { hasNativeClient, nativeRequest } from "./native/client";
 import { isRemoteServerView } from "./servers/environment";
 
 export interface FileTarget {
-  agent?: string;
-  path?: string;
-  asset?: string;
+  agent?: string | undefined;
+  path?: string | undefined;
+  asset?: string | undefined;
 }
 export interface SaveFile {
   name: string;

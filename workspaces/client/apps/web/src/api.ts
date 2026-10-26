@@ -57,9 +57,9 @@ type QueryOfPath<Path extends PathsFor<"get">> = Path extends keyof paths
   : never;
 
 type InternalGetOptions<Path extends PathsFor<"get">> = ApiOptions & {
-  query?: QueryOf<Operation<Path, "get">>;
-  etag?: string;
-  readMetadata?: ApiReadMetadata;
+  query?: QueryOf<Operation<Path, "get">> | undefined;
+  etag?: string | undefined;
+  readMetadata?: ApiReadMetadata | undefined;
 };
 
 type PathsWithRequiredQuery = ApiPathsWithRequiredQuery<paths>;
@@ -100,18 +100,21 @@ type PostFetchResponse<Path extends PathsFor<"post">> = FetchResponse<
   "application/json"
 >;
 
-export type ApiReadMetadata = { etag?: string; notModified?: boolean };
+export type ApiReadMetadata = {
+  etag?: string | undefined;
+  notModified?: boolean;
+};
 
 export type ApiGetPath = PathsFor<"get">;
 
 export type ApiPostPath = PathsFor<"post">;
 
 export type ApiOptions = {
-  timeoutMs?: number;
-  workspaceId?: string;
-  sessionToken?: string;
-  signal?: AbortSignal;
-  cache?: RequestCache;
+  timeoutMs?: number | undefined;
+  workspaceId?: string | undefined;
+  sessionToken?: string | undefined;
+  signal?: AbortSignal | undefined;
+  cache?: RequestCache | undefined;
 };
 
 export type GetOptions<Path extends PathsFor<"get">> = ApiGetOptions<
@@ -204,13 +207,20 @@ export class ApiError extends Error {
   public readonly outcome?: string;
   public readonly catalogPending?: boolean;
 
+  public status: number;
+  public readonly response: unknown;
+  public readonly location: string[] | undefined;
   constructor(
     message: unknown,
-    public status: number,
-    public readonly response: unknown = message,
-    public readonly location?: string[],
+    status: number,
+    response: unknown = message,
+    location?: string[],
   ) {
     super(displayError(message) || `Request failed (${status})`);
+    this.status = status;
+    this.response = response;
+    this.location = location;
+
     if (isRecord(response)) {
       if (typeof response.outcome === "string") this.outcome = response.outcome;
       if (typeof response.catalogPending === "boolean")
@@ -220,8 +230,11 @@ export class ApiError extends Error {
 }
 
 export class ApiSchemaMismatchError extends ApiError {
-  constructor(public readonly markedResponse = false) {
+  public readonly markedResponse: boolean;
+  constructor(markedResponse = false) {
     super("Studio must be updated before using this tab.", 426);
+    this.markedResponse = markedResponse;
+
     this.name = "ApiSchemaMismatchError";
   }
 }
@@ -550,12 +563,13 @@ export function createApiScope(options: ApiScopeOptions) {
     try {
       const result =
         method === "GET"
-          ? await accessClient.GET("/api/multi-server", {
-              signal: controller.signal,
-            })
+          ? await accessClient.GET(
+              "/api/multi-server",
+              controller.signal ? { signal: controller.signal } : {},
+            )
           : await accessClient.POST("/api/multi-server", {
               body: body!,
-              signal: controller.signal,
+              ...(controller.signal ? { signal: controller.signal } : {}),
               headers: {
                 "X-Canvas-Token": sessionToken ?? token,
                 "X-Canvas-Workspace": workspace,

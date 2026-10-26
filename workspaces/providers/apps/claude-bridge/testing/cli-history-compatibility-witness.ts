@@ -16,7 +16,7 @@ import {
   readHistoryIndex,
   verifiedHistoryMessages,
 } from "../history-index.mjs";
-import { forkAtTurn, rollbackSession } from "../controls.mjs";
+import { forkAtTurn, rollbackSession } from "../controls.ts";
 
 const base = path.join(os.homedir(), ".cache/codex-studio/pivot1-v5-history");
 await fs.mkdir(base, { recursive: true });

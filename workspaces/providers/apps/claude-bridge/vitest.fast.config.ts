@@ -24,11 +24,11 @@ export default {
       "steer.test.ts",
       "stop-receipts.test.ts",
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
-      "usage.test.mjs",
-      "usage-bridge.test.mjs",
+      "usage.test.ts",
+      "usage-bridge.test.ts",
       // Portable image codecs, bounded compression and visible pre-input refusals.
-      "images.test.mjs",
-      "images-bridge.test.mjs",
+      "images.test.ts",
+      "images-bridge.test.ts",
     ],
   },
 };

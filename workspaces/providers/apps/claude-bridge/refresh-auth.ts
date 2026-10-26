@@ -1,4 +1,4 @@
-import { createAccountCheck } from "./account-identity.mjs";
+import { createAccountCheck } from "./account-identity.ts";
 // Keep the host CLI alive through OAuth refresh without supplying a model prompt.
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "node:readline";
