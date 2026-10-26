@@ -1,5 +1,4 @@
 import type {} from "../fixtures/ux-chat.tsx";
-import { required } from "./helpers.ts";
 import path from "node:path";
 import {
   test,
@@ -19,41 +18,24 @@ test("Claude image refusal remains visible and preserves the draft", async ({
     () => {
       throw Error("The fixture must refuse this image");
     },
-    (error) => error.message,
+    (error) => (error as Error).message,
   );
   const web = path.resolve(import.meta.dirname, "../..");
   const identity = syncIdentityFixture();
-  const syncFixture = {
+  // This one-off fixture omits chats/edges; the entity fixture reads only the supplied runtime collections.
+  const syncFixture: Omit<
+    Parameters<typeof handleEntitySyncFixtureRequest>[2],
+    "snapshot"
+  > & {
+    snapshot: Partial<import("../playwright.ts").EntityFixtureState> &
+      Pick<Partial<import("../playwright.ts").TestStateView>, "threads">;
+  } = {
     workspaceId: identity.workspaceId,
     snapshot: {
-      chats: [],
-      edges: [],
       stateDir: "ux-chat-fixture",
+      threads: [],
       runtime: {
         agents: [],
-        rooms: [],
-        tasks: [],
-        monitors: [],
-        complaints: [],
-        projects: [],
-        events: [],
-        peerTeams: [],
-        requests: [],
-        rules: [],
-        work: [],
-        accountsSummary: {
-          accounts: [],
-          archivedAccounts: [],
-          defaultAccountKey: "default",
-          defaultAccountGroups: [],
-          logins: [],
-          supportsDelete: true,
-          supportsDisconnect: true,
-        },
-        nativeNotices: [],
-        sidebarOrder: { groups: null, revision: 0 },
-        rateLimits: null,
-        rateLimitsByAccount: {},
         queuesByAgent: {
           lead: {
             items: [],
@@ -77,10 +59,17 @@ test("Claude image refusal remains visible and preserves the draft", async ({
         enforce: "pre",
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
-            if (handleEntitySyncFixtureRequest(request, response, syncFixture))
+            if (
+              handleEntitySyncFixtureRequest(
+                request,
+                response,
+                syncFixture as Parameters<
+                  typeof handleEntitySyncFixtureRequest
+                >[2],
+              )
+            )
               return;
-            if (!required(required(request).url).startsWith("/api/"))
-              return next();
+            if (!request.url!.startsWith("/api/")) return next();
             for (const [key, value] of Object.entries(apiSchemaHeaders()))
               response.setHeader(key, value);
             response.setHeader("Content-Type", "application/json");
@@ -111,7 +100,7 @@ test("Claude image refusal remains visible and preserves the draft", async ({
         await page.addInitScript((failure) => {
           window.__uxChatSendFailure = failure;
         }, refusal);
-        await page.goto(required(server.resolvedUrls).local[0] + "check");
+        await page.goto(server.resolvedUrls!.local[0] + "check");
         await page.locator("#message").fill("Read the attached image.");
         await page.locator("#send").click();
         await expect(page.locator(".message-delivery-error")).toContainText(

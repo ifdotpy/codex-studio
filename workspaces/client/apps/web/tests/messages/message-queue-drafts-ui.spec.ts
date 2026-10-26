@@ -1,8 +1,8 @@
-import { listeningPort } from "./helpers.ts";
+#!/usr/bin/env node
+import type { AddressInfo } from "node:net";
 import type { ViteDevServer } from "vite";
 import type { Server } from "node:http";
 import type { BrowserContext } from "@playwright/test";
-import { required } from "./helpers.ts";
 import { assert } from "../chat/assertions.ts";
 // Actual queue component, isolated browser storage, no backend or model service.
 
@@ -59,21 +59,21 @@ test("Message Queue Drafts Ui", async ({
         );
         return;
       }
-      required(vite).middlewares(request, response, () => {
+      vite!.middlewares(request, response, () => {
         response.statusCode = 404;
         response.end("Not found");
       });
     });
     await new Promise<void>((resolve, reject) => {
-      required(server).once("error", reject);
-      required(server).listen(0, "127.0.0.1", resolve);
+      server!.once("error", reject);
+      server!.listen(0, "127.0.0.1", resolve);
     });
-    const url = `http://127.0.0.1:${listeningPort(required(server))}`;
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     browser = testBrowser;
     const observe = (context: BrowserContext) => {
       context.setDefaultTimeout(10000);
       context.on("page", (page) =>
-        page.on("pageerror", (error) => errors.push(error.message)),
+        page.on("pageerror", (error) => errors.push((error as Error).message)),
       );
       return context;
     };
@@ -158,7 +158,7 @@ test("Message Queue Drafts Ui", async ({
     const records = await second.evaluate(() =>
       Object.keys(localStorage)
         .filter((k) => k.startsWith("codex-queue-edit:"))
-        .map((k) => JSON.parse(localStorage.getItem(k) ?? "null")),
+        .map((k) => JSON.parse(localStorage.getItem(k)!)),
     );
     assert.deepEqual(
       records.map((r) => r.text),
@@ -192,7 +192,7 @@ test("Message Queue Drafts Ui", async ({
     await quotaContext?.close();
     await context?.close();
     if (server?.listening)
-      await new Promise((resolve) => required(server).close(resolve));
+      await new Promise((resolve) => server!.close(resolve));
     await vite?.close();
     if (!process.env.KEEP_TEST_ARTIFACTS)
       await rm(root, { recursive: true, force: true });

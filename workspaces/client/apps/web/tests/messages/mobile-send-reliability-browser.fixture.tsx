@@ -5,7 +5,7 @@ export function mount() {
   const root = createRoot(document.body);
   root.render(
     React.createElement(function Harness() {
-      window.mobileSendOutbox = useOutbox();
+      window.outbox = useOutbox();
       return null;
     }),
   );
@@ -13,30 +13,30 @@ export function mount() {
 }
 
 const initialize = async () => {
-  window.mobileSendSend = await import("../../src/sync/send.ts");
-  window.mobileSendStorage = await (
+  window.send = await import("../../src/sync/send.ts");
+  window.storage = await (
     await import("../../src/sync/client.ts")
   ).syncDatabase();
-  window.mobileSendFetchCount = 0;
+  window.fetchCount = 0;
   const original = window.fetch;
   window.fetch = (...args) => {
-    window.mobileSendFetchCount++;
+    window.fetchCount++;
     return original(...args);
   };
-  window.mobileSendRead = async (id) => {
-    const doc = await window.mobileSendStorage.db.outbox.findOne(id).exec();
+  window.read = async (id) => {
+    const doc = await window.storage.db.outbox.findOne(id).exec();
     return doc && JSON.parse(doc.getLatest().payload);
   };
   window.mobileSendStart = (body) => {
-    window.mobileSendPersisted = false;
-    window.mobileSendSettled = false;
-    window.mobileSendResult = window.mobileSendSend
+    window.persisted = false;
+    window.settled = false;
+    window.mobileSendResult = window.send
       .durableSend(body, [], () => {
-        window.mobileSendPersisted = true;
-        window.mobileSendPersistedRecord = window.mobileSendRead(body.id);
+        window.persisted = true;
+        window.persistedRecord = window.read(body.id);
       })
       .then((result) => {
-        window.mobileSendSettled = true;
+        window.settled = true;
         return result;
       });
   };
@@ -49,27 +49,17 @@ declare global {
   interface Window {
     mobileSendInitialize: typeof initialize;
     mobileSendMount: typeof mount;
-    mobileSendSend: typeof import("../../src/sync/send.ts");
-    mobileSendStorage: Awaited<
-      ReturnType<typeof import("../../src/sync/client.ts").syncDatabase>
-    >;
-    mobileSendFetchCount: number;
-    mobileSendRead: (
-      id: string,
-    ) => Promise<Omit<
-      import("../../src/sync/send.ts").OutboxEntry,
-      "id"
-    > | null>;
+    fetchCount: number;
     mobileSendStart: (
       body: Parameters<typeof import("../../src/sync/send.ts").durableSend>[0],
     ) => void;
-    mobileSendPersisted: boolean;
-    mobileSendSettled: boolean;
+    persisted: boolean;
+    settled: boolean;
     mobileSendResult: ReturnType<
       typeof import("../../src/sync/send.ts").durableSend
     >;
-    mobileSendPersistedRecord: ReturnType<Window["mobileSendRead"]>;
-    mobileSendOutbox: ReturnType<typeof useOutbox>;
+    persistedRecord: ReturnType<Window["read"]>;
+    outbox: ReturnType<typeof useOutbox>;
     mobileSendReactRoot: ReturnType<typeof createRoot>;
   }
 }

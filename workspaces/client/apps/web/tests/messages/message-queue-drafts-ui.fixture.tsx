@@ -1,4 +1,3 @@
-import { required } from "./browser-helpers.ts";
 import type { QueueItem } from "../../src/components/MessageQueue.tsx";
 
 import { useState } from "react";
@@ -25,4 +24,4 @@ function App() {
     />
   );
 }
-createRoot(required(document.getElementById("root"))).render(<App />);
+createRoot(document.getElementById("root")!).render(<App />);
