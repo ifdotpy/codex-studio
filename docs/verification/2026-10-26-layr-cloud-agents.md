@@ -228,3 +228,12 @@ node --test \
   --test-name-pattern='archived CI partitions reuse prepared binaries without Cargo build options' \
   workspaces/tooling/apps/repository-checks/tests/gates.test.mjs
 ```
+
+## Wording verification
+
+A case-insensitive tracked-file search of all eight files changed by this task
+returned zero matches for the prohibited term at Studio commit
+`621ab77e4565d743574fecaeda7995dc678d5fc7` (search exit code 1, empty output).
+The skill uses copy terminology, and the VM reference contains no legacy vault
+heading or paragraph with that term. The same search was repeated after adding
+this verification record, with zero matches.
