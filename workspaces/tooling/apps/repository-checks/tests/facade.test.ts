@@ -1598,3 +1598,30 @@ test("JavaScript policy rejects unlisted tracked output, unchecked exceptions an
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("native configuration owner permits erased type queries while keeping runtime boundaries", () => {
+  const fixture = workspaceFixture();
+  try {
+    const web = fixture.add("web-app", "workspaces/client/apps/web");
+    fixture.add("native-app", "workspaces/client/apps/native");
+    const file = path.join(web, "entry.ts");
+    writeFileSync(
+      file,
+      'type Configuration = typeof import("../native/src-tauri/tauri.conf.json");',
+    );
+    assert.deepEqual(
+      boundaryFindings(fixture.root, fixture.packages, [file]),
+      [],
+    );
+    writeFileSync(
+      file,
+      'import configuration from "../native/src-tauri/tauri.conf.json";',
+    );
+    assert.equal(
+      boundaryFindings(fixture.root, fixture.packages, [file]).length,
+      1,
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});

@@ -207,6 +207,11 @@ const DECLARATION_SECTIONS = [
 // Only erased type imports may use these shared owners across workspace boundaries.
 const SHARED_TYPE_OWNERS = [
   {
+    file: "workspaces/client/apps/native/src-tauri/tauri.conf.json",
+    purpose:
+      "Native application configuration shape shared by policy witnesses.",
+  },
+  {
     file: "workspaces/client/apps/desktop/backend.ts",
     purpose: "Backend identity type consumed by native startup checks.",
   },
