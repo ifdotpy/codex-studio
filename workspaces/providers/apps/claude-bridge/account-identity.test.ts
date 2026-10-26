@@ -1,7 +1,6 @@
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -166,10 +165,7 @@ test("checkAccount preserves email provider and subscription refusal", () => {
     );
 });
 
-const SDK = await readFile(
-  new URL("./account-identity.fixture.mts", import.meta.url),
-  "utf8",
-);
+const SDK = new URL("./account-identity.fixture.mts", import.meta.url);
 test("the real bridge reports native UUIDs and refuses input after an organization change", async () => {
   const bridge = await startBridge(SDK, "claude-org-identity-");
   bridges.push(bridge);
