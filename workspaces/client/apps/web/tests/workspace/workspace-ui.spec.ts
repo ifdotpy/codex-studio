@@ -54,7 +54,7 @@ test("workspace ui", async ({ page: testPage }) => {
     env: { ...process.env, FIXTURE_HOLD: "lead" },
   });
   let log = "";
-  const page: Page = testPage;
+  let page!: Page;
   proc.stderr!.on("data", (d) => (log += d));
   const poll = async (fn: () => boolean | Promise<boolean>, label: string) => {
     for (let i = 0; i < 180; i++) {
@@ -107,6 +107,7 @@ test("workspace ui", async ({ page: testPage }) => {
       });
       assert.equal(response.status, 200, await response.text());
     };
+    page = testPage;
     await page.setViewportSize({ width: 1440, height: 980 });
     const errors: string[] = [];
     const resourceRequests: string[] = [];

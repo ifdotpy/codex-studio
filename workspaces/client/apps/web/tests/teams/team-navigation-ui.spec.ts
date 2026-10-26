@@ -45,7 +45,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       }),
     },
   });
-  const page = fixturePage;
+  let page!: import("@playwright/test").Page;
   let log = "";
   proc.stderr!.on("data", (data) => (log += data));
   try {
@@ -85,6 +85,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       )!;
     const longName =
       "Check approval and interrupted worker navigation across a large release team";
+    page = fixturePage;
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

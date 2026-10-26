@@ -70,9 +70,7 @@ test("workspace identity retry browser", async ({ browser }) => {
     await page.evaluate(() => window.workspaceIdentityRetryBrowserMount());
     await expect.poll(() => identityReads).toBeGreaterThan(1);
     await expect
-      .poll(() =>
-        page.evaluate(() => window.workspaceIdentityRetryBrowserWorkspace),
-      )
+      .poll(() => page.evaluate(() => window.workspace))
       .toBe(workspaceId);
     assert.deepEqual(errors, []);
   } finally {

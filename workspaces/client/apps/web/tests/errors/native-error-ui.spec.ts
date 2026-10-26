@@ -51,7 +51,7 @@ test("native error ui", async ({ page: runnerPage }) => {
     },
   });
   let log = "",
-    page = runnerPage,
+    page!: import("@playwright/test").Page,
     backendExit: {
       at: string;
       code: number | null;

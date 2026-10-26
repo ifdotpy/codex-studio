@@ -65,7 +65,7 @@ test("current command history ui", async ({ browser: _browser }) => {
     });
     await page.goto(server.resolvedUrls!.local[0]!);
     await page.waitForFunction(
-      () => typeof window.currentCommandHistoryApply === "function",
+      () => typeof window.applySnapshot === "function",
     );
     const command = (
       id: string,
@@ -134,17 +134,9 @@ test("current command history ui", async ({ browser: _browser }) => {
       enabled: boolean,
       currentTurn?: string,
     ) => {
-      await page.evaluate(
-        (json) => {
-          const snapshot: HistorySnapshot = JSON.parse(json);
-          window.currentCommandHistoryApply(snapshot);
-        },
-        JSON.stringify({
-          label,
-          items: rows,
-          enabled,
-          currentTurn,
-        }),
+      await page.evaluate<void, unknown>(
+        (snapshot) => window.applySnapshot(snapshot as HistorySnapshot),
+        { label, items: rows, enabled, currentTurn },
       );
       await page
         .locator(`main[data-case="${label}"]`)

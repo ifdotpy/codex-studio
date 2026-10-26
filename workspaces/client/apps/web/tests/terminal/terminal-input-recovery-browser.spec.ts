@@ -179,11 +179,11 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     });
     await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.evaluate(async () => {
-      window.terminalInputRecoveryTerminals = [];
-      window.terminalInputRecoveryNotices = [];
-      window.terminalInputRecoveryAdvance = 0;
+      window.terminals = [];
+      window.notices = [];
+      window.advance = 0;
       const now = Date.now;
-      Date.now = () => now() + window.terminalInputRecoveryAdvance;
+      Date.now = () => now() + window.advance;
     });
     await page.addScriptTag({
       type: "module",
@@ -202,30 +202,22 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     };
-    const count = () =>
-      page.evaluate(() => window.terminalInputRecoveryTerminals.length);
+    const count = () => page.evaluate(() => window.terminals.length);
     const mount = async () => {
       const before = await count();
       await page.evaluate(() => window.terminalInputRecoveryMount("shell-a"));
       await page.waitForFunction(
         (before) =>
-          window.terminalInputRecoveryTerminals.length > before &&
-          window.terminalInputRecoveryCurrentTerminal.input,
+          window.terminals.length > before && window.currentTerminal.input,
         before,
       );
       assert.equal(
-        await page.evaluate(
-          () =>
-            window.terminalInputRecoveryCurrentTerminal.options.disableStdin,
-        ),
+        await page.evaluate(() => window.currentTerminal.options.disableStdin),
         false,
       );
     };
     const input = (text: string) =>
-      page.evaluate(
-        (text) => window.terminalInputRecoveryCurrentTerminal.input!(text),
-        text,
-      );
+      page.evaluate((text) => window.currentTerminal.input!(text), text);
     const observed = (text: string) =>
       until(
         () => posts.some((post) => post.text === text),
@@ -264,10 +256,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     };
     const assertUnpaused = async () => {
       assert.equal(
-        await page.evaluate(
-          () =>
-            window.terminalInputRecoveryCurrentTerminal.options.disableStdin,
-        ),
+        await page.evaluate(() => window.currentTerminal.options.disableStdin),
         false,
       );
       assert.equal(
@@ -285,8 +274,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         .click();
       await page.waitForFunction(
         (before) =>
-          window.terminalInputRecoveryTerminals.length > before &&
-          window.terminalInputRecoveryCurrentTerminal.input,
+          window.terminals.length > before && window.currentTerminal.input,
         before,
       );
       await assertUnpaused();
@@ -314,16 +302,14 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await accepted("timeout-old", true);
     await input("discard-timeout");
     await page.evaluate(() => {
-      window.terminalInputRecoveryAdvance += 16000;
+      window.advance += 16000;
       window.dispatchEvent(new Event("pageshow"));
     });
     await page
       .getByText(/Input paused\. Reconnect before you continue\./)
       .waitFor();
     assert.equal(
-      await page.evaluate(
-        () => window.terminalInputRecoveryCurrentTerminal.options.disableStdin,
-      ),
+      await page.evaluate(() => window.currentTerminal.options.disableStdin),
       true,
     );
     await page.getByText(/Previous input delivery is uncertain\./).waitFor();
@@ -332,8 +318,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await page.waitForFunction(
       (before) =>
-        window.terminalInputRecoveryTerminals.length > before &&
-        window.terminalInputRecoveryCurrentTerminal.input,
+        window.terminals.length > before && window.currentTerminal.input,
       beforeTimeoutReconnect,
     );
     await assertUnpaused();
@@ -348,23 +333,19 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       await accepted(`${outcome}-old`, true);
       await input(`discard-${outcome}`);
       await page.evaluate(() => {
-        window.terminalInputRecoveryAdvance += 16000;
+        window.advance += 16000;
         window.dispatchEvent(new Event("pageshow"));
       });
       await page
         .getByText(/Input paused\. Reconnect before you continue\./)
         .waitFor();
       await page.evaluate(
-        () =>
-          (window.terminalInputRecoveryRetiredTerminal =
-            window.terminalInputRecoveryCurrentTerminal),
+        () => (window.retiredTerminal = window.currentTerminal),
       );
       await reconnect();
       await page.getByText(/Previous input delivery is uncertain\./).waitFor();
       await page.evaluate(() =>
-        window.terminalInputRecoveryRetiredTerminal.input!(
-          "discard-retired-callback",
-        ),
+        window.retiredTerminal.input!("discard-retired-callback"),
       );
       await accepted(`${outcome}-fresh`, true);
       await reply(`${outcome}-old`, outcome);
@@ -385,18 +366,15 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await accepted("unmount-old", true);
     await input("discard-unmount");
     await page.evaluate(() => {
-      window.terminalInputRecoveryRetiredTerminal =
-        window.terminalInputRecoveryCurrentTerminal;
-      window.terminalInputRecoveryRoot!.unmount();
-      window.terminalInputRecoveryRoot = null;
+      window.retiredTerminal = window.currentTerminal;
+      window.reactRoot!.unmount();
+      window.reactRoot = null;
     });
     await mount();
     await accepted("unmount-fresh", true);
     await reply("unmount-old", "error");
     await page.evaluate(() =>
-      window.terminalInputRecoveryRetiredTerminal.input!(
-        "discard-unmounted-callback",
-      ),
+      window.retiredTerminal.input!("discard-unmounted-callback"),
     );
     await assertUnpaused();
     await reply("unmount-fresh");
@@ -412,8 +390,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       .click();
     await page.waitForFunction(
       (before) =>
-        window.terminalInputRecoveryTerminals.length > before &&
-        window.terminalInputRecoveryCurrentTerminal.input,
+        window.terminals.length > before && window.currentTerminal.input,
       beforeSwitch,
     );
     await accepted("switch-fresh", true);

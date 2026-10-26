@@ -1,7 +1,7 @@
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 declare global {
   interface Window {
-    monitorOutputUiNotices: string[];
+    notices: string[];
   }
 }
 
@@ -26,7 +26,7 @@ createRoot(document.getElementById("root")!).render(
       initialFocus: { id: "monitor", leadId: "lead", requestId: "focus" },
       openAgent: () => {},
       refresh: async () => {},
-      notify: (message) => (window.monitorOutputUiNotices ??= []).push(message),
+      notify: (message) => (window.notices ??= []).push(message),
     }),
   ),
 );

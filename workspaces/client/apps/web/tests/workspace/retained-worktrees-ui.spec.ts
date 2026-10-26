@@ -77,7 +77,7 @@ test("retained folders of live and deleted workers show at both widths", async (
       0,
     );
     cleanupComplete = true;
-    await page.evaluate(() => window.retainedWorktreesRefresh());
+    await page.evaluate(() => window.refreshRetained());
     for (const text of ["Deleted worker", "Cleanup outcome unconfirmed"])
       await expect(page.getByText(text, { exact: true })).toBeVisible();
     await expect(page.getByText("Live worker", { exact: true })).toHaveCount(0);
@@ -97,9 +97,7 @@ test("retained folders of live and deleted workers show at both widths", async (
       .getByRole("button", { name: "Open folder", exact: true })
       .first()
       .click();
-    expect(
-      await page.evaluate(() => window.retainedWorktreesOpenedFolder),
-    ).toBe(
+    expect(await page.evaluate(() => window.openedFolder)).toBe(
       "/Users/example/Projects/studio/.worktrees/codex-agents/deleted-worker",
     );
     expect(errors).toEqual([]);

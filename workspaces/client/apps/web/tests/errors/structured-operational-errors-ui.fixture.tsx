@@ -3,15 +3,10 @@ import type { JsonInput, Agent } from "../../src/types.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 declare global {
   interface Window {
-    structuredOperationalErrorsUiReadRecordings: () => ReturnType<
-      typeof listRecordings
-    >;
-    structuredOperationalErrorsUiCrashes: string[];
-    structuredOperationalErrorsUiRenderCase: (
-      which: string,
-      value: JsonInput,
-    ) => Promise<void>;
-    structuredOperationalErrorsUiTranscriptionCalls: number;
+    readRecordings: () => ReturnType<typeof listRecordings>;
+    crashes: string[];
+    renderCase: (which: string, value: JsonInput) => Promise<void>;
+    transcriptionCalls: number;
   }
 }
 
@@ -26,8 +21,7 @@ import CapacityRetry from "../../src/components/CapacityRetry.tsx";
 import SafetyBuffering from "../../src/components/conversation/transcript/SafetyBuffering.tsx";
 import { Dictation } from "../../src/components/Dictation.tsx";
 import { saveRecording, listRecordings } from "../../src/dictation/storage.ts";
-window.structuredOperationalErrorsUiReadRecordings = () =>
-  listRecordings("lead");
+window.readRecordings = () => listRecordings("lead");
 const root = createRoot(document.getElementById("root")!);
 const agent: Agent = {
   id: "lead",
@@ -48,7 +42,7 @@ class Boundary extends React.Component<React.PropsWithChildren> {
     return { error: error.message };
   }
   componentDidCatch(error: Error) {
-    window.structuredOperationalErrorsUiCrashes.push(error.message);
+    window.crashes.push(error.message);
   }
   render() {
     return this.state.error
@@ -56,7 +50,7 @@ class Boundary extends React.Component<React.PropsWithChildren> {
       : this.props.children;
   }
 }
-window.structuredOperationalErrorsUiRenderCase = async (which, value) => {
+window.renderCase = async (which, value) => {
   let component;
   if (which === "request") {
     const request = {
@@ -177,4 +171,4 @@ window.structuredOperationalErrorsUiRenderCase = async (which, value) => {
     ),
   );
 };
-window.structuredOperationalErrorsUiCrashes = [];
+window.crashes = [];

@@ -2,9 +2,9 @@ import type { Agent, Project } from "../../src/types.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
 declare global {
   interface Window {
-    uxRequestRecoveryBrowserSelected: string[];
-    uxRequestRecoveryBrowserSaves: number;
-    uxRequestRecoveryBrowserFailRefresh: boolean;
+    selected: string[];
+    saves: number;
+    failRefresh: boolean;
   }
 }
 
@@ -67,13 +67,13 @@ const accounts: GetResult<"/api/accounts"> = {
   defaultAccountGroups: [],
   defaultAccountKey: "ready",
 };
-window.uxRequestRecoveryBrowserSelected = [];
-window.uxRequestRecoveryBrowserSaves = 0;
-window.uxRequestRecoveryBrowserFailRefresh = mode === "confirmed";
+window.selected = [];
+window.saves = 0;
+window.failRefresh = mode === "confirmed";
 const saved = async () => {
-  window.uxRequestRecoveryBrowserSaves++;
-  if (window.uxRequestRecoveryBrowserFailRefresh) {
-    window.uxRequestRecoveryBrowserFailRefresh = false;
+  window.saves++;
+  if (window.failRefresh) {
+    window.failRefresh = false;
     throw Error("Snapshot unavailable");
   }
 };
@@ -106,7 +106,7 @@ let body =
     <Picker
       initialPath="/project"
       onSelect={async (path) => {
-        window.uxRequestRecoveryBrowserSelected.push(path);
+        window.selected.push(path);
       }}
     />
   ) : mode === "claude" || mode === "deadline" ? (

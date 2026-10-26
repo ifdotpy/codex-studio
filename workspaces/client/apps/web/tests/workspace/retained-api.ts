@@ -12,8 +12,8 @@ async function get<Path extends ApiGetPath>(
 import type { watchResourceReads } from "../../src/sync/subscriptions/reads.ts";
 declare global {
   interface Window {
-    retainedWorktreesRefresh: () => Promise<void>;
-    retainedWorktreesOpenedFolder: string;
+    refreshRetained: () => Promise<void>;
+    openedFolder: string;
   }
 }
 const api = { get };
@@ -21,11 +21,11 @@ export const useServerApi = () => api;
 // This one-off watcher fixture omits the unused refresh method on its disposer.
 const watch = ((_resource, read, failed) => {
   let active = true;
-  window.retainedWorktreesRefresh = async () => {
+  window.refreshRetained = async () => {
     if (active) await read().catch(failed);
   };
   queueMicrotask(() => {
-    if (active) void window.retainedWorktreesRefresh();
+    if (active) void window.refreshRetained();
   });
   return () => {
     active = false;
@@ -35,6 +35,6 @@ export const useServerResourceReads = () => watch;
 export const useServerFileDialogs = () => ({
   canRevealPath: () => true,
   revealPath: async (path: string) => {
-    window.retainedWorktreesOpenedFolder = path;
+    window.openedFolder = path;
   },
 });

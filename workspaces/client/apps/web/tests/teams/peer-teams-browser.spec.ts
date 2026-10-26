@@ -102,8 +102,8 @@ test("Peer teams browser", async ({
       });
     });
     await page.goto(`${server.resolvedUrls!.local[0]!}check`);
-    await page.waitForFunction(() => window.peerTeamsFixture?.data);
-    state = await page.evaluate(() => window.peerTeamsFixture.data);
+    await page.waitForFunction(() => window.peerTeamsData);
+    state = await page.evaluate(() => window.peerTeamsData);
     const project = page.locator('[data-project-path="/p"]');
     const menu = async () => {
       await project.locator(":scope > .project-tree-heading").hover();
@@ -169,12 +169,12 @@ test("Peer teams browser", async ({
       .click();
     form = page.getByRole("form", { name: "Edit team", exact: true });
     await form.getByLabel("Gamma", { exact: true }).check();
-    await page.evaluate(() => (window.peerTeamsFixture.failRefresh = true));
+    await page.evaluate(() => (window.failRefresh = true));
     await form.getByRole("button", { name: "Save team", exact: true }).click();
     await form.getByRole("alert").waitFor();
     assert.match(await form.innerText(), /change was saved/);
     const count = requests.length;
-    await page.evaluate(() => (window.peerTeamsFixture.failRefresh = false));
+    await page.evaluate(() => (window.failRefresh = false));
     await form.getByRole("button", { name: "Retry", exact: true }).click();
     await form.waitFor({ state: "detached" });
     assert.equal(requests.length, count);
@@ -199,9 +199,9 @@ test("Peer teams browser", async ({
       { id: "t1", name: "First team", projectPath: "/p", members: ["a", "b"] },
       { id: "t2", name: "Second team", projectPath: "/p", members: ["c", "e"] },
     ];
-    await page.evaluate(
-      (serialized) => window.peerTeamsFixture.set(serialized),
-      JSON.stringify(state),
+    await page.evaluate<void, unknown>(
+      (value) => window.setFixture(value as Snapshot),
+      state,
     );
     const second = page.locator('[data-peer-team="t2"]');
     const teamTarget = second.locator(".peer-team-toggle");
@@ -215,7 +215,7 @@ test("Peer teams browser", async ({
     await second.locator('[data-chat="a"]').dragTo(projectTarget);
     await page.waitForFunction(
       () =>
-        !window.peerTeamsFixture.data.runtime.peerTeams.some((t) =>
+        !window.peerTeamsData.runtime.peerTeams.some((t) =>
           t.members!.includes("a"),
         ),
     );
@@ -251,7 +251,7 @@ test("Peer teams browser", async ({
     await second.locator('[data-chat="b"]').dragTo(projectTarget);
     await page.waitForFunction(
       () =>
-        !window.peerTeamsFixture.data.runtime.peerTeams.some((t) =>
+        !window.peerTeamsData.runtime.peerTeams.some((t) =>
           t.members!.includes("b"),
         ),
     );
@@ -287,9 +287,9 @@ test("Peer teams browser", async ({
         updated: 1,
       },
     ];
-    await page.evaluate(
-      (serialized) => window.peerTeamsFixture.set(serialized),
-      JSON.stringify(state),
+    await page.evaluate<void, unknown>(
+      (value) => window.setFixture(value as Snapshot),
+      state,
     );
     await page.locator('[data-room="peer"]').waitFor();
     assert.equal(await page.locator('[data-room="other"]').count(), 0);

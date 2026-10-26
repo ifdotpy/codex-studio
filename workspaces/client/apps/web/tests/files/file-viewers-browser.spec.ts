@@ -55,7 +55,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
       "/docs/chapter.md": ["text/markdown", "first\nsecond\nthird"],
       "/docs/image.svg": [
         "image/svg+xml",
-        `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" onload="window.fileViewersBrowserSvgExecuted=true">
+        `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" onload="window.svgExecuted=true">
   <style>@import url('https://blocked.invalid/import.css'); @font-face {font-family:external;src:url('https://blocked.invalid/font.woff2')} .red {fill:rgb(255,0,0)} .gradient {fill:url('#gradient')} .external {fill:url('https://blocked.invalid/external.svg#paint')}</style>
   <defs><linearGradient id="gradient"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs>
   <rect width="960" height="640" fill="white"/>
@@ -65,7 +65,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
   <rect x="400" width="200" height="100" class="gradient"/>
   <rect x="600" width="200" height="100" style="fill:url(&quot;#gradient&quot;)"/>
   <rect class="external" x="800" width="100" height="100"/><text y="200" style="font-family:external">External font must not load</text>
-  <script>window.fileViewersBrowserSvgExecuted=true</script><image href="https://blocked.invalid/x"/><foreignObject><p>Bad</p></foreignObject></svg>`,
+  <script>window.svgExecuted=true</script><image href="https://blocked.invalid/x"/><foreignObject><p>Bad</p></foreignObject></svg>`,
       ],
       "/docs/table.csv": ["text/csv", "nested,table\n1,2"],
       "/data.csv": [
@@ -128,9 +128,9 @@ test("file-viewers-browser", async ({ browser, page }) => {
       await route.abort();
     });
     await page.goto(server.resolvedUrls!.local[0]! + "check");
-    await page.waitForFunction(() => window.fileViewersBrowserShow);
+    await page.waitForFunction(() => window.show);
     const show = async (path: string) => {
-      await page.evaluate((path) => window.fileViewersBrowserShow(path), path);
+      await page.evaluate((path) => window.show(path), path);
       await page.waitForFunction(
         (name) =>
           document.querySelector(".mantine-Modal-title")?.textContent === name,
@@ -274,7 +274,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
       .getByRole("button", { name: "Save a copy", exact: true })
       .click();
     assert.deepEqual(
-      await page.evaluate(() => window.fileViewersBrowserSaved.bytes),
+      await page.evaluate(() => window.saved.bytes),
       Array.from(Buffer.from(fixtures["/data.csv"][1]!)),
     );
     await show("/data.tsv");
@@ -354,10 +354,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
       await page.getByLabel("Image zoom", { exact: true }).textContent(),
       "100%",
     );
-    assert.equal(
-      await page.evaluate(() => window.fileViewersBrowserSvgExecuted),
-      undefined,
-    );
+    assert.equal(await page.evaluate(() => window.svgExecuted), undefined);
     await show("/sound.wav");
     assert.equal(await page.locator("audio[controls]").count(), 1);
     await page
@@ -389,19 +386,16 @@ test("file-viewers-browser", async ({ browser, page }) => {
     await page
       .getByText("No preview for this file type.", { exact: true })
       .waitFor();
-    await page.evaluate(() => window.fileViewersBrowserShow("/large.docx"));
+    await page.evaluate(() => window.show("/large.docx"));
     await page
       .getByText("File exceeds preview limit", { exact: true })
       .waitFor();
     await page.getByRole("button", { name: "Preview", exact: true }).click();
-    assert.deepEqual(
-      (await page.evaluate(() => window.fileViewersBrowserActions)).at(-1),
-      {
-        action: "preview",
-        target: { agent: "agent-a", path: "/large.docx" },
-      },
-    );
-    await page.evaluate(() => window.fileViewersBrowserShow("/late.md"));
+    assert.deepEqual((await page.evaluate(() => window.actions)).at(-1), {
+      action: "preview",
+      target: { agent: "agent-a", path: "/large.docx" },
+    });
+    await page.evaluate(() => window.show("/late.md"));
     await page.waitForFunction(() =>
       document.querySelector('[aria-label="Load file"]'),
     );
@@ -419,10 +413,10 @@ test("file-viewers-browser", async ({ browser, page }) => {
       0,
     );
     const parser = await page.evaluate(() => ({
-      limit: window.fileViewersBrowserParseDelimited("a\n".repeat(250), ","),
-      broken: window.fileViewersBrowserParseDelimited('"missing', ","),
-      columns: window.fileViewersBrowserParseDelimited("a,b,c", ",", 200, 2),
-      svg: window.fileViewersBrowserSafeSvg(
+      limit: window.parseDelimited("a\n".repeat(250), ","),
+      broken: window.parseDelimited('"missing', ","),
+      columns: window.parseDelimited("a,b,c", ",", 200, 2),
+      svg: window.safeSvg(
         '<svg xmlns="http://www.w3.org/2000/svg"><style>*{fill:url(https://bad/x)}</style><rect onclick="evil()" fill="url(https://bad/x)"/></svg>',
       ),
     }));

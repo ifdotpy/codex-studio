@@ -64,7 +64,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let log = "";
-  const browser = _browser;
+  let browser: typeof _browser;
   server.stderr!.on("data", (chunk) => {
     log += chunk;
   });
@@ -109,6 +109,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     assert.equal(typeof lead.concurrency, "number");
     const currentLead = async () =>
       (await snapshot()).threads.find((agent) => agent.id === lead.id)!;
+    browser = _browser;
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
       serviceWorkers: "block",

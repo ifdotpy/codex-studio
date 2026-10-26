@@ -154,10 +154,9 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await server.listen();
-    await page.addInitScript((json) => {
-      const value: TaskReviewFrames = JSON.parse(json);
-      window.taskReviewFrames = value;
-    }, JSON.stringify(frames()));
+    await page.addInitScript<unknown>((value) => {
+      window.taskReviewFrames = value as TaskReviewFrames;
+    }, frames());
     await page.route("**/api/work*", async (route) => {
       if (route.request().method() === "GET")
         return route.fulfill({
@@ -211,11 +210,10 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
         tasks[0]!.status = "ready";
         tasks[0]!.version++;
       }
-      await page.evaluate((json) => {
-        const value: TaskReviewFrames = JSON.parse(json);
-        window.taskReviewFrames = value;
+      await page.evaluate<void, unknown>((value) => {
+        window.taskReviewFrames = value as TaskReviewFrames;
         window.dispatchEvent(new Event("task-review-frame"));
-      }, JSON.stringify(frames()));
+      }, frames());
       return route.fulfill({ json: { ok: true } });
     });
     await page.setViewportSize({ width: 320, height: 800 });

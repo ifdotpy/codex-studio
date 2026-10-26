@@ -106,7 +106,7 @@ test("upload recovery browser", async ({ browser }) => {
       });
       await page.waitForFunction(() => !!window.uploadRecoveryBrowserMount);
       await page.evaluate((scope) => {
-        window.uploadRecoveryBrowserScope = scope;
+        window.scope = scope;
         window.uploadRecoveryBrowserMount();
       }, workspaceId);
       await page.waitForFunction(() => !!window.uploadRecoveryBrowserFixture);
@@ -119,7 +119,7 @@ test("upload recovery browser", async ({ browser }) => {
             "Recovery state did not arrive: " +
               JSON.stringify(
                 await page.evaluate(() => ({
-                  notices: window.uploadRecoveryBrowserNotices,
+                  notices: window.notices,
                   error: window.uploadRecoveryBrowserFixture?.recovery.error,
                   pending:
                     window.uploadRecoveryBrowserFixture?.recovery.pending.map(
@@ -139,7 +139,7 @@ test("upload recovery browser", async ({ browser }) => {
     // A failed local commit must leave the selected File objects in the input.
     await page.evaluate(() => {
       const original = IDBDatabase.prototype.transaction;
-      window.uploadRecoveryBrowserRestoreTransactions = () =>
+      window.restoreTransactions = () =>
         (IDBDatabase.prototype.transaction = original);
       IDBDatabase.prototype.transaction = function (...args) {
         if (this.name === "codex-studio-uploads" && args[1] === "readwrite")
@@ -157,7 +157,7 @@ test("upload recovery browser", async ({ browser }) => {
       buffer: Buffer.from("Keep selected bytes"),
     });
     await page.waitForFunction(() =>
-      window.uploadRecoveryBrowserNotices.some((message) =>
+      window.notices.some((message) =>
         message.includes("Upload storage is full"),
       ),
     );
@@ -168,9 +168,7 @@ test("upload recovery browser", async ({ browser }) => {
       1,
     );
     assert.equal(posts.length, 0);
-    await page.evaluate(() =>
-      window.uploadRecoveryBrowserRestoreTransactions(),
-    );
+    await page.evaluate(() => window.restoreTransactions());
     await page.evaluate(() =>
       window.uploadRecoveryBrowserFixture.setScope("b".repeat(32)),
     );
@@ -292,7 +290,7 @@ test("upload recovery browser", async ({ browser }) => {
     await wait(() =>
       page.evaluate(
         () =>
-          window.uploadRecoveryBrowserFixture.attachments.lead!.length === 2,
+          window.uploadRecoveryBrowserFixture.attachments.lead?.length === 2,
       ),
     );
     assert.deepEqual(
@@ -342,12 +340,12 @@ test("upload recovery browser", async ({ browser }) => {
       try {
         await window.uploadRecoveryBrowserFixture.recovery.remove(id);
       } catch (error) {
-        window.uploadRecoveryBrowserCancelError = (error as Error).message;
+        window.cancelError = (error as Error).message;
       }
       IDBDatabase.prototype.transaction = original;
     }, cancelled);
     assert.equal(
-      await page.evaluate(() => window.uploadRecoveryBrowserCancelError),
+      await page.evaluate(() => window.cancelError),
       "Deletion interrupted",
     );
     await held.shift()!.route.fulfill({
@@ -416,8 +414,7 @@ test("upload recovery browser", async ({ browser }) => {
     await page.evaluate(() => {
       const read = FileReader.prototype.readAsDataURL;
       FileReader.prototype.readAsDataURL = function (blob) {
-        window.uploadRecoveryBrowserReleaseFileRead = () =>
-          read.call(this, blob);
+        window.releaseFileRead = () => read.call(this, blob);
         FileReader.prototype.readAsDataURL = read;
       };
     });
@@ -426,12 +423,10 @@ test("upload recovery browser", async ({ browser }) => {
       mimeType: "text/plain",
       buffer: Buffer.from("Immutable workspace"),
     });
-    await page.waitForFunction(
-      () => !!window.uploadRecoveryBrowserReleaseFileRead,
-    );
+    await page.waitForFunction(() => !!window.releaseFileRead);
     await page.evaluate(async () => {
       (await import("/src/api.ts")).setWorkspace("b".repeat(32));
-      window.uploadRecoveryBrowserReleaseFileRead();
+      window.releaseFileRead();
     });
     await wait(() =>
       page.evaluate(() =>
@@ -482,11 +477,11 @@ test("upload recovery browser", async ({ browser }) => {
       () => !!window.uploadRecoveryBrowserMountWriter,
     );
     await other.evaluate(() => window.uploadRecoveryBrowserMountWriter());
-    await other.waitForFunction(() => !!window.uploadRecoveryBrowserWriter);
+    await other.waitForFunction(() => !!window.uploadRecoveryBrowserFixture);
     const write = (page: Page, id: string) =>
       page.evaluate(
         (id) =>
-          window.uploadRecoveryBrowserWriter.setAttachments((current) => ({
+          window.uploadRecoveryBrowserFixture.setAttachments((current) => ({
             ...current,
             lead: [
               ...(current.lead || []),
@@ -504,7 +499,7 @@ test("upload recovery browser", async ({ browser }) => {
           tab.waitForFunction(
             () =>
               ["tab-a", "tab-b"].every((id) =>
-                window.uploadRecoveryBrowserWriter.attachments.lead!.some(
+                window.uploadRecoveryBrowserFixture.attachments.lead!.some(
                   (asset) => asset.id === id,
                 ),
               ),
@@ -517,7 +512,7 @@ test("upload recovery browser", async ({ browser }) => {
       const state = await Promise.all(
         tabs.map((tab) =>
           tab.evaluate(() => ({
-            attachments: window.uploadRecoveryBrowserWriter.attachments,
+            attachments: window.uploadRecoveryBrowserFixture.attachments,
             stored: window.uploadRecoveryBrowserReadStoredAttachments(),
           })),
         ),
@@ -589,7 +584,7 @@ async function setupAttachmentWriters(browser: Browser) {
       });
       await page.waitForFunction(() => !!window.uploadRecoveryBrowserRaceMount);
       await page.evaluate(() => window.uploadRecoveryBrowserRaceMount());
-      await page.waitForFunction(() => !!window.uploadRecoveryBrowserWriter);
+      await page.waitForFunction(() => !!window.uploadRecoveryBrowserFixture);
       return page;
     };
     const page = await mountWriter();
@@ -603,7 +598,7 @@ async function setupAttachmentWriters(browser: Browser) {
     const write = (tab: Page, id: string) =>
       tab.evaluate(
         (id) =>
-          window.uploadRecoveryBrowserWriter.setAttachments((current) => ({
+          window.uploadRecoveryBrowserFixture.setAttachments((current) => ({
             ...current,
             lead: [
               ...(current.lead || []),

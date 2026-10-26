@@ -100,16 +100,9 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
     assert.equal(writes[0]!.expected_mode_revision, 0);
     await expect(control).toHaveAttribute("data-concurrency", "32");
     await expect(input).toBeDisabled();
-    assert.equal(
-      await page.evaluate(
-        () => window.confirmedConcurrencyFixture.refreshCount,
-      ),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.refreshCount), 0);
     releaseReply!();
-    await page.waitForFunction(
-      () => !!window.confirmedConcurrencyFixture.refreshRelease,
-    );
+    await page.waitForFunction(() => !!window.refreshRelease);
     await expect(control).toHaveAttribute("data-concurrency", "64");
     await expect(control).toHaveAttribute("data-agent-mode-revision", "1");
     await expect(input).toBeEnabled({ timeout: 1000 });
@@ -118,8 +111,8 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
       0,
     );
     await page.evaluate(() => {
-      window.confirmedConcurrencyFixture.refreshFailure = true;
-      window.confirmedConcurrencyFixture.refreshRelease!();
+      window.refreshFailure = true;
+      window.refreshRelease!();
     });
     await expect(control.getByRole("alert")).toContainText(
       "Setting saved. Credentials unavailable",
@@ -127,8 +120,8 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
     await expect(control).toHaveAttribute("data-concurrency", "64");
     await expect(input).toBeEnabled();
     await page.evaluate(() => {
-      window.confirmedConcurrencyFixture.refreshHold = false;
-      window.confirmedConcurrencyFixture.refreshFailure = false;
+      window.refreshHold = false;
+      window.refreshFailure = false;
     });
     reply = { ...initial, concurrency: 0, agentModeRevision: 2 };
     await input.fill("0");
@@ -145,14 +138,11 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
     await input.fill("128");
     await input.blur();
     await expect.poll(() => writes.length).toBe(3);
-    await page.evaluate(
-      (lead) => window.confirmedConcurrencyFixture.setLead!(lead),
-      {
-        ...initial,
-        concurrency: 8,
-        agentModeRevision: 4,
-      },
-    );
+    await page.evaluate((lead) => window.setLead!(lead), {
+      ...initial,
+      concurrency: 8,
+      agentModeRevision: 4,
+    });
     releaseReply!();
     await expect(input).toBeEnabled();
     await expect(control).toHaveAttribute("data-concurrency", "8");

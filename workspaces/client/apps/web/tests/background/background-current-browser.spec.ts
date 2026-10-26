@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import { createServer } from "vite";
 import type {} from "./background-current-browser.fixture.tsx";
@@ -46,6 +47,24 @@ test("Background Current Browser", async ({
     plugins: [
       {
         name: "current-background-fixture",
+        load(id) {
+          if (
+            process.env.BASELINE_SYNC_WAIT === "1" &&
+            id ===
+              join(
+                root,
+                "workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+              )
+          )
+            return execFileSync(
+              "git",
+              [
+                "show",
+                "HEAD:workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+              ],
+              { cwd: root, encoding: "utf8" },
+            );
+        },
       },
     ],
     server: { host: "127.0.0.1", port: 0, hmr: false },
@@ -123,9 +142,7 @@ test("Background Current Browser", async ({
       });
     });
     await page.goto(server.resolvedUrls!.local[0]! + "fixture");
-    await page.waitForFunction(
-      () => !!window.backgroundCurrentBrowserRenderFixture,
-    );
+    await page.waitForFunction(() => !!window.renderFixture);
     const agents: import("../../src/types.ts").Agent[] = [
       { id: "lead", rootId: "lead", name: "Lead" },
       { id: "worker", rootId: "lead", name: "Worker" },
@@ -195,11 +212,7 @@ test("Background Current Browser", async ({
     ) => {
       await page.evaluate(
         ({ serialized, leadId, focus }) =>
-          window.backgroundCurrentBrowserRenderFixture(
-            serialized,
-            leadId,
-            focus,
-          ),
+          window.renderFixture(serialized, leadId, focus),
         { serialized: JSON.stringify(data), leadId, focus },
       );
     };
@@ -328,8 +341,8 @@ test("Background Current Browser", async ({
       .getByRole("button", { name: "Cancel monitor", exact: true })
       .waitFor();
     await page.evaluate(() => {
-      window.backgroundCurrentBrowserHoldRefresh = true;
-      window.backgroundCurrentBrowserRefreshCalls = 0;
+      window.holdRefresh = true;
+      window.refreshCalls = 0;
     });
     holdAnswer = true;
     const approve = page.getByRole("button", {
@@ -344,34 +357,23 @@ test("Background Current Browser", async ({
     await expect
       .poll(async () => ({
         release: typeof releaseAnswer,
-        notifications: await page.evaluate(
-          () => window.backgroundCurrentBrowserNotifications || [],
-        ),
+        notifications: await page.evaluate(() => window.notifications || []),
       }))
       .toMatchObject({ release: "function" });
     await expect(pendingControl).toBeDisabled();
-    assert.equal(
-      await page.evaluate(() => window.backgroundCurrentBrowserRefreshCalls),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.refreshCalls), 0);
     holdAnswer = false;
     releaseAnswer!();
     await expect(pendingControl).toBeEnabled({ timeout: 2000 });
     await page.waitForFunction(
-      () =>
-        window.backgroundCurrentBrowserRefreshCalls === 1 &&
-        !!window.backgroundCurrentBrowserRejectRefresh,
+      () => window.refreshCalls === 1 && !!window.rejectRefresh,
     );
     await page.evaluate(() => {
-      window.backgroundCurrentBrowserHoldRefresh = false;
-      window.backgroundCurrentBrowserRejectRefresh(
-        new Error("Credential refresh unavailable"),
-      );
+      window.holdRefresh = false;
+      window.rejectRefresh(new Error("Credential refresh unavailable"));
     });
     await page.waitForFunction(() =>
-      window.backgroundCurrentBrowserNotifications?.includes(
-        "Credential refresh unavailable",
-      ),
+      window.notifications?.includes("Credential refresh unavailable"),
     );
     assert.equal(
       calls.filter(

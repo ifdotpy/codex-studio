@@ -272,10 +272,9 @@ test("Ux request recovery browser", async ({
               )?.disabled,
           );
           await use.click();
-          assert.deepEqual(
-            await page.evaluate(() => window.uxRequestRecoveryBrowserSelected),
-            ["/other"],
-          );
+          assert.deepEqual(await page.evaluate(() => window.selected), [
+            "/other",
+          ]);
           await page.getByLabel("Folder path").fill("~/work");
           await page
             .getByRole("button", { name: "Open path", exact: true })
@@ -440,9 +439,7 @@ test("Ux request recovery browser", async ({
             await page
               .getByRole("button", { name: "Create folder", exact: true })
               .click();
-            await page.waitForFunction(
-              () => window.uxRequestRecoveryBrowserSaves === 1,
-            );
+            await page.waitForFunction(() => window.saves === 1);
             assert.equal(writes.length, 2);
             assert.equal(writes[0]!.folder_id, writes[1]!.folder_id);
             assert.equal(writes[1]!.name, "Different name");
@@ -474,7 +471,7 @@ test("Ux request recovery browser", async ({
             .click();
           await page.waitForFunction(
             () =>
-              window.uxRequestRecoveryBrowserSaves ===
+              window.saves ===
               (window.location.search.includes("confirmed") ? 2 : 1),
           );
           assert.equal(writes.length, mode === "confirmed" ? 1 : 2);

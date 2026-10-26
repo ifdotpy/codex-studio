@@ -5,13 +5,11 @@ import {
 import type { Agent } from "../../src/types.ts";
 declare global {
   interface Window {
-    confirmedConcurrencyFixture: {
-      refreshCount: number;
-      refreshHold: boolean;
-      refreshFailure: boolean;
-      refreshRelease?: () => void;
-      setLead?: (lead: Agent) => void;
-    };
+    refreshCount: number;
+    refreshHold: boolean;
+    refreshFailure: boolean;
+    refreshRelease?: () => void;
+    setLead?: (lead: Agent) => void;
   }
 }
 import React, { useState } from "react";
@@ -20,15 +18,12 @@ import { flushSync } from "react-dom";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import Control from "../../src/components/agents/SubagentConcurrencyControl.tsx";
-window.confirmedConcurrencyFixture = {
-  refreshCount: 0,
-  refreshHold: true,
-  refreshFailure: false,
-};
+window.refreshCount = 0;
+window.refreshHold = true;
+window.refreshFailure = false;
 function Fixture() {
   const [lead, setLead] = useState<Agent>(initialConfirmedLead);
-  window.confirmedConcurrencyFixture.setLead = (value) =>
-    flushSync(() => setLead(value));
+  window.setLead = (value) => flushSync(() => setLead(value));
   return (
     <MantineProvider>
       <Control
@@ -37,14 +32,12 @@ function Fixture() {
         stateDir="fixture-state"
         workspaceId={confirmedWorkspaceId}
         refresh={async () => {
-          window.confirmedConcurrencyFixture.refreshCount++;
-          if (window.confirmedConcurrencyFixture.refreshHold)
+          window.refreshCount++;
+          if (window.refreshHold)
             await new Promise<void>(
-              (resolve) =>
-                (window.confirmedConcurrencyFixture.refreshRelease = resolve),
+              (resolve) => (window.refreshRelease = resolve),
             );
-          if (window.confirmedConcurrencyFixture.refreshFailure)
-            throw new Error("Credentials unavailable");
+          if (window.refreshFailure) throw new Error("Credentials unavailable");
         }}
       />
     </MantineProvider>

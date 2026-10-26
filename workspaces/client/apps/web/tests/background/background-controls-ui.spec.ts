@@ -7,7 +7,7 @@ type RecordedBody = Partial<
 >;
 declare global {
   interface Window {
-    backgroundControlsSchemaHandshakeEvents: string[];
+    __schemaHandshakeEvents: string[];
   }
 }
 import {
@@ -203,7 +203,7 @@ test("Background controls", async ({ context }, testInfo) => {
     page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 980 });
     await page.addInitScript(() => {
-      window.backgroundControlsSchemaHandshakeEvents = [];
+      window.__schemaHandshakeEvents = [];
       const add = EventSource.prototype.addEventListener;
       EventSource.prototype.addEventListener = function (
         type: string,
@@ -218,9 +218,7 @@ test("Background controls", async ({ context }, testInfo) => {
           this,
           type,
           (event) => {
-            window.backgroundControlsSchemaHandshakeEvents.push(
-              (event as MessageEvent).data,
-            );
+            window.__schemaHandshakeEvents.push((event as MessageEvent).data);
             return (listener as EventListener).call(this, event);
           },
           options,
@@ -420,14 +418,12 @@ test("Background controls", async ({ context }, testInfo) => {
     );
     await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 15000 });
     await page.waitForFunction(
-      () => window.backgroundControlsSchemaHandshakeEvents?.length > 0,
+      () => window.__schemaHandshakeEvents?.length > 0,
       undefined,
       { timeout: 5000 },
     );
     const handshakes = await page.evaluate(() =>
-      window.backgroundControlsSchemaHandshakeEvents.map((data) =>
-        JSON.parse(data),
-      ),
+      window.__schemaHandshakeEvents.map((data) => JSON.parse(data)),
     );
     assert.equal(handshakes[0].hash, readApiSchemaHash());
     await page
