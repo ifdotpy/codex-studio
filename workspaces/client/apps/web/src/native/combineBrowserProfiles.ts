@@ -1,12 +1,27 @@
+import type { BrowserProfileSnapshot } from "./importBrowserProfile.ts";
 /** Combine explicitly mapped source origins before the empty-destination import.
  * Existing server storage names are retained. Conflicts require reconciliation;
  * iteration order must never decide which user's saved data survives. */
-export function combineBrowserProfiles(profiles) {
+export function combineBrowserProfiles(
+  profiles: { owner: string; snapshot: BrowserProfileSnapshot }[],
+): BrowserProfileSnapshot;
+export function combineBrowserProfiles(
+  profiles: { owner: string; snapshot: unknown }[],
+): unknown;
+export function combineBrowserProfiles(
+  profiles: { owner: string; snapshot: unknown }[],
+): unknown {
+  const record = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const list = (value: unknown): value is unknown[] => Array.isArray(value);
   if (!Array.isArray(profiles) || !profiles.some((row) => row.owner === "root"))
     throw new Error("The profile archive needs a root owner.");
   const owners = new Set();
-  const preferences = Object.create(null);
-  const databases = new Map();
+  const preferences: Record<string, unknown> = Object.create(null);
+  const databases = new Map<
+    string,
+    { owner: string; database: Record<string, unknown> }
+  >();
   let version;
   for (const { owner, snapshot } of profiles) {
     if (
@@ -17,12 +32,13 @@ export function combineBrowserProfiles(profiles) {
       throw new Error("Invalid or duplicate profile owner.");
     owners.add(owner);
     if (
-      ![1, 2].includes(snapshot?.version) ||
+      !record(snapshot) ||
+      (snapshot.version !== 1 && snapshot.version !== 2) ||
       (version !== undefined && snapshot.version !== version) ||
       !snapshot.preferences ||
       typeof snapshot.preferences !== "object" ||
       Array.isArray(snapshot.preferences) ||
-      !Array.isArray(snapshot.databases)
+      !list(snapshot.databases)
     )
       throw new Error("Invalid source profile contents.");
     version = snapshot.version;
@@ -34,6 +50,8 @@ export function combineBrowserProfiles(profiles) {
       preferences[key] = value;
     }
     for (const database of snapshot.databases) {
+      if (!record(database) || typeof database.name !== "string")
+        throw new Error("Invalid source profile contents.");
       const previous = databases.get(database.name);
       if (
         previous &&
@@ -46,26 +64,44 @@ export function combineBrowserProfiles(profiles) {
     }
   }
   // Preserve the existing receipt identity for archives that were root-only.
-  if (profiles.length === 1) return profiles[0].snapshot;
+  if (profiles.length === 1) return profiles[0]?.snapshot;
   return {
     version,
     preferences,
     databases: [...databases.values()]
       .sort((a, b) =>
-        a.database.name < b.database.name
+        String(a.database.name) < String(b.database.name)
           ? -1
-          : a.database.name > b.database.name
+          : String(a.database.name) > String(b.database.name)
             ? 1
             : 0,
       )
-      .map(({ owner, database }) => ({
-        ...database,
-        stores: database.stores.map((store) => ({
-          ...store,
-          ...(store.chunks
-            ? { chunks: store.chunks.map((chunk) => ({ ...chunk, owner })) }
-            : {}),
-        })),
-      })),
+      .map(({ owner, database }) => {
+        if (!list(database.stores))
+          throw new TypeError("Invalid source profile contents.");
+        return {
+          ...database,
+          stores: database.stores.map((store) => {
+            if (!record(store))
+              throw new Error("Invalid source profile contents.");
+            if (store.chunks && !list(store.chunks))
+              throw new TypeError("Invalid source profile contents.");
+            return {
+              ...store,
+              ...(store.chunks
+                ? {
+                    chunks: (list(store.chunks) ? store.chunks : []).map(
+                      (chunk) => {
+                        if (!record(chunk))
+                          throw new Error("Invalid source profile contents.");
+                        return { ...chunk, owner };
+                      },
+                    ),
+                  }
+                : {}),
+            };
+          }),
+        };
+      }),
   };
 }
