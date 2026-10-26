@@ -105,7 +105,7 @@ pub(crate) fn checked_envelope(value: &Value) -> Result<Envelope> {
     validate(
         match envelope.kind {
             MessageKind::ChatMessage => "FederationChatPayload",
-            _ => "FederationRoomPayload",
+            MessageKind::RoomInvite | MessageKind::RoomAccept => "FederationRoomPayload",
         },
         &envelope.payload,
         "envelope.payload",

@@ -690,7 +690,21 @@ pub(crate) fn settle_terminal_in_transaction(
                 match status {
                     AgentStatus::Failed => "failed",
                     AgentStatus::Interrupted => "interrupted",
-                    _ => "completed",
+                    AgentStatus::Unknown
+                    | AgentStatus::Idle
+                    | AgentStatus::Queued
+                    | AgentStatus::Starting
+                    | AgentStatus::Running
+                    | AgentStatus::Waiting
+                    | AgentStatus::WaitingOnMonitor
+                    | AgentStatus::Approval
+                    | AgentStatus::Completed
+                    | AgentStatus::Blocked
+                    | AgentStatus::Paused
+                    | AgentStatus::Parked
+                    | AgentStatus::Abandoned
+                    | AgentStatus::CapacityRetry
+                    | AgentStatus::Other(_) => "completed",
                 },
                 error.as_ref(),
                 now,
@@ -1020,7 +1034,7 @@ pub async fn settle_start_outcome(
     };
     let reason = match outcome {
         TurnStart::Blocked { reason } => Some(reason),
-        _ => None,
+        TurnStart::NotSubmitted | TurnStart::Unknown => None,
     };
     Ok(lifecycle_transaction(store, move |transaction| {
         SchedulerRepository::settle_start_outcome(transaction, &identity, status, reason.as_deref())

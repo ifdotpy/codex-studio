@@ -185,7 +185,18 @@ fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> 
             Some("pending")
         }
         WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
-        _ => None,
+        WorkerError::Store(_)
+        | WorkerError::Scheduler(_)
+        | WorkerError::Session(_)
+        | WorkerError::Notification(_)
+        | WorkerError::StaleVmActor
+        | WorkerError::CleanupUnconfirmed(_)
+        | WorkerError::AlreadyRunning
+        | WorkerError::Closed
+        | WorkerError::ShutdownTimeout
+        | WorkerError::TaskFailed
+        | WorkerError::Capacity
+        | WorkerError::CallbackUnknown => None,
     }
 }
 
@@ -2281,7 +2292,9 @@ impl Worker {
         Ok(
             match Box::pin(self.drive(commit.finish(control, vm))).await? {
                 submission::Committed::Ready(ready) => Some(ready),
-                _ => None,
+                submission::Committed::Nothing
+                | submission::Committed::Retry(..)
+                | submission::Committed::Vm(..) => None,
             },
         )
     }
@@ -3153,7 +3166,7 @@ impl Worker {
             let ticket = match &outcome {
                 SessionOutcome::Write { ticket, .. } => ticket.as_ref(),
                 SessionOutcome::Resolved { ticket, .. } => Some(ticket),
-                _ => None,
+                SessionOutcome::GenerationClosed { .. } => None,
             };
             let pending = ticket.and_then(|t| self.pending.get(&t.id)).cloned();
             if let Some(actor) = actor_id {
@@ -3808,7 +3821,11 @@ impl Worker {
             {
                 frame.method.as_str() == "turn/completed"
             }
-            _ => false,
+            JournalPayload::Frame(_)
+            | JournalPayload::RawStdout { .. }
+            | JournalPayload::Stderr(_)
+            | JournalPayload::Exit(_)
+            | JournalPayload::Other { .. } => false,
         };
         if completed {
             self.bridge.continuation_wake().notify_one();
@@ -4562,7 +4579,11 @@ impl Worker {
                         result => result?,
                     }
                 }
-                effect => remaining.push_back(effect),
+                effect @ Effect::LimitsUpdated(_)
+                | effect @ Effect::LimitFailure { .. }
+                | effect @ Effect::Submit(_)
+                | effect @ Effect::Interrupt { .. }
+                | effect @ Effect::Wake(..) => remaining.push_back(effect),
             }
         }
         self.effects = remaining;
@@ -4675,7 +4696,21 @@ fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str
                 reason,
             },
         )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
-        _ => None,
+        WorkerError::Store(_)
+        | WorkerError::Scheduler(_)
+        | WorkerError::Session(_)
+        | WorkerError::Notification(_)
+        | WorkerError::PreparationRefused(_)
+        | WorkerError::StaleVmActor
+        | WorkerError::PreparationPending(_)
+        | WorkerError::PreparationAwaitsAgent(_)
+        | WorkerError::CleanupUnconfirmed(_)
+        | WorkerError::AlreadyRunning
+        | WorkerError::Closed
+        | WorkerError::ShutdownTimeout
+        | WorkerError::TaskFailed
+        | WorkerError::Capacity
+        | WorkerError::CallbackUnknown => None,
     }
 }
 fn definite_rejection(error: &WorkerError) -> bool {

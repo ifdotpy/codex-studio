@@ -266,7 +266,7 @@ fn question_choices(field: &Map<String, Value>) -> [(&'static str, Value); 4] {
                     Value::Object(option) => string_member(option, "label").map(|label| {
                         json!({"label": label, "description": string_member(option, "description")})
                     }),
-                    _ => None,
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => None,
                 }
                 })
                 .collect::<Vec<_>>()

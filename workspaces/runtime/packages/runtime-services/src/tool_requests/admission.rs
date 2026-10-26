@@ -152,6 +152,8 @@ pub(crate) fn restart(record: &mut Value) -> Result<bool, ToolRequestError> {
             "Conflicting request lifecycle evidence",
         )),
         DecisionKind::Transitioned => lifecycle::apply(record, &decision.next_state),
-        _ => Ok(false),
+        DecisionKind::ReturnExisting
+        | DecisionKind::NoEffect
+        | DecisionKind::ReceiptMissingUnknown => Ok(false),
     }
 }

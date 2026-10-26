@@ -418,7 +418,7 @@ pub fn is_live(agent: &AgentRecord) -> bool {
             Value::Bool(true) => true,
             Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
             Value::String(value) => !value.is_empty(),
-            _ => true,
+            Value::Array(_) | Value::Object(_) => true,
         })
 }
 
@@ -433,7 +433,10 @@ pub fn publish_queue(
             let snapshot = queue_snapshot(transaction, &agent).map_err(|error| match error {
                 QueueWriteError::Store(error) => error,
                 QueueWriteError::Json(error) => StoreError::Json(error),
-                _ => StoreError::InvalidSyncObject {
+                QueueWriteError::InvalidRequest(_)
+                | QueueWriteError::Conflict(_)
+                | QueueWriteError::InvalidStoredObject { .. }
+                | QueueWriteError::RemoteEventsUnavailable => StoreError::InvalidSyncObject {
                     scope: "queue".into(),
                     id: id.into(),
                 },

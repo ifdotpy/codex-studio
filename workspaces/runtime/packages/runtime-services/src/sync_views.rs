@@ -125,7 +125,9 @@ fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Va
             };
             Value::String(text.chars().take(limit).collect())
         }
-        _ => value.clone(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+            value.clone()
+        }
     }
 }
 
@@ -217,7 +219,9 @@ fn project_schema_value(
                     .collect(),
             )
         }
-        _ => bound_sync_value(value, field, agent_short_strings),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            bound_sync_value(value, field, agent_short_strings)
+        }
     }
 }
 

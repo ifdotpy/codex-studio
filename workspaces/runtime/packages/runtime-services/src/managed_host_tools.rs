@@ -731,7 +731,13 @@ fn remote_dependency(
         }
         ManagedHostTool::Spawn if moved_from => Some("multi-server-runtime/spawn"),
         ManagedHostTool::Interrupt if moved_from => Some("multi-server-runtime/interrupt"),
-        _ => None,
+        ManagedHostTool::Spawn
+        | ManagedHostTool::Interrupt
+        | ManagedHostTool::Search
+        | ManagedHostTool::Context
+        | ManagedHostTool::Watch
+        | ManagedHostTool::Monitor
+        | ManagedHostTool::Review => None,
     };
     Ok(dependency)
 }
@@ -1145,7 +1151,7 @@ mod tests {
             match value {
                 Value::Array(items) => stack.extend(items),
                 Value::Object(map) => stack.extend(map.values()),
-                _ => {}
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
             }
         }
         assert!(

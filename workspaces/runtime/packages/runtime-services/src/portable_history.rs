@@ -1017,7 +1017,9 @@ fn stored_items(
             let input_id = match input_id {
                 Value::String(value) => Some(value),
                 Value::Null => None,
-                _ => return Err(PortableHistoryError::InvalidArchive("input identity")),
+                Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+                    return Err(PortableHistoryError::InvalidArchive("input identity"));
+                }
             };
             let event = if let Some(input_id) = input_id {
                 QueueEventRepository::get(transaction, &QueueEventId::from(input_id.as_str()))?
@@ -1144,7 +1146,12 @@ fn checked_native_records(
                 }
                 unmaterialized_seen = true;
             }
-            _ => return Err(PortableHistoryError::InvalidArchive("native record kind")),
+            ArchiveRecord::Header { .. }
+            | ArchiveRecord::Ancestor { .. }
+            | ArchiveRecord::StudioItem { .. }
+            | ArchiveRecord::NativeUnmaterialized { .. } => {
+                return Err(PortableHistoryError::InvalidArchive("native record kind"));
+            }
         }
         writer.write_record(&record)?;
     }

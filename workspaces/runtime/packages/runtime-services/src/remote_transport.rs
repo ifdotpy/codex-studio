@@ -1044,7 +1044,26 @@ fn map_outbound_error(
                 key: format!("{server_id}/{request_id}"),
             }
         }
-        _ => RemoteTransportError::Store(error),
+        StoreError::StateDirectory(_)
+        | StoreError::AlreadyOwned
+        | StoreError::MissingDatabase(_)
+        | StoreError::UnsafeStateDirectory
+        | StoreError::SchemaMismatch(_)
+        | StoreError::InvalidSyncObject { .. }
+        | StoreError::InvalidSyncObjectField { .. }
+        | StoreError::InvalidStoredRecord { .. }
+        | StoreError::SchemaObjectMismatch { .. }
+        | StoreError::Sqlite(_)
+        | StoreError::CommitOutcomeUnknown(_)
+        | StoreError::Json(_)
+        | StoreError::InvalidStoredObject { .. }
+        | StoreError::SchemaValidation(_)
+        | StoreError::RecordContract(_)
+        | StoreError::WriterPoisoned
+        | StoreError::WriterActorInitialization(_)
+        | StoreError::WriterActorControl(_)
+        | StoreError::CommitActorOutcomeUnknown(_)
+        | StoreError::ReadTaskFailed => RemoteTransportError::Store(error),
     }
 }
 
@@ -1520,6 +1539,8 @@ fn validate_exchange_arguments(
     validate_https_url(url)
 }
 
+// ureq errors are non-exhaustive; every failure except the size limit has unknown outcome.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn exchange_with_agent(
     agent: &ureq::Agent,
     method: &str,

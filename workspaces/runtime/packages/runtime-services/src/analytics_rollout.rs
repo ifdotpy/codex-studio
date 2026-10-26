@@ -411,7 +411,7 @@ fn normalize_item(v: &Value) -> Result<Value, CaptureError> {
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
-            _ => None,
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => None,
         };
         if let Some(text) = text {
             result["text"] = json!(text);
@@ -649,7 +649,9 @@ mod tests {
             super::RolloutAction::Event { params, .. } => {
                 assert!(params["tokenUsage"]["modelContextWindow"].is_null());
             }
-            _ => panic!("token count produces a usage event"),
+            super::RolloutAction::Payload { .. } | super::RolloutAction::WrongThread => {
+                panic!("token count produces a usage event")
+            }
         }
     }
 }

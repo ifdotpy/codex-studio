@@ -66,7 +66,7 @@ pub fn is_disk_full_error(error: &Value) -> bool {
                     .and_then(Value::as_str)
                     .is_some_and(|text| pattern().is_match(text))
         }
-        _ => false,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => false,
     }
 }
 

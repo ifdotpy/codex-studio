@@ -76,7 +76,14 @@ impl AccountSessionPort for ResetBrokerSession {
             }
             .map_err(|error| match error {
                 PortError::Unknown => AccountSessionError::Unknown,
-                _ => AccountSessionError::Refused("Retained reset request was refused"),
+                PortError::Identity
+                | PortError::ScopeMismatch
+                | PortError::Invalid
+                | PortError::NotSent
+                | PortError::Deadline
+                | PortError::Capacity => {
+                    AccountSessionError::Refused("Retained reset request was refused")
+                }
             })?;
             let (certainty, result) = match receipt.result {
                 RequestResult::Reply(value) => (
@@ -382,7 +389,19 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
                     self.changed.notify_one();
                     Ok(())
                 }
-                _ => Err(crate::notification_dispatch::NotificationDispatchError::invalid()),
+                crate::notification_dispatch::NotificationPostCommit::Analytics { .. }
+                | crate::notification_dispatch::NotificationPostCommit::AnalyticsStream {
+                    ..
+                }
+                | crate::notification_dispatch::NotificationPostCommit::AnalyticsCaptured(_)
+                | crate::notification_dispatch::NotificationPostCommit::AnalyticsStreamCaptured(
+                    _,
+                )
+                | crate::notification_dispatch::NotificationPostCommit::TokenRateStream(_)
+                | crate::notification_dispatch::NotificationPostCommit::TokenRateAssociation(_)
+                | crate::notification_dispatch::NotificationPostCommit::TokenRateUsage(_) => {
+                    Err(crate::notification_dispatch::NotificationDispatchError::invalid())
+                }
             }
         })
     }

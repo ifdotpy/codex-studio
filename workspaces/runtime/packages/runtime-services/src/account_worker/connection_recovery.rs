@@ -211,7 +211,22 @@ fn stream_store_error(
 ) -> crate::notification_dispatch::NotificationDispatchError {
     match error {
         super::WorkerError::Store(error) => error.into(),
-        _ => crate::notification_dispatch::NotificationDispatchError::invalid(),
+        super::WorkerError::Scheduler(_)
+        | super::WorkerError::Session(_)
+        | super::WorkerError::Notification(_)
+        | super::WorkerError::PreparationRefused(_)
+        | super::WorkerError::StaleVmActor
+        | super::WorkerError::PreparationPending(_)
+        | super::WorkerError::PreparationAwaitsAgent(_)
+        | super::WorkerError::CleanupUnconfirmed(_)
+        | super::WorkerError::AlreadyRunning
+        | super::WorkerError::Closed
+        | super::WorkerError::ShutdownTimeout
+        | super::WorkerError::TaskFailed
+        | super::WorkerError::Capacity
+        | super::WorkerError::CallbackUnknown => {
+            crate::notification_dispatch::NotificationDispatchError::invalid()
+        }
     }
 }
 

@@ -111,7 +111,19 @@ impl MonitorError {
             | Self::Rules(crate::rules_tick::RulesTickError::Event(
                 crate::event_write::EventWriteError::Store(error),
             )) => Some(error),
-            _ => None,
+            Self::InvalidStored { .. }
+            | Self::InvalidResultReceipt(_)
+            | Self::InvalidDeliveryIdentity(_)
+            | Self::InvalidOutputReceipt(_)
+            | Self::TaskFailed
+            | Self::Refused(_)
+            | Self::Unavailable(_)
+            | Self::ProviderRequest { .. }
+            | Self::ConfigurationRejected { .. }
+            | Self::ConfigurationReceipt { .. }
+            | Self::Event(_)
+            | Self::Rules(_)
+            | Self::Io(_) => None,
         }
     }
 
@@ -149,7 +161,14 @@ impl MonitorError {
             Self::Rules(crate::rules_tick::RulesTickError::Event(
                 crate::event_write::EventWriteError::Store(error),
             )) => fatal_store_error(error),
-            _ => false,
+            Self::Refused(_)
+            | Self::Unavailable(_)
+            | Self::ProviderRequest { .. }
+            | Self::ConfigurationRejected { .. }
+            | Self::ConfigurationReceipt { .. }
+            | Self::Event(_)
+            | Self::Rules(_)
+            | Self::Io(_) => false,
         }
     }
 }

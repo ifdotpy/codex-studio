@@ -282,7 +282,13 @@ impl Snapshot {
                                 "The server restarted before the turn interrupt receipt arrived. No request was repeated."
                             );
                         }
-                        _ => {}
+                        Phase::Waiting
+                        | Phase::Lazy
+                        | Phase::Ready
+                        | Phase::Blocked
+                        | Phase::Unknown
+                        | Phase::Completed
+                        | Phase::Left => {}
                     }
                 }
             }
@@ -837,7 +843,7 @@ impl Snapshot {
                     .expect("member is an object")
                     .remove("nativeParams");
             }
-            _ => {
+            RequestCertainty::Written | RequestCertainty::Unknown => {
                 current["phase"] = json!("unknown");
                 current["error"] =
                     json!("Native transfer outcome is unknown; no request was repeated");

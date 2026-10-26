@@ -31,7 +31,7 @@ fn text(p: &PreparedSubmission) -> String {
         .iter()
         .filter_map(|p| match p {
             ProviderInput::Text { text, .. } => Some(text.as_str()),
-            _ => None,
+            ProviderInput::LocalImage { .. } => None,
         })
         .collect()
 }
@@ -270,7 +270,7 @@ fn bounded_assignments_keep_input_origin_and_reports_remain_data() {
             {
                 Some(*origin)
             }
-            _ => None,
+            ProviderInput::Text { .. } | ProviderInput::LocalImage { .. } => None,
         });
         assert_eq!(origin, Some(Some(expected)), "{kind}");
     }

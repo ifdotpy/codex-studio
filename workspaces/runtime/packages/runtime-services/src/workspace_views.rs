@@ -250,7 +250,7 @@ pub fn parse_task_cursor(
     let time = match kind {
         CursorKind::Current if parsed.created.is_none() => parsed.updated,
         CursorKind::Before if parsed.updated.is_none() => parsed.created,
-        _ => return Err(InvalidCursor),
+        CursorKind::Current | CursorKind::Before => return Err(InvalidCursor),
     }
     .ok_or(InvalidCursor)?;
     Ok(Some(TaskFeedCursor {

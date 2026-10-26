@@ -1741,7 +1741,9 @@ mod resource_tests {
                             thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
                                 attempt
                             }
-                            other => panic!("{case}: {other:?}"),
+                            other @ thread::Outcome::Ready(_)
+                            | other @ thread::Outcome::Hold(_)
+                            | other @ thread::Outcome::Refuse(_) => panic!("{case}: {other:?}"),
                         };
                         assert_eq!(
                             attempt.before_submit.set["nativeToolSource"],
@@ -2044,7 +2046,7 @@ mod workspace_fence_tests {
                         None)?;
                     let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                         thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
-                        other => panic!("expected thread launch, got {other:?}"),
+                        other @ thread::Outcome::Ready(_) | other @ thread::Outcome::Hold(_) | other @ thread::Outcome::Refuse(_) => panic!("expected thread launch, got {other:?}"),
                     };
                     assert_eq!(attempt.params["claude"]["permissionMode"], *mode);
                 }
@@ -2093,7 +2095,7 @@ mod workspace_fence_tests {
                         None)?;
                     let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                         thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
-                        other => panic!("expected thread launch, got {other:?}"),
+                        other @ thread::Outcome::Ready(_) | other @ thread::Outcome::Hold(_) | other @ thread::Outcome::Refuse(_) => panic!("expected thread launch, got {other:?}"),
                     };
                     let options = attempt.params.get("claude").unwrap_or(&Value::Null);
                     if provider == "claude" && role == "reviewer" {

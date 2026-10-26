@@ -78,7 +78,25 @@ impl From<StoreError> for TranscriptError {
             {
                 Self::ReadOnlyRepair
             }
-            _ => Self::Store,
+            StoreError::StateDirectory(_)
+            | StoreError::AlreadyOwned
+            | StoreError::MissingDatabase(_)
+            | StoreError::UnsafeStateDirectory
+            | StoreError::SchemaMismatch(_)
+            | StoreError::InvalidSyncObjectField { .. }
+            | StoreError::InvalidStoredRecord { .. }
+            | StoreError::SchemaObjectMismatch { .. }
+            | StoreError::Sqlite(_)
+            | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::Json(_)
+            | StoreError::InvalidStoredObject { .. }
+            | StoreError::SchemaValidation(_)
+            | StoreError::RecordContract(_)
+            | StoreError::WriterPoisoned
+            | StoreError::WriterActorInitialization(_)
+            | StoreError::WriterActorControl(_)
+            | StoreError::CommitActorOutcomeUnknown(_)
+            | StoreError::ReadTaskFailed => Self::Store,
         }
     }
 }
@@ -88,11 +106,18 @@ impl From<studio_runtime_store::analytics::AnalyticsError> for TranscriptError {
             studio_runtime_store::analytics::AnalyticsError::InvalidStoredRow { table, id } => {
                 invalid_stored(table, &id)
             }
-            _ => Self::Store,
+            studio_runtime_store::analytics::AnalyticsError::InvalidRequest(_)
+            | studio_runtime_store::analytics::AnalyticsError::InvalidStoredObject(_)
+            | studio_runtime_store::analytics::AnalyticsError::UnknownAgent
+            | studio_runtime_store::analytics::AnalyticsError::Read(_)
+            | studio_runtime_store::analytics::AnalyticsError::Sqlite(_)
+            | studio_runtime_store::analytics::AnalyticsError::Serialization(_) => Self::Store,
         }
     }
 }
 impl From<rusqlite::Error> for TranscriptError {
+    // rusqlite errors are non-exhaustive; only a read-only failure has a dedicated remedy.
+    #[allow(clippy::wildcard_enum_match_arm)]
     fn from(error: rusqlite::Error) -> Self {
         match error {
             rusqlite::Error::SqliteFailure(error, _)
@@ -609,7 +634,25 @@ pub(crate) fn search_work_in_transaction(
                 StoreError::InvalidStoredObject { table, id } => {
                     TranscriptError::InvalidStoredObject { table, id }
                 }
-                _ => TranscriptError::Store,
+                StoreError::StateDirectory(_)
+                | StoreError::AlreadyOwned
+                | StoreError::MissingDatabase(_)
+                | StoreError::UnsafeStateDirectory
+                | StoreError::SchemaMismatch(_)
+                | StoreError::InvalidSyncObject { .. }
+                | StoreError::InvalidSyncObjectField { .. }
+                | StoreError::InvalidStoredRecord { .. }
+                | StoreError::SchemaObjectMismatch { .. }
+                | StoreError::Sqlite(_)
+                | StoreError::CommitOutcomeUnknown(_)
+                | StoreError::Json(_)
+                | StoreError::SchemaValidation(_)
+                | StoreError::RecordContract(_)
+                | StoreError::WriterPoisoned
+                | StoreError::WriterActorInitialization(_)
+                | StoreError::WriterActorControl(_)
+                | StoreError::CommitActorOutcomeUnknown(_)
+                | StoreError::ReadTaskFailed => TranscriptError::Store,
             })?
         {
             let Some(encoded) = stored.record else {

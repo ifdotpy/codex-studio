@@ -54,7 +54,22 @@ fn resources(preparation: Option<&PreparationResources>) -> Result<&PreparationR
 fn worker_error(error: WorkerError) -> Error {
     match error {
         WorkerError::Store(error) => Error::Store(error),
-        _ => Error::Invalid("Studio context is unavailable for this agent"),
+        WorkerError::Scheduler(_)
+        | WorkerError::Session(_)
+        | WorkerError::Notification(_)
+        | WorkerError::PreparationRefused(_)
+        | WorkerError::StaleVmActor
+        | WorkerError::PreparationPending(_)
+        | WorkerError::PreparationAwaitsAgent(_)
+        | WorkerError::CleanupUnconfirmed(_)
+        | WorkerError::AlreadyRunning
+        | WorkerError::Closed
+        | WorkerError::ShutdownTimeout
+        | WorkerError::TaskFailed
+        | WorkerError::Capacity
+        | WorkerError::CallbackUnknown => {
+            Error::Invalid("Studio context is unavailable for this agent")
+        }
     }
 }
 

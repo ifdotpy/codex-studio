@@ -912,7 +912,20 @@ impl MonitorRuntime {
                 MonitorError::Refused("Monitor input receipt identity changed") => {
                     MonitorError::InvalidDeliveryIdentity("input receipt changed")
                 }
-                error => error,
+                error @ MonitorError::InvalidStored { .. }
+                | error @ MonitorError::InvalidResultReceipt(_)
+                | error @ MonitorError::InvalidDeliveryIdentity(_)
+                | error @ MonitorError::InvalidOutputReceipt(_)
+                | error @ MonitorError::TaskFailed
+                | error @ MonitorError::Refused(_)
+                | error @ MonitorError::Unavailable(_)
+                | error @ MonitorError::ProviderRequest { .. }
+                | error @ MonitorError::ConfigurationRejected { .. }
+                | error @ MonitorError::ConfigurationReceipt { .. }
+                | error @ MonitorError::Store(_)
+                | error @ MonitorError::Event(_)
+                | error @ MonitorError::Rules(_)
+                | error @ MonitorError::Io(_) => error,
             })?,
             MonitorEvent::Probe { generation, result } => {
                 let id = delivery.id.clone();
@@ -1077,9 +1090,23 @@ impl MonitorRuntime {
                     let (snapshot, owner) =
                         monitor_runtime::snapshot(connection, id).map_err(|error| match error {
                             MonitorError::Store(error) => error,
-                            _ => studio_runtime_store::StoreError::RecordContract(
-                                "Unknown monitor in this caller's scope",
-                            ),
+                            MonitorError::InvalidStored { .. }
+                            | MonitorError::InvalidResultReceipt(_)
+                            | MonitorError::InvalidDeliveryIdentity(_)
+                            | MonitorError::InvalidOutputReceipt(_)
+                            | MonitorError::TaskFailed
+                            | MonitorError::Refused(_)
+                            | MonitorError::Unavailable(_)
+                            | MonitorError::ProviderRequest { .. }
+                            | MonitorError::ConfigurationRejected { .. }
+                            | MonitorError::ConfigurationReceipt { .. }
+                            | MonitorError::Event(_)
+                            | MonitorError::Rules(_)
+                            | MonitorError::Io(_) => {
+                                studio_runtime_store::StoreError::RecordContract(
+                                    "Unknown monitor in this caller's scope",
+                                )
+                            }
                         })?;
                     if snapshot.agent() != caller_id
                         || snapshot.record().get("epoch").and_then(Value::as_i64)

@@ -327,7 +327,11 @@ impl TerminalSession for PtyTerminalSession {
                         .write(session, &bytes)
                         .map_err(|error| match error {
                             PtyHostError::InputTimeout => SessionError::UnknownOutcome,
-                            _ => SessionError::Disconnected,
+                            PtyHostError::Pty(_)
+                            | PtyHostError::Io(_)
+                            | PtyHostError::ProcessId
+                            | PtyHostError::Lock
+                            | PtyHostError::Signal(_) => SessionError::Disconnected,
                         })
                 })?;
                 Ok(json!({"ok":true}))

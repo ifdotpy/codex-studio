@@ -85,7 +85,9 @@ impl Fixture {
     fn plan(&self) -> crate::workspace_ready::WorktreePlan {
         match self.context().decide() {
             WorkspaceDecision::Provision(p) => p,
-            other => panic!("expected plan: {other:?}"),
+            other @ WorkspaceDecision::Ready { .. }
+            | other @ WorkspaceDecision::Defer { .. }
+            | other @ WorkspaceDecision::Refuse(_) => panic!("expected plan: {other:?}"),
         }
     }
     fn paths(

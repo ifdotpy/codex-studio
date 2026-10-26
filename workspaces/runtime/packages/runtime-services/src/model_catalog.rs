@@ -525,7 +525,7 @@ impl ModelCatalogService {
             CatalogRead::Unavailable => self
                 .last_known(account_key, home, provider)
                 .map_or(CatalogRead::Unavailable, CatalogRead::Ready),
-            read => read,
+            read @ CatalogRead::Ready(_) | read @ CatalogRead::Pending => read,
         }
     }
 

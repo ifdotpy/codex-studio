@@ -472,7 +472,12 @@ fn guest_error_text(error: &GuestError) -> String {
                 .join(": ");
             format!("VM guest host.exec: {text}")
         }
-        error => format!("VM guest host.exec failed: {error}"),
+        error @ GuestError::InvalidRequest
+        | error @ GuestError::Identity
+        | error @ GuestError::SpacePreflight { .. }
+        | error @ GuestError::Transport { .. }
+        | error @ GuestError::Protocol { .. }
+        | error @ GuestError::FrameCallback { .. } => format!("VM guest host.exec failed: {error}"),
     }
 }
 

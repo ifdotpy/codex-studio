@@ -314,7 +314,8 @@ pub(crate) mod mac {
         let (reply, receive) = tokio::sync::oneshot::channel();
         dispatch2::DispatchQueue::main().exec_async(move || {
             if !reply.is_closed() {
-                let _ = reply.send(objc2::rc::autoreleasepool(|_| work()));
+                // The requester can disconnect after the is_closed check.
+                drop(reply.send(objc2::rc::autoreleasepool(|_| work())));
             }
         });
         receive
@@ -338,7 +339,8 @@ pub(crate) mod mac {
             let reply = Mutex::new(Some(reply));
             let handler = RcBlock::new(move |granted: Bool| {
                 if let Some(reply) = reply.lock().ok().and_then(|mut r| r.take()) {
-                    let _ = reply.send(granted.as_bool());
+                    // The requester can cancel while authorization is pending.
+                    let _send_result = reply.send(granted.as_bool());
                 }
             });
             unsafe {
@@ -447,12 +449,13 @@ pub(crate) mod mac {
             session.engine.stop();
         }
         if let Ok(mut shared) = session.shared.lock() {
+            // Stopping already ended capture; the subscriber may have disconnected.
             if flush && !shared.failed {
                 let pcm = shared.resampler.finish();
                 if !pcm.is_empty() {
-                    let _ = shared.sender.try_send(json!({"pcm": encode_pcm(&pcm)}));
+                    drop(shared.sender.try_send(json!({"pcm": encode_pcm(&pcm)})));
                 }
-                let _ = shared.sender.try_send(json!({"stopped": true}));
+                drop(shared.sender.try_send(json!({"stopped": true})));
             }
             shared.failed = true;
         }

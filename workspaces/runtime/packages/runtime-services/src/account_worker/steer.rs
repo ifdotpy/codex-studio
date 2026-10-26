@@ -236,7 +236,7 @@ pub(super) fn outcome(
                 return Ok(wake(SchedulerRepository::steer_rejected(tx, agent, steer)?));
             }
         },
-        _ => {}
+        SessionOutcome::Write { .. } | SessionOutcome::GenerationClosed { .. } => {}
     }
     Ok(None)
 }

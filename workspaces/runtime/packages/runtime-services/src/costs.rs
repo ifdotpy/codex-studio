@@ -292,7 +292,7 @@ pub fn usage_reconciliation(
                     }
                 }
             }
-            _ => {}
+            UsageObservation::Response { .. } | UsageObservation::Cumulative { .. } => {}
         }
     }
     let budget_record: Option<String> = tx
@@ -698,7 +698,7 @@ fn parse_codex_evidence(
                     }
                 }
                 RolloutAction::WrongThread => incomplete = true,
-                _ => {}
+                RolloutAction::Event { .. } | RolloutAction::Payload { .. } => {}
             }
         }
     }

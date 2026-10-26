@@ -404,7 +404,9 @@ impl ProductionLifecyclePorts {
                     let response = match &settled_outcome {
                         InterruptWriteResult::Accepted(response) => response,
                         InterruptWriteResult::Rejected(error) => &error["data"]["interruptReceipt"],
-                        _ => &Value::Null,
+                        InterruptWriteResult::NotSent | InterruptWriteResult::Unknown => {
+                            &Value::Null
+                        }
                     };
                     SchedulerRepository::settle_interrupt_inputs(
                         tx,
@@ -1321,7 +1323,14 @@ fn notify_parent_with_step(
             ManagementError::Unavailable(crate::monitor_runtime::REMOTE_EVENTS_DEPENDENCY)
         }
         event_write::EventWriteError::Store(error) => ManagementError::Store(error),
-        _ => ManagementError::Invalid("Unable to write child stop event"),
+        event_write::EventWriteError::InvalidRequest(_)
+        | event_write::EventWriteError::InvalidResultSchema(_)
+        | event_write::EventWriteError::Conflict(_)
+        | event_write::EventWriteError::WorkerAssignmentUnavailable
+        | event_write::EventWriteError::InvalidStoredObject { .. }
+        | event_write::EventWriteError::Clock => {
+            ManagementError::Invalid("Unable to write child stop event")
+        }
     })?;
     Ok(())
 }
@@ -1587,7 +1596,15 @@ fn enqueue_turn_result(
     )
     .map_err(|error| match error {
         event_write::EventWriteError::Store(error) => error,
-        other => studio_runtime_store::StoreError::SchemaMismatch(other.to_string()),
+        other @ event_write::EventWriteError::InvalidRequest(_)
+        | other @ event_write::EventWriteError::InvalidResultSchema(_)
+        | other @ event_write::EventWriteError::Conflict(_)
+        | other @ event_write::EventWriteError::RemoteEventsUnavailable
+        | other @ event_write::EventWriteError::WorkerAssignmentUnavailable
+        | other @ event_write::EventWriteError::InvalidStoredObject { .. }
+        | other @ event_write::EventWriteError::Clock => {
+            studio_runtime_store::StoreError::SchemaMismatch(other.to_string())
+        }
     })?;
     Ok(())
 }

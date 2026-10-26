@@ -65,7 +65,14 @@ impl RetainedAccountSession for WorkerSession {
                 .await
                 .map_err(|error| match error {
                     PortError::Unknown => AccountSessionError::Unknown,
-                    _ => AccountSessionError::Refused("Provider request was refused"),
+                    PortError::Identity
+                    | PortError::ScopeMismatch
+                    | PortError::Invalid
+                    | PortError::NotSent
+                    | PortError::Deadline
+                    | PortError::Capacity => {
+                        AccountSessionError::Refused("Provider request was refused")
+                    }
                 })?;
             let (certainty, result) = match receipt.result {
                 RequestResult::Reply(value) => (

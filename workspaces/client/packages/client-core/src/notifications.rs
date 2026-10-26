@@ -190,7 +190,8 @@ pub mod mac {
             let reply = Mutex::new(Some(reply));
             let granted = RcBlock::new(move |granted: Bool, _error: *mut NSError| {
                 if let Some(reply) = reply.lock().ok().and_then(|mut r| r.take()) {
-                    let _ = reply.send(granted.as_bool());
+                    // The authorization requester may have canceled while the prompt was open.
+                    let _send_result = reply.send(granted.as_bool());
                 }
             });
             UNUserNotificationCenter::currentNotificationCenter()
@@ -226,7 +227,8 @@ pub mod mac {
                     Err(unsafe { &*error }.localizedDescription().to_string())
                 };
                 if let Some(reply) = reply.lock().ok().and_then(|mut r| r.take()) {
-                    let _ = reply.send(result);
+                    // Completion can outlive the requester.
+                    drop(reply.send(result));
                 }
             });
             UNUserNotificationCenter::currentNotificationCenter()

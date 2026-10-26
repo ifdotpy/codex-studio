@@ -119,7 +119,19 @@ pub(super) fn warning_text(kind: NoticeKind, params: &Value) -> String {
         NoticeKind::Guardian if text.starts_with("Automatic approval review approved (") => {
             String::new()
         }
-        _ => text.into(),
+        NoticeKind::Warning
+        | NoticeKind::Guardian
+        | NoticeKind::Config
+        | NoticeKind::Deprecation
+        | NoticeKind::HookStarted
+        | NoticeKind::HookCompleted
+        | NoticeKind::Safety
+        | NoticeKind::Verification
+        | NoticeKind::ReviewStarted
+        | NoticeKind::ReviewCompleted
+        | NoticeKind::Error
+        | NoticeKind::AuthStarted
+        | NoticeKind::AuthCompleted => text.into(),
     }
 }
 
@@ -288,7 +300,15 @@ pub(super) fn decide(
                 json!({"turnId":turn}),
             ));
         }
-        _ => {
+        NoticeKind::Warning
+        | NoticeKind::Guardian
+        | NoticeKind::Config
+        | NoticeKind::Deprecation
+        | NoticeKind::McpStartup
+        | NoticeKind::McpLogin
+        | NoticeKind::StrictReview
+        | NoticeKind::HookStarted
+        | NoticeKind::HookCompleted => {
             let text = warning_text(kind, params);
             if text.is_empty() {
                 return Ok(decision);
@@ -591,7 +611,9 @@ pub(crate) fn account_notice(
         let mut notices = match &workspace["value"]["nativeNotices"] {
             Value::Null => Vec::new(),
             Value::Array(notices) => notices.clone(),
-            _ => return Err(super::stored("sync_entities", "workspace:current")),
+            Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Object(_) => {
+                return Err(super::stored("sync_entities", "workspace:current"));
+            }
         };
         let version_warnings: Vec<_> = notices
             .iter()

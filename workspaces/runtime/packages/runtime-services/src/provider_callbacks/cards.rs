@@ -680,7 +680,12 @@ fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContex
         CallbackError::Stored(_) | CallbackError::Stale => {
             CallbackError::Dependency("provider-session/question-answer")
         }
-        error => error,
+        error @ CallbackError::Invalid(_)
+        | error @ CallbackError::InvalidResultSchema(_)
+        | error @ CallbackError::Dependency(_)
+        | error @ CallbackError::Conflict
+        | error @ CallbackError::Unknown
+        | error @ CallbackError::Store(_) => error,
     })
 }
 
@@ -796,7 +801,16 @@ pub async fn prepare_delete(
                 crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
                     CallbackError::Dependency("provider-session/question-answer")
                 }
-                _ => CallbackError::Invalid("Unable to delete question"),
+                crate::questions_write::QuestionsWriteError::Conflict(_)
+                | crate::questions_write::QuestionsWriteError::InvalidStoredObject { .. }
+                | crate::questions_write::QuestionsWriteError::Event(_)
+                | crate::questions_write::QuestionsWriteError::Store(_)
+                | crate::questions_write::QuestionsWriteError::Json(_)
+                | crate::questions_write::QuestionsWriteError::Clock
+                | crate::questions_write::QuestionsWriteError::Coordination(_)
+                | crate::questions_write::QuestionsWriteError::Projects(_) => {
+                    CallbackError::Invalid("Unable to delete question")
+                }
             })?;
             if !allowed {
                 return Ok(None);

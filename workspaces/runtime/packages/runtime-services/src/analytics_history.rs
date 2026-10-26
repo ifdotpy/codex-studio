@@ -162,7 +162,17 @@ impl HistoryError {
             }
             Self::DiscoveryLimit => HistoryRetryPolicy::WaitForProfileInput,
             Self::DiscoveryRoundLimit => HistoryRetryPolicy::ContinueAfterRoundBudget,
-            _ => HistoryRetryPolicy::Backoff,
+            Self::Capture(_)
+            | Self::Store(_)
+            | Self::Budget(_)
+            | Self::Read(_)
+            | Self::ProfileUnavailable
+            | Self::StaleCheckpoint
+            | Self::ChangedDuringRead
+            | Self::Cancelled
+            | Self::BudgetUnavailable
+            | Self::Watcher(_)
+            | Self::AccountDriver(_) => HistoryRetryPolicy::Backoff,
         }
     }
 }
@@ -885,7 +895,9 @@ impl NativeEvidenceRoot {
             match component {
                 std::path::Component::Normal(name) => walked.push(name),
                 std::path::Component::CurDir => continue,
-                _ => {
+                std::path::Component::Prefix(_)
+                | std::path::Component::RootDir
+                | std::path::Component::ParentDir => {
                     return Err(NativeFileOpenError::Refused(
                         NativeFileRejection::OutsideProfile,
                     ));

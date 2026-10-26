@@ -142,7 +142,9 @@ async fn reconcile_first_pass(
                     snapshot
                 }
                 RecoveryJob::Connection { snapshot, .. } if recovery_turn => snapshot,
-                _ => continue,
+                RecoveryJob::Turn(_) | RecoveryJob::Connection { .. } | RecoveryJob::Task(_) => {
+                    continue;
+                }
             };
             let agent = snapshot.record()["id"]
                 .as_str()

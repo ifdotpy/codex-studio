@@ -194,6 +194,7 @@ mod mac {
             }
         }
     );
+    // A canceled document request may drop its receiver before rendering finishes.
     fn finish(id: u64, result: Result<Value, String>) {
         let job = JOBS.with(|jobs| jobs.borrow_mut().remove(&id));
         if let Some(job) = job {
@@ -201,7 +202,7 @@ mod mac {
                 job.view.setNavigationDelegate(None);
                 job.view.stopLoading();
             }
-            let _ = job.reply.send(result);
+            drop(job.reply.send(result));
         }
     }
     struct Cancel(u64);

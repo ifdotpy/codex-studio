@@ -44,7 +44,11 @@ fn hold_reason(
         AccountStatus::Changed => Some(CHANGED_ERROR),
         AccountStatus::Ready if same_selected_account(selected, current) => None,
         AccountStatus::Ready => Some(adapter(kind).account_changed_message()),
-        _ => Some(adapter(kind).sign_in_message()),
+        AccountStatus::SignedOut
+        | AccountStatus::Pending
+        | AccountStatus::Error
+        | AccountStatus::Duplicate
+        | AccountStatus::Unavailable => Some(adapter(kind).sign_in_message()),
     }
 }
 
@@ -124,7 +128,21 @@ pub fn launch_hold_reason(error: &crate::account_worker::WorkerError) -> Option<
         {
             Some(adapter(ProviderKind::Claude).sign_in_message())
         }
-        _ => None,
+        crate::account_worker::WorkerError::Store(_)
+        | crate::account_worker::WorkerError::Scheduler(_)
+        | crate::account_worker::WorkerError::Session(_)
+        | crate::account_worker::WorkerError::Notification(_)
+        | crate::account_worker::WorkerError::PreparationRefused(_)
+        | crate::account_worker::WorkerError::StaleVmActor
+        | crate::account_worker::WorkerError::PreparationPending(_)
+        | crate::account_worker::WorkerError::PreparationAwaitsAgent(_)
+        | crate::account_worker::WorkerError::CleanupUnconfirmed(_)
+        | crate::account_worker::WorkerError::AlreadyRunning
+        | crate::account_worker::WorkerError::Closed
+        | crate::account_worker::WorkerError::ShutdownTimeout
+        | crate::account_worker::WorkerError::TaskFailed
+        | crate::account_worker::WorkerError::Capacity
+        | crate::account_worker::WorkerError::CallbackUnknown => None,
     }
 }
 

@@ -255,7 +255,20 @@ fn rejected_notifications(
     if let Err(error) = selected_inputs_current(tx, intent) {
         return match error {
             WorkerError::PreparationRefused(_) => Ok(rejected),
-            error => Err(error),
+            error @ WorkerError::Store(_)
+            | error @ WorkerError::Scheduler(_)
+            | error @ WorkerError::Session(_)
+            | error @ WorkerError::Notification(_)
+            | error @ WorkerError::StaleVmActor
+            | error @ WorkerError::PreparationPending(_)
+            | error @ WorkerError::PreparationAwaitsAgent(_)
+            | error @ WorkerError::CleanupUnconfirmed(_)
+            | error @ WorkerError::AlreadyRunning
+            | error @ WorkerError::Closed
+            | error @ WorkerError::ShutdownTimeout
+            | error @ WorkerError::TaskFailed
+            | error @ WorkerError::Capacity
+            | error @ WorkerError::CallbackUnknown => Err(error),
         };
     }
     let record = agent(tx, &intent.agent_id)?.value();
@@ -493,7 +506,7 @@ fn catalog(
                 }),
             ))
         }
-        _ => Ok((
+        AdmissionCatalogRead::Pending | AdmissionCatalogRead::Unavailable => Ok((
             gates::CatalogIdentity {
                 account_key: intent.account_key.clone(),
                 home: resources.account_home.clone(),
@@ -668,7 +681,13 @@ fn catalog_admission_error(error: gates::ExecutionDenial) -> WorkerError {
         gates::ExecutionDenial::CatalogRequired | gates::ExecutionDenial::CatalogExpired => {
             catalog_pending()
         }
-        _ => refusal(error.to_string()),
+        gates::ExecutionDenial::AccountChanged
+        | gates::ExecutionDenial::SettingsChanged
+        | gates::ExecutionDenial::CatalogIdentityMismatch
+        | gates::ExecutionDenial::ModelUnavailable
+        | gates::ExecutionDenial::EffortUnsupported
+        | gates::ExecutionDenial::FastModeUnsupported
+        | gates::ExecutionDenial::DaybreakUnsupported => refusal(error.to_string()),
     }
 }
 
@@ -818,7 +837,10 @@ pub(crate) async fn before_start(
                 thread::HoldReason::AccountTransfer
             ))
         }
-        error => refusal(error.to_string()),
+        error @ crate::account_transfer::TransferError::Stored { .. }
+        | error @ crate::account_transfer::TransferError::Refused(_)
+        | error @ crate::account_transfer::TransferError::Requires(_)
+        | error @ crate::account_transfer::TransferError::Store(_) => refusal(error.to_string()),
     })
 }
 
@@ -987,7 +1009,13 @@ async fn workspace_with_vm_action(
                 | crate::native_actions::NativeError::Unavailable(_)) => {
                     WorkerError::PreparationPending(format!("workspace-readiness/{error}").into())
                 }
-                error => refusal(error.to_string()),
+                error @ crate::native_actions::NativeError::Invalid(_)
+                | error @ crate::native_actions::NativeError::InvalidStored { .. }
+                | error @ crate::native_actions::NativeError::Conflict
+                | error @ crate::native_actions::NativeError::Changed
+                | error @ crate::native_actions::NativeError::Store(_)
+                | error @ crate::native_actions::NativeError::Json(_)
+                | error @ crate::native_actions::NativeError::Sql(_) => refusal(error.to_string()),
             })?;
         }
         let ready = workspace_agent(&store, &intent.agent_id).await?;
@@ -1034,9 +1062,10 @@ async fn workspace_with_vm_action(
         } => Err(WorkerError::PreparationAwaitsAgent(
             WORKSPACE_PENDING_REASON.into(),
         )),
-        _ => Err(WorkerError::PreparationPending(
-            WORKSPACE_PENDING_REASON.into(),
-        )),
+        crate::workspace_ready::WorkspaceDecision::Provision(_)
+        | crate::workspace_ready::WorkspaceDecision::Defer { .. } => Err(
+            WorkerError::PreparationPending(WORKSPACE_PENDING_REASON.into()),
+        ),
     }
 }
 
@@ -1196,7 +1225,9 @@ async fn prepare_native_thread_for_transfer_owner(
         }),
         thread::Outcome::Refuse(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
         thread::Outcome::Hold(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
-        _ => Err(refusal("native-thread/start-required".into())),
+        thread::Outcome::Ready(_) | thread::Outcome::Resume(_) => {
+            Err(refusal("native-thread/start-required".into()))
+        }
     }
 }
 
@@ -1236,7 +1267,9 @@ pub(crate) async fn prepare_review_thread(
         thread::Outcome::Hold(reason) => {
             return Err(refusal(format!("thread-preparation/{reason:?}")));
         }
-        _ => return Err(refusal("native-review/thread-start-required".into())),
+        thread::Outcome::Ready(_) | thread::Outcome::Resume(_) => {
+            return Err(refusal("native-review/thread-start-required".into()));
+        }
     };
     for artifact in &attempt.artifacts {
         let thread::ArtifactIntent::RememberRole { version, text } = artifact;
@@ -1738,7 +1771,9 @@ pub(crate) async fn prepare_safety_retry(
         thread::Outcome::Hold(reason) => {
             return Err(refusal(format!("thread-preparation/{reason:?}")));
         }
-        _ => return Err(refusal("safety-retry/source-thread-required".into())),
+        thread::Outcome::Ready(_) | thread::Outcome::Start(_) => {
+            return Err(refusal("safety-retry/source-thread-required".into()));
+        }
     };
     let program = daybreak_program(resources, &snapshot)?;
     let mut turn_params = native_turn_params(
@@ -2777,7 +2812,7 @@ mod team_progress_delivery_tests {
                         );
                         Some(text.as_str())
                     }
-                    _ => None,
+                    turn::ProviderInput::LocalImage { .. } => None,
                 })
                 .collect();
             assert!(

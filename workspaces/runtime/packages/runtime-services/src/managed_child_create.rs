@@ -985,7 +985,13 @@ pub(crate) async fn spawn_agents(
                     .map(Some)
                     .map_err(|error| match error {
                         crate::event_write::EventWriteError::Store(error) => error,
-                        _ => invalid(),
+                        crate::event_write::EventWriteError::InvalidRequest(_)
+                        | crate::event_write::EventWriteError::InvalidResultSchema(_)
+                        | crate::event_write::EventWriteError::Conflict(_)
+                        | crate::event_write::EventWriteError::RemoteEventsUnavailable
+                        | crate::event_write::EventWriteError::WorkerAssignmentUnavailable
+                        | crate::event_write::EventWriteError::InvalidStoredObject { .. }
+                        | crate::event_write::EventWriteError::Clock => invalid(),
                     })
             })
             .await
@@ -1393,7 +1399,19 @@ fn map_create_error(error: crate::agents_create::CreateError) -> Error {
         crate::agents_create::CreateError::InvalidCreation(message) => {
             Error::Managed(crate::managed_host_tools::Error::Invalid(message))
         }
-        _ => Error::Refused,
+        crate::agents_create::CreateError::Conflict
+        | crate::agents_create::CreateError::MissingCreationIntent
+        | crate::agents_create::CreateError::Deleted
+        | crate::agents_create::CreateError::UnknownAgent
+        | crate::agents_create::CreateError::LeadRequired
+        | crate::agents_create::CreateError::RequestIdRequired
+        | crate::agents_create::CreateError::ModelUnavailable
+        | crate::agents_create::CreateError::IdentityChanged
+        | crate::agents_create::CreateError::Internal
+        | crate::agents_create::CreateError::Stale
+        | crate::agents_create::CreateError::CurrentAccountExcluded
+        | crate::agents_create::CreateError::InFlight
+        | crate::agents_create::CreateError::InvalidStoredObject { .. } => Error::Refused,
     }
 }
 
@@ -1404,7 +1422,24 @@ fn map_recheck_error(
         crate::agents_create::MutationError::Store(error) => {
             crate::managed_host_tools::Error::Store(error)
         }
-        _ => crate::managed_host_tools::Error::Stale,
+        crate::agents_create::MutationError::Conflict
+        | crate::agents_create::MutationError::MissingCreationIntent
+        | crate::agents_create::MutationError::Deleted
+        | crate::agents_create::MutationError::UnknownAgent
+        | crate::agents_create::MutationError::LeadRequired
+        | crate::agents_create::MutationError::RequestIdRequired
+        | crate::agents_create::MutationError::InvalidCreation(_)
+        | crate::agents_create::MutationError::BaseUnresolved
+        | crate::agents_create::MutationError::ModelUnavailable
+        | crate::agents_create::MutationError::CapabilityUnavailable(_)
+        | crate::agents_create::MutationError::IdentityChanged
+        | crate::agents_create::MutationError::Internal
+        | crate::agents_create::MutationError::Stale
+        | crate::agents_create::MutationError::CurrentAccountExcluded
+        | crate::agents_create::MutationError::InFlight
+        | crate::agents_create::MutationError::InvalidStoredObject { .. } => {
+            crate::managed_host_tools::Error::Stale
+        }
     }
 }
 
@@ -1645,7 +1680,7 @@ pub(crate) async fn request_review(
                         crate::native_actions::NativeError::Unavailable(name) => {
                             crate::managed_host_tools::Error::Unavailable(name)
                         }
-                        _ => crate::managed_host_tools::Error::Invalid(
+                        crate::native_actions::NativeError::Invalid(_) | crate::native_actions::NativeError::InvalidStored { .. } | crate::native_actions::NativeError::Conflict | crate::native_actions::NativeError::Changed | crate::native_actions::NativeError::Unknown | crate::native_actions::NativeError::Json(_) | crate::native_actions::NativeError::Sql(_) => crate::managed_host_tools::Error::Invalid(
                             "Native review creation was refused",
                         ),
                     },

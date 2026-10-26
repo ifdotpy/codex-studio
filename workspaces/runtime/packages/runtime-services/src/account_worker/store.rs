@@ -273,7 +273,7 @@ pub(super) async fn recover(
         crate::provider_callbacks::expire_ended_generations(tx, &account, generation.0).map_err(
             |error| match error {
                 crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
-                _ => invalid(&account),
+                crate::provider_callbacks::CallbackError::Invalid(_) | crate::provider_callbacks::CallbackError::InvalidResultSchema(_) | crate::provider_callbacks::CallbackError::Dependency(_) | crate::provider_callbacks::CallbackError::Stale | crate::provider_callbacks::CallbackError::Conflict | crate::provider_callbacks::CallbackError::Unknown | crate::provider_callbacks::CallbackError::Stored(_) => invalid(&account),
             },
         )?;
         // A provider replacement in this backend is a disconnect. Actual backend
@@ -896,7 +896,145 @@ pub(super) async fn submitted(
                     request.ticket.generation,
                     &id_string(&request.ticket.id),
                 )?,
-                _ => {
+                Method::Initialize
+                | Method::Initialized
+                | Method::Ack
+                | Method::AccountLoginCancel
+                | Method::AccountLoginStart
+                | Method::AccountRateLimitResetCreditConsume
+                | Method::ThreadLoadedList
+                | Method::ConfigRead
+                | Method::SkillsExtraRootsSet
+                | Method::ModelList
+                | Method::AccountRead
+                | Method::AccountRateLimitsRead
+                | Method::ThreadStart
+                | Method::ThreadRealtimeStart
+                | Method::ThreadRealtimeStop
+                | Method::ThreadRealtimeAppendSpeech
+                | Method::ThreadRealtimeItemStarted
+                | Method::ThreadRealtimeTranscriptDelta
+                | Method::ThreadRealtimeTranscriptDone
+                | Method::ThreadRealtimeSdp
+                | Method::ThreadRealtimeError
+                | Method::ThreadRealtimeClosed
+                | Method::ThreadResume
+                | Method::ThreadRead
+                | Method::ThreadTurnsList
+                | Method::TurnSteer
+                | Method::ThreadList
+                | Method::ThreadArchive
+                | Method::ThreadFork
+                | Method::ThreadNameSet
+                | Method::ThreadMetadataUpdate
+                | Method::ThreadSettingsUpdate
+                | Method::ThreadCompactStart
+                | Method::ThreadRollback
+                | Method::ThreadItemsList
+                | Method::ThreadGoalSet
+                | Method::ThreadGoalUpdated
+                | Method::ThreadUnarchive
+                | Method::ThreadUnsubscribe
+                | Method::ProcessSpawn
+                | Method::ProcessWriteStdin
+                | Method::ProcessKill
+                | Method::ProcessResizePty
+                | Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadBackgroundTerminalsTerminate
+                | Method::ThreadBackgroundTerminalsClean
+                | Method::ThreadCommandExecutionBackground
+                | Method::ThreadQueueList
+                | Method::ClaudeState
+                | Method::ClaudeRepairReport
+                | Method::ClaudeFileBackups
+                | Method::ClaudeSettings
+                | Method::ClaudeActivity
+                | Method::ClaudeStopTask
+                | Method::ClaudeDiagnostics
+                | Method::ClaudeMoveVersions
+                | Method::McpServerReconnect
+                | Method::McpServerStatusList
+                | Method::SkillsList
+                | Method::OperationStatus
+                | Method::ReviewStart
+                | Method::BrowserAnswer
+                | Method::BrowserCallback
+                | Method::BrowserClose
+                | Method::BrowserWait
+                | Method::ClaudeCommands
+                | Method::ClaudeMoveExport
+                | Method::ClaudeMoveIdentity
+                | Method::ClaudeMovePreflight
+                | Method::ClaudeMoveProof
+                | Method::Detach
+                | Method::EventRead
+                | Method::Exec
+                | Method::Generate
+                | Method::Health
+                | Method::Info
+                | Method::LayrHealth
+                | Method::Next
+                | Method::Open
+                | Method::ProjectEnsure
+                | Method::ProjectExec
+                | Method::ProjectImport
+                | Method::ProviderList
+                | Method::Replay
+                | Method::ResponseStatus
+                | Method::RetireCommand
+                | Method::SecretsList
+                | Method::SecretsRemove
+                | Method::SecretsSet
+                | Method::ShareConfigure
+                | Method::ShareName
+                | Method::ShareStatus
+                | Method::Sign
+                | Method::Status
+                | Method::SyncMacApply
+                | Method::SyncMacHandoff
+                | Method::SyncMacHashes
+                | Method::SyncMacHead
+                | Method::SyncMacRead
+                | Method::SyncMacWorktree
+                | Method::VaultConfigure
+                | Method::VaultPush
+                | Method::VaultStatus
+                | Method::UploadBegin
+                | Method::UploadChunk
+                | Method::UploadCommit
+                | Method::Verify
+                | Method::Write
+                | Method::CurrentTimeRead
+                | Method::ItemToolCall
+                | Method::ItemCommandExecutionRequestApproval
+                | Method::ItemFileChangeRequestApproval
+                | Method::ItemPermissionsRequestApproval
+                | Method::McpServerElicitationRequest
+                | Method::ItemToolRequestUserInput
+                | Method::ItemStarted
+                | Method::ItemCompleted
+                | Method::ItemAgentMessageDelta
+                | Method::ItemReasoningTextDelta
+                | Method::ItemCommandExecutionOutputDelta
+                | Method::CommandExecOutputDelta
+                | Method::TurnStarted
+                | Method::TurnCompleted
+                | Method::TurnPlanUpdated
+                | Method::TurnDiffUpdated
+                | Method::ThreadClosed
+                | Method::ThreadStatusChanged
+                | Method::ThreadTokenUsageUpdated
+                | Method::ThreadIdleCompactionUpdated
+                | Method::AccountLoginCompleted
+                | Method::AccountUpdated
+                | Method::AccountRateLimitsUpdated
+                | Method::ModelSafetyBufferingUpdated
+                | Method::ProviderGenerationStarted
+                | Method::ProtocolError => {
                     agent.epoch == i.epoch
                         && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["id"]
                             == i.attempt_id
@@ -1327,11 +1465,147 @@ fn settle_outcome(
                         },
                     )?;
                 }
-                _ => {}
+                Method::Initialize
+                | Method::Initialized
+                | Method::Ack
+                | Method::AccountLoginCancel
+                | Method::AccountLoginStart
+                | Method::AccountRateLimitResetCreditConsume
+                | Method::ThreadLoadedList
+                | Method::ConfigRead
+                | Method::SkillsExtraRootsSet
+                | Method::ModelList
+                | Method::AccountRead
+                | Method::AccountRateLimitsRead
+                | Method::ThreadRealtimeStart
+                | Method::ThreadRealtimeStop
+                | Method::ThreadRealtimeAppendSpeech
+                | Method::ThreadRealtimeItemStarted
+                | Method::ThreadRealtimeTranscriptDelta
+                | Method::ThreadRealtimeTranscriptDone
+                | Method::ThreadRealtimeSdp
+                | Method::ThreadRealtimeError
+                | Method::ThreadRealtimeClosed
+                | Method::ThreadRead
+                | Method::ThreadTurnsList
+                | Method::TurnSteer
+                | Method::ThreadList
+                | Method::ThreadArchive
+                | Method::ThreadFork
+                | Method::ThreadNameSet
+                | Method::ThreadMetadataUpdate
+                | Method::ThreadSettingsUpdate
+                | Method::ThreadCompactStart
+                | Method::ThreadRollback
+                | Method::ThreadItemsList
+                | Method::ThreadGoalSet
+                | Method::ThreadGoalUpdated
+                | Method::ThreadUnarchive
+                | Method::ThreadUnsubscribe
+                | Method::ProcessSpawn
+                | Method::ProcessWriteStdin
+                | Method::ProcessKill
+                | Method::ProcessResizePty
+                | Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadBackgroundTerminalsTerminate
+                | Method::ThreadBackgroundTerminalsClean
+                | Method::ThreadCommandExecutionBackground
+                | Method::ThreadQueueList
+                | Method::ClaudeState
+                | Method::ClaudeRepairReport
+                | Method::ClaudeFileBackups
+                | Method::ClaudeSettings
+                | Method::ClaudeActivity
+                | Method::ClaudeStopTask
+                | Method::ClaudeDiagnostics
+                | Method::ClaudeMoveVersions
+                | Method::McpServerReconnect
+                | Method::McpServerStatusList
+                | Method::SkillsList
+                | Method::OperationStatus
+                | Method::ReviewStart
+                | Method::BrowserAnswer
+                | Method::BrowserCallback
+                | Method::BrowserClose
+                | Method::BrowserWait
+                | Method::ClaudeCommands
+                | Method::ClaudeMoveExport
+                | Method::ClaudeMoveIdentity
+                | Method::ClaudeMovePreflight
+                | Method::ClaudeMoveProof
+                | Method::Detach
+                | Method::EventRead
+                | Method::Exec
+                | Method::Generate
+                | Method::Health
+                | Method::Info
+                | Method::LayrHealth
+                | Method::Next
+                | Method::Open
+                | Method::ProjectEnsure
+                | Method::ProjectExec
+                | Method::ProjectImport
+                | Method::ProviderList
+                | Method::Replay
+                | Method::ResponseStatus
+                | Method::RetireCommand
+                | Method::SecretsList
+                | Method::SecretsRemove
+                | Method::SecretsSet
+                | Method::ShareConfigure
+                | Method::ShareName
+                | Method::ShareStatus
+                | Method::Sign
+                | Method::Status
+                | Method::SyncMacApply
+                | Method::SyncMacHandoff
+                | Method::SyncMacHashes
+                | Method::SyncMacHead
+                | Method::SyncMacRead
+                | Method::SyncMacWorktree
+                | Method::VaultConfigure
+                | Method::VaultPush
+                | Method::VaultStatus
+                | Method::UploadBegin
+                | Method::UploadChunk
+                | Method::UploadCommit
+                | Method::Verify
+                | Method::Write
+                | Method::CurrentTimeRead
+                | Method::ItemToolCall
+                | Method::ItemCommandExecutionRequestApproval
+                | Method::ItemFileChangeRequestApproval
+                | Method::ItemPermissionsRequestApproval
+                | Method::McpServerElicitationRequest
+                | Method::ItemToolRequestUserInput
+                | Method::ItemStarted
+                | Method::ItemCompleted
+                | Method::ItemAgentMessageDelta
+                | Method::ItemReasoningTextDelta
+                | Method::ItemCommandExecutionOutputDelta
+                | Method::CommandExecOutputDelta
+                | Method::TurnStarted
+                | Method::TurnCompleted
+                | Method::TurnPlanUpdated
+                | Method::TurnDiffUpdated
+                | Method::ThreadClosed
+                | Method::ThreadStatusChanged
+                | Method::ThreadTokenUsageUpdated
+                | Method::ThreadIdleCompactionUpdated
+                | Method::AccountLoginCompleted
+                | Method::AccountUpdated
+                | Method::AccountRateLimitsUpdated
+                | Method::ModelSafetyBufferingUpdated
+                | Method::ProviderGenerationStarted
+                | Method::ProtocolError => {}
             }
             true
         }
-        _ => false,
+        SessionOutcome::GenerationClosed { .. } => false,
     };
     if retired {
         // A retained Submit owns the same prepared/request identity. Retire
@@ -1501,7 +1775,7 @@ fn uncertain(
             },
             match &outcome {
                 TurnStart::Blocked { reason } => Some(reason.as_str()),
-                _ => None,
+                TurnStart::NotSubmitted | TurnStart::Unknown => None,
             },
         )?;
         if matches!(outcome, TurnStart::Unknown) {
@@ -1601,7 +1875,11 @@ pub(super) async fn journal_batch(
                     .clone()
                     .map(|params| (entry.generation.0, params))
             }
-            _ => None,
+            JournalPayload::Frame(_)
+            | JournalPayload::RawStdout { .. }
+            | JournalPayload::Stderr(_)
+            | JournalPayload::Exit(_)
+            | JournalPayload::Other { .. } => None,
         })
         .collect::<Vec<_>>();
     if !usage_notices.is_empty() {
@@ -1810,7 +2088,11 @@ fn journal_method(entry: &JournalEntry) -> Option<&str> {
         JournalPayload::Frame(Frame::Notification(frame)) => Some(frame.method.as_str()),
         JournalPayload::Frame(Frame::Request(frame)) => Some(frame.method.as_str()),
         JournalPayload::Frame(Frame::UnknownMethod(frame)) => Some(frame.method.as_str()),
-        _ => None,
+        JournalPayload::Frame(_)
+        | JournalPayload::RawStdout { .. }
+        | JournalPayload::Stderr(_)
+        | JournalPayload::Exit(_)
+        | JournalPayload::Other { .. } => None,
     }
 }
 
@@ -1826,7 +2108,11 @@ fn journal_stage(entry: &JournalEntry) -> &'static str {
             _ => "journal.entry.notification",
         },
         JournalPayload::Frame(Frame::Request(_)) => "journal.entry.request",
-        _ => "journal.entry.other",
+        JournalPayload::Frame(_)
+        | JournalPayload::RawStdout { .. }
+        | JournalPayload::Stderr(_)
+        | JournalPayload::Exit(_)
+        | JournalPayload::Other { .. } => "journal.entry.other",
     }
 }
 
@@ -1890,7 +2176,7 @@ fn journal_one(
                 f.method.as_str(),
                 f.fields.get("params").unwrap_or(&Value::Null),
             )),
-            _ => None,
+            Frame::Request(_) | Frame::UnknownMethod(_) | Frame::Response { .. } => None,
         };
         if let Some(("command/exec/outputDelta", params)) = notice
             && let Some(process_id) = params
@@ -2804,7 +3090,10 @@ fn save_publication_effect(
         | Effect::AnalyticsStreamCaptured(_)
         | Effect::TokenRateAssociation(_)
         | Effect::TokenRateUsage(_) => PUBLICATION_TOKEN_RATE,
-        _ => PUBLICATION_PENDING,
+        Effect::Analytics { .. }
+        | Effect::AnalyticsStream { .. }
+        | Effect::AnalyticsCaptured(_)
+        | Effect::Recovered { .. } => PUBLICATION_PENDING,
     };
     save_signed(
         tx,

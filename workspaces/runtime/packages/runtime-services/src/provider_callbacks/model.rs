@@ -211,7 +211,9 @@ impl Input {
                 request.method.clone(),
                 request.fields.get("params").cloned(),
             ),
-            _ => return Ok(None),
+            Frame::Notification(_) | Frame::UnknownMethod(_) | Frame::Response { .. } => {
+                return Ok(None);
+            }
         };
         let params = params.unwrap_or(json!({}));
         if !params.is_object() || params.to_string().len() > MAX_BYTES {

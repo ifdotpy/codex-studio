@@ -450,8 +450,8 @@ async fn stop(active: Active) {
     #[cfg(target_os = "macos")]
     {
         let session = active.session.clone();
-        let _ =
-            crate::media::mac::on_main(move || Ok(crate::voice_audio::mac::stop(&session))).await;
+        // Audio shutdown remains best effort; the peer is closed below even if its UI owner left.
+        drop(crate::media::mac::on_main(move || Ok(crate::voice_audio::mac::stop(&session))).await);
     }
     if let Some(peer) = active.peer {
         peer.close().await;
@@ -501,7 +501,8 @@ async fn create(params: &Value) -> Result<Value, String> {
                     device_playback,
                     device_muted,
                     Box::new(move |_| {
-                        let _ = ended.try_send(json!({"type":"microphone","state":"ended"}));
+                        // A canceled voice subscriber no longer needs this final device event.
+                        drop(ended.try_send(json!({"type":"microphone","state":"ended"})));
                     }),
                 )
             })

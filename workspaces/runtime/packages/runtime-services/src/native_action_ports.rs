@@ -180,7 +180,10 @@ impl Acceptance for NativeActionAcceptance {
             Delivery::Written(result) if request.method == "review/start" => {
                 result["turn"]["id"].as_str().map(str::to_owned)
             }
-            _ => None,
+            Delivery::Written(_)
+            | Delivery::Rejected(_)
+            | Delivery::NotSent
+            | Delivery::Unknown => None,
         };
         AgentRepository::put(tx, &AgentRecord::from_value(value)?)
             .map_err(|_| NativeError::Changed)?;
@@ -207,6 +210,10 @@ fn admission_error(error: crate::coordination::CoordinationError) -> NativeError
     match error {
         CoordinationError::RequiresDependency(name) => NativeError::Unavailable(name),
         CoordinationError::AdmissionDenied(_) => NativeError::Invalid("budget"),
-        _ => NativeError::Invalid("admission"),
+        CoordinationError::InvalidRequest(_)
+        | CoordinationError::Conflict(_)
+        | CoordinationError::InvalidStored { .. }
+        | CoordinationError::BudgetRuntime(_)
+        | CoordinationError::Store(_) => NativeError::Invalid("admission"),
     }
 }

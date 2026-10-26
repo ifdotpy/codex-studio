@@ -531,7 +531,20 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
                 && !truthy(agent.extra.get("startAttempt"))
         }
         AgentStatus::Approval => false,
-        _ => true,
+        AgentStatus::Unknown
+        | AgentStatus::Idle
+        | AgentStatus::Queued
+        | AgentStatus::Waiting
+        | AgentStatus::WaitingOnMonitor
+        | AgentStatus::Completed
+        | AgentStatus::Interrupted
+        | AgentStatus::Failed
+        | AgentStatus::Blocked
+        | AgentStatus::Paused
+        | AgentStatus::Parked
+        | AgentStatus::Abandoned
+        | AgentStatus::CapacityRetry
+        | AgentStatus::Other(_) => true,
     };
     if !auto_wake || truthy(agent.extra.get("nativeFailureHold")) || !status {
         return Ok(());

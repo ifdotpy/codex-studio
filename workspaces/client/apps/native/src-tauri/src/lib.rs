@@ -270,7 +270,8 @@ async fn client_request(
                         studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
                     ));
                 }
-                remote.as_ref().unwrap().clone()
+                // The branch above initializes the client while this lock is held.
+                remote.as_ref().expect("remote client initialized").clone()
             };
             return match client.dispatch(&request.method, &request.params).await {
                 Ok(value) => Ok(Response::success(request.id, value)),

@@ -256,7 +256,14 @@ async fn finish(
         NativeError::Unavailable("native-review/not-sent") => {
             "The native review request was not sent.".to_owned()
         }
-        other => format!("Native review could not start: {other}"),
+        other @ NativeError::Invalid(_)
+        | other @ NativeError::InvalidStored { .. }
+        | other @ NativeError::Conflict
+        | other @ NativeError::Changed
+        | other @ NativeError::Unavailable(_)
+        | other @ NativeError::Store(_)
+        | other @ NativeError::Json(_)
+        | other @ NativeError::Sql(_) => format!("Native review could not start: {other}"),
     };
     let request = request.clone();
     let not_sent = matches!(error, NativeError::Unavailable("native-review/not-sent"));
@@ -410,7 +417,19 @@ fn worker_error(error: WorkerError) -> NativeError {
         WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
             NativeError::Unavailable("native-review/preparation")
         }
-        _ => NativeError::Invalid("native-review/preparation"),
+        WorkerError::Store(_)
+        | WorkerError::Scheduler(_)
+        | WorkerError::Session(_)
+        | WorkerError::Notification(_)
+        | WorkerError::PreparationRefused(_)
+        | WorkerError::StaleVmActor
+        | WorkerError::CleanupUnconfirmed(_)
+        | WorkerError::AlreadyRunning
+        | WorkerError::Closed
+        | WorkerError::ShutdownTimeout
+        | WorkerError::TaskFailed
+        | WorkerError::Capacity
+        | WorkerError::CallbackUnknown => NativeError::Invalid("native-review/preparation"),
     }
 }
 
@@ -655,7 +674,145 @@ pub(crate) mod tests {
                         json!({"turn":{"id":"review-turn","items":[],"status":"inProgress"},
                             "reviewThreadId":"review-thread"}),
                     ),
-                    _ => (Reply::Accept, json!({})),
+                    Method::Initialize
+                    | Method::Initialized
+                    | Method::Ack
+                    | Method::AccountLoginCancel
+                    | Method::AccountLoginStart
+                    | Method::AccountRateLimitResetCreditConsume
+                    | Method::ThreadLoadedList
+                    | Method::ConfigRead
+                    | Method::SkillsExtraRootsSet
+                    | Method::ModelList
+                    | Method::AccountRead
+                    | Method::AccountRateLimitsRead
+                    | Method::ThreadRealtimeStart
+                    | Method::ThreadRealtimeStop
+                    | Method::ThreadRealtimeAppendSpeech
+                    | Method::ThreadRealtimeItemStarted
+                    | Method::ThreadRealtimeTranscriptDelta
+                    | Method::ThreadRealtimeTranscriptDone
+                    | Method::ThreadRealtimeSdp
+                    | Method::ThreadRealtimeError
+                    | Method::ThreadRealtimeClosed
+                    | Method::ThreadResume
+                    | Method::ThreadRead
+                    | Method::ThreadTurnsList
+                    | Method::TurnStart
+                    | Method::TurnSteer
+                    | Method::TurnInterrupt
+                    | Method::ThreadList
+                    | Method::ThreadArchive
+                    | Method::ThreadFork
+                    | Method::ThreadNameSet
+                    | Method::ThreadMetadataUpdate
+                    | Method::ThreadSettingsUpdate
+                    | Method::ThreadCompactStart
+                    | Method::ThreadRollback
+                    | Method::ThreadItemsList
+                    | Method::ThreadGoalSet
+                    | Method::ThreadGoalUpdated
+                    | Method::ThreadUnarchive
+                    | Method::ThreadUnsubscribe
+                    | Method::ProcessSpawn
+                    | Method::ProcessWriteStdin
+                    | Method::ProcessKill
+                    | Method::ProcessResizePty
+                    | Method::CommandExec
+                    | Method::CommandExecWrite
+                    | Method::CommandExecResize
+                    | Method::CommandExecTerminate
+                    | Method::ThreadBackgroundTerminalsList
+                    | Method::ThreadBackgroundTerminalsTerminate
+                    | Method::ThreadBackgroundTerminalsClean
+                    | Method::ThreadCommandExecutionBackground
+                    | Method::ThreadQueueList
+                    | Method::ClaudeState
+                    | Method::ClaudeRepairReport
+                    | Method::ClaudeFileBackups
+                    | Method::ClaudeSettings
+                    | Method::ClaudeActivity
+                    | Method::ClaudeStopTask
+                    | Method::ClaudeDiagnostics
+                    | Method::ClaudeMoveVersions
+                    | Method::McpServerReconnect
+                    | Method::McpServerStatusList
+                    | Method::SkillsList
+                    | Method::OperationStatus
+                    | Method::BrowserAnswer
+                    | Method::BrowserCallback
+                    | Method::BrowserClose
+                    | Method::BrowserWait
+                    | Method::ClaudeCommands
+                    | Method::ClaudeMoveExport
+                    | Method::ClaudeMoveIdentity
+                    | Method::ClaudeMovePreflight
+                    | Method::ClaudeMoveProof
+                    | Method::Detach
+                    | Method::EventRead
+                    | Method::Exec
+                    | Method::Generate
+                    | Method::Health
+                    | Method::Info
+                    | Method::LayrHealth
+                    | Method::Next
+                    | Method::Open
+                    | Method::ProjectEnsure
+                    | Method::ProjectExec
+                    | Method::ProjectImport
+                    | Method::ProviderList
+                    | Method::Replay
+                    | Method::ResponseStatus
+                    | Method::RetireCommand
+                    | Method::SecretsList
+                    | Method::SecretsRemove
+                    | Method::SecretsSet
+                    | Method::ShareConfigure
+                    | Method::ShareName
+                    | Method::ShareStatus
+                    | Method::Sign
+                    | Method::Status
+                    | Method::SyncMacApply
+                    | Method::SyncMacHandoff
+                    | Method::SyncMacHashes
+                    | Method::SyncMacHead
+                    | Method::SyncMacRead
+                    | Method::SyncMacWorktree
+                    | Method::VaultConfigure
+                    | Method::VaultPush
+                    | Method::VaultStatus
+                    | Method::UploadBegin
+                    | Method::UploadChunk
+                    | Method::UploadCommit
+                    | Method::Verify
+                    | Method::Write
+                    | Method::CurrentTimeRead
+                    | Method::ItemToolCall
+                    | Method::ItemCommandExecutionRequestApproval
+                    | Method::ItemFileChangeRequestApproval
+                    | Method::ItemPermissionsRequestApproval
+                    | Method::McpServerElicitationRequest
+                    | Method::ItemToolRequestUserInput
+                    | Method::ItemStarted
+                    | Method::ItemCompleted
+                    | Method::ItemAgentMessageDelta
+                    | Method::ItemReasoningTextDelta
+                    | Method::ItemCommandExecutionOutputDelta
+                    | Method::CommandExecOutputDelta
+                    | Method::TurnStarted
+                    | Method::TurnCompleted
+                    | Method::TurnPlanUpdated
+                    | Method::TurnDiffUpdated
+                    | Method::ThreadClosed
+                    | Method::ThreadStatusChanged
+                    | Method::ThreadTokenUsageUpdated
+                    | Method::ThreadIdleCompactionUpdated
+                    | Method::AccountLoginCompleted
+                    | Method::AccountUpdated
+                    | Method::AccountRateLimitsUpdated
+                    | Method::ModelSafetyBufferingUpdated
+                    | Method::ProviderGenerationStarted
+                    | Method::ProtocolError => (Reply::Accept, json!({})),
                 };
                 let ticket = RequestTicket {
                     generation: 7,

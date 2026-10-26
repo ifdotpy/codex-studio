@@ -1752,7 +1752,19 @@ fn account_error(error: AccountDriverError) -> AccountSessionError {
         AccountDriverError::LoginCancellationUnavailable => {
             AccountSessionError::Requires("provider-session/codex-login")
         }
-        _ => AccountSessionError::Persistence,
+        AccountDriverError::ReadRegistry
+        | AccountDriverError::InvalidRegistry
+        | AccountDriverError::WriteRegistry
+        | AccountDriverError::DurabilityUnconfirmed
+        | AccountDriverError::Poisoned
+        | AccountDriverError::SignInRequired
+        | AccountDriverError::DeletedAccount
+        | AccountDriverError::InvalidAccountOrder(_)
+        | AccountDriverError::NameRequestConflict
+        | AccountDriverError::DeleteRequestConflict
+        | AccountDriverError::NoDisconnectReplacement
+        | AccountDriverError::NoDeleteReplacement
+        | AccountDriverError::InvalidCodexProfile => AccountSessionError::Persistence,
     }
 }
 fn mutation_error(error: AccountMutationError) -> AccountSessionError {
@@ -2178,7 +2190,7 @@ mod limits_runtime_tests {
                     Method::AccountLoginStart,
                     json!({"type":"chatgptDeviceCode"}),
                 ),
-                _ => (Method::AccountRateLimitsRead, json!({})),
+                Reply::Data(_) | Reply::Rejected => (Method::AccountRateLimitsRead, json!({})),
             };
             assert_eq!(method, expected_method);
             assert_eq!(request.params, expected_params);

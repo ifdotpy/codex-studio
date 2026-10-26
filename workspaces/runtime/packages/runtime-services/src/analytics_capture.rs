@@ -685,7 +685,12 @@ pub(crate) fn capture_logged_effect(
             observation,
             metrics,
         } => (observation, Some(metrics)),
-        _ => return Err(CaptureError::Invalid("/effect")),
+        Effect::AnalyticsCaptured(_)
+        | Effect::AnalyticsStreamCaptured(_)
+        | Effect::TokenRateStream(_)
+        | Effect::TokenRateAssociation(_)
+        | Effect::TokenRateUsage(_)
+        | Effect::Recovered { .. } => return Err(CaptureError::Invalid("/effect")),
     };
     let agent = observation
         .agent
@@ -693,7 +698,13 @@ pub(crate) fn capture_logged_effect(
         .ok_or(CaptureError::Invalid("/agent"))?;
     let epoch = match effect {
         Effect::Analytics { ledger_since, .. } => *ledger_since,
-        _ => studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        Effect::AnalyticsStream { .. }
+        | Effect::AnalyticsCaptured(_)
+        | Effect::AnalyticsStreamCaptured(_)
+        | Effect::TokenRateStream(_)
+        | Effect::TokenRateAssociation(_)
+        | Effect::TokenRateUsage(_)
+        | Effect::Recovered { .. } => studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
     };
     let mut prepared = PreparedCapture::notification_event(
         agent,
@@ -1595,7 +1606,8 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
     {
         match correction(&old.studio_usage, &observation) {
             UsageCorrection::Apply | UsageCorrection::UnresolvedGap => {}
-            decision => {
+            decision @ UsageCorrection::Replay
+            | decision @ UsageCorrection::ResponseReplayConflict => {
                 out.response_replay_conflict = decision == UsageCorrection::ResponseReplayConflict;
                 if let (Some(rate), UsageObservation::Response { tokens, .. }) =
                     (&mut out.response_rate, &old.studio_usage)

@@ -176,7 +176,24 @@ impl From<StoreError> for NotificationDispatchError {
             StoreError::InvalidSyncObject { scope, id } => {
                 Self::InvalidStoredObject { table: scope, id }
             }
-            error => Self::Store(error),
+            error @ StoreError::StateDirectory(_)
+            | error @ StoreError::AlreadyOwned
+            | error @ StoreError::MissingDatabase(_)
+            | error @ StoreError::UnsafeStateDirectory
+            | error @ StoreError::SchemaMismatch(_)
+            | error @ StoreError::InvalidSyncObjectField { .. }
+            | error @ StoreError::InvalidStoredRecord { .. }
+            | error @ StoreError::SchemaObjectMismatch { .. }
+            | error @ StoreError::Sqlite(_)
+            | error @ StoreError::CommitOutcomeUnknown(_)
+            | error @ StoreError::Json(_)
+            | error @ StoreError::SchemaValidation(_)
+            | error @ StoreError::RecordContract(_)
+            | error @ StoreError::WriterPoisoned
+            | error @ StoreError::WriterActorInitialization(_)
+            | error @ StoreError::WriterActorControl(_)
+            | error @ StoreError::CommitActorOutcomeUnknown(_)
+            | error @ StoreError::ReadTaskFailed => Self::Store(error),
         }
     }
 }
@@ -2234,7 +2251,9 @@ fn checked_outcome(outcome: DispatchOutcome) -> Result<DispatchOutcome, Notifica
         DispatchOutcome::RequiresService { service } => {
             Err(NotificationDispatchError::Dependency(service.name()))
         }
-        outcome => Ok(outcome),
+        outcome @ DispatchOutcome::Written
+        | outcome @ DispatchOutcome::Ignored { .. }
+        | outcome @ DispatchOutcome::Unhandled { .. } => Ok(outcome),
     }
 }
 
@@ -2425,7 +2444,12 @@ mod tests {
                     NotificationPostCommit::TokenRateUsage(_) => {
                         rates.publish_observation(effect).expect("rate projection")
                     }
-                    _ => {}
+                    NotificationPostCommit::AnalyticsStream { .. }
+                    | NotificationPostCommit::AnalyticsCaptured(_)
+                    | NotificationPostCommit::AnalyticsStreamCaptured(_)
+                    | NotificationPostCommit::TokenRateStream(_)
+                    | NotificationPostCommit::TokenRateAssociation(_)
+                    | NotificationPostCommit::Recovered { .. } => {}
                 }
             }
         }
@@ -2849,7 +2873,9 @@ mod tests {
         bytes.push(b'\n');
         match studio_runtime_providers::decode_journal_entry(1, 1, bytes).payload {
             studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
-            other => panic!("fixture must decode: {other:?}"),
+            other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => {
+                panic!("fixture must decode: {other:?}")
+            }
         }
     }
 

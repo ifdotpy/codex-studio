@@ -2673,7 +2673,22 @@ fn account_identity_blocking(
 ) -> Result<(AccountIdentity, AccountStatus, bool), OperationError> {
     let status = driver.get(account_key).map_err(|error| match error {
         AccountDriverError::UnknownAccount => OperationError::Invalid("Unknown account"),
-        _ => OperationError::Internal,
+        AccountDriverError::ReadRegistry
+        | AccountDriverError::InvalidRegistry
+        | AccountDriverError::WriteRegistry
+        | AccountDriverError::DurabilityUnconfirmed
+        | AccountDriverError::Poisoned
+        | AccountDriverError::SignInRequired
+        | AccountDriverError::DeletedAccount
+        | AccountDriverError::InvalidAccountOrder(_)
+        | AccountDriverError::NameRequestConflict
+        | AccountDriverError::DeleteRequestConflict
+        | AccountDriverError::NoDisconnectReplacement
+        | AccountDriverError::NoDeleteReplacement
+        | AccountDriverError::InvalidCodexProfile
+        | AccountDriverError::LoginResponseUnknown
+        | AccountDriverError::UnknownLogin
+        | AccountDriverError::LoginCancellationUnavailable => OperationError::Internal,
     })?;
     if status == AccountStatus::Changed {
         return Err(OperationError::Invalid(

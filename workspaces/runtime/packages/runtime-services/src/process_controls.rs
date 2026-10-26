@@ -98,7 +98,7 @@ fn canonical(value: &Value) -> String {
             "[{}]",
             items.iter().map(canonical).collect::<Vec<_>>().join(",")
         ),
-        _ => value.to_string(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
     }
 }
 pub fn digest(value: &Value) -> String {

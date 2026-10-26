@@ -1553,7 +1553,10 @@ fn write_internal(
                             && value.get("agentId").and_then(Value::as_str)
                                 == Some(agent.id.0.as_str())
                     }
-                    _ => false,
+                    WorkWrite::Create(_)
+                    | WorkWrite::Mutate(_)
+                    | WorkWrite::Claim(_)
+                    | WorkWrite::Submit(_) => false,
                 };
                 if !matches_accept {
                     return Err(Error::Conflict("This request id has different content").into());
@@ -2696,7 +2699,19 @@ fn submit(
     )
     .map_err(|error| match error {
         crate::monitor_policy::MonitorError::Store(error) => WorkWriteError::Store(error),
-        _ => WorkWriteError::Event(Error::Conflict(
+        crate::monitor_policy::MonitorError::InvalidStored { .. }
+        | crate::monitor_policy::MonitorError::InvalidResultReceipt(_)
+        | crate::monitor_policy::MonitorError::InvalidDeliveryIdentity(_)
+        | crate::monitor_policy::MonitorError::InvalidOutputReceipt(_)
+        | crate::monitor_policy::MonitorError::TaskFailed
+        | crate::monitor_policy::MonitorError::Refused(_)
+        | crate::monitor_policy::MonitorError::Unavailable(_)
+        | crate::monitor_policy::MonitorError::ProviderRequest { .. }
+        | crate::monitor_policy::MonitorError::ConfigurationRejected { .. }
+        | crate::monitor_policy::MonitorError::ConfigurationReceipt { .. }
+        | crate::monitor_policy::MonitorError::Event(_)
+        | crate::monitor_policy::MonitorError::Rules(_)
+        | crate::monitor_policy::MonitorError::Io(_) => WorkWriteError::Event(Error::Conflict(
             "The acceptance gate could not be admitted; check workspace and monitor capacity",
         )),
     })?;

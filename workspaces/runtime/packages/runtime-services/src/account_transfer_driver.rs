@@ -542,7 +542,12 @@ fn persist(tx: &Transaction<'_>, mut decision: Decision, now: f64) -> Result<Val
                 studio_runtime_store::UsageRepositoryError::Store(error) => {
                     TransferError::Store(error)
                 }
-                _ => TransferError::Stored {
+                studio_runtime_store::UsageRepositoryError::MissingFamily
+                | studio_runtime_store::UsageRepositoryError::EventDriverRequired
+                | studio_runtime_store::UsageRepositoryError::UnknownAgent
+                | studio_runtime_store::UsageRepositoryError::UnknownContinuation
+                | studio_runtime_store::UsageRepositoryError::InvalidStoredObject { .. }
+                | studio_runtime_store::UsageRepositoryError::Sqlite(_) => TransferError::Stored {
                     object: "usage resume",
                     pointer: "/".into(),
                 },

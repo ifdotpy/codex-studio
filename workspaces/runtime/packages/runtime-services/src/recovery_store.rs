@@ -317,7 +317,7 @@ impl RecoveryEffects for RecoveryStore {
                     }
                     json!({"status":"unconfirmed","checked":true})
                 }
-                _ => return completion.lock().map_err(|_| RecoveryError::CommitFailed)?.complete(tx, &expected, &scope, &action),
+                RecoveryAction::AcceptStart { .. } | RecoveryAction::AdoptQueuedWait { .. } | RecoveryAction::Terminal { .. } => return completion.lock().map_err(|_| RecoveryError::CommitFailed)?.complete(tx, &expected, &scope, &action),
             };
             persist_request_result(a, &mut updated, &result);
             RecoverySnapshot::from_record(updated.clone())
@@ -647,7 +647,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                             crate::notification_dispatch::NotificationDispatchError::Dependency(
                                 name,
                             ) => RecoveryError::Dependency(name),
-                            _ => RecoveryError::CommitFailed,
+                            crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. } | crate::notification_dispatch::NotificationDispatchError::InvalidAccountState { .. } | crate::notification_dispatch::NotificationDispatchError::StreamCapacity | crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject { .. } | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery | crate::notification_dispatch::NotificationDispatchError::ConflictingInput | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission | crate::notification_dispatch::NotificationDispatchError::Budget(_) | crate::notification_dispatch::NotificationDispatchError::Move(_) | crate::notification_dispatch::NotificationDispatchError::Json(_) => RecoveryError::CommitFailed,
                         })? {
                             stream_update = Some(update);
                         }
@@ -835,7 +835,11 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     stream_update,
                 })
             }
-            _ => Err(RecoveryError::EffectsUnavailable),
+            RecoveryAction::StartAbsent { .. }
+            | RecoveryAction::AdoptQueuedWait { .. }
+            | RecoveryAction::RestorePreparation { .. }
+            | RecoveryAction::OrphanIdle { .. }
+            | RecoveryAction::RecordCheck { .. } => Err(RecoveryError::EffectsUnavailable),
         }
     }
 }

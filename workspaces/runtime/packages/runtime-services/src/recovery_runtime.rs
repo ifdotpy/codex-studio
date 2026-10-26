@@ -155,7 +155,7 @@ impl RecoveryJob {
         let a = self.agent().record();
         let task = match self {
             Self::Task(t) => Some(t.task()["id"].clone()),
-            _ => None,
+            Self::Turn(_) | Self::Connection { .. } => None,
         };
         // Diagnostic timestamps change after each probe; they must not reset
         // pacing. Only durable operation identity creates a new check.
@@ -360,7 +360,7 @@ impl RecoveryRuntime {
                     RecoveryOutcome::Unconfirmed
                 }))
             }
-            _ => {
+            RecoveryJob::Turn(_) | RecoveryJob::Connection { .. } => {
                 let mut effects = RecoveryStore {
                     store: Arc::clone(&self.store),
                     connection_current: {

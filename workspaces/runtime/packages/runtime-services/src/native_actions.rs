@@ -1194,7 +1194,14 @@ fn located(error: NativeError, table: &'static str, id: &str) -> NativeError {
             id: id.to_owned(),
             location: location.to_owned(),
         },
-        other => other,
+        other @ NativeError::InvalidStored { .. }
+        | other @ NativeError::Conflict
+        | other @ NativeError::Changed
+        | other @ NativeError::Unknown
+        | other @ NativeError::Unavailable(_)
+        | other @ NativeError::Store(_)
+        | other @ NativeError::Json(_)
+        | other @ NativeError::Sql(_) => other,
     }
 }
 
@@ -1222,7 +1229,12 @@ impl CommandSnapshot {
         let process = match &task["processId"] {
             Value::String(v) if !v.is_empty() => v.clone(),
             Value::Number(v) if v.as_u64().is_some_and(|v| v > 0) => v.to_string(),
-            _ => return Err(NativeError::Invalid("command.processId")),
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_)
+            | Value::Object(_) => return Err(NativeError::Invalid("command.processId")),
         };
         Ok(Self {
             task,
