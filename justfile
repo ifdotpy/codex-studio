@@ -157,7 +157,7 @@ test-browser-smoke *args:
 
 [doc("Check the main user scenarios on the app installed on this Mac, with its own test chats. See docs/testing.md, Installed scenario smoke.")]
 smoke-installed *args:
-    @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.mjs")}} "$@"
+    @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.ts")}} "$@"
 
 [doc("Run the full browser project as a manual heavy check.")]
 test-heavy:
