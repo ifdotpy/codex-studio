@@ -111,7 +111,7 @@ import {
   rewindSessionFiles,
 } from "./file-checkpoints.ts";
 import { createAccountCheck } from "./account-identity.ts";
-import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
+import { readHistoryIndex, verifiedHistoryIndex } from "./history-index.ts";
 import {
   persistNativeSession,
   guardNativeSessionInput,
@@ -2962,8 +2962,8 @@ async function handle(
     return rollbackSession(s, p, {
       persist,
       forkSession,
-      getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options?.dir ?? s.cwd }),
+      getHistoryIndex: (id, options) =>
+        verifiedHistoryIndex({ id, cwd: options?.dir ?? s.cwd }),
       prepareFileRestore: (session, messages, messageId) =>
         prepareFileRestore(session, messages, messageId, root),
       verifyFileRestore,
@@ -3121,8 +3121,8 @@ async function handle(
       );
     const s = await forkAtTurn(old, p, {
       forkSession,
-      getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options?.dir ?? old.cwd }),
+      getHistoryIndex: (id, options) =>
+        verifiedHistoryIndex({ id, cwd: options?.dir ?? old.cwd }),
       persist,
     });
     sessions.set(s.id, s);

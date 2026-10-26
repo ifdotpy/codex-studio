@@ -180,6 +180,38 @@ test("restart restores the final native assistant reply", async () => {
     });
   });
 });
+const attachment = (parentUuid: string): SessionStoreEntry => ({
+  type: "attachment",
+  uuid: nextId,
+  parentUuid,
+  sessionId,
+  cwd,
+  isSidechain: false,
+  attachment: {
+    type: "deferred_tools_delta",
+    addedNames: ["mcp__fixture__echo"],
+    addedLines: ["mcp__fixture__echo"],
+    removedNames: [],
+  },
+});
+const costState: SessionStoreEntry = { type: "cost-state", totalCost: 0 };
+for (const trailing of [false, true])
+  test(`restart restores the final reply through a known attachment${trailing ? " and trailing metadata" : ""}`, async () => {
+    await loadStale(
+      [
+        user(),
+        attachment(userId),
+        { ...reply(), parentUuid: nextId },
+        ...(trailing ? [costState] : []),
+      ],
+      {},
+      (turn) => {
+        assert.equal(turn.status, "completed");
+        assert.equal(turn.items.at(-1)?.text, "The task is complete.");
+      },
+    );
+  });
+
 test("restart confirms a native turn with no assistant reply as interrupted", async () => {
   await loadStale([user()], {}, (turn) =>
     assert.equal(turn.status, "interrupted"),
@@ -202,7 +234,97 @@ test("restart confirms a pending native tool call as interrupted", async () => {
     (turn) => assert.equal(turn.status, "interrupted"),
   );
 });
+test("known non-input records cannot turn input coverage into a final answer", async () => {
+  await loadStale([user(), attachment(userId), costState], {}, (turn) => {
+    assert.equal(turn.status, "interrupted");
+    assert.equal(
+      turn.items.some((item) => item.phase === "final_answer"),
+      false,
+    );
+  });
+});
+test("known non-input records preserve the pending-tool outcome", async () => {
+  await loadStale(
+    [
+      user(),
+      attachment(userId),
+      row("assistant", replyId, nextId, [
+        { type: "tool_use", id: "tool", name: "Bash", input: {} },
+      ]),
+      costState,
+    ],
+    {},
+    (turn) => assert.equal(turn.status, "interrupted"),
+  );
+});
 for (const [name, rows, options] of [
+  [
+    "API error after a known attachment",
+    [
+      user(),
+      attachment(userId),
+      { ...reply(), parentUuid: nextId, isApiErrorMessage: true },
+      costState,
+    ],
+    {},
+  ],
+  [
+    "unknown attachment",
+    [
+      user(),
+      {
+        ...attachment(userId),
+        attachment: { type: "future-input", content: "instruction" },
+      },
+      { ...reply(), parentUuid: nextId },
+    ],
+    {},
+  ],
+  [
+    "broken attachment ancestry",
+    [user(), attachment(replyId), { ...reply(), parentUuid: nextId }],
+    {},
+  ],
+  [
+    "sibling assistant reply",
+    [
+      user(),
+      row("assistant", nextId, userId, [
+        { type: "text", text: "Earlier output" },
+      ]),
+      reply(),
+    ],
+    {},
+  ],
+  [
+    "valid compaction boundary after final reply",
+    [
+      user(),
+      reply(),
+      {
+        type: "system",
+        uuid: nextId,
+        parentUuid: replyId,
+        sessionId,
+        cwd,
+        isSidechain: false,
+        subtype: "compact_boundary",
+      },
+    ],
+    {},
+  ],
+  [
+    "unresolved tool before text reply",
+    [
+      user(),
+      row("assistant", nextId, userId, [
+        { type: "tool_use", id: "tool", name: "Bash", input: {} },
+      ]),
+      { ...reply(), parentUuid: nextId },
+      costState,
+    ],
+    {},
+  ],
   ["sidechain input", [{ ...user(), isSidechain: true }, reply()], {}],
   [
     "compacted turn",
@@ -295,7 +417,12 @@ test("thread/read and resume deliver the recovered final reply without a model q
     await fs.mkdir(folder, { recursive: true });
     await fs.writeFile(
       path.join(folder, sessionId + ".jsonl"),
-      [user(), reply()]
+      [
+        user(),
+        attachment(userId),
+        { ...reply(), parentUuid: nextId },
+        costState,
+      ]
         .map((entry) => JSON.stringify({ ...entry, cwd: bridge.root }) + "\n")
         .join(""),
     );

@@ -111,18 +111,14 @@ export interface Turn {
     | undefined;
   apiErrorInfo?: string | null | undefined;
 }
-export interface ControlReceipt {
+interface ControlReceiptBase {
   kind: "rollback";
   turnId: string;
   restoreFiles?: boolean | undefined;
   fileMessageId?: string | undefined;
-  status: "submitted" | "forked" | "rewind_submitted" | "rewound" | "completed";
   sourceNativeId: string;
-  targetNativeId?: string | undefined;
   createdAt: string;
   retainedCount: number;
-  sourceMessages?: SessionMessage[] | undefined;
-  previousTurns?: Turn[] | undefined;
   upToMessageId: string | null;
   filePlan?: FileRestorePlan | undefined;
   fileResult?: RewindFilesResult | undefined;
@@ -136,6 +132,35 @@ export interface ControlReceipt {
     fileResult?: RewindFilesResult | undefined;
   };
 }
+type PendingControlReceipt = ControlReceiptBase & {
+  sourceMessages: SessionMessage[];
+  previousTurns: Turn[];
+};
+export type ControlReceipt =
+  | (PendingControlReceipt & { status: "submitted" })
+  | (PendingControlReceipt & { status: "forked"; targetNativeId: string })
+  | (PendingControlReceipt & {
+      status: "rewind_submitted";
+      targetNativeId: string;
+      restoreFiles: true;
+      fileMessageId: string;
+      filePlan: FileRestorePlan;
+    })
+  | (PendingControlReceipt & {
+      status: "rewound";
+      targetNativeId: string;
+      restoreFiles: true;
+      fileMessageId: string;
+      filePlan: FileRestorePlan;
+      fileResult: RewindFilesResult;
+    })
+  | (ControlReceiptBase & {
+      status: "completed";
+      targetNativeId: string;
+      result: NonNullable<ControlReceiptBase["result"]>;
+      sourceMessages?: never;
+      previousTurns?: never;
+    });
 export interface JournalRepairReport {
   status: "needs_repair" | "repaired";
   skippedRows: number;

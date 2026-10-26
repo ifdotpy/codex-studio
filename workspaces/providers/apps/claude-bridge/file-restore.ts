@@ -117,7 +117,7 @@ function same(a: unknown, b: unknown) {
 
 async function nativeBackups(
   session: RestoreSession,
-  messages: Pick<SessionMessage, "uuid">[],
+  messages: readonly Pick<SessionMessage, "uuid">[],
   messageId: string,
   configDir: string,
 ) {
@@ -330,7 +330,7 @@ async function admitBackup(
 }
 export function prepareFileRestore(
   session: RestoreSession,
-  messages: Pick<SessionMessage, "uuid">[],
+  messages: readonly Pick<SessionMessage, "uuid">[],
   messageId: string,
   stateDir: string,
   configDir?: string,
@@ -416,7 +416,7 @@ export function fileBackups<S extends Pick<Session, "controlRequests">>(
 
 async function prepareFileRestoreOwned(
   session: RestoreSession,
-  messages: Pick<SessionMessage, "uuid">[],
+  messages: readonly Pick<SessionMessage, "uuid">[],
   messageId: string,
   stateDir: string,
   configDir = process.env.CLAUDE_CONFIG_DIR ||
