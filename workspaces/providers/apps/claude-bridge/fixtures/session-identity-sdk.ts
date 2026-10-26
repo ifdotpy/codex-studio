@@ -8,7 +8,7 @@ import type {
 } from "./session-sdk-types.ts";
 
 export type IdentityQueryRecord = Pick<Options, "resume" | "sessionId">;
-export const resolveSettings = async () => ({ effective: {} });
+export { resolveSettings } from "../sdk-fixtures.ts";
 export const tool = (
   name: string,
   description: string,

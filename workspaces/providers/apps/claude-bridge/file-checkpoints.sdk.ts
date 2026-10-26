@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 import assert from "node:assert/strict";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 import type {

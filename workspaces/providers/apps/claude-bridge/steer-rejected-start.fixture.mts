@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 export {
   tool,
   createSdkMcpServer,

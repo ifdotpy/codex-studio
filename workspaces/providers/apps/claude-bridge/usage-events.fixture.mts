@@ -1,4 +1,4 @@
-import { inputText } from "./sdk-fixtures.ts";
+export { resolveSettings } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 export {
   tool,
@@ -36,7 +36,11 @@ export function query({ prompt, options }: FixtureQuery) {
       const input = await prompt.next();
       if (input.done) return;
       yield { type: "user", isReplay: true, uuid: input.value.uuid };
-      yield { type: "system", subtype: "init" };
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: options.resume || options.sessionId,
+      };
       for (const event of events) yield event;
       await new Promise<void>((resolve) =>
         abort.signal.addEventListener("abort", () => resolve(), { once: true }),

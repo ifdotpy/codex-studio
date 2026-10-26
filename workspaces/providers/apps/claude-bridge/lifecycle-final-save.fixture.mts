@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 const scenario = process.env.STUDIO_FIXTURE_FINAL_SAVE;
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 import { inputText } from "./sdk-fixtures.ts";

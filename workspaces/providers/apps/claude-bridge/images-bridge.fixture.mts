@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 import { inputText, waitForFile } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 export {

@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 export const query = () => {
   throw new Error("No SDK call expected");
 };
