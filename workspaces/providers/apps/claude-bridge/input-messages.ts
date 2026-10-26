@@ -1,3 +1,4 @@
+import type { Item } from "./session-state.ts";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 export type InputGroup = {
@@ -79,7 +80,7 @@ export function sdkInputMessages(
 // Ordered native UUIDs of one logical input. The final UUID keeps the logical
 // input identity; the first UUID is its history boundary, never a checkpoint.
 export function nativeInputIds(
-  item: { nativeIds?: string[]; nativeId?: string } | null | undefined,
+  item: Pick<Item, "nativeIds" | "nativeId"> | null | undefined,
 ) {
   const ids = item?.nativeIds ?? [item?.nativeId];
   if (
