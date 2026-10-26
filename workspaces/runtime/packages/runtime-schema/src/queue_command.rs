@@ -306,55 +306,212 @@ mod tests {
     }
 
     #[test]
-    fn queue_command_schema_preserves_old_acceptance() {
-        let old: Value =
+    fn queue_command_schema_matches_committed_openapi() {
+        let openapi =
             serde_json::from_str(include_str!("../../runtime-http/openapi.json")).expect("OpenAPI");
-        for (name, schema) in schemas() {
-            let before =
-                jsonschema::validator_for(&old["components"]["schemas"][name]).expect("old schema");
-            let after = jsonschema::validator_for(&schema).expect("owner schema");
-            let action = match name {
-                "QueueCancelBody" => "cancel",
-                "QueueEditBody" => "edit",
-                "QueueFirstBody" => "first",
-                "QueueReorderBody" => "reorder",
-                _ => unreachable!(),
-            };
-            let base = match action {
-                "edit" => json!({"action":action,"text":"text","id":"a"}),
-                "reorder" => json!({"action":action,"expected_revision":"r","ordered_ids":["a"]}),
-                _ => json!({"action":action,"id":"a"}),
-            };
-            for field in [
-                "action",
-                "agent",
-                "id",
-                "message_id",
-                "request_id",
-                "expected_revision",
-                "expectedText",
-                "text",
-                "ordered_ids",
-                "extra",
-            ] {
-                for value in [
-                    Value::Null,
-                    json!(""),
-                    json!("a"),
-                    json!(42),
-                    json!(true),
-                    json!([]),
-                    json!(["a"]),
+        check_schema_parity(&openapi).expect("queue schemas match their owner");
+    }
+
+    #[test]
+    fn queue_command_schema_preserves_fixed_legacy_outcomes() {
+        let openapi: Value =
+            serde_json::from_str(include_str!("../../runtime-http/openapi.json")).expect("OpenAPI");
+        let validators = schemas()
+            .into_iter()
+            .map(|(name, schema)| {
+                (
+                    name,
+                    [
+                        jsonschema::validator_for(&schema).expect("owner schema"),
+                        jsonschema::validator_for(&openapi["components"]["schemas"][name])
+                            .expect("committed schema"),
+                    ],
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let check = |name: &str, wire: &Value, expected: bool| {
+            for validator in &validators[name] {
+                assert_eq!(validator.is_valid(wire), expected, "{name}: {wire}");
+            }
+        };
+        // Expected outcomes are fixed legacy schema behavior, independent of
+        // either schema renderer. Handler-only ID/receipt checks stay in HTTP.
+        for (name, base, nullable) in [
+            (
+                "QueueCancelBody",
+                json!({"action":"cancel","id":"a","message_id":"fallback"}),
+                &[
+                    "agent",
+                    "id",
+                    "message_id",
+                    "request_id",
+                    "expected_revision",
+                    "expectedText",
+                ][..],
+            ),
+            (
+                "QueueEditBody",
+                json!({"action":"edit","id":"a","text":"text"}),
+                &[
+                    "agent",
+                    "id",
+                    "message_id",
+                    "request_id",
+                    "expected_revision",
+                    "expectedText",
+                ][..],
+            ),
+            (
+                "QueueFirstBody",
+                json!({"action":"first","id":"a"}),
+                &[
+                    "agent",
+                    "id",
+                    "message_id",
+                    "request_id",
+                    "expected_revision",
+                    "expectedText",
+                ][..],
+            ),
+            (
+                "QueueFirstBody",
+                json!({"action":"send_now","id":"a"}),
+                &[
+                    "agent",
+                    "id",
+                    "message_id",
+                    "request_id",
+                    "expected_revision",
+                    "expectedText",
+                ][..],
+            ),
+            (
+                "QueueReorderBody",
+                json!({"action":"reorder","expected_revision":"r","ordered_ids":["a"]}),
+                &["agent", "id", "request_id"][..],
+            ),
+        ] {
+            check(name, &base, true);
+            for malformed in [Value::Null, json!(true), json!(7), json!("body"), json!([])] {
+                check(name, &malformed, false);
+            }
+            for field in nullable {
+                for (value, expected) in [
+                    (None, true),
+                    (Some(Value::Null), true),
+                    (Some(json!("")), true),
+                    (Some(json!("value")), true),
+                    (Some(json!(7)), false),
+                    (Some(json!(false)), false),
+                    (Some(json!([])), false),
+                    (Some(json!({})), false),
                 ] {
                     let mut wire = base.clone();
-                    wire[field] = value;
-                    assert_eq!(
-                        before.is_valid(&wire),
-                        after.is_valid(&wire),
-                        "{name}: {wire}"
-                    );
+                    wire.as_object_mut().expect("body").remove(*field);
+                    if let Some(value) = value {
+                        wire[*field] = value;
+                    }
+                    check(name, &wire, expected);
                 }
             }
+            for character in ["x", "🙂"] {
+                // Literal lengths deliberately do not read the owner's limit.
+                for (length, expected) in [(199, true), (200, true), (201, false)] {
+                    let mut wire = base.clone();
+                    wire["request_id"] = json!(character.repeat(length));
+                    check(name, &wire, expected);
+                }
+            }
+            let mut missing_action = base.clone();
+            missing_action
+                .as_object_mut()
+                .expect("body")
+                .remove("action");
+            check(name, &missing_action, false);
+            for action in [Value::Null, json!("unknown"), json!(1)] {
+                let mut wire = base.clone();
+                wire["action"] = action;
+                check(name, &wire, false);
+            }
+            let mut unknown = base;
+            unknown["extra"] = json!(true);
+            check(name, &unknown, false);
+        }
+        for (wire, expected) in [
+            (json!({"action":"cancel"}), false),
+            (json!({"action":"cancel","id":null}), false),
+            (json!({"action":"cancel","id":""}), false),
+            (json!({"action":"cancel","message_id":""}), false),
+            (json!({"action":"cancel","message_id":"a"}), true),
+            (json!({"action":"cancel","id":null,"message_id":"a"}), true),
+            (json!({"action":"cancel","id":"","message_id":"a"}), true),
+            (json!({"action":"cancel","id":"a","message_id":null}), true),
+            (json!({"action":"cancel","id":"a","message_id":""}), true),
+            (json!({"action":"cancel","id":"a","message_id":"b"}), true),
+        ] {
+            check("QueueCancelBody", &wire, expected);
+        }
+        for (wire, expected) in [
+            (json!({"action":"edit","text":""}), true),
+            (json!({"action":"edit","text":"text","id":null}), true),
+            (json!({"action":"edit","text":"text","message_id":""}), true),
+            (json!({"action":"edit"}), false),
+            (json!({"action":"edit","text":null}), false),
+            (json!({"action":"edit","text":7}), false),
+        ] {
+            check("QueueEditBody", &wire, expected);
+        }
+        for character in ["x", "🙂"] {
+            for (length, expected) in [(31999, true), (32000, true), (32001, false)] {
+                check(
+                    "QueueEditBody",
+                    &json!({"action":"edit","text":character.repeat(length)}),
+                    expected,
+                );
+            }
+        }
+        for action in ["first", "send_now"] {
+            for wire in [
+                json!({"action":action}),
+                json!({"action":action,"id":null}),
+                json!({"action":action,"message_id":""}),
+            ] {
+                check("QueueFirstBody", &wire, true);
+            }
+        }
+        for (wire, expected) in [
+            (
+                json!({"action":"reorder","expected_revision":"","ordered_ids":[]}),
+                true,
+            ),
+            (
+                json!({"action":"reorder","expected_revision":"r","ordered_ids":["","a","a"]}),
+                true,
+            ),
+            (
+                json!({"action":"reorder","expected_revision":null,"ordered_ids":[]}),
+                false,
+            ),
+            (json!({"action":"reorder","ordered_ids":[]}), false),
+            (json!({"action":"reorder","expected_revision":"r"}), false),
+            (
+                json!({"action":"reorder","expected_revision":"r","ordered_ids":null}),
+                false,
+            ),
+            (
+                json!({"action":"reorder","expected_revision":"r","ordered_ids":["a",7]}),
+                false,
+            ),
+            (
+                json!({"action":"reorder","expected_revision":"r","ordered_ids":[],"message_id":"a"}),
+                false,
+            ),
+            (
+                json!({"action":"reorder","expected_revision":"r","ordered_ids":[],"expectedText":null}),
+                false,
+            ),
+        ] {
+            check("QueueReorderBody", &wire, expected);
         }
     }
 }

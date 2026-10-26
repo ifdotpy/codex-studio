@@ -49,6 +49,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         rust_type: "studio_runtime_schema::complaints::ComplaintResponseStatus".to_owned(),
         serde_with: None,
     };
+    // Queue ingress has one shared serde owner. Keep the generated request
+    // name as an alias, and do not emit unused parallel payload DTOs.
+    analysis
+        .schemas
+        .get_mut("QueueActionApiQueuePostRequest")
+        .ok_or("missing queue command schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::queue_command::QueueCommand".to_owned(),
+        serde_with: None,
+    };
+    for name in [
+        "QueueCancelBody",
+        "QueueEditBody",
+        "QueueFirstBody",
+        "QueueReorderBody",
+        "QueueCancelBodyAction",
+        "QueueEditBodyAction",
+        "QueueFirstBodyAction",
+        "QueueReorderBodyAction",
+    ] {
+        analysis
+            .schemas
+            .remove(name)
+            .ok_or("missing queue payload schema")?;
+    }
     // Keep the wire schema shared, and deserialize ingress timing directly
     // into its runtime owner through the explicit compatibility codec.
     let SchemaType::Object { properties, .. } = &mut analysis

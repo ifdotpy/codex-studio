@@ -130,6 +130,8 @@ mod tests {
                     wire[*field] = value;
                     let typed: QueueCommand =
                         serde_json::from_value(wire.clone()).expect("command");
+                    // The generated request must be the shared command itself.
+                    let typed: crate::generated::QueueActionApiQueuePostRequest = typed;
                     assert_eq!(
                         super::super::work_items::python_operation_signature(
                             &json!({"agent":"workspace","body":wire})
