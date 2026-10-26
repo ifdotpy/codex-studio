@@ -119,9 +119,9 @@ test("the production Vite build compresses final outputs without changing shell 
     );
     assert.ok(!files.some((name) => /\.(?:br|gz)\.(?:br|gz)$/.test(name)));
     const worker = await readFile(join(dist, "studio-sw.js"), "utf8");
-    const manifest = worker.match(/^self\.STUDIO_SHELL = (.*);/)?.[1];
-    assert.ok(manifest);
-    const shell = readShellManifest(manifest);
+    const shell = readShellManifest(
+      worker.match(/^self\.STUDIO_SHELL = (.*);/)![1],
+    );
     assert.ok(shell.initial.length > 0);
     assert.ok(
       [...shell.initial, ...shell.allowed].every(

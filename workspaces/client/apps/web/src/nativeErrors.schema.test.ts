@@ -30,13 +30,12 @@ function assertKnownVariants(codes: string[]) {
         additionalDetails: "Cause",
       });
       assert.equal(
-        view.message,
+        view!.message,
         expectedMessages.get(code) ?? "Native message",
       );
-      assert.equal(view.kind, code);
-      assert.ok(view);
-      assert.ok(view.hint);
-      assert.ok(view.hint.length > 0);
+      assert.equal(view!.kind, code);
+
+      assert.ok(view!.hint.length > 0);
       assert.ok(view.details.includes("Cause"));
     }
   }
@@ -57,17 +56,14 @@ test.skipIf(!process.env.CODEX_NATIVE_SCHEMA)(
       const schema: {
         definitions: {
           CodexErrorInfo: {
-            oneOf: (
-              | { enum: string[] }
-              | { properties: Record<string, unknown> }
-            )[];
+            oneOf: { enum?: string[]; properties?: Record<string, unknown> }[];
           };
         };
       } = JSON.parse(
         readFileSync(join(dir, "v2/ErrorNotification.json"), "utf8"),
       );
-      const codes = schema.definitions.CodexErrorInfo.oneOf.flatMap((v) =>
-        "enum" in v ? v.enum : Object.keys(v.properties),
+      const codes = schema.definitions.CodexErrorInfo.oneOf.flatMap(
+        (v) => v.enum || Object.keys(v.properties!),
       );
       assert.deepEqual([...codes].sort(), Object.keys(nativeErrorHints).sort());
       assertKnownVariants(codes);
@@ -141,11 +137,11 @@ test("native error rendering handles structured and plain errors", () => {
     }),
   ]) {
     const view = nativeErrorView({ message, codexErrorInfo: "other" });
-    assert.equal(view.title, "This content can't be shown");
+    assert.equal(view!.title, "This content can't be shown");
     assert.equal(view.severity, "info");
-    assert.ok(view);
+
     assert.equal(
-      view.links[0]?.href,
+      view!.links[0].href,
       "https://chatgpt.com/r/b749fb02595e04c3007a54375f3f4374",
     );
   }
@@ -154,7 +150,7 @@ test("native error rendering handles structured and plain errors", () => {
       .length,
     0,
   );
-  assert.ok(nativeErrorView);
+
   for (const [plan, link] of [
     ["pro", "https://chatgpt.com/cyber/"],
     [
@@ -164,7 +160,7 @@ test("native error rendering handles structured and plain errors", () => {
     [undefined, "https://openai.com/form/enterprise-trusted-access-for-cyber/"],
   ] as const)
     assert.equal(
-      nativeErrorView({ codexErrorInfo: "cyberPolicy" }, plan).links[0]?.href,
+      nativeErrorView({ codexErrorInfo: "cyberPolicy" }, plan).links[0].href,
       link,
     );
   const cyber = nativeErrorView(
@@ -176,8 +172,8 @@ test("native error rendering handles structured and plain errors", () => {
     "Codex refused this turn under its cybersecurity policy.",
   );
   assert.equal(cyber.title, "Cybersecurity policy refusal");
-  assert.ok(cyber.hint);
-  assert.match(cyber.hint, /narrower or rephrased task/);
+
+  assert.match(cyber.hint!, /narrower or rephrased task/);
   assert.equal(cyber.details.includes("Raw refusal detail"), true);
   const nestedError = {
     error: { message: "Service unavailable", code: "unavailable" },
@@ -190,7 +186,7 @@ test("native error rendering handles structured and plain errors", () => {
     JSON.stringify("Service unavailable"),
   ]) {
     const view = nativeErrorView(raw);
-    assert.equal(view.message, "Service unavailable");
+    assert.equal(view!.message, "Service unavailable");
     assert.equal(view.details, raw);
     const notification = {
       message: raw,
@@ -222,9 +218,9 @@ test("native error rendering handles structured and plain errors", () => {
     '```json\n{"error":{"code":"bio_policy","message":"Restricted"}}\n```',
   ]) {
     const view = nativeErrorView({ message: raw, codexErrorInfo: "other" });
-    assert.equal(view.message, "Restricted");
-    assert.equal(view.title, "This content can't be shown");
-    assert.equal(view.kind, "other");
+    assert.equal(view!.message, "Restricted");
+    assert.equal(view!.title, "This content can't be shown");
+    assert.equal(view!.kind, "other");
   }
   for (const raw of [
     'HTTP 500: {"message":"bio_policy mentioned in a log"}',
@@ -233,9 +229,9 @@ test("native error rendering handles structured and plain errors", () => {
     '{"message":"Failed","metadata":{"error":{"code":"bio_policy"}}}',
   ]) {
     const view = nativeErrorView({ message: raw, codexErrorInfo: "other" });
-    assert.equal(view.kind, "other");
-    assert.equal(view.title, "");
-    assert.equal(view.links.length, 0);
+    assert.equal(view!.kind, "other");
+    assert.equal(view!.title, "");
+    assert.equal(view!.links.length, 0);
     assert.equal(nativeThreadError({ error: { message: raw } }), undefined);
   }
   for (const raw of [

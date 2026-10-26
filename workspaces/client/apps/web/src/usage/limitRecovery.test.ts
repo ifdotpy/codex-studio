@@ -139,18 +139,15 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
       }),
       now,
     );
-    assert.ok(recovery);
-    assert.equal(recovery.title, title);
 
-    assert.equal(recovery.action?.label, action);
+    assert.equal(recovery!.title, title);
 
-    if (owner) {
-      assert.ok(recovery.ownerRequest);
-      assert.ok(recovery.ownerRequest.includes(owner));
-    }
+    assert.equal(recovery!.action?.label, action);
+
+    if (owner) assert.ok(recovery!.ownerRequest!.includes(owner));
 
     assert.equal(
-      recovery.resetAt,
+      recovery!.resetAt,
       now + 90,
       "the Rust policy owns which reset applies",
     );
@@ -159,8 +156,8 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
       limits({ rateLimitReachedType: reason }),
       now,
     );
-    assert.ok(usage);
-    assert.match(usage.title, /usage limit/);
+
+    assert.match(usage!.title, /usage limit/);
   }
   for (const [plan, label] of [
     ["pro", "View credits in ChatGPT"],
@@ -170,17 +167,17 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
     ["go", "View ChatGPT usage"],
   ]) {
     assert.equal(
-      limitRecovery(agent, limits({ planType: plan }), now)?.action?.label,
+      limitRecovery(agent, limits({ planType: plan }), now)!.action!.label,
       label,
     );
   }
-  assert.ok(limitRecovery);
+
   assert.equal(
     limitRecovery(
       agent,
       limits({ rateLimitReachedType: "future", planType: "pro" }),
       now,
-    )?.action,
+    )!.action,
     undefined,
   );
   for (const snapshot of [
@@ -191,7 +188,7 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
     limits({}, { at: now - 301 }),
   ]) {
     assert.match(
-      limitRecovery(agent, snapshot, now)?.message ?? "",
+      limitRecovery(agent, snapshot, now)!.message,
       /^View account limits/,
     );
   }
@@ -210,10 +207,10 @@ test("Claude notices show model reset and overage without Codex purchase actions
     limits({ planType: "pro" }, { eligibility }),
     now,
   );
-  assert.ok(recovery);
-  assert.equal(recovery.eligibility, eligibility);
 
-  assert.equal(recovery.resetAt, now + 180);
+  assert.equal(recovery!.eligibility, eligibility);
 
-  assert.equal(recovery.action, undefined);
+  assert.equal(recovery!.resetAt, now + 180);
+
+  assert.equal(recovery!.action, undefined);
 });

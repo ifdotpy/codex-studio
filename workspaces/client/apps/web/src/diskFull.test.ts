@@ -70,14 +70,14 @@ it("shows a clear disk-full message instead of the raw ENOSPC text", () => {
 
 it("presents a disk-full hold as waiting, not failed", () => {
   const agent = held();
-  assert.ok(agent.capacityRetry);
+
   assert.equal(diskFullHold(agent), agent.capacityRetry);
   assert.deepEqual(chatIndicators(snapshot([agent])).get("lead"), {
     kind: "paused",
     label: DISK_FULL_WAIT_LABEL,
   });
   const other = held({
-    capacityRetry: { ...agent.capacityRetry, cause: "serverOverloaded" },
+    capacityRetry: { ...held().capacityRetry!, cause: "serverOverloaded" },
   });
   assert.equal(diskFullHold(other), null);
   assert.deepEqual(chatIndicators(snapshot([other])).get("lead"), {
@@ -85,7 +85,7 @@ it("presents a disk-full hold as waiting, not failed", () => {
     label: "Failed",
   });
   const finished = held({
-    capacityRetry: { ...agent.capacityRetry, status: "exhausted" },
+    capacityRetry: { ...held().capacityRetry!, status: "exhausted" },
   });
   assert.equal(diskFullHold(finished), null);
 });

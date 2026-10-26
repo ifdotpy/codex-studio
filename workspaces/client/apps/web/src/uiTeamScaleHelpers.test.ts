@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { components, AgentEntityDto } from "./generated/api.ts";
 import type {
   DialogControl,
@@ -236,18 +235,10 @@ describe("ui team scale helpers", () => {
 
   it("reads the lock error counter only when it is a count", () => {
     expect(
+      // Timing/sample counters are unrelated to this one lock-error fixture.
       sqliteLockErrors({
-        sqliteContention: {
-          lockError: {
-            lockErrors: 2,
-            longestTransactionMs: 0,
-            longTransactions: 0,
-            transactions: 0,
-            writeWaitMs: 0,
-            writeWaits: 0,
-          },
-        },
-      }),
+        sqliteContention: { lockError: { lockErrors: 2 } },
+      } as Parameters<typeof sqliteLockErrors>[0]),
     ).toBe(2);
     expect(sqliteLockErrors({})).toBeNull();
   });
@@ -295,7 +286,6 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
   const actions: string[] = [];
   let role = "Lead";
   let provider = "Codex";
-  const selectors = new WeakMap<Pick<DialogControl, "click">, string>();
   const locate = (
     scope: string,
     kind: Parameters<DialogControl["getByRole"]>[0],
@@ -303,7 +293,7 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
       name,
       selected,
     }: NonNullable<Parameters<DialogControl["getByRole"]>[1]> = {},
-  ): DialogControl => {
+  ): DialogControl<string> => {
     if (scope === "dialog") {
       const prefix = role === "Lead" ? "Main agent" : "Default subagent";
       const account =
@@ -323,36 +313,33 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
       expect(names[kind], `Unexpected control ${kind}:${name}`).toContain(name);
     }
     const path = `${scope}/${kind}:${name}`;
-    const node: DialogControl = {
+    const node: DialogControl<string> = {
       getByRole: (kind, options) => locate(path, kind, options),
       locator: (selector) => ({
         click: async () => {
-          assert.ok(typeof selector === "string");
-          const name = /^label\[for="([^"]+)"\]$/.exec(selector)?.[1];
+          const name = /^label\[for="([^"]+)"\]$/.exec(selector as string)?.[1];
           expect(name).toBeDefined();
-          assert.ok(name);
-          actions.push(name);
+
+          actions.push(name!);
           if (
             scope === "dialog" &&
             kind === "radiogroup" &&
-            ["Lead", "Workers"].includes(name)
+            ["Lead", "Workers"].includes(name!)
           )
-            role = name;
-          else if (kind === "radiogroup" && ["Codex", "Claude"].includes(name))
-            provider = name;
+            role = name!;
+          else if (kind === "radiogroup" && ["Codex", "Claude"].includes(name!))
+            provider = name!;
           else if (kind !== "radiogroup" || name !== "Low")
             throw new Error(`Unexpected segment ${path}/${name}`);
         },
       }),
       and: (selector) => {
-        expect(selectors.get(selector)).toMatch(
-          /^\[data-(?:account-key|value)=/,
-        );
+        expect(selector).toMatch(/^\[data-(?:account-key|value)=/);
         return node;
       },
       first: () => node,
       getAttribute: async () =>
-        kind === "radio" && typeof name === "string" ? name : selectedAccount,
+        kind === "radio" ? (name as string) : selectedAccount,
       count: async () => (fast ? 1 : 0),
       setChecked: async (checked) => {
         actions.push(`Fast mode ${checked}`);
@@ -376,11 +363,7 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
   };
   return {
     actions,
-    locator: (selector: string) => {
-      const locator = { click: async () => {} };
-      selectors.set(locator, selector);
-      return locator;
-    },
+    locator: (selector: string) => selector,
     getByRole: (
       kind: Parameters<DialogControl["getByRole"]>[0],
       options?: Parameters<DialogControl["getByRole"]>[1],
@@ -440,6 +423,19 @@ describe("current New chat setup", () => {
   });
 });
 
+const transferMetadata = (seq = 3) =>
+  ({
+    protocol: 4 as const,
+    complete: false,
+    cursor: { seq, workspaceId: "workspace" },
+    epoch: "epoch",
+    reason: "change" as const,
+    replyKind: "delta" as const,
+    resource: { kind: "state" as const },
+    revision: 3,
+    workspaceId: "workspace",
+  }) satisfies Partial<Schemas["ResourceEntityTransferEvent"]>;
+
 const resourceFrame = (
   documents: Schemas["SyncEntity"][],
 ): Schemas["ResourceChangeEvent"] => ({
@@ -473,15 +469,8 @@ type UpsertArgs =
       id: string,
       value: Omit<Schemas["EventEntityDto"], "id">,
     ];
-function upsert(...[collection, id, value]: UpsertArgs): Upsert {
-  // Each fixture supplies its collection's fields; these sparse entity DTOs
-  // share their optional keys and their required identity.
-  if (collection === "agentSummary")
-    return { collection, id, seq: 3, op: "upsert", value: { id, ...value } };
-  if (collection === "agentDetail")
-    return { collection, id, seq: 3, op: "upsert", value: { id, ...value } };
-  return { collection, id, seq: 3, op: "upsert", value: { id, ...value } };
-}
+const upsert = (...[collection, id, value]: UpsertArgs): Upsert =>
+  ({ collection, id, seq: 3, op: "upsert", value: { id, ...value } }) as Upsert;
 
 it("merges current summary/detail streams for owned agents and observes input events and deletions", async () => {
   const feeds = new Map<string, FrameReceiver>();
@@ -500,8 +489,8 @@ it("merges current summary/detail streams for owned agents and observes input ev
   );
   await pull();
   const state = feeds.get(JSON.stringify({ kind: "state" }));
-  assert.ok(state);
-  state(
+
+  state!(
     "resources",
     resourceFrame([
       upsert("agentSummary", "foreign", { rootId: "other" }),
@@ -519,14 +508,17 @@ it("merges current summary/detail streams for owned agents and observes input ev
   const lead = feeds.get(
     JSON.stringify({ kind: "agentDetail", agentId: "lead" }),
   );
-  assert.ok(lead);
-  lead(
+
+  lead!(
     "resources",
     resourceFrame([
       upsert("agentDetail", "lead", {
         effort: "low",
         fastMode: false,
-        workerDefaults: { model: "gpt-6-luna", effort: null, fastMode: false },
+        // The fixture only observes the default model, not effort or fast mode.
+        workerDefaults: { model: "gpt-6-luna" } as NonNullable<
+          AgentEntityDto["workerDefaults"]
+        >,
       }),
     ]),
   );
@@ -537,7 +529,7 @@ it("merges current summary/detail streams for owned agents and observes input ev
     fastMode: false,
     status: "running",
   });
-  state(
+  state!(
     "resources",
     resourceFrame([
       upsert("agentSummary", "worker", { rootId: "lead", status: "running" }),
@@ -547,8 +539,8 @@ it("merges current summary/detail streams for owned agents and observes input ev
   const worker = feeds.get(
     JSON.stringify({ kind: "agentDetail", agentId: "worker" }),
   );
-  assert.ok(worker);
-  worker(
+
+  worker!(
     "resources",
     resourceFrame([upsert("agentDetail", "worker", { lastAnswer: "TOKEN" })]),
   );
@@ -557,7 +549,7 @@ it("merges current summary/detail streams for owned agents and observes input ev
     rootId: "lead",
     lastAnswer: "TOKEN",
   });
-  state(
+  state!(
     "resources",
     resourceFrame([
       { collection: "agentSummary", id: "lead", seq: 4, op: "delete" },
@@ -583,26 +575,18 @@ it("assembles the server's multipart entity-transfer envelope before applying do
     Schemas["ResourceEntityTransferEvent"],
     "partIndex" | "data"
   > = {
-    complete: false,
-    cursor: { seq: 3, workspaceId: "workspace" },
-    epoch: "epoch",
-    reason: "change",
-    replyKind: "delta",
-    resource: { kind: "state" },
-    revision: 3,
-    workspaceId: "workspace",
-    protocol: 4,
+    ...transferMetadata(),
     transferId: "transfer",
     pageIndex: 0,
     partCount: 2,
   };
-  receive("entity-transfer", {
+  receive!("entity-transfer", {
     ...frame,
     partIndex: 0,
     data: data.slice(0, 20),
   });
   expect(accept).not.toHaveBeenCalled();
-  receive("entity-transfer", {
+  receive!("entity-transfer", {
     ...frame,
     partIndex: 1,
     complete: true,
@@ -610,7 +594,7 @@ it("assembles the server's multipart entity-transfer envelope before applying do
   });
   expect(accept).toHaveBeenCalledWith(documents);
   expect(() =>
-    receive("entity-transfer", { ...frame, partIndex: 1, data: "" }),
+    receive!("entity-transfer", { ...frame, partIndex: 1, data: "" }),
   ).toThrow(/out of order/);
 });
 
@@ -622,16 +606,14 @@ it("reads split SSE bytes through the advertised protocol and closes its owned c
   const mock = vi
     .spyOn(globalThis, "fetch")
     .mockImplementation(async (url, options) => {
-      assert.ok(url instanceof URL);
-      assert.ok(options?.signal);
-      expect(url.searchParams.get("protocol")).toBe("4");
-      expect(JSON.parse(url.searchParams.get("resources") ?? "null")).toEqual([
+      expect((url as URL).searchParams.get("protocol")).toBe("4");
+      expect(JSON.parse((url as URL).searchParams.get("resources")!)).toEqual([
         { kind: "agentDetail", agentId: "lead" },
       ]);
       return new Response(
         new ReadableStream({
           start(controller) {
-            options?.signal?.addEventListener("abort", () =>
+            options!.signal!.addEventListener("abort", () =>
               controller.error(new Error("aborted")),
             );
             const bytes = new TextEncoder().encode(wire);
@@ -727,14 +709,7 @@ it("stages several transfer pages until the final complete marker and rejects mi
     through: number,
     complete: boolean,
   ): Schemas["ResourceEntityTransferEvent"] => ({
-    protocol: 4,
-    cursor: { seq: through, workspaceId: "workspace" },
-    epoch: "epoch",
-    reason: "change",
-    replyKind: "delta",
-    resource: { kind: "state" },
-    revision: 3,
-    workspaceId: "workspace",
+    ...transferMetadata(through),
     transferId: "multi",
     pageIndex: index,
     partIndex: 0,
@@ -746,13 +721,13 @@ it("stages several transfer pages until the final complete marker and rejects mi
       documents: [upsert("agentSummary", `worker-${index}`, {})],
     }),
   });
-  receive("entity-transfer", page(0, 0, 1, false));
-  receive("entity-transfer", page(1, 1, 2, false));
+  receive!("entity-transfer", page(0, 0, 1, false));
+  receive!("entity-transfer", page(1, 1, 2, false));
   expect(accept).not.toHaveBeenCalled();
   expect(() => receive.assertComplete()).toThrow(/incomplete/);
-  receive("entity-transfer", page(2, 2, 3, true));
+  receive!("entity-transfer", page(2, 2, 3, true));
   expect(accept).toHaveBeenCalledTimes(1);
-  expect(accept.mock.calls.at(0)?.at(0)).toHaveLength(3);
+  expect(accept.mock.calls[0][0]).toHaveLength(3);
   expect(() => receive.assertComplete()).not.toThrow();
   const missing = createEntityFrameReader(vi.fn());
   missing("entity-transfer", page(0, 0, 1, false));
@@ -771,16 +746,9 @@ it("cannot certify observations interrupted before a required transfer completes
     return { close: async () => {} };
   }, vi.fn());
   await pull();
-  assert.ok(receive && failed);
-  receive("entity-transfer", {
-    protocol: 4,
-    cursor: { seq: 1, workspaceId: "workspace" },
-    epoch: "epoch",
-    reason: "change",
-    replyKind: "delta",
-    resource: { kind: "state" },
-    revision: 3,
-    workspaceId: "workspace",
+
+  receive!("entity-transfer", {
+    ...transferMetadata(1),
     transferId: "interrupted",
     pageIndex: 0,
     partIndex: 0,
@@ -789,7 +757,7 @@ it("cannot certify observations interrupted before a required transfer completes
     data: JSON.stringify({ after: 0, through: 1, documents: [] }),
   });
   expect(() => pull.assertComplete()).toThrow(/incomplete/);
-  failed(new Error("stream interrupted"));
+  failed!(new Error("stream interrupted"));
   expect(() => pull.assertComplete()).toThrow(/stream interrupted/);
   await pull.close();
 });
@@ -865,7 +833,10 @@ it("validates the actual post-create lead and worker defaults through proven ali
     accountKey: "claude",
     effort: "low",
     fastMode: false,
-    workerDefaults: { model: "default", effort: "low", fastMode: false },
+    // Fast mode is absent in this legacy profile fixture.
+    workerDefaults: { model: "default", effort: "low" } as NonNullable<
+      AgentEntityDto["workerDefaults"]
+    >,
   };
   expect(() => assertCreatedTeamProfiles(entity, lead, worker)).not.toThrow();
   expect(() =>

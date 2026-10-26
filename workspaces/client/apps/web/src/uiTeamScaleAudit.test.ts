@@ -95,7 +95,7 @@ describe("worker audit", () => {
   it("fails duplicate turns, failed turns, duplicate deliveries and unanswered calls", () => {
     const items = [
       ...healthy,
-      healthy.at(0) ?? userItem(10, []),
+      healthy[0],
       { ...answer("again", "t2"), turnStatus: "failed" },
       { ...toolItem("exec-2", "x", "inProgress"), turnId: "t2" },
     ];
@@ -379,19 +379,17 @@ describe("helpers", () => {
     const started: number[] = [];
     const results = mapLimited([3, 1, 2, 0], 2, async (value, index) => {
       started.push(value);
-      const deferred = pending[index];
-      if (!deferred) throw new Error("Missing deferred fixture");
-      await deferred.promise;
+      await pending[index].promise;
       return value * 10;
     });
     expect(started).toEqual([3, 1]);
-    pending.at(1)?.resolve();
-    await pending.at(1)?.promise;
+    pending[1].resolve();
+    await pending[1].promise;
     await Promise.resolve();
     expect(started).toEqual([3, 1, 2]);
-    pending.at(2)?.resolve();
-    pending.at(0)?.resolve();
-    pending.at(3)?.resolve();
+    pending[2].resolve();
+    pending[0].resolve();
+    pending[3].resolve();
     expect(await results).toEqual([30, 10, 20, 0]);
   });
 
@@ -475,10 +473,8 @@ it("treats journalctl's empty status 1 as no matches, while preserving other fai
     { kind: "journalUnavailable", unit: "studio", error: "No journal access" },
   ]);
   expect(
-    auditJournalResult(
-      { status: 2, stdout: "", stderr: "" },
-      "studio",
-    ).anomalies.at(0)?.kind,
+    auditJournalResult({ status: 2, stdout: "", stderr: "" }, "studio")
+      .anomalies[0].kind,
   ).toBe("journalUnavailable");
 });
 

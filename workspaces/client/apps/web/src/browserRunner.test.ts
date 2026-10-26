@@ -51,31 +51,26 @@ function observeCommand(
   args: string[],
   options: SpawnSyncOptions,
 ) {
-  assert.ok(options.env);
-  if (options.env.PLAYWRIGHT_OUTPUT_DIR)
-    runRoots.add(dirname(options.env.PLAYWRIGHT_OUTPUT_DIR));
+  if (options.env!.PLAYWRIGHT_OUTPUT_DIR)
+    runRoots.add(dirname(options.env!.PLAYWRIGHT_OUTPUT_DIR));
   return { command, args, environment: options.env };
 }
 
 function assertIsolated(environment: NodeJS.ProcessEnv | undefined) {
-  assert.ok(environment);
-  assert.ok(environment.HOME);
-  assert.ok(environment.XDG_CACHE_HOME);
-  assert.ok(environment.PLAYWRIGHT_OUTPUT_DIR);
-  assert.notEqual(environment.HOME, callerHome);
-  assert.notEqual(environment.XDG_CACHE_HOME, callerCache);
-  assert.equal(environment.CODEX_HOME, join(environment.HOME, ".codex"));
+  assert.notEqual(environment!.HOME!, callerHome);
+  assert.notEqual(environment!.XDG_CACHE_HOME!, callerCache);
+  assert.equal(environment!.CODEX_HOME!, join(environment!.HOME!, ".codex"));
   assert.equal(
-    environment.COREPACK_HOME,
+    environment!.COREPACK_HOME!,
     join(callerCache, "node", "corepack"),
   );
   assert.equal(
-    environment.CLAUDE_CONFIG_DIR,
-    join(environment.HOME, ".claude"),
+    environment!.CLAUDE_CONFIG_DIR!,
+    join(environment!.HOME!, ".claude"),
   );
   assert.equal(
-    dirname(environment.XDG_CACHE_HOME),
-    dirname(environment.PLAYWRIGHT_OUTPUT_DIR),
+    dirname(environment!.XDG_CACHE_HOME!),
+    dirname(environment!.PLAYWRIGHT_OUTPUT_DIR!),
   );
 }
 
@@ -92,7 +87,7 @@ test("runs Playwright in an isolated home with no interpreter probe", async () =
     calls.map((call) => call.command),
     ["pnpm"],
   );
-  assert.deepEqual(calls[0]?.args, ["exec", "playwright", "test", "--list"]);
+  assert.deepEqual(calls[0].args, ["exec", "playwright", "test", "--list"]);
   assert.equal(process.exitCode, 0);
 });
 

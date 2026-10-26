@@ -1,63 +1,51 @@
 import type { Message, JsonValue } from "../types";
+type TranscriptFixture = Pick<Message, "id"> &
+  Partial<Record<keyof Message, unknown>>;
 import assert from "node:assert/strict";
 import { retainTranscriptItems } from "./transcriptIdentity.ts";
 
 import { it } from "vitest";
 
 it("retains identity for unchanged transcript items and replaces changed data", () => {
-  const previous: [Message, Message, Message] = [
+  const previous = [
     {
       id: "user",
       role: "user",
       text: "Saved input",
-      inputs: [
-        {
-          id: "request",
-          pending: true,
-          text: "Saved input",
-          kind: "user",
-          truncated: false,
-        },
-      ],
-      assets: [
-        {
-          id: "image",
-          name: "image",
-          mime: "image/png",
-          image: true,
-          size: 0,
-          preview: "",
-        },
-      ],
+      inputs: [{ id: "request", pending: true }],
+      assets: [{ id: "image" }],
     },
     {
       id: "answer",
       role: "assistant",
       text: "First answer",
-      streaming: true,
+      streaming: true as Message["streaming"],
       turnStatus: "running",
     },
     {
       id: "tool",
       role: "tool",
       text: "{}",
-      nativeError: { message: "Failed", metadata: { retry: false } },
+      nativeError: {
+        message: "Failed",
+        metadata: { retry: false } as JsonValue & { retry?: boolean },
+      },
     },
-  ];
+  ] satisfies [TranscriptFixture, TranscriptFixture, TranscriptFixture];
+  // This test reads the same transcript JSON it just serialized.
+  function roundTripTranscript(items: typeof previous): typeof previous {
+    return JSON.parse(JSON.stringify(items));
+  }
   assert.equal(
-    retainTranscriptItems(previous, structuredClone(previous)),
+    retainTranscriptItems(previous, roundTripTranscript(previous)),
     previous,
   );
   for (const mutate of [
     (rows: typeof previous) => {
-      const input = rows[0].inputs?.[0];
-      assert.ok(input);
-      input.pending = false;
+      rows[0].inputs[0].pending = false;
     },
     (rows: typeof previous) => {
-      const asset = rows[0].assets?.[0];
-      assert.ok(asset);
-      asset.id = "new-image";
+      rows[0].assets[0].id = "new-image";
     },
     (rows: typeof previous) => {
       rows[1].text = "New answer";
@@ -70,10 +58,10 @@ it("retains identity for unchanged transcript items and replaces changed data", 
       delete rows[1].streaming;
     },
     (rows: typeof previous) => {
-      rows[2].nativeError = { message: "Failed", metadata: { retry: true } };
+      rows[2].nativeError.metadata.retry = true;
     },
     (rows: typeof previous) => {
-      rows[2].nativeError = { message: "Failed", metadata: [false] };
+      rows[2].nativeError.metadata = [false];
     },
   ]) {
     const incoming = structuredClone(previous);
@@ -92,7 +80,7 @@ it("retains identity for unchanged transcript items and replaces changed data", 
   assert.equal(reordered[0], previous[2]);
   assert.equal(reordered[2], previous[0]);
   assert.deepEqual(retainTranscriptItems(previous, []), []);
-  const extended: Message[] = [
+  const extended = [
     ...structuredClone(previous),
     { id: "new", role: "system", text: "New notice" },
   ];
@@ -104,9 +92,10 @@ it("retains identity for unchanged transcript items and replaces changed data", 
 });
 
 it("keeps changed JSON shapes and deeply nested projections authoritative", () => {
-  const row = (value: JsonValue): (Message & { value: JsonValue })[] => [
-    { id: "message", role: "assistant", text: "", value },
-  ];
+  const row = (value: JsonValue) =>
+    [
+      { id: "message", role: "assistant", value },
+    ] satisfies (TranscriptFixture & { value: JsonValue })[];
   const changed: [JsonValue, JsonValue][] = [
     [null, {}],
     [{}, null],

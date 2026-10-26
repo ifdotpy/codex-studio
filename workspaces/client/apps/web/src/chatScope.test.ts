@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { expect, it } from "vitest";
 import { roomLeadIds } from "./chatScope";
 import type { Agent, Room } from "./types";
@@ -32,15 +31,12 @@ it("resolves room leads by member without scanning the whole team", () => {
     { members: ["a511", "a510", "a449", "a448"], leads: ["a448"] },
     { members: ["missing", "missing", "unknown", "unknown"], leads: [] },
   ];
-  const rooms = Array.from({ length: ROOM_COUNT }, (_, index) => {
-    const example = examples[index % examples.length];
-    if (!example) throw new Error("A room example is required.");
-    return example;
-  });
+  const rooms = Array.from(
+    { length: ROOM_COUNT },
+    (_, index) => examples[index % examples.length],
+  );
   reads = 0;
-  for (const example of rooms) {
-    assert.ok(example);
-    const { members, leads } = example;
+  for (const { members, leads } of rooms) {
     const room = { kind: "private", members } as Room;
     expect(roomLeadIds(room, agents)).toEqual(leads);
   }

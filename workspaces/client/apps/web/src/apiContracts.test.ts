@@ -342,7 +342,7 @@ type PreferenceProjectDeclaration =
   import("./components/accountPreference").PreferenceProject;
 type LocalSyncRow = import("./sync/client").SyncDocument;
 type ProjectionSyncRow = import("./sync/entityProjection").EntityRow;
-type LocalContractAssertions = [
+export type LocalContractAssertions = [
   Assert<Equal<DesktopDeclaration, WebDesktopDeclaration>>,
   Assert<
     Equal<
@@ -385,17 +385,6 @@ type LocalContractAssertions = [
     >
   >,
 ];
-const localContractAssertions: LocalContractAssertions = [
-  true,
-  true,
-  true,
-  true,
-  true,
-  true,
-  true,
-  true,
-];
-void localContractAssertions;
 
 // Entity room DTOs contain fixed radio identities; API responses retain tuples.
 type TupleResponse = ApiSuccessBodyFor<{
@@ -414,7 +403,8 @@ const tupleResponsePreserved: Assert<
 > = true;
 void tupleResponsePreserved;
 
-const rendererNativeError: Message["nativeError"] = {
-  message: undefined,
-} satisfies JsonInput;
-void rendererNativeError;
+export type RendererNativeError = Assert<
+  { message: undefined } extends NonNullable<Message["nativeError"]> & JsonInput
+    ? true
+    : false
+>;
