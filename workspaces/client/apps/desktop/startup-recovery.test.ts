@@ -20,8 +20,8 @@ test("startup uses the verified backend environment before configuring recovery"
     ],
   ] satisfies [Partial<BackendIdentity> | null, NodeJS.ProcessEnv | null][]) {
     const calls: string[] = [];
-    let lookup: { origin: string; state: string } | undefined;
-    let configured: RecoveryOptions | undefined;
+    let lookup: { origin: string; state: string } | undefined,
+      configured: RecoveryOptions | undefined;
     let finish!: (code: number) => void;
     const stopped = new Promise<number>((resolve) => {
       finish = resolve;

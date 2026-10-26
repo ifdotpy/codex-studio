@@ -26,10 +26,10 @@ test("desktop native settings, notification and speech boundaries work with fixt
   const folder = await mkdtemp(join(tmpdir(), "studio-native-ux-"));
   const main = mainTestSource();
   async function fixture() {
-    let window!: Window;
-    let notification!: Notice;
-    let handler!: RawNativeAction;
-    let ready!: () => void;
+    let window!: Window,
+      handler!: RawNativeAction,
+      notification!: Notice,
+      ready!: () => void;
     const display = {
       id: 1,
       workArea: { x: 0, y: 0, width: 1440, height: 960 },
@@ -556,7 +556,11 @@ test("desktop native settings, notification and speech boundaries work with fixt
     ] as const)
       view.setUint16(offset, value, true);
     const helper = join(folder, "helper");
-    await writeFile(helper, nodeFixture("speech-progress"), { mode: 0o700 });
+    await writeFile(
+      helper,
+      nodeFixture("speech-progress", "/usr/bin/env node"),
+      { mode: 0o700 },
+    );
     const progress: SpeechProgress[] = [];
     assert.equal(
       (
@@ -570,7 +574,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       { completed: 0, total: 2 },
       { completed: 2, total: 2 },
     ]);
-    await writeFile(helper, nodeFixture("speech-pending"));
+    await writeFile(helper, nodeFixture("speech-pending", "/usr/bin/env node"));
     await mkdir(join(folder, "desktop/native"), { recursive: true });
     await writeFile(
       join(folder, "desktop/native/studio-speech"),

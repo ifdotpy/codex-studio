@@ -31,6 +31,10 @@ import {
   isInstalledApplication,
   recoveryStatusLabel,
 } from "./recovery.ts";
+// Both rejection witnesses record calls and intentionally ignore push's count.
+const recordingRun = (calls: Parameters<RecoveryRun>[]) =>
+  (async (...args: Parameters<RecoveryRun>) => calls.push(args)) as RecoveryRun;
+
 function fixture() {
   const root = mkdtempSync(
     path.join(tmpdir(), "studio-recovery-registration-"),
@@ -130,9 +134,7 @@ test("only the installed Studio bundle can configure background recovery", async
         ),
         env: { ...data.env, CODEX_AGENTS_STATE_DIR: state },
         enabled,
-        // The rejection witness never reads the callback's array-push result.
-        run: (async (...args: Parameters<RecoveryRun>) =>
-          calls.push(args)) as RecoveryRun,
+        run: recordingRun(calls),
       };
       await assert.rejects(
         configureRecovery(attempt),
@@ -919,9 +921,7 @@ test("recovery refuses when no interpreter runs recover_backend.py and writes no
         checkInterpreter: async () => {
           throw new Error("ImportError: cannot import name 'StrEnum'");
         },
-        // This rejection witness does not inspect the array-push return value.
-        run: (async (...args: Parameters<RecoveryRun>) =>
-          calls.push(args)) as RecoveryRun,
+        run: recordingRun(calls),
       }),
       /needs Python 3\.11 or newer to run recover_backend\.py/,
     );

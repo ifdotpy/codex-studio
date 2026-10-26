@@ -76,7 +76,7 @@ test("desktop starts only the Rust executable with Python unavailable", async ()
   fixtures.push({ root });
   await mkdir(renderer, { recursive: true });
   await writeFile(path.join(renderer, "index.html"), "fixture");
-  await writeFile(binary, nodeFixture("runtime-identity"));
+  await writeFile(binary, nodeFixture("runtime-identity", "/usr/bin/env node"));
   await chmod(binary, 0o755);
   const port = await new Promise<number>((resolve, reject) => {
     const probe = createServer();
@@ -99,7 +99,7 @@ test("desktop starts only the Rust executable with Python unavailable", async ()
       XDG_CACHE_HOME: path.join(root, "cache"),
     },
   });
-  fixtures.at(-1)!.pid = backend.pid;
+  fixtures[fixtures.length - 1].pid = backend.pid;
   expect(backend.owned).toBe(true);
   expect(backend.backendBuild).toMatch(/^[a-f0-9]{64}$/);
   expect(backend.backendBuild).toBe(

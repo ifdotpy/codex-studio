@@ -13,8 +13,8 @@ export type RawNativeAction = (
   request: unknown,
 ) => ReturnType<typeof import("./main.ts").nativeAction>;
 
-export function nodeFixture(name: string) {
-  return `#!${process.execPath}\n${stripTypeScriptTypes(readFileSync(new URL(`./fixtures/${name}.mts`, import.meta.url), "utf8"))}`;
+export function nodeFixture(name: string, interpreter = process.execPath) {
+  return `#!${interpreter}\n${stripTypeScriptTypes(readFileSync(new URL(`./fixtures/${name}.mts`, import.meta.url), "utf8"))}`;
 }
 export function parsedRecord(source: string): Record<string, unknown> {
   return JSON.parse(source);

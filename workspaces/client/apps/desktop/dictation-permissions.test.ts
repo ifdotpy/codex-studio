@@ -25,8 +25,8 @@ test("main and preload require a trusted local microphone gesture", async () => 
       NonNullable<Parameters<Session["setPermissionCheckHandler"]>[0]>
     >;
   } = {};
-  let window!: InstanceType<typeof electron.BrowserWindow>;
-  let asked = 0;
+  let window!: InstanceType<typeof electron.BrowserWindow>,
+    asked = 0;
   const origin = "http://127.0.0.1:46299";
   const electron = {
     app: {
@@ -230,8 +230,8 @@ test("main and preload require a trusted local microphone gesture", async () => 
     }),
     /Transcribe/,
   );
-  let bridge: DesktopBridge | undefined;
-  let click: ((event: Pick<Event, "isTrusted">) => void) | undefined;
+  let bridge: DesktopBridge | undefined,
+    click: ((event: Pick<Event, "isTrusted">) => void) | undefined;
   const calls: unknown[][] = [];
   vm.runInNewContext(
     await readFile(new URL("./preload.cjs", import.meta.url), "utf8"),
