@@ -111,6 +111,7 @@ export default function TerminalDock({
     root.dataset.terminalDock = opened ? "open" : "closed";
     return () => {
       delete root.dataset.terminalDock;
+      root.style.removeProperty("--terminal-dock-height");
     };
   }, [opened]);
   useEffect(() => {
