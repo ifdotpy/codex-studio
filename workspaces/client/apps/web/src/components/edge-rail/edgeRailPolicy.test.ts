@@ -119,3 +119,44 @@ describe("edge rail geometry", () => {
     ).toBeNull();
   });
 });
+
+describe("top strip rail (iPhone Duo portrait)", () => {
+  const portrait = {
+    coarsePointer: true,
+    viewportHeight: 951,
+    viewportWidth: 669,
+    insets: { top: 0, right: 0, bottom: 34, left: 0 },
+    topStrip: 82,
+  };
+  const top = {
+    ...metrics,
+    targetSize: 48,
+    statusColumnCenter: 48,
+    topStatusReserve: 136,
+  };
+
+  test("makes a row in the strip that ends before the clock", () => {
+    expect(edgeRailGeometry(portrait, top)).toEqual({
+      side: "top",
+      width: 82,
+      top: 0,
+      bottom: 34,
+      height: 669 - 136,
+      targetSize: 48,
+      center: 48,
+    });
+  });
+
+  test("needs the viewport owner's top strip and prefers a side strip", () => {
+    expect(
+      edgeRailGeometry({ ...portrait, topStrip: undefined }, top),
+    ).toBeNull();
+    expect(edgeRailGeometry({ ...portrait, topStrip: 40 }, top)).toBeNull();
+    expect(
+      edgeRailGeometry(
+        { ...portrait, insets: { ...portrait.insets, right: 82 } },
+        top,
+      )?.side,
+    ).toBe("right");
+  });
+});

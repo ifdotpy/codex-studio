@@ -50,16 +50,26 @@ export function EdgeRail({
     }
   }, [geometry?.height, geometry?.side, geometry?.top]);
   if (!geometry) return null;
-  const position = geometry.side === "right" ? "left" : "right";
+  const row = geometry.side === "top";
+  const position =
+    geometry.side === "top"
+      ? "bottom"
+      : geometry.side === "right"
+        ? "left"
+        : "right";
   // The button column centers on the system status column, so it sits
   // closer to the screen edge than the strip center.
   const outerPadding = geometry.center - geometry.targetSize / 2;
   const innerGap = geometry.width - geometry.center - geometry.targetSize / 2;
-  const railBottom = geometry.top + geometry.height;
-  // The menu starts at its button and ends at the rail bottom (above Home);
-  // longer menus scroll inside.
+  const railBottom = row
+    ? window.innerHeight - geometry.bottom
+    : geometry.top + geometry.height;
+  const menuOffset = innerGap + layoutValues.edgeRail.menuGap;
+  // The menu starts at its button (below it for a top row) and ends at the
+  // rail bottom or above Home; longer menus scroll inside.
   const measureMenu = () => {
-    const top = menuButton.current?.getBoundingClientRect().top;
+    const rect = menuButton.current?.getBoundingClientRect();
+    const top = rect && (row ? rect.bottom + menuOffset : rect.top);
     const root = document.documentElement;
     const offsetTop = parseFloat(
       getComputedStyle(root).getPropertyValue("--mobile-viewport-top"),
@@ -106,16 +116,29 @@ export function EdgeRail({
       aria-label="Conversation actions"
       data-side={geometry.side}
       style={
-        {
-          width: geometry.width,
-          top: `calc(var(--mobile-viewport-top, 0px) + ${geometry.top}px)`,
-          height: geometry.height,
-          [geometry.side]: 0,
-          [geometry.side === "right" ? "paddingRight" : "paddingLeft"]:
-            outerPadding,
-          alignItems: geometry.side === "right" ? "flex-end" : "flex-start",
-          "--edge-rail-target": `${geometry.targetSize}px`,
-        } as CSSProperties
+        row
+          ? ({
+              // A row in the top strip, ending before the clock and Wi-Fi.
+              top: "var(--mobile-viewport-top, 0px)",
+              left: 0,
+              width: geometry.height,
+              height: geometry.width,
+              paddingTop: outerPadding,
+              flexDirection: "row",
+              alignItems: "flex-start",
+              justifyContent: "flex-end",
+              "--edge-rail-target": `${geometry.targetSize}px`,
+            } as CSSProperties)
+          : ({
+              width: geometry.width,
+              top: `calc(var(--mobile-viewport-top, 0px) + ${geometry.top}px)`,
+              height: geometry.height,
+              [geometry.side]: 0,
+              [geometry.side === "right" ? "paddingRight" : "paddingLeft"]:
+                outerPadding,
+              alignItems: geometry.side === "right" ? "flex-end" : "flex-start",
+              "--edge-rail-target": `${geometry.targetSize}px`,
+            } as CSSProperties)
       }
     >
       {button(
@@ -143,15 +166,15 @@ export function EdgeRail({
       {menu != null && (
         <Menu
           withInitialFocusPlaceholder={false}
-          position={`${position}-start`}
+          position={row ? "bottom-end" : `${position}-start`}
           withinPortal
-          offset={innerGap + layoutValues.edgeRail.menuGap}
+          offset={menuOffset}
           onOpen={measureMenu}
           middlewares={{
             flip: false,
             shift: {
               padding: {
-                top: geometry.top,
+                top: row ? geometry.width : geometry.top,
                 bottom: geometry.bottom,
                 left: geometry.side === "left" ? geometry.width : 0,
                 right: geometry.side === "right" ? geometry.width : 0,
