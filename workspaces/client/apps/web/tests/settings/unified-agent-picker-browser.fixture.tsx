@@ -154,7 +154,7 @@ window.fetch = async (input, options) => {
         rateLimits: {
           limitId: i < 4 ? "codex" : "claude",
           primary: {
-            usedPercent: [20, 60, 95, 100, 25, 70, 100][i],
+            usedPercent: required([20, 60, 95, 100, 25, 70, 100][i]),
             windowDurationMins: 300,
             resetsAt: Date.now() / 1000 + 3600,
           },
