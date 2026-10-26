@@ -75,7 +75,7 @@ python3 -B tests/resource-receipt-contract.py
 python3 -B tests/monitor-continuation-native.py
 python3 -B tests/monitor-shell-native.py
 node desktop/backend-test.mjs
-node desktop/test.mjs
+node desktop/test.ts
 ```
 
 ## Delivery limits

@@ -1,33 +1,69 @@
+import {
+  loadSourceFrame,
+  captureSourceProfile,
+} from "./profile-export-reader.ts";
+import type { WebContents, WebFrameMain } from "electron";
+import type {
+  BrowserProfileSnapshot,
+  BrowserProfileArchive,
+} from "../web/src/native/importBrowserProfile.ts";
 import { app, BrowserWindow, session, safeStorage } from "electron";
 import { execFileSync } from "node:child_process";
 import { open, link, unlink, mkdir, rm } from "node:fs/promises";
 import { readFileSync, realpathSync, writeSync } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
-import { exportServerCredentials } from "./export-server-credentials.mjs";
-import { exportBrowserProfile } from "./export-browser-profile.mjs";
+import { exportServerCredentials } from "./export-server-credentials.ts";
+import { exportBrowserProfile } from "./export-browser-profile.ts";
+
+export type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
+export type ExportManifest = {
+  profile: string;
+  output: string;
+  origins: string[];
+  contexts?: Record<string, string>;
+  owners?: Record<string, string>;
+  nativeCredentials?: Parameters<
+    typeof exportServerCredentials
+  >[0]["destination"];
+};
 
 // Explicit origins are required: an offline profile can contain several old
 // frame ports. The migration caller must enumerate them before importing.
 async function main() {
   const manifestPath = process.argv[2];
   let outputTemporary;
-  let partsDirectory;
+  let partsDirectory: string | undefined;
   let published = false;
   let exitCode = 1;
   try {
     if (!manifestPath)
       throw new Error("Supply an offline profile export manifest.");
-    const input = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const input: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (
+      !input ||
+      typeof input !== "object" ||
+      !("profile" in input) ||
+      typeof input.profile !== "string" ||
+      !("output" in input) ||
+      typeof input.output !== "string"
+    )
+      throw new Error("Supply an offline profile export manifest.");
     const profile = realpathSync(input.profile);
     const output = path.resolve(input.output);
     if (output === profile || output.startsWith(profile + path.sep))
       throw new Error("Export outside the original profile.");
-    if (!Array.isArray(input.origins) || !input.origins.length)
+    if (
+      !("origins" in input) ||
+      !Array.isArray(input.origins) ||
+      !input.origins.length
+    )
       throw new Error("Supply every saved Studio browser origin.");
     const origins = [
       ...new Set(
-        input.origins.map((value) => {
+        input.origins.map((value: unknown) => {
+          if (typeof value !== "string")
+            throw new Error("Only saved local Studio origins can be exported.");
           const url = new URL(value);
           if (
             url.protocol !== "http:" ||
@@ -47,18 +83,20 @@ async function main() {
         }),
       ),
     ];
-    const contexts = input.contexts ?? {};
+    const sourceContexts = "contexts" in input ? (input.contexts ?? {}) : {};
     if (
-      typeof contexts !== "object" ||
-      Array.isArray(contexts) ||
-      Object.entries(contexts).some(
+      typeof sourceContexts !== "object" ||
+      Array.isArray(sourceContexts) ||
+      Object.entries(sourceContexts).some(
         ([origin, parent]) =>
           !origins.includes(origin) ||
+          typeof parent !== "string" ||
           !origins.includes(parent) ||
           origin === parent,
       )
     )
       throw new Error("Invalid source frame context.");
+    const contexts = sourceContexts as Record<string, string>;
     // Refuse before requesting Electron's singleton lock: contacting a live
     // singleton would send it a second-instance event and could activate it.
     let owners;
@@ -69,10 +107,16 @@ async function main() {
         timeout: 15000,
       }).trim();
     } catch (error) {
-      if (error.status !== 1 || String(error.stderr || "").trim()) throw error;
+      if (
+        !(error instanceof Error) ||
+        !("status" in error) ||
+        error.status !== 1 ||
+        String("stderr" in error ? error.stderr || "" : "").trim()
+      )
+        throw error;
       // lsof can report matching owners and still exit 1 when another lookup
       // in the recursive scan fails. Its stdout remains evidence of use.
-      owners = String(error.stdout || "").trim();
+      owners = String("stdout" in error ? error.stdout || "" : "").trim();
     }
     if (owners)
       throw new Error(
@@ -106,22 +150,25 @@ async function main() {
         },
       );
     });
-    const destinations = input.owners ?? {};
+    const rawDestinations = "owners" in input ? (input.owners ?? {}) : {};
     if (
-      typeof destinations !== "object" ||
-      Array.isArray(destinations) ||
-      Object.entries(destinations).some(
+      typeof rawDestinations !== "object" ||
+      Array.isArray(rawDestinations) ||
+      Object.entries(rawDestinations).some(
         ([owner, origin]) =>
           !(owner === "root" || /^server:[a-zA-Z0-9_-]+$/.test(owner)) ||
+          typeof origin !== "string" ||
           !origins.includes(origin),
       )
     )
       throw new Error("Invalid destination owner mapping.");
+    const destinations = rawDestinations as Record<string, string>;
     const id = randomUUID();
     const partsName = path.basename(output) + "." + id + ".parts";
     partsDirectory = path.join(path.dirname(output), partsName);
     await mkdir(partsDirectory, { mode: 0o700 });
-    const snapshots = [];
+    const parts = partsDirectory;
+    const snapshots: BrowserProfileSnapshot[] = [];
     for (const origin of origins) {
       console.error("Export source " + (snapshots.length + 1));
       const window = new BrowserWindow({
@@ -151,8 +198,8 @@ async function main() {
         await window.webContents.debugger.sendCommand("Runtime.addBinding", {
           name: "studioExportChunk",
         });
-        let failTransfer;
-        const transferFailed = new Promise((_, reject) => {
+        let failTransfer: (reason: unknown) => void = () => {};
+        const transferFailed = new Promise<never>((_, reject) => {
           failTransfer = reject;
         });
         // Observe failures that arrive while the source document is loading.
@@ -184,12 +231,19 @@ async function main() {
               let file;
               try {
                 file = await open(
-                  path.join(partsDirectory, sha256 + ".json"),
+                  path.join(parts, sha256 + ".json"),
                   "wx",
                   0o600,
                 );
               } catch (error) {
-                if (error.code !== "EEXIST") throw error;
+                if (
+                  !(
+                    error instanceof Error &&
+                    "code" in error &&
+                    error.code === "EEXIST"
+                  )
+                )
+                  throw error;
               }
               if (file) {
                 try {
@@ -231,26 +285,11 @@ async function main() {
           },
         );
         await window.loadURL((contexts[origin] || origin) + "/");
-        let source = window.webContents;
+        let source: WebContents | WebFrameMain | undefined = window.webContents;
         if (contexts[origin]) {
-          await window.webContents
-            .executeJavaScript(`new Promise((resolve,reject) => {
-            const frame = document.createElement('iframe');
-            window.__studioExportReplies = new Map();
-            addEventListener('message', event => {
-              if (event.source !== frame.contentWindow || event.origin !== ${JSON.stringify(origin)} || event.data?.kind !== 'profile-export-chunk') return;
-              const {id, payload} = event.data;
-              window.__studioExportReplies.set(id, result => {
-                window.__studioExportReplies.delete(id);
-                frame.contentWindow.postMessage({kind:'profile-export-reply', id, result}, ${JSON.stringify(origin)});
-              });
-              window.studioExportChunk(payload);
-            });
-            const timer = setTimeout(() => reject(new Error('Source frame did not load')), 30000);
-            frame.onload = () => { clearTimeout(timer); resolve(); };
-            frame.src = ${JSON.stringify(origin + "/")};
-            document.body.append(frame);
-          })`);
+          await window.webContents.executeJavaScript(
+            `(${loadSourceFrame.toString()})(${JSON.stringify(origin)})`,
+          );
           source = window.webContents.mainFrame.frames.find(
             (frame) => frame.url === origin + "/",
           );
@@ -260,33 +299,11 @@ async function main() {
         await window.webContents.debugger.sendCommand("Runtime.addBinding", {
           name: "studioExportChunk",
         });
-        const snapshot = await Promise.race([
+        const snapshot: BrowserProfileSnapshot = await Promise.race([
           transferFailed,
-          source.executeJavaScript(`(async () => {
-          window.__studioExportReplies = new Map();
-          const parentOrigin = ${JSON.stringify(contexts[origin] || null)};
-          if (parentOrigin) addEventListener('message', event => {
-            if (event.source === parent && event.origin === parentOrigin && event.data?.kind === 'profile-export-reply')
-              window.__studioExportReplies.get(event.data.id)?.(event.data.result);
-          });
-          let next = 0;
-          const emit = records => new Promise((resolve, reject) => {
-            const id = ++next;
-            const timer = setTimeout(() => {
-              window.__studioExportReplies.delete(id);
-              reject(new Error('Saving a profile chunk timed out'));
-            }, 120000);
-            window.__studioExportReplies.set(id, result => {
-              clearTimeout(timer);
-              window.__studioExportReplies.delete(id);
-              if (result.error) reject(new Error(result.error)); else resolve(result.value);
-            });
-            const payload = JSON.stringify({id, records});
-            if (parentOrigin) parent.postMessage({kind:'profile-export-chunk', id, payload}, parentOrigin);
-            else window.studioExportChunk(payload);
-          });
-          return (${exportBrowserProfile.toString()})(emit);
-        })()`),
+          source.executeJavaScript(
+            `(${captureSourceProfile.toString()})(${JSON.stringify(contexts[origin] || null)},(${exportBrowserProfile.toString()}))`,
+          ),
         ]);
         if (contexts[origin]) snapshot.topLevelOrigin = contexts[origin];
         snapshots.push(snapshot);
@@ -297,7 +314,8 @@ async function main() {
     }
     await exportServerCredentials({
       profile,
-      destination: input.nativeCredentials,
+      destination:
+        "nativeCredentials" in input ? input.nativeCredentials : undefined,
       safeStorage,
     });
     const bytes = JSON.stringify({
@@ -308,7 +326,7 @@ async function main() {
       created: Date.now(),
       snapshots,
       owners: destinations,
-    });
+    } satisfies BrowserProfileArchive);
     outputTemporary = output + "." + id + ".tmp";
     const file = await open(outputTemporary, "wx", 0o600);
     try {

@@ -4,6 +4,6 @@ export const runtimeBinaries = Object.freeze([
   { package: "studio-process-supervisor", binary: "codex-process-supervisor" },
 ]);
 
-export function runtimeBinaryName(binary, platform = process.platform) {
+export function runtimeBinaryName(binary: string, platform = process.platform) {
   return platform === "win32" ? `${binary}.exe` : binary;
 }
