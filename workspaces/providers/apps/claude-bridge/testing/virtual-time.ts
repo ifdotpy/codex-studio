@@ -6,10 +6,13 @@ mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
 // waits unref the channel for children without a controlled clock; restore it.
 const keepClockChannel = () => process.channel?.ref();
 keepClockChannel();
-process.on("message", ({ advance }) => {
+process.on("message", (message: unknown) => {
+  if (!message || typeof message !== "object" || !("advance" in message))
+    return;
+  const { advance } = message;
   if (typeof advance !== "number") return;
   keepClockChannel();
   mock.timers.tick(advance);
   // Finish the timer callbacks' promise continuations before acknowledging.
-  setImmediate(() => process.send("advanced"));
+  setImmediate(() => process.send?.("advanced"));
 });

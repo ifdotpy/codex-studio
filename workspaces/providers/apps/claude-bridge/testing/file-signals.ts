@@ -7,18 +7,28 @@ export const HANG_GUARD_MS = 10_000;
 // Observe before inspecting so creation, rename and append cannot fall between
 // the condition check and subscription. The timeout is only a failure guard.
 export function waitForFile(
-  file,
-  { signal, matches = () => true, absent = false, childIpc = false } = {},
+  file: string,
+  {
+    signal: suppliedSignal,
+    matches = () => true,
+    absent = false,
+    childIpc = false,
+  }: {
+    signal?: AbortSignal;
+    matches?: () => boolean;
+    absent?: boolean;
+    childIpc?: boolean;
+  } = {},
 ) {
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const controller = new AbortController();
-    const deadline = signal
+    const signal = suppliedSignal ?? controller.signal;
+    const deadline = suppliedSignal
       ? undefined
       : setTimeout(
           () => controller.abort(new Error(`File signal missing: ${file}`)),
           HANG_GUARD_MS,
         );
-    signal ??= controller.signal;
     const watcher = watch(path.dirname(file), check);
     const cleanup = () => {
       watcher.close();
@@ -40,8 +50,14 @@ export function waitForFile(
         reject(error);
       }
     }
-    function notified(message) {
-      if (message?.fixtureFile === file) check();
+    function notified(message: unknown) {
+      if (
+        message &&
+        typeof message === "object" &&
+        "fixtureFile" in message &&
+        message.fixtureFile === file
+      )
+        check();
     }
     // Only scripted children opt in: test workers also have process.send, but
     // their IPC reference belongs to the test runner. A publisher notification
