@@ -1,3 +1,4 @@
+import type { SafeStorage } from "electron";
 import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -8,6 +9,11 @@ export async function exportServerCredentials({
   profile,
   destination,
   safeStorage,
+}: {
+  profile: string;
+  destination?: unknown;
+  safeStorage: Pick<SafeStorage, "isEncryptionAvailable" | "decryptString"> &
+    Partial<Pick<SafeStorage, "getSelectedStorageBackend">>;
 }) {
   let encrypted;
   try {
@@ -16,13 +22,19 @@ export async function exportServerCredentials({
       "utf8",
     );
   } catch (error) {
-    if (error.code === "ENOENT") return;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return;
     throw new Error("Could not read the saved server keys.");
   }
   if (
     !destination ||
+    typeof destination !== "object" ||
+    !("executable" in destination) ||
+    typeof destination.executable !== "string" ||
+    !("profile" in destination) ||
+    typeof destination.profile !== "string" ||
     !path.isAbsolute(destination.executable ?? "") ||
-    !path.isAbsolute(destination.profile ?? "")
+    !path.isAbsolute(destination.profile)
   )
     throw new Error(
       "Saved server keys require a native credential migration destination.",
@@ -41,13 +53,14 @@ export async function exportServerCredentials({
   } catch {
     throw new Error("Could not decrypt the saved server keys.");
   }
+  const { executable, profile: destinationProfile } = destination;
   try {
     if (bytes.length > 1024 * 1024)
       throw new Error("Saved server keys exceed the migration limit.");
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const child = spawn(
-        destination.executable,
-        ["--import-server-credentials", destination.profile],
+        executable,
+        ["--import-server-credentials", destinationProfile],
         { stdio: ["pipe", "ignore", "ignore"], timeout: 60000 },
       );
       // An early exit closes stdin; the process result determines success.
