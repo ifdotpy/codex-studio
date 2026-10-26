@@ -45,8 +45,12 @@ export function useMobileViewport(active: boolean, compact = false) {
     // opens or closes, and the first paint after it is slow. A transition, or
     // an animation that starts before that paint is committed, counts the
     // lost time and its first presented frame jumps. The animation holds its
-    // start position and starts in the second rendered frame, after the
-    // first one has been committed.
+    // start position and plays from the next rendered frame. A downward
+    // (closing) motion plays from the second one and waits
+    // keyboard.nativeMotionHold more, so its first presented frame still
+    // shows the start position. An upward (opening) motion starts at once:
+    // the rising keyboard covers its first frames, and a later start leaves
+    // the composer under the keyboard.
     let composerMotion: Animation | null = null;
     let composerMotionFrame = 0;
     const moveComposer = (node: HTMLElement, from: number, to: number) => {
@@ -57,6 +61,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       )
         return;
       let start = from;
+      const closing = to > from;
       if (composerMotion && composerMotion.playState !== "finished") {
         // Continue from the current position when the target changes mid-motion.
         const current = /^matrix\((?:[^,]+,){5}\s*([^)]+)\)$/.exec(
@@ -73,16 +78,20 @@ export function useMobileViewport(active: boolean, compact = false) {
         {
           duration: nativeKeyboardDuration(nativeKeyboard),
           easing: nativeKeyboardEasing(nativeKeyboard.curve),
+          delay: closing ? layoutValues.keyboard.nativeMotionHold : 0,
+          fill: "backwards",
         },
       );
       motion.pause();
       composerMotion = motion;
       cancelAnimationFrame(composerMotionFrame);
+      const play = () => {
+        composerMotionFrame = 0;
+        if (composerMotion === motion) motion.play();
+      };
       composerMotionFrame = requestAnimationFrame(() => {
-        composerMotionFrame = requestAnimationFrame(() => {
-          composerMotionFrame = 0;
-          if (composerMotion === motion) motion.play();
-        });
+        composerMotionFrame = closing ? requestAnimationFrame(play) : 0;
+        if (!closing) play();
       });
     };
     const resetComposer = () => {

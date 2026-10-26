@@ -149,5 +149,6 @@
   --layout-header-compact-height: 44px;
   --layout-keyboard-motion-duration: 400ms;
   --layout-keyboard-motion-target-tolerance: 0.1px;
+  --layout-keyboard-native-motion-hold: 64ms;
   --layout-keyboard-focus-sample-window: 600ms;
 }

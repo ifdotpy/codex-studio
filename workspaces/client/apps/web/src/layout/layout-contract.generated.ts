@@ -821,6 +821,12 @@ export const layoutTokens = {
     purpose:
       "Maximum transform matrix serialization error when retaining the current keyboard animation target",
   },
+  "keyboard.nativeMotionHold": {
+    value: 64,
+    unit: "ms",
+    purpose:
+      "Delay of the native iOS shell closing composer animation after its start frame; longer than the WebKit commit latency, so the first presented frame shows the start position",
+  },
   "keyboard.focusSampleWindow": {
     value: 600,
     unit: "ms",
@@ -892,6 +898,7 @@ export const layoutValues = {
     compactMaxHeight: 400,
     motionDuration: 400,
     motionTargetTolerance: 0.1,
+    nativeMotionHold: 64,
     focusSampleWindow: 600,
   },
   viewport: {
