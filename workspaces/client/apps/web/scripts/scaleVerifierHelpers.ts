@@ -1,3 +1,51 @@
+import type {
+  StdinTimingDiagnostic,
+  ReplyTimingDiagnostic,
+} from "../src/generated/rustOwned.ts";
+import {
+  STDIN_TIMING_DIAGNOSTIC_PREFIX as PROVIDER_STDIN_JOURNAL_PREFIX,
+  REPLY_TIMING_DIAGNOSTIC_PREFIX as PROVIDER_REPLY_JOURNAL_PREFIX,
+} from "../src/generated/rustOwned.ts";
+export { PROVIDER_STDIN_JOURNAL_PREFIX, PROVIDER_REPLY_JOURNAL_PREFIX };
+import type { components } from "../src/generated/api.ts";
+import type { ChildProcess } from "node:child_process";
+import type { EventEmitter } from "node:events";
+import type { Stats, WatchListener } from "node:fs";
+type Schema = components["schemas"];
+export type ScaleProfile = (typeof SCALE_PROFILES)[keyof typeof SCALE_PROFILES];
+export type ServedModelRecord = Partial<
+  Pick<Schema["AnalyticsUsageRecord"], "model" | "turnId" | "responseId">
+>;
+export type RetainedInput = Required<{
+  [K in "id" | "agent" | "kind" | "status"]: NonNullable<
+    Schema["EventEntityDto"][K]
+  >;
+}>;
+type StateDocument = Schema["SyncDocument"];
+export type EntityPage = Pick<
+  Schema["SyncPullResponse"],
+  "workspaceId" | "checkpoint" | "reset"
+> & { documents: StateDocument[] };
+export type StateFrame = Pick<
+  Schema["ResourceChangeEvent"],
+  "resources" | "resourceVersions" | "workspaceId" | "reason"
+>;
+export type Barrier = { path: string; token: string };
+export type ProcessSample = {
+  pid: number;
+  ppid: number;
+  comm: string;
+  argv: string[];
+  cpuMs: number;
+  rssBytes: number;
+};
+export type WatchDirectory = (
+  path: string,
+  listener: WatchListener<string>,
+) => Pick<EventEmitter, "on"> & Pick<ReturnType<typeof watch>, "close">;
+export function errorCode(error: unknown) {
+  return error instanceof Error && "code" in error ? error.code : undefined;
+}
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -71,12 +119,14 @@ export const SCALE_PROVIDER = SCALE_PROFILES["claude-haiku"];
 export const UPSTREAM_LIMIT_PATTERN =
   /\brate[ _-]?limit|\b429\b|\bcapacity\b|\busage limit|\btoo many requests\b/i;
 
-export function showsUpstreamLimit(text) {
+export function showsUpstreamLimit(text: unknown) {
   return UPSTREAM_LIMIT_PATTERN.test(String(text ?? ""));
 }
 
-export function scaleProfile(name) {
-  const profile = SCALE_PROFILES[name];
+export function scaleProfile(name: string): ScaleProfile {
+  const profile = Object.entries(SCALE_PROFILES).find(
+    ([key]) => key === name,
+  )?.[1];
   assert.ok(
     profile,
     `Profile must be one of ${Object.keys(SCALE_PROFILES).join(", ")}.`,
@@ -86,7 +136,11 @@ export function scaleProfile(name) {
 
 // Ready accounts of the profile's provider. The accounts route reports Codex
 // accounts without a provider field.
-export function scaleAccountKeys(accounts, profile) {
+export function scaleAccountKeys(
+  accounts: (Pick<Schema["Account"], "id" | "status"> &
+    Partial<Pick<Schema["Account"], "provider">>)[],
+  profile: ScaleProfile,
+) {
   const keys = accounts
     .filter(
       (row) =>
@@ -104,9 +158,15 @@ export function scaleAccountKeys(accounts, profile) {
 
 // With several accounts the lead's defaults must not pin one: the create path
 // rejects a worker whose explicit account differs from a pinned default.
-export function scaleWorkerDefaults(model, profile, accountKeys) {
+export function scaleWorkerDefaults(
+  model: string,
+  profile: ScaleProfile,
+  accountKeys: string[],
+): Schema["WorkerDefaults"] {
   return {
-    ...(accountKeys.length === 1 ? { account_key: accountKeys[0] } : {}),
+    ...(accountKeys.length === 1
+      ? { account_key: accountKeys.at(0) ?? null }
+      : {}),
     model,
     effort: profile.effort,
     fast_mode: profile.fastMode,
@@ -117,7 +177,14 @@ export function scaleWorkerDefaults(model, profile, accountKeys) {
 // The approved load profile requires an isolated Git worktree for every worker.
 export const SCALE_WORKSPACE_MODE = "worktree";
 
-export function callbackWorktreeCwd(entity, agentId, project) {
+export function callbackWorktreeCwd(
+  entity: Pick<
+    Schema["AgentEntityDto"],
+    "cwd" | "workspaceMode" | "worktree" | "worktreePreparation"
+  > | null,
+  agentId: string,
+  project: string,
+) {
   assert.ok(
     entity && typeof entity.cwd === "string" && isAbsolute(entity.cwd),
     `Worker ${agentId} has no authoritative absolute worktree cwd.`,
@@ -147,7 +214,10 @@ export function callbackWorktreeCwd(entity, agentId, project) {
   return cwd;
 }
 
-export function requireScaleModel(catalog, profile = SCALE_PROVIDER) {
+export function requireScaleModel(
+  catalog: { data?: Partial<Schema["ProviderModel"]>[] | null | undefined },
+  profile: ScaleProfile = SCALE_PROVIDER,
+) {
   const candidate = catalog.data?.find((row) => row.model === profile.model);
   assert.ok(
     candidate,
@@ -161,22 +231,25 @@ export function requireScaleModel(catalog, profile = SCALE_PROVIDER) {
     `The paid-test model must resolve to ${profile.servedModelPrefix}*; no agents were created.`,
   );
   assert.ok(
-    candidate.supportedReasoningEfforts?.some(
-      (row) => row.reasoningEffort === profile.effort,
-    ),
+    Array.isArray(candidate.supportedReasoningEfforts) &&
+      candidate.supportedReasoningEfforts.some(
+        (row) =>
+          typeof row === "object" &&
+          row !== null &&
+          !Array.isArray(row) &&
+          row.reasoningEffort === profile.effort,
+      ),
     `${profile.model} does not expose ${profile.effort} effort.`,
   );
   return candidate;
 }
 
-export const PROVIDER_STDIN_JOURNAL_PREFIX = "studio_provider_stdin_write ";
-export const PROVIDER_REPLY_JOURNAL_PREFIX = "studio_provider_reply ";
 // Requests whose stdin write and reply are journaled besides turn/start. Their
 // lines never join an exact input event.
 export const THREAD_REQUEST_METHODS = ["thread/start", "thread/resume"];
 
 // Linux exposes UUID text in /proc; journald stores the same boot ID as 32 hex digits.
-export function canonicalJournalBootId(value) {
+export function canonicalJournalBootId(value: unknown) {
   assert.ok(
     typeof value === "string" &&
       /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(
@@ -187,9 +260,13 @@ export function canonicalJournalBootId(value) {
   return value.replaceAll("-", "").toLowerCase();
 }
 
-export function parseProviderStdinJournalMessage(message) {
+export function parseProviderStdinJournalMessage(
+  message: string,
+): StdinTimingDiagnostic | null {
   if (!message.startsWith(PROVIDER_STDIN_JOURNAL_PREFIX)) return null;
-  const entry = JSON.parse(message.slice(PROVIDER_STDIN_JOURNAL_PREFIX.length));
+  const entry: Record<string, unknown> = JSON.parse(
+    message.slice(PROVIDER_STDIN_JOURNAL_PREFIX.length),
+  );
   assert.deepEqual(
     Object.keys(entry).sort(),
     [
@@ -207,7 +284,9 @@ export function parseProviderStdinJournalMessage(message) {
     "Provider stdin journal record has no provider handle.",
   );
   assert.ok(
-    Number.isSafeInteger(entry.generation) && entry.generation > 0,
+    typeof entry.generation === "number" &&
+      Number.isSafeInteger(entry.generation) &&
+      entry.generation > 0,
     "Provider stdin journal record has an invalid generation.",
   );
   assert.ok(
@@ -216,7 +295,9 @@ export function parseProviderStdinJournalMessage(message) {
   );
   assert.ok(
     (typeof entry.requestId === "string" && entry.requestId.length > 0) ||
-      (Number.isSafeInteger(entry.requestId) && entry.requestId >= 0),
+      (typeof entry.requestId === "number" &&
+        Number.isSafeInteger(entry.requestId) &&
+        entry.requestId >= 0),
     "Provider stdin journal record has an invalid request ID.",
   );
   assert.ok(
@@ -224,15 +305,28 @@ export function parseProviderStdinJournalMessage(message) {
     "Provider stdin journal record has no method.",
   );
   assert.ok(
-    Number.isSafeInteger(entry.stdinFlushedAtNs) && entry.stdinFlushedAtNs >= 0,
+    typeof entry.stdinFlushedAtNs === "number" &&
+      Number.isSafeInteger(entry.stdinFlushedAtNs) &&
+      entry.stdinFlushedAtNs >= 0,
     "Provider stdin journal record has an invalid flush timestamp.",
   );
-  return entry;
+  return {
+    providerHandle: entry.providerHandle,
+    generation: entry.generation,
+    operationId: entry.operationId,
+    requestId: entry.requestId,
+    method: entry.method,
+    stdinFlushedAtNs: entry.stdinFlushedAtNs,
+  };
 }
 
-export function parseProviderReplyJournalMessage(message) {
+export function parseProviderReplyJournalMessage(
+  message: string,
+): ReplyTimingDiagnostic | null {
   if (!message.startsWith(PROVIDER_REPLY_JOURNAL_PREFIX)) return null;
-  const entry = JSON.parse(message.slice(PROVIDER_REPLY_JOURNAL_PREFIX.length));
+  const entry: Record<string, unknown> = JSON.parse(
+    message.slice(PROVIDER_REPLY_JOURNAL_PREFIX.length),
+  );
   assert.deepEqual(
     Object.keys(entry).sort(),
     [
@@ -250,18 +344,33 @@ export function parseProviderReplyJournalMessage(message) {
     typeof entry.providerHandle === "string" &&
       typeof entry.operationId === "string" &&
       typeof entry.method === "string" &&
+      typeof entry.generation === "number" &&
       Number.isSafeInteger(entry.generation) &&
       (typeof entry.requestId === "string" ||
-        Number.isSafeInteger(entry.requestId)) &&
+        (typeof entry.requestId === "number" &&
+          Number.isSafeInteger(entry.requestId))) &&
+      typeof entry.replyAtNs === "number" &&
       Number.isSafeInteger(entry.replyAtNs) &&
       entry.replyAtNs >= 0 &&
       (entry.outcome === "result" || entry.outcome === "error"),
     "Provider reply journal record has an invalid field.",
   );
-  return entry;
+  return {
+    providerHandle: entry.providerHandle,
+    generation: entry.generation,
+    operationId: entry.operationId,
+    requestId: entry.requestId,
+    method: entry.method,
+    replyAtNs: entry.replyAtNs,
+    outcome: entry.outcome,
+  };
 }
 
-export async function forEachBounded(items, concurrency, operation) {
+export async function forEachBounded<T>(
+  items: T[],
+  concurrency: number,
+  operation: (item: T, index: number) => Promise<unknown>,
+) {
   for (let offset = 0; offset < items.length; offset += concurrency) {
     const batch = items.slice(offset, offset + concurrency);
     const results = await Promise.allSettled(
@@ -273,19 +382,23 @@ export async function forEachBounded(items, concurrency, operation) {
 }
 
 export function createEntityCursorPuller(
-  initialSequence,
-  workspaceId,
-  pullPage,
+  initialSequence: number,
+  workspaceId: string,
+  pullPage: (after: number) => Promise<EntityPage | undefined>,
 ) {
   assert.ok(Number.isSafeInteger(initialSequence) && initialSequence >= 0);
   let cursor = initialSequence;
-  return async function pullThrough(targetSequence, { force = false } = {}) {
+  return async function pullThrough(
+    targetSequence: number,
+    { force = false } = {},
+  ) {
     assert.ok(Number.isSafeInteger(targetSequence) && targetSequence >= cursor);
     const after = cursor;
-    const latestById = new Map();
+    const latestById = new Map<string, StateDocument>();
     while (cursor < targetSequence || force) {
       force = false;
       const page = await pullPage(cursor);
+      assert.ok(page);
       assert.equal(page.workspaceId, workspaceId, "Sync workspace changed.");
       assert.notEqual(
         page.reset,
@@ -322,7 +435,7 @@ export function createEntityCursorPuller(
   };
 }
 
-export function stateResourceVersion(value) {
+export function stateResourceVersion(value: StateFrame | null | undefined) {
   if (
     !Array.isArray(value?.resources) ||
     !Array.isArray(value.resourceVersions)
@@ -335,17 +448,20 @@ export function stateResourceVersion(value) {
 }
 
 export function createStateResourceAdapter(
-  workspaceId,
-  observedAgentIds,
-  pullPage,
+  workspaceId: string,
+  observedAgentIds: Set<string>,
+  pullPage: Parameters<typeof createEntityCursorPuller>[2],
 ) {
-  let sequence = null;
-  let lastFrameSequence = null;
-  let pullThrough;
-  return async function observe(frame, pendingSequence = null) {
+  let sequence: number | null = null;
+  let lastFrameSequence: number | null = null;
+  let pullThrough: ReturnType<typeof createEntityCursorPuller> | undefined;
+  return async function observe(
+    frame: StateFrame,
+    pendingSequence: number | null = null,
+  ) {
     const version = stateResourceVersion(frame);
     assert.ok(
-      Number.isSafeInteger(version?.revision),
+      version && Number.isSafeInteger(version.revision),
       "State resource event omitted its entity-sequence revision.",
     );
     assert.equal(frame.workspaceId, workspaceId, "Sync workspace changed.");
@@ -364,7 +480,7 @@ export function createStateResourceAdapter(
         "State stream repeated its initial baseline.",
       );
       assert.ok(
-        version.revision >= lastFrameSequence,
+        lastFrameSequence !== null && version.revision >= lastFrameSequence,
         `Sync entity sequence moved backwards: ${version.revision} < ${lastFrameSequence}.`,
       );
     }
@@ -377,12 +493,13 @@ export function createStateResourceAdapter(
       pendingSequence ?? version.revision,
       version.revision,
     );
+    assert.ok(pullThrough);
     const batch = await pullThrough(target, { force: true });
     sequence = batch.through;
-    const latestById = new Map();
+    const latestById = new Map<string, StateDocument>();
     for (const document of batch.documents) {
       const match = /^entity:agent:(.+)$/.exec(document.id);
-      if (match && observedAgentIds.has(match[1]))
+      if (match && observedAgentIds.has(match[1] ?? ""))
         latestById.set(document.id, document);
     }
     return {
@@ -394,7 +511,10 @@ export function createStateResourceAdapter(
   };
 }
 
-export function resumeIntentState(intent, existedBeforeResume) {
+export function resumeIntentState<T extends { state: string }>(
+  intent: T,
+  existedBeforeResume: boolean,
+) {
   if (existedBeforeResume && intent.state === "prepared") {
     return {
       ...intent,
@@ -409,8 +529,16 @@ export function resumeIntentState(intent, existedBeforeResume) {
 // The stored profile is what the backend will bill, so it is checked after the
 // create response rather than trusting the request that asked for it.
 export function assertStoredScaleProfile(
-  entity,
-  { id, model, effort, fastMode },
+  entity: Pick<
+    Schema["AgentEntityDto"],
+    "model" | "effort" | "fastMode"
+  > | null,
+  {
+    id,
+    model,
+    effort,
+    fastMode,
+  }: Pick<Schema["AgentEntityDto"], "id" | "model" | "effort" | "fastMode">,
 ) {
   assert.ok(entity, `Agent ${id} has no stored profile.`);
   assert.equal(
@@ -434,10 +562,10 @@ export function assertStoredScaleProfile(
 // It is family evidence only: a stored record cannot show whether the bridge
 // fell back to the configured model when the SDK omitted the response model.
 export function assertServedModelEvidence(
-  records,
-  agentId,
-  minimumResponses,
-  profile = SCALE_PROVIDER,
+  records: ServedModelRecord[],
+  agentId: string,
+  minimumResponses: number,
+  profile: ScaleProfile = SCALE_PROVIDER,
 ) {
   assert.ok(
     servedModelTurnCount(records, agentId, profile) >= minimumResponses,
@@ -445,7 +573,11 @@ export function assertServedModelEvidence(
   );
 }
 
-function servedModelTurnCount(records, agentId, profile) {
+function servedModelTurnCount(
+  records: ServedModelRecord[],
+  agentId: string,
+  profile: ScaleProfile,
+) {
   for (const record of records)
     assert.ok(
       typeof record.model === "string" &&
@@ -467,6 +599,14 @@ export async function waitForServedModelEvidence({
   minimumResponses,
   readRecords,
   waitForPublication,
+}: {
+  profile?: ScaleProfile;
+  agentIds: string[];
+  minimumResponses: number;
+  readRecords: () =>
+    | Map<string, ServedModelRecord[]>
+    | Promise<Map<string, ServedModelRecord[]>>;
+  waitForPublication: () => void | Promise<unknown>;
 }) {
   for (;;) {
     const records = await readRecords();
@@ -485,23 +625,30 @@ export async function waitForServedModelEvidence({
 // The runtime writes a numeric RequestId into a ticket as its decimal string
 // (safety_buffering/executor.rs request_id_string), so both forms share one key.
 // Anything else has no identity and returns null, which never joins.
-export function requestIdentityKey(value) {
+export function requestIdentityKey(value: unknown) {
   if (typeof value === "string") return value.length ? value : null;
-  return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? String(value)
+    : null;
 }
 
 // Live rows outside the journal-owned set are foreign to this run's cleanup.
-export function foreignLiveTeamRows(rows, ownedIds) {
+export function foreignLiveTeamRows<
+  T extends { id: string; deletedAt?: unknown },
+>(rows: T[], ownedIds: Set<string>) {
   return rows.filter((row) => row.deletedAt == null && !ownedIds.has(row.id));
 }
 
 // A cleanup is finished once the row is deleted and no cleanup intent remains.
-export function finishedWorkspaceCleanupIds(rows, expectedIds) {
+export function finishedWorkspaceCleanupIds(
+  rows: { id: string; deletedAt?: unknown; workspaceCleanupIntent?: unknown }[],
+  expectedIds: Iterable<string>,
+) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   return new Set(
     [...expectedIds].filter((id) => {
       const row = byId.get(id);
-      return Boolean(row?.deletedAt) && !row.workspaceCleanupIntent;
+      return Boolean(row?.deletedAt) && !row?.workspaceCleanupIntent;
     }),
   );
 }
@@ -532,7 +679,7 @@ const ACCOUNT_QUEUE_KEY = new RegExp(
   `^account[1-9]\\d*\\.(${ACCOUNT_QUEUE_NAMES.join("|")})$`,
 );
 
-function isKnownQueueKey(key) {
+function isKnownQueueKey(key: string) {
   return (
     key === RECOVERY_QUEUE_KEY ||
     key === DURABLE_INPUT_QUEUE_KEY ||
@@ -540,14 +687,16 @@ function isKnownQueueKey(key) {
   );
 }
 
-function isCount(value) {
-  return Number.isSafeInteger(value) && value >= 0;
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 // Stage-end drain of the non-durable dispatch, callback, clock, and recovery
 // queues. A missing, null, negative, fractional, or unrecognized counter is
 // unavailable, never drained.
-export function classifyStageQueues(queues) {
+export function classifyStageQueues(
+  queues: Record<string, unknown> | null | undefined,
+) {
   const snapshot = queues ?? {};
   const keys = Object.keys(snapshot);
   const aliases = [
@@ -609,6 +758,12 @@ export function classifyRetainedInputs({
   ownedAgentIds,
   parentAgentIds,
   phase,
+}: {
+  rows: RetainedInput[];
+  baseline: RetainedInput[];
+  ownedAgentIds: Set<string>;
+  parentAgentIds: Set<string>;
+  phase: string;
 }) {
   assert.ok(
     RETAINED_PHASES.includes(phase),
@@ -671,7 +826,7 @@ export function classifyRetainedInputs({
   };
 }
 
-export function normalizedWorktreePath(path) {
+export function normalizedWorktreePath(path: unknown) {
   assert.ok(
     typeof path === "string" && isAbsolute(path),
     "Owned worktree has no absolute path.",
@@ -679,14 +834,14 @@ export function normalizedWorktreePath(path) {
   return resolve(path);
 }
 
-export function createBoundedEventQueue(limit) {
-  const events = [];
-  let failure;
+export function createBoundedEventQueue<T>(limit: number) {
+  const events: T[] = [];
+  let failure: Error | undefined;
   return {
     get length() {
       return events.length;
     },
-    push(value) {
+    push(value: T) {
       if (events.length >= limit) {
         failure = new Error(
           `State event buffer exceeded its ${limit} item limit.`,
@@ -705,24 +860,30 @@ export function createBoundedEventQueue(limit) {
   };
 }
 
-export async function acquireRunLock(path, runId) {
-  const owner = { runId, pid: process.pid, token: randomUUID() };
+type RunLock = { runId: string; pid: number; token: string };
+async function readRunLock(path: string): Promise<RunLock> {
+  // The verifier owns this lock document; its exclusive create writes RunLock.
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+export async function acquireRunLock(path: string, runId: string) {
+  const owner: RunLock = { runId, pid: process.pid, token: randomUUID() };
   for (;;) {
     try {
       const handle = await open(path, "wx", 0o600);
       await handle.writeFile(`${JSON.stringify(owner)}\n`);
       await handle.close();
       return async () => {
-        const current = JSON.parse(await readFile(path, "utf8"));
+        const current = await readRunLock(path);
         assert.deepEqual(current, owner, "Run lock ownership changed.");
         await unlink(path);
       };
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
+      if (errorCode(error) !== "EEXIST") throw error;
     }
-    let current;
+    let current: typeof owner;
     try {
-      current = JSON.parse(await readFile(path, "utf8"));
+      current = await readRunLock(path);
     } catch (error) {
       throw new Error(`Existing run lock is unreadable; inspect ${path}.`, {
         cause: error,
@@ -737,7 +898,7 @@ export async function acquireRunLock(path, runId) {
     try {
       process.kill(current.pid, 0);
     } catch (error) {
-      if (error?.code === "ESRCH") alive = false;
+      if (errorCode(error) === "ESRCH") alive = false;
       else throw error;
     }
     assert.ok(
@@ -748,16 +909,16 @@ export async function acquireRunLock(path, runId) {
     try {
       await rename(path, stalePath);
     } catch (error) {
-      if (error?.code === "ENOENT") continue;
+      if (errorCode(error) === "ENOENT") continue;
       throw error;
     }
   }
 }
 
 export function releaseFifoBarriers(
-  workers,
-  deadlineAt,
-  processSet = new Set(),
+  workers: Barrier[],
+  deadlineAt: number,
+  processSet = new Set<ChildProcess>(),
 ) {
   const paths = workers.map((worker) => worker.path);
   const tokens = workers.map((worker) => worker.token);
@@ -808,9 +969,9 @@ for (let index = 1; index < process.argv.length; index += 2) {
     "data",
     (chunk) => (stderr = `${stderr}${chunk}`.slice(-1_000)),
   );
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     let timedOut = false;
-    let killTimer;
+    let killTimer: NodeJS.Timeout | undefined;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -841,15 +1002,20 @@ export const TOOL_BARRIER_PROCESS_BOUND_MS =
 
 const READINESS_MARKER_PATTERN = /^worker-(0|[1-9]\d*)\.ready$/;
 
-export function readinessMarkerName(index) {
+export function readinessMarkerName(index: number) {
   return `worker-${index}.ready`;
 }
 
-export function assertOwnedEntry(info, path, kind, mode) {
+export function assertOwnedEntry(
+  info: Stats,
+  path: string,
+  kind: (info: Stats) => boolean,
+  mode: number,
+) {
   assert.ok(!info.isSymbolicLink(), `${path} is a symbolic link.`);
   assert.equal(
     info.uid,
-    process.getuid(),
+    process.getuid?.(),
     `${path} is not owned by the verifier.`,
   );
   assert.equal(info.mode & 0o777, mode, `${path} has unexpected permissions.`);
@@ -858,7 +1024,7 @@ export function assertOwnedEntry(info, path, kind, mode) {
 
 // Creates a fresh private marker directory. It never reuses or deletes an
 // existing path, so previous evidence stays intact.
-export async function createReadinessMarkerDirectory(path) {
+export async function createReadinessMarkerDirectory(path: string) {
   await mkdir(path, { mode: 0o700 });
   assertOwnedEntry(
     await lstat(path),
@@ -873,30 +1039,30 @@ export async function createReadinessMarkerDirectory(path) {
 // directory at arming and when a caller begins an empty wait. A marker is
 // accepted only when its final name holds the exact per-worker token.
 export async function watchReadinessMarkers(
-  directory,
-  tokens,
-  signal = null,
-  watchDirectory = watch,
+  directory: string,
+  tokens: string[],
+  signal: AbortSignal | null = null,
+  watchDirectory: WatchDirectory = watch,
 ) {
   signal?.throwIfAborted();
-  const ready = [];
-  const seen = new Set();
-  const checks = new Map();
-  const waiters = new Set();
-  let failure = null;
+  const ready: number[] = [];
+  const seen = new Set<number>();
+  const checks = new Map<number, Promise<void>>();
+  const waiters = new Set<() => void>();
+  let failure: unknown = null;
   let closed = false;
   const wake = () => {
     for (const wakeWaiter of waiters) wakeWaiter();
   };
-  const fail = (error) => {
+  const fail = (error: unknown) => {
     failure ??= error;
     wake();
   };
-  const inspect = async (index) => {
+  const inspect = async (index: number) => {
     if (seen.has(index)) return;
     const path = join(directory, readinessMarkerName(index));
     const info = await lstat(path).catch((error) => {
-      if (error?.code === "ENOENT") return null;
+      if (errorCode(error) === "ENOENT") return null;
       throw error;
     });
     if (!info) return;
@@ -913,7 +1079,7 @@ export async function watchReadinessMarkers(
   };
   // An event arriving during an in-flight read must schedule another inspection.
   // Chain checks per worker so an initial ENOENT cannot swallow its rename event.
-  const check = (index) => {
+  const check = (index: number) => {
     const pending = checks.get(index) ?? Promise.resolve();
     const next = pending.then(() => inspect(index)).catch(fail);
     checks.set(index, next);
@@ -923,7 +1089,7 @@ export async function watchReadinessMarkers(
     for (let index = 0; index < tokens.length; index += 1) check(index);
   };
   const ownName = basename(directory);
-  const inspectName = (filename) => {
+  const inspectName = (filename: string | Buffer | null) => {
     if (closed) return;
     if (filename == null) {
       checkAll();
@@ -936,7 +1102,7 @@ export async function watchReadinessMarkers(
     if (name === ownName) {
       return lstat(join(directory, name)).then(
         () => fail(new Error(`Unknown readiness marker name: ${name}`)),
-        (error) => (error?.code === "ENOENT" ? checkAll() : fail(error)),
+        (error) => (errorCode(error) === "ENOENT" ? checkAll() : fail(error)),
       );
     }
     // A rename notification may retain the temporary name. Inspect only the
@@ -955,12 +1121,12 @@ export async function watchReadinessMarkers(
   });
   watcher.on("error", fail);
   const onAbort = () =>
-    fail(signal.reason ?? new Error("Readiness wait was aborted."));
+    fail(signal?.reason ?? new Error("Readiness wait was aborted."));
   signal?.addEventListener("abort", onAbort, { once: true });
   checkAll();
   return {
-    path: (index) => join(directory, readinessMarkerName(index)),
-    async next(deadlineAt) {
+    path: (index: number) => join(directory, readinessMarkerName(index)),
+    async next(deadlineAt: number) {
       let reconciled = false;
       while (true) {
         if (failure) throw failure;
@@ -977,7 +1143,7 @@ export async function watchReadinessMarkers(
           await Promise.all(checks.values());
           continue;
         }
-        await new Promise((resolveWait) => {
+        await new Promise<void>((resolveWait) => {
           const wakeWaiter = () => {
             clearTimeout(timer);
             waiters.delete(wakeWaiter);
@@ -1004,7 +1170,7 @@ export const CALLBACK_EXIT_AFTER_RELEASE_MS = 5_000;
 
 // Writes each owned release token without blocking. A FIFO with no reader
 // (ENXIO) or no path (ENOENT) means its shell is already gone.
-export function releaseBarriersNow(entries) {
+export function releaseBarriersNow(entries: Barrier[]) {
   return entries.map(({ path, token }) => {
     assert.match(token, /^[0-9a-f-]{36}$/i, "Expected a UUID release token.");
     let fd;
@@ -1013,7 +1179,7 @@ export function releaseBarriersNow(entries) {
       writeSync(fd, `${token}\n`);
       return { path, outcome: "released" };
     } catch (error) {
-      if (error?.code === "ENXIO" || error?.code === "ENOENT")
+      if (errorCode(error) === "ENXIO" || errorCode(error) === "ENOENT")
         return { path, outcome: "gone" };
       throw error;
     } finally {
@@ -1029,13 +1195,19 @@ export function callbackProcessRetirementDelayMs({
   readinessObservedAt,
   releasedAt = null,
   nowMs = Date.now(),
+}: {
+  readinessObservedAt?: string | undefined;
+  releasedAt?: string | null | undefined;
+  nowMs?: number;
+  startedAt?: string;
+  preparedAt?: string;
 }) {
   if (releasedAt) {
     const releasedMs = Date.parse(releasedAt);
     assert.ok(Number.isFinite(releasedMs), "Invalid callback release time.");
     return Math.max(0, releasedMs + CALLBACK_EXIT_AFTER_RELEASE_MS - nowMs);
   }
-  const startMs = Date.parse(readinessObservedAt);
+  const startMs = Date.parse(readinessObservedAt ?? "");
   assert.ok(
     Number.isFinite(startMs),
     "Owned callback has no verified readiness bound; worktree retirement is unproven.",
@@ -1050,7 +1222,7 @@ const CLOCK_TICKS_PER_SECOND = 100;
 const PAGE_SIZE_BYTES = 4096;
 
 export function readProcessTable(procRoot = "/proc") {
-  const table = new Map();
+  const table = new Map<number, ProcessSample>();
   for (const entry of readdirSync(procRoot)) {
     if (!/^[1-9]\d*$/.test(entry)) continue;
     try {
@@ -1076,32 +1248,38 @@ export function readProcessTable(procRoot = "/proc") {
         rssBytes: Number(statm[1]) * PAGE_SIZE_BYTES,
       });
     } catch (error) {
-      if (error?.code !== "ENOENT" && error?.code !== "ESRCH") throw error;
+      if (errorCode(error) !== "ENOENT" && errorCode(error) !== "ESRCH")
+        throw error;
     }
   }
   return table;
 }
 
-export function sampleProviderProcesses(table, rootPid, processName) {
-  const children = new Map();
+export function sampleProviderProcesses(
+  table: Map<number, ProcessSample>,
+  rootPid: number,
+  processName: string,
+) {
+  const children = new Map<number, ProcessSample[]>();
   for (const item of table.values())
     children.set(item.ppid, [...(children.get(item.ppid) || []), item]);
-  const tree = [];
+  const tree: ProcessSample[] = [];
   const queue = [...(children.get(rootPid) || [])];
   while (queue.length) {
     const item = queue.pop();
+    if (!item) continue;
     tree.push(item);
     queue.push(...(children.get(item.pid) || []));
   }
-  const names = (item) => [
+  const names = (item: ProcessSample) => [
     item.comm,
     ...item.argv.map((arg) => arg.split("/").at(-1)),
   ];
   const matched = tree.filter((item) => names(item).includes(processName));
   const rss = matched.map((item) => item.rssBytes).sort((a, b) => a - b);
-  const at = (p) =>
+  const at = (p: number) =>
     rss[Math.min(rss.length - 1, Math.ceil(p * rss.length) - 1)];
-  const sum = (items, key) =>
+  const sum = (items: ProcessSample[], key: "rssBytes" | "cpuMs") =>
     items.reduce((total, item) => total + item[key], 0);
   return {
     processName,
@@ -1129,17 +1307,23 @@ export function sampleProviderProcesses(table, rootPid, processName) {
 export const WORKER_WORKSPACES = Object.freeze(["shared", "worktree"]);
 export const DEFAULT_WORKER_WORKSPACE = "shared";
 
-export function parseWorkerWorkspace(value = DEFAULT_WORKER_WORKSPACE) {
+export function parseWorkerWorkspace(value: string = DEFAULT_WORKER_WORKSPACE) {
   assert.ok(
     WORKER_WORKSPACES.includes(value),
     `--worker-workspace must be one of ${WORKER_WORKSPACES.join(", ")}.`,
   );
+  assert.ok(value === "shared" || value === "worktree");
+  assert.ok(value === "shared" || value === "worktree");
   return value;
 }
 
 // Per-worker release FIFO of a shared-workspace stage. It lives under the
 // owned evidence directory, never inside the repository checkout.
-export function sharedBarrierPaths(evidenceDir, workers, index) {
+export function sharedBarrierPaths(
+  evidenceDir: string,
+  workers: number,
+  index: number,
+) {
   assert.ok(isAbsolute(evidenceDir), "Evidence directory must be absolute.");
   assert.ok(
     Number.isSafeInteger(workers) && workers > 0,
@@ -1156,25 +1340,29 @@ export function sharedBarrierPaths(evidenceDir, workers, index) {
 // Processes holding each FIFO open, read from /proc/<pid>/fd. A FIFO shell
 // keeps its read-write descriptor for as long as it blocks, so a holder proves
 // the tool process is alive and still waiting for its release.
-export function findFifoHolders(paths, procRoot = "/proc") {
-  const wanted = new Map();
+export function findFifoHolders(paths: string[], procRoot = "/proc") {
+  const wanted = new Map<string, string>();
   for (const path of paths) {
     let real = path;
     try {
       real = realpathSync(path);
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (errorCode(error) !== "ENOENT") throw error;
     }
     wanted.set(real, path);
   }
-  const holders = new Map(paths.map((path) => [path, []]));
+  const holders = new Map(paths.map((path) => [path, [] as number[]]));
   for (const entry of readdirSync(procRoot)) {
     if (!/^[1-9]\d*$/.test(entry)) continue;
     let fds;
     try {
       fds = readdirSync(`${procRoot}/${entry}/fd`);
     } catch (error) {
-      if (["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error?.code))
+      if (
+        ["ENOENT", "ESRCH", "EACCES", "EPERM"].some(
+          (code) => code === errorCode(error),
+        )
+      )
         continue;
       throw error;
     }
@@ -1183,14 +1371,18 @@ export function findFifoHolders(paths, procRoot = "/proc") {
       try {
         target = readlinkSync(`${procRoot}/${entry}/fd/${fd}`);
       } catch (error) {
-        if (["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(error?.code))
+        if (
+          ["ENOENT", "ESRCH", "EACCES", "EPERM"].some(
+            (code) => code === errorCode(error),
+          )
+        )
           continue;
         throw error;
       }
       const original = wanted.get(target);
       if (original !== undefined) {
         const pids = holders.get(original);
-        if (!pids.includes(Number(entry))) pids.push(Number(entry));
+        if (pids && !pids.includes(Number(entry))) pids.push(Number(entry));
       }
     }
   }
@@ -1209,6 +1401,12 @@ export function assertConcurrentWorkers({
   journalEntries,
   fifoPaths,
   holders,
+}: {
+  workers: number;
+  extraTurnStarts?: number;
+  journalEntries: { method: string; operationId: string }[];
+  fifoPaths: string[];
+  holders: Map<string, number[]>;
 }) {
   assert.equal(
     fifoPaths.length,

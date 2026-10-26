@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 // Explicitly selected live provider load verifier. Never run from the ordinary test tiers.
 import assert from "node:assert/strict";
-import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
+import type { components } from "../src/generated/api.ts";
+import type { ChildProcess } from "node:child_process";
+import type { ScaleVerifierLifecycle } from "./scaleVerifierTeardown.ts";
+import type {
+  ScaleProfile,
+  ServedModelRecord,
+  RetainedInput,
+  EntityPage,
+  StateFrame,
+  Barrier,
+} from "./scaleVerifierHelpers.ts";
+import { errorCode } from "./scaleVerifierHelpers.ts";
+import { runScaleVerifier } from "./scaleVerifierTeardown.ts";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
@@ -62,7 +74,345 @@ import {
   readProcessTable,
   sampleProviderProcesses,
   showsUpstreamLimit,
-} from "./scaleVerifierHelpers.mjs";
+} from "./scaleVerifierHelpers.ts";
+
+type StdinEntry = NonNullable<
+  ReturnType<typeof parseProviderStdinJournalMessage>
+>;
+type ReplyEntry = NonNullable<
+  ReturnType<typeof parseProviderReplyJournalMessage>
+>;
+type AttemptEvidence = Pick<
+  Schema["ExecutionAttempt"],
+  "id" | "accountKey" | "events" | "requestTicket" | "connectionGeneration"
+> & { runAccountKey?: Schema["ExecutionAttempt"]["accountKey"] };
+export type RetainedInputRows = RetainedInput[];
+type TeamChild = {
+  id: string;
+  initialInputNotSent: boolean;
+  workspaceCleanupIntent: unknown;
+} & {
+  [
+    K in
+      | "deletedAt"
+      | "cwd"
+      | "branch"
+      | "workspaceMode"
+      | "worktreeReady"
+      | "cleanedWorktree"
+      | "rootId"
+      | "parentId"
+  ]: Schema["AgentRecordResponse"][K] | null;
+};
+type Schema = components["schemas"];
+type FilesystemSnapshot = Awaited<ReturnType<typeof readFilesystemSnapshot>>;
+type Client = Awaited<ReturnType<typeof createClient>>;
+type SyncStream = Awaited<ReturnType<typeof startSyncResourceStream>>;
+type ReadinessWatch = Awaited<ReturnType<typeof watchReadinessMarkers>>;
+type BackendIdentity = {
+  pid: number;
+  stateDir: string;
+  backendKind: string | null;
+  backendBuild: Schema["DesktopResponse"]["backendBuild"] | null;
+  bootId?: string;
+};
+type Intent = {
+  state: string;
+  error?: string;
+  preparedAt?: string;
+  responseAt?: string;
+  elapsedMs?: number;
+  receipt?: string | null;
+  status?: string | null;
+  targetId?: string;
+  descendants?: boolean;
+  requestId?: Schema["CreateAgentRequest"]["id"];
+  method?: string;
+  path?: string;
+  finishedAt?: string;
+  resolvedAt?: string;
+  args?: string[];
+  inspectedAbsent?: boolean;
+};
+type BarrierRecord = {
+  barrierDirectory: string;
+  barrierPath: string;
+  readinessMarkerPath?: string;
+  readinessObservedAt?: string;
+  completionTag?: string;
+};
+type Worktree = Partial<BarrierRecord> & {
+  cwd: string;
+  branch?: string | null | undefined;
+  cleanup: string;
+  registeredRoot?: string;
+  removeIntent?: Intent;
+  branchDeleteIntent?: Intent;
+};
+type OwnedAgent = {
+  id: string;
+  parentId: string | null;
+  isLead: boolean;
+  stageWorkers: number;
+  stageIndex?: number;
+  create: Intent;
+  exchanges: Intent[];
+  cleanup: Intent & {
+    at?: string;
+    stop?: Intent;
+    stopCommand?: string | null;
+    stopElapsedMs?: number | null;
+    deleteCommand?: string;
+  };
+  worktree?: Worktree;
+  sharedBarrier?: BarrierRecord;
+  callbackReadinessObservedAt?: string;
+  callbackReleasedAt?: string;
+};
+type HttpRecord = {
+  at: string;
+  method: string;
+  path: string;
+  status: number | null;
+  elapsedMs: number;
+  outcome?: string;
+  error?: string;
+  eventStream?: boolean;
+};
+type Cleanup = Intent & {
+  agents?: unknown[];
+  backendIdentity?: Awaited<ReturnType<typeof verifyBackendIdentity>>;
+  startedAt?: string;
+  resumedAt?: string;
+  filesystemDisk?: {
+    at: string;
+    availableBytesBefore: number;
+    availableBytesAfter: number;
+    usedDeltaBytes: number;
+    deltaAttribution: string;
+  };
+  evidenceError?: string;
+  retainedInputs?: ReturnType<typeof verifyRetainedInputsAfterCleanup>;
+};
+type StageCleanup = Partial<Intent> & {
+  delete?: Intent;
+  foreignChildrenObserved?: string[];
+  workerStopObservationError?: string;
+  beforeMutation?: TeamAudit;
+  afterCleanup?: TeamAudit;
+};
+type TeamAudit = {
+  at: string;
+  rowsObserved: number;
+  ownedCurrentRows: number;
+  foreignRows: number;
+  source: string;
+};
+type DiagnosticSnapshot = Partial<
+  Pick<
+    Schema["DiagnosticsResponse"],
+    | "httpRequestMetrics"
+    | "runtimeLockOperations"
+    | "sqliteContention"
+    | "queues"
+    | "processTree"
+    | "blockingPoolMetrics"
+  >
+> & {
+  at?: string;
+  upstreamLimits?: string;
+  unavailable?: string;
+  error?: string;
+};
+type Stage = {
+  workers: number;
+  state: string;
+  agentIds: string[];
+  turnIntervals: {
+    agentId: string;
+    turnId: string;
+    startedAtMs: number;
+    observedAt: string;
+    endedAtMs?: number;
+  }[];
+  maxConcurrentTurns: number;
+  createLatenciesMs: number[];
+  secondExchangeLatenciesMs: number[];
+  leadId?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  backendPid?: number;
+  readinessMarkerDirectory?: string;
+  workerScriptDirectory?: string;
+  sharedBarrierDirectory?: string;
+  createStartedAt?: string;
+  createsConfirmed?: number;
+  leadExchangeCompleted?: boolean;
+  leadExchangeError?: string;
+  allWorkersActiveAt?: string;
+  toolCallbacksReadyCount?: number;
+  toolBarrierTokens?: string[];
+  toolBarrierRelease?: Intent & { intentAt?: string; confirmedAt?: string };
+  toolBarrierReleasePaths?: string[];
+  toolBarrierWorkerDirectories?: string[];
+  toolBarrierState?: string;
+  barrierReleasedAt?: string;
+  firstExchangeCount?: number;
+  secondExchangeCount?: number;
+  secondExchangeIds?: string[];
+  secondExchangeResults?: {
+    id: string | undefined;
+    state: string;
+    error: string | null;
+  }[];
+  createResults?: {
+    id: string | undefined;
+    state: string;
+    error: string | null;
+  }[];
+  leadWakeSuppression?: Intent & {
+    intentAt?: string;
+    confirmedAt?: string;
+    leadStatus?: Schema["AgentEntityDto"]["status"];
+    autoWake?: boolean;
+  };
+  settledCount?: number;
+  leadNativeTurnCount?: number;
+  elapsedMs?: number;
+  apiLatencyPass?: boolean;
+  providerStdinLatencyPass?: boolean;
+  stageCleanupStartedAt?: string;
+  stageCleanupFinishedAt?: string;
+  cleanup?: StageCleanup;
+  nativeTurnCounts?: Record<string, number>;
+  diagnosticsBefore?: DiagnosticSnapshot;
+  diagnosticsAfter?: DiagnosticSnapshot;
+  leadServedModel?: Awaited<ReturnType<typeof verifyServedModel>>;
+  firstExchangeServedModel?: Awaited<ReturnType<typeof verifyServedModel>>;
+  secondExchangeServedModel?: Awaited<ReturnType<typeof verifyServedModel>>;
+  concurrentWorkers?: ReturnType<typeof assertConcurrentWorkers>;
+  providerProcessesAtPeak?: ReturnType<typeof sampleProviderProcesses>;
+  worktreeDisk?: Awaited<ReturnType<typeof verifyOwnedWorktreeDisk>>;
+  providerStdinJournalWindow?: { startedAt: string; finishedAt: string };
+  providerStdinJournal?: ReturnType<typeof readProviderStdinJournal>;
+  eventEvidence?: Awaited<ReturnType<typeof readEventEvidence>>;
+  toolCallbacksVerified?: Awaited<ReturnType<typeof verifyToolCallback>>[];
+  sqliteLockErrorsEvidence?: {
+    owner: string;
+    scope: string;
+    backendPid: number | undefined;
+    baseline: number | null;
+    completed: number | null;
+  };
+  sqliteLockErrorDelta?: number | null;
+  queueDrain?: ReturnType<typeof classifyStageQueues> & {
+    snapshot: Schema["QueueSizes"] | null | undefined;
+    afterSettledWorkerTurns: number;
+    durableDeliveredExchanges: number;
+    retainedInputs?: ReturnType<typeof classifyRetainedInputs>;
+  };
+  timingEvidence?: ReturnType<typeof summarizeEventTiming> & {
+    providerThreadReplyMs?: ReturnType<typeof summarizeProviderThreadReplies>;
+  };
+  apiLatencyMs?: {
+    create: ReturnType<typeof summary>;
+    message: ReturnType<typeof summary>;
+  };
+  completeTurnDeliveryLatencyMs?: ReturnType<typeof summary>;
+  workerStopApiLatencyMs?: ReturnType<typeof summary> & {
+    agents: { agentId: string; elapsedMs: number }[];
+  };
+};
+type Journal = {
+  version: number;
+  runId: string;
+  origin: string;
+  project: string;
+  leadProfile: ScaleProfile;
+  workerProfile: ScaleProfile;
+  workerWorkspace: string;
+  stages: Stage[];
+  ownedAgents: OwnedAgent[];
+  http: HttpRecord[];
+  eventStream: { state: string; reconnects: number };
+  cleanup: Cleanup;
+  metricsGaps: string[];
+  runBudget: {
+    stages: { workers: number; deadlineMs: number }[];
+    maxStageWorkers: number | undefined;
+    maxExchanges: number;
+    requestDeadlineMs: number;
+    setupAndFinalRequestCountMax: number;
+    preflightCommandCountMax: number;
+    cleanupDeadlineMs: number;
+    maxWallMs: number;
+    maxToolBarrierSeconds: number;
+    apiRequestsMax: number;
+    cleanupApiRequestReserve: number;
+    hostResourceCeilings: string;
+    worktreeDiskLimitBytes?: number;
+    freeDiskFloorBytes?: number;
+  };
+  updatedAt?: string;
+  backendIdentity?: BackendIdentity;
+  diskPreflight?: Awaited<ReturnType<typeof verifyDiskPreflight>>;
+  projectHead?: string;
+  ownerBaseline?: {
+    at: string;
+    workspaceId: string;
+    generation: number | null;
+    checkpoint: Schema["SyncCheckpoint"] | null;
+    documentsObserved: number;
+    note: string;
+  };
+  foreignRetainedInputBaseline?: {
+    at: string;
+    statuses: readonly string[];
+    identities: RetainedInput[];
+  };
+  catalog?: {
+    checkedAt: string;
+    lead: { accountKeys: string[]; models: [string, string][] };
+    workers: { accountKeys: string[]; models: [string, string][] };
+  };
+  providerStdinDiagnostics?: {
+    enabled: boolean;
+    environmentOwner: string;
+    source: string;
+    journalPrefix: string;
+    pid: number;
+    bootId: string | undefined;
+  };
+  result?: { state: string; error?: string; reason?: string; at: string };
+  diagnosticsAfterCleanup?: DiagnosticSnapshot;
+  metrics?: ReturnType<typeof aggregateMetrics>;
+};
+type StreamEvent = {
+  name: string;
+  value?: StateFrame;
+  receivedAt?: number;
+  stateDocuments?: Schema["SyncDocument"][];
+};
+type TimingEvidenceInput = {
+  events?: EvidenceEvent[];
+  providerErrorEvents?: {
+    id: string;
+    agentId: string;
+    exchange: number;
+    error?: string | undefined;
+  }[];
+};
+type EvidenceEvent = {
+  id: string;
+  agentId: string;
+  kind?: string;
+  status?: string;
+  exchange: number;
+  error?: string;
+  missing?: boolean;
+  timing?: { enqueuedAt?: unknown };
+  attempts?: AttemptEvidence[];
+};
 
 // The lead and worker profiles and the stage list are fixed once from the CLI.
 // The default staged run is a Claude Sonnet lead over Codex Luna workers.
@@ -74,7 +424,8 @@ const STDIN_TIMING_DIAGNOSTIC_ENV = "CODEX_RUNTIME_STDIN_TIMING_DIAGNOSTICS";
 const DEFAULT_STAGES = [30, 128, 512];
 let STAGES = DEFAULT_STAGES;
 // Where workers run: `shared` (project checkout) or `worktree` (one per worker).
-let WORKER_WORKSPACE = parseWorkerWorkspace();
+let WORKER_WORKSPACE: ReturnType<typeof parseWorkerWorkspace> =
+  parseWorkerWorkspace();
 const STAGE_DEADLINE_MS = 5 * 60 * 1000;
 const REQUEST_DEADLINE_MS = 30_000;
 const SETUP_AND_FINAL_REQUESTS_MAX = 8;
@@ -85,11 +436,11 @@ const STREAM_RECONNECTS = 0;
 const API_P95_LIMIT_MS = 1_000;
 const API_REQUESTS_MAX = 12_000;
 let CLEANUP_API_REQUEST_RESERVE = ownedAgentsCleanupReserve(STAGES);
-function ownedAgentsCleanupReserve(stages) {
+function ownedAgentsCleanupReserve(stages: number[]) {
   return stages.reduce((sum, workers) => sum + workers + 1, 0) * 6 + 32;
 }
 // Selects the stages to run, for example `512` or `30,128`.
-export function parseStages(value) {
+export function parseStages(value: unknown) {
   const stages = String(value)
     .split(",")
     .map((item) => Number(item));
@@ -107,13 +458,13 @@ const FREE_DISK_FLOOR_BYTES = 256 * 1024 ** 3;
 // The server owns the page size; this checkpoint does not need a full entity seed.
 export const ENTITY_BASELINE_PULL_PATH =
   "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&reset=1";
-const journalWriteTails = new WeakMap();
+const journalWriteTails = new WeakMap<Journal, Promise<void>>();
 const REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../../..",
 );
 const workloadAbort = new AbortController();
-const barrierProcesses = new Set();
+const barrierProcesses = new Set<ChildProcess>();
 let interruptRequested = false;
 // Owned release helpers are stopped at once on an interrupt or a failed stage.
 function killBarrierProcesses() {
@@ -124,8 +475,8 @@ function killBarrierProcesses() {
   }
 }
 
-function parseArgs(argv) {
-  const result = {};
+function parseArgs(argv: string[]) {
+  const result: Record<string, string | boolean | undefined> = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--resume") {
@@ -136,6 +487,7 @@ function parseArgs(argv) {
       result.help = true;
       continue;
     }
+    assert.ok(arg);
     if (!arg.startsWith("--")) throw new Error(`Unexpected argument: ${arg}`);
     const key = arg.slice(2);
     const value = argv[i + 1];
@@ -150,14 +502,14 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/verify-rust-chat-scale.mjs --url http://127.0.0.1:4620 --project /existing/project --evidence-dir /outside/checkout/evidence [--lead-profile claude-sonnet] [--worker-profile codex-luna|claude-haiku] [--stages 30,128,512] [--worker-workspace shared|worktree]",
-    "  node scripts/verify-rust-chat-scale.mjs --url http://127.0.0.1:4620 --evidence-dir /outside/checkout/evidence --resume",
+    "  node scripts/verify-rust-chat-scale.ts --url http://127.0.0.1:4620 --project /existing/project --evidence-dir /outside/checkout/evidence [--lead-profile claude-sonnet] [--worker-profile codex-luna|claude-haiku] [--stages 30,128,512] [--worker-workspace shared|worktree]",
+    "  node scripts/verify-rust-chat-scale.ts --url http://127.0.0.1:4620 --evidence-dir /outside/checkout/evidence --resume",
     "",
     "This is a live, paid provider load run. Run only as an announced standalone LOAD-class operation.",
   ].join("\n");
 }
 
-function saveJournal(path, value) {
+function saveJournal(path: string, value: Journal) {
   value.updatedAt = new Date().toISOString();
   const snapshot = `${JSON.stringify(value, null, 2)}\n`;
   const previous = journalWriteTails.get(value) || Promise.resolve();
@@ -173,16 +525,17 @@ function saveJournal(path, value) {
   return nextWrite;
 }
 
-async function readJournal(path) {
+async function readJournal(path: string): Promise<Journal | null> {
   try {
+    // This verifier reads the versioned ownership journal it wrote itself.
     return JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
+    if (errorCode(error) === "ENOENT") return null;
     throw error;
   }
 }
 
-function validateJournal(journal) {
+function validateJournal(journal: Journal) {
   assert.equal(
     journal.version,
     1,
@@ -201,14 +554,14 @@ function validateJournal(journal) {
   );
 }
 
-function deadlineSignal(ms, parentSignal = null) {
+function deadlineSignal(ms: number, parentSignal: AbortSignal | null = null) {
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new Error(`Request exceeded ${ms} ms.`)),
     ms,
   );
   timer.unref?.();
-  const abortFromParent = () => controller.abort(parentSignal.reason);
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
   if (parentSignal?.aborted) abortFromParent();
   else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   return {
@@ -221,13 +574,13 @@ function deadlineSignal(ms, parentSignal = null) {
   };
 }
 
-function percentile(values, p) {
+function percentile(values: number[], p: number) {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.ceil(p * sorted.length) - 1];
+  return sorted[Math.ceil(p * sorted.length) - 1] ?? null;
 }
 
-function summary(values) {
+function summary(values: number[]) {
   return {
     samples: values.length,
     p50Ms: percentile(values, 0.5),
@@ -237,7 +590,7 @@ function summary(values) {
   };
 }
 
-function safeOrigin(value) {
+function safeOrigin(value: string) {
   const url = new URL(value);
   assert.ok(
     url.protocol === "http:" || url.protocol === "https:",
@@ -252,11 +605,11 @@ function safeOrigin(value) {
   return url.origin;
 }
 
-function shellQuote(value) {
+function shellQuote(value: unknown) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-async function readFilesystemSnapshot(path) {
+async function readFilesystemSnapshot(path: string) {
   const stats = await statfs(path, { bigint: true });
   const availableBytes = stats.bavail * stats.bsize;
   const usedBytes = (stats.blocks - stats.bfree) * stats.bsize;
@@ -282,7 +635,7 @@ async function readFilesystemSnapshot(path) {
 // Studio places worker worktrees at <root>/codex-agents/<id>, where <root> is
 // <repository>/.worktrees or the configured worktree root
 // (runtime-services worktree_root.rs). Git registration proves ownership.
-function ownedWorktreeRoot(cwd, agentId) {
+function ownedWorktreeRoot(cwd: string, agentId: string) {
   let current = resolve(cwd);
   while (current !== dirname(current)) {
     if (
@@ -295,7 +648,7 @@ function ownedWorktreeRoot(cwd, agentId) {
   throw new Error(`Owned worktree path is outside its managed root: ${cwd}`);
 }
 
-async function verifyDiskPreflight(project) {
+async function verifyDiskPreflight(project: string) {
   const tree = spawnSync(
     "git",
     ["-C", project, "ls-tree", "--full-tree", "-r", "-l", "HEAD"],
@@ -307,7 +660,7 @@ async function verifyDiskPreflight(project) {
   );
   assert.ok(
     !tree.error && tree.status === 0,
-    `Could not estimate tracked worktree size: ${String(tree.error?.message || tree.stderr || tree.status).slice(0, 300)}`,
+    `Could not estimate tracked worktree size: ${String((tree.error instanceof Error ? tree.error.message : undefined) || tree.stderr || tree.status).slice(0, 300)}`,
   );
   const head = spawnSync("git", ["-C", project, "rev-parse", "HEAD"], {
     encoding: "utf8",
@@ -317,7 +670,7 @@ async function verifyDiskPreflight(project) {
     !head.error &&
       head.status === 0 &&
       /^[0-9a-f]{40,64}$/i.test(head.stdout.trim()),
-    `Could not freeze selected project HEAD: ${String(head.error?.message || head.stderr || head.status).slice(0, 300)}`,
+    `Could not freeze selected project HEAD: ${String((head.error instanceof Error ? head.error.message : undefined) || head.stderr || head.status).slice(0, 300)}`,
   );
   const trackedBytes = tree.stdout
     .trim()
@@ -372,6 +725,12 @@ async function verifyOwnedWorktreeDisk({
   owners,
   previousSnapshot,
   trackedBytesPerWorktree,
+}: {
+  project: string;
+  stageIds: string[];
+  owners: OwnedAgent[];
+  previousSnapshot: FilesystemSnapshot;
+  trackedBytesPerWorktree: number;
 }) {
   const stageOwnerIds = new Set(stageIds);
   const stageOwners = owners.filter((owner) => stageOwnerIds.has(owner.id));
@@ -380,7 +739,10 @@ async function verifyOwnedWorktreeDisk({
     stageIds.length,
     "A stage worker is missing its durable journal owner.",
   );
-  const worktreeOwners = owners.filter((owner) => owner.worktree?.cwd);
+  const worktreeOwners = owners.filter(
+    (owner): owner is OwnedAgent & { worktree: Worktree } =>
+      Boolean(owner.worktree?.cwd),
+  );
   const paths = worktreeOwners.map((owner) => owner.worktree.cwd);
   assert.equal(
     new Set(paths).size,
@@ -388,7 +750,7 @@ async function verifyOwnedWorktreeDisk({
     "Journal contains duplicate owned worktree paths.",
   );
   const projectInfo = await lstat(project);
-  const worktreeVolumes = new Set();
+  const worktreeVolumes = new Set<string>();
   for (const owner of worktreeOwners) {
     const root = ownedWorktreeRoot(owner.worktree.cwd, owner.id);
     owner.worktree.registeredRoot = root;
@@ -437,11 +799,18 @@ async function verifyOwnedWorktreeDisk({
   };
 }
 
-function parseStateEntity(document) {
-  if (!document || document._deleted || typeof document.payload !== "string")
+function parseStateEntity(
+  document: Schema["SyncPullResponse"]["documents"][number] | undefined,
+) {
+  if (
+    !document ||
+    !("payload" in document) ||
+    document._deleted ||
+    typeof document.payload !== "string"
+  )
     return null;
   try {
-    const entity = JSON.parse(document.payload);
+    const entity: Schema["SyncEntityPayload"] = JSON.parse(document.payload);
     return entity.collection === "agent" ? entity.value : null;
   } catch {
     return null;
@@ -449,19 +818,22 @@ function parseStateEntity(document) {
 }
 
 async function waitForCallbackReadiness(
-  markers,
-  client,
-  ids,
-  runId,
-  workers,
-  tokens,
-  deadlineAt,
-  project,
-  journal,
-  journalPath,
+  markers: ReadinessWatch,
+  client: Client,
+  ids: string[],
+  runId: string,
+  workers: number,
+  tokens: string[],
+  deadlineAt: number,
+  project: string,
+  journal: Journal,
+  journalPath: string,
 ) {
-  const ready = new Map();
-  const currentCwd = async (agentId) => {
+  const ready = new Map<
+    string,
+    Barrier & { agentId: string; index: number; cwd: string; directory: string }
+  >();
+  const currentCwd = async (agentId: string) => {
     const entity = await client.agentSnapshot(agentId);
     return callbackWorktreeCwd(entity, agentId, project);
   };
@@ -469,7 +841,10 @@ async function waitForCallbackReadiness(
   // barrier path is checked before the worker is accepted for release.
   while (ready.size < ids.length) {
     const index = await markers.next(deadlineAt);
+    assert.ok(index !== undefined);
     const agentId = ids[index];
+    const token = tokens[index];
+    assert.ok(agentId && token);
     const owner = journal.ownedAgents.find((item) => item.id === agentId);
     assert.ok(owner, `Worker ${agentId} is not journal-owned.`);
     assert.ok(
@@ -504,7 +879,7 @@ async function waitForCallbackReadiness(
       cwd,
       directory,
       path,
-      token: tokens[index],
+      token,
     });
     const barrier = {
       barrierDirectory: directory,
@@ -521,19 +896,37 @@ async function waitForCallbackReadiness(
       new Set([...ready.values()].map((item) => item.cwd)).size === ids.length,
     "Managed workers do not have unique worktree paths.",
   );
-  return ids.map((id) => ready.get(id));
+  return ids.map((id) => {
+    const item = ready.get(id);
+    assert.ok(item);
+    return item;
+  });
 }
 
-async function main({ setRemaining }) {
+async function main({
+  setRemaining,
+}: Pick<ScaleVerifierLifecycle, "setRemaining">) {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(`${usage()}\n`);
     return;
   }
   assert.ok(options.url, "--url is required.");
-  LEAD = scaleProfile(options["lead-profile"] ?? DEFAULT_LEAD_PROFILE);
-  WORKER = scaleProfile(options["worker-profile"] ?? DEFAULT_WORKER_PROFILE);
-  WORKER_WORKSPACE = parseWorkerWorkspace(options["worker-workspace"]);
+  LEAD = scaleProfile(
+    typeof options["lead-profile"] === "string"
+      ? options["lead-profile"]
+      : DEFAULT_LEAD_PROFILE,
+  );
+  WORKER = scaleProfile(
+    typeof options["worker-profile"] === "string"
+      ? options["worker-profile"]
+      : DEFAULT_WORKER_PROFILE,
+  );
+  WORKER_WORKSPACE = parseWorkerWorkspace(
+    typeof options["worker-workspace"] === "string"
+      ? options["worker-workspace"]
+      : undefined,
+  );
   if (options.stages) {
     STAGES = parseStages(options.stages);
     CLEANUP_API_REQUEST_RESERVE = ownedAgentsCleanupReserve(STAGES);
@@ -541,6 +934,8 @@ async function main({ setRemaining }) {
   assert.ok(options["evidence-dir"], "--evidence-dir is required.");
   if (!options.resume)
     assert.ok(options.project, "--project is required for a new live run.");
+  assert.ok(typeof options.url === "string");
+  assert.ok(typeof options["evidence-dir"] === "string");
   const origin = safeOrigin(options.url);
   const evidenceDir = resolve(options["evidence-dir"]);
   const journalPath = join(evidenceDir, "rust-chat-scale.json");
@@ -579,7 +974,8 @@ async function main({ setRemaining }) {
         "Evidence belongs to another backend.",
       );
       prior = lockedJournal;
-      setRemaining(() => remainingOwnership(journalPath, prior));
+      const resumedJournal = prior;
+      setRemaining(() => remainingOwnership(journalPath, resumedJournal));
       await resumeCleanup(origin, journalPath, prior);
     } finally {
       await releaseLock();
@@ -591,6 +987,7 @@ async function main({ setRemaining }) {
     null,
     "Evidence directory already has an attempt; inspect it or use --resume.",
   );
+  assert.ok(typeof options.project === "string");
   const project = await realpath(resolve(options.project));
   const projectInfo = await lstat(project);
   assert.ok(
@@ -610,7 +1007,7 @@ async function main({ setRemaining }) {
     await releaseLock();
     throw error;
   }
-  const journal = {
+  const journal: Journal = {
     version: 1,
     runId,
     origin,
@@ -663,28 +1060,38 @@ async function main({ setRemaining }) {
       throw error;
     },
   );
-  let stream;
-  let readinessWatch = null;
-  let resultError;
-  let previousDiskSnapshot;
+  let stream: SyncStream | null | undefined;
+  let readinessWatch: ReadinessWatch | null = null;
+  let resultError: unknown;
+  let previousDiskSnapshot: FilesystemSnapshot | undefined;
   try {
-    const accounts = (await client.get("/api/accounts")).accounts;
-    const resolveRole = async (profile) => {
+    const accounts = (
+      await client.get<Schema["AccountsResponse"]>("/api/accounts")
+    ).accounts;
+    const resolveRole = async (profile: ScaleProfile) => {
       const accountKeys = scaleAccountKeys(accounts, profile);
-      const modelByAccount = new Map();
+      const modelByAccount = new Map<string, string>();
       for (const key of accountKeys) {
-        const catalog = await client.get(
+        const catalog = await client.get<Schema["ModelCatalogResponse"]>(
           `/api/models?account_key=${encodeURIComponent(key)}`,
         );
         const candidate = requireScaleModel(catalog, profile);
         // Pin paid requests to the catalog's resolved model identity.
-        modelByAccount.set(key, candidate.resolvedModel ?? candidate.model);
+        const model = candidate.resolvedModel ?? candidate.model;
+        assert.ok(typeof model === "string");
+        modelByAccount.set(key, model);
       }
       return { profile, accountKeys, modelByAccount };
     };
     const leadRole = await resolveRole(LEAD);
     const workerRole = await resolveRole(WORKER);
-    const leadModel = leadRole.modelByAccount.get(leadRole.accountKeys[0]);
+    const leadAccount = leadRole.accountKeys[0];
+    const workerDefaultAccount = workerRole.accountKeys[0];
+    assert.ok(leadAccount && workerDefaultAccount);
+    const leadModel = leadRole.modelByAccount.get(leadAccount);
+    const workerDefaultModel =
+      workerRole.modelByAccount.get(workerDefaultAccount);
+    assert.ok(leadModel && workerDefaultModel);
     assert.equal(
       process.platform,
       "linux",
@@ -726,9 +1133,9 @@ async function main({ setRemaining }) {
     process.stdout.write(
       `${JSON.stringify({ loadClass: true, startsAfterThisAnnouncement: true, workersByStage: STAGES, maxWallMs: journal.runBudget.maxWallMs, providerWorkerTurnsMax: journal.runBudget.maxExchanges, providerLeadTurnsMax: STAGES.length, providerTurnsMax: journal.runBudget.maxExchanges + STAGES.length, apiRequestsMax: journal.runBudget.apiRequestsMax, cleanupApiRequestReserve: CLEANUP_API_REQUEST_RESERVE, maxConcurrentToolCallbacks: STAGES.at(-1), toolChildrenWaitOnKernelFifo: true, toolCallbackReadinessOutput: true, providerStdinTimingDiagnostic: STDIN_TIMING_DIAGNOSTIC_ENV, journalEvidenceScope: "backend PID + kernel boot ID + stage wall-clock", worktreeDiskLimitBytes: WORKTREE_DISK_BUDGET_BYTES, trackedSizeEstimateBytes: journal.diskPreflight.estimatedBytesWith25PercentMargin, freeDiskFloorBytes: FREE_DISK_FLOOR_BYTES, initialFreeDiskBytes: journal.diskPreflight.snapshot.availableBytes, diskAccounting: "tracked-size estimate, causal statfs deltas, and owned worktree root metadata; no recursive walk", syntheticCpuMemoryDiskNetworkLoad: false, hostResourceCeilings: journal.runBudget.hostResourceCeilings, leadProfile: LEAD, workerProfile: WORKER, workerWorkspace: WORKER_WORKSPACE, workerAccounts: workerRole.accountKeys })}\n`,
     );
-    const desktop = await client.get("/api/desktop");
+    const desktop = await client.get<Schema["DesktopResponse"]>("/api/desktop");
     assert.equal(
-      desktop.backendKind,
+      "backendKind" in desktop ? desktop.backendKind : undefined,
       "rust",
       "The target is not the shared Rust backend required by this verifier.",
     );
@@ -743,7 +1150,10 @@ async function main({ setRemaining }) {
     journal.backendIdentity = {
       pid: desktop.pid,
       stateDir: resolve(desktop.stateDir),
-      backendKind: desktop.backendKind || null,
+      backendKind:
+        "backendKind" in desktop && typeof desktop.backendKind === "string"
+          ? desktop.backendKind
+          : null,
       backendBuild: desktop.backendBuild || null,
     };
     journal.backendIdentity.bootId = canonicalJournalBootId(
@@ -767,20 +1177,23 @@ async function main({ setRemaining }) {
       pid: desktop.pid,
       bootId: journal.backendIdentity.bootId,
     };
-    const baseline = await client.get(ENTITY_BASELINE_PULL_PATH);
+    const baseline = await client.get<Schema["SyncPullResponse"]>(
+      ENTITY_BASELINE_PULL_PATH,
+    );
     assert.ok(
       typeof baseline.workspaceId === "string" && baseline.workspaceId,
       "Initial sync baseline did not include a workspace identity.",
     );
     journal.ownerBaseline = {
       at: new Date().toISOString(),
-      workspaceId: baseline.workspaceId || null,
+      workspaceId: baseline.workspaceId,
       generation: baseline.generation || null,
       checkpoint: baseline.checkpoint || null,
       documentsObserved: (baseline.documents || []).length,
       note: "Initial authoritative entity-sync checkpoint saved before any verifier writes; every UUID is also checked individually before create.",
     };
-    const syncIdentity = await client.get("/api/sync/identity");
+    const syncIdentity =
+      await client.get<Schema["SyncIdentityResponse"]>("/api/sync/identity");
     assert.equal(
       syncIdentity.workspaceId,
       journal.ownerBaseline.workspaceId,
@@ -815,14 +1228,19 @@ async function main({ setRemaining }) {
         randomUUID(),
       );
       stage.toolBarrierTokens = barrierTokens;
-      const stageBackend = await client.get("/api/desktop");
-      assert.equal(stageBackend.backendKind, "rust");
+      const stageBackend =
+        await client.get<Schema["DesktopResponse"]>("/api/desktop");
+      assert.equal(
+        "backendKind" in stageBackend ? stageBackend.backendKind : undefined,
+        "rust",
+      );
       assert.equal(
         resolve(stageBackend.stateDir),
         journal.backendIdentity.stateDir,
         "The backend state directory changed during the staircase.",
       );
-      const stageIdentity = await client.get("/api/sync/identity");
+      const stageIdentity =
+        await client.get<Schema["SyncIdentityResponse"]>("/api/sync/identity");
       assert.equal(
         stageIdentity.workspaceId,
         journal.ownerBaseline.workspaceId,
@@ -830,7 +1248,10 @@ async function main({ setRemaining }) {
       );
       stage.backendPid = stageBackend.pid;
       stage.diagnosticsBefore = await diagnostics(client);
-      if (Number.isSafeInteger(stage.diagnosticsBefore.processTree?.rootPid))
+      if (
+        stage.diagnosticsBefore.processTree &&
+        Number.isSafeInteger(stage.diagnosticsBefore.processTree.rootPid)
+      )
         assert.equal(
           stage.diagnosticsBefore.processTree.rootPid,
           stage.backendPid,
@@ -893,11 +1314,11 @@ async function main({ setRemaining }) {
             effort: LEAD.effort,
             fast_mode: LEAD.fastMode,
             yolo_mode: true,
-            account_key: leadRole.accountKeys[0],
+            account_key: leadAccount,
             concurrency: workers,
             maxAgents: workers + 1,
             worker_defaults: scaleWorkerDefaults(
-              workerRole.modelByAccount.get(workerRole.accountKeys[0]),
+              workerDefaultModel,
               WORKER,
               workerRole.accountKeys,
             ),
@@ -931,7 +1352,11 @@ async function main({ setRemaining }) {
           1,
           stageDeadline,
         );
-        if (leadState?.worktreeReady === true) {
+        if (
+          leadState &&
+          "worktreeReady" in leadState &&
+          leadState.worktreeReady === true
+        ) {
           assert.equal(leadState.workspaceMode, "worktree");
           assert.ok(
             typeof leadState.cwd === "string" &&
@@ -945,7 +1370,10 @@ async function main({ setRemaining }) {
           assert.ok(leadOwner, "Orchestrator is not journal-owned.");
           leadOwner.worktree = {
             cwd: resolve(leadState.cwd),
-            branch: leadState.branch,
+            branch:
+              "branch" in leadState && typeof leadState.branch === "string"
+                ? leadState.branch
+                : undefined,
             cleanup: "pending",
           };
           await saveJournal(journalPath, journal);
@@ -953,7 +1381,9 @@ async function main({ setRemaining }) {
         stage.leadExchangeCompleted = true;
       } catch (error) {
         if (leadCreated)
-          stage.leadExchangeError = String(error?.message || error);
+          stage.leadExchangeError = String(
+            (error instanceof Error ? error.message : undefined) || error,
+          );
         else createResults.push({ status: "rejected", reason: error });
       }
       if (
@@ -966,7 +1396,9 @@ async function main({ setRemaining }) {
               // Workers are spread round-robin over the profile's ready accounts.
               const workerAccount =
                 workerRole.accountKeys[index % workerRole.accountKeys.length];
+              assert.ok(workerAccount);
               const workerModel = workerRole.modelByAccount.get(workerAccount);
+              assert.ok(workerModel);
               const tag = `STUDIO_SCALE_${runId.slice(0, 8)}_${workers}_${index}`;
               const shared = WORKER_WORKSPACE === "shared";
               const barrier = shared
@@ -976,6 +1408,7 @@ async function main({ setRemaining }) {
                     path: `.codex-scale-${runId}-${index}/release.fifo`,
                   };
               const token = barrierTokens[index];
+              assert.ok(readinessWatch && stage.workerScriptDirectory);
               const markerPath = readinessWatch.path(index);
               const markerTemp = `${markerPath}.tmp`;
               // The marker is renamed into place only after the FIFO is open.
@@ -1036,7 +1469,11 @@ async function main({ setRemaining }) {
         state: item.status,
         error:
           item.status === "rejected"
-            ? String(item.reason?.message || item.reason).slice(0, 500)
+            ? String(
+                (item.reason instanceof Error
+                  ? item.reason.message
+                  : undefined) || item.reason,
+              ).slice(0, 500)
             : null,
       }));
       await saveJournal(journalPath, journal);
@@ -1188,7 +1625,7 @@ async function main({ setRemaining }) {
               `Worker callback left a run-owned barrier path behind: ${path}`,
             );
           } catch (error) {
-            if (error?.code !== "ENOENT") throw error;
+            if (errorCode(error) !== "ENOENT") throw error;
           }
         }
       }
@@ -1196,11 +1633,13 @@ async function main({ setRemaining }) {
       await saveJournal(journalPath, journal);
       stage.firstExchangeCount = workers;
       stage.secondExchangeLatenciesMs = [];
-      stage.secondExchangeIds = ids.map(() => randomUUID());
+      const secondExchangeIds = ids.map(() => randomUUID());
+      stage.secondExchangeIds = secondExchangeIds;
       stage.state = "sending-second-exchanges";
       const secondResults = await Promise.allSettled(
         ids.map(async (agentId, index) => {
-          const messageId = stage.secondExchangeIds[index];
+          const messageId = secondExchangeIds[index];
+          assert.ok(messageId);
           const before = await client.receipt(agentId, messageId);
           assert.equal(
             before,
@@ -1222,11 +1661,15 @@ async function main({ setRemaining }) {
         }),
       );
       stage.secondExchangeResults = secondResults.map((item, index) => ({
-        id: stage.secondExchangeIds[index],
+        id: secondExchangeIds[index],
         state: item.status,
         error:
           item.status === "rejected"
-            ? String(item.reason?.message || item.reason).slice(0, 500)
+            ? String(
+                (item.reason instanceof Error
+                  ? item.reason.message
+                  : undefined) || item.reason,
+              ).slice(0, 500)
             : null,
       }));
       await saveJournal(journalPath, journal);
@@ -1292,9 +1735,12 @@ async function main({ setRemaining }) {
         1,
         `Stage ${workers} lead durably completed an unexpected number of native turns.`,
       );
-      stage.toolCallbacksVerified = Array(ids.length);
+      const toolCallbacksVerified: Awaited<
+        ReturnType<typeof verifyToolCallback>
+      >[] = Array(ids.length);
+      stage.toolCallbacksVerified = toolCallbacksVerified;
       await forEachBounded(ids, 32, async (agentId, index) => {
-        stage.toolCallbacksVerified[index] = await verifyToolCallback(
+        toolCallbacksVerified[index] = await verifyToolCallback(
           client,
           agentId,
           runId,
@@ -1319,7 +1765,8 @@ async function main({ setRemaining }) {
         `Stage ${workers} has an exchange that was not durably delivered.`,
       );
       stage.diagnosticsAfter = await diagnostics(client);
-      const completedStageBackend = await client.get("/api/desktop");
+      const completedStageBackend =
+        await client.get<Schema["DesktopResponse"]>("/api/desktop");
       assert.equal(
         completedStageBackend.pid,
         stage.backendPid,
@@ -1371,7 +1818,9 @@ async function main({ setRemaining }) {
         rows: stage.eventEvidence.retainedInputs,
         baseline: journal.foreignRetainedInputBaseline.identities,
         ownedAgentIds: new Set(journal.ownedAgents.map((owner) => owner.id)),
-        parentAgentIds: new Set(journal.stages.map((item) => item.leadId)),
+        parentAgentIds: new Set(
+          journal.stages.flatMap((item) => (item.leadId ? [item.leadId] : [])),
+        ),
         phase: "beforeCleanup",
       });
       if (queueClass.state === "unavailable")
@@ -1403,7 +1852,7 @@ async function main({ setRemaining }) {
         );
       if (
         stage.timingEvidence.readyToProviderStdinMs.state === "measured" &&
-        stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms >
+        (stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms ?? 0) >
           stage.timingEvidence.readyToProviderStdinMs.requiredP95LimitMs
       )
         throw new Error(
@@ -1427,16 +1876,18 @@ async function main({ setRemaining }) {
       stage.apiLatencyPass =
         Number.isFinite(stage.apiLatencyMs.create.p95Ms) &&
         Number.isFinite(stage.apiLatencyMs.message.p95Ms) &&
-        stage.apiLatencyMs.create.p95Ms <= API_P95_LIMIT_MS &&
-        stage.apiLatencyMs.message.p95Ms <= API_P95_LIMIT_MS;
+        (stage.apiLatencyMs.create.p95Ms ?? 0) <= API_P95_LIMIT_MS &&
+        (stage.apiLatencyMs.message.p95Ms ?? 0) <= API_P95_LIMIT_MS;
       stage.providerStdinLatencyPass =
         stage.timingEvidence.readyToProviderStdinMs.state === "measured" &&
-        stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms <=
+        (stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms ?? 0) <=
           stage.timingEvidence.readyToProviderStdinMs.requiredP95LimitMs;
       stage.completeTurnDeliveryLatencyMs = summary(
         stage.turnIntervals
           .filter((interval) => Number.isFinite(interval.endedAtMs))
-          .map((interval) => interval.endedAtMs - interval.startedAtMs),
+          .map(
+            (interval) => (interval.endedAtMs ?? NaN) - interval.startedAtMs,
+          ),
       );
       await saveJournal(journalPath, journal);
       process.stdout.write(
@@ -1470,11 +1921,19 @@ async function main({ setRemaining }) {
     const failedStage = journal.stages.at(-1);
     if (failedStage && !failedStage.diagnosticsAfter)
       failedStage.diagnosticsAfter = await diagnostics(client).catch(
-        (diagnosticError) => ({ error: String(diagnosticError?.message) }),
+        (diagnosticError) => ({
+          error: String(
+            diagnosticError instanceof Error
+              ? diagnosticError.message
+              : undefined,
+          ),
+        }),
       );
     journal.result = {
       state: "failed",
-      error: String(error?.message || error),
+      error: String(
+        (error instanceof Error ? error.message : undefined) || error,
+      ),
       at: new Date().toISOString(),
     };
   } finally {
@@ -1487,7 +1946,9 @@ async function main({ setRemaining }) {
     journal.cleanup.startedAt = new Date().toISOString();
     try {
       await saveJournal(journalPath, journal).catch((error) => {
-        journal.cleanup.evidenceError = String(error?.message || error);
+        journal.cleanup.evidenceError = String(
+          (error instanceof Error ? error.message : undefined) || error,
+        );
       });
       readinessWatch?.close();
       readinessWatch = null;
@@ -1538,7 +1999,9 @@ async function main({ setRemaining }) {
       );
     } catch (error) {
       journal.cleanup.state = "incomplete";
-      journal.cleanup.error = String(error?.message || error);
+      journal.cleanup.error = String(
+        (error instanceof Error ? error.message : undefined) || error,
+      );
       resultError ||= error;
     }
     if (stream) await stream.close();
@@ -1560,7 +2023,7 @@ async function main({ setRemaining }) {
     const stopLatencyExceeded = (journal.stages || []).some(
       (stage) =>
         Number.isFinite(stage.workerStopApiLatencyMs?.p95Ms) &&
-        stage.workerStopApiLatencyMs.p95Ms > API_P95_LIMIT_MS,
+        (stage.workerStopApiLatencyMs?.p95Ms ?? 0) > API_P95_LIMIT_MS,
     );
     const sqliteLockErrorsGap = (journal.stages || []).some(
       (stage) => !Number.isSafeInteger(stage.sqliteLockErrorDelta),
@@ -1615,7 +2078,7 @@ async function main({ setRemaining }) {
     );
 }
 
-async function assertEvidenceOutsideCheckout(evidenceDir) {
+async function assertEvidenceOutsideCheckout(evidenceDir: string) {
   const [repoRoot, actualEvidenceDir] = await Promise.all([
     realpath(REPO_ROOT),
     realpath(evidenceDir),
@@ -1629,7 +2092,7 @@ async function assertEvidenceOutsideCheckout(evidenceDir) {
   );
 }
 
-function makeStage(workers) {
+function makeStage(workers: number): Stage {
   return {
     workers,
     state: "pending",
@@ -1641,7 +2104,11 @@ function makeStage(workers) {
   };
 }
 
-async function createClient(origin, journal, journalPath) {
+async function createClient(
+  origin: string,
+  journal: Journal,
+  journalPath: string,
+) {
   const sessionStartedAt = performance.now();
   let pendingRequests = 0;
   const session = await requestJson(
@@ -1666,10 +2133,10 @@ async function createClient(origin, journal, journalPath) {
     origin,
     "x-canvas-token": session.token,
   };
-  const request = async (
-    method,
-    path,
-    body = undefined,
+  const request = async <T extends object = Schema["StopResponse"]>(
+    method: string,
+    path: string,
+    body: unknown = undefined,
     deadlineMs = REQUEST_DEADLINE_MS,
   ) => {
     const remainingStage = client.stageDeadlineAt
@@ -1694,7 +2161,7 @@ async function createClient(origin, journal, journalPath) {
       });
       const text = await response.text();
       const elapsedMs = Math.round(performance.now() - startedAt);
-      let value;
+      let value: unknown;
       try {
         value = text ? JSON.parse(text) : null;
       } catch {
@@ -1710,9 +2177,17 @@ async function createClient(origin, journal, journalPath) {
           ),
           { status: response.status, body: value, elapsedMs },
         );
-      return { value, elapsedMs, at };
+      assert.ok(value !== null && typeof value === "object");
+      return { value: value as T, elapsedMs, at };
     } catch (error) {
-      if (!error?.status) {
+      if (
+        !(
+          typeof error === "object" &&
+          error !== null &&
+          "status" in error &&
+          error.status
+        )
+      ) {
         const record = {
           at,
           method,
@@ -1720,7 +2195,9 @@ async function createClient(origin, journal, journalPath) {
           status: null,
           elapsedMs: Math.round(performance.now() - startedAt),
           outcome: "unknown",
-          error: String(error?.message || error).slice(0, 500),
+          error: String(
+            (error instanceof Error ? error.message : undefined) || error,
+          ).slice(0, 500),
         };
         journal.http.push(record);
         await saveJournal(journalPath, journal);
@@ -1737,9 +2214,23 @@ async function createClient(origin, journal, journalPath) {
       releaseRequest();
     }
   };
-  const get = async (path) => (await request("GET", path)).value;
-  const write = async (method, path, body, identity) => {
-    const intent = {
+  const get = async <T extends object>(path: string): Promise<T> =>
+    (await request<T>("GET", path)).value;
+  const write = async (
+    method: string,
+    path: string,
+    body: Schema["CreateAgentRequest"] | Schema["ManagedMessageBody"],
+    identity: {
+      type: "create" | "message";
+      id: string;
+      parentId?: string;
+      isLead?: boolean;
+      agentId?: string;
+      stageWorkers: number;
+      stageIndex?: number;
+    },
+  ) => {
+    const intent: Intent = {
       ...identity,
       method,
       path,
@@ -1749,12 +2240,14 @@ async function createClient(origin, journal, journalPath) {
     };
     journal.ownedAgents ||= [];
     if (identity.type === "create") {
-      const owner = {
+      const owner: OwnedAgent = {
         id: identity.id,
         parentId: identity.parentId || null,
         isLead: identity.isLead === true,
         stageWorkers: identity.stageWorkers,
-        stageIndex: identity.stageIndex,
+        ...(identity.stageIndex === undefined
+          ? {}
+          : { stageIndex: identity.stageIndex }),
         create: intent,
         exchanges: [],
         cleanup: { state: "pending" },
@@ -1776,17 +2269,31 @@ async function createClient(origin, journal, journalPath) {
     await saveJournal(journalPath, journal);
     let result;
     try {
-      result = await request(method, path, body);
+      result = await request<
+        | Schema["AgentResponse"]
+        | Schema["studio_api__work__models__MessageReceipt"]
+      >(method, path, body);
     } catch (error) {
-      intent.state = error?.unknown ? "unknown" : "failed";
-      intent.error = String(error?.message || error).slice(0, 500);
+      intent.state =
+        typeof error === "object" &&
+        error !== null &&
+        "unknown" in error &&
+        error.unknown
+          ? "unknown"
+          : "failed";
+      intent.error = String(
+        (error instanceof Error ? error.message : undefined) || error,
+      ).slice(0, 500);
       await saveJournal(journalPath, journal);
       throw error;
     }
     intent.state = "confirmed";
     intent.responseAt = result.at;
     intent.elapsedMs = result.elapsedMs;
-    intent.receipt = result.value?.status || null;
+    intent.receipt =
+      "status" in result.value && typeof result.value.status === "string"
+        ? result.value.status
+        : null;
     await saveJournal(journalPath, journal);
     return { ...result, elapsedMs: result.elapsedMs };
   };
@@ -1798,7 +2305,7 @@ async function createClient(origin, journal, journalPath) {
     get,
     write,
     request,
-    stageDeadlineAt: null,
+    stageDeadlineAt: null as number | null,
     cleanupMode: false,
     reserveApiRequest() {
       const limit = this.cleanupMode
@@ -1813,14 +2320,14 @@ async function createClient(origin, journal, journalPath) {
         pendingRequests -= 1;
       };
     },
-    setDeadline(deadlineAt) {
+    setDeadline(deadlineAt: number | null) {
       this.stageDeadlineAt = deadlineAt;
     },
-    async agentSnapshot(id) {
+    async agentSnapshot(id: string) {
       const entity = await this.rawAgentSnapshot(id);
       return entity?.deletedAt ? null : entity;
     },
-    async rawAgentSnapshot(id) {
+    async rawAgentSnapshot(id: string) {
       const url = new URL("/api/sync/pull", origin);
       url.searchParams.set("scope", "state:entities:v1");
       url.searchParams.set("after", "0");
@@ -1828,27 +2335,39 @@ async function createClient(origin, journal, journalPath) {
       url.searchParams.set("reset", "1");
       url.searchParams.set("limit", "1");
       url.searchParams.set("priorityId", id);
-      const result = (await request("GET", `${url.pathname}${url.search}`))
-        .value;
+      const result = (
+        await request<Schema["SyncPullResponse"]>(
+          "GET",
+          `${url.pathname}${url.search}`,
+        )
+      ).value;
       const document = (result.documents || []).find(
         (item) => parseStateEntity(item)?.id === id,
       );
-      if (!document || document._deleted) return null;
+      if (!document || ("_deleted" in document && document._deleted))
+        return null;
       return parseStateEntity(document);
     },
-    async receipt(agentId, messageId) {
+    async receipt(agentId: string, messageId: string) {
       const url = new URL("/api/messages/receipts", origin);
       url.searchParams.set("agent", agentId);
       url.searchParams.set("ids", JSON.stringify([messageId]));
-      const result = await request("GET", `${url.pathname}${url.search}`);
+      const result = await request<Schema["MessageReceipts"]>(
+        "GET",
+        `${url.pathname}${url.search}`,
+      );
       return result.value?.items?.find((item) => item.id === messageId) || null;
     },
   };
-  request.origin = origin;
+
   return client;
 }
 
-async function requestJson(url, init, timeoutMs) {
+async function requestJson(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Schema["SessionResponse"]> {
   const timing = deadlineSignal(timeoutMs);
   try {
     const response = await fetch(url, { ...init, signal: timing.signal });
@@ -1861,18 +2380,21 @@ async function requestJson(url, init, timeoutMs) {
 }
 
 async function startSyncResourceStream(
-  client,
-  journal,
-  journalPath,
+  client: Client,
+  journal: Journal,
+  journalPath: string,
   interruptible = true,
-  resources = [{ kind: "state" }],
+  resources: Schema["ResourceRef"][] = [{ kind: "state" }],
 ) {
+  assert.ok(journal.backendIdentity && journal.ownerBaseline);
+
   const resource = encodeURIComponent(JSON.stringify(resources));
   const url = new URL(
     `/api/sync/stream?protocol=3&resources=${resource}`,
     client.origin,
   );
-  const token = (await client.get("/api/session")).token;
+  const token = (await client.get<Schema["SessionResponse"]>("/api/session"))
+    .token;
   const connectDeadlineMs = client.stageDeadlineAt
     ? Math.min(REQUEST_DEADLINE_MS, client.stageDeadlineAt - performance.now())
     : REQUEST_DEADLINE_MS;
@@ -1887,7 +2409,7 @@ async function startSyncResourceStream(
   const startedAt = performance.now();
   let response;
   let keepSignal = false;
-  let releaseApiBudget = client.reserveApiRequest();
+  let releaseApiBudget: (() => void) | null = client.reserveApiRequest();
   try {
     response = await fetch(url, {
       headers: {
@@ -1923,7 +2445,9 @@ async function startSyncResourceStream(
       elapsedMs: Math.round(performance.now() - startedAt),
       eventStream: true,
       outcome: "unknown",
-      error: String(error?.message || error).slice(0, 500),
+      error: String(
+        (error instanceof Error ? error.message : undefined) || error,
+      ).slice(0, 500),
     });
     await saveJournal(journalPath, journal);
     throw error;
@@ -1931,14 +2455,16 @@ async function startSyncResourceStream(
     releaseApiBudget?.();
     if (!keepSignal) timing.close();
   }
-  const events = createBoundedEventQueue(10_000);
+  const events = createBoundedEventQueue<StreamEvent>(10_000);
   const stateResourceIndex = resources.findIndex(
     (resource) => resource.kind === "state",
   );
-  let stateSequence = null;
-  let pendingStateSequence = null;
-  let observeStateResource;
-  let failure;
+  let stateSequence: number | null = null;
+  let pendingStateSequence: number | null = null;
+  let observeStateResource:
+    | ReturnType<typeof createStateResourceAdapter>
+    | undefined;
+  let failure: unknown;
   let reader;
   try {
     reader = response.body.getReader();
@@ -1949,12 +2475,12 @@ async function startSyncResourceStream(
   }
   const decoder = new TextDecoder();
   let buffer = "";
-  let event = { data: [] };
-  let wake;
-  const pushEvent = (value) => {
+  let event: { data: string[]; name?: string } = { data: [] };
+  let wake: (() => void) | undefined;
+  const pushEvent = (value: StreamEvent) => {
     if (value.name === "resources") {
       const version = stateResourceVersion(value.value);
-      if (Number.isSafeInteger(version?.revision))
+      if (version && Number.isSafeInteger(version.revision))
         pendingStateSequence = Math.max(
           pendingStateSequence ?? version.revision,
           version.revision,
@@ -2006,7 +2532,7 @@ async function startSyncResourceStream(
   // without leaving an outstanding read behind. The observer is always running
   // when this is called, so the flag is consumed by its next read.
   let interrupted = false;
-  const nextRaw = async (timeoutAt) => {
+  const nextRaw = async (timeoutAt: number): Promise<StreamEvent> => {
     while (!events.length) {
       if (failure) throw failure;
       if (interrupted) {
@@ -2016,7 +2542,7 @@ async function startSyncResourceStream(
       const remaining = timeoutAt - performance.now();
       if (Number.isFinite(timeoutAt) && remaining <= 0)
         throw new Error("Timed out waiting for an authoritative state event.");
-      await new Promise((resolvePromise, rejectPromise) => {
+      await new Promise<void>((resolvePromise, rejectPromise) => {
         const timer = Number.isFinite(timeoutAt)
           ? setTimeout(() => {
               wake = undefined;
@@ -2034,9 +2560,11 @@ async function startSyncResourceStream(
       });
     }
     if (failure) throw failure;
-    return events.shift();
+    const event = events.shift();
+    assert.ok(event);
+    return event;
   };
-  const next = async (timeoutAt) => {
+  const next = async (timeoutAt: number) => {
     const received = await nextRaw(timeoutAt);
     if (stateResourceIndex < 0 || received.name !== "resources")
       return received;
@@ -2045,17 +2573,18 @@ async function startSyncResourceStream(
       throw new Error("State SSE frame omitted its entity-sequence revision.");
     if (!observeStateResource) {
       observeStateResource = createStateResourceAdapter(
-        journal.ownerBaseline?.workspaceId,
+        journal.ownerBaseline?.workspaceId ?? "",
         client.observedAgentIds,
         async (after) => {
           const url = new URL("/api/sync/pull", client.origin);
           url.searchParams.set("scope", "state:entities:v1");
           url.searchParams.set("after", String(after));
           url.searchParams.set("reset", "1");
-          return client.get(`${url.pathname}${url.search}`);
+          return client.get<EntityPage>(`${url.pathname}${url.search}`);
         },
       );
     }
+    assert.ok(received.value);
     const observation = await observeStateResource(
       received.value,
       pendingStateSequence,
@@ -2079,7 +2608,7 @@ async function startSyncResourceStream(
       timing.close();
       await Promise.race([
         pump,
-        new Promise((resolvePromise) => setTimeout(resolvePromise, 500)),
+        new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 500)),
       ]);
     },
     isHealthy() {
@@ -2091,16 +2620,17 @@ async function startSyncResourceStream(
 // Records worker turn intervals from state events until the stream is
 // interrupted. The intervals are evidence; they are not the concurrency gate.
 async function observeWorkerTurns(
-  stream,
-  ids,
-  deadlineAt,
-  stage,
-  journal,
-  journalPath,
+  stream: SyncStream,
+  ids: string[],
+  deadlineAt: number,
+  stage: Stage,
+  journal: Journal,
+  journalPath: string,
 ) {
   const expected = new Set(ids);
+  assert.ok(stage.leadId);
   const monitored = new Set([...ids, stage.leadId]);
-  const active = new Map();
+  const active = new Map<string, string>();
   let max = 0;
   while (performance.now() < deadlineAt) {
     const event = await stream.next(deadlineAt);
@@ -2108,8 +2638,9 @@ async function observeWorkerTurns(
     if (event.name !== "resources") continue;
     for (const document of event.stateDocuments || []) {
       const entity = parseStateEntity(document);
-      if (!entity || !monitored.has(entity.id)) continue;
+      if (!entity || !entity.id || !monitored.has(entity.id)) continue;
       const at = event.receivedAt;
+      assert.ok(at !== undefined);
       if (entity.id === stage.leadId) {
         const open = stage.turnIntervals.findLast(
           (row) => row.agentId === stage.leadId && row.endedAtMs === undefined,
@@ -2175,18 +2706,20 @@ async function observeWorkerTurns(
 }
 
 async function waitForStageSettled(
-  stream,
-  ids,
-  deadlineAt,
-  stage,
-  journal,
-  journalPath,
+  stream: SyncStream,
+  ids: string[],
+  deadlineAt: number,
+  stage: Stage,
+  journal: Journal,
+  journalPath: string,
 ) {
   const expected = new Set(ids);
-  const state = new Map();
-  const isSettled = (entity) =>
+  const state = new Map<string, Schema["AgentEntityDto"]>();
+  const isSettled = (entity: Schema["AgentEntityDto"]) =>
     !entity.inFlight &&
-    ["completed", "failed", "interrupted", "paused"].includes(entity.status);
+    ["completed", "failed", "interrupted", "paused"].some(
+      (status) => status === entity.status,
+    );
   while (
     (state.size < expected.size ||
       [...state.values()].some((entity) => !isSettled(entity))) &&
@@ -2196,7 +2729,7 @@ async function waitForStageSettled(
     if (event.name !== "resources") continue;
     for (const document of event.stateDocuments || []) {
       const entity = parseStateEntity(document);
-      if (!entity || !expected.has(entity.id)) continue;
+      if (!entity || !entity.id || !expected.has(entity.id)) continue;
       state.set(entity.id, entity);
       if (
         entity.inFlight &&
@@ -2213,7 +2746,7 @@ async function waitForStageSettled(
           stage.turnIntervals.push({
             agentId: entity.id,
             turnId: entity.turnId,
-            startedAtMs: event.receivedAt,
+            startedAtMs: event.receivedAt ?? performance.now(),
             observedAt: new Date().toISOString(),
           });
           stage.maxConcurrentTurns = Math.max(
@@ -2230,7 +2763,8 @@ async function waitForStageSettled(
             (!entity.turnId || row.turnId === entity.turnId) &&
             row.endedAtMs === undefined,
         );
-        if (interval) interval.endedAtMs = event.receivedAt;
+        if (interval)
+          interval.endedAtMs = event.receivedAt ?? performance.now();
       }
     }
     stage.settledCount = [...state.values()].filter(isSettled).length;
@@ -2264,10 +2798,18 @@ async function waitForStageSettled(
     );
 }
 
-async function verifyToolCallback(client, agentId, runId, workers, index) {
+async function verifyToolCallback(
+  client: Client,
+  agentId: string,
+  runId: string,
+  workers: number,
+  index: number,
+) {
   const url = new URL("/api/transcript/page", client.origin);
   url.searchParams.set("id", agentId);
-  const page = await client.get(`${url.pathname}${url.search}`);
+  const page = await client.get<Schema["TranscriptPageResponse"]>(
+    `${url.pathname}${url.search}`,
+  );
   const rows = page.items || [];
   const tool = rows.some(
     (row) =>
@@ -2294,7 +2836,7 @@ async function verifyToolCallback(client, agentId, runId, workers, index) {
     )
       return false;
     try {
-      const record = JSON.parse(row.text || "{}");
+      const record: Record<string, unknown> = JSON.parse(row.text || "{}");
       return (
         typeof record.aggregatedOutput === "string" &&
         record.aggregatedOutput.includes(expectedOutput)
@@ -2352,9 +2894,10 @@ async function verifyToolCallback(client, agentId, runId, workers, index) {
   };
 }
 
-async function diagnostics(client) {
+async function diagnostics(client: Client) {
   try {
-    const value = await client.get("/api/diagnostics");
+    const value =
+      await client.get<Schema["DiagnosticsResponse"]>("/api/diagnostics");
     return {
       at: new Date().toISOString(),
       httpRequestMetrics: value.httpRequestMetrics || null,
@@ -2369,18 +2912,29 @@ async function diagnostics(client) {
   } catch (error) {
     return {
       at: new Date().toISOString(),
-      unavailable: String(error?.message || error),
+      unavailable: String(
+        (error instanceof Error ? error.message : undefined) || error,
+      ),
     };
   }
 }
 
-function observedSqliteLockErrors(value) {
+function observedSqliteLockErrors(
+  value: DiagnosticSnapshot | null | undefined,
+) {
   const count = value?.sqliteContention?.lockError?.lockErrors;
-  return Number.isSafeInteger(count) && count >= 0 ? count : null;
+  return typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+    ? count
+    : null;
 }
 
 // Every evidence reader shares one read-only transaction and workspace fence.
-function withEvidenceDatabase(stateDir, workspaceId, deadlineAt, read) {
+function withEvidenceDatabase<T>(
+  stateDir: string,
+  workspaceId: string,
+  deadlineAt: number,
+  read: (database: DatabaseSync) => T,
+) {
   const remainingMs = Math.floor(
     Math.min(REQUEST_DEADLINE_MS, deadlineAt - performance.now()),
   );
@@ -2408,11 +2962,11 @@ function withEvidenceDatabase(stateDir, workspaceId, deadlineAt, read) {
 }
 
 export function readServedModelRecords(
-  stateDir,
-  workspaceId,
-  agentIds,
-  deadlineAt,
-  usageSource = "claudeResponse",
+  stateDir: string,
+  workspaceId: string,
+  agentIds: string[],
+  deadlineAt: number,
+  usageSource: string | null = "claudeResponse",
 ) {
   return withEvidenceDatabase(stateDir, workspaceId, deadlineAt, (database) => {
     database
@@ -2440,10 +2994,18 @@ export function readServedModelRecords(
           "? END ORDER BY seq",
       )
       .all(...agentIds, usageSource || "claudeResponse");
-    const records = new Map();
+    const records = new Map<string, ServedModelRecord[]>();
     for (const { agentId, ...row } of rows) {
+      assert.ok(typeof agentId === "string");
+      assert.ok(typeof row.model === "string" || row.model === null);
+      assert.ok(typeof row.turnId === "string" || row.turnId === null);
+      assert.ok(typeof row.responseId === "string" || row.responseId === null);
       const list = records.get(agentId) || [];
-      list.push(row);
+      list.push({
+        model: row.model,
+        turnId: row.turnId,
+        responseId: row.responseId,
+      });
       records.set(agentId, list);
     }
     return records;
@@ -2454,21 +3016,24 @@ export function readServedModelRecords(
 // completed exchange. The served-model source is the bridge's response model
 // stored in analytics_usage; no configured model is ever substituted for it.
 async function verifyServedModel(
-  stream,
-  journal,
-  profile,
-  agentIds,
-  minimumResponses,
-  deadlineAt,
+  stream: SyncStream,
+  journal: Journal,
+  profile: ScaleProfile,
+  agentIds: string[],
+  minimumResponses: number,
+  deadlineAt: number,
 ) {
+  assert.ok(journal.backendIdentity && journal.ownerBaseline);
+
+  const { backendIdentity, ownerBaseline } = journal;
   const records = await waitForServedModelEvidence({
     profile,
     agentIds,
     minimumResponses,
     readRecords: () =>
       readServedModelRecords(
-        journal.backendIdentity.stateDir,
-        journal.ownerBaseline.workspaceId,
+        backendIdentity.stateDir,
+        ownerBaseline.workspaceId,
         agentIds,
         deadlineAt,
         profile.usageSource,
@@ -2492,14 +3057,14 @@ async function verifyServedModel(
 // The one read-only SQLite snapshot for exact identities. Every caller gets the
 // workspace fence and every retained input in the same transaction.
 export function runEventEvidenceQuery(
-  stateDir,
-  workspaceId,
-  eventIds,
-  agentIds,
-  deadlineAt,
+  stateDir: string,
+  workspaceId: string,
+  eventIds: { id: string; agentId: string; exchange: number }[],
+  agentIds: string[],
+  deadlineAt: number,
 ) {
   return withEvidenceDatabase(stateDir, workspaceId, deadlineAt, (database) => {
-    const events = eventIds.map((item) => {
+    const events: EvidenceEvent[] = eventIds.map((item) => {
       const row = database
         .prepare(
           "SELECT e.id,e.agent AS agentId,e.kind,e.status,e.error,m.record FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=? AND e.agent=?",
@@ -2512,17 +3077,48 @@ export function runEventEvidenceQuery(
           exchange: item.exchange,
           missing: true,
         };
-      const metadata = row.record ? JSON.parse(row.record) : {};
-      const timing = metadata?.timing;
+      assert.ok(row.record === null || typeof row.record === "string");
+      assert.ok(
+        typeof row.id === "string" &&
+          typeof row.agentId === "string" &&
+          typeof row.kind === "string" &&
+          typeof row.status === "string" &&
+          (row.error === null || typeof row.error === "string"),
+      );
+      const metadata: unknown = row.record ? JSON.parse(row.record) : {};
+      const timing =
+        typeof metadata === "object" &&
+        metadata !== null &&
+        "timing" in metadata
+          ? metadata.timing
+          : undefined;
       const attempts = database
         .prepare(
           "SELECT a.id,json_extract(a.record,'$.requestTicket') AS requestTicket,json_extract(a.record,'$.connectionGeneration') AS connectionGeneration,json_extract(a.record,'$.accountKey') AS accountKey,json_extract(a.record,'$.events') AS events,r.account AS runAccountKey FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run JOIN runtime_execution_attempts a ON a.run=i.run WHERE i.event=? AND r.agent=? ORDER BY a.id",
         )
         .all(item.id, item.agentId)
-        .map((attempt) => ({
-          ...attempt,
-          events: attempt.events ? JSON.parse(attempt.events) : [],
-        }));
+        .map((attempt): AttemptEvidence => {
+          assert.ok(
+            typeof attempt.id === "string" &&
+              (attempt.accountKey === null ||
+                typeof attempt.accountKey === "string") &&
+              (attempt.events === null || typeof attempt.events === "string") &&
+              (attempt.requestTicket === null ||
+                typeof attempt.requestTicket === "string") &&
+              (attempt.connectionGeneration === null ||
+                typeof attempt.connectionGeneration === "number") &&
+              (attempt.runAccountKey === null ||
+                typeof attempt.runAccountKey === "string"),
+          );
+          return {
+            id: attempt.id,
+            accountKey: attempt.accountKey,
+            requestTicket: attempt.requestTicket,
+            connectionGeneration: attempt.connectionGeneration,
+            runAccountKey: attempt.runAccountKey,
+            events: attempt.events ? JSON.parse(attempt.events) : [],
+          };
+        });
       return {
         id: row.id,
         agentId: row.agentId,
@@ -2531,7 +3127,9 @@ export function runEventEvidenceQuery(
         exchange: item.exchange,
         error: (row.error || "").slice(0, 500),
         timing:
-          timing && Object.hasOwn(timing, "enqueuedAt")
+          typeof timing === "object" &&
+          timing !== null &&
+          "enqueuedAt" in timing
             ? { enqueuedAt: timing.enqueuedAt }
             : {},
         attempts,
@@ -2544,16 +3142,30 @@ export function runEventEvidenceQuery(
           ") ORDER BY id",
       )
       .all(...RETAINED_INPUT_STATUSES)
-      .map((row) => ({ ...row }));
+      .map((row): RetainedInput => {
+        assert.ok(
+          typeof row.id === "string" &&
+            typeof row.agent === "string" &&
+            typeof row.kind === "string" &&
+            typeof row.status === "string",
+        );
+        return {
+          id: row.id,
+          agent: row.agent,
+          kind: row.kind,
+          status: row.status,
+        };
+      });
     const nativeTurnCounts = Object.fromEntries(
-      agentIds.map((agentId) => [
-        agentId,
-        database
+      agentIds.map((agentId) => {
+        const count = database
           .prepare(
             "SELECT count(*) AS count FROM runtime_completed_turns WHERE id>=? AND id<?",
           )
-          .get(agentId + ":", agentId + ";").count,
-      ]),
+          .get(agentId + ":", agentId + ";")?.count;
+        assert.ok(typeof count === "number");
+        return [agentId, count];
+      }),
     );
     return {
       workspaceId,
@@ -2567,16 +3179,27 @@ export function runEventEvidenceQuery(
 
 // Retained inputs of every agent, with no exact event requested. The baseline
 // and the post-cleanup audit read through this without a stage.
-export function readRetainedInputRows(stateDir, workspaceId, deadlineAt) {
+export function readRetainedInputRows(
+  stateDir: string,
+  workspaceId: string,
+  deadlineAt: number,
+): RetainedInputRows {
   return runEventEvidenceQuery(stateDir, workspaceId, [], [], deadlineAt)
     .retainedInputs;
 }
 
-async function readEventEvidence(stateDir, workspaceId, stage, deadlineAt) {
+async function readEventEvidence(
+  stateDir: string,
+  workspaceId: string,
+  stage: Stage,
+  deadlineAt: number,
+) {
+  assert.ok(stage.secondExchangeIds && stage.leadId);
+  const secondIds = stage.secondExchangeIds;
   const eventIds = stage.agentIds.flatMap((agentId, index) => [
     { id: `${agentId}:initial`, agentId, exchange: 1 },
     {
-      id: stage.secondExchangeIds[index],
+      id: secondIds[index] ?? "",
       agentId,
       exchange: 2,
     },
@@ -2607,7 +3230,11 @@ async function readEventEvidence(stateDir, workspaceId, stage, deadlineAt) {
   };
 }
 
-export function readProviderStdinJournal(backendIdentity, stage, deadlineAt) {
+export function readProviderStdinJournal(
+  backendIdentity: BackendIdentity,
+  stage: Pick<Stage, "providerStdinJournalWindow">,
+  deadlineAt: number,
+) {
   const bootId = canonicalJournalBootId(backendIdentity.bootId);
   const window = stage.providerStdinJournalWindow;
   assert.ok(
@@ -2638,7 +3265,7 @@ export function readProviderStdinJournal(backendIdentity, stage, deadlineAt) {
   );
   if (result.error || result.status !== 0)
     throw new Error(
-      `Could not read the PID-, boot-, and stage-bounded provider stdin journal: ${String(result.error?.message || result.stderr || result.status).slice(0, 800)}`,
+      `Could not read the PID-, boot-, and stage-bounded provider stdin journal: ${String((result.error instanceof Error ? result.error.message : undefined) || result.stderr || result.status).slice(0, 800)}`,
     );
   const startedAtUs = Date.parse(window.startedAt) * 1_000;
   const finishedAtUs = Date.parse(window.finishedAt) * 1_000;
@@ -2646,7 +3273,7 @@ export function readProviderStdinJournal(backendIdentity, stage, deadlineAt) {
   const replies = [];
   for (const line of result.stdout.split("\n")) {
     if (!line) continue;
-    const envelope = JSON.parse(line);
+    const envelope: Record<string, unknown> = JSON.parse(line);
     if (
       envelope._PID !== String(backendIdentity.pid) ||
       envelope._BOOT_ID !== bootId
@@ -2663,9 +3290,13 @@ export function readProviderStdinJournal(backendIdentity, stage, deadlineAt) {
       throw new Error(
         "Journal returned a row outside the stage wall-clock window.",
       );
-    const entry = parseProviderStdinJournalMessage(envelope.MESSAGE || "");
+    const entry = parseProviderStdinJournalMessage(
+      typeof envelope.MESSAGE === "string" ? envelope.MESSAGE : "",
+    );
     if (entry) entries.push({ ...entry, journalTimeUs });
-    const reply = parseProviderReplyJournalMessage(envelope.MESSAGE || "");
+    const reply = parseProviderReplyJournalMessage(
+      typeof envelope.MESSAGE === "string" ? envelope.MESSAGE : "",
+    );
     if (reply) replies.push({ ...reply, journalTimeUs });
   }
   return {
@@ -2678,11 +3309,11 @@ export function readProviderStdinJournal(backendIdentity, stage, deadlineAt) {
 }
 
 export async function readCurrentTeamChildren(
-  stateDir,
-  workspaceId,
-  leadId,
-  deadlineAt,
-  agentIds = [],
+  stateDir: string,
+  workspaceId: string,
+  leadId: string,
+  deadlineAt: number,
+  agentIds: string[] = [],
 ) {
   return withEvidenceDatabase(stateDir, workspaceId, deadlineAt, (database) => {
     const rows = agentIds.length
@@ -2698,8 +3329,10 @@ export async function readCurrentTeamChildren(
             "SELECT id,record FROM runtime_agents WHERE id=? OR json_extract(record,'$.rootId')=? ORDER BY id",
           )
           .all(leadId, leadId);
-    return rows.map(({ id, record: raw }) => {
-      const record = JSON.parse(raw);
+    return rows.map(({ id, record: raw }): TeamChild => {
+      assert.ok(typeof id === "string" && typeof raw === "string");
+      const record: Schema["AgentRecordResponse"] & Record<string, unknown> =
+        JSON.parse(raw);
       const item = Object.fromEntries(
         [
           "deletedAt",
@@ -2726,17 +3359,32 @@ export async function readCurrentTeamChildren(
             "SELECT count(*) AS total,coalesce(sum(id=? AND status='cancelled'),0) AS cancelled FROM runtime_events WHERE agent=?",
           )
           .get(initial, id);
-        initialInputNotSent = counts.total === 1 && counts.cancelled === 1;
+        initialInputNotSent = counts?.total === 1 && counts.cancelled === 1;
       }
-      return { ...item, id, initialInputNotSent };
+      return {
+        id,
+        initialInputNotSent,
+        workspaceCleanupIntent: item.workspaceCleanupIntent,
+        deletedAt: record.deletedAt ?? null,
+        cwd: record.cwd ?? null,
+        branch: record.branch ?? null,
+        workspaceMode: record.workspaceMode ?? null,
+        worktreeReady: record.worktreeReady ?? null,
+        cleanedWorktree: record.cleanedWorktree ?? null,
+        rootId: record.rootId ?? null,
+        parentId: record.parentId ?? null,
+      };
     });
   });
 }
 
 // Evidence only, not a pass gate: reply latency of thread/start and
 // thread/resume per account, from the physical stdin flush to the reply line.
-export function summarizeProviderThreadReplies(stdinEntries, replies) {
-  const writes = new Map();
+export function summarizeProviderThreadReplies(
+  stdinEntries: StdinEntry[],
+  replies: ReplyEntry[],
+) {
+  const writes = new Map<string, StdinEntry>();
   for (const entry of stdinEntries) {
     if (!THREAD_REQUEST_METHODS.includes(entry.method)) continue;
     writes.set(
@@ -2749,7 +3397,7 @@ export function summarizeProviderThreadReplies(stdinEntries, replies) {
       entry,
     );
   }
-  const latencies = new Map();
+  const latencies = new Map<string, number[]>();
   let unmatchedReplies = 0;
   const answered = new Set();
   for (const reply of replies) {
@@ -2782,13 +3430,16 @@ export function summarizeProviderThreadReplies(stdinEntries, replies) {
   };
 }
 
-export function summarizeEventTiming(evidence, allJournalEntries) {
+export function summarizeEventTiming(
+  evidence: TimingEvidenceInput,
+  allJournalEntries: StdinEntry[],
+) {
   const journalEntries = allJournalEntries.filter(
     (entry) => !THREAD_REQUEST_METHODS.includes(entry.method),
   );
   const events = evidence?.events || [];
-  const entriesByRequest = new Map();
-  const operationCounts = new Map();
+  const entriesByRequest = new Map<string, StdinEntry[]>();
+  const operationCounts = new Map<string, number>();
   for (const entry of journalEntries) {
     const identity = requestIdentityKey(entry.requestId);
     if (identity !== null) {
@@ -2843,7 +3494,9 @@ export function summarizeEventTiming(evidence, allJournalEntries) {
       });
       continue;
     }
-    const { entry, attempt } = attemptMatches[0];
+    const match = attemptMatches[0];
+    assert.ok(match);
+    const { entry, attempt } = match;
     if (operationCounts.get(entry.operationId) !== 1) {
       timingGaps.push({
         eventId: event.id,
@@ -2862,7 +3515,7 @@ export function summarizeEventTiming(evidence, allJournalEntries) {
       });
       continue;
     }
-    if (!Number.isSafeInteger(enqueuedAt)) {
+    if (typeof enqueuedAt !== "number" || !Number.isSafeInteger(enqueuedAt)) {
       timingGaps.push({ eventId: event.id, reason: "missing enqueuedAt" });
       continue;
     }
@@ -2939,7 +3592,11 @@ export function summarizeEventTiming(evidence, allJournalEntries) {
   };
 }
 
-async function waitForStoppedAgents(stream, ids, deadlineAt) {
+async function waitForStoppedAgents(
+  stream: SyncStream,
+  ids: string[],
+  deadlineAt: number,
+) {
   const expected = new Set(ids);
   const stopped = new Set();
   while (stopped.size < expected.size && performance.now() < deadlineAt) {
@@ -2963,12 +3620,12 @@ async function waitForStoppedAgents(stream, ids, deadlineAt) {
 }
 
 async function waitForWorkspaceCleanup(
-  stream,
-  ids,
-  deadlineAt,
-  stateDir,
-  workspaceId,
-  leadId,
+  stream: SyncStream,
+  ids: string[],
+  deadlineAt: number,
+  stateDir: string,
+  workspaceId: string,
+  leadId: string,
 ) {
   const expected = new Set(ids);
   const readFinished = async () =>
@@ -2998,11 +3655,11 @@ async function waitForWorkspaceCleanup(
 // means the shell is gone; either way the short exit bound applies.
 // The release FIFO of a worker, in its worktree or in the shared-workspace
 // scratch directory under the evidence directory.
-function ownerBarrierPath(owner) {
+function ownerBarrierPath(owner: OwnedAgent) {
   return owner.sharedBarrier?.barrierPath ?? owner.worktree?.barrierPath;
 }
 
-function releaseUnfinishedCallbacks(owners, journal) {
+function releaseUnfinishedCallbacks(owners: OwnedAgent[], journal: Journal) {
   const pending = owners.filter(
     (owner) =>
       ownerBarrierPath(owner) &&
@@ -3016,11 +3673,18 @@ function releaseUnfinishedCallbacks(owners, journal) {
             proof.callbackProcessesRetired === true,
         ),
   );
-  const entries = pending.map((owner) => ({
-    path: ownerBarrierPath(owner),
-    token: journal.stages.find((stage) => stage.workers === owner.stageWorkers)
-      .toolBarrierTokens[owner.stageIndex],
-  }));
+  const entries = pending.map((owner) => {
+    const path = ownerBarrierPath(owner);
+    const stage = journal.stages.find(
+      (stage) => stage.workers === owner.stageWorkers,
+    );
+    assert.ok(
+      path && stage?.toolBarrierTokens && owner.stageIndex !== undefined,
+    );
+    const token = stage.toolBarrierTokens[owner.stageIndex];
+    assert.ok(token);
+    return { path, token };
+  });
   releaseBarriersNow(entries);
   const releasedAt = new Date().toISOString();
   for (const owner of pending) owner.callbackReleasedAt = releasedAt;
@@ -3028,8 +3692,9 @@ function releaseUnfinishedCallbacks(owners, journal) {
 
 // The deterministic scratch paths of a shared-workspace worker, so cleanup can
 // find them even when the stage failed before its readiness was journaled.
-async function sharedBarrierRecord(journalPath, owner) {
+async function sharedBarrierRecord(journalPath: string, owner: OwnedAgent) {
   const evidenceDir = await realpath(dirname(journalPath));
+  assert.ok(owner.stageIndex !== undefined);
   const { directory, path } = sharedBarrierPaths(
     evidenceDir,
     owner.stageWorkers,
@@ -3049,15 +3714,20 @@ async function sharedBarrierRecord(journalPath, owner) {
 // Removes the run-owned FIFOs and readiness markers of shared-workspace
 // workers after their tool processes retired. A FIFO that a process still
 // holds open is not removed: that retirement is unproven.
-async function removeSharedBarriers(owners) {
-  const paths = owners.map((owner) => owner.sharedBarrier.barrierPath);
+async function removeSharedBarriers(owners: OwnedAgent[]) {
+  const paths = owners.map((owner) => {
+    assert.ok(owner.sharedBarrier);
+    return owner.sharedBarrier.barrierPath;
+  });
   const holders = findFifoHolders(paths);
-  const stageDirectories = new Set();
+  const stageDirectories = new Set<string>();
   for (const owner of owners) {
+    assert.ok(owner.sharedBarrier);
     const { barrierDirectory, barrierPath, readinessMarkerPath } =
       owner.sharedBarrier;
+    assert.ok(readinessMarkerPath);
     assert.equal(
-      holders.get(barrierPath).length,
+      holders.get(barrierPath)?.length,
       0,
       `Owned tool process still holds the release FIFO of ${owner.id}.`,
     );
@@ -3065,11 +3735,12 @@ async function removeSharedBarriers(owners) {
       [barrierPath, unlink],
       [barrierDirectory, rmdir],
       [readinessMarkerPath, unlink],
-    ]) {
+    ] as const) {
       try {
+        assert.ok(path);
         await remove(path);
       } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+        if (errorCode(error) !== "ENOENT") throw error;
       }
     }
     stageDirectories.add(dirname(barrierDirectory));
@@ -3079,21 +3750,24 @@ async function removeSharedBarriers(owners) {
     try {
       await rmdir(directory);
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (errorCode(error) !== "ENOENT") throw error;
     }
   }
 }
 
 async function verifyOwnedWorktreesRemoved(
-  client,
-  project,
-  owners,
-  rows,
-  deadlineAt,
-  journal,
-  journalPath,
+  client: Client,
+  project: string,
+  owners: OwnedAgent[],
+  rows: TeamChild[],
+  deadlineAt: number,
+  journal: Journal,
+  journalPath: string,
 ) {
-  const worktrees = owners.filter((owner) => owner.worktree?.cwd);
+  const worktrees = owners.filter(
+    (owner): owner is OwnedAgent & { worktree: Worktree } =>
+      Boolean(owner.worktree?.cwd),
+  );
   const sharedWorkers = owners.filter(
     (owner) => !owner.isLead && journal.workerWorkspace === "shared",
   );
@@ -3185,7 +3859,7 @@ async function verifyOwnedWorktreesRemoved(
     );
     return Math.min(REQUEST_DEADLINE_MS, remaining);
   };
-  const runGit = (cwd, args) => {
+  const runGit = (cwd: string, args: string[]) => {
     const result = spawnSync("git", ["-C", cwd, ...args], {
       encoding: "utf8",
       timeout: timeout(),
@@ -3194,15 +3868,16 @@ async function verifyOwnedWorktreesRemoved(
     if (result.error || result.status !== 0)
       throw Object.assign(
         new Error(
-          `Owned worktree Git command failed: ${String(result.error?.message || result.stderr || result.status).slice(0, 500)}`,
+          `Owned worktree Git command failed: ${String((result.error instanceof Error ? result.error.message : undefined) || result.stderr || result.status).slice(0, 500)}`,
         ),
         {
-          unknown: result.error?.code === "ETIMEDOUT" || result.signal != null,
+          unknown:
+            errorCode(result.error) === "ETIMEDOUT" || result.signal != null,
         },
       );
     return result.stdout;
   };
-  const parseRegistrations = (text) =>
+  const parseRegistrations = (text: string) =>
     text
       .split(/\n\n+/)
       .filter(Boolean)
@@ -3211,7 +3886,7 @@ async function verifyOwnedWorktreesRemoved(
         const branch = block.match(/^branch (.+)$/m)?.[1] || null;
         return path ? { path: resolve(path), branch } : null;
       })
-      .filter(Boolean);
+      .filter((row) => row !== null);
   let registered = parseRegistrations(
     runGit(project, ["worktree", "list", "--porcelain"]),
   );
@@ -3221,9 +3896,14 @@ async function verifyOwnedWorktreesRemoved(
     /^[0-9a-f]{40,64}$/i,
     "Ownership journal has no frozen project HEAD.",
   );
-  const runIntent = async (owner, key, args, inspectDone) => {
+  const runIntent = async (
+    owner: OwnedAgent & { worktree: Worktree },
+    key: "removeIntent" | "branchDeleteIntent",
+    args: string[],
+    inspectDone: () => Promise<boolean>,
+  ) => {
     const existing = owner.worktree[key];
-    const intent =
+    const intent: Intent =
       existing ||
       (owner.worktree[key] = {
         state: "prepared",
@@ -3261,10 +3941,11 @@ async function verifyOwnedWorktreesRemoved(
     );
     await saveJournal(journalPath, journal);
     try {
+      assert.ok(intent.args);
       runGit(project, intent.args);
       if (intent.args[0] === "worktree" && intent.args[1] === "remove") {
         registered = registered.filter(
-          (item) => item.path !== resolve(intent.args.at(-1)),
+          (item) => item.path !== resolve(args.at(-1) ?? ""),
         );
       }
       intent.state = "confirmed";
@@ -3275,8 +3956,16 @@ async function verifyOwnedWorktreesRemoved(
         `Owned worktree ${key} did not verify for ${owner.id}.`,
       );
     } catch (error) {
-      intent.state = error?.unknown ? "unknown" : "failed";
-      intent.error = String(error?.message || error).slice(0, 500);
+      intent.state =
+        typeof error === "object" &&
+        error !== null &&
+        "unknown" in error &&
+        error.unknown
+          ? "unknown"
+          : "failed";
+      intent.error = String(
+        (error instanceof Error ? error.message : undefined) || error,
+      ).slice(0, 500);
       await saveJournal(journalPath, journal);
       throw error;
     }
@@ -3301,17 +3990,19 @@ async function verifyOwnedWorktreesRemoved(
         1,
         `Could not identify exactly one verifier-owned registered worktree for ${owner.id}.`,
       );
-      owner.worktree.registeredRoot = owned[0].path;
+      const registration = owned[0];
+      assert.ok(registration);
+      owner.worktree.registeredRoot = registration.path;
       await saveJournal(journalPath, journal);
     }
     const root = resolve(owner.worktree.registeredRoot);
     if (owned.length) {
       assert.ok(
-        owned.length === 1 && owned[0].path === root,
+        owned.length === 1 && owned[0]?.path === root,
         `Owned worktree registration changed for ${owner.id}.`,
       );
       assert.equal(
-        owned[0].branch,
+        owned[0]?.branch,
         `refs/heads/${owner.worktree.branch}`,
         `Owned worktree branch identity changed for ${owner.id}.`,
       );
@@ -3328,7 +4019,7 @@ async function verifyOwnedWorktreesRemoved(
         await lstat(root);
         return true;
       } catch (error) {
-        if (error?.code === "ENOENT") return false;
+        if (errorCode(error) === "ENOENT") return false;
         throw error;
       }
     };
@@ -3391,7 +4082,7 @@ async function verifyOwnedWorktreesRemoved(
           }
           await rmdir(barrierDirectory);
         } catch (error) {
-          if (error?.code !== "ENOENT") throw error;
+          if (errorCode(error) !== "ENOENT") throw error;
         }
       }
       assert.equal(
@@ -3433,9 +4124,12 @@ async function verifyOwnedWorktreesRemoved(
           timeout: timeout(),
         },
       );
-      if (result.error || ![0, 1].includes(result.status))
+      if (
+        result.error ||
+        !([0, 1] as const).some((code) => code === result.status)
+      )
         throw new Error(
-          `Could not inspect owned branch ${branchRef}: ${String(result.error?.message || result.stderr || result.status)}`,
+          `Could not inspect owned branch ${branchRef}: ${String((result.error instanceof Error ? result.error.message : undefined) || result.stderr || result.status)}`,
         );
       return result.status === 0;
     };
@@ -3462,7 +4156,7 @@ async function verifyOwnedWorktreesRemoved(
   );
   const survivors = worktrees.filter((owner) =>
     finalRegistered.some(
-      (item) => item.path === resolve(owner.worktree.registeredRoot),
+      (item) => item.path === resolve(owner.worktree.registeredRoot ?? ""),
     ),
   );
   assert.equal(
@@ -3472,28 +4166,30 @@ async function verifyOwnedWorktreesRemoved(
   );
   for (const owner of worktrees) {
     try {
+      assert.ok(owner.worktree.registeredRoot);
       await lstat(owner.worktree.registeredRoot);
       throw new Error(
         `Owned worktree path still exists after retirement: ${owner.worktree.registeredRoot}`,
       );
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (errorCode(error) !== "ENOENT") throw error;
     }
   }
 }
 
-function rootParts(path, indexFromEnd) {
+function rootParts(path: string, indexFromEnd: number) {
   return resolve(path)
     .split(sep)
     .filter(Boolean)
     .at(-1 - indexFromEnd);
 }
 
-async function verifyBackendIdentity(client, journal) {
-  const desktop = await client.get("/api/desktop");
-  const sync = await client.get("/api/sync/identity");
+async function verifyBackendIdentity(client: Client, journal: Journal) {
+  const desktop = await client.get<Schema["DesktopResponse"]>("/api/desktop");
+  const sync =
+    await client.get<Schema["SyncIdentityResponse"]>("/api/sync/identity");
   assert.equal(
-    desktop.backendKind,
+    "backendKind" in desktop ? desktop.backendKind : undefined,
     "rust",
     "Cleanup target is not the Rust backend.",
   );
@@ -3518,13 +4214,15 @@ async function verifyBackendIdentity(client, journal) {
 
 // `onlyStage` limits the audit and deletion to one finished stage.
 async function cleanupOwned(
-  client,
-  journal,
-  journalPath,
-  budgetMs,
-  stream,
-  onlyStage = null,
+  client: Client,
+  journal: Journal,
+  journalPath: string,
+  budgetMs: number,
+  stream: SyncStream | null | undefined,
+  onlyStage: Stage | null = null,
 ) {
+  assert.ok(journal.backendIdentity && journal.ownerBaseline);
+
   const deadlineAt = performance.now() + budgetMs;
   client.setDeadline(deadlineAt);
   const owners = journal.ownedAgents || [];
@@ -3536,13 +4234,14 @@ async function cleanupOwned(
   const byId = new Map(owners.map((owner) => [owner.id, owner]));
   const stages = onlyStage ? [onlyStage] : journal.stages || [];
   for (const stage of stages) {
+    assert.ok(stage.leadId);
     if (performance.now() >= deadlineAt)
       throw new Error(
         "Cleanup deadline elapsed before every stage was audited.",
       );
     const stageOwners = [stage.leadId, ...(stage.agentIds || [])]
       .map((id) => byId.get(id))
-      .filter(Boolean);
+      .filter((owner) => owner !== undefined);
     if (!stageOwners.length) continue;
     const cleanup = (stage.cleanup ||= { state: "pending" });
     const lead = byId.get(stage.leadId);
@@ -3597,6 +4296,7 @@ async function cleanupOwned(
             cleanup: "pending",
           };
         if (!owner.isLead) {
+          assert.ok(owner.worktree);
           owner.worktree.barrierDirectory = join(
             resolve(row.cwd),
             `.codex-scale-${journal.runId}-${owner.stageIndex}`,
@@ -3617,7 +4317,7 @@ async function cleanupOwned(
     stage.cleanup.foreignChildrenObserved = foreignChildren.map(
       (row) => row.id,
     );
-    const snapshot = new Map();
+    const snapshot = new Map<string, Schema["AgentEntityDto"] | null>();
     await forEachBounded(persistedOwners, 32, async (owner) => {
       const row = initialById.get(owner.id);
       snapshot.set(
@@ -3688,7 +4388,7 @@ async function cleanupOwned(
     const measureWorkerStops =
       stage.state === "completed" &&
       workerOwners.length === (stage.agentIds || []).length;
-    const workerStopLatencies = [];
+    const workerStopLatencies: { agentId: string; elapsedMs: number }[] = [];
     for (let offset = 0; offset < present.length; offset += 32) {
       const batch = present.slice(offset, offset + 32);
       const send = [];
@@ -3715,7 +4415,7 @@ async function cleanupOwned(
         )
           workerStopLatencies.push({
             agentId: owner.id,
-            elapsedMs: intent.elapsedMs,
+            elapsedMs: intent.elapsedMs ?? 0,
           });
         else if (intent.state === "prepared") send.push(owner);
       }
@@ -3723,13 +4423,22 @@ async function cleanupOwned(
       const results = await Promise.allSettled(
         send.map(async (owner) => {
           const intent = owner.cleanup.stop;
+          assert.ok(intent);
           try {
-            const stopped = await client.request("POST", "/api/stop", {
-              id: owner.id,
-              descendants: false,
-            });
+            const stopped = await client.request<Schema["StopResponse"]>(
+              "POST",
+              "/api/stop",
+              {
+                id: owner.id,
+                descendants: false,
+              },
+            );
             intent.state = "confirmed";
-            intent.status = stopped.value?.status || null;
+            intent.status =
+              "status" in stopped.value &&
+              typeof stopped.value.status === "string"
+                ? stopped.value.status
+                : null;
             intent.elapsedMs = stopped.elapsedMs;
             if (measureWorkerStops && !owner.isLead)
               workerStopLatencies.push({
@@ -3737,8 +4446,16 @@ async function cleanupOwned(
                 elapsedMs: stopped.elapsedMs,
               });
           } catch (error) {
-            intent.state = error.unknown ? "unknown" : "failed";
-            intent.error = String(error?.message || error).slice(0, 500);
+            intent.state =
+              typeof error === "object" &&
+              error !== null &&
+              "unknown" in error &&
+              error.unknown
+                ? "unknown"
+                : "failed";
+            intent.error = String(
+              (error instanceof Error ? error.message : undefined) || error,
+            ).slice(0, 500);
           }
         }),
       );
@@ -3767,7 +4484,7 @@ async function cleanupOwned(
         Math.min(deadlineAt, performance.now() + 10_000),
       ).catch((error) => {
         cleanup.workerStopObservationError = String(
-          error?.message || error,
+          (error instanceof Error ? error.message : undefined) || error,
         ).slice(0, 500);
       });
       await forEachBounded(stageOwners, 32, async (owner) => {
@@ -3804,6 +4521,7 @@ async function cleanupOwned(
 
     const deleteTarget =
       lead && verifiedStopped.get(lead.id) ? lead : present[0];
+    assert.ok(deleteTarget);
     const existingDeleteIntent = cleanup.delete;
     const deleteIntent = (cleanup.delete ||= {
       state: "prepared",
@@ -3831,8 +4549,16 @@ async function cleanupOwned(
         deleteIntent.state = "confirmed";
         deleteIntent.elapsedMs = deleted.elapsedMs;
       } catch (error) {
-        deleteIntent.state = error.unknown ? "unknown" : "failed";
-        deleteIntent.error = String(error?.message || error).slice(0, 500);
+        deleteIntent.state =
+          typeof error === "object" &&
+          error !== null &&
+          "unknown" in error &&
+          error.unknown
+            ? "unknown"
+            : "failed";
+        deleteIntent.error = String(
+          (error instanceof Error ? error.message : undefined) || error,
+        ).slice(0, 500);
         await saveJournal(journalPath, journal);
         throw error;
       }
@@ -3926,7 +4652,12 @@ async function cleanupOwned(
 // no owned input is still retained and that foreign retained inputs still equal
 // the pre-write baseline. Paused-lead notices must have been cancelled by the
 // owned deletes; a surviving one fails the run.
-function verifyRetainedInputsAfterCleanup(journal, deadlineAt) {
+function verifyRetainedInputsAfterCleanup(
+  journal: Journal,
+  deadlineAt: number,
+) {
+  assert.ok(journal.backendIdentity && journal.ownerBaseline);
+
   assert.ok(
     journal.foreignRetainedInputBaseline,
     "No pre-write foreign retained-input baseline exists; post-cleanup inputs are unproven.",
@@ -3939,7 +4670,9 @@ function verifyRetainedInputsAfterCleanup(journal, deadlineAt) {
     ),
     baseline: journal.foreignRetainedInputBaseline.identities,
     ownedAgentIds: new Set(journal.ownedAgents.map((owner) => owner.id)),
-    parentAgentIds: new Set(journal.stages.map((stage) => stage.leadId)),
+    parentAgentIds: new Set(
+      journal.stages.flatMap((stage) => (stage.leadId ? [stage.leadId] : [])),
+    ),
     phase: "afterCleanup",
   });
   return { at: new Date().toISOString(), ...classification };
@@ -3948,12 +4681,15 @@ function verifyRetainedInputsAfterCleanup(journal, deadlineAt) {
 // Fresh authoritative audit of the lead's live team. `owners` is the journal-
 // owned set that may remain live; any other live row fails the stage.
 async function assertNoForeignTeamChildren(
-  journal,
-  stage,
-  owners,
-  deadlineAt,
-  auditKey,
+  journal: Journal,
+  stage: Stage,
+  owners: OwnedAgent[],
+  deadlineAt: number,
+  auditKey: "beforeMutation" | "afterCleanup",
 ) {
+  assert.ok(journal.backendIdentity && journal.ownerBaseline);
+
+  assert.ok(stage.leadId);
   const rows = await readCurrentTeamChildren(
     journal.backendIdentity.stateDir,
     journal.ownerBaseline.workspaceId,
@@ -3980,7 +4716,13 @@ async function assertNoForeignTeamChildren(
   };
 }
 
-async function resumeCleanup(origin, journalPath, journal) {
+async function resumeCleanup(
+  origin: string,
+  journalPath: string,
+  journal: Journal,
+) {
+  assert.ok(journal.backendIdentity && journal.ownerBaseline);
+
   assert.ok(
     journal.ownedAgents?.length,
     "Journal contains no verifier-owned agent identities.",
@@ -4038,7 +4780,7 @@ async function resumeCleanup(origin, journalPath, journal) {
   );
 }
 
-function aggregateMetrics(journal) {
+function aggregateMetrics(journal: Journal) {
   const stages = journal.stages || [];
   return {
     apiP95Ms: Object.fromEntries(
@@ -4164,7 +4906,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
     });
 }
 
-function remainingOwnership(journalPath, journal) {
+function remainingOwnership(journalPath: string, journal: Journal) {
   return {
     evidence: journalPath,
     cleanup: journal.cleanup,

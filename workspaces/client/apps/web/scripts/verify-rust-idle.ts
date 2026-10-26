@@ -1,11 +1,56 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import type { BrowserContext, Page, Request } from "playwright";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
+type Options = Partial<
+  Record<
+    "url" | "pid" | "evidence-dir" | "chromium" | "duration-ms" | "settle-ms",
+    string
+  >
+> & { help?: boolean };
+type Observation = {
+  api: {
+    requestCount: number;
+    counts: Record<string, number>;
+    omittedEndpointCounts: number;
+    samples: { method: string; path: string; resourceType: string }[];
+    omittedSamples: number;
+  };
+  errors: {
+    httpCount: number;
+    http: { method: string; path: string; status: number }[];
+    omittedHttp: number;
+    failedRequestCount: number;
+    failedRequests: { method: string; path: string; error: string }[];
+    omittedFailedRequests: number;
+    pageErrorCount: number;
+    pageErrors: string[];
+    omittedPageErrors: number;
+  };
+};
+type Evidence = Observation & {
+  version: number;
+  status: string;
+  startedAt: string;
+  target: { origin: string; pid: number } | null;
+  observationConfig: {
+    settleMs: number;
+    durationMs: number;
+    clockTicksPerSecond: number;
+  } | null;
+  process: Record<
+    string,
+    string | number | ReturnType<typeof numericCounters>
+  > | null;
+  failure: { message: string; outerDeadlineExceeded?: boolean } | null;
+  observedAt?: { start: string; end: string };
+  page?: { origin: string; sidebarVisible: boolean };
+  finishedAt?: string;
+};
 const DEFAULT_DURATION_MS = 75_000;
 const DEFAULT_SETTLE_MS = 15_000;
 const MIN_DURATION_MS = 1_000;
@@ -20,15 +65,15 @@ const MAX_API_SAMPLES = 30;
 const MAX_ERROR_SAMPLES = 100;
 const MAX_ERROR_TEXT = 300;
 
-function parseArgs(argv) {
-  const options = {};
+function parseArgs(argv: string[]) {
+  const options: Options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--help" || value === "-h") {
       options.help = true;
       continue;
     }
-    if (!value.startsWith("--"))
+    if (!value?.startsWith("--"))
       throw new Error(`Unexpected argument: ${value}`);
     const key = value.slice(2);
     if (
@@ -45,7 +90,15 @@ function parseArgs(argv) {
     const next = argv[index + 1];
     if (!next || next.startsWith("--"))
       throw new Error(`Missing value for ${value}`);
-    options[key] = next;
+    if (
+      key === "url" ||
+      key === "pid" ||
+      key === "evidence-dir" ||
+      key === "chromium" ||
+      key === "duration-ms" ||
+      key === "settle-ms"
+    )
+      options[key] = next;
     index += 1;
   }
   return options;
@@ -54,14 +107,20 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/verify-rust-idle.mjs --url HTTPS_URL --pid PID --evidence-dir DIR [--chromium PATH] [--duration-ms MS] [--settle-ms MS]",
+    "  node scripts/verify-rust-idle.ts --url HTTPS_URL --pid PID --evidence-dir DIR [--chromium PATH] [--duration-ms MS] [--settle-ms MS]",
     "",
     "Opens the supplied URL in headless Chromium, waits for #sidebar, then records bounded API activity and Linux process counters.",
     "A completed run is measurement-only; it does not prove that the server or its CPU was idle. The verifier is read-only and exits nonzero for observed errors or measurement failures.",
   ].join("\n");
 }
 
-function numericOption(value, fallback, name, minimum, maximum) {
+function numericOption(
+  value: string | undefined,
+  fallback: number,
+  name: string,
+  minimum: number,
+  maximum: number,
+) {
   if (value === undefined) return fallback;
   assert.match(value, /^\d+$/, `--${name} must be an integer in milliseconds.`);
   const number = Number(value);
@@ -71,7 +130,7 @@ function numericOption(value, fallback, name, minimum, maximum) {
   return number;
 }
 
-function parseBareHttpsUrl(value) {
+function parseBareHttpsUrl(value: string) {
   const url = new URL(value);
   assert.equal(url.protocol, "https:", "--url must use HTTPS.");
   assert.equal(url.username, "", "--url must not include credentials.");
@@ -82,7 +141,7 @@ function parseBareHttpsUrl(value) {
   return url.origin;
 }
 
-function processClockTicks(pid) {
+function processClockTicks(pid: number) {
   const output = spawnSync("getconf", ["CLK_TCK"], {
     encoding: "utf8",
     timeout: 2_000,
@@ -109,7 +168,7 @@ function processClockTicks(pid) {
   return value;
 }
 
-function processSnapshot(pid) {
+function processSnapshot(pid: number) {
   const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
   const closingParen = stat.lastIndexOf(")");
   assert.ok(closingParen >= 0, "Linux process stat record is malformed.");
@@ -124,25 +183,34 @@ function processSnapshot(pid) {
       .split("\n")
       .map((line) => {
         const [key, value] = line.split(":");
+        assert.ok(key && value);
         return [key, BigInt(value.trim())];
       }),
   );
   for (const key of ["rchar", "read_bytes", "syscr"])
     assert.ok(io.has(key), `Linux process IO record is missing ${key}.`);
+  const rchar = io.get("rchar");
+  const physicalReadBytes = io.get("read_bytes");
+  const readSyscalls = io.get("syscr");
+  assert.ok(
+    rchar !== undefined &&
+      physicalReadBytes !== undefined &&
+      readSyscalls !== undefined,
+  );
   return {
     capturedAt: new Date().toISOString(),
     monotonicMs: performance.now(),
-    userTicks: BigInt(fields[11]),
-    systemTicks: BigInt(fields[12]),
-    startTicks: BigInt(fields[19]),
-    rchar: io.get("rchar"),
-    physicalReadBytes: io.get("read_bytes"),
-    readSyscalls: io.get("syscr"),
+    userTicks: BigInt(fields[11] ?? ""),
+    systemTicks: BigInt(fields[12] ?? ""),
+    startTicks: BigInt(fields[19] ?? ""),
+    rchar,
+    physicalReadBytes,
+    readSyscalls,
   };
 }
 
-function waitFor(ms, signal) {
-  return new Promise((resolvePromise, reject) => {
+function waitFor(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolvePromise, reject) => {
     if (signal.aborted) {
       reject(signal.reason || new Error("Observation deadline reached."));
       return;
@@ -161,7 +229,7 @@ function waitFor(ms, signal) {
   });
 }
 
-function numericCounters(snapshot) {
+function numericCounters(snapshot: ReturnType<typeof processSnapshot>) {
   return {
     userTicks: snapshot.userTicks.toString(),
     systemTicks: snapshot.systemTicks.toString(),
@@ -172,7 +240,7 @@ function numericCounters(snapshot) {
   };
 }
 
-function safePath(url) {
+function safePath(url: string) {
   try {
     return new URL(url).pathname
       .replace(
@@ -185,7 +253,7 @@ function safePath(url) {
   }
 }
 
-function emptyObservation() {
+function emptyObservation(): Observation {
   return {
     api: {
       requestCount: 0,
@@ -208,16 +276,22 @@ function emptyObservation() {
   };
 }
 
-function boundedPush(items, value, limit, omitted, target) {
+function boundedPush<T, K extends string>(
+  items: T[],
+  value: T,
+  limit: number,
+  omitted: K,
+  target: Record<K, number>,
+) {
   if (items.length < limit) items.push(value);
   else target[omitted] += 1;
 }
 
-function recordApiRequest(observation, request) {
+function recordApiRequest(observation: Observation, request: Request) {
   const path = safePath(request.url());
   const key = `${request.method()} ${path}`;
   const counts = observation.api.counts;
-  if (Object.hasOwn(counts, key)) counts[key] += 1;
+  if (Object.hasOwn(counts, key)) counts[key] = (counts[key] ?? 0) + 1;
   else if (Object.keys(counts).length < MAX_API_ENDPOINTS) counts[key] = 1;
   else observation.api.omittedEndpointCounts += 1;
   observation.api.requestCount += 1;
@@ -230,7 +304,11 @@ function recordApiRequest(observation, request) {
   );
 }
 
-function addListeners(page, observation, recording) {
+function addListeners(
+  page: Page,
+  observation: Observation,
+  recording: () => boolean,
+) {
   page.on("request", (request) => {
     if (!recording()) return;
     if (/^\/api(?:\/|$)/.test(safePath(request.url())))
@@ -276,7 +354,10 @@ function addListeners(page, observation, recording) {
     observation.errors.pageErrorCount += 1;
     boundedPush(
       observation.errors.pageErrors,
-      String(error?.message || error).slice(0, MAX_ERROR_TEXT),
+      String(error instanceof Error ? error.message : error).slice(
+        0,
+        MAX_ERROR_TEXT,
+      ),
       MAX_ERROR_SAMPLES,
       "omittedPageErrors",
       observation.errors,
@@ -284,7 +365,7 @@ function addListeners(page, observation, recording) {
   });
 }
 
-function writeArtifact(path, result) {
+function writeArtifact(path: string, result: Evidence) {
   const temporary = `${path}.next`;
   writeFileSync(temporary, `${JSON.stringify(result, null, 2)}\n`, {
     encoding: "utf8",
@@ -294,9 +375,9 @@ function writeArtifact(path, result) {
 }
 
 async function main() {
-  let options;
+  let options: Options = {};
   let artifactPath;
-  let result = {
+  let result: Evidence = {
     version: 1,
     status: "running",
     startedAt: new Date().toISOString(),
@@ -306,9 +387,9 @@ async function main() {
     ...emptyObservation(),
     failure: null,
   };
-  let context;
+  let context: BrowserContext | undefined;
   let recording = false;
-  let deadlineTimer;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   let deadlineExceeded = false;
   const deadlineController = new AbortController();
   try {
@@ -357,11 +438,8 @@ async function main() {
       initialStartTicks: initialProcess.startTicks.toString(),
       initialCounters: numericCounters(initialProcess),
     };
-    const workPackage = resolve(
-      dirname(fileURLToPath(import.meta.url)),
-      "../package.json",
-    );
-    const { chromium } = createRequire(workPackage)("playwright");
+
+    const { chromium } = await import("playwright");
     const profileDir = resolve(evidenceDir, "profile");
     const deadlineMs = Math.min(
       OUTER_DEADLINE_MS,
@@ -372,15 +450,12 @@ async function main() {
         CLEANUP_TIMEOUT_MS,
     );
 
+    const executablePath =
+      options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
     const run = async () => {
       context = await chromium.launchPersistentContext(profileDir, {
         headless: true,
-        ...(options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
-          ? {
-              executablePath:
-                options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
-            }
-          : {}),
+        ...(executablePath ? { executablePath } : {}),
         viewport: { width: 1440, height: 1000 },
         acceptDownloads: false,
         timeout: BROWSER_LAUNCH_TIMEOUT_MS,
@@ -487,7 +562,10 @@ async function main() {
     recording = false;
     result.status = "failed";
     result.failure = {
-      message: String(error?.message || error).slice(0, MAX_ERROR_TEXT),
+      message: String(error instanceof Error ? error.message : error).slice(
+        0,
+        MAX_ERROR_TEXT,
+      ),
       outerDeadlineExceeded: deadlineExceeded,
     };
   } finally {
@@ -497,7 +575,7 @@ async function main() {
       deadlineController.abort(new Error("Observer finished."));
     if (context) {
       try {
-        let cleanupTimer;
+        let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           context.close(),
           new Promise((resolvePromise) => {
@@ -527,7 +605,7 @@ async function main() {
         );
       } catch (error) {
         process.stderr.write(
-          `Could not write evidence artifact: ${error.message}\n`,
+          `Could not write evidence artifact: ${error instanceof Error ? error.message : error}\n`,
         );
         result.status = "failed";
       }
