@@ -9,7 +9,7 @@ Base: `92794cb2` (`work/fast-browser-tests`). The production build passed.
   could not render `native-task`; the test then waited for that impossible row
   until its 60-second deadline. Serve the task feed through the fixture entity
   contract. Solo repeat3 passed 3/3 (23.2s total).
-- `mobile/mobile-keyboard-ui.spec.mjs`: initial loaded-state readings varied
+- `mobile/mobile-keyboard-ui.spec.ts`: initial loaded-state readings varied
   because the fixture seeds context on `Release lead`, while the mobile layout
   hides the `[data-chat]` rows needed to select that lead. A later attempt
   captured the Release lead ID from sync and restored it through
@@ -126,7 +126,7 @@ node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tes
 Result: 3/3 passed (50.9s; 16.0–17.1s each).
 
 ```sh
-node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.mjs --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-mobile-review-final
+node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.ts --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-mobile-review-final
 ```
 
 Result: 9 passed, 3 skipped (1.2m). Main flow and compact keyboard setup passed

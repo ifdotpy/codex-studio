@@ -8,7 +8,7 @@ const testFiles = [
   "src/components/prompt-composer/PromptInput.spec.mjs",
   "tests/composer/composer-stability-ui.spec.ts",
   "tests/composer/skill-autocomplete-ui.spec.ts",
-  "tests/performance/draft-render-performance-browser.spec.mjs",
+  "tests/performance/draft-render-performance-browser.spec.ts",
 ];
 const missingTests = testFiles.filter((test) => !existsSync(join(web, test)));
 if (missingTests.length > 0) {
