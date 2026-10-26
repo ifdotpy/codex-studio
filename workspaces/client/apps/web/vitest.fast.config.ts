@@ -50,6 +50,8 @@ export default {
       "src/startWait.test.ts",
       "src/apiSchema.test.ts",
       "src/studioPreferences.test.ts",
+      "src/apiContracts.test.ts",
+      "src/components/accountDeleteRequests.test.ts",
       "src/chatScope.test.ts",
       "src/hooks/conversationData.test.ts",
       "src/scaleVerifierHelpers.test.ts",

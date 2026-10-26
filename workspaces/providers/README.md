@@ -9,9 +9,13 @@ has one Rust owner, [`ProviderKind`](../runtime/packages/runtime-schema/src/prov
 Rust consumers import that enum; TypeScript and schema consumers use its generated
 contract. Do not maintain a second provider enum, union, or list in a consumer.
 
-Parse external provider names at the boundary. Unknown or malformed names must
-remain unsupported, never select an existing provider by default. The identity
-owner alone handles the documented missing/null field in legacy account records.
+Parse external provider names at the boundary. Missing, unknown, or malformed
+names must remain unsupported, never select an existing provider by default.
+Convert historical representations in a dated storage migration before normal
+readers run; do not retain compatibility defaults in the identity owner or callers.
+Each migration records its introduction date and the oldest supported upgrade
+source. Remove it only when supported installations and restorable backups have
+crossed that format boundary; elapsed time alone does not establish this.
 
 Provider dispatch must be exhaustive: use an enum `match` or a typed mapping that
 requires every supported provider. Do not use `if provider == "codex" ... else ...`,
