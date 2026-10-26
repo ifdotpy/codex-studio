@@ -7,7 +7,7 @@ import type {
 import type { HistoryReadOptions } from "./history-index.ts";
 import type { JournalChange } from "./journal-repair.ts";
 import type { BridgeRepairReport } from "./bridge-protocol.ts";
-import { object } from "./history-records.ts";
+import type { JsonValue } from "./runtime-contract.generated.ts";
 export interface StoreOptions {
   maxCacheBytes?: number;
   compactBytes?: number;
@@ -23,7 +23,7 @@ interface SavedSession {
   records: number;
   journalBytes: number;
 }
-interface CacheEntry extends SavedSession {
+interface CacheEntry extends Required<SavedSession> {
   shadow: Session;
   used: number;
   syncSessionBytesOnWrite: boolean;
@@ -67,14 +67,17 @@ const DEFAULT_DISK_FULL_RETRY_MS = 15_000;
 // A write failed because the volume has no free space (ENOSPC) or the user quota is used (EDQUOT).
 export function isDiskFull(error: unknown): boolean {
   for (
-    let current: unknown = error, depth = 0;
-    object(current) && depth < 8;
+    let current = error as NodeJS.ErrnoException | undefined, depth = 0;
+    current && depth < 8;
     depth++
   ) {
     if (current.code === "ENOSPC" || current.code === "EDQUOT") return true;
-    if (Array.isArray(current.errors) && current.errors.some(isDiskFull))
+    if (
+      Array.isArray((current as AggregateError).errors) &&
+      (current as AggregateError).errors.some(isDiskFull)
+    )
       return true;
-    current = current.cause;
+    current = current.cause as NodeJS.ErrnoException | undefined;
   }
   return false;
 }
@@ -132,7 +135,7 @@ function estimateJsonBytes(value: unknown): number {
       ) +
       Math.max(0, value.length - 1)
     );
-  const entries = Object.entries(value ?? {}).filter(
+  const entries = Object.entries(value as object).filter(
     ([, item]) => item !== undefined,
   );
   return (
@@ -192,34 +195,50 @@ function diff(
     after &&
     typeof before === "object" &&
     typeof after === "object" &&
-    object(before) &&
-    object(after)
+    !Array.isArray(before) &&
+    !Array.isArray(after)
   ) {
     const oldKeys = Object.keys(before).filter(
-      (key) => before[key] !== undefined,
+      (key) => (before as Record<string, unknown>)[key] !== undefined,
     );
     const newKeys = Object.keys(after).filter(
-      (key) => after[key] !== undefined,
+      (key) => (after as Record<string, unknown>)[key] !== undefined,
     );
     let delta =
       Math.max(0, newKeys.length - 1) - Math.max(0, oldKeys.length - 1);
     for (const key of oldKeys) {
-      if (!(key in after) || after[key] === undefined) {
+      if (
+        !(key in after) ||
+        (after as Record<string, unknown>)[key] === undefined
+      ) {
         changes.push({ op: "delete", path: [...location, key] });
         delta -=
           Buffer.byteLength(JSON.stringify(key)) +
           1 +
-          estimateJsonBytes(before[key]);
+          estimateJsonBytes((before as Record<string, unknown>)[key]);
       } else
-        delta += diff(before[key], after[key], [...location, key], changes);
+        delta += diff(
+          (before as Record<string, unknown>)[key],
+          (after as Record<string, unknown>)[key],
+          [...location, key],
+          changes,
+        );
     }
     for (const key of newKeys) {
-      if (key in before && before[key] !== undefined) continue;
-      changes.push({ op: "set", path: [...location, key], value: after[key] });
+      if (
+        key in before &&
+        (before as Record<string, unknown>)[key] !== undefined
+      )
+        continue;
+      changes.push({
+        op: "set",
+        path: [...location, key],
+        value: (after as Record<string, unknown>)[key],
+      });
       delta +=
         Buffer.byteLength(JSON.stringify(key)) +
         1 +
-        estimateJsonBytes(after[key]);
+        estimateJsonBytes((after as Record<string, unknown>)[key]);
     }
     return delta;
   }
@@ -231,32 +250,20 @@ function replaySessionJournal(
   session: Session,
   changes: JournalChange[],
 ): Session {
-  let result: unknown = session;
+  // This bridge wrote the snapshots and validated journal changes. Indexed views
+  // preserve the original replay operations without migration-time validation.
   for (const change of changes) {
-    let parent: unknown = result;
-    for (const key of change.path.slice(0, -1)) {
-      if (parent === null || typeof parent !== "object")
-        throw new TypeError("Invalid journal parent");
-      parent = Reflect.get(parent, key);
-    }
-    const key = change.path.at(-1);
-    if (change.op === "set" && !change.path.length) {
-      result = change.value;
-      continue;
-    }
-    if (parent === null || typeof parent !== "object" || key === undefined)
-      throw new TypeError("Invalid journal path");
-    if (change.op === "append") {
-      const target: unknown = Reflect.get(parent, key);
-      if (!Array.isArray(target) || !Array.isArray(change.value))
-        throw new TypeError("Invalid journal append");
-      target.push(...change.value);
-    } else if (change.op === "delete") Reflect.deleteProperty(parent, key);
-    else Reflect.set(parent, key, change.value);
+    let parent = session as Session & Record<string, unknown>;
+    for (const key of change.path.slice(0, -1))
+      parent = parent[key] as Session & Record<string, JsonValue>;
+    const key = change.path.at(-1)!;
+    if (change.op === "append")
+      (parent[key] as JsonValue[]).push(...(change.value as JsonValue[]));
+    else if (change.op === "delete") delete parent[key];
+    else if (change.path.length) parent[key] = change.value;
+    else session = change.value as Session;
   }
-  // Trust boundary: this bridge wrote these journal records and snapshots.
-  // Schema validation is deliberately outside this behavior-preserving migration.
-  return result as Session;
+  return session;
 }
 
 export function createSessionStore(root: string, options: StoreOptions = {}) {
@@ -337,7 +344,9 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
     metadataCache.set(session.id, metadata);
     return metadata;
   };
-  const readBase = async (id: string): Promise<SavedSession> => {
+  const readBase = async (
+    id: string,
+  ): Promise<Pick<SavedSession, "session" | "sequence">> => {
     await ready;
     const raw = await fs.readFile(fileFor(id), "utf8");
     const saved = parseSessionSnapshot(raw);
@@ -345,18 +354,16 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
       return {
         session: saved.session,
         sequence: saved.sequence,
-        records: 0,
-        journalBytes: 0,
       };
-    return { session: saved, sequence: 0, records: 0, journalBytes: 0 };
+    return { session: saved, sequence: 0 };
   };
   const readAll = async (id: string): Promise<SavedSession> => {
-    const base = await readBase(id);
+    const base: SavedSession = (await readBase(id)) as SavedSession;
     let logBytes = Buffer.alloc(0);
     try {
       logBytes = await fs.readFile(logFor(id));
     } catch (error) {
-      if (!object(error) || error.code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     const log = logBytes.toString("utf8");
     const completeLines = log.split("\n");
@@ -412,12 +419,16 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
     base.journalBytes = validLogBytes;
     if (skippedRows || invalidSequence) {
       const marker = fileFor(id).replace(/\.json$/, ".repair.json");
-      const report: JournalRepairReport = {
+      const report: Omit<
+        JournalRepairReport,
+        "scopeConfirmed" | "nativeHistoryConfirmed"
+      > &
+        Partial<
+          Pick<JournalRepairReport, "scopeConfirmed" | "nativeHistoryConfirmed">
+        > = {
         status: "needs_repair",
         skippedRows,
         invalidSequence,
-        scopeConfirmed: false,
-        nativeHistoryConfirmed: false,
       };
       const sameScope =
         JSON.stringify(originalScope) ===
@@ -445,7 +456,10 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
         );
       // Preserve the original bytes before replacing the snapshot and journal.
       await writeFileAtomic(logFor(id) + ".corrupt", logBytes);
-      base.session.journalRepair = { ...report, status: "repaired" };
+      base.session.journalRepair = {
+        ...report,
+        status: "repaired",
+      } as JournalRepairReport;
       await atomicSnapshot(id, base.session, base.sequence);
       await fs.writeFile(logFor(id), "", { mode: 0o600 });
       await writeFileAtomic(marker, JSON.stringify(base.session.journalRepair));
@@ -467,10 +481,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
     finalizer.register(session, { id, ref }, session);
   };
   const adopt = (id: string, session: Session, saved: SavedSession) => {
-    const entry: CacheEntry = {
-      sessionBytes: 0,
-      shadowBytes: 0,
-      bytes: 0,
+    const entry = {
       session,
       shadow: saved.session,
       sequence: saved.sequence,
@@ -480,7 +491,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
       syncSessionBytesOnWrite: true,
       metadataDirty: true,
       journalRepairNeeded: false,
-    };
+    } as CacheEntry;
     measure(entry);
     sessions.set(id, session);
     entries.set(id, entry);
@@ -522,10 +533,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
     sessions.set(id, session);
     const previous = entries.get(id);
     if (previous) retainedBytes -= previous.bytes;
-    const entry: CacheEntry = {
-      sessionBytes: 0,
-      shadowBytes: 0,
-      bytes: 0,
+    const entry = {
       session,
       shadow: previous?.shadow || shadow,
       sequence: previous?.sequence ?? sequence,
@@ -533,7 +541,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
       journalBytes: previous?.journalBytes ?? journalBytes,
       used: ++clock,
       syncSessionBytesOnWrite,
-    };
+    } as CacheEntry;
     measure(entry);
     entries.set(id, entry);
     retainedBytes += entry.bytes;
@@ -564,7 +572,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
       try {
         saved = await readAll(id);
       } catch (error) {
-        if (!object(error) || error.code !== "ENOENT") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         const initial = copy(session);
         await atomicSnapshot(id, initial, 0);
         await fs.writeFile(logFor(id), "", { mode: 0o600 });
@@ -576,9 +584,6 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
         return;
       }
       entry = {
-        sessionBytes: 0,
-        shadowBytes: 0,
-        bytes: 0,
         session,
         shadow: saved.session,
         sequence: saved.sequence,
@@ -588,7 +593,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
         syncSessionBytesOnWrite: true,
         metadataDirty: true,
         journalRepairNeeded: false,
-      };
+      } as CacheEntry;
       measure(entry);
       sessions.set(id, session);
       entries.set(id, entry);
@@ -709,7 +714,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
     if (sessions.has(id)) {
       const entry = entries.get(id);
       if (entry) entry.used = ++clock;
-      return sessions.get(id) ?? load(id);
+      return sessions.get(id)!;
     }
     if (!loads.has(id)) {
       const weak = evicted.get(id);
@@ -726,9 +731,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
         },
       );
     }
-    const pending = loads.get(id);
-    if (!pending) throw new Error("Claude session load was not scheduled");
-    return pending;
+    return loads.get(id)!;
   }
   async function metadata(id: string): Promise<SessionMetadata> {
     const live = sessions.get(id);
@@ -745,7 +748,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
       metadataCache.set(id, saved);
       return saved;
     } catch (error) {
-      if (!object(error) || error.code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     // Legacy sessions have no header. Load only the requested record, then
     // write a sidecar so later list and read requests avoid the transcript.
@@ -888,9 +891,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
         buffer.subarray(0, bytesRead).toString("utf8"),
       );
       if (
-        !object(report) ||
-        !["needs_repair", "repaired"].includes(String(report.status)) ||
-        typeof report.skippedRows !== "number" ||
+        !["needs_repair", "repaired"].includes(report.status) ||
         !Number.isSafeInteger(report.skippedRows) ||
         report.skippedRows < 0 ||
         typeof report.invalidSequence !== "boolean"
@@ -910,7 +911,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
             : null,
       };
     } catch (error) {
-      if (!object(error) || error.code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       return {
         status: "none",
         skippedRows: 0,
