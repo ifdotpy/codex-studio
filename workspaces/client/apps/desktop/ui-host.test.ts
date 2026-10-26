@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import { expect, test } from "vitest";
-import { createRequire } from "node:module";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-const require = createRequire(import.meta.url);
-const { startUiHost } = require("./ui-host.cjs");
-const { uiOnlyInstallation } = require("./install-mode.cjs");
+import { startUiHost } from "./ui-host.ts";
+import { uiOnlyInstallation } from "./install-mode.ts";
 test("UI-only host serves assets without backend resources and refuses API and outside files", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "studio-ui-only-"));
   await mkdir(path.join(root, "web/dist/assets"), { recursive: true });

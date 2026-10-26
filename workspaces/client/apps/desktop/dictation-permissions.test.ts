@@ -1,15 +1,31 @@
+import { present, record } from "./test-support.ts";
+import type { DesktopBridge } from "./api.ts";
+import type { Session } from "electron";
+import type { RecoveryNavigation } from "./renderer-recovery.ts";
+import { mainTestSource, mainDependency } from "./main-test-source.ts";
 // Execute the real main/preload boundary with native permission prompts mocked.
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { test } from "vitest";
 
 test("main and preload require a trusted local microphone gesture", async () => {
-  const require = createRequire(import.meta.url),
-    handlers = {};
-  let window,
-    asked = 0;
+  type PermissionHandler<F> = F extends (
+    contents: never,
+    ...args: infer Args
+  ) => infer Result
+    ? (contents: unknown, ...args: Args) => Result
+    : never;
+  const handlers: {
+    request?: PermissionHandler<
+      NonNullable<Parameters<Session["setPermissionRequestHandler"]>[0]>
+    >;
+    check?: PermissionHandler<
+      NonNullable<Parameters<Session["setPermissionCheckHandler"]>[0]>
+    >;
+  } = {};
+  const windows: InstanceType<typeof electron.BrowserWindow>[] = [];
+  let asked = 0;
   const origin = "http://127.0.0.1:46299";
   const electron = {
     app: {
@@ -34,23 +50,33 @@ test("main and preload require a trusted local microphone gesture", async () => 
       isPackaged: false,
     },
     BrowserWindow: class {
-      constructor() {
-        window = this;
-        this.on = () => {};
-        this.isDestroyed = () => false;
-        this.webContents = {
-          mainFrame: { url: origin + "/" },
-          session: {
-            setPermissionRequestHandler(fn) {
-              handlers.request = fn;
-            },
-            setPermissionCheckHandler(fn) {
-              handlers.check = fn;
-            },
+      on() {}
+      isDestroyed() {
+        return false;
+      }
+      webContents = {
+        mainFrame: { url: origin + "/" },
+        session: {
+          setPermissionRequestHandler(
+            fn: PermissionHandler<
+              NonNullable<Parameters<Session["setPermissionRequestHandler"]>[0]>
+            >,
+          ) {
+            handlers.request = fn;
           },
-          on() {},
-          setWindowOpenHandler() {},
-        };
+          setPermissionCheckHandler(
+            fn: PermissionHandler<
+              NonNullable<Parameters<Session["setPermissionCheckHandler"]>[0]>
+            >,
+          ) {
+            handlers.check = fn;
+          },
+        },
+        on() {},
+        setWindowOpenHandler() {},
+      };
+      constructor() {
+        windows.push(this);
       }
       async loadURL() {}
       showInactive() {}
@@ -74,24 +100,24 @@ test("main and preload require a trusted local microphone gesture", async () => 
       },
     },
   };
-  let ready;
-  const started = new Promise((resolve) => {
+  let ready: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
     ready = resolve;
   });
   const context = vm.createContext({
-    require: (name) =>
+    require: (name: string) =>
       name === "electron"
         ? electron
-        : name === "./backend.cjs"
+        : name === "./backend.ts"
           ? { ensureBackend: async () => ({ origin }) }
-          : name === "./ui-host.cjs"
+          : name === "./ui-host.ts"
             ? {
                 startUiHost: async () => ({
                   origin: "http://127.0.0.1:46300",
                   close: async () => {},
                 }),
               }
-            : name === "./recovery.cjs"
+            : name === "./recovery.ts"
               ? {
                   configureRecovery: async () => ({ enabled: false }),
                   recoveryPreference: () => false,
@@ -99,7 +125,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
                   recoveryStatusLabel: () => "Recovery unavailable",
                   trackDesktopRecovery: () => ({ windowClosing() {} }),
                 }
-              : name === "./window-state.cjs"
+              : name === "./window-state.ts"
                 ? {
                     loadWindowState: () => ({
                       bounds: {},
@@ -108,16 +134,16 @@ test("main and preload require a trusted local microphone gesture", async () => 
                     }),
                     trackWindowState: () => ({ restore() {} }),
                   }
-                : name === "./renderer-recovery.cjs"
+                : name === "./renderer-recovery.ts"
                   ? {
                       createRendererRecovery: () => ({
-                        handleNavigation(event) {
+                        handleNavigation(event: RecoveryNavigation) {
                           event.preventDefault();
                         },
                         reload: async () => {},
                       }),
                     }
-                  : require(name),
+                  : mainDependency(name),
     module: { exports: {} },
     process: { argv: [], env: {}, platform: "darwin" },
     console: { log: ready, error: console.error },
@@ -127,13 +153,9 @@ test("main and preload require a trusted local microphone gesture", async () => 
     Error,
     URL,
   });
-  vm.runInContext(
-    "(function(){" +
-      (await readFile(new URL("./main.cjs", import.meta.url), "utf8")) +
-      "})()",
-    context,
-  );
+  vm.runInContext("(function(){" + mainTestSource() + "})()", context);
   await started;
+  const window = present(windows.at(-1));
   const event = {
     sender: window.webContents,
     senderFrame: window.webContents.mainFrame,
@@ -147,14 +169,16 @@ test("main and preload require a trusted local microphone gesture", async () => 
     isMainFrame: true,
     requestingUrl: origin + "/",
     mediaType: "audio",
-  };
+  } satisfies Electron.PermissionCheckHandlerHandlerDetails;
   assert.equal(
-    handlers.check(window.webContents, "media", origin, check),
+    present(handlers.check)(window.webContents, "media", origin, check),
     false,
   );
-  const allow = (details) =>
-    new Promise((resolve) =>
-      handlers.request(window.webContents, "media", resolve, details),
+  const allow = (
+    details: Parameters<NonNullable<typeof handlers.request>>[3],
+  ) =>
+    new Promise<boolean>((resolve) =>
+      present(handlers.request)(window.webContents, "media", resolve, details),
     );
   assert.equal(await allow(request), false);
   await assert.rejects(
@@ -171,7 +195,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
   assert.equal(asked, 1);
   assert.equal(await allow(request), true);
   assert.equal(
-    handlers.check(window.webContents, "media", origin, check),
+    present(handlers.check)(window.webContents, "media", origin, check),
     true,
   );
   assert.equal(await allow({ ...request, isMainFrame: false }), false);
@@ -184,7 +208,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
     false,
   );
   assert.equal(
-    handlers.check(window.webContents, "media", origin, {
+    present(handlers.check)(window.webContents, "media", origin, {
       ...check,
       mediaType: "video",
     }),
@@ -197,19 +221,20 @@ test("main and preload require a trusted local microphone gesture", async () => 
     }),
     /Transcribe/,
   );
-  let bridge, click;
-  const calls = [];
+  let bridge: DesktopBridge | undefined;
+  let click: ((event: Pick<Event, "isTrusted">) => void) | undefined;
+  const calls: unknown[][] = [];
   vm.runInNewContext(
     await readFile(new URL("./preload.cjs", import.meta.url), "utf8"),
     {
       require: () => ({
         contextBridge: {
-          exposeInMainWorld(_name, value) {
+          exposeInMainWorld(_name: string, value: DesktopBridge) {
             bridge = value;
           },
         },
         ipcRenderer: {
-          invoke(...args) {
+          invoke(...args: unknown[]) {
             calls.push(args);
             return Promise.resolve();
           },
@@ -220,7 +245,10 @@ test("main and preload require a trusted local microphone gesture", async () => 
       location: { search: "" },
       performance: { now: () => 100 },
       window: {
-        addEventListener(name, handler) {
+        addEventListener(
+          name: string,
+          handler: (event: Pick<Event, "isTrusted">) => void,
+        ) {
           if (name === "click") click = handler;
         },
       },
@@ -229,14 +257,15 @@ test("main and preload require a trusted local microphone gesture", async () => 
       Error,
     },
   );
+  assert(bridge);
   await assert.rejects(bridge.requestMicrophone(), /desktop button/);
-  click({ isTrusted: true });
+  present(click)({ isTrusted: true });
   await bridge.requestMicrophone();
-  assert.equal(calls[0][1].method, "requestMicrophone");
+  assert.equal(record(present(calls[0])[1]).method, "requestMicrophone");
   await assert.rejects(bridge.prepareTranscription(), /desktop button/);
-  click({ isTrusted: true });
+  present(click)({ isTrusted: true });
   await bridge.prepareTranscription();
-  assert.equal(calls[1][1].method, "prepareTranscription");
+  assert.equal(record(present(calls[1])[1]).method, "prepareTranscription");
   console.log(
     "PASS: real main/preload deny iframe, remote origin, video, missing gesture and invented transcription permits; explicit main-frame audio path accepted with mocked OS permission.",
   );

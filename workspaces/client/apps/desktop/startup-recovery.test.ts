@@ -1,11 +1,12 @@
+import { present } from "./test-support.ts";
+import type { BackendIdentity } from "./backend.ts";
+import type { RecoveryOptions } from "./recovery.ts";
+import { mainTestSource, mainDependency } from "./main-test-source.ts";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import vm from "node:vm";
 import { test } from "vitest";
 
-const require = createRequire(import.meta.url);
-const main = readFileSync(new URL("./main.cjs", import.meta.url), "utf8");
+const main = mainTestSource();
 
 test("startup uses the verified backend environment before configuring recovery", async () => {
   for (const [existing, expectedEnvironment] of [
@@ -18,11 +19,12 @@ test("startup uses the verified backend environment before configuring recovery"
       { restartEnvironment: {}, supervisorFallback: true },
       { CODEX_AGENTS_SUPERVISOR_MODE: "1" },
     ],
-  ]) {
-    const calls = [];
-    let lookup, configured;
-    let finish;
-    const stopped = new Promise((resolve) => {
+  ] satisfies [Partial<BackendIdentity> | null, NodeJS.ProcessEnv | null][]) {
+    const calls: string[] = [];
+    let lookup: { origin: string; state: string } | undefined;
+    let configured: RecoveryOptions | undefined;
+    let finish: (code: number) => void = () => {};
+    const stopped = new Promise<number>((resolve) => {
       finish = resolve;
     });
     const app = {
@@ -39,7 +41,7 @@ test("startup uses the verified backend environment before configuring recovery"
       exit: finish,
     };
     const backend = {
-      identity: async (origin, state) => {
+      identity: async (origin: string, state: string) => {
         lookup = { origin, state };
         calls.push("identity");
         return existing;
@@ -55,25 +57,25 @@ test("startup uses the verified backend environment before configuring recovery"
       recoveryPaths: () => ({ state: "/canonical-state" }),
       recoveryPreference: () => true,
       supervisorPreference: () => true,
-      configureRecovery: async (options) => {
+      configureRecovery: async (options: RecoveryOptions) => {
         calls.push("configureRecovery");
         configured = options;
         return { enabled: true };
       },
     };
     vm.runInNewContext(main, {
-      require: (name) =>
+      require: (name: string) =>
         name === "electron"
           ? { app, dialog: { showErrorBox() {} } }
-          : name === "./backend.cjs"
+          : name === "./backend.ts"
             ? backend
-            : name === "./recovery.cjs"
+            : name === "./recovery.ts"
               ? recovery
-              : name === "./install-mode.cjs"
+              : name === "./install-mode.ts"
                 ? { uiOnlyInstallation: () => false }
                 : name.startsWith("./")
                   ? {}
-                  : require(name),
+                  : mainDependency(name),
       process: {
         argv: [],
         platform: "darwin",
@@ -93,7 +95,9 @@ test("startup uses the verified backend environment before configuring recovery"
       state: "/canonical-state",
     });
     assert.deepEqual(
-      JSON.parse(JSON.stringify(configured.restartEnvironment ?? null)),
+      JSON.parse(
+        JSON.stringify(present(configured).restartEnvironment ?? null),
+      ),
       expectedEnvironment,
     );
   }

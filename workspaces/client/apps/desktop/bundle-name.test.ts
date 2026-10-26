@@ -4,15 +4,15 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setBundleDisplayName } from "./bundle-name.mjs";
+import { setBundleDisplayName } from "./bundle-name.ts";
 
-const read = (file) =>
+const read = (file: string) =>
   JSON.parse(
     execFileSync("plutil", ["-convert", "json", "-o", "-", file], {
       encoding: "utf8",
     }),
   );
-function bundle(fileName, displayName = fileName) {
+function bundle(fileName: string, displayName = fileName) {
   const root = mkdtempSync(path.join(tmpdir(), "studio-bundle-name-"));
   const application = path.join(root, `${fileName}.app`);
   for (const locale of ["en", "ru"])

@@ -1,9 +1,11 @@
+import { present } from "./test-support.ts";
+import type { PairReceipt, Invitation } from "./server-credentials.ts";
 import { expect, test, vi } from "vitest";
-import { createRequire } from "node:module";
-const { pairApproved } = createRequire(import.meta.url)("./approved-pair.cjs");
+import { pairApproved } from "./approved-pair.ts";
 function fixture() {
-  const invitation = {
+  const invitation: Invitation = {
     protocol: 1,
+    label: "Remote",
     serverId: "remote",
     origin: "https://remote.tailnet.ts.net",
     publicKey: "peer-key",
@@ -18,7 +20,8 @@ function fixture() {
     identity: { serverId: "home" },
     servers: [peer],
   };
-  const value = {
+  const value: Parameters<typeof pairApproved>[0]["value"] = {
+    action: "pairApproved",
     origin: invitation.origin,
     invitation,
     requestId: "pair-id",
@@ -29,15 +32,25 @@ function fixture() {
       inviteRequestId: "invite-id",
     },
   };
-  const credentials = { pair: vi.fn(async () => ({ id: "remote" })) };
-  const fetchRequest = vi.fn(async (url, init) => {
+  const receipt: PairReceipt = {
+    id: "remote",
+    origin: invitation.origin,
+    label: "Remote",
+    credentialId: "fixture",
+  };
+  const credentials = { pair: vi.fn(async () => receipt) };
+  const fetchRequest = vi.fn<typeof fetch>(async (input, init) => {
+    const url = String(input);
+    init = present(init);
     expect(new URL(url).origin).toBe("http://127.0.0.1:4620");
     expect(init.redirect).toBe("error");
     if (url.endsWith("/api/session"))
       return Response.json({ token: "local-secret" });
     if (init.method === "POST") {
-      expect(init.headers["X-Canvas-Token"]).toBe("local-secret");
-      expect(JSON.parse(init.body)).toEqual({
+      expect(new Headers(init.headers).get("X-Canvas-Token")).toBe(
+        "local-secret",
+      );
+      expect(JSON.parse(String(init.body))).toEqual({
         action: "ui_invite",
         serverId: "remote",
         requestId: "invite-id",
@@ -68,7 +81,7 @@ function fixture() {
 }
 test("automatic access verifies the local peer and the saved invitation before using its exact pair ID", async () => {
   const f = fixture();
-  expect(await f.run()).toEqual({ id: "remote" });
+  expect(await f.run()).toMatchObject({ id: "remote" });
   expect(f.credentials.pair).toHaveBeenCalledExactlyOnceWith({
     origin: f.value.origin,
     invitation: f.invitation,
@@ -99,10 +112,10 @@ test("automatic access rejects a renderer invitation that differs from its local
 });
 test("automatic access checks revocation after the invitation returns", async () => {
   const f = fixture();
-  const original = f.fetchRequest.getMockImplementation();
+  const original = present(f.fetchRequest.getMockImplementation());
   f.fetchRequest.mockImplementation(async (url, init) => {
     const response = await original(url, init);
-    if (init.method === "POST") f.peer.status = "revoked";
+    if (init?.method === "POST") f.peer.status = "revoked";
     return response;
   });
   await expect(f.run()).rejects.toThrow("not approved");

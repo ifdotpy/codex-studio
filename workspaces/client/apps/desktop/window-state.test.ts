@@ -4,10 +4,11 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
-const { windowState, loadWindowState, trackWindowState } = createRequire(
-  import.meta.url,
-)("./window-state.cjs");
+import {
+  windowState,
+  loadWindowState,
+  trackWindowState,
+} from "./window-state.ts";
 const display = (x = 0, y = 25, width = 1600, height = 1000) => ({
   workArea: { x, y, width, height },
 });
@@ -59,20 +60,21 @@ test("close flushes bounds synchronously; fullscreen is not restored; hidden mod
   const profile = mkdtempSync(path.join(tmpdir(), "studio-window-state-"));
   try {
     const app = new EventEmitter();
-    const win = new EventEmitter();
     let bounds = { x: 30, y: 40, width: 1200, height: 850 };
-    win.isDestroyed = () => false;
-    win.isFullScreen = () => true;
-    win.isMaximized = () => false;
-    win.getNormalBounds = () => bounds;
-    win.maximize = () => {
-      throw new Error("Hidden windows must stay hidden");
-    };
+    const win = Object.assign(new EventEmitter(), {
+      isDestroyed: () => false,
+      isFullScreen: () => true,
+      isMaximized: () => false,
+      getNormalBounds: () => bounds,
+      maximize: () => {
+        throw new Error("Hidden windows must stay hidden");
+      },
+    });
     const tracker = trackWindowState(
       win,
       app,
       profile,
-      { maximized: true },
+      windowState({ version: 1, bounds, maximized: true }, [display()]),
       { hidden: true },
     );
     tracker.restore();
@@ -80,7 +82,7 @@ test("close flushes bounds synchronously; fullscreen is not restored; hidden mod
     bounds = { x: 90, y: 70, width: 1000, height: 700 };
     app.emit("before-quit");
     const saved = JSON.parse(
-      readFileSync(path.join(profile, "window-state.json")),
+      readFileSync(path.join(profile, "window-state.json"), "utf8"),
     );
     assert.deepEqual(saved.bounds, bounds);
     assert.equal(saved.maximized, true);

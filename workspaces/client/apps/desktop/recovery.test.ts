@@ -1,3 +1,6 @@
+import { present, portOf } from "./test-support.ts";
+import type { RecoveryRun } from "./recovery.ts";
+import { trackDesktopRecovery } from "./recovery.ts";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
@@ -15,14 +18,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-const {
+import {
   configureRecovery,
   recoveryPaths,
   recoveryPreference,
   supervisorPreference,
   isInstalledApplication,
   recoveryStatusLabel,
-} = createRequire(import.meta.url)("./recovery.cjs");
+} from "./recovery.ts";
 function fixture() {
   const root = mkdtempSync(
     path.join(tmpdir(), "studio-recovery-registration-"),
@@ -68,9 +71,9 @@ function fixture() {
 
 // Two python3 stubs on PATH: `old` stands for /usr/bin/python3 (3.9), `new` for a
 // Python that runs recover_backend.py.
-function interpreters(data) {
-  const found = {};
-  for (const name of ["old", "new"]) {
+function interpreters(data: ReturnType<typeof fixture>) {
+  const found = { old: "", new: "" };
+  for (const name of ["old", "new"] as const) {
     const dir = path.join(data.root, `${name}-python`);
     mkdirSync(dir, { recursive: true });
     found[name] = path.join(dir, "python3");
@@ -79,16 +82,20 @@ function interpreters(data) {
   }
   return found;
 }
-function plistInterpreter(file) {
-  return readFileSync(file, "utf8").match(
-    /<key>ProgramArguments<\/key><array><string>([^<]+)<\/string>/,
-  )[1];
+function plistInterpreter(file: string) {
+  return present(
+    present(
+      readFileSync(file, "utf8").match(
+        /<key>ProgramArguments<\/key><array><string>([^<]+)<\/string>/,
+      ),
+    )[1],
+  );
 }
 
 test("only the installed Studio bundle can configure background recovery", async () => {
   const data = fixture();
   const state = path.join(data.root, "state");
-  const calls = [];
+  const calls: Parameters<RecoveryRun>[] = [];
   try {
     assert.equal(isInstalledApplication(data.applicationPath), true);
     assert.equal(
@@ -122,7 +129,9 @@ test("only the installed Studio bundle can configure background recovery", async
         ),
         env: { ...data.env, CODEX_AGENTS_STATE_DIR: state },
         enabled,
-        run: async (...args) => calls.push(args),
+        run: async (...args: Parameters<RecoveryRun>) => {
+          calls.push(args);
+        },
       };
       await assert.rejects(
         configureRecovery(attempt),
@@ -153,7 +162,7 @@ test.skipIf(process.platform !== "darwin")(
   "register and read back the exact-state launch agent without storing credentials",
   async () => {
     const fixtureData = fixture();
-    const calls = [];
+    const calls: string[][] = [];
     const registered = new Set();
     const paths = recoveryPaths(fixtureData.env, fixtureData.home);
     try {
@@ -179,7 +188,7 @@ test.skipIf(process.platform !== "darwin")(
         calls.map((args) => args[0]),
         ["print", "bootstrap", "print"],
       );
-      assert.equal(calls[1][1], "gui/777");
+      assert.equal(present(calls[1])[1], "gui/777");
       const config = JSON.parse(readFileSync(result.config, "utf8"));
       assert.equal(config.supervisorEnabled, false);
       assert.equal(config.environment.CODEX_HOME, fixtureData.env.CODEX_HOME);
@@ -258,7 +267,7 @@ test.skipIf(process.platform !== "darwin")(
 
 test("a resource policy update preserves the registered recovery process", async () => {
   const data = fixture();
-  const calls = [];
+  const calls: string[][] = [];
   try {
     const initial = await configureRecovery({
       ...data,
@@ -295,7 +304,7 @@ test.each([false, true])(
   "a lost bootstrap response preserves registration or restores the previous service (%s)",
   async (applied) => {
     const data = fixture();
-    const calls = [];
+    const calls: (string | undefined)[] = [];
     let registered = true;
     let bootstraps = 0;
     try {
@@ -402,9 +411,9 @@ test("recovery rewrite refuses to stop its supervisor while handles are live", a
   const data = fixture();
   const paths = recoveryPaths(data.env, data.home);
   const registered = new Set();
-  const calls = [];
+  const calls: Parameters<RecoveryRun>[] = [];
   try {
-    const run = async (file, args) => {
+    const run: RecoveryRun = async (file, args) => {
       calls.push([file, args]);
       if (file === "/bin/launchctl") {
         const service = args[1];
@@ -412,7 +421,7 @@ test("recovery rewrite refuses to stop its supervisor while handles are live", a
           throw new Error("service is not loaded");
         if (args[0] === "bootstrap")
           registered.add(
-            `${args[1]}/${args[2].includes("supervisor.") ? paths.supervisorLabel : paths.label}`,
+            `${args[1]}/${present(args[2]).includes("supervisor.") ? paths.supervisorLabel : paths.label}`,
           );
         if (args[0] === "print" && service === `gui/777/${paths.label}`)
           return { stdout: "pid = 4242\n" };
@@ -470,7 +479,7 @@ test("a Finder launch cannot turn off the persisted supervisor setting", async (
     );
     await configureRecovery({ ...data, enabled: true, run: async () => {} });
     assert.equal(
-      JSON.parse(readFileSync(files.config)).supervisorEnabled,
+      JSON.parse(readFileSync(files.config, "utf8")).supervisorEnabled,
       true,
     );
     assert.equal(supervisorPreference(data.env), true);
@@ -508,7 +517,7 @@ test("a desktop launch keeps the service-owned Rust selection and its supervisor
         ...selection,
       }),
     );
-    const calls = [];
+    const calls: string[][] = [];
     await configureRecovery({
       ...data,
       enabled: true,
@@ -516,7 +525,7 @@ test("a desktop launch keeps the service-owned Rust selection and its supervisor
         calls.push(args);
       },
     });
-    const saved = JSON.parse(readFileSync(files.config));
+    const saved = JSON.parse(readFileSync(files.config, "utf8"));
     assert.deepEqual(
       {
         backend: saved.backend,
@@ -538,9 +547,9 @@ test("a desktop launch keeps the service-owned Rust selection and its supervisor
 
 test("updating registered recovery preserves its live service; disabling removes only supervision", async () => {
   const data = fixture();
-  const calls = [];
+  const calls: (string | undefined)[] = [];
   try {
-    const run = async (_, args) => {
+    const run: RecoveryRun = async (_, args) => {
       calls.push(args[0]);
     };
     const result = await configureRecovery({ ...data, enabled: true, run });
@@ -550,7 +559,10 @@ test("updating registered recovery preserves its live service; disabling removes
     assert.deepEqual(calls, ["print", "bootout"]);
     assert.equal(recoveryPreference(data.env), false);
     assert.equal(existsSync(result.plist), false);
-    assert.equal(JSON.parse(readFileSync(result.config)).enabled, false);
+    assert.equal(
+      JSON.parse(readFileSync(result.config, "utf8")).enabled,
+      false,
+    );
   } finally {
     rmSync(data.root, { recursive: true, force: true });
   }
@@ -587,7 +599,7 @@ test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
     const port = await new Promise((resolve) => {
       const server = createServer();
       server.listen(0, "127.0.0.1", () => {
-        const port = server.address().port;
+        const port = portOf(server);
         server.close(() => resolve(port));
       });
     });
@@ -633,25 +645,29 @@ test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
 
 test("a graceful desktop exit always withdraws open intent", async () => {
   const { EventEmitter } = await import("node:events");
-  const { trackDesktopRecovery } = createRequire(import.meta.url)(
-    "./recovery.cjs",
-  );
+
   for (const shutdown of [false, true]) {
     const data = fixture();
     try {
-      const app = new EventEmitter();
-      app.getPath = () => path.join(data.root, "profile");
+      const app = Object.assign(new EventEmitter(), {
+        getPath: () => path.join(data.root, "profile"),
+      });
       const powerMonitor = new EventEmitter();
       const { filename } = trackDesktopRecovery({
         app,
-        powerMonitor,
         env: data.env,
       });
-      assert.equal(JSON.parse(readFileSync(filename)).desiredOpen, true);
+      assert.equal(
+        JSON.parse(readFileSync(filename, "utf8")).desiredOpen,
+        true,
+      );
       if (shutdown) powerMonitor.emit("shutdown");
       app.emit("before-quit");
       app.emit("window-all-closed");
-      assert.equal(JSON.parse(readFileSync(filename)).desiredOpen, false);
+      assert.equal(
+        JSON.parse(readFileSync(filename, "utf8")).desiredOpen,
+        false,
+      );
     } finally {
       rmSync(data.root, { recursive: true, force: true });
     }
@@ -670,9 +686,9 @@ test("an attaching desktop preserves the saved restart environment and explicit 
       },
       run: async () => {},
     });
-    const before = JSON.parse(readFileSync(initial.config));
+    const before = JSON.parse(readFileSync(initial.config, "utf8"));
     await configureRecovery({ ...data, enabled: true, run: async () => {} });
-    const after = JSON.parse(readFileSync(initial.config));
+    const after = JSON.parse(readFileSync(initial.config, "utf8"));
     assert.deepEqual(after.environment, before.environment);
     assert.deepEqual(after.unsetEnvironment, before.unsetEnvironment);
     assert.equal(after.environment.CODEX_HOME, undefined);
@@ -724,7 +740,7 @@ test("recovery rejects an invalid saved launch environment before changing it", 
 // The shapes of two live background-recovery.json files that the deleted
 // Python backend wrote (one Mac still on Python, one already switched to Rust;
 // values replaced by fixture paths). Main refused both for CODEX_AGENTS_PYTHON.
-function pythonEraRecords(state, resources) {
+function pythonEraRecords(state: string, resources: string) {
   const codex = path.join(resources, "bin/codex");
   return [
     {
@@ -804,10 +820,10 @@ test("a Python-era saved launch environment is accepted without its retired keys
       JSON.stringify({
         ...first,
         environment: {
-          ...first.environment,
+          ...present(first).environment,
           CODEX_AGENTS_PYTHON: "/old/python",
         },
-        unsetEnvironment: first.unsetEnvironment.filter(
+        unsetEnvironment: present(first).unsetEnvironment.filter(
           (key) => key !== "CODEX_AGENTS_PYTHON",
         ),
       }),
@@ -818,7 +834,10 @@ test("a Python-era saved launch environment is accepted without its retired keys
     // An unknown new name is still refused.
     const before = JSON.stringify({
       ...first,
-      unsetEnvironment: [...first.unsetEnvironment, "CODEX_UNKNOWN_SETTING"],
+      unsetEnvironment: [
+        ...present(first).unsetEnvironment,
+        "CODEX_UNKNOWN_SETTING",
+      ],
     });
     writeFileSync(files.config, before);
     await assert.rejects(
@@ -849,7 +868,7 @@ test("backend restart environment overrides the attaching desktop and preserves 
       },
       run: async () => {},
     });
-    const config = JSON.parse(readFileSync(result.config));
+    const config = JSON.parse(readFileSync(result.config, "utf8"));
     assert.equal(
       config.environment.CODEX_CANVAS_CWD,
       "/authoritative-workspace",
@@ -864,18 +883,16 @@ test("backend restart environment overrides the attaching desktop and preserves 
 
 test("explicit Quit and window close withdraw intent after a cancelled shutdown", async () => {
   const { EventEmitter } = await import("node:events");
-  const { trackDesktopRecovery } = createRequire(import.meta.url)(
-    "./recovery.cjs",
-  );
-  for (const action of ["closeExplicitly", "windowClosing"]) {
+
+  for (const action of ["closeExplicitly", "windowClosing"] as const) {
     const data = fixture();
     try {
-      const app = new EventEmitter();
-      app.getPath = () => path.join(data.root, "profile");
+      const app = Object.assign(new EventEmitter(), {
+        getPath: () => path.join(data.root, "profile"),
+      });
       const powerMonitor = new EventEmitter();
       const tracker = trackDesktopRecovery({
         app,
-        powerMonitor,
         env: data.env,
       });
       powerMonitor.emit("shutdown");
@@ -883,7 +900,7 @@ test("explicit Quit and window close withdraw intent after a cancelled shutdown"
       app.emit("before-quit");
       app.emit("window-all-closed");
       assert.equal(
-        JSON.parse(readFileSync(tracker.filename)).desiredOpen,
+        JSON.parse(readFileSync(tracker.filename, "utf8")).desiredOpen,
         false,
       );
     } finally {
@@ -894,7 +911,7 @@ test("explicit Quit and window close withdraw intent after a cancelled shutdown"
 
 test("recovery refuses when no interpreter runs recover_backend.py and writes nothing", async () => {
   const data = fixture();
-  const calls = [];
+  const calls: Parameters<RecoveryRun>[] = [];
   const paths = recoveryPaths(data.env, data.home);
   try {
     await assert.rejects(
@@ -904,7 +921,9 @@ test("recovery refuses when no interpreter runs recover_backend.py and writes no
         checkInterpreter: async () => {
           throw new Error("ImportError: cannot import name 'StrEnum'");
         },
-        run: async (...args) => calls.push(args),
+        run: async (...args) => {
+          calls.push(args);
+        },
       }),
       /needs Python 3\.11 or newer to run recover_backend\.py/,
     );
@@ -931,7 +950,7 @@ test("recovery refuses when no interpreter runs recover_backend.py and writes no
 test("recovery saves the first interpreter that runs recover_backend.py", async () => {
   const data = fixture();
   const python = interpreters(data);
-  const checked = [];
+  const checked: string[][] = [];
   try {
     const result = await configureRecovery({
       ...data,
@@ -968,7 +987,7 @@ test("a registered recovery job with an interpreter that cannot run recover_back
     ...data.env,
     PATH: `${path.dirname(python.old)}:${path.dirname(python.new)}`,
   };
-  const calls = [];
+  const calls: (string | undefined)[] = [];
   try {
     // The first registration saved `old` (the defect of 2026-10-24); launchd runs it.
     const initial = await configureRecovery({
