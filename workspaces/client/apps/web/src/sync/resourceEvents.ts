@@ -481,7 +481,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         tabId,
       } satisfies TabMessage);
     } catch {
-      releaseStream("broadcast failed");
+      releaseStream();
       stopChannel();
       setStatus("degraded");
       startIndependent();
@@ -858,7 +858,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const event = value as ResourceTokenRatesEvent;
     if (event.workspaceId !== workspaceId) {
       setStatus("degraded");
-      if (!fromPeer) reconnectNow("token rates from another workspace");
+      if (!fromPeer) reconnectNow();
       return;
     }
     if (fromPeer && (owner || independent)) return;
@@ -922,8 +922,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
   }
 
-  // Set while a subscription removal discards unapplied frames.
-  let discardingForRemoval = false;
   function recoverResourceApplication(
     refs: ResourceRef[],
     error: unknown,
@@ -938,20 +936,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           (ref.kind === "room" && !ref.legacy)),
     );
     if (!resources.length || !coordinatorActive) return false;
-<<<<<<< head
     if (owner || independent) frameFailed(error, "local-state-error");
-||||||| base
-    if (owner || independent) frameFailed(error);
-=======
-    if (discardingForRemoval && source && sessionId && (owner || independent)) {
-      // The UI removed another subscription. Subscribe the still-active
-      // resources again on this stream instead of reopening it: a reopen
-      // during startup meets the next removal and repeats.
-      for (const ref of resources) acceptedResources.delete(resourceKey(ref));
-      return true;
-    }
-    if (owner || independent) frameFailed(error);
->>>>>>> 686377a
     else {
       setStatus("degraded");
       entityDelivery.invalidate();
@@ -1206,7 +1191,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (fromPeer && (owner || independent)) return;
     if (!workspaceId || event.workspaceId !== workspaceId) {
       setStatus("degraded");
-      if (!fromPeer) reconnectNow("resource frame from another workspace");
+      if (!fromPeer) reconnectNow();
       return;
     }
     if (!fromPeer)
@@ -1225,14 +1210,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const heartbeat = value as ResourceHeartbeatEvent;
     if (heartbeat.workspaceId !== workspaceId) {
       setStatus("degraded");
-      if (!fromPeer) reconnectNow("heartbeat from another workspace");
+      if (!fromPeer) reconnectNow();
       return;
     }
     if (lastEpoch && heartbeat.epoch !== lastEpoch) {
       lastEpoch = undefined;
       lastRevision = undefined;
       lastHeartbeatRevision = undefined;
-      reconnectNow("heartbeat epoch changed");
+      reconnectNow();
       return;
     }
     if (
@@ -1240,7 +1225,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       (lastHeartbeatRevision !== undefined &&
         heartbeat.revision < lastHeartbeatRevision)
     ) {
-      reconnectNow("heartbeat revision went back");
+      reconnectNow();
       return;
     }
     if (fromPeer) return;
@@ -1266,32 +1251,18 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   ) {
     if (error !== undefined)
       console.error("Sync stream frame could not be applied", error);
-<<<<<<< head
     reconnectNow(
       failure,
       error === undefined
         ? undefined
         : String((error as Error)?.message ?? error),
     );
-||||||| base
-    setStatus("degraded");
-    reconnectNow();
-=======
-    setStatus("degraded");
-    reconnectNow(`frame failed: ${String((error as Error)?.message ?? error)}`);
->>>>>>> 686377a
   }
 
   function refreshHeartbeatTimeout() {
     clearTimeout(heartbeatTimeout);
     heartbeatTimeout = setTimeout(
-<<<<<<< head
       () => reconnectNow("heartbeat-timeout"),
-||||||| base
-      () => reconnectNow(),
-=======
-      () => reconnectNow("no heartbeat for 45 s"),
->>>>>>> 686377a
       RESOURCE_HEARTBEAT_TIMEOUT_MS,
     );
   }
@@ -1366,7 +1337,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       ) {
         // Reconnect once for the current source. Repeated requests while its
         // replacement is pending do not reset the bounded retry schedule.
-        reconnectNow("peer channel asked to reconnect");
+        reconnectNow();
       }
     } else if (record.kind === "tab-heartbeat") {
       const peer = peerSubscriptions.get(record.tabId);
@@ -1490,21 +1461,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (removed.length) {
       blockedSelectors = [...blockedResources.values()];
-<<<<<<< head
       entityDelivery.remove(removed);
       removeEntityTransfers(removed);
-||||||| base
-      entityDelivery.invalidate(true);
-      cancelEntityTransfers(true);
-=======
-      discardingForRemoval = true;
-      try {
-        entityDelivery.invalidate(true);
-        cancelEntityTransfers(true);
-      } finally {
-        discardingForRemoval = false;
-      }
->>>>>>> 686377a
       if (!source && reconnectTimer !== undefined) return;
     }
     const generation = ++streamUpdateGeneration;
@@ -1538,18 +1496,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }, COORDINATOR_IDLE_STOP_MS);
   }
 
-<<<<<<< head
   /** The reason reaches the desktop stream log. */
   function closeSource(reason = "closed") {
     openingSource?.abort();
     openingSource = undefined;
-||||||| base
-  function closeSource() {
-    pendingOpening = undefined;
-=======
-  function closeSource(reason = "closed") {
-    pendingOpening = undefined;
->>>>>>> 686377a
     validatedServerFrameAt = undefined;
     clearTimeout(subscriptionTimer);
     subscriptionTimer = undefined;
@@ -1621,18 +1571,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     notifyConnectionListeners();
   }
 
-<<<<<<< head
   function reconnectNow(
     failure: ResourceConnectionFailure = "unknown",
     detail?: string,
   ) {
-||||||| base
-  function reconnectNow() {
-=======
-  function reconnectNow(reason: string) {
->>>>>>> 686377a
     if (source) requireBaselineReconciliation();
-<<<<<<< head
     closeSource(detail ? `${failure}: ${detail}` : failure);
     scheduleReconnect(failure);
   }
@@ -1702,52 +1645,24 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       !pageHidden() &&
       navigator.onLine !== false
     );
-||||||| base
-    closeSource();
-    scheduleReconnect();
-=======
-    closeSource(reason);
-    scheduleReconnect();
->>>>>>> 686377a
   }
 
   async function openSource() {
-<<<<<<< head
     if (!canOpenSource()) return;
     if (openingSource || reconnectTimer !== undefined) return;
-||||||| base
-    if (
-      isApiSchemaMismatch() ||
-      !coordinatorActive ||
-      (!owner && !independent) ||
-      document.hidden ||
-      navigator.onLine === false
-    )
-      return;
-=======
-    if (
-      isApiSchemaMismatch() ||
-      !coordinatorActive ||
-      (!owner && !independent) ||
-      pageHidden() ||
-      navigator.onLine === false
-    )
-      return;
->>>>>>> 686377a
     const resources = owner ? aggregateResources() : localResources();
     const tokenRates = owner
       ? hasTokenRateInterest()
       : tokenRateListeners.size > 0;
     if (!resources.length && !tokenRates) {
       cancelIdentityProbe();
-      closeSource("open: replaced");
+      closeSource();
       return;
     }
     if (source) {
       updateSubscriptions(resources, tokenRates);
       return;
     }
-<<<<<<< head
     closeSource();
     const attempt = new AbortController();
     openingSource = attempt;
@@ -1761,55 +1676,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (attempt.signal.aborted || !canOpenSource()) {
       openingSource = undefined;
       notifyConnectionListeners();
-||||||| base
-    const selection = JSON.stringify([resources.map(resourceKey), tokenRates]);
-    if (
-      pendingOpening?.generation === subscriptionGeneration &&
-      pendingOpening.selection === selection
-    )
-      return;
-    closeSource();
-    const openingGeneration = subscriptionGeneration;
-    const opening = { generation: openingGeneration, selection };
-    pendingOpening = opening;
-    const since = await Promise.all(
-      resources.map(async (resource) => ({
-        resource,
-        since: entityDelivery.requiresSnapshot(resource)
-          ? undefined
-          : await options.sync
-              .readSubscriptionCursor?.(resource)
-              .catch(() => undefined),
-      })),
-    ).finally(() => {
-      if (pendingOpening === opening) pendingOpening = undefined;
-    });
-    if (openingGeneration !== subscriptionGeneration || !coordinatorActive)
-=======
-    const selection = JSON.stringify([resources.map(resourceKey), tokenRates]);
-    if (
-      pendingOpening?.generation === subscriptionGeneration &&
-      pendingOpening.selection === selection
-    )
-      return;
-    closeSource("open: replaced");
-    const openingGeneration = subscriptionGeneration;
-    const opening = { generation: openingGeneration, selection };
-    pendingOpening = opening;
-    const since = await Promise.all(
-      resources.map(async (resource) => ({
-        resource,
-        since: entityDelivery.requiresSnapshot(resource)
-          ? undefined
-          : await options.sync
-              .readSubscriptionCursor?.(resource)
-              .catch(() => undefined),
-      })),
-    ).finally(() => {
-      if (pendingOpening === opening) pendingOpening = undefined;
-    });
-    if (openingGeneration !== subscriptionGeneration || !coordinatorActive)
->>>>>>> 686377a
       return;
     }
     // Screens can change while optional local cursors are being read. Open
@@ -1876,7 +1742,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       ) => {
         if (source !== connected || schemaHandshakeReceived) return;
         requireBaselineReconciliation();
-        closeSource("open: cursor preparation failed");
+        closeSource();
         if (preHandshakeFailures === 0)
           preHandshakeResponseGeneration =
             matchingApiSchemaResponseGeneration();
@@ -2040,7 +1906,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           return;
         }
         requireBaselineReconciliation();
-        closeSource("open: stream failed");
+        closeSource();
         if (!connectionOpened && !identityProbe) {
           // EventSource hides HTTP rejection details. Check the identity once
           // to distinguish a server rollback from a temporary network failure.
@@ -2060,27 +1926,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       };
       if (!heartbeatTimeout) {
         heartbeatTimeout = setTimeout(
-<<<<<<< head
           () => reconnectNow("heartbeat-timeout"),
-||||||| base
-          () => reconnectNow(),
-=======
-          () => reconnectNow("stream error event"),
->>>>>>> 686377a
           RESOURCE_HEARTBEAT_TIMEOUT_MS,
         );
       }
     } catch {
-<<<<<<< head
       closeSource();
       scheduleReconnect("stream-error");
-||||||| base
-      closeSource();
-      scheduleReconnect();
-=======
-      closeSource("open: stream closed");
-      scheduleReconnect();
->>>>>>> 686377a
     }
   }
 
@@ -2110,7 +1962,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (!sessionId) {
       // A stream without its session cannot acknowledge a diff. Recover with
       // the complete desired set rather than stranding newly added resources.
-      reconnectNow("subscriptions changed");
+      reconnectNow();
       return;
     }
     const connected = source;
@@ -2121,13 +1973,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const add = await prepareResourceCursors(addedResources, controller.signal);
     if (source !== connected || subscriptionRequest !== controller) return;
     subscriptionAckTimer = setTimeout(() => {
-<<<<<<< head
       if (source === connected) reconnectNow("subscription-timeout");
-||||||| base
-      if (source === connected) reconnectNow();
-=======
-      if (source === connected) reconnectNow("subscription update failed");
->>>>>>> 686377a
     }, SUBSCRIPTION_ACK_TIMEOUT_MS);
     void post(
       "/api/sync/subscriptions",
@@ -2142,13 +1988,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     )
       .catch(() => {
         // A lost response has an unknown outcome. Reopen instead of retrying a diff.
-<<<<<<< head
         if (source === connected) reconnectNow("subscription-rejected");
-||||||| base
-        if (source === connected) reconnectNow();
-=======
-        if (source === connected) reconnectNow("subscription update rejected");
->>>>>>> 686377a
       })
       .finally(() => {
         if (subscriptionRequest !== controller) return;
@@ -2251,7 +2091,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           });
           releaseOwner = undefined;
           owner = false;
-          closeSource("became stream owner");
+          closeSource();
           if (peerHeartbeatTimer !== undefined)
             clearInterval(peerHeartbeatTimer);
           peerHeartbeatTimer = undefined;
@@ -2274,7 +2114,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       });
   }
 
-  function releaseStream(reason: string) {
+  function releaseStream() {
     cancelIdentityProbe();
     const pendingRequest = ownerRequestController;
     ownerRequestController = undefined;
@@ -2285,7 +2125,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (source) requireBaselineReconciliation();
     owner = false;
     independent = false;
-    closeSource(reason);
+    closeSource();
     if (peerHeartbeatTimer !== undefined) clearInterval(peerHeartbeatTimer);
     peerHeartbeatTimer = undefined;
     cancelReconnect();
@@ -2370,7 +2210,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       clearTimeout(coordinatorIdleStopTimer);
     coordinatorIdleStopTimer = undefined;
     streamUpdateGeneration++;
-    releaseStream("coordinator stopped");
+    releaseStream();
     clearTimeout(heartbeatTimeout);
     cancelReconnect();
     stopChannel();
@@ -2403,7 +2243,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function pauseTransport() {
     setStatus("paused");
-    releaseStream("page hidden");
+    releaseStream();
     broadcast({
       kind: "subscriptions",
       resources: [],
