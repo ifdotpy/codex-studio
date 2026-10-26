@@ -13,13 +13,15 @@ declare global {
   }
 }
 export class Terminal {
-  options: ITerminalOptions;
-  cols = 100;
-  rows = 24;
-  disposed = false;
-  input: ((text: string) => void) | undefined;
+  declare options: ITerminalOptions;
+  declare cols: number;
+  declare rows: number;
+  declare disposed: boolean | undefined;
+  declare input: ((text: string) => void) | undefined;
   constructor(options: ITerminalOptions) {
     this.options = options;
+    this.cols = 100;
+    this.rows = 24;
     window.terminalInputRecoveryTerminals.push(this);
     window.terminalInputRecoveryCurrentTerminal = this;
   }
