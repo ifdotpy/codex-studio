@@ -279,7 +279,7 @@ export async function verifiedHistoryMessages(session: HistorySession) {
  * pinned bytes, SDK metadata, and the typed SDK conversation chain.
  */
 export function inputHistoryOutcome(
-  rows: sdk.SessionStoreEntry[] | undefined | null,
+  rows: unknown,
   scope: {
     sessionId: string;
     cwd: string;
@@ -287,7 +287,14 @@ export function inputHistoryOutcome(
     inputIds: string[] | null;
   },
 ) {
-  if (!Array.isArray(rows)) return "unknown";
+  if (
+    !Array.isArray(rows) ||
+    !rows.every(
+      (row: unknown): row is sdk.SessionStoreEntry =>
+        object(row) && typeof row.type === "string",
+    )
+  )
+    return "unknown";
   const chain = verifiedChain(rows, scope.sessionId, scope.cwd);
   if (!chain) return "unknown";
   return messageIndex(
