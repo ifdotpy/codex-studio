@@ -1,9 +1,12 @@
+import type { ComponentHookCell } from "./componentTestFixtures";
+import type { EffectCallback } from "react";
+import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Agent, Snapshot } from "../types";
 
 const h = vi.hoisted(() => ({
   cursor: 0,
-  cells: [] as any[],
+  cells: [] as ComponentHookCell[],
   effects: [] as Array<() => unknown>,
   get: vi.fn(async () => ({
     items: [],
@@ -20,22 +23,24 @@ vi.mock("react", async (original) => {
       const index = h.cursor++;
       h.cells[index] ??= { value: initial };
       return [
-        h.cells[index].value,
+        required(h.cells[index]).value,
         (value: unknown) => {
-          h.cells[index].value =
-            typeof value === "function" ? value(h.cells[index].value) : value;
+          required(h.cells[index]).value =
+            typeof value === "function"
+              ? value(required(h.cells[index]).value)
+              : value;
         },
       ];
     },
     useMemo: (compute: () => unknown) => compute(),
-    useEffect: (effect: () => unknown, deps: unknown[]) => {
+    useEffect: (effect: EffectCallback, deps: unknown[]) => {
       const index = h.cursor++;
       const previous = h.cells[index];
-      if (!previous || deps.some((value, i) => value !== previous.deps[i])) {
+      if (!previous || deps.some((value, i) => value !== previous.deps?.[i])) {
         previous?.cleanup?.();
         h.cells[index] = { deps };
         h.effects.push(() => {
-          h.cells[index].cleanup = effect();
+          required(h.cells[index]).cleanup = effect() || undefined;
         });
       }
     },
@@ -131,7 +136,7 @@ it("question history follows projected answers without a request-triggered HTTP 
         ],
       },
     } as unknown as Snapshot);
-  expect(render(read)(item)?.questions[0].answers).toEqual(["Yes"]);
+  expect(required(render(read)(item)?.questions[0]).answers).toEqual(["Yes"]);
   expect(h.get).not.toHaveBeenCalled();
 });
 
