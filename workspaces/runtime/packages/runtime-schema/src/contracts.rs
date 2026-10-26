@@ -972,6 +972,22 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             + "\n",
     });
     if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<crate::provider_input::ToolDefinition>();
+        generator.subschema_for::<crate::idle_compaction::CacheReport>();
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Bridge runtime contracts","version":"1"},
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/runtime-contract.generated.ts".into(),
+            text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
         let mut usage_generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
