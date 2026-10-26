@@ -8006,6 +8006,7 @@ export interface components {
       rootId: string;
       /** Source */
       source: string;
+      studioUsage?: components["schemas"]["UsageObservation"];
       /**
        * Threadid
        * @default null
@@ -11917,6 +11918,8 @@ export interface components {
       application: string;
       /** Backendbuild */
       backendBuild: string;
+      /** @constant */
+      backendKind?: "rust";
       browser: components["schemas"]["BrowserStatus"] | null;
       /** @default null */
       diskSpace?: components["schemas"]["DiskSpaceStatus"] | null;
