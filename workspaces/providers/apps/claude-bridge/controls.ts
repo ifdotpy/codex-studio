@@ -427,7 +427,10 @@ export async function rollbackSession(
 // The Runtime workspace operation owns submission identity and unknown outcomes.
 export async function forkAtTurn(
   source: Session,
-  params: Partial<Session> & { threadId?: string; lastTurnId?: string | null },
+  params: Partial<Session> & {
+    threadId?: string | undefined;
+    lastTurnId?: string | null;
+  },
   deps: ControlDependencies,
 ) {
   // Native reads can wait while the source receives more output. Keep the
