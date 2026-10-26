@@ -1,3 +1,14 @@
+import type { LegacyPullFixture } from "./prefetch-storage.fixture.ts";
+import {
+  projectionIsStored,
+  completedTranscriptAgent,
+} from "./prefetch-storage.fixture.ts";
+import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { Page, Route } from "@playwright/test";
+import type { components } from "../../src/generated/api.ts";
+import type { Agent } from "../../src/types.ts";
+import { fixtureGetResult, fixturePostBody } from "./http.ts";
+import { initializeInstrumentation } from "./chat-switch-latency-ui.fixture.ts";
 import {
   readTestState,
   stubEntityState,
@@ -27,17 +38,18 @@ test(
       stdio: ["ignore", "pipe", "pipe"],
     });
     let log = "",
-      page;
-    proc.stderr.on("data", (d) => (log += d));
+      page: Page | undefined;
+    proc.stderr?.on("data", (d) => (log += d));
     try {
-      const port = await new Promise((resolve, reject) => {
-        proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
+      const port = await new Promise<number>((resolve, reject) => {
+        proc.stdout?.once("data", (d) => resolve(Number(String(d).trim())));
         proc.once("exit", () => reject(Error(log)));
       });
       const origin = `http://127.0.0.1:${port}`;
       const state = await readTestState(origin);
       const a = state.threads.find((x) => x.name === "Other project");
       const b = state.threads.find((x) => x.name === "Release lead");
+      assert.ok(a && b, "Expected both fixture chats");
       // Background transcript warming keeps only the top-ranked desktop chat.
       // Pin one other managed chat so this cold target stays outside that watch.
       const initialTopWatchRows = state.threads
@@ -52,57 +64,13 @@ test(
       assert.equal(initialTopWatchRows.length, 1);
       for (const agent of initialTopWatchRows) agent.pinned = true;
       Object.assign(a, { pinned: false, updated: 0 });
-      page = runnerPage;
-      await page.setViewportSize({ width: 1440, height: 960 });
-      page.setDefaultTimeout(10000);
-      const errors = [];
-      page.on("pageerror", (e) => errors.push(e.message));
-      await page.addInitScript(() => {
-        window.__resourceFrames = [];
-        window.__chatSwitchPrepareStartedAt = undefined;
-        const addEventListener = EventSource.prototype.addEventListener;
-        EventSource.prototype.addEventListener = function (
-          type,
-          listener,
-          options,
-        ) {
-          if (type === "resources") {
-            const observe = (event) => {
-              try {
-                window.__resourceFrames.push({
-                  ...JSON.parse(event.data),
-                  receivedAt: performance.now(),
-                });
-              } catch {
-                /* Ignore non-resource handshake frames. */
-              }
-            };
-            addEventListener.call(this, type, observe, options);
-          }
-          return addEventListener.call(this, type, listener, options);
-        };
-        window.__chatSwitchStartedAt = undefined;
-        window.__chatSwitchFirstRowsPaintAt = undefined;
-        window.__chatSwitchPaintAt = undefined;
-        window.__chatSwitchScrollStartedAt = undefined;
-        window.__chatSwitchLongTasks = [];
-        window.__firstSidebarRowVisibleAt = undefined;
-        const sidebarObserver = new MutationObserver(() => {
-          const row = document.querySelector("[data-chat]");
-          if (row?.getClientRects().length) {
-            window.__firstSidebarRowVisibleAt = performance.now();
-            sidebarObserver.disconnect();
-          }
-        });
-        sidebarObserver.observe(document, { childList: true, subtree: true });
-        new PerformanceObserver((list) => {
-          for (const entry of list.getEntries())
-            window.__chatSwitchLongTasks.push({
-              startTime: entry.startTime,
-              duration: entry.duration,
-            });
-        }).observe({ type: "longtask", buffered: true });
-      });
+      const activePage = runnerPage;
+      page = activePage;
+      await activePage.setViewportSize({ width: 1440, height: 960 });
+      activePage.setDefaultTimeout(10000);
+      const errors: string[] = [];
+      activePage.on("pageerror", (e) => errors.push(e.message));
+      await activePage.addInitScript(initializeInstrumentation);
       const snapshot = {
         ...state,
         threads: state.threads.map((x) => ({
@@ -115,24 +83,35 @@ test(
       };
       const syncContract = await readFixtureSyncContract(origin);
       const entitySync = await stubEntityState(page, snapshot, syncContract);
-      const payload = (agent, tag) => ({
-        agent: { ...agent, status: "completed", inFlight: false, turnId: null },
+      const payload = (
+        agent: Agent,
+        tag: string,
+      ): GetResult<"/api/transcript/page"> &
+        Partial<
+          Pick<components["schemas"]["TranscriptStreamDelta"], "order">
+        > => ({
+        agent: completedTranscriptAgent(agent),
+        truncated: false,
         items: Array.from({ length: 30 }, (_, i) => ({
           id: `${tag}-${i}`,
           role: "assistant",
           text: `History ${tag} ${i}. ${"Visible saved text. ".repeat(15)}`,
         })),
-        replace: true,
       });
-      const requests = [];
+      const requests: { id: string; at: number; route: Route }[] = [];
       const visited = new Set();
       let hold = false;
       let coldSwitchArmed = false;
-      let resolveNextA;
-      let resolveHeldB;
+      let resolveNextA: ((route: Route) => void) | undefined;
+      let resolveHeldB: ((route: Route) => void) | undefined;
       let latestA = payload(a, "a");
       let latestASequence = 10;
-      const responseFor = (id, data, seq, after = 0) => ({
+      const responseFor = (
+        id: string,
+        data: GetResult<"/api/transcript/page">,
+        seq: number,
+        after = 0,
+      ) => ({
         ...syncContract.identity,
         ...entityPullFixture(snapshot, {
           scope: `transcript:${id}`,
@@ -141,7 +120,7 @@ test(
           transcriptSeq: seq,
         }),
       });
-      await page.route("**/api/sync/pull?*", async (r) => {
+      await activePage.route("**/api/sync/pull?*", async (r) => {
         const url = new URL(r.request().url());
         const scope = url.searchParams.get("scope");
         if (!scope?.startsWith("transcript:")) return r.fallback();
@@ -174,27 +153,40 @@ test(
             ),
           });
       });
-      await page.goto(origin);
-      await page.waitForFunction(() =>
-        performance.getEntriesByType("resource").some((entry) => {
-          const url = new URL(entry.name);
-          return url.pathname === "/api/session" && entry.responseEnd > 0;
-        }),
+      await activePage.goto(origin);
+      await activePage.waitForFunction(() =>
+        performance
+          .getEntriesByType("resource")
+          .filter(
+            (entry): entry is PerformanceResourceTiming =>
+              entry instanceof PerformanceResourceTiming,
+          )
+          .some((entry) => {
+            const url = new URL(entry.name);
+            return url.pathname === "/api/session" && entry.responseEnd > 0;
+          }),
       );
-      await page.locator("#conversation-title").waitFor();
-      await page.locator(`[data-chat="${b.id}"]`).waitFor();
-      await page.locator(`[data-chat="${b.id}"]`).click();
+      await activePage.locator("#conversation-title").waitFor();
+      await activePage.locator(`[data-chat="${b.id}"]`).waitFor();
+      await activePage.locator(`[data-chat="${b.id}"]`).click();
       await page
         .locator("#conversation-title")
         .getByText("Release lead", { exact: true })
         .waitFor();
-      await page.locator("#messages [data-message^='b-']").first().waitFor();
+      await activePage
+        .locator("#messages [data-message^='b-']")
+        .first()
+        .waitFor();
       console.log(
         "chat-switch startup readiness",
         JSON.stringify(
-          await page.evaluate(() => {
+          await activePage.evaluate(() => {
             const resources = performance
               .getEntriesByType("resource")
+              .filter(
+                (entry): entry is PerformanceResourceTiming =>
+                  entry instanceof PerformanceResourceTiming,
+              )
               .filter((entry) =>
                 new URL(entry.name).pathname.startsWith("/api/"),
               );
@@ -206,7 +198,7 @@ test(
             );
             return {
               navigationStart: 0,
-              firstSidebarRowAt: window.__firstSidebarRowVisibleAt,
+              firstSidebarRowAt: window.switchLatencyFirstSidebarRowVisibleAt,
               sessionRequestStartAt: session?.startTime ?? null,
               sessionResponseAt: session?.responseEnd ?? null,
               identityRequestStartAt: identity?.startTime ?? null,
@@ -229,23 +221,23 @@ test(
           }),
         ),
       );
-      const open = async (id, message) => {
+      const open = async (id: string, message: string) => {
         const firstVisit = !visited.has(id);
-        const chat = page.locator(`[data-chat="${id}"]`);
+        const chat = activePage.locator(`[data-chat="${id}"]`);
         const selector = `[data-message="${message}"]`;
         const prefix = message.slice(0, message.lastIndexOf("-"));
         await chat.evaluate((element, target) => {
-          window.__chatSwitchPrepareStartedAt = undefined;
-          window.__chatSwitchStartedAt = undefined;
-          window.__chatSwitchFirstRowsPaintAt = undefined;
-          window.__chatSwitchPaintAt = undefined;
-          window.__chatSwitchScrollStartedAt = undefined;
-          const markPrepareIntent = (event) => {
+          window.switchLatencyPrepareStartedAt = undefined;
+          window.switchLatencyStartedAt = undefined;
+          window.switchLatencyFirstRowsPaintAt = undefined;
+          window.switchLatencyPaintAt = undefined;
+          window.switchLatencyScrollStartedAt = undefined;
+          const markPrepareIntent = (event: Event) => {
             if (
               event.target instanceof Element &&
               event.target.closest(`[data-chat="${element.dataset.chat}"]`)
             ) {
-              window.__chatSwitchPrepareStartedAt = performance.now();
+              window.switchLatencyPrepareStartedAt = performance.now();
               window.removeEventListener(
                 "pointerover",
                 markPrepareIntent,
@@ -257,7 +249,7 @@ test(
           element.addEventListener(
             "pointerdown",
             () => {
-              window.__chatSwitchStartedAt = performance.now();
+              window.switchLatencyStartedAt = performance.now();
               const messages = document.querySelector("#messages");
               const messageBounds = messages?.getBoundingClientRect();
               const targetPrefix = target;
@@ -278,7 +270,7 @@ test(
                   );
                 });
                 if (row?.isConnected) {
-                  window.__chatSwitchFirstRowsPaintAt = performance.now();
+                  window.switchLatencyFirstRowsPaintAt = performance.now();
                   return;
                 }
                 requestAnimationFrame(recordFirstRows);
@@ -296,7 +288,7 @@ test(
                   bounds.bottom > viewport.top &&
                   bounds.top < viewport.bottom
                 ) {
-                  window.__chatSwitchPaintAt = performance.now();
+                  window.switchLatencyPaintAt = performance.now();
                   return;
                 }
                 requestAnimationFrame(recordVisibleTarget);
@@ -309,16 +301,24 @@ test(
         }, prefix);
         if (id === a.id && firstVisit) coldSwitchArmed = true;
         await chat.click();
-        await page.waitForFunction(
-          () => typeof window.__chatSwitchFirstRowsPaintAt === "number",
+        await activePage.waitForFunction(
+          () => typeof window.switchLatencyFirstRowsPaintAt === "number",
         );
-        const firstRowsTiming = await page.evaluate((id) => {
-          const startedAt = window.__chatSwitchStartedAt;
-          const prepareStartedAt = window.__chatSwitchPrepareStartedAt;
+        const firstRowsTiming = await activePage.evaluate((id) => {
+          const startedAt = window.switchLatencyStartedAt;
+          const prepareStartedAt = window.switchLatencyPrepareStartedAt;
+          if (startedAt === undefined)
+            throw new Error("Missing chat switch gesture");
           const gestureStartedAt = prepareStartedAt ?? startedAt;
-          const firstRowsAt = window.__chatSwitchFirstRowsPaintAt;
+          const firstRowsAt = window.switchLatencyFirstRowsPaintAt;
+          if (firstRowsAt === undefined)
+            throw new Error("Missing first rows timestamp");
           const resource = performance
             .getEntriesByType("resource")
+            .filter(
+              (entry): entry is PerformanceResourceTiming =>
+                entry instanceof PerformanceResourceTiming,
+            )
             .filter((entry) => {
               const url = new URL(entry.name);
               return (
@@ -354,6 +354,10 @@ test(
               : null,
             precedingRequests: performance
               .getEntriesByType("resource")
+              .filter(
+                (entry): entry is PerformanceResourceTiming =>
+                  entry instanceof PerformanceResourceTiming,
+              )
               .filter((entry) => {
                 const url = new URL(entry.name);
                 return (
@@ -367,7 +371,7 @@ test(
                 startAfterClickMs: entry.startTime - startedAt,
                 durationMs: entry.duration,
               })),
-            longTasks: window.__chatSwitchLongTasks
+            longTasks: window.switchLatencyLongTasks
               .filter(
                 (entry) =>
                   entry.startTime >= gestureStartedAt &&
@@ -380,17 +384,17 @@ test(
           };
         }, id);
         if (!visited.has(id)) {
-          await page.locator("#messages").evaluate((messages) => {
-            window.__chatSwitchScrollStartedAt = performance.now();
+          await activePage.locator("#messages").evaluate((messages) => {
+            window.switchLatencyScrollStartedAt = performance.now();
             messages.scrollTop = messages.scrollHeight;
             messages.dispatchEvent(new Event("scroll"));
           });
           visited.add(id);
         }
-        await page.locator(selector).waitFor({ state: "visible" });
-        const targetMountAfterScrollMs = await page.evaluate(() =>
-          typeof window.__chatSwitchScrollStartedAt === "number"
-            ? performance.now() - window.__chatSwitchScrollStartedAt
+        await activePage.locator(selector).waitFor({ state: "visible" });
+        const targetMountAfterScrollMs = await activePage.evaluate(() =>
+          typeof window.switchLatencyScrollStartedAt === "number"
+            ? performance.now() - window.switchLatencyScrollStartedAt
             : null,
         );
         const timing = {
@@ -417,9 +421,17 @@ test(
         .locator("#conversation-title")
         .getByText("Release lead", { exact: true })
         .waitFor();
-      await page.locator("#messages [data-message^='b-']").first().waitFor();
-      await page.waitForFunction(() => {
-        const entries = performance.getEntriesByType("resource");
+      await activePage
+        .locator("#messages [data-message^='b-']")
+        .first()
+        .waitFor();
+      await activePage.waitForFunction(() => {
+        const entries = performance
+          .getEntriesByType("resource")
+          .filter(
+            (entry): entry is PerformanceResourceTiming =>
+              entry instanceof PerformanceResourceTiming,
+          );
         return entries.some((entry) => {
           const url = new URL(entry.name);
           return url.pathname === "/api/session" && entry.responseEnd > 0;
@@ -428,49 +440,24 @@ test(
       const projectionDatabaseName =
         `rxdb-dexie-studio-entity-projection-${syncContract.identity.workspaceId}-` +
         `${readApiSchemaHash()}--0--projections`;
-      const targetWasCold = await page.evaluate(
-        async ({ databaseName, documentId }) => {
-          const databases = await indexedDB.databases();
-          if (!databases.some((database) => database.name === databaseName))
-            return false;
-          const request = indexedDB.open(databaseName);
-          const db = await new Promise((resolve, reject) => {
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-          });
-          const found = await Promise.all(
-            [...db.objectStoreNames].map(
-              (store) =>
-                new Promise((resolve) => {
-                  const query = db
-                    .transaction(store, "readonly")
-                    .objectStore(store)
-                    .getAll();
-                  query.onsuccess = () =>
-                    resolve(query.result.some((row) => row.id === documentId));
-                  query.onerror = () => resolve(false);
-                }),
-            ),
-          );
-          db.close();
-          return found.some(Boolean);
-        },
-        {
-          databaseName: projectionDatabaseName,
-          documentId: `transcript:${a.id}`,
-        },
-      );
+      const targetWasCold = await activePage.evaluate(projectionIsStored, {
+        databaseName: projectionDatabaseName,
+        documentId: `transcript:${a.id}`,
+        onlyIfExists: true,
+      });
       assert.equal(
         targetWasCold,
         false,
         "The target chat has no stored transcript before the user opens it",
       );
-      await page.waitForFunction(() =>
-        window.__resourceFrames.some((frame) => frame.reason === "initial"),
+      await activePage.waitForFunction(() =>
+        window.switchLatencyResourceFrames.some(
+          (frame) => frame.reason === "initial",
+        ),
       );
-      const targetInInitialSubscription = await page.evaluate(
+      const targetInInitialSubscription = await activePage.evaluate(
         (targetId) =>
-          window.__resourceFrames.some(
+          window.switchLatencyResourceFrames.some(
             (frame) =>
               frame.reason === "initial" &&
               frame.resources?.some(
@@ -517,9 +504,9 @@ test(
       console.log(
         "cold-open prepare trace",
         JSON.stringify(
-          await page.evaluate(
+          await activePage.evaluate(
             (targetId) => ({
-              targetedFrames: window.__resourceFrames
+              targetedFrames: window.switchLatencyResourceFrames
                 .filter((frame) =>
                   frame.resources?.some(
                     (resource) =>
@@ -543,7 +530,7 @@ test(
         cold < 1500,
         `Cold history appears without the old three-second delay: ${cold}ms`,
       );
-      await page.locator("#messages").evaluate((e) => {
+      await activePage.locator("#messages").evaluate((e) => {
         e.scrollTop = 950;
         e.dispatchEvent(new Event("scroll"));
       });
@@ -553,20 +540,20 @@ test(
       await open(b.id, "b-29");
       hold = true;
       const previousReads = requests.filter((x) => x.id === a.id).length;
-      const refresh = new Promise((resolve) => (resolveNextA = resolve));
+      const refresh = new Promise<Route>((resolve) => (resolveNextA = resolve));
       const cached = await open(a.id, "a-29");
       assert.ok(
         cached < 500,
         `Saved history appears before a blocked refresh: ${cached}ms`,
       );
       assert.equal(
-        await page.locator('[data-message="b-29"]').count(),
+        await activePage.locator('[data-message="b-29"]').count(),
         0,
         "No other chat history leaks",
       );
       assert.ok(
         Math.abs(
-          (await page.locator("#messages").evaluate((e) => e.scrollTop)) -
+          (await activePage.locator("#messages").evaluate((e) => e.scrollTop)) -
             savedTop,
         ) < 2,
         "Saved scroll position survives instant history restore",
@@ -580,7 +567,7 @@ test(
       fresh.order = fresh.items.map((x) => x.id);
       latestA = fresh;
       latestASequence = 30;
-      const freshPull = page.waitForResponse((response) => {
+      const freshPull = activePage.waitForResponse((response) => {
         const url = new URL(response.url());
         return (
           url.pathname === "/api/sync/pull" &&
@@ -604,24 +591,24 @@ test(
         ),
       });
       await freshPull;
-      await page.locator("#messages").evaluate((messages) => {
+      await activePage.locator("#messages").evaluate((messages) => {
         messages.scrollTop = messages.scrollHeight;
         messages.dispatchEvent(new Event("scroll"));
       });
-      await page.locator('[data-message="fresh-29"]').waitFor();
-      await page.evaluate(
+      await activePage.locator('[data-message="fresh-29"]').waitFor();
+      await activePage.evaluate(
         () =>
           new Promise((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(resolve)),
           ),
       );
       assert.equal(
-        await page.locator('[data-message="obsolete-29"]').count(),
+        await activePage.locator('[data-message="obsolete-29"]').count(),
         0,
         "Delayed HTTP cannot replace a newer stream",
       );
-      const heldB = new Promise((resolve) => (resolveHeldB = resolve));
-      const lateRequest = page.waitForRequest((request) => {
+      const heldB = new Promise<Route>((resolve) => (resolveHeldB = resolve));
+      const lateRequest = activePage.waitForRequest((request) => {
         const url = new URL(request.url());
         return (
           url.pathname === "/api/sync/pull" &&
@@ -642,61 +629,34 @@ test(
           Number(lateOtherUrl.searchParams.get("after") || 0),
         ),
       });
-      await page.evaluate(
+      await activePage.evaluate(
         () =>
           new Promise((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(resolve)),
           ),
       );
       assert.equal(
-        await page.locator('[data-message="late-other-29"]').count(),
+        await activePage.locator('[data-message="late-other-29"]').count(),
         0,
         "Response from a previous chat cannot replace current history",
       );
       // Exercise the real RxDB projection path, including a slow pull on revisit.
-      await page.unroute("**/api/sync/**");
-      const identity = await (
-        await fetch(origin + "/api/sync/identity")
-      ).json();
+      await activePage.unroute("**/api/sync/**");
+      const identity = await fixtureGetResult(
+        "/api/sync/identity",
+        await fetch(origin + "/api/sync/identity"),
+      );
       let projectionDelay = 0;
       let syncPulls = 0;
-      const waitForProjection = async (id, sequence) =>
-        page.waitForFunction(
-          async ({ databaseName, documentId, sequence }) => {
-            const request = indexedDB.open(databaseName);
-            const db = await new Promise((resolve, reject) => {
-              request.onsuccess = () => resolve(request.result);
-              request.onerror = () => reject(request.error);
-            });
-            const matches = await Promise.all(
-              [...db.objectStoreNames].map(
-                (store) =>
-                  new Promise((resolve) => {
-                    const query = db
-                      .transaction(store, "readonly")
-                      .objectStore(store)
-                      .getAll();
-                    query.onsuccess = () =>
-                      resolve(
-                        query.result.some(
-                          (row) =>
-                            row.id === documentId && row.seq === sequence,
-                        ),
-                      );
-                    query.onerror = () => resolve(false);
-                  }),
-              ),
-            );
-            db.close();
-            return matches.some(Boolean);
-          },
-          {
-            databaseName: `rxdb-dexie-studio-entity-projection-${identity.workspaceId}-${readApiSchemaHash()}--0--projections`,
-            documentId: `transcript:${id}`,
-            sequence,
-          },
-        );
-      await page.route("**/api/sync/pull?*", async (r) => {
+      const waitForProjection = async (id: string, sequence: number) => {
+        const databaseName = `rxdb-dexie-studio-entity-projection-${identity.workspaceId}-${readApiSchemaHash()}--0--projections`;
+        await activePage.waitForFunction(projectionIsStored, {
+          databaseName,
+          documentId: `transcript:${id}`,
+          sequence,
+        });
+      };
+      await activePage.route("**/api/sync/pull?*", async (r) => {
         const url = new URL(r.request().url());
         const scope = url.searchParams.get("scope");
         if (!scope?.startsWith("transcript:")) return r.fallback();
@@ -708,12 +668,14 @@ test(
           selected,
           selected.id === a.id ? "sync-a" : "sync-b",
         );
-        data.agent = {
+        assert.ok(data.agent);
+        const runningAgent = {
           ...data.agent,
           status: "running",
           inFlight: true,
           turnId: "fixture-live-turn",
         };
+        data.agent = runningAgent;
         const seq = selected.id === a.id ? 100 : 101;
         const after = Number(url.searchParams.get("after") || 0);
         await r.fulfill({
@@ -731,28 +693,37 @@ test(
                   ]
                 : [],
             checkpoint: { seq: Math.max(after, seq) },
-          },
+          } satisfies LegacyPullFixture,
         });
       });
       // Preserve the old server's byte comparison in this fixture. New UI writes
       // must clear drafts safely before a busy backend can be upgraded.
       let legacyDraftConflicts = 0;
-      await page.route("**/api/sync/drafts", async (r) => {
-        const old = await (
-          await fetch(origin + "/api/sync/pull?scope=drafts")
-        ).json();
+      await activePage.route("**/api/sync/drafts", async (r) => {
+        const old = await fixtureGetResult(
+          "/api/sync/pull",
+          await fetch(origin + "/api/sync/pull?scope=drafts"),
+        );
+        if (!("documents" in old)) throw new Error("Unexpected drafts reset");
         const conflicts = [];
-        for (const row of r.request().postDataJSON().rows) {
+        for (const row of fixturePostBody(
+          "/api/sync/drafts",
+          r.request().postDataJSON(),
+        ).rows) {
           const next = row.newDocumentState;
-          const previous = old.documents.find((x) => x.id === next.id);
+          const previous = old.documents.find(
+            (x) => x.id === next.id && "payload" in x,
+          );
           const assumed = row.assumedMasterState;
           if (
             previous &&
+            "payload" in previous &&
             (!assumed ||
               assumed.payload !== previous.payload ||
-              !!assumed._deleted !== !!previous._deleted) &&
+              ("_deleted" in assumed && !!assumed._deleted) !==
+                !!previous._deleted) &&
             (next.payload !== previous.payload ||
-              !!next._deleted !== !!previous._deleted)
+              ("_deleted" in next && !!next._deleted) !== !!previous._deleted)
           )
             conflicts.push(previous);
         }
@@ -763,11 +734,11 @@ test(
         return r.fallback();
       });
       hold = false;
-      await page.reload();
+      await activePage.reload();
       await open(a.id, "sync-a-29");
       projectionDelay = 1000;
-      await page.locator(`[data-chat="${b.id}"]`).click();
-      await page.locator('[data-message="sync-b-29"]').waitFor();
+      await activePage.locator(`[data-chat="${b.id}"]`).click();
+      await activePage.locator('[data-message="sync-b-29"]').waitFor();
       await waitForProjection(a.id, 100);
       await waitForProjection(b.id, 101);
       const pullsBeforeQuickReturn = syncPulls;
@@ -794,13 +765,17 @@ test(
         "Real RxDB replication loaded both chat projections",
       );
       assert.equal(
-        await page.locator('[data-message="sync-b-29"]').count(),
+        await activePage.locator('[data-message="sync-b-29"]').count(),
         0,
         "Replicated chat history stays scoped",
       );
-      const sends = [];
-      await page.route("**/api/messages", async (r) => {
-        sends.push(r.request().postDataJSON());
+      const sends: PostBody<"/api/messages">[] = [];
+      await activePage.route("**/api/messages", async (r) => {
+        const body = fixturePostBody(
+          "/api/messages",
+          r.request().postDataJSON(),
+        );
+        sends.push(body);
         assert.equal(
           r.request().headers()["x-canvas-workspace"],
           identity.workspaceId,
@@ -808,20 +783,25 @@ test(
         );
         await r.fulfill({
           json: {
-            id: r.request().postDataJSON().id,
+            id: body.id,
             status: "queued",
             deliveries: { [a.id]: "queued" },
-          },
+          } satisfies Pick<
+            PostResult<"/api/messages">,
+            "id" | "status" | "deliveries"
+          >,
         });
       });
-      await page.locator("#stop").waitFor();
+      await activePage.locator("#stop").waitFor();
       for (const action of ["button", "Enter"]) {
-        await page.locator("#message").fill(`Sync shortcut ${action}`);
-        if (action === "button") await page.locator("#send").click();
-        else await page.locator("#message").press(action);
+        await activePage.locator("#message").fill(`Sync shortcut ${action}`);
+        if (action === "button") await activePage.locator("#send").click();
+        else await activePage.locator("#message").press(action);
         await page
           .waitForFunction(
-            () => document.querySelector("#message").value === "",
+            () =>
+              document.querySelector<HTMLTextAreaElement>("#message")?.value ===
+              "",
           )
           .catch(async (error) => {
             console.error("Shortcut failure", action, JSON.stringify(sends));
@@ -836,8 +816,8 @@ test(
           expectedCount,
           "The outbox submits each message once",
         );
-        assert.equal(sends.at(-1).delivery, "current_turn");
-        assert.equal(sends.at(-1).room, a.id);
+        assert.equal(sends.at(-1)?.delivery, "current_turn");
+        assert.equal(sends.at(-1)?.room, a.id);
       }
       assert.equal(sends.length, 2, "Each shortcut sends exactly one message");
       assert.equal(

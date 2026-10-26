@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 const web = fileURLToPath(new URL("../../../", import.meta.url));
 const testFiles = [
   "src/components/prompt-composer/PromptInput.spec.mjs",
-  "tests/composer/composer-stability-ui.spec.mjs",
-  "tests/composer/skill-autocomplete-ui.spec.mjs",
+  "tests/composer/composer-stability-ui.spec.ts",
+  "tests/composer/skill-autocomplete-ui.spec.ts",
   "tests/performance/draft-render-performance-browser.spec.mjs",
 ];
 const missingTests = testFiles.filter((test) => !existsSync(join(web, test)));

@@ -1,4 +1,10 @@
+import { catalogSkills } from "./skill-autocomplete-ui.fixture.ts";
+import type { BrowserContext, BrowserContextOptions } from "@playwright/test";
+import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "../chat/http.ts";
 import {
+  waitForFixturePort,
+  stubSessionCost,
   readTestState,
   installApiSchemaFixtureHeaders,
   test,
@@ -9,6 +15,12 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+declare global {
+  interface Window {
+    __skillTestNow: number;
+    __skillTypingFrameMs?: number;
+  }
+}
 test("Skill autocomplete", async ({ browser: testBrowser }) => {
   test.setTimeout(75_000);
   // Production composer against an isolated runtime and delayed skill endpoint.
@@ -17,8 +29,8 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const contexts = [];
-  const newPage = async (options) => {
+  const contexts: BrowserContext[] = [];
+  const newPage = async (options: BrowserContextOptions) => {
     const context = await testBrowser.newContext(options);
     contexts.push(context);
     const page = await context.newPage();
@@ -26,21 +38,10 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     return page;
   };
   let log = "";
-  fixture.stderr.on("data", (data) => (log += data));
-
-  const deferred = () => {
-    let resolve;
-    const promise = new Promise((done) => (resolve = done));
-    return { promise, resolve: (value) => resolve(value) };
-  };
+  fixture.stderr?.on("data", (data) => (log += data));
 
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (data) =>
-        resolve(Number(String(data).trim())),
-      );
-      fixture.once("exit", () => reject(Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
@@ -55,38 +56,52 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       Date.now = () => window.__skillTestNow;
     });
     page.setDefaultTimeout(10000);
-    const pageErrors = [];
-    const skillRequests = [];
-    const sends = [];
-    const queues = [];
+    const pageErrors: string[] = [];
+    const skillRequests: (string | null)[] = [];
+    const sends: PostBody<"/api/messages">[] = [];
+    const queues: PostBody<"/api/queue">[] = [];
     let catalogSkillCount = 0;
-    let sendHandled = deferred();
+    let sendHandled = Promise.withResolvers<void>();
     page.on("pageerror", (error) => pageErrors.push(error.message));
 
-    const gates = new Map();
-    const stubSessionCosts = (targetPage) =>
-      targetPage.route("**/api/session-cost?*", (route) =>
-        route.fulfill({ json: { totalUSD: 0, breakdown: { providers: {} } } }),
-      );
-    await stubSessionCosts(page);
+    const gates = new Map<
+      string | null,
+      PromiseWithResolvers<GetResult<"/api/skills">>
+    >();
+    await stubSessionCost(page);
     await page.route("**/api/skills?*", async (route) => {
       const agent = new URL(route.request().url()).searchParams.get("agent");
       skillRequests.push(agent);
       let gate = gates.get(agent) || gates.get(lead.id);
-      if (!gate) gates.set(agent, (gate = deferred()));
+      if (!gate)
+        gates.set(
+          agent,
+          (gate = Promise.withResolvers<GetResult<"/api/skills">>()),
+        );
       else if (!gates.has(agent)) gates.set(agent, gate);
       const catalog = await gate.promise;
       await route.fulfill({ json: catalog });
     });
     await page.route("**/api/messages", async (route) => {
-      const message = route.request().postDataJSON();
+      const message = fixturePostBody(
+        "/api/messages",
+        route.request().postDataJSON(),
+      );
+      assert.ok(message.id);
       sends.push(message);
       sendHandled.resolve();
-      await route.fulfill({ json: { id: message.id, status: "accepted" } });
+      await route.fulfill({
+        json: {
+          id: message.id,
+          status: "accepted",
+        } satisfies PostResult<"/api/messages">,
+      });
     });
     await page.route("**/api/queue", async (route) => {
       if (route.request().method() === "POST") {
-        queues.push(route.request().postDataJSON());
+        queues.push(
+          fixturePostBody("/api/queue", route.request().postDataJSON()),
+        );
         await route.fulfill({ json: { items: [] } });
       } else {
         await route.fulfill({ json: { items: [] } });
@@ -131,7 +146,9 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     );
     await composer.press("ArrowUp");
     await page.waitForFunction(() =>
-      document.querySelector("#message")?.value.includes("Review the release"),
+      document
+        .querySelector<HTMLTextAreaElement>("#message")
+        ?.value.includes("Review the release"),
     );
     await composer.fill("");
 
@@ -144,7 +161,8 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         console.error(
           "autocomplete debug",
           await page.evaluate(() => ({
-            value: document.querySelector("#message")?.value,
+            value:
+              document.querySelector<HTMLTextAreaElement>("#message")?.value,
             aria: document
               .querySelector("#message")
               ?.getAttribute("aria-expanded"),
@@ -181,41 +199,10 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         ?.textContent.includes("Other project"),
     );
     assert.equal(await page.locator("#skill-suggestions").count(), 0);
-    const catalogSkills = [
-      {
-        name: "review",
-        description: "Review a change",
-        path: "/skills/review",
-      },
-      {
-        name: "release",
-        description: "Prepare a release",
-        path: "/skills/release",
-      },
-      {
-        name: "research",
-        description: "Research a topic",
-        path: "/skills/research",
-      },
-      {
-        name: "plugin-management:plugin-management",
-        description: "Installed namespaced skill",
-        path: "/skills/plugin-management/plugin-management",
-      },
-      {
-        name: "openai-templates:artifact-template-analytics-dashboard",
-        description:
-          "A long namespaced native skill for narrow composer layouts",
-        path: "/skills/openai-templates/artifact-template-analytics-dashboard",
-      },
-      ...Array.from({ length: 500 }, (_, index) => ({
-        name: `review-extra-${index}`,
-        description: "Large-catalog fixture",
-        path: `/skills/review-extra-${index}`,
-      })),
-    ];
     catalogSkillCount = catalogSkills.length;
-    gates.get(lead.id).resolve({
+    const leadGate = gates.get(lead.id);
+    assert.ok(leadGate);
+    leadGate.resolve({
       skills: catalogSkills,
       errors: [],
     });
@@ -261,7 +248,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
 
     await composer.fill("");
     await composer.fill("before $plugin-management:plugin-wrong suffix");
-    await composer.evaluate((element) => {
+    await composer.evaluate((element: HTMLTextAreaElement) => {
       const caret = element.value.indexOf("-wrong");
       element.focus();
       element.setSelectionRange(caret, caret);
@@ -318,6 +305,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         .locator("#skill-suggestions")
         .evaluate((list) => {
           const selected = list.querySelector('[aria-selected="true"]');
+          if (!selected) throw new Error("Missing selected skill");
           const row = selected.getBoundingClientRect();
           const box = list.getBoundingClientRect();
           return {
@@ -370,7 +358,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
 
     // Click selection keeps the textarea focused and replaces only the token.
     await composer.fill("before $rel after");
-    await composer.evaluate((element) => {
+    await composer.evaluate((element: HTMLTextAreaElement) => {
       const caret = element.value.indexOf("$rel") + 3;
       element.focus();
       element.setSelectionRange(caret, caret);
@@ -382,7 +370,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     });
     await release.waitFor();
     await page.waitForFunction(() => {
-      const input = document.querySelector("#message");
+      const input = document.querySelector<HTMLTextAreaElement>("#message");
       return (
         input?.value === "before $rel after" &&
         input.selectionStart === "before $rel".length &&
@@ -393,15 +381,17 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     assert.equal(await composer.inputValue(), "before $release after");
     await page.waitForFunction(
       () =>
-        document.querySelector("#message")?.selectionStart ===
-        "before $release".length,
+        document.querySelector<HTMLTextAreaElement>("#message")
+          ?.selectionStart === "before $release".length,
     );
     assert.equal(
       await composer.evaluate((element) => document.activeElement === element),
       true,
     );
     assert.equal(
-      await composer.evaluate((element) => element.selectionStart),
+      await composer.evaluate(
+        (element: HTMLTextAreaElement) => element.selectionStart,
+      ),
       "before $release".length,
       "caret remains at the insertion point",
     );
@@ -424,24 +414,26 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await composer.press("Escape");
     await page.locator("#skill-suggestions").waitFor({ state: "detached" });
     await composer.fill("ordinary message");
-    sendHandled = deferred();
+    sendHandled = Promise.withResolvers<void>();
     await composer.press("Enter");
     await sendHandled.promise;
     await page.waitForFunction(
-      () => document.querySelector("#message")?.value === "",
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
     );
 
     // An unselected Tab preserves the existing queue shortcut.
     await composer.fill("queue this");
-    sendHandled = deferred();
+    sendHandled = Promise.withResolvers<void>();
     await composer.press("Tab");
     await sendHandled.promise;
     await page.waitForFunction(
-      () => document.querySelector("#message")?.value === "",
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
     );
     assert.equal(sends.length, 2);
     assert.equal(
-      sends[1].delivery,
+      sends[1]?.delivery,
       "next_turn",
       `unselected Tab keeps queue behavior: ${JSON.stringify(sends)}`,
     );
@@ -480,7 +472,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     });
     await composer.press("Escape");
     await composer.fill("");
-    const refreshedCatalog = deferred();
+    const refreshedCatalog = Promise.withResolvers<GetResult<"/api/skills">>();
     gates.set(lead.id, refreshedCatalog);
     await composer.fill("$r");
     await page.getByText("Loading skills…", { exact: true }).waitFor();
@@ -506,12 +498,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await composer.press("Shift+Enter");
     await composer.type("line two");
     assert.equal(await composer.inputValue(), "line one\nline two");
-    sendHandled = deferred();
+    sendHandled = Promise.withResolvers<void>();
     await composer.press("Control+Enter");
     await sendHandled.promise;
     assert.equal(sends.length, 3);
     assert.equal(
-      sends[2].text,
+      sends[2]?.text,
       "line one\nline two",
       "modified Enter keeps normal send behavior",
     );
@@ -521,11 +513,11 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     const failurePage = await newPage({
       viewport: { width: 1280, height: 900 },
     });
-    await stubSessionCosts(failurePage);
+    await stubSessionCost(failurePage);
     failurePage.setDefaultTimeout(10000);
     let failureReads = 0;
-    const failureSends = [];
-    let failureSendHandled = deferred();
+    const failureSends: PostBody<"/api/messages">[] = [];
+    let failureSendHandled = Promise.withResolvers<void>();
     await failurePage.route("**/api/skills?*", async (route) => {
       failureReads++;
       await route.fulfill({
@@ -534,10 +526,19 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       });
     });
     await failurePage.route("**/api/messages", async (route) => {
-      const message = route.request().postDataJSON();
+      const message = fixturePostBody(
+        "/api/messages",
+        route.request().postDataJSON(),
+      );
+      assert.ok(message.id);
       failureSends.push(message);
-      failureSendHandled.resolve(message);
-      await route.fulfill({ json: { id: message.id, status: "accepted" } });
+      failureSendHandled.resolve();
+      await route.fulfill({
+        json: {
+          id: message.id,
+          status: "accepted",
+        } satisfies PostResult<"/api/messages">,
+      });
     });
     await failurePage.route("**/api/queue", async (route) => {
       await route.fulfill({ json: { items: [] } });
@@ -570,7 +571,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await failurePage
       .getByText("Could not load skills", { exact: true })
       .waitFor();
-    failureSendHandled = deferred();
+    failureSendHandled = Promise.withResolvers<void>();
     await failedComposer.press("Tab");
     await Promise.race([
       failureSendHandled.promise,
@@ -596,7 +597,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     const mobilePage = await newPage({
       viewport: { width: 390, height: 844 },
     });
-    await stubSessionCosts(mobilePage);
+    await stubSessionCost(mobilePage);
     mobilePage.setDefaultTimeout(10000);
     await mobilePage.route("**/api/skills?*", (route) =>
       route.fulfill({
@@ -609,7 +610,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
             },
           ],
           errors: [],
-        },
+        } satisfies GetResult<"/api/skills">,
       }),
     );
     await mobilePage.goto(origin);
@@ -647,20 +648,32 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     const emptyPage = await newPage({
       viewport: { width: 1280, height: 900 },
     });
-    await stubSessionCosts(emptyPage);
+    await stubSessionCost(emptyPage);
     emptyPage.setDefaultTimeout(10000);
-    const emptySends = [];
-    let emptySendHandled = deferred();
+    const emptySends: PostBody<"/api/messages">[] = [];
+    let emptySendHandled = Promise.withResolvers<void>();
     await emptyPage.route("**/api/skills?*", (route) =>
       route.fulfill({
-        json: { skills: [], errors: ["One skills folder was unavailable"] },
+        json: {
+          skills: [],
+          errors: ["One skills folder was unavailable"],
+        } satisfies GetResult<"/api/skills">,
       }),
     );
     await emptyPage.route("**/api/messages", async (route) => {
-      const message = route.request().postDataJSON();
+      const message = fixturePostBody(
+        "/api/messages",
+        route.request().postDataJSON(),
+      );
+      assert.ok(message.id);
       emptySends.push(message);
-      emptySendHandled.resolve(message);
-      await route.fulfill({ json: { id: message.id, status: "accepted" } });
+      emptySendHandled.resolve();
+      await route.fulfill({
+        json: {
+          id: message.id,
+          status: "accepted",
+        } satisfies PostResult<"/api/messages">,
+      });
     });
     await emptyPage.route("**/api/queue", async (route) => {
       await route.fulfill({ json: { items: [] } });
@@ -693,7 +706,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     );
     await emptyComposer.fill("$queue-missing");
     await emptyPage.getByText("No matching skills", { exact: true }).waitFor();
-    emptySendHandled = deferred();
+    emptySendHandled = Promise.withResolvers<void>();
     await emptyComposer.press("Tab");
     await Promise.race([
       emptySendHandled.promise,
@@ -743,60 +756,25 @@ test("500-entry local skill filter latency @performance", async ({ page }) => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr.on("data", (data) => (log += data));
+  fixture.stderr?.on("data", (data) => (log += data));
 
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (data) =>
-        resolve(Number(String(data).trim())),
-      );
-      fixture.once("exit", () => reject(Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     assert.ok(lead);
 
-    const catalogSkills = [
-      {
-        name: "review",
-        description: "Review a change",
-        path: "/skills/review",
-      },
-      {
-        name: "release",
-        description: "Prepare a release",
-        path: "/skills/release",
-      },
-      {
-        name: "research",
-        description: "Research a topic",
-        path: "/skills/research",
-      },
-      {
-        name: "plugin-management:plugin-management",
-        description: "Installed namespaced skill",
-        path: "/skills/plugin-management/plugin-management",
-      },
-      {
-        name: "openai-templates:artifact-template-analytics-dashboard",
-        description:
-          "A long namespaced native skill for narrow composer layouts",
-        path: "/skills/openai-templates/artifact-template-analytics-dashboard",
-      },
-      ...Array.from({ length: 500 }, (_, index) => ({
-        name: `review-extra-${index}`,
-        description: "Large-catalog fixture",
-        path: `/skills/review-extra-${index}`,
-      })),
-    ];
     assert.equal(catalogSkills.length, 505);
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.route("**/api/session-cost?*", (route) =>
-      route.fulfill({ json: { totalUSD: 0, breakdown: { providers: {} } } }),
-    );
+    await stubSessionCost(page);
     await page.route("**/api/skills?*", (route) =>
-      route.fulfill({ json: { skills: catalogSkills, errors: [] } }),
+      route.fulfill({
+        json: {
+          skills: catalogSkills,
+          errors: [],
+        } satisfies GetResult<"/api/skills">,
+      }),
     );
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -814,7 +792,7 @@ test("500-entry local skill filter latency @performance", async ({ page }) => {
 
     const timingSession = await page.context().newCDPSession(page);
     await timingSession.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    await composer.evaluate((element) => {
+    await composer.evaluate((element: HTMLTextAreaElement) => {
       element.addEventListener(
         "keydown",
         (event) => {
@@ -836,6 +814,7 @@ test("500-entry local skill filter latency @performance", async ({ page }) => {
     );
     await timingSession.send("Emulation.setCPUThrottlingRate", { rate: 1 });
     await timingSession.detach();
+    assert.ok(typingFrameMs !== undefined);
     assert.ok(
       typingFrameMs < 250,
       `500-entry local filter next-frame latency ${typingFrameMs.toFixed(1)} ms at 4x CPU`,

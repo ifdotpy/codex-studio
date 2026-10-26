@@ -239,7 +239,7 @@ The current turn shows tool calls by default, including completed commands while
 the agent thinks. Manual collapse remains available. Turn completion preserves
 the visible calls; older commands stay hidden when history is reopened.
 
-`workspaces/client/apps/web/tests/chat/live-chat-ui.spec.mjs` injects app-server notifications into an isolated runtime.
+`workspaces/client/apps/web/tests/chat/live-chat-ui.spec.ts` injects app-server notifications into an isolated runtime.
 It tests the real HTTP stream and React interface without model inference.
 
 ## Orchestration workspace

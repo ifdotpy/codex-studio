@@ -1,3 +1,6 @@
+import { waitForFixturePort } from "../playwright.ts";
+import type { FixtureNotificationHook } from "../fixtures/rust-ui-fixture.ts";
+import type { TestAgent } from "../playwright.ts";
 import {
   readTestState,
   test,
@@ -30,8 +33,10 @@ test("Live chat ui", async ({
   });
   let log = "",
     page;
+  assert.ok(proc.stderr && proc.stdout && proc.stdin);
+  const stdin = proc.stdin;
   proc.stderr.on("data", (d) => (log += d));
-  const poll = async (fn, label) => {
+  const poll = async (fn: () => unknown | Promise<unknown>, label: string) => {
     for (let i = 0; i < 100; i++) {
       if (await fn()) return;
       await new Promise((r) => setTimeout(r, 50));
@@ -39,15 +44,12 @@ test("Live chat ui", async ({
     throw Error(label + " " + log);
   };
   try {
-    const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
-      proc.once("exit", () => reject(Error(log)));
-    });
+    const port = await waitForFixturePort(proc, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const state = async () => await readTestState(origin);
     page = runnerPage;
     await page.setViewportSize({ width: 1200, height: 900 });
-    const errors = [];
+    const errors: string[] = [];
     let transcriptPolls = 0;
     let transcriptStreams = 0;
     page.on("pageerror", (e) => errors.push(e.message));
@@ -57,8 +59,11 @@ test("Live chat ui", async ({
     });
     const initial = await state();
     const lead = initial.runtime.agents.find((a) => a.name === "Other project");
-    let resolveInitialTranscript;
-    const initialTranscriptLoaded = new Promise((resolve) => {
+    assert.ok(lead, "fixture lead exists");
+    let resolveInitialTranscript: () => void = () => {
+      throw new Error("Transcript resolver not initialized");
+    };
+    const initialTranscriptLoaded = new Promise<void>((resolve) => {
       resolveInitialTranscript = resolve;
     });
     page.on("response", (response) => {
@@ -87,20 +92,31 @@ test("Live chat ui", async ({
     const transcriptPollsAtStart = transcriptPolls;
     await page.locator("#message").fill("Exercise the live stream");
     await page.locator("#send").click();
-    let agent;
+    let agent: TestAgent = lead;
     await poll(async () => {
-      agent = (await state()).runtime.agents.find(
+      const next = (await state()).runtime.agents.find(
         (a) => a.name === "Other project",
       );
+      assert.ok(next, "fixture agent exists");
+      agent = next;
       return agent.status === "running" && agent.turnId;
     }, "turn starts");
-    const event = (method, params) =>
-      proc.stdin.write(
+    const event = (
+      method: string,
+      params: Omit<FixtureNotificationHook["params"], "threadId">,
+    ) => {
+      assert.ok(agent.threadId, "running fixture agent has thread identity");
+      return stdin.write(
         JSON.stringify({
           method,
-          params: { threadId: agent.threadId, turnId: agent.turnId, ...params },
+          params: {
+            threadId: agent.threadId,
+            turnId: agent.turnId,
+            ...params,
+          } satisfies FixtureNotificationHook["params"],
         }) + "\n",
       );
+    };
     event("item/started", { item: { id: "reason-live", type: "reasoning" } });
     await page.locator('.reasoning-duration[data-running="true"]').waitFor();
     event("item/started", {
@@ -244,8 +260,8 @@ test("Live chat ui", async ({
     });
     await poll(
       async () =>
-        (await state()).runtime.agents.find((a) => a.id === agent.id).status ===
-        "completed",
+        (await state()).runtime.agents.find((a) => a.id === agent.id)
+          ?.status === "completed",
       "turn completes",
     );
     await page.locator(".agent-phase.active").waitFor({ state: "detached" });
@@ -278,7 +294,11 @@ test("Live chat ui", async ({
     await page.locator("#send").click();
     const oldTurn = agent.turnId;
     await poll(async () => {
-      agent = (await state()).runtime.agents.find((a) => a.id === agent.id);
+      const next = (await state()).runtime.agents.find(
+        (a) => a.id === agent.id,
+      );
+      assert.ok(next, "fixture agent exists");
+      agent = next;
       return agent.turnId && agent.turnId !== oldTurn;
     }, "next turn");
     event("item/agentMessage/delta", {

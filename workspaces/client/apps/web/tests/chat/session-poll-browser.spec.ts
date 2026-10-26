@@ -1,3 +1,11 @@
+import type {
+  SyncPullResponse,
+  SyncEntity,
+  SessionResponse,
+} from "../playwright.ts";
+import type {} from "./session-poll.fixture.tsx";
+import type { ServerResponse } from "node:http";
+import { assert } from "./assertions.ts";
 import {
   apiSchemaHeaders,
   apiSchemaHandshakeSse,
@@ -5,33 +13,24 @@ import {
   syncIdentityFixture,
   test,
   createFixtureViteServer,
-  expect,
 } from "../playwright.ts";
 // Replicated state uses the current credential endpoint and reports failures.
 import { fileURLToPath } from "node:url";
+// This legacy workspace fixture intentionally carries a marker outside the DTO.
+type LegacyWorkspace = Omit<
+  Extract<SyncEntity, { collection: "workspace"; op: "upsert" }>,
+  "value"
+> & { value: unknown };
+type LegacyPull = Omit<SyncPullResponse, "generation" | "documents"> & {
+  documents: LegacyWorkspace[];
+};
+
 test("Session Poll Browser", async ({
   browser: _testBrowser,
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
-  let streamResponse;
+  let streamResponse: ServerResponse | undefined;
   const server = await createFixtureViteServer({
     configFile: false,
     root: fileURLToPath(new URL("../../", import.meta.url)),
@@ -58,9 +57,12 @@ test("Session Poll Browser", async ({
     ],
   });
   await server.listen();
+  const address = server.httpServer?.address();
+  if (!address || typeof address === "string")
+    throw new Error("Missing fixture server address");
   try {
     const page = testPage;
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let pulls = 0,
       snapshotReads = 0,
@@ -76,7 +78,7 @@ test("Session Poll Browser", async ({
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: "<!doctype html><title>Session refresh</title>",
+        body: '<!doctype html><title>Session refresh</title><script type="module" src="/tests/chat/session-poll.fixture.tsx"></script>',
       }),
     );
     await page.route("**/api/session", (route) => {
@@ -84,7 +86,10 @@ test("Session Poll Browser", async ({
       return route.fulfill({
         status,
         headers: apiSchemaHeaders(),
-        json: status === 200 ? { token } : { error: "Session unavailable" },
+        json:
+          status === 200
+            ? ({ token } satisfies SessionResponse)
+            : { error: "Session unavailable" },
       });
     });
     await page.route("**/api/sync/identity", (route) =>
@@ -112,32 +117,20 @@ test("Session Poll Browser", async ({
           checkpoint: { seq: 1 },
           maxSeq: 1,
           initialHigh: 1,
-        },
+        } satisfies LegacyPull,
         headers: apiSchemaHeaders(),
       });
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.evaluate(async () => {
-      const { useSnapshot } = await import("/src/hooks.ts");
-      const r = await import("/node_modules/.vite/deps/react.js"),
-        d = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const React = r.default || r,
-        { createRoot } = d.default || d;
-      const node = document.createElement("div");
-      document.body.appendChild(node);
-      createRoot(node).render(
-        React.createElement(function Harness() {
-          window.snapshot = useSnapshot();
-          return null;
-        }),
-      );
-    });
+    await page.goto(`http://127.0.0.1:${address.port}/check`);
+
     await page.waitForFunction(
-      () => window.snapshot?.data?.runtime?.marker === "replicated",
+      () =>
+        Reflect.get(
+          window.sessionPollFixture?.data?.runtime ?? {},
+          "marker",
+        ) === "replicated",
     );
-    await page.evaluate(() => window.snapshot.refresh());
+    await page.evaluate(() => window.sessionPollFixture.refresh());
     assert.ok(sessions >= 2);
     assert.equal(
       snapshotReads,
@@ -146,24 +139,26 @@ test("Session Poll Browser", async ({
     );
     assert.ok(pulls > 0, "Startup and refresh use the entity pull");
     token = "rotated";
-    await page.evaluate(() => window.snapshot.refresh());
+    await page.evaluate(() => window.sessionPollFixture.refresh());
     assert.equal(
-      await page.evaluate(() => window.snapshot.data.token),
+      await page.evaluate(() => window.sessionPollFixture.data?.token),
       "rotated",
     );
     assert.equal(
-      await page.evaluate(() => window.snapshot.data.runtime.marker),
+      await page.evaluate(() =>
+        Reflect.get(window.sessionPollFixture.data?.runtime ?? {}, "marker"),
+      ),
       "replicated",
     );
     for (const failure of [503, 404]) {
       status = failure;
-      await page.evaluate(() => window.snapshot.refresh());
+      await page.evaluate(() => window.sessionPollFixture.refresh());
       assert.equal(
-        await page.evaluate(() => window.snapshot.error),
+        await page.evaluate(() => window.sessionPollFixture.error),
         "Session unavailable",
       );
       assert.equal(
-        await page.evaluate(() => window.snapshot.data.token),
+        await page.evaluate(() => window.sessionPollFixture.data?.token),
         "rotated",
       );
       assert.equal(
@@ -174,12 +169,15 @@ test("Session Poll Browser", async ({
     }
     status = 200;
     token = "recovered";
-    await page.evaluate(() => window.snapshot.refresh());
+    await page.evaluate(() => window.sessionPollFixture.refresh());
     assert.equal(
-      await page.evaluate(() => window.snapshot.data.token),
+      await page.evaluate(() => window.sessionPollFixture.data?.token),
       "recovered",
     );
-    assert.equal(await page.evaluate(() => window.snapshot.error), "");
+    assert.equal(
+      await page.evaluate(() => window.sessionPollFixture.error),
+      "",
+    );
     assert.equal(snapshotReads, 0, "Never download the full state");
     assert.equal(snapshotReads, 0, "Never invoke the old snapshot fallback");
     assert.deepEqual(errors, []);
