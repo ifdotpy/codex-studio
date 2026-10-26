@@ -49,17 +49,7 @@ declare global {
   interface Window {
     mobileSendInitialize: typeof initialize;
     mobileSendMount: typeof mount;
-    send: typeof import("../../src/sync/send.ts");
-    storage: Awaited<
-      ReturnType<typeof import("../../src/sync/client.ts").syncDatabase>
-    >;
     fetchCount: number;
-    read: (
-      id: string,
-    ) => Promise<Omit<
-      import("../../src/sync/send.ts").OutboxEntry,
-      "id"
-    > | null>;
     mobileSendStart: (
       body: Parameters<typeof import("../../src/sync/send.ts").durableSend>[0],
     ) => void;
