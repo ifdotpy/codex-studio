@@ -1,3 +1,10 @@
+import {
+  required,
+  componentMessage,
+  componentAttachment,
+} from "../componentTestFixtures";
+import type { Message } from "../../types";
+import type { OutgoingMessage, OutboxEntry } from "../../sync/send";
 import assert from "node:assert/strict";
 import {
   mergeOutgoing,
@@ -12,14 +19,14 @@ import {
 } from "./messageDelivery.ts";
 import { it } from "vitest";
 
-const receipt = {
+const receipt: OutgoingMessage = {
   id: "one",
-  body: { room: "lead", text: "Same text" },
+  body: { id: "one", room: "lead", text: "Same text" },
   created: 1,
   status: "accepted",
-  receipt: { status: "queued" },
+  receipt: { id: "one", status: "queued" },
 };
-const pending = {
+const pending: Message = {
   id: "lead:one",
   role: "user",
   text: "Same text",
@@ -27,7 +34,7 @@ const pending = {
 };
 
 it("does not restore a sending action over a materialized removed copy", () => {
-  const restored = {
+  const restored: Message = {
     id: "lead:removed",
     role: "user",
     text: "Removed while sending",
@@ -50,13 +57,27 @@ it("does not restore a sending action over a materialized removed copy", () => {
 
 it("matches transcript rows by receipt identity and retains edited text and attachments", () => {
   assert.equal(
-    outgoingTranscript(
-      [pending],
-      [{ ...receipt, attachments: [{ id: "asset-one" }] }],
-    ).items[0].assets[0].id,
+    required(
+      required(
+        required(
+          outgoingTranscript(
+            [pending],
+            [
+              {
+                ...receipt,
+                attachments: [componentAttachment({ id: "asset-one" })],
+              },
+            ],
+          ).items[0],
+        ).assets,
+      )?.[0],
+    ).id,
     "asset-one",
   );
-  assert.equal(outgoingTranscript([], [receipt]).items[0].text, "Same text");
+  assert.equal(
+    required(outgoingTranscript([], [receipt]).items[0]).text,
+    "Same text",
+  );
   assert.deepEqual(outgoingTranscript([pending], [receipt]).observed, []);
   assert.equal(outgoingTranscript([pending], [receipt]).items.length, 1);
   // An older server omits a reserved queue row before it materializes the input.
@@ -81,7 +102,7 @@ it("matches transcript rows by receipt identity and retains edited text and atta
       .length,
     2,
   );
-  const batch = [
+  const batch: Message[] = [
     { id: "lead:one", clientMessageId: "one", role: "user", text: "Same text" },
     { id: "lead:two", clientMessageId: "two", role: "user", text: "Same text" },
   ];
@@ -89,9 +110,12 @@ it("matches transcript rows by receipt identity and retains edited text and atta
     outgoingTranscript(batch, [receipt, { ...receipt, id: "two" }]).observed,
     ["one", "two"],
   );
-  const edited = { ...receipt, displayText: "Edited queue text" };
+  const edited: OutgoingMessage = {
+    ...receipt,
+    displayText: "Edited queue text",
+  };
   assert.equal(
-    outgoingTranscript([], [edited]).items[0].text,
+    required(outgoingTranscript([], [edited]).items[0]).text,
     "Edited queue text",
   );
   assert.equal(edited.body.text, "Same text");
@@ -112,8 +136,10 @@ it("matches transcript rows by receipt identity and retains edited text and atta
 });
 
 it("retires delivered local cards outside the page only with exact saved input proof", () => {
-  const latest = [{ id: "lead:new", role: "assistant", text: "Latest reply" }];
-  const delivered = {
+  const latest: Message[] = [
+    { id: "lead:new", role: "assistant", text: "Latest reply" },
+  ];
+  const delivered: OutgoingMessage = {
     ...receipt,
     displayPending: true,
     receipt: { id: "one", status: "delivered", materialized: true },
@@ -121,29 +147,40 @@ it("retires delivered local cards outside the page only with exact saved input p
   const result = outgoingTranscript(latest, [delivered]);
   assert.deepEqual(result.items, latest);
   assert.deepEqual(result.observed, ["one"]);
-  for (const materialized of [false, undefined]) {
+  for (const materialized of [false, undefined] as const) {
     const unproven = {
       ...delivered,
-      receipt: { ...delivered.receipt, materialized },
+      receipt: { ...required(delivered.receipt), materialized },
     };
     assert.equal(outgoingTranscript(latest, [unproven]).items.length, 2);
     assert.deepEqual(outgoingTranscript(latest, [unproven]).observed, []);
   }
-  for (const status of ["queued", "sending", "uncertain", "failed", "paused"]) {
+  for (const status of [
+    "queued",
+    "sending",
+    "uncertain",
+    "failed",
+    "paused",
+  ] as const) {
     assert.equal(
       outgoingTranscript(latest, [{ ...delivered, status }]).items.length,
       2,
     );
   }
-  for (const status of ["pending", "reserved", "dispatching", "uncertain"]) {
+  for (const status of [
+    "pending",
+    "reserved",
+    "dispatching",
+    "uncertain",
+  ] as const) {
     assert.equal(
       outgoingTranscript(latest, [
-        { ...delivered, receipt: { ...delivered.receipt, status } },
+        { ...delivered, receipt: { ...required(delivered.receipt), status } },
       ]).items.length,
       2,
     );
   }
-  const original = {
+  const original: Message = {
     id: "lead:batch-second",
     clientMessageId: "one",
     role: "user",
@@ -159,22 +196,23 @@ it("retires delivered local cards outside the page only with exact saved input p
 });
 
 it("normalizes legacy next-turn rows without rewriting their retry payload", () => {
-  const legacy = {
+  const legacy: OutgoingMessage = {
     ...receipt,
     body: { ...receipt.body, delivery: "after_turn" },
   };
-  const row = outgoingTranscript([], [legacy]).items[0];
+  const row = required(outgoingTranscript([], [legacy]).items[0]);
   assert.equal(row.requestedDelivery, "next_turn");
   assert.equal(legacy.body.delivery, "after_turn");
   assert.equal(
-    outgoingTranscript([], [receipt]).items[0].requestedDelivery,
+    required(outgoingTranscript([], [receipt]).items[0]).requestedDelivery,
     "current_turn",
   );
-  for (const delivery of ["later", 1, false]) {
+  for (const delivery of ["later", 1, false] as const) {
     assert.throws(
       () =>
         outgoingTranscript(
           [],
+          // @ts-expect-error The delivery field deliberately contains an unsupported string, number, or boolean.
           [{ ...receipt, body: { ...receipt.body, delivery } }],
         ),
       /Invalid delivery moment/,
@@ -183,10 +221,15 @@ it("normalizes legacy next-turn rows without rewriting their retry payload", () 
 });
 
 it("keeps explicit delivery modes queued until a message is dispatched", () => {
-  for (const delivery of ["after_tool", "steer", "current_turn"]) {
-    const local = { ...receipt, body: { ...receipt.body, delivery } };
-    for (const source of [[], [pending]]) {
-      const message = outgoingTranscript(source, [local]).items[0];
+  for (const delivery of ["after_tool", "steer", "current_turn"] as const) {
+    const local: OutgoingMessage = {
+      ...receipt,
+      body: { ...receipt.body, delivery },
+    };
+    for (const source of [[], [pending]] as const) {
+      const message = required(
+        outgoingTranscript([...source], [local]).items[0],
+      );
       assert.equal(message.requestedDelivery, "current_turn");
       assert.equal(
         local.body.delivery,
@@ -220,7 +263,12 @@ it("keeps explicit delivery modes queued until a message is dispatched", () => {
     dispatchedMessage({ ...pending, pending: false, materialized: true }),
     true,
   );
-  for (const deliveryStatus of ["reserved", "dispatching", "delivered", "sent"])
+  for (const deliveryStatus of [
+    "reserved",
+    "dispatching",
+    "delivered",
+    "sent",
+  ] as const)
     assert.equal(dispatchedMessage({ ...pending, deliveryStatus }), true);
   assert.equal(dispatchedMessage({ ...pending, materialized: true }), true);
   assert.equal(dispatchedMessage({ ...pending, pending: true }), false);
@@ -263,8 +311,12 @@ it("keeps explicit delivery modes queued until a message is dispatched", () => {
     false,
   );
   assert.equal(
-    outgoingTranscript([], [{ ...receipt, receipt: { status: "pending" } }])
-      .items[0].deliveryStatus,
+    required(
+      outgoingTranscript(
+        [],
+        [{ ...receipt, receipt: { id: "one", status: "pending" } }],
+      ).items[0],
+    ).deliveryStatus,
     "pending",
   );
 });
@@ -299,34 +351,53 @@ it("applies queue permutations and rejects duplicate or incomplete orders", () =
 
 it("uses stable render and receipt identities rather than message text", () => {
   assert.equal(
-    messageRenderKey({
-      id: "server-row",
-      role: "user",
-      clientMessageId: "send-1",
-    }),
+    messageRenderKey(
+      componentMessage({
+        id: "server-row",
+        role: "user",
+        clientMessageId: "send-1",
+      }),
+    ),
     "client:send-1",
   );
   assert.equal(
-    messageRenderKey({
-      id: "assistant-row",
-      role: "assistant",
-      clientMessageId: "send-1",
-    }),
+    messageRenderKey(
+      componentMessage({
+        id: "assistant-row",
+        role: "assistant",
+        clientMessageId: "send-1",
+      }),
+    ),
     "assistant-row",
   );
-  assert.equal(messageRenderKey({ id: "user-row", role: "user" }), "user-row");
+  assert.equal(
+    messageRenderKey(componentMessage({ id: "user-row", role: "user" })),
+    "user-row",
+  );
 
   assert.equal(
-    receiptMessage({ id: "server-row", clientMessageId: "one" }, receipt),
+    receiptMessage(
+      componentMessage({ id: "server-row", clientMessageId: "one" }),
+      receipt,
+    ),
     true,
   );
-  assert.equal(receiptMessage({ id: "one" }, receipt), true);
-  assert.equal(receiptMessage({ id: "lead:one" }, receipt), true);
-  assert.equal(receiptMessage({ id: "lead:one:0" }, receipt), true);
-  assert.equal(receiptMessage({ id: "lead:one:1" }, receipt), false);
+  assert.equal(receiptMessage(componentMessage({ id: "one" }), receipt), true);
+  assert.equal(
+    receiptMessage(componentMessage({ id: "lead:one" }), receipt),
+    true,
+  );
+  assert.equal(
+    receiptMessage(componentMessage({ id: "lead:one:0" }), receipt),
+    true,
+  );
+  assert.equal(
+    receiptMessage(componentMessage({ id: "lead:one:1" }), receipt),
+    false,
+  );
   assert.equal(
     receiptMessage(
-      { id: "other:one:0", clientMessageId: "different" },
+      componentMessage({ id: "other:one:0", clientMessageId: "different" }),
       receipt,
     ),
     false,
@@ -334,35 +405,39 @@ it("uses stable render and receipt identities rather than message text", () => {
 });
 
 it("updates a matching receipt without replacing existing transcript content", () => {
-  const durable = {
+  const durable: Message = {
     id: "lead:one",
     clientMessageId: "one",
     role: "user",
     text: "server text",
-    assets: [{ id: "server-asset" }],
+    assets: [componentAttachment({ id: "server-asset" })],
     pending: false,
     materialized: true,
     requestedDelivery: "next_turn",
     deliveryStatus: "sent",
   };
-  const entry = {
+  const entry: OutgoingMessage = {
     ...receipt,
     body: { ...receipt.body, delivery: "after_tool" },
-    attachments: [{ id: "outbox-asset" }],
+    attachments: [
+      componentAttachment(componentAttachment({ id: "outbox-asset" })),
+    ],
     status: "failed",
     error: "late receipt error",
   };
   const result = outgoingTranscript([durable], [entry]);
   assert.deepEqual(result.observed, ["one"]);
   assert.equal(result.items.length, 1);
-  assert.equal(result.items[0].text, "server text");
-  assert.deepEqual(result.items[0].assets, [{ id: "server-asset" }]);
-  assert.equal(result.items[0].requestedDelivery, "next_turn");
-  assert.equal(result.items[0].deliveryStatus, "sent");
-  assert.equal(result.items[0].deliveryError, undefined);
-  assert.equal(result.items[0], durable);
+  assert.equal(required(result.items[0]).text, "server text");
+  assert.deepEqual(required(result.items[0]).assets, [
+    componentAttachment({ id: "server-asset" }),
+  ]);
+  assert.equal(required(result.items[0]).requestedDelivery, "next_turn");
+  assert.equal(required(result.items[0]).deliveryStatus, "sent");
+  assert.equal(required(result.items[0]).deliveryError, undefined);
+  assert.equal(required(result.items[0]), durable);
 
-  const emptyDurable = {
+  const emptyDurable: Message = {
     ...durable,
     id: "lead:two",
     clientMessageId: "two",
@@ -370,14 +445,20 @@ it("updates a matching receipt without replacing existing transcript content", (
   };
   const noAttachmentChange = outgoingTranscript(
     [emptyDurable],
-    [{ ...receipt, id: "two", attachments: [{ id: "outbox-only" }] }],
+    [
+      {
+        ...receipt,
+        id: "two",
+        attachments: [componentAttachment({ id: "outbox-only" })],
+      },
+    ],
   );
-  assert.equal(noAttachmentChange.items[0].assets, undefined);
-  assert.equal(noAttachmentChange.items[0], emptyDurable);
+  assert.equal(required(noAttachmentChange.items[0]).assets, undefined);
+  assert.equal(required(noAttachmentChange.items[0]), emptyDurable);
 });
 
 it("restores attachments and requested delivery to a local transcript row", () => {
-  const materializing = {
+  const materializing: Message = {
     id: "lead:one",
     clientMessageId: "one",
     role: "user",
@@ -391,15 +472,17 @@ it("restores attachments and requested delivery to a local transcript row", () =
       {
         ...receipt,
         body: { ...receipt.body, delivery: "after_tool" },
-        attachments: [{ id: "asset-one" }],
+        attachments: [componentAttachment({ id: "asset-one" })],
       },
     ],
   );
-  assert.deepEqual(result.items[0].assets, [{ id: "asset-one" }]);
-  assert.equal(result.items[0].requestedDelivery, "current_turn");
+  assert.deepEqual(required(result.items[0]).assets, [
+    componentAttachment({ id: "asset-one" }),
+  ]);
+  assert.equal(required(result.items[0]).requestedDelivery, "current_turn");
   assert.deepEqual(result.observed, []);
 
-  const existingDelivery = {
+  const existingDelivery: Message = {
     ...materializing,
     requestedDelivery: "next_turn",
   };
@@ -407,13 +490,16 @@ it("restores attachments and requested delivery to a local transcript row", () =
     [existingDelivery],
     [{ ...receipt, body: { ...receipt.body, delivery: "after_tool" } }],
   );
-  assert.equal(unchangedDelivery.items[0].requestedDelivery, "next_turn");
-  assert.equal(unchangedDelivery.items[0], existingDelivery);
+  assert.equal(
+    required(unchangedDelivery.items[0]).requestedDelivery,
+    "next_turn",
+  );
+  assert.equal(required(unchangedDelivery.items[0]), existingDelivery);
 });
 
 it("shows failed and uncertain receipts until the transcript confirms their outcome", () => {
-  for (const status of ["failed", "uncertain"]) {
-    const present = {
+  for (const status of ["failed", "uncertain"] as const) {
+    const present: Message = {
       id: "lead:one",
       clientMessageId: "one",
       role: "user",
@@ -424,19 +510,19 @@ it("shows failed and uncertain receipts until the transcript confirms their outc
       [present],
       [{ ...receipt, status, error: `${status} detail` }],
     );
-    assert.equal(result.items[0].deliveryStatus, status);
-    assert.equal(result.items[0].deliveryError, `${status} detail`);
+    assert.equal(required(result.items[0]).deliveryStatus, status);
+    assert.equal(required(result.items[0]).deliveryError, `${status} detail`);
     assert.deepEqual(result.observed, []);
 
-    const alreadyLabeled = { ...present, deliveryStatus: "sending" };
+    const alreadyLabeled: Message = { ...present, deliveryStatus: "sending" };
     const preserved = outgoingTranscript(
       [alreadyLabeled],
       [{ ...receipt, status, error: "must not overwrite" }],
     );
-    assert.equal(preserved.items[0].deliveryStatus, "sending");
-    assert.equal(preserved.items[0].deliveryError, undefined);
+    assert.equal(required(preserved.items[0]).deliveryStatus, "sending");
+    assert.equal(required(preserved.items[0]).deliveryError, undefined);
 
-    const materializedWithoutLabel = {
+    const materializedWithoutLabel: Message = {
       ...present,
       pending: false,
       materialized: true,
@@ -447,22 +533,27 @@ it("shows failed and uncertain receipts until the transcript confirms their outc
       [{ ...receipt, status, error: `${status} detail` }],
     );
     assert.deepEqual(notYetObserved.observed, []);
-    assert.equal(notYetObserved.items[0].deliveryStatus, status);
+    assert.equal(required(notYetObserved.items[0]).deliveryStatus, status);
   }
 });
 
 it("creates local receipt rows with display content and accepted queue status", () => {
-  const missingReceipt = {
+  const missingReceipt: OutgoingMessage = {
     ...receipt,
-    status: "accepted",
     receipt: undefined,
-    displayText: "Edited draft",
     attachments: undefined,
+    status: "accepted",
+    displayText: "Edited draft",
     created: 1234,
     error: "receipt unavailable",
-    body: { room: "lead", text: "Original text", delivery: "after_turn" },
+    body: {
+      id: "one",
+      room: "lead",
+      text: "Original text",
+      delivery: "after_turn",
+    },
   };
-  const row = outgoingTranscript([], [missingReceipt]).items[0];
+  const row = required(outgoingTranscript([], [missingReceipt]).items[0]);
   assert.equal(row.id, "lead:one");
   assert.equal(row.clientMessageId, "one");
   assert.equal(row.role, "user");
@@ -475,60 +566,87 @@ it("creates local receipt rows with display content and accepted queue status", 
   assert.equal(row.localDelivery, true);
   assert.equal(row.requestedDelivery, "next_turn");
 
-  const queued = outgoingTranscript(
-    [],
-    [{ ...receipt, receipt: { status: "reserved" } }],
-  ).items[0];
+  const queued = required(
+    outgoingTranscript(
+      [],
+      [{ ...receipt, receipt: { id: "one", status: "reserved" } }],
+    ).items[0],
+  );
   assert.equal(queued.deliveryStatus, "accepted");
-  const waiting = outgoingTranscript(
-    [],
-    [{ ...receipt, receipt: { status: "pending" } }],
-  ).items[0];
+  const waiting = required(
+    outgoingTranscript(
+      [],
+      [{ ...receipt, receipt: { id: "one", status: "pending" } }],
+    ).items[0],
+  );
   assert.equal(waiting.deliveryStatus, "pending");
-  const missing = outgoingTranscript([], [{ ...receipt, receipt: undefined }])
-    .items[0];
+  const missing = required(
+    outgoingTranscript([], [{ ...receipt, receipt: undefined }]).items[0],
+  );
   assert.equal(missing.deliveryStatus, "accepted");
-  const nonAccepted = outgoingTranscript(
-    [],
-    [{ ...receipt, status: "queued", receipt: { status: "pending" } }],
-  ).items[0];
+  const nonAccepted = required(
+    outgoingTranscript(
+      [],
+      [
+        {
+          ...receipt,
+          status: "queued",
+          receipt: { id: "one", status: "pending" },
+        },
+      ],
+    ).items[0],
+  );
   assert.equal(nonAccepted.deliveryStatus, "queued");
 });
 
 it("labels every delivery state used by the chat and hides unknown states", () => {
-  const labels = {
-    sending: "Sending…",
-    reserved: "Starting…",
-    dispatching: "Sending…",
-    pending: "Queued",
-    queued: "Waiting to send",
-    paused: "Retries paused",
-    uncertain: "Delivery unconfirmed",
-    failed: "Not sent",
-    accepted: "Sent",
-    cancelled: "Cancelled",
-  };
-  for (const [status, label] of Object.entries(labels))
-    assert.equal(deliveryLabel({ deliveryStatus: status }), label);
+  const labels = [
+    ["sending", "Sending…"],
+    ["reserved", "Starting…"],
+    ["dispatching", "Sending…"],
+    ["pending", "Queued"],
+    ["queued", "Waiting to send"],
+    ["paused", "Retries paused"],
+    ["uncertain", "Delivery unconfirmed"],
+    ["failed", "Not sent"],
+    ["accepted", "Sent"],
+    ["cancelled", "Cancelled"],
+  ] satisfies [NonNullable<Message["deliveryStatus"]>, string][];
+  for (const [status, label] of labels)
+    assert.equal(
+      deliveryLabel(componentMessage({ deliveryStatus: status })),
+      label,
+    );
   assert.equal(
-    deliveryLabel({ deliveryStatus: "sending", pending: true }),
+    deliveryLabel(
+      componentMessage({ deliveryStatus: "sending", pending: true }),
+    ),
     "Waiting for agent",
   );
-  assert.equal(deliveryLabel({ pending: true }), "Queued");
-  assert.equal(deliveryLabel({}), "");
-  assert.equal(deliveryLabel({ deliveryStatus: "future-status" }), "");
+  assert.equal(deliveryLabel(componentMessage({ pending: true })), "Queued");
+  assert.equal(deliveryLabel(componentMessage({})), "");
+  assert.equal(
+    // @ts-expect-error An unknown deliveryStatus must not invent a visible label.
+    deliveryLabel(componentMessage({ deliveryStatus: "future-status" })),
+    "",
+  );
 });
 
 // The App merges the durable outbox with this tab's send copies. The chat then
 // renders local cards; OutboxControls shows retry actions for queued entries.
-const steer = {
+const steer: OutgoingMessage["body"] = {
   id: "steer",
   room: "lead",
   text: "Steer the turn",
   assets: [],
   delivery: "current_turn",
 };
-function localCards(outbox, local, observed = new Set(), history = []) {
+function localCards(
+  outbox: OutboxEntry[],
+  local: Record<string, OutgoingMessage>,
+  observed = new Set<string>(),
+  history: Message[] = [],
+) {
   const shown = mergeOutgoing(outbox, local, observed).filter(
     (entry) => entry.body.room === "lead",
   );
@@ -537,13 +655,13 @@ function localCards(outbox, local, observed = new Set(), history = []) {
     .map((item) => ({
       label: deliveryLabel(item),
       retryControls: ["queued", "paused"].includes(
-        shown.find((entry) => entry.id === item.clientMessageId)?.status,
+        shown.find((entry) => entry.id === item.clientMessageId)?.status ?? "",
       ),
     }));
 }
 
 it("hides a delivered message whose first send result was queued after a chat switch", () => {
-  const sending = {
+  const sending: OutgoingMessage = {
     id: "steer",
     body: steer,
     status: "sending",
@@ -556,8 +674,10 @@ it("hides a delivered message whose first send result was queued after a chat sw
   ]);
 
   // The first response is lost, so the send result stays queued for retry.
-  const local = { steer: { ...sending, status: "queued", error: "Timed out" } };
-  const stored = {
+  const local: Record<string, OutgoingMessage> = {
+    steer: { ...sending, status: "queued", error: "Timed out" },
+  };
+  const stored: OutboxEntry = {
     id: "steer",
     body: steer,
     status: "queued",
@@ -573,7 +693,7 @@ it("hides a delivered message whose first send result was queued after a chat sw
 
   // Another chat is open. The outbox retry delivers the message and receipt
   // recovery confirms the saved transcript input. No chat observes it.
-  const delivered = {
+  const delivered: OutboxEntry = {
     ...stored,
     status: "accepted",
     error: undefined,
@@ -586,7 +706,7 @@ it("hides a delivered message whose first send result was queued after a chat sw
 });
 
 it("lets the durable outbox state replace an in-flight send copy", () => {
-  const sending = {
+  const sending: OutgoingMessage = {
     id: "steer",
     body: steer,
     status: "sending",
@@ -594,7 +714,7 @@ it("lets the durable outbox state replace an in-flight send copy", () => {
     attachments: [],
     displayPending: true,
   };
-  const stored = {
+  const stored: OutboxEntry = {
     id: "steer",
     body: steer,
     status: "queued",
@@ -614,7 +734,7 @@ it("lets the durable outbox state replace an in-flight send copy", () => {
   );
   // A stored uncertain outcome stays uncertain while a repeat send of the same
   // identity is in flight. The outbox does not send it again.
-  for (const copy of ["sending", "queued", "accepted"])
+  for (const copy of ["sending", "queued", "accepted"] as const)
     assert.deepEqual(
       localCards(
         [{ ...stored, status: "uncertain", attempted: true, error: "Lost" }],
@@ -623,7 +743,7 @@ it("lets the durable outbox state replace an in-flight send copy", () => {
       [{ label: "Delivery unconfirmed", retryControls: false }],
     );
   // A confirmed outbox result is not shown again as an earlier send state.
-  for (const copy of ["sending", "queued"])
+  for (const copy of ["sending", "queued"] as const)
     assert.deepEqual(
       localCards(
         [

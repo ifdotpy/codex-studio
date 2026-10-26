@@ -8,6 +8,11 @@ const prefix = "studio-session-cost:";
 const maxEntries = 16;
 const maxStoredBytes = 64 * 1024;
 
+// These records are written by this cache; valid() still checks legacy cache eligibility.
+function readSessionCostEntry(raw: string): JsonInput {
+  return JSON.parse(raw) as JsonInput;
+}
+
 export const sessionCostScope = (stateDir: string, rootId: string) =>
   JSON.stringify([stateDir, rootId]);
 
@@ -47,7 +52,7 @@ export function createSessionCostCache(localStorage: Storage) {
     let entry = entries.get(scope);
     if (!entry) {
       try {
-        const saved = JSON.parse(
+        const saved = readSessionCostEntry(
           localStorage.getItem(prefix + scope) || "null",
         );
         if (valid(saved, scope)) entry = remember(saved);
@@ -102,7 +107,7 @@ export function createSessionCostCache(localStorage: Storage) {
         const raw = localStorage.getItem(candidate) || "";
         let at = 0;
         try {
-          at = Number(JSON.parse(raw).storedAt) || 0;
+          at = Number(jsonObject(readSessionCostEntry(raw))?.storedAt) || 0;
         } catch {
           /* Invalid cache records are evicted first. */
         }
