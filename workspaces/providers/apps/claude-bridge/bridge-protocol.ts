@@ -216,7 +216,7 @@ export type BridgeRepairReport = Omit<
   nativeHistoryConfirmed: boolean | null;
 };
 export interface BridgeState {
-  settings: Settings;
+  settings: NonNullable<Session["claude"]>;
   turns: (Pick<Turn, "id" | "status" | "error"> & {
     canRestoreFiles: boolean;
     restoreFilesUnavailableReason: string | null;
@@ -309,8 +309,8 @@ export interface BridgeMethods {
     },
   ];
   "claude/settings": [
-    BridgeThreadParams & { settings: Settings },
-    { settings: Settings },
+    BridgeThreadParams & { settings: NonNullable<Session["claude"]> },
+    { settings: NonNullable<Session["claude"]> },
   ];
   "thread/rollback": [
     BridgeThreadParams & {
