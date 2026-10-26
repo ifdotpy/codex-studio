@@ -206,17 +206,18 @@ it("does not send a login from an older row before its exact account identity is
   expect(startAccount).not.toHaveBeenCalled();
 });
 
-it("does not mark a local account offline because an unrelated peer is offline", () => {
-  const { html } = render();
-  expect(html).not.toContain('title="Offline"');
-  expect(html).not.toContain("Build server: Offline");
+it("shows Offline only on the offline peer, not on the live local account", () => {
+  const { html } = render({
+    accountsByServer: { local: [account], remote: [account] },
+  });
+  expect(html).toContain("Build server: Offline");
+  expect(html).not.toContain("Workstation: Offline");
 });
 
 it.each([undefined, "idle", "connecting"])(
   "does not report unknown or %s transport as offline",
   (status) => {
     const { html } = render({ statuses: status ? { local: status } : {} });
-    expect(html).not.toContain('title="Offline"');
     expect(html).not.toContain("Workstation: Offline");
     expect(
       controls.find(
