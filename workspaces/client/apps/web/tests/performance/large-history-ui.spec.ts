@@ -306,7 +306,7 @@ test("Large history @performance", async ({ context }) => {
     try {
       await firstToolSummary.waitFor({ state: "visible" });
     } catch (error) {
-      const state = await page.evaluate(
+      const diagnosticState = await page.evaluate(
         ({ id, stateDir, agentId }) => {
           const turn = document.querySelector(`[data-turn="turn-${id}"]`);
           const work = turn?.querySelector<HTMLDetailsElement>(".turn-work");
@@ -326,7 +326,7 @@ test("Large history @performance", async ({ context }) => {
         { id: turns - 1, stateDir: state.stateDir, agentId: lead.id },
       );
       throw Error(
-        `Newest tool did not render: ${JSON.stringify(state)}. ${error}`,
+        `Newest tool did not render: ${JSON.stringify(diagnosticState)}. ${error}`,
       );
     }
     await page
