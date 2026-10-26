@@ -47,16 +47,14 @@ import { accountDisplayName } from "../accountName";
 const Analytics = lazy(() => import("./Analytics"));
 
 import type { Account } from "./Accounts";
-export type UsageAccount = Pick<
-  Account,
-  "label" | "email" | "provider" | "plan" | "accountId"
-> & {
-  key: string;
-  signedOut?: boolean;
-  limits: UsageLimitSnapshot | null;
-  loading: boolean;
-  reload: (force?: boolean) => void | Promise<void>;
-};
+export type UsageAccount = Pick<Account, "label"> &
+  Partial<Pick<Account, "email" | "provider" | "plan" | "accountId">> & {
+    key: string;
+    signedOut?: boolean;
+    limits: UsageLimitSnapshot | null;
+    loading: boolean;
+    reload: (force?: boolean) => void | Promise<void>;
+  };
 
 const humanAccountLabel = (account?: UsageAccount) =>
   account?.email ||
@@ -226,7 +224,7 @@ export default function Usage({
     onChange?.(value);
   };
   const fallbackKey = agent.accountKey || "default";
-  const usageAccounts = accounts.length
+  const usageAccounts: UsageAccount[] = accounts.length
     ? accounts
     : [
         {
