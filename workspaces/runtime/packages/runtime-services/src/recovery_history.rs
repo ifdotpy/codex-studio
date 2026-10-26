@@ -48,6 +48,10 @@ pub enum HistoryError {
     Identity,
     #[error("invalid recovery history at {0}")]
     Invalid(&'static str),
+    #[error("invalid recovery history notification (failed check {check})")]
+    Notification {
+        check: crate::notification_dispatch::FailedCheck,
+    },
     #[error("recovery history unavailable")]
     Unavailable,
 }
@@ -58,8 +62,20 @@ pub struct HistoryReceipt {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExactStart {
     Delivered(Value),
-    NotApplied,
+    NotApplied(NotAppliedStart),
     Missing,
+}
+/// Only an exact, identity-checked native negative receipt can construct this proof.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotAppliedStart {
+    scope: ConnectionScope,
+    thread: String,
+    message: String,
+}
+impl NotAppliedStart {
+    pub(crate) fn matches(&self, scope: &ConnectionScope, thread: &Value, message: &Value) -> bool {
+        self.scope == *scope && thread == &self.thread && message == &self.message
+    }
 }
 pub trait RecoveryReader: Send {
     /// Return cached worker state and the injected clock; must perform no I/O or waiting.
@@ -398,6 +414,11 @@ impl<'a> HistoryRead<'a> {
                         })
                     });
                 if matches {
+                    nonempty(&turn["id"])?;
+                    if turn.get("threadId").is_some_and(|v| v != thread) || page_match {
+                        return Err(HistoryError::Identity);
+                    }
+                    page_match = true;
                     if turn["startOutcome"] == "preparing"
                         || turn["items"].as_array().is_some_and(|items| {
                             items.iter().any(|item| {
@@ -416,15 +437,11 @@ impl<'a> HistoryRead<'a> {
                         not_applied = true;
                         continue;
                     }
-                    nonempty(&turn["id"])?;
-                    if turn.get("threadId").is_some_and(|v| v != thread) || page_match {
+                    let turn = checked_full(turn, thread, nonempty(&turn["id"])?)?;
+                    if not_applied || found.as_ref().is_some_and(|previous| previous != &turn) {
                         return Err(HistoryError::Identity);
                     }
-                    page_match = true;
-                    if not_applied || found.as_ref().is_some_and(|previous| previous != turn) {
-                        return Err(HistoryError::Identity);
-                    }
-                    found = Some(turn.clone());
+                    found = Some(turn);
                 }
             }
             cursor = next_cursor(&page, &mut seen)?;
@@ -432,7 +449,11 @@ impl<'a> HistoryRead<'a> {
                 return Ok(found.map_or_else(
                     || {
                         if not_applied {
-                            ExactStart::NotApplied
+                            ExactStart::NotApplied(NotAppliedStart {
+                                scope: self.scope.clone(),
+                                thread: thread.into(),
+                                message: message.into(),
+                            })
                         } else {
                             ExactStart::Missing
                         }

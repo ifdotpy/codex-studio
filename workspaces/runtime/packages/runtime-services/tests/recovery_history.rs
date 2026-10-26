@@ -393,6 +393,53 @@ async fn exact_start_requires_unique_complete_client_receipt() {
 }
 
 #[tokio::test]
+async fn exact_start_refuses_malformed_delivered_items() {
+    for items in [Value::Null, json!([{"id":null,"type":"agentMessage"}])] {
+        let mut reader = Reader {
+            replies: [Ok(page(
+                json!({"id":"turn","threadId":"thread","clientUserMessageId":"event",
+                "status":"completed","items":items}),
+            ))]
+            .into(),
+            ..Default::default()
+        };
+        assert!(
+            HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+                .exact_start_outcome("thread", "event")
+                .await
+                .is_err(),
+            "{items}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn exact_start_rejects_invalid_negative_receipt_identity() {
+    for mutation in [
+        json!({"threadId":"foreign"}),
+        json!({"id":null}),
+        json!({"id":""}),
+    ] {
+        let mut turn = json!({"id":"rejected","threadId":"thread","items":[],
+            "clientUserMessageId":"event","startOutcome":"not_applied"});
+        for (key, value) in mutation.as_object().expect("mutation") {
+            turn[key] = value.clone();
+        }
+        let mut reader = Reader {
+            replies: vec![Ok(page(turn))].into(),
+            ..Default::default()
+        };
+        assert!(
+            HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+                .exact_start_outcome("thread", "event")
+                .await
+                .is_err(),
+            "{mutation}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof() {
     let mut reader = Reader {
         replies: vec![Ok(json!({"data":[{
@@ -406,13 +453,13 @@ async fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proo
         .into(),
         ..Default::default()
     };
-    assert_eq!(
+    assert!(matches!(
         HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
             .exact_start_outcome("thread", "event")
             .await
             .expect("explicit negative receipt"),
-        studio_runtime_services::recovery_history::ExactStart::NotApplied
-    );
+        studio_runtime_services::recovery_history::ExactStart::NotApplied(_)
+    ));
     let mut unavailable = Reader {
         replies: vec![Err(HistoryError::Unavailable)].into(),
         ..Default::default()

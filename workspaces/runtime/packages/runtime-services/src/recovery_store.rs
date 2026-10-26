@@ -92,7 +92,7 @@ impl RecoveryEffects for RecoveryStore {
                     observation,
                     complete_history,
                     idle_twice,
-                    confirmed_not_applied,
+                    not_applied,
                 } => {
                     use crate::recovery_absence::{StartAbsenceDecision, start_absence};
                     if !expected.eligibility().unconfirmed_start {
@@ -107,12 +107,15 @@ impl RecoveryEffects for RecoveryStore {
                     {
                         return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
                     }
-                    let decision = if *confirmed_not_applied {
+                    let attempt = expected.start_attempt();
+                    if not_applied.as_ref().is_some_and(|proof| !proof.matches(&scope, &a["threadId"], &attempt["events"][0])) {
+                        return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
+                    }
+                    let decision = if not_applied.is_some() {
                         StartAbsenceDecision::Restore
                     } else {
                         start_absence(&expected, &current, *complete_history, *idle_twice)
                     };
-                    let attempt = expected.start_attempt();
                     match decision {
                         StartAbsenceDecision::Restore => {
                             let mut rows = Vec::new();
@@ -143,7 +146,7 @@ impl RecoveryEffects for RecoveryStore {
                                 row.error = None;
                                 QueueEventRepository::put(tx, &row)?;
                             }
-                            if *confirmed_not_applied {
+                            if not_applied.is_some() {
                                 let object =
                                     updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
                                 object.remove("startAttempt");
@@ -626,8 +629,9 @@ impl CompletionWriter for LifecycleCompletionWriter {
                             )?;
                         if previous.as_ref().is_some_and(|(stored, _)| {
                             stored["streaming"] != true
-                                && stored["text"].as_str()
-                                    == Some(item["text"].as_str().unwrap_or_default())
+                                && item["text"]
+                                    .as_str()
+                                    .is_some_and(|body| stored["text"].as_str() == Some(body))
                         }) {
                             continue;
                         }
@@ -640,15 +644,8 @@ impl CompletionWriter for LifecycleCompletionWriter {
                             item,
                             self.at,
                         )
-                        .map_err(|error| match error {
-                            crate::notification_dispatch::NotificationDispatchError::Store(
-                                error,
-                            ) => RecoveryError::Store(error),
-                            crate::notification_dispatch::NotificationDispatchError::Dependency(
-                                name,
-                            ) => RecoveryError::Dependency(name),
-                            crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. } | crate::notification_dispatch::NotificationDispatchError::InvalidAccountState { .. } | crate::notification_dispatch::NotificationDispatchError::StreamCapacity | crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject { .. } | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery | crate::notification_dispatch::NotificationDispatchError::ConflictingInput | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission | crate::notification_dispatch::NotificationDispatchError::Budget(_) | crate::notification_dispatch::NotificationDispatchError::Move(_) | crate::notification_dispatch::NotificationDispatchError::Json(_) => RecoveryError::CommitFailed,
-                        })? {
+                        .map_err(RecoveryError::from)?
+                        {
                             stream_update = Some(update);
                         }
                     }
@@ -987,7 +984,9 @@ fn restore_text(
             continue;
         }
         let id = format!("{agent_id}:{}", text(item, "id")?);
-        let body = item.get("text").and_then(Value::as_str).unwrap_or("");
+        let body = crate::notification_dispatch::recovered_message_text(item)
+            .map_err(RecoveryError::from)?
+            .unwrap_or_default();
         let previous = N::transcript_item(tx, &agent_id, &id)?;
         let created = previous.as_ref().map_or(at, |(_, created)| *created);
         let mut record = json!({"id":id,"role":"assistant","title":"Assistant","at":at});

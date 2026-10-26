@@ -148,6 +148,8 @@ impl std::fmt::Display for PreparationBlock {
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
     #[error(transparent)]
+    Recovery(#[from] crate::recovery::RecoveryError),
+    #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
     Scheduler(#[from] scheduler::SchedulerError),
@@ -188,6 +190,7 @@ fn vm_credential_maintenance_error(error: &WorkerError) -> Option<&'static str> 
         }
         WorkerError::PreparationRefused(_) => Some("stale-or-unavailable"),
         WorkerError::Store(_)
+        | WorkerError::Recovery(_)
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)
         | WorkerError::Notification(_)
@@ -525,7 +528,7 @@ pub enum AccountCommand {
         thread_id: String,
         turn_id: String,
     },
-    RestartRecoveryDone,
+    RestartRecoveryDone(Result<(), crate::recovery::RecoveryError>),
     RestartStreams(Box<NotificationStreamBuffer>),
 }
 
@@ -1675,8 +1678,9 @@ impl Worker {
                 thread_id,
                 turn_id,
             } => self.interrupt(agent_id, thread_id, turn_id).await?,
-            AccountCommand::RestartRecoveryDone => {
+            AccountCommand::RestartRecoveryDone(result) => {
                 self.restart_recovery.take();
+                result?;
                 self.schedule_publication_drain()?;
                 #[cfg(test)]
                 {
@@ -4712,6 +4716,14 @@ fn invalid_agent_record_error(error: &WorkerError) -> bool {
 }
 fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str)> {
     match error {
+        WorkerError::Recovery(crate::recovery::RecoveryError::Store(
+            StoreError::InvalidSyncObjectField {
+                scope,
+                id,
+                pointer,
+                reason,
+            },
+        )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
         WorkerError::Store(StoreError::InvalidSyncObjectField {
             scope,
             id,
@@ -4726,7 +4738,8 @@ fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str
                 reason,
             },
         )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
-        WorkerError::Store(_)
+        WorkerError::Recovery(_)
+        | WorkerError::Store(_)
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)
         | WorkerError::Notification(_)

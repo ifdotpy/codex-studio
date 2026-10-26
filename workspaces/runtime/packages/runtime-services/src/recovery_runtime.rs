@@ -140,7 +140,7 @@ pub enum RecoveryJob {
     Task(TaskRecoverySnapshot),
 }
 impl RecoveryJob {
-    fn agent(&self) -> &RecoverySnapshot {
+    pub(crate) fn agent(&self) -> &RecoverySnapshot {
         match self {
             Self::Turn(s) | Self::Connection { snapshot: s, .. } => s,
             Self::Task(t) => t.agent(),

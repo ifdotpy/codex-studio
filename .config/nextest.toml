@@ -71,6 +71,9 @@ inherits = "ci"
 # Typed usage legacy compatibility, budget replay, gap, reset and dispatch witnesses.
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-store) & kind(lib) & test(malformed_start_submission_never_releases_input_or_changes_history)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(/account_worker::tests::retained::startup_first_pass_(refuses_|isolates_|reports_fatal_|continues_)/) | test(account_worker::tests::retained::connection_completion_))) |
+    (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |
     (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner))) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
     (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity) | test(provider_errors::) | test(provider_lifecycle::) | test(provider_parity_rejects_each_native_discriminator_and_sql_drift))) |
@@ -199,6 +202,9 @@ platform = 'cfg(target_os = "linux")'
 # Typed accounting mappings, strict ingress and native SDK schema parity.
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-store) & kind(lib) & test(malformed_start_submission_never_releases_input_or_changes_history)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(/account_worker::tests::retained::startup_first_pass_(refuses_|isolates_|reports_fatal_|continues_)/) | test(account_worker::tests::retained::connection_completion_))) |
+    (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |
     (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner))) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
     (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity) | test(provider_errors::) | test(provider_lifecycle::) | test(provider_parity_rejects_each_native_discriminator_and_sql_drift))) |

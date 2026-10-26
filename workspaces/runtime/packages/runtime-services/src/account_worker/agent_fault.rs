@@ -103,6 +103,7 @@ pub(super) enum HoldResult {
 pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
     let named = match error {
         WorkerError::Store(error)
+        | WorkerError::Recovery(crate::recovery::RecoveryError::Store(error))
         | WorkerError::Scheduler(scheduler::SchedulerError::Store(error))
         | WorkerError::Notification(
             crate::notification_dispatch::NotificationDispatchError::Store(error),
@@ -135,7 +136,8 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
                 id,
             },
         ) => (table.clone(), id.clone()),
-        WorkerError::Scheduler(_)
+        WorkerError::Recovery(_)
+        | WorkerError::Scheduler(_)
         | WorkerError::Session(_)
         | WorkerError::Notification(_)
         | WorkerError::PreparationRefused(_)

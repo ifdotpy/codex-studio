@@ -1273,7 +1273,7 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let decision = start_error_decision(&agent, epoch, false, StartReach::Provider);
+        let decision = start_error_decision(&agent, epoch, false, StartReach::Provider)?;
         if decision.return_busy_input {
             return Err(ExecutionHistoryRepository::invalid(
                 "runtime_execution_attempts",
@@ -1842,9 +1842,9 @@ pub(super) fn start_error_decision(
     epoch: i64,
     unknown: bool,
     reach: StartReach,
-) -> StartErrorDecision {
+) -> StoreResult<StartErrorDecision> {
     let attempt = &agent.extra.get("startAttempt").unwrap_or(&Value::Null);
-    let submitted = attempt["submitted"] == true;
+    let submitted = ValidatedAttempt::submission(agent)? == StartSubmission::Submitted;
     let busy = attempt["activeAtReservation"] == true;
     let current = agent.epoch == epoch;
     let visible = (current && agent.extra.get("autoWake").is_some_and(truthy)).then_some(if busy {
@@ -1854,7 +1854,7 @@ pub(super) fn start_error_decision(
     } else {
         AgentStatus::Failed
     });
-    StartErrorDecision {
+    Ok(StartErrorDecision {
         event_status: if unknown {
             if submitted { "uncertain" } else { "reserved" }
         } else if !current {
@@ -1879,7 +1879,7 @@ pub(super) fn start_error_decision(
             && busy
             && current
             && agent.extra.get("autoWake").is_some_and(truthy),
-    }
+    })
 }
 /// The provider states that the disk was full and it never handed this input to
 /// the model (the Claude bridge could not write its pre-input receipt).
@@ -1994,7 +1994,7 @@ pub(super) fn apply_start_error(
     }
     let events = validated_events(tx, &agent, attempt)?;
     let count = attempt["events"].as_array().map_or(0, Vec::len);
-    let decision = start_error_decision(&agent, identity.epoch, unknown, reach);
+    let decision = start_error_decision(&agent, identity.epoch, unknown, reach)?;
     if decision.return_busy_input {
         ExecutionHistoryRepository::reject_attempt(tx, &identity.attempt_id, message)?;
         tx.execute_cached("UPDATE runtime_events SET status='pending',turn_id=NULL,error=CASE WHEN EXISTS(SELECT 1 FROM runtime_event_meta m WHERE m.id=runtime_events.id AND json_extract(m.record,'$.sendNow')=1) THEN ?1 ELSE NULL END WHERE agent=?2 AND epoch=?3 AND id IN(SELECT value FROM json_each(?4)) AND status IN ('reserved','dispatching','uncertain')",
@@ -2717,10 +2717,29 @@ pub(super) fn attempt_authority(agent: &AgentRecord, epoch: i64) -> AttemptAutho
         AttemptAuthority::Inactive
     }
 }
-pub(super) struct ValidatedAttempt {
+pub(crate) struct ValidatedAttempt {
     agent: AgentRecord,
     event_ids: (String, usize),
     authority: AttemptAuthority,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartSubmission {
+    Submitted,
+    Unsubmitted,
+}
+impl ValidatedAttempt {
+    /// The persisted boolean is proof; missing or malformed evidence is never unsent.
+    pub(crate) fn submission(agent: &AgentRecord) -> StoreResult<StartSubmission> {
+        match agent
+            .extra
+            .get("startAttempt")
+            .and_then(|attempt| attempt["submitted"].as_bool())
+        {
+            Some(true) => Ok(StartSubmission::Submitted),
+            Some(false) => Ok(StartSubmission::Unsubmitted),
+            None => Err(invalid_agent(&agent.id.0)),
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AcceptanceDecision {
@@ -2782,7 +2801,7 @@ pub(super) fn load_attempt(
     };
     if attempt["id"] != attempt_id
         || attempt["epoch"] != epoch
-        || attempt["submitted"] != true
+        || ValidatedAttempt::submission(&agent)? != StartSubmission::Submitted
         || attempt["accountKey"]
             != agent
                 .extra

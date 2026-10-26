@@ -24,7 +24,7 @@ pub enum RecoveryAction {
         observation: crate::recovery_absence::RecoveryObservation,
         complete_history: bool,
         idle_twice: bool,
-        confirmed_not_applied: bool,
+        not_applied: Option<crate::recovery_history::NotAppliedStart>,
     },
     AcceptStart {
         turn: Value,
@@ -85,6 +85,56 @@ pub enum RecoveryError {
     #[error("Not implemented: requires {0}")]
     Dependency(&'static str),
 }
+impl From<crate::notification_dispatch::NotificationDispatchError> for RecoveryError {
+    fn from(error: crate::notification_dispatch::NotificationDispatchError) -> Self {
+        use crate::notification_dispatch::NotificationDispatchError;
+        match error {
+            NotificationDispatchError::Store(error) => Self::Store(error),
+            NotificationDispatchError::InvalidNotification { check } => {
+                Self::History(HistoryError::Notification { check })
+            }
+            NotificationDispatchError::InvalidStoredObject { table, id } => {
+                Self::Store(studio_runtime_store::StoreError::InvalidSyncObject {
+                    scope: table,
+                    id,
+                })
+            }
+            NotificationDispatchError::Dependency(name) => Self::Dependency(name),
+            NotificationDispatchError::InvalidAccountState { .. }
+            | NotificationDispatchError::StreamCapacity
+            | NotificationDispatchError::ConflictingDelivery
+            | NotificationDispatchError::ConflictingInput
+            | NotificationDispatchError::UnauthorizedSubmission
+            | NotificationDispatchError::Budget(_)
+            | NotificationDispatchError::Move(_)
+            | NotificationDispatchError::Json(_) => Self::CommitFailed,
+        }
+    }
+}
+/// A located refusal leaves its row uncertain; failures of the store stop the pass.
+pub(crate) enum RecoveryFailure {
+    Refused,
+    Fatal(RecoveryError),
+}
+impl RecoveryError {
+    pub(crate) fn classify(self) -> RecoveryFailure {
+        use studio_runtime_store::StoreError;
+        match self {
+            Self::History(_)
+            | Self::Record(_)
+            | Self::Dependency(_)
+            | Self::Store(
+                StoreError::InvalidStoredObject { .. }
+                | StoreError::InvalidStoredRecord { .. }
+                | StoreError::InvalidSyncObject { .. }
+                | StoreError::InvalidSyncObjectField { .. },
+            ) => RecoveryFailure::Refused,
+            Self::Store(_) | Self::EffectsUnavailable | Self::CommitFailed => {
+                RecoveryFailure::Fatal(self)
+            }
+        }
+    }
+}
 /// Integrator supplies the existing lifecycle and transcript writers here.
 /// `apply` must re-read expected agent scope, event statuses and operation
 /// receipts in the same transaction as its writes. It must reject stale
@@ -135,7 +185,7 @@ pub async fn recover_turn(
                         observation,
                         complete_history: false,
                         idle_twice: false,
-                        confirmed_not_applied: false,
+                        not_applied: None,
                     },
                 )
                 .await;
@@ -164,7 +214,7 @@ pub async fn recover_turn(
                     .apply(snapshot, &scope, RecoveryAction::AcceptStart { turn })
                     .await;
             }
-            Ok(crate::recovery_history::ExactStart::NotApplied) => {
+            Ok(crate::recovery_history::ExactStart::NotApplied(proof)) => {
                 let state = read.thread_document(thread).await?;
                 if !ThreadLifecycle::observe(&state)
                     .and_then(|observation| observation.activity)
@@ -183,10 +233,17 @@ pub async fn recover_turn(
                             observation,
                             complete_history: true,
                             idle_twice: true,
-                            confirmed_not_applied: true,
+                            not_applied: Some(proof),
                         },
                     )
                     .await;
+            }
+            Err(
+                error @ (HistoryError::Invalid(_)
+                | HistoryError::Identity
+                | HistoryError::Notification { .. }),
+            ) => {
+                return Err(error.into());
             }
             history => {
                 let complete_history =
@@ -217,7 +274,7 @@ pub async fn recover_turn(
                             observation,
                             complete_history,
                             idle_twice,
-                            confirmed_not_applied: false,
+                            not_applied: None,
                         },
                     )
                     .await;

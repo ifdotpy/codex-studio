@@ -682,7 +682,7 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
                     observation: observation.clone(),
                     complete_history: true,
                     idle_twice: true,
-                    confirmed_not_applied: false,
+                    not_applied: None,
                 },
             )
             .await;
@@ -746,6 +746,28 @@ async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
             let current: Arc<ObservationSource> =
                 Arc::new(move |_: &ConnectionScope| Some(current_observation.clone()));
             let writer = HoldWriter::default();
+            let mut reader = StartReader {
+                replies: [json!({"data":[{"id":"rejected","threadId":before.record()["threadId"],
+                    "clientUserMessageId":before.start_attempt()["events"][0],"startOutcome":"not_applied","items":[]}]})].into(),
+                observation: observation.clone(), state: json!({"type":"idle"}),
+            };
+            let crate_proof = studio_runtime_services::recovery_history::HistoryRead::new(
+                &mut reader,
+                observation.scope.clone(),
+                std::time::Instant::now()
+                    + studio_runtime_services::recovery_history::READ_DEADLINE,
+            )
+            .exact_start_outcome(
+                before.record()["threadId"].as_str().expect("thread"),
+                before.start_attempt()["events"][0].as_str().expect("event"),
+            )
+            .await
+            .expect("negative receipt");
+            let studio_runtime_services::recovery_history::ExactStart::NotApplied(proof) =
+                crate_proof
+            else {
+                panic!("negative proof");
+            };
             let result = RecoveryStore {
                 store: Arc::clone(&store),
                 connection_current: Arc::new(|_| true),
@@ -760,7 +782,7 @@ async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
                     observation: observation.clone(),
                     complete_history: true,
                     idle_twice: true,
-                    confirmed_not_applied: true,
+                    not_applied: Some(proof),
                 },
             )
             .await;

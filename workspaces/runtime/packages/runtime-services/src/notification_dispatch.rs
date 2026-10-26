@@ -1075,10 +1075,10 @@ impl NotificationStreamBuffer {
                 || item["type"] != "agentMessage"
                 || turn["id"].as_str().is_none_or(str::is_empty)
                 || agent["turnId"] != turn["id"]
-                || item.get("text").is_some_and(|text| !text.is_string())
             {
                 return Err(NotificationDispatchError::invalid());
             }
+            let body = recovered_message_text(item)?;
             let params = json!({"threadId":agent["threadId"],"turnId":turn["id"],"item":item});
             validate_agent(
                 agent,
@@ -1098,10 +1098,7 @@ impl NotificationStreamBuffer {
                     params: &params,
                     item_id,
                     observed_at: at,
-                    update: TextUpdate::Completed(
-                        item.get("text").and_then(Value::as_str),
-                        item.get("phase"),
-                    ),
+                    update: TextUpdate::Completed(body, item.get("phase")),
                 },
             )?;
             if has_questions(item.get("questions")) {
@@ -1113,6 +1110,15 @@ impl NotificationStreamBuffer {
         *agent = staged_agent;
         Ok((next != *self).then_some(next))
     }
+}
+
+/// Checked recovery message body; absent text retains the provider's optional-body semantics.
+pub(crate) fn recovered_message_text(
+    item: &Value,
+) -> Result<Option<&str>, NotificationDispatchError> {
+    item.get("text")
+        .map(|text| text.as_str().ok_or(NotificationDispatchError::invalid()))
+        .transpose()
 }
 
 fn command_key(

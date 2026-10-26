@@ -416,7 +416,8 @@ fn worker_error(error: WorkerError) -> NativeError {
         WorkerError::PreparationPending(_) | WorkerError::PreparationAwaitsAgent(_) => {
             NativeError::Unavailable("native-review/preparation")
         }
-        WorkerError::Store(_)
+        WorkerError::Recovery(_)
+        | WorkerError::Store(_)
         | WorkerError::Scheduler(_)
         | WorkerError::Session(_)
         | WorkerError::Notification(_)

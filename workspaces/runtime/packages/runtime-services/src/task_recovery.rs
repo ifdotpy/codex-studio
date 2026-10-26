@@ -37,8 +37,9 @@ impl TaskRecoverySnapshot {
         aliases: Vec<String>,
         receipts: Vec<(String, Value)>,
     ) -> Result<Self, InvalidRecoveryRecord> {
-        let located = |table: &str, id: &str| InvalidRecoveryRecord {
-            location: format!("{table}.{id}"),
+        let located = |table: &'static str, id: &str| InvalidRecoveryRecord::Stored {
+            table,
+            id: id.into(),
         };
         let agent = RecoverySnapshot::from_record(agent)
             .map_err(|_| located("runtime_agents", agent_id))?;

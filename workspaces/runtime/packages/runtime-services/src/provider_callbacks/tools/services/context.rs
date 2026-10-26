@@ -53,7 +53,11 @@ fn resources(preparation: Option<&PreparationResources>) -> Result<&PreparationR
 
 fn worker_error(error: WorkerError) -> Error {
     match error {
-        WorkerError::Store(error) => Error::Store(error),
+        WorkerError::Store(error)
+        | WorkerError::Recovery(crate::recovery::RecoveryError::Store(error)) => {
+            Error::Store(error)
+        }
+        WorkerError::Recovery(_) => Error::Invalid("Studio context is unavailable for this agent"),
         WorkerError::Scheduler(_)
         | WorkerError::Session(_)
         | WorkerError::Notification(_)
