@@ -4,18 +4,6 @@ export function fixtureServerOrigin(server: ViteDevServer): string {
   return server.resolvedUrls!.local[0];
 }
 
-export async function until(
-  check: () => boolean | Promise<boolean>,
-  message: string,
-  timeoutMs = 15_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await check())) {
-    if (Date.now() > deadline) throw new Error(message);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
 import type { Request } from "@playwright/test";
 import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
 
