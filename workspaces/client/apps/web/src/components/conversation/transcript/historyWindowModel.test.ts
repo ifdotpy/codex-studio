@@ -1,3 +1,5 @@
+import type { Message } from "../../../types";
+import { required } from "../../componentTestFixtures";
 import { describe, expect, it } from "vitest";
 import {
   historyWindowIndices,
@@ -17,7 +19,7 @@ describe("history windows", () => {
     expect(windowHistoryRows(rows)).toBe(rows);
   });
   it("bounds one large turn and retains each message and final failure once", () => {
-    const items = Array.from({ length: 1001 }, (_, index) => ({
+    const items: Message[] = Array.from({ length: 1001 }, (_, index) => ({
       id: `m${index}`,
       role: "assistant",
       text: "Answer",
@@ -27,7 +29,7 @@ describe("history windows", () => {
       id: "m0",
       items,
       outcome: "failed",
-      result: items.at(-1),
+      result: required(items.at(-1)),
     };
     const rows = windowHistoryRows([group]);
     expect(rows.every((row) => row.items.length <= HISTORY_ROW_ITEMS)).toBe(
@@ -40,7 +42,7 @@ describe("history windows", () => {
     expect(rows.filter((row) => row.result)).toEqual([rows.at(-1)]);
   });
   it("retains prior boundaries when the same turn prepends, appends and removes items", () => {
-    const items = Array.from({ length: 3000 }, (_, index) => ({
+    const items: Message[] = Array.from({ length: 3000 }, (_, index) => ({
       id: `m${index}`,
       role: "tool",
       text: "Saved output",
@@ -50,11 +52,11 @@ describe("history windows", () => {
       id: "m0",
       items,
       outcome: "failed",
-      result: items.at(-1),
+      result: required(items.at(-1)),
     };
     const initial = windowHistoryRows([group]);
     const prefix = Array.from({ length: 50 }, (_, index) => ({
-      ...items[0],
+      ...required(items[0]),
       id: `prefix${index}`,
     }));
     const prepended = windowHistoryRows(
@@ -70,7 +72,7 @@ describe("history windows", () => {
       ...items,
     ]);
     const suffix = Array.from({ length: 50 }, (_, index) => ({
-      ...items[0],
+      ...required(items[0]),
       id: `suffix${index}`,
     }));
     const appended = windowHistoryRows(
@@ -78,7 +80,7 @@ describe("history windows", () => {
         {
           ...group,
           items: [...prefix, ...items, ...suffix],
-          result: suffix.at(-1),
+          result: required(suffix.at(-1)),
         },
       ],
       prepended,
@@ -93,14 +95,16 @@ describe("history windows", () => {
     ]);
     expect(appended.filter((row) => row.result)).toEqual([appended.at(-1)]);
     const removed = items.filter(
-      (item) => item.id !== "m0" && !initial[1].items.includes(item),
+      (item) => item.id !== "m0" && !required(initial[1]).items.includes(item),
     );
     const pruned = windowHistoryRows(
-      [{ ...group, id: removed[0].id, items: removed }],
+      [{ ...group, id: required(removed[0]).id, items: removed }],
       initial,
     );
-    expect(pruned[0].id).toBe("m0");
-    expect(pruned.some((row) => row.id === initial[1].id)).toBe(false);
+    expect(required(pruned[0]).id).toBe("m0");
+    expect(pruned.some((row) => row.id === required(initial[1]).id)).toBe(
+      false,
+    );
     expect(pruned.flatMap((row) => row.items)).toEqual(removed);
   });
   it("keeps the viewport range bounded, including zero-height rows", () => {
@@ -124,7 +128,7 @@ describe("history windows", () => {
         items: [{ id: `m${index}`, text: "Answer", role: "assistant" }],
       }),
     );
-    const page = Array.from({ length: 20 }, (_, index) => ({
+    const page: HistoryGroup[] = Array.from({ length: 20 }, (_, index) => ({
       id: `m${100 + index}`,
       items: [
         { id: `m${100 + index}`, text: "Later answer", role: "assistant" },

@@ -11,20 +11,19 @@ import {
 } from "../generated/sharedValues";
 import type { Agent } from "../types";
 
-const interrupted = (error: string, turnId: string | null) =>
-  ({
-    id: "agent-1",
-    source: "managed",
-    status: "interrupted",
-    inFlight: false,
-    autoWake: false,
-    startAttempt: null,
-    threadId: "thread-1",
-    turnId,
-    epoch: 4,
-    accountKey: "default",
-    error,
-  }) as unknown as Agent;
+const interrupted = (error: string, turnId: string | null): Agent => ({
+  id: "agent-1",
+  source: "managed",
+  status: "interrupted",
+  inFlight: false,
+  autoWake: false,
+  startAttempt: null,
+  threadId: "thread-1",
+  turnId,
+  epoch: 4,
+  accountKey: "default",
+  error,
+});
 
 test("a VM provider disconnect offers Check connection", () => {
   expect(
@@ -53,7 +52,7 @@ test.each([null, "turn-1"])(
       turnId,
       previousError: LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
       nativeState: "idle",
-    } as Agent["connectionCheck"];
+    };
     expect(matchingConnectionCheck(agent)).toBeTruthy();
   },
 );
@@ -86,6 +85,6 @@ test("a saved check without a turn ID matches the agent without a turn ID", () =
       previousError: VM_PROVIDER_DISCONNECTED_TURN_ERROR,
       nativeState: "idle",
     },
-  } as unknown as Agent;
+  } satisfies Agent;
   expect(matchingConnectionCheck(agent)).toBeTruthy();
 });

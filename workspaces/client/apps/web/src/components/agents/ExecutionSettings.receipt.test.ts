@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import {
   createElement,
   isValidElement,
@@ -25,10 +26,12 @@ vi.mock("react", async (load) => ({
       value: typeof initial === "function" ? initial() : initial,
     };
     return [
-      cells[index].value,
+      required(cells[index]).value,
       (value: unknown) => {
-        cells[index].value =
-          typeof value === "function" ? value(cells[index].value) : value;
+        required(cells[index]).value =
+          typeof value === "function"
+            ? value(required(cells[index]).value)
+            : value;
       },
     ];
   },
@@ -42,7 +45,7 @@ vi.mock("react", async (load) => ({
     const previous = cells[index];
     if (!previous || deps.some((value, i) => value !== previous.deps[i]))
       cells[index] = { deps, value: compute() };
-    return cells[index].value;
+    return required(cells[index]).value;
   },
   useEffect: (effect: () => unknown, deps: unknown[]) => {
     const cells = h.cells.get(h.scope)!;
@@ -213,7 +216,9 @@ test("queued settings and account changes keep their canonical scope", async () 
   h.post.mockResolvedValue(queued);
   render(active).picker.onModel("gpt-6-luna");
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
-  expect(h.post.mock.calls[0][1]).toMatchObject({ next_turn: true });
+  expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+    next_turn: true,
+  });
   expect(render(active).model).toBe("Luna 6");
   expect(render(queued).label).toContain("Lead Luna 6 High");
   expect(render({ ...initial, accountKey: "other" }).model).toBe("Astra 6");
@@ -348,9 +353,9 @@ test("an older same-domain request cannot replace the latest acknowledgment", as
   render().picker.onRole("orchestrator");
   render().picker.onModel("gpt-6-astra");
   expect(finish).toHaveLength(2);
-  finish[1]({ ...initial, model: "gpt-6-astra" });
+  required(finish[1])({ ...initial, model: "gpt-6-astra" });
   await Promise.resolve();
-  finish[0]({ ...initial, model: "gpt-6-luna" });
+  required(finish[0])({ ...initial, model: "gpt-6-luna" });
   await Promise.resolve();
   expect(render().model).toBe("Astra 6");
 });

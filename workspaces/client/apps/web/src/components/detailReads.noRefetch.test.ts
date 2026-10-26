@@ -1,3 +1,4 @@
+import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import { createElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,10 +20,12 @@ vi.mock("react", async (original) => ({
       value: typeof initial === "function" ? initial() : initial,
     };
     return [
-      h.cells[index].value,
+      required(h.cells[index]).value,
       (value: any) => {
-        h.cells[index].value =
-          typeof value === "function" ? value(h.cells[index].value) : value;
+        required(h.cells[index]).value =
+          typeof value === "function"
+            ? value(required(h.cells[index]).value)
+            : value;
       },
     ];
   },
@@ -43,7 +46,7 @@ vi.mock("react", async (original) => ({
       previous?.cleanup?.();
       h.cells[index] = { deps };
       h.effects.push(() => {
-        h.cells[index].cleanup = effect();
+        required(h.cells[index]).cleanup = effect();
       });
     }
   },
@@ -127,7 +130,7 @@ it("new failed and uncertain turns use inline errors without analytics reads", a
     expect(h.get).not.toHaveBeenCalled();
     const inline = render(() =>
       useTurnErrors(
-        [{ ...items[0], turnError: "Streamed failure" }],
+        [{ ...required(items[0]), turnError: "Streamed failure" }],
         agent,
         "live-turns",
       ),
@@ -191,10 +194,12 @@ it("opening a different thread loads its historical errors once", async () => {
   render(() => useTurnErrors(items, nextAgent, "thread-switch"));
   await settle();
   expect(h.get).toHaveBeenCalledTimes(2);
-  expect(h.get.mock.calls[1][1].query.thread).toBe("next-thread");
+  expect(required(required(h.get.mock.calls[1])[1]).query.thread).toBe(
+    "next-thread",
+  );
   render(() =>
     useTurnErrors(
-      [...items, { ...items[0], id: "live", turnId: "live" }],
+      [...items, { ...required(items[0]), id: "live", turnId: "live" }],
       nextAgent,
       "thread-switch",
     ),

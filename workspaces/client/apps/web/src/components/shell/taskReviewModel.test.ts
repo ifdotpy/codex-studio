@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import { expect, test } from "vitest";
 import {
   DEFAULT_GATE_TIMEOUT_MS,
@@ -86,7 +87,7 @@ test("only a successful gate for the current configuration permits normal accept
       gate: { command: "check", timeout_ms: 1 },
     }),
   ).toBe(true);
-  passed.results![0].gate!.monitorId = null;
+  required(passed.results![0]).gate!.monitorId = null;
   expect(requiresGateOverride(passed)).toBe(true);
 });
 
