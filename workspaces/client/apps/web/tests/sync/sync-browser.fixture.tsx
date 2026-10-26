@@ -27,7 +27,7 @@ declare global {
     syncBrowserFixtureValues: (string | null | undefined)[];
     stopSync: () => void;
     failure?: string | undefined;
-    stopDrafts: Awaited<
+    syncStopDrafts: Awaited<
       ReturnType<
         typeof import("../../src/sync/client.ts").startDraftReplication
       >

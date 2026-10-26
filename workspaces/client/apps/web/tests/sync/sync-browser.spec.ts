@@ -203,7 +203,7 @@ test("Sync Browser", async ({
     );
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.stopDrafts = await client.startDraftReplication((error) => {
+      window.syncStopDrafts = await client.startDraftReplication((error) => {
         if (error) window.failure = String(error);
         else delete window.failure;
       });

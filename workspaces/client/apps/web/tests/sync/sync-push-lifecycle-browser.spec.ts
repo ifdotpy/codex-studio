@@ -107,7 +107,7 @@ test("Sync Push Lifecycle Browser", async ({
     );
 
     await page.evaluate(() => {
-      window.syncSyncPushLifecycleBrowserStops = [
+      window.stops = [
         window.client.watchSyncInvalidations("entities", () => {}),
         window.client.watchSyncInvalidations("entities", () => {}),
       ];
@@ -119,9 +119,9 @@ test("Sync Push Lifecycle Browser", async ({
       1,
       "Subscriptions to one scope must share one stream.",
     );
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStops[0]());
+    await page.evaluate(() => window.stops[0]());
     assert.equal(streams.size, 1, "The remaining subscriber keeps its stream.");
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStops[1]());
+    await page.evaluate(() => window.stops[1]());
     await expect.poll(() => streams.size).toBe(0);
     assert.deepEqual(errors, []);
     console.log("sync push lifecycle browser contract passed");
@@ -135,6 +135,6 @@ declare global {
   interface Window {
     client: typeof import("../../src/sync/client.ts");
     stopPush: () => void;
-    syncSyncPushLifecycleBrowserStops: [() => void, () => void];
+    stops: (() => void)[];
   }
 }

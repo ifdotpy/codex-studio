@@ -120,7 +120,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       window.rejectCancelOnce = false;
       window.cancelRejections = 0;
       window.draftTiming = client.DRAFT_SYNC_TIMING_MS;
-      window.stopDrafts = await client.startDraftReplication(
+      window.syncStopDrafts = await client.startDraftReplication(
         (error) =>
           window.replicationErrors.push(
             error
@@ -243,7 +243,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await expect.poll(() => pushes).toBeGreaterThan(postsBeforeRetry);
     await page.evaluate(async () => {
       window.rejectCancelOnce = true;
-      await window.stopDrafts();
+      await window.syncStopDrafts();
     });
     assert.ok(
       await page.evaluate(() =>
@@ -271,7 +271,7 @@ declare global {
     rejectCancelOnce: boolean;
     cancelRejections: number;
     draftTiming: typeof import("../../src/sync/client.ts").DRAFT_SYNC_TIMING_MS;
-    stopDrafts: Awaited<
+    syncStopDrafts: Awaited<
       ReturnType<
         typeof import("../../src/sync/client.ts").startDraftReplication
       >

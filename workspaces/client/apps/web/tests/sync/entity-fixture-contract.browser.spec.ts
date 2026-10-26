@@ -42,7 +42,8 @@ test("transcript fixture applies its sequence before the request cursor", async 
     chats: [],
     edges: [],
     runtime: {},
-  } satisfies EntityFixtureState;
+  } satisfies EntityFixtureState &
+    Pick<import("../playwright.ts").TestStateView, "token" | "threads">;
   const transcript = {
     items: [],
     truncated: false,
