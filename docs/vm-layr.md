@@ -252,7 +252,7 @@ The repository contains the layr source at `workspaces/runtime/apps/layr`.
 Its manifest records the base commit, its Git tree, and the SHA-256 hashes of the files.
 The guest installer verifies those hashes before a build.
 It uses Rust 1.90.0 and the committed Cargo lock file.
-The source matches layr 0.2.0, commit `efa2fa142b44c278d264f59355d0d97d815fe5ba`.
+The source uses Layr 0.4.0. `manifest.json` owns the exact upstream revision.
 It includes the `crates/layr-store` and `crates/layr-model` workspace members.
 The layr-desk source keeps its existing revision.
 
@@ -260,7 +260,7 @@ Run this command to select another committed layr revision:
 
 ```sh
 python3 workspaces/tooling/apps/repository-checks/update-vm-layr.py \
-  --source /Users/igor/Projects/layr --revision efa2fa1
+  --source /Users/igor/Projects/layr --revision <published-upstream-commit>
 ```
 
 The helper is independent of the retired Python backend.
@@ -292,6 +292,20 @@ sudo bash /opt/codex-studio/vm/guest/install-layr.sh
 The installer verifies the manifest, builds with the pinned Rust toolchain, and restarts the layr daemon.
 Run it only after VM commands finish.
 The install keeps the existing store and its machine identity.
+
+The local store format guard refuses an unversioned store until an operator explicitly upgrades it.
+Keep the VM idle during this procedure.
+Make a copy of its data disk first.
+After installation, run these commands inside the VM:
+
+```sh
+sudo env LAYR_ROOT=/var/lib/codex-studio/layr /usr/local/bin/layr store-version --json
+sudo env LAYR_ROOT=/var/lib/codex-studio/layr /usr/local/bin/layr store-version --upgrade
+sudo systemctl restart codex-studio-layr.service
+```
+
+Upgrade only a legacy store. A newer incompatible format requires a matching binary.
+The upgrade retains the projects, lines, caches, and machine identity.
 
 ## Checks
 
