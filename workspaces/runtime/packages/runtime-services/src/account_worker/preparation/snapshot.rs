@@ -675,7 +675,9 @@ pub(super) fn guidance(
         ));
     }
     if crate::layr_native::is_native(record) {
-        for (name, value) in crate::layr_native::thread_environment(state_root) {
+        for (name, value) in crate::layr_native::thread_environment_for_record(state_root, record)
+            .map_err(|_| invalid("native-layr/store"))?
+        {
             thread_config.insert(format!("shell_environment_policy.set.{name}"), value);
         }
         if record["role"] == "reviewer"
@@ -1085,8 +1087,10 @@ fn native_claude_options(
         let scratch = record["layrScratch"]
             .as_str()
             .ok_or_else(|| invalid("native-reviewer/scratch"))?;
+        let root = crate::layr_native::settings::record_store(state_root, record)
+            .map_err(|_| invalid("native-layr/store"))?;
         options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
-            "filesystem":{"allowWrite":[scratch],"denyWrite":[crate::layr_native::store_path(state_root)]},
+            "filesystem":{"allowWrite":[scratch],"denyWrite":[root]},
             "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
         options.insert(
             "nativeReviewerEnvironment".into(),

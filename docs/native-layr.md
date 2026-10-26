@@ -7,7 +7,11 @@ The chat selector calls this mode **Layr**.
 
 ## Store and installation
 
-Studio owns one host store at `<Studio state>/layr-native/store`.
+Studio defaults to the host store at `<Studio state>/layr-native/store`.
+An operator can select an existing host store with `native-layr configure --store-root`.
+Studio saves this setting in `<Studio state>/layr-native/settings.json`.
+Each prepared chat records its store in `layrStoreRoot`.
+A root switch changes the destination for new chats. Existing chats retain their store and line.
 The managed `bin/layr` entry starts `bin/layr-real` with the real Git directory first in its child process's `PATH`.
 Layr can maintain its Git object store and export commits through that entry.
 The agent's `PATH` still selects the managed Git guard, which refuses Git writes in native lines.
@@ -15,10 +19,13 @@ An existing installation receives this entry when Studio checks its managed bina
 `NATIVE_LAYR_DIRECTORY` in `runtime-store/src/path.rs` owns the installation directory.
 `STORE_DIRECTORY` in `layr_native.rs` owns the store subdirectory.
 The state directory must stay outside project folders.
-The project ID is the SHA-256 of the canonical source folder path.
-Later chats for that folder reuse its main line.
+New imports use the SHA-256 of the canonical source folder path as the project ID.
+Studio reuses an existing project when its Git origin and commit history match the source folder.
+An explicit mapping selects a project when more than one project matches.
+Studio refuses an origin or history mismatch.
+Readiness records and operation receipts are separate for each store. The default store retains its original receipt paths.
 
-Studio installs Layr 0.2.3 at `<Studio state>/layr-native/bin/layr`.
+Studio installs Layr 0.4.0 at `<Studio state>/layr-native/bin/layr`.
 It never selects `~/.cargo/bin/layr` for runtime operations.
 The package build compiles the vendored source once and includes the signed executable, version, and SHA-256 manifest.
 The first native turn verifies that manifest and copies the executable into the managed binary folder.
@@ -65,6 +72,61 @@ sudo env LAYR_ROOT=/path/to/studio-state/layr-native/store \
 The daemon must run before a native chat or migration on Linux.
 Version checks of an installed Linux binary also use this daemon.
 macOS does not require this step.
+
+## Select a shared store
+
+Use an existing store outside the source project folder.
+The commands below change only Studio settings. They do not move or delete either store.
+
+```sh
+studio-runtime-server native-layr configure --state /path/to/studio-state \
+  --store-root /Users/igor/Projects/layr-store
+studio-runtime-server native-layr map --state /path/to/studio-state \
+  --project studio /Users/igor/Projects/codex-agents
+studio-runtime-server native-layr paths --state /path/to/studio-state
+```
+
+The mapping verifies the Git origin and at least one common ancestor commit.
+GitHub origins match when the GitHub repository IDs match, including a repository rename.
+Studio reads these IDs with `gh api`. The host needs `gh`, network access, and GitHub authentication.
+An unsuccessful lookup refuses the mapping.
+Other origins must have equal normalized URLs.
+The mapping record retains both origin URLs and the GitHub repository ID.
+The source and project can have different folder names.
+An existing project supplies its saved main line and caches. Studio does not import another copy.
+New implementer lines receive the caches from that main line.
+The original source folder stays separate from main.
+
+Studio requires a compatible Layr store format before it prepares a line.
+`layr store-version --json` reports the store format, package version, and build identity.
+An incompatible store returns an error that names the root and both versions.
+An unversioned store requires an explicit upgrade with the approved Layr binary.
+Make a copy of the store before the upgrade.
+Wait for its current Layr commands to finish.
+Then run:
+
+```sh
+studio-runtime-server native-layr upgrade-store --state /path/to/studio-state
+```
+
+For a shared root, Studio also inspects `~/.local/bin/layr`.
+That binary must support `store-version` and use the same package version and store format as the bundled binary.
+Studio reports a different build identity as `layrVersionWarning` on the prepared chat.
+Upgrade an old developer binary before you use the shared root.
+The format guard cannot protect a store from an old binary that does not implement the guard.
+
+To select the original default for new chats, run:
+
+```sh
+studio-runtime-server native-layr configure --state /path/to/studio-state --default-store
+```
+
+An earlier import in the default store retains its project ID, receipts, lines, and data.
+Chats created before a switch retain their recorded root, including records created before this setting existed.
+Each store must pass the version check when Studio prepares its next native line.
+On Linux, the configured daemon must serve the selected root and compatible format.
+Each selected root has its own daemon socket under the Studio native metadata folder.
+Use the socket from `native-layr paths` when you start that root's daemon.
 
 ## First import
 

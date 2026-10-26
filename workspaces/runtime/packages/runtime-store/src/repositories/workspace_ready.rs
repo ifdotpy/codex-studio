@@ -49,6 +49,8 @@ pub fn workspace_generation(actor: &Value) -> Value {
         "environment",
         "layrReady",
         "layrLine",
+        "layrProjectId",
+        "layrStoreRoot",
         "checkpointHistoryHead",
         "lastCompletedTurn",
     ];

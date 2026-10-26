@@ -3,6 +3,7 @@
 real_git=@REAL_GIT@
 layr=@LAYR@
 store=@STORE@
+selected_store=${LAYR_ROOT-}
 commit_refusal=@COMMIT_REFUSAL@
 refuse() {
     case "$1" in
@@ -27,7 +28,11 @@ refuse() {
     return 1
 }
 in_line() {
-    case "$1" in "$store"/projects/*/lines/*) return 0 ;; *) return 1 ;; esac
+    case "$1" in "$store"/projects/*/lines/*) return 0 ;; esac
+    if [ -n "$selected_store" ]; then
+        case "$1" in "$selected_store"/projects/*/lines/*) return 0 ;; esac
+    fi
+    return 1
 }
 resolve_candidate() {
     suffix=''

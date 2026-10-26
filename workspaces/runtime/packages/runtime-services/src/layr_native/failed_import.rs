@@ -1,5 +1,7 @@
 //! Discard only an explicitly failed import's private project before a fresh import.
-use super::{NATIVE_LAYR_DIRECTORY, NativeLayrError, private_tree::Directory, store_path};
+#[cfg(test)]
+use super::{NATIVE_LAYR_DIRECTORY, store_path};
+use super::{NativeLayrError, private_tree::Directory};
 use std::path::Path;
 #[cfg(target_os = "macos")]
 mod flags_ffi;
@@ -8,7 +10,12 @@ use flags_ffi::unseal;
 
 type Result<T> = std::result::Result<T, NativeLayrError>;
 
+#[cfg(test)]
 pub(super) fn discard(state: &Path, project: &str) -> Result<()> {
+    discard_in_store(state, &super::settings::selected_store(state)?, project)
+}
+
+pub(super) fn discard_in_store(state: &Path, root: &Path, project: &str) -> Result<()> {
     if project.len() != super::PROJECT_ID_HEX_BYTES
         || !project.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
@@ -16,8 +23,7 @@ pub(super) fn discard(state: &Path, project: &str) -> Result<()> {
             "Invalid failed import project ID".into(),
         ));
     }
-    if state
-        .join(NATIVE_LAYR_DIRECTORY)
+    if super::settings::metadata(state, root)
         .join(format!("{project}.json"))
         .exists()
     {
@@ -25,7 +31,7 @@ pub(super) fn discard(state: &Path, project: &str) -> Result<()> {
             "Cannot discard a ready native project".into(),
         ));
     }
-    let projects_path = store_path(state).join("projects");
+    let projects_path = root.join("projects");
     let projects = match Directory::open(&projects_path) {
         Ok(projects) => projects,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),

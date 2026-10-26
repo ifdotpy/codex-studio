@@ -24,6 +24,17 @@ pub fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join(NATIVE_LAYR_DIRECTORY).join("layr.sock")
 }
 
+pub fn selected_socket_path(state_dir: &Path) -> Result<PathBuf, NativeLayrError> {
+    Ok(socket_path_in_store(
+        state_dir,
+        &settings::selected_store(state_dir)?,
+    ))
+}
+
+fn socket_path_in_store(state_dir: &Path, root: &Path) -> PathBuf {
+    settings::metadata(state_dir, root).join("layr.sock")
+}
+
 pub fn is_native(record: &Value) -> bool {
     record["workspaceMode"] == "layr-native"
 }
@@ -46,8 +57,19 @@ pub fn configure_child(record: &mut Value, parent: &Value, root: &Value) {
         .unwrap_or_default();
     configure_new_chat(record, source);
     record["cwd"] = parent["cwd"].clone();
-    if let Some(project) = root.get("layrProjectId") {
-        record["layrProjectId"] = project.clone();
+    for key in ["layrProjectId", "layrStoreRoot"] {
+        if let Some(value) = root.get(key) {
+            record[key] = value.clone();
+        }
+    }
+    if record["layrStoreRoot"].is_null()
+        && root["layrReady"] == true
+        && let Some(cwd) = root["layrReadCwd"]
+            .as_str()
+            .or_else(|| root["cwd"].as_str())
+        && let Some(store) = settings::root_from_cwd(Path::new(cwd))
+    {
+        record["layrStoreRoot"] = json!(store);
     }
 }
 
@@ -89,6 +111,11 @@ mod tests {
 mod capability;
 mod git_guard;
 pub mod install;
+pub mod mapping;
+pub mod settings;
+mod versions;
+#[cfg(test)]
+mod warm_store_tests;
 pub use capability::{NativeLayrCapability, capability};
 mod failed_import;
 mod private_tree;
@@ -100,27 +127,54 @@ pub use runtime::{
 
 /// Thread commands must resolve Studio's host binary before any user Cargo installation.
 pub fn thread_environment(state_root: &Path) -> serde_json::Map<String, Value> {
+    thread_environment_in_store(state_root, &store_path(state_root))
+}
+
+pub fn thread_environment_for_record(
+    state_root: &Path,
+    record: &Value,
+) -> Result<serde_json::Map<String, Value>, NativeLayrError> {
+    Ok(thread_environment_in_store(
+        state_root,
+        &settings::record_store(state_root, record)?,
+    ))
+}
+
+fn thread_environment_in_store(state_root: &Path, root: &Path) -> serde_json::Map<String, Value> {
     let bin = binary_path(state_root);
     let path = format!(
         "{}:{}",
         bin.parent().unwrap_or(Path::new("/")).display(),
         std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
     );
-    let mut environment = transport_environment(state_root, cfg!(target_os = "linux"));
+    let mut environment =
+        transport_environment_in_store(state_root, root, cfg!(target_os = "linux"));
     environment.insert("PATH".into(), json!(path));
     environment
 }
 
+#[cfg(test)]
 fn transport_environment(state_root: &Path, uses_service: bool) -> serde_json::Map<String, Value> {
+    transport_environment_in_store(state_root, &store_path(state_root), uses_service)
+}
+
+fn transport_environment_in_store(
+    state_root: &Path,
+    root: &Path,
+    uses_service: bool,
+) -> serde_json::Map<String, Value> {
     let mut environment = serde_json::Map::from_iter([
-        ("LAYR_ROOT".into(), json!(store_path(state_root))),
+        ("LAYR_ROOT".into(), json!(root)),
         (
             "LAYR_DIRECT".into(),
             json!(if uses_service { "0" } else { "1" }),
         ),
     ]);
     if uses_service {
-        environment.insert("LAYR_SOCKET".into(), json!(socket_path(state_root)));
+        environment.insert(
+            "LAYR_SOCKET".into(),
+            json!(socket_path_in_store(state_root, root)),
+        );
     }
     environment
 }

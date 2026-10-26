@@ -55,7 +55,13 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn operator_commands(state: &Path, project: &Path, lines: &[Value], options: &Options) -> Value {
+fn operator_commands(
+    state: &Path,
+    project: &Path,
+    project_id: &str,
+    lines: &[Value],
+    options: &Options,
+) -> Result<Value> {
     let state_arg = quote(&state.to_string_lossy());
     let project_arg = quote(&project.to_string_lossy());
     let mut selection = if options.without_git {
@@ -77,13 +83,14 @@ fn operator_commands(state: &Path, project: &Path, lines: &[Value], options: &Op
         ),
         format!("studio-runtime-server native-layr migrate --state {state_arg} {selection}"),
     ];
-    let project_id = studio_runtime_store::sha256_hex(project.to_string_lossy().as_bytes());
-    let main = main_path(state, &project_id);
-    let environment = super::transport_environment(state, cfg!(target_os = "linux"))
-        .into_iter()
-        .map(|(name, value)| format!("{name}={}", quote(value.as_str().unwrap_or_default())))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let root = settings::selected_store(state)?;
+    let main = runtime::main_path_in_store(&root, project_id);
+    let environment =
+        super::transport_environment_in_store(state, &root, cfg!(target_os = "linux"))
+            .into_iter()
+            .map(|(name, value)| format!("{name}={}", quote(value.as_str().unwrap_or_default())))
+            .collect::<Vec<_>>()
+            .join(" ");
     let layr = format!(
         "env {environment} {} -C {}",
         quote(&binary_path(state).to_string_lossy()),
@@ -101,7 +108,7 @@ fn operator_commands(state: &Path, project: &Path, lines: &[Value], options: &Op
             ));
         }
     }
-    json!({
+    Ok(json!({
         "steps":[
             "Wait for current WT turns to finish. Pause those chats in Studio before the import.",
             "Each open Git worktree becomes a separate Layr line. Original folders remain intact.",
@@ -112,7 +119,7 @@ fn operator_commands(state: &Path, project: &Path, lines: &[Value], options: &Op
             "Keep old WT chats paused after the import. A repeated migration replays receipts and does not copy later edits."
         ],
         "commands":commands
-    })
+    }))
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -165,11 +172,14 @@ pub fn migrate_with_options(
             .to_str()
             .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 project path".into()))?,
     );
-    let project_id = project_id(&record)?;
-    let target = state_dir.join(NATIVE_LAYR_DIRECTORY);
+    let root = settings::selected_store(state_dir)?;
+    let project_id = super::mapping::resolve(state_dir, &root, &record)?;
+    record["layrProjectId"] = json!(project_id);
+    record["layrStoreRoot"] = json!(root);
+    let target = settings::metadata(state_dir, &root);
     let main_plan =
         super::import::Plan::new_with_git_policy(&project, false, &target, options.without_git)?;
-    let existing_path = main_path(state_dir, &project_id);
+    let existing_path = runtime::main_path_in_store(&root, &project_id);
     // A failed first import can leave an incomplete main. Only ready imports supply estimates.
     let existing_main =
         if existing_path.exists() && target.join(format!("{project_id}.json")).exists() {
@@ -289,7 +299,7 @@ pub fn migrate_with_options(
                 entry["reason"] = json!(
                     "No uncommitted or untracked files. HEAD is contained in a local branch or remote-tracking ref. Its Git metadata is retained with main; ignored data remains in this source worktree."
                 );
-                let existing_main = main_path(state_dir, &project_id);
+                let existing_main = runtime::main_path_in_store(&root, &project_id);
                 if existing_main.exists() {
                     let proof = head
                         .ok_or_else(|| {
@@ -384,7 +394,7 @@ pub fn migrate_with_options(
             }
         }
     }
-    let main_destination = main_path(state_dir, &project_id);
+    let main_destination = runtime::main_path_in_store(&root, &project_id);
     let missing_line = |line: &&Value| {
         line["entries"].is_number()
             && main_destination.parent().is_none_or(|parent| {
@@ -420,7 +430,7 @@ pub fn migrate_with_options(
         }
     }
     if dry_run {
-        report["operator"] = operator_commands(state_dir, &project, &lines, &options);
+        report["operator"] = operator_commands(state_dir, &project, &project_id, &lines, &options)?;
         report["lines"] = json!(lines);
         return Ok(report);
     }
@@ -448,8 +458,9 @@ pub fn migrate_with_options(
         let allocation = plan.migration_size(&actual_main, &relative);
         let imported_head = line["headCommit"].clone();
         let selection = options.worktrees.as_str();
-        let receipt = runtime::operation_with_preflight(
+        let receipt = runtime::operation_with_preflight_in_store(
             state_dir,
+            &root,
             &format!("migrate:{project_id}:{name}"),
             &input,
             || {
@@ -520,7 +531,7 @@ pub fn migrate_with_options(
         line["stateId"] = receipt["stateId"].clone();
     }
     report["mainPath"] = json!(main);
-    report["operator"] = operator_commands(state_dir, &project, &lines, &options);
+    report["operator"] = operator_commands(state_dir, &project, &project_id, &lines, &options)?;
     report["lines"] = json!(lines);
     Ok(report)
 }
@@ -1507,7 +1518,8 @@ mod tests {
         let project = Path::new("/project's code");
         let lines =
             vec![json!({"line":"wt-worker","status":"imported","stateId":"full-exact-state"})];
-        let report = operator_commands(state, project, &lines, &Options::default());
+        let report = operator_commands(state, project, "project", &lines, &Options::default())
+            .expect("operator commands");
         let commands = report["commands"]
             .as_array()
             .expect("fixture operation succeeds");
