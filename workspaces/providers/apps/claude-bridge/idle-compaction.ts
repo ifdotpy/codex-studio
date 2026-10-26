@@ -4,7 +4,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { CacheReport } from "./runtime-contract.generated.ts";
 import type { Session } from "./session-state.ts";
-import { object } from "./history-records.ts";
+import type { ActiveQuery } from "./bridge.ts";
 type PrefixSession = Partial<
   Pick<
     Session,
@@ -43,7 +43,7 @@ export function promptPrefix(s: PrefixSession, effective: Settings = {}) {
         s.developerInstructions,
         s.dynamicTools,
         s.capabilityProfile,
-        object(s.moveProof) ? s.moveProof.options : undefined,
+        s.moveProof?.options,
         s.moveTurnOptions,
         effective,
       ]),
@@ -59,9 +59,7 @@ export function cacheReport(
   effective: Settings = {},
 ): CacheReport {
   const n = (value: number | null | undefined) =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0
-      ? value
-      : 0;
+    Number.isFinite(value) && value! >= 0 ? value! : 0;
   const writes = n(usage.cache_creation_input_tokens);
   const reads = n(usage.cache_read_input_tokens);
   const creation = usage.cache_creation;
@@ -93,20 +91,20 @@ export function cacheReport(
 
 export function idleRefusal(
   s: PrefixSession,
-  active: unknown,
+  active:
+    | {
+        turn?: Partial<NonNullable<ActiveQuery["turn"]>> | null;
+        tasks?: Pick<ActiveQuery["tasks"], "size">;
+        input?: Pick<ActiveQuery["input"], "values">;
+      }
+    | null
+    | undefined,
   expected: Pick<CacheReport, "prefix" | "requestId">,
   effective: Settings = {},
 ) {
   if (expected.prefix !== promptPrefix(s, effective)) return "prefix_changed";
   if (expected.requestId !== s.idleCache?.requestId) return "newer_request";
-  if (
-    object(active) &&
-    (active.turn ||
-      (object(active.tasks) && active.tasks.size) ||
-      (object(active.input) &&
-        Array.isArray(active.input.values) &&
-        active.input.values.length))
-  )
+  if (active?.turn || active?.tasks?.size || active?.input?.values?.length)
     return "active";
   return null;
 }
