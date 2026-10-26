@@ -1,7 +1,7 @@
 import { localDateTime } from "../../../local-time";
 import "./message-date.css";
 
-export type MessageDateProps = { at?: number | string | null };
+export type MessageDateProps = { at?: number | string | null | undefined };
 
 export default function MessageDate({ at }: MessageDateProps) {
   const value =

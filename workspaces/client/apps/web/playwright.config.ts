@@ -2,9 +2,9 @@ import { defineConfig } from "@playwright/test";
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browserExecutablePath } from "./tests/browser-executable.mjs";
-import { choosePlaywrightScratchRoot } from "./tests/scratch-root.mjs";
-import { getPlaywrightWorkerSelection } from "./playwright-workers.mjs";
+import { browserExecutablePath } from "./tests/browser-executable.ts";
+import { choosePlaywrightScratchRoot } from "./tests/scratch-root.ts";
+import { getPlaywrightWorkerSelection } from "./playwright-workers.ts";
 
 const workerSelection = getPlaywrightWorkerSelection();
 const workerLimit = workerSelection.workers;
@@ -65,15 +65,17 @@ const specialProjects =
 export default defineConfig({
   ...(outputDirectory ? { outputDir: outputDirectory } : {}),
   globalSetup: fileURLToPath(
-    new URL("./playwright-global-setup.mjs", import.meta.url),
+    new URL("./playwright-global-setup.ts", import.meta.url),
   ),
   globalTeardown: fileURLToPath(
-    new URL("./playwright-memory-teardown.mjs", import.meta.url),
+    new URL("./playwright-memory-teardown.ts", import.meta.url),
   ),
   testDir: ".",
   testMatch: [
     fileURLToPath(new URL("./tests/**/*.spec.mjs", import.meta.url)),
+    fileURLToPath(new URL("./tests/**/*.spec.ts", import.meta.url)),
     fileURLToPath(new URL("./src/**/*.spec.mjs", import.meta.url)),
+    fileURLToPath(new URL("./src/**/*.spec.ts", import.meta.url)),
   ],
   testIgnore: [
     fileURLToPath(new URL("../../../../.worktrees/**", import.meta.url)),

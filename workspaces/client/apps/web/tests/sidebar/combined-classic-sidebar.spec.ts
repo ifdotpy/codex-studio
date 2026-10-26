@@ -1,0 +1,808 @@
+import type { TestRuntimeView } from "../playwright.ts";
+import type { TestAgent } from "../playwright.ts";
+import type { ProjectEntityDto } from "../../src/generated/api.ts";
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import assert from "node:assert/strict";
+import type { MultiServerFixtureOptions } from "../servers/multi-server-fixture.ts";
+import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
+import type { Owner } from "./sidebar-parity-fixture.ts";
+import { fixturePostBody } from "../servers/browser-fixture.ts";
+import { remoteNetwork } from "../servers/browser-fixture.ts";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "../servers/multi-server-fixture.ts";
+
+for (const [theme, viewport] of [
+  ["light", { width: 1440, height: 900 }],
+  ["dark", { width: 1440, height: 900 }],
+  ["mobile", { width: 390, height: 844 }],
+] as const) {
+  test(`the combined classic sidebar routes actions to their owner: ${theme}`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    test.setTimeout(90000);
+    page.setDefaultTimeout(10000);
+    await page.setViewportSize(viewport);
+    await page.emulateMedia({
+      colorScheme: theme === "dark" ? "dark" : "light",
+    });
+    const calls: Record<
+      Owner,
+      {
+        [Path in ApiPostPath]: { path: Path; body: PostBody<Path> };
+      }[ApiPostPath][]
+    > = { local: [], remote: [] };
+    const syncCalls: PostBody<"/api/mac-sync/resolve">[] = [];
+    const secretCalls: {
+      path: string;
+      body: PostBody<"/api/project-secrets/set">;
+    }[] = [];
+    const secretNames = new Set(["EXISTING_KEY"]);
+    const handler =
+      (owner: Owner): NonNullable<MultiServerFixtureOptions["handle"]> =>
+      ({ url, body: rawBody, json, snapshot }) => {
+        if (url.pathname === "/api/organization") {
+          const body = fixturePostBody<"/api/organization">(rawBody);
+          calls[owner].push({ path: "/api/organization", body });
+          const row = snapshot.threads.find((chat) => chat.id === body.id);
+          expect(row).toBeTruthy();
+          assert.ok(row);
+          for (const key of ["pinned", "archived"] as const)
+            if (key in body) row[key] = body[key];
+          if ("project_folder" in body) {
+            row.projectFolder = body.project_folder;
+            row.projectFolderRevision = (row.projectFolderRevision || 0) + 1;
+          }
+          json({
+            projectFolder: row.projectFolder || null,
+            pinned: !!row.pinned,
+            archived: !!row.archived,
+          });
+          return true;
+        }
+        if (url.pathname === "/api/mac-sync/resolve") {
+          const body = fixturePostBody<"/api/mac-sync/resolve">(rawBody);
+          expect(owner).toBe("remote");
+          syncCalls.push(body);
+          json({
+            path: body.path,
+            choice: body.choice,
+            mainStateId: "m1",
+            status: null,
+          });
+          return true;
+        }
+        if (url.pathname.startsWith("/api/project-secrets/")) {
+          const body = fixturePostBody<"/api/project-secrets/set">(rawBody);
+          expect(owner).toBe("remote");
+          secretCalls.push({ path: url.pathname, body });
+          if (url.pathname.endsWith("/set")) secretNames.add(body.name);
+          if (url.pathname.endsWith("/remove")) secretNames.delete(body.name);
+          // The server answers with names only.
+          json({ projectId: body.projectId, names: [...secretNames].sort() });
+          return true;
+        }
+        if (url.pathname === "/api/rename") {
+          const body = fixturePostBody<"/api/rename">(rawBody);
+          calls[owner].push({ path: url.pathname, body });
+          const row = snapshot.threads.find((chat) => chat.id === body.id);
+          expect(row).toBeTruthy();
+          requiredFixtureValue(row).name = body.name;
+          json({ ok: true });
+          return true;
+        }
+        if (url.pathname === "/api/projects") {
+          const body = fixturePostBody<"/api/projects">(rawBody);
+          calls[owner].push({ path: url.pathname, body });
+          assert.ok("path" in body);
+          const project = snapshot.runtime.projects.find(
+            (row) => row.path === body.path,
+          );
+          expect(project).toBeTruthy();
+          assert.ok(
+            project &&
+              "expected_revision" in body &&
+              "organizationRevision" in project,
+          );
+          assert.ok(
+            project.organizationRevision !== null &&
+              project.organizationRevision !== undefined,
+          );
+          expect(body.expected_revision).toBe(project.organizationRevision);
+          if (body.action === "rename_folder") {
+            const folder = project.folders?.find(
+              (row) => row.id === body.folder_id,
+            );
+            assert.ok(folder && body.name);
+            folder.name = body.name;
+          }
+          project.organizationRevision += 1;
+          json({ project, revision: project.organizationRevision });
+          return true;
+        }
+        return false;
+      };
+    const local = await fixture("Local", false, { handle: handler("local") });
+    const remote = await fixture("Remote", true, { handle: handler("remote") });
+    for (const [owner, server] of [
+      ["local", local],
+      ["remote", remote],
+    ] as const) {
+      const project = server.snapshot.runtime.projects[0];
+      assert.ok(project);
+      Object.assign(project, {
+        id: owner === "local" ? "logical-project" : "remote-project",
+        path: owner === "local" ? "/same/project" : "/remote/project",
+        name: owner === "local" ? "Home project" : "Remote project",
+        homeServerId: owner,
+        organizationRevision: owner === "local" ? 3 : 9,
+        peerTeamsRevision: owner === "local" ? 4 : 8,
+        folders: [{ id: "folder", name: `${owner} folder`, parentId: null }],
+        ...(owner === "remote"
+          ? {
+              projectAliases: [
+                {
+                  serverId: "local",
+                  projectId: "logical-project",
+                  name: "Home project",
+                },
+              ],
+              // Only the remote server reports layr support for its folder.
+              layrReadiness: { state: "ready" },
+            }
+          : {}),
+      } satisfies Partial<ProjectEntityDto>);
+      Object.assign(
+        server.snapshot.threads[0] ??
+          (() => {
+            throw new Error("Missing fixture chat");
+          })(),
+        {
+          cwd: project.path,
+          pinned: true,
+          projectFolderRevision: 2,
+          updated: Date.now() / 1000,
+        } satisfies Partial<TestAgent>,
+      );
+      Object.assign(server.snapshot.runtime, {
+        projectOrganizationVersion: 1,
+        peerTeamsVersion: 1,
+        sidebarOrder: { revision: 1, groups: {} },
+      } satisfies Partial<TestRuntimeView>);
+    }
+    local.aliases.remote = "REM";
+    local.discoverPeer(remote);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+      await remoteNetwork(context, remote);
+      await page.goto(local.origin);
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      const sidebar = page.locator("#sidebar");
+      await expect(
+        sidebar.getByRole("button", { name: /Remote chat/ }).first(),
+      ).toBeVisible();
+      await expect(
+        sidebar.getByRole("button", { name: /Local chat/ }).first(),
+      ).toBeVisible();
+      await expect(sidebar.locator(".sidebar-project")).toHaveCount(1);
+      const projectName = sidebar.locator(".project-tree-toggle", {
+        hasText: "Home project",
+      });
+      await expect(projectName).toBeVisible();
+      const heading = sidebar.locator(".project-tree-heading", {
+        hasText: "Home project",
+      });
+      // Only the remote server reports readiness; the button keeps its name, and the LAYR
+      // chip under it is a button of its own.
+      const readiness = heading.locator(".project-layr-readiness");
+      await expect(projectName.locator(".project-layr-readiness")).toHaveCount(
+        0,
+      );
+      await expect(
+        heading.getByRole("button", {
+          name: "layr: REM: Ready for layr chats",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(readiness).toHaveText("LAYR");
+      await expect(readiness).toHaveAttribute("data-state", "ready");
+      await expect(readiness).toHaveAttribute(
+        "title",
+        "REM: Ready for layr chats",
+      );
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "REM: Ready for layr chats. Drag to reorder. Alt + Up or Down also works.",
+      );
+      await expect(projectName).toHaveAttribute("aria-expanded", "true");
+      expect(await projectName.evaluate((element) => element.tagName)).toBe(
+        "BUTTON",
+      );
+      const chatCount = await sidebar.locator("[data-chat]").count();
+      // The heading collapses the merged project with the chats of both servers.
+      await projectName.click();
+      await expect(projectName).toHaveAttribute("aria-expanded", "false");
+      await expect(sidebar.locator("[data-chat]")).toHaveCount(0);
+      await projectName.click();
+      await expect(sidebar.locator("[data-chat]")).toHaveCount(chatCount);
+      await expect(page.getByLabel("Studio server")).toHaveCount(0);
+      await expect(
+        sidebar.getByRole("button", { name: "Studio settings", exact: true }),
+      ).toBeVisible();
+      await expect(sidebar.locator("[data-folder-id]")).toHaveCount(2);
+      expect(calls).toEqual({ local: [], remote: [] });
+      await page.screenshot({
+        path: testInfo.outputPath(`combined-${theme}.png`),
+      });
+
+      let row = sidebar
+        .locator(".sidebar-row")
+        .filter({ hasText: "Remote chat" });
+      await row.hover();
+      await row
+        .getByRole("button", { name: "Actions for Remote chat", exact: true })
+        .click();
+      await page.getByRole("menuitem", { name: "Unpin", exact: true }).click();
+      await expect(row.locator(".chat-pin")).toHaveCount(0);
+      await expect.poll(() => calls.remote.length).toBe(1);
+      expect(calls.remote[0]).toEqual({
+        path: "/api/organization",
+        body: { id: "overlap", pinned: false },
+      });
+      expect(requiredFixtureValue(local.snapshot.threads[0]).pinned).toBe(true);
+
+      await row.hover();
+      await row
+        .getByRole("button", { name: "Actions for Remote chat", exact: true })
+        .click();
+      await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+      await row.getByLabel("Chat name").fill("Remote renamed");
+      await row.getByRole("button", { name: "Save name" }).click();
+      row = sidebar
+        .locator(".sidebar-row")
+        .filter({ hasText: "Remote renamed" });
+      await expect(
+        row.getByRole("button", { name: /Remote renamed/ }).first(),
+      ).toBeVisible();
+      expect(fixturePostBody<"/api/rename">(calls.remote[1]?.body).id).toBe(
+        "overlap",
+      );
+      expect(
+        fixturePostBody<"/api/rename">(calls.remote[1]?.body).request_id,
+      ).toBeTruthy();
+      expect(requiredFixtureValue(local.snapshot.threads[0]).name).toBe(
+        "Local chat",
+      );
+
+      await row.hover();
+      await row
+        .getByRole("button", {
+          name: "Actions for Remote renamed",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Move to folder", exact: true })
+        .click();
+      await page
+        .getByLabel("Move to folder", { exact: true })
+        .selectOption({ label: "remote folder" });
+      await page
+        .getByRole("button", { name: "Move chat", exact: true })
+        .click();
+      await expect(
+        page.getByRole("dialog").filter({
+          has: page.getByRole("heading", { name: "Move chat", exact: true }),
+        }),
+      ).toHaveCount(0);
+      await expect(
+        row.locator("xpath=ancestor::*[@data-folder-id][1]"),
+      ).toHaveAttribute(
+        "data-folder-id",
+        JSON.stringify(["folder", "remote", "/remote/project", "folder"]),
+      );
+      expect(requiredFixtureValue(calls.remote[2]).body).toEqual({
+        id: "overlap",
+        project_path: "/remote/project",
+        project_folder: "folder",
+        expected_folder: null,
+        expected_revision: 2,
+      });
+      expect(
+        requiredFixtureValue(local.snapshot.threads[0]).projectFolder,
+      ).toBeUndefined();
+      expect(calls.local).toEqual([]);
+
+      await sidebar
+        .getByRole("button", { name: /remote folder Codex/ })
+        .hover();
+      await sidebar
+        .getByRole("button", {
+          name: "Options for folder remote folder",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Rename folder", exact: true })
+        .click();
+      await expect(
+        page
+          .getByRole("dialog")
+          .filter({
+            has: page.getByRole("heading", {
+              name: "Rename folder",
+              exact: true,
+            }),
+          })
+          .locator(".project-directory"),
+      ).toHaveText("/remote/project");
+      await page
+        .getByRole("textbox", { name: "Folder name", exact: true })
+        .fill("Remote folder renamed");
+      await page
+        .getByRole("button", { name: "Save name", exact: true })
+        .click();
+      await expect(
+        page.getByRole("dialog").filter({
+          has: page.getByRole("heading", {
+            name: "Rename folder",
+            exact: true,
+          }),
+        }),
+      ).toHaveCount(0);
+      expect(requiredFixtureValue(calls.remote[3]).body).toMatchObject({
+        action: "rename_folder",
+        path: "/remote/project",
+        folder_id: "folder",
+        expected_revision: 9,
+      });
+      expect(
+        requiredFixtureValue(
+          requiredFixtureValue(
+            requiredFixtureValue(local.snapshot.runtime.projects[0]).folders,
+          )[0],
+        ).name,
+      ).toBe("local folder");
+      await expect(
+        sidebar.getByRole("button", { name: /Remote folder renamed Codex/ }),
+      ).toBeVisible();
+
+      await row
+        .getByRole("button", { name: /Remote renamed/ })
+        .first()
+        .click();
+      await expect(
+        page.locator('iframe[title="Studio on Remote"]'),
+      ).toBeVisible();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      await sidebar
+        .getByLabel("Filter projects and chats")
+        .fill("/remote/project");
+      await expect(row).toBeVisible();
+      await expect(
+        sidebar.locator(".sidebar-row").filter({ hasText: "Local chat" }),
+      ).toHaveCount(0);
+      await sidebar.getByLabel("Filter projects and chats").fill("");
+      remote.offline(true);
+      await expect(async () => {
+        await row.hover();
+        await row
+          .getByRole("button", {
+            name: "Actions for Remote renamed",
+            exact: true,
+          })
+          .click();
+        await expect(
+          page.getByRole("menuitem", { name: "Pin", exact: true }),
+        ).toHaveAttribute("data-disabled", "true");
+        await page.keyboard.press("Escape");
+      }).toPass({ timeout: 15000 });
+      await expect(row).toBeVisible();
+      expect(calls.local).toEqual([]);
+
+      // layr shows only where it is active: an import in progress shows nothing.
+      remote.offline(false);
+      requiredFixtureValue(remote.snapshot.runtime.projects[0]).layrReadiness =
+        {
+          state: "importing",
+        };
+      await page.reload();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      await expect(projectName).toBeVisible();
+      await expect(heading.locator(".project-layr-readiness")).toHaveCount(0);
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "Drag to reorder. Alt + Up or Down also works.",
+      );
+
+      // The remote server now syncs its Mac folder: one chip tells that the project is
+      // ready and that one file waits for a choice, and the remote server takes it.
+      Object.assign(
+        remote.snapshot.runtime.projects[0] ??
+          (() => {
+            throw new Error("Missing fixture project");
+          })(),
+        {
+          layrReadiness: { state: "ready", projectId: "remote-layr" },
+          layrSync: {
+            projectId: "remote-layr",
+            state: "conflict",
+            enabled: true,
+            conflicts: ["src/app.txt"],
+            choices: [],
+            withAgent: [],
+            deletes: 0,
+            reason: null,
+          },
+        } satisfies Partial<ProjectEntityDto>,
+      );
+      await page.reload();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      // One LAYR chip on its own line: the conflict marks it and its tooltip says why.
+      const layrChip = heading.locator(".project-layr-readiness");
+      await expect(layrChip).toHaveText("LAYR");
+      await expect(layrChip).toHaveAttribute("data-attention", "true");
+      await expect(layrChip).toHaveAttribute(
+        "title",
+        "REM: Ready for layr chats\nREM: Folder sync: 1 file changed on both sides",
+      );
+      await expect(heading.locator(".project-layr-sync")).toHaveCount(0);
+      // The chip starts where the project name starts.
+      {
+        const name = await projectName.locator("span").first().boundingBox();
+        const chip = await layrChip.boundingBox();
+        expect(Math.abs((chip?.x ?? 0) - (name?.x ?? 0))).toBeLessThanOrEqual(
+          1,
+        );
+      }
+      // Its menu closes with Escape and with a click outside it.
+      const chipMenu = page.getByRole("menu").filter({
+        has: page.getByRole("menuitem", { name: "Pause sync (REM)" }),
+      });
+      await layrChip.click();
+      await expect(chipMenu).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(chipMenu).toHaveCount(0);
+      await layrChip.click();
+      await expect(chipMenu).toBeVisible();
+      await sidebar.locator(".projects-heading-label").click();
+      await expect(chipMenu).toHaveCount(0);
+      if (viewport.width >= 760) {
+        // A click in the frame of the main view also closes it.
+        await layrChip.click();
+        await expect(chipMenu).toBeVisible();
+        await page.mouse.click(viewport.width - 20, viewport.height / 2);
+        await expect(chipMenu).toHaveCount(0);
+      }
+      const nameBox = await projectName.locator("span").first().boundingBox();
+      const chipBox = await layrChip.boundingBox();
+      expect(
+        chipBox && nameBox && chipBox.y >= nameBox.y + nameBox.height - 1,
+      ).toBe(true);
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "REM: Ready for layr chats; REM: Folder sync: 1 file changed on both sides. " +
+          "Drag to reorder. Alt + Up or Down also works.",
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(`sync-row-${theme}.png`),
+      });
+      // The LAYR chip opens the layr menu; the remote server takes the choice for its Mac
+      // folder.
+      await layrChip.click();
+      await page
+        .getByRole("menuitem", {
+          name: "Choose versions (1) (REM)",
+          exact: true,
+        })
+        .click();
+      const syncDialog = page.getByRole("dialog", {
+        name: "Folder sync: Home project (REM)",
+      });
+      await expect(syncDialog.getByText("src/app.txt")).toBeVisible();
+      await page.screenshot({
+        path: testInfo.outputPath(`mac-sync-${theme}.png`),
+      });
+      await syncDialog
+        .getByRole("button", { name: "Keep VM", exact: true })
+        .click();
+      await expect.poll(() => syncCalls.length).toBe(1);
+      expect(syncCalls[0]).toEqual({
+        projectId: "remote-layr",
+        path: "src/app.txt",
+        choice: "vm",
+      });
+      await expect(
+        syncDialog.getByText("No files wait for a choice."),
+      ).toBeVisible();
+      // Escape would also close the mobile sidebar drawer.
+      await syncDialog.getByRole("button", { name: "Close" }).click();
+      await expect(syncDialog).toHaveCount(0);
+
+      // The project's vault: the menu tells when it last saved a change and opens its Desk
+      // page; the folder belongs to the remote server, so this Mac does not pull it.
+      requiredFixtureValue(remote.snapshot.runtime.projects[0]).vault = {
+        projectId: "remote-layr",
+        state: "ok",
+        prefix: "home project",
+        site: "https://desk.example.com/",
+        lastPush: Math.floor(Date.now() / 1000) - 600,
+      };
+      await page.reload();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      // The project menu has no layr items: they are only in the LAYR chip's menu.
+      await heading.hover();
+      const options = heading.getByRole("button", {
+        name: "Options for project Home project",
+        exact: true,
+      });
+      await options.click();
+      await expect(
+        page.getByRole("menuitem", { name: "Rename project", exact: true }),
+      ).toBeVisible();
+      for (const name of [
+        "Choose versions (1) (REM)",
+        "Pause sync (REM)",
+        "Open in Desk (REM)",
+      ] as const)
+        await expect(
+          page.getByRole("menuitem", { name, exact: true }),
+        ).toHaveCount(0);
+      await options.click();
+      await expect(
+        page.getByRole("menuitem", { name: "Rename project", exact: true }),
+      ).toHaveCount(0);
+      // A project with a vault has a cloud on its chip and the vault report in the tooltip.
+      await expect(layrChip).toHaveAttribute("data-vault", "ok");
+      await expect(layrChip.locator("svg")).toHaveCount(1);
+      await expect(layrChip).toHaveAttribute(
+        "title",
+        /REM: Vault: saved 10 min ago$/,
+      );
+      await layrChip.click();
+      await expect(
+        page.getByText("Vault: saved 10 min ago (REM)"),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("menuitem", { name: "Pause sync (REM)", exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("menuitem", { name: "Open in Desk (REM)", exact: true }),
+      ).toHaveAttribute("href", "https://desk.example.com/home%20project/");
+      await expect(
+        page.getByRole("menuitem", { name: "Pull… (REM)", exact: true }),
+      ).toHaveCount(0);
+      // The screenshot waits for the end of the menu's opening transition.
+      await expect(
+        page.getByRole("menu").filter({
+          has: page.getByRole("menuitem", { name: "Open in Desk (REM)" }),
+        }),
+      ).toHaveCSS("opacity", "1");
+      await page.screenshot({
+        path: testInfo.outputPath(`vault-menu-${theme}.png`),
+      });
+      await page.keyboard.press("Escape");
+
+      // The project's secrets: the dialog lists names, adds one with a hidden value, and
+      // removes one; the remote server that holds the layr project takes each change.
+      await layrChip.click();
+      await page
+        .getByRole("menuitem", { name: "Secrets… (REM)", exact: true })
+        .click();
+      const secretsDialog = page.getByRole("dialog", {
+        name: "Secrets: Home project (REM)",
+      });
+      await expect(
+        secretsDialog.getByText("EXISTING_KEY", { exact: true }),
+      ).toBeVisible();
+      const nameField = secretsDialog.getByLabel("Name", { exact: true });
+      const valueField = secretsDialog.getByLabel("Value", { exact: true });
+      const add = secretsDialog.getByRole("button", {
+        name: "Add",
+        exact: true,
+      });
+      await expect(valueField).toHaveAttribute("type", "password");
+      await nameField.fill("lower-case");
+      await expect(
+        secretsDialog.getByText("Use only A to Z, 0 to 9 and _"),
+      ).toBeVisible();
+      await expect(add).toBeDisabled();
+      const secretValue = "zulip-value-from-the-browser";
+      await nameField.fill("ZULIP_APEIRO_SHOWROOM_API_KEY");
+      await valueField.fill(secretValue);
+      await add.click();
+      await expect(
+        secretsDialog.getByText("ZULIP_APEIRO_SHOWROOM_API_KEY"),
+      ).toBeVisible();
+      await expect(nameField).toHaveValue("");
+      await expect(valueField).toHaveValue("");
+      await expect(secretsDialog).not.toContainText(secretValue);
+      await page.screenshot({
+        path: testInfo.outputPath(`project-secrets-${theme}.png`),
+      });
+      await secretsDialog
+        .getByRole("button", { name: "Remove EXISTING_KEY", exact: true })
+        .click();
+      await expect(
+        secretsDialog.getByText("EXISTING_KEY", { exact: true }),
+      ).toHaveCount(0);
+      expect(secretCalls.map((call) => call.path)).toEqual([
+        "/api/project-secrets/list",
+        "/api/project-secrets/set",
+        "/api/project-secrets/remove",
+      ]);
+      expect(requiredFixtureValue(secretCalls[1]).body).toEqual({
+        projectId: "remote-layr",
+        name: "ZULIP_APEIRO_SHOWROOM_API_KEY",
+        value: secretValue,
+        requestId: expect.any(String),
+      });
+      expect(requiredFixtureValue(secretCalls[2]).body).toEqual({
+        projectId: "remote-layr",
+        name: "EXISTING_KEY",
+        requestId: expect.any(String),
+      });
+      expect(requiredFixtureValue(secretCalls[2]).body.requestId).not.toBe(
+        requiredFixtureValue(secretCalls[1]).body.requestId,
+      );
+      // Escape would also close the mobile sidebar drawer.
+      await secretsDialog.getByRole("button", { name: "Close" }).click();
+      await expect(secretsDialog).toHaveCount(0);
+      expect(calls.local).toEqual([]);
+      expect(errors).toEqual([]);
+      await testInfo.attach("owner-requests", {
+        body: JSON.stringify(calls, null, 2),
+        contentType: "application/json",
+      });
+    } finally {
+      await remote.close();
+      await local.close();
+    }
+  });
+}
+
+test("offline folder expansion does not change the saved source state after reconnect", async ({
+  page,
+  context,
+}, testInfo) => {
+  test.setTimeout(60000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const preferenceWrites = [];
+  const local = await fixture("Local");
+  const remote = await fixture("Remote", true, {
+    handle: ({ request, url, body }) => {
+      if (request.method === "POST" && url.pathname === "/api/sync/preferences")
+        preferenceWrites.push(body);
+      return false;
+    },
+  });
+  const path = "/remote/project";
+  const key = ":server:remote:codex-project-tree:/same/state";
+  const saved = { [JSON.stringify([path, "folder", "folder"])]: true };
+  Object.assign(
+    remote.snapshot.runtime.projects[0] ??
+      (() => {
+        throw new Error("Missing fixture project");
+      })(),
+    {
+      path,
+      name: "Remote project",
+      folders: [{ id: "folder", name: "Saved closed folder" }],
+    } satisfies Partial<ProjectEntityDto>,
+  );
+  Object.assign(
+    remote.snapshot.threads[0] ??
+      (() => {
+        throw new Error("Missing fixture chat");
+      })(),
+    {
+      cwd: path,
+      projectFolder: "folder",
+      updated: Date.now() / 1000,
+    } satisfies Partial<TestAgent>,
+  );
+  Object.assign(remote.snapshot.runtime, {
+    projectOrganizationVersion: 1,
+    sidebarOrder: { revision: 1, groups: {} },
+  } satisfies Partial<TestRuntimeView>);
+  local.discoverPeer(remote);
+  try {
+    await context.addInitScript(
+      ({ origin, destination, key, saved }) => {
+        if (
+          new URLSearchParams(location.search).get("studio-server") === "remote"
+        )
+          localStorage.setItem(key, JSON.stringify(saved));
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+          const request = new Request(input, init);
+          const url = new URL(request.url);
+          if (url.origin !== origin) return nativeFetch(request);
+          const body = await request.clone().arrayBuffer();
+          return nativeFetch(destination + url.pathname + url.search, {
+            method: request.method,
+            headers: request.headers,
+            ...(body.byteLength ? { body } : {}),
+            signal: request.signal,
+            redirect: "error",
+            credentials: "omit",
+          });
+        };
+      },
+      {
+        origin: remote.invitation.origin,
+        destination: remote.origin,
+        key,
+        saved,
+      },
+    );
+    await page.goto(local.origin);
+    const sidebar = page.locator("#sidebar");
+    const folder = sidebar.getByRole("button", {
+      name: "Saved closed folder",
+      exact: true,
+    });
+    await expect(folder).toHaveAttribute("aria-expanded", "false");
+    const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
+    const original = await remoteFrame
+      .locator("html")
+      .evaluate((_, key) => localStorage.getItem(key), key);
+    expect(JSON.parse(original ?? "null")).toEqual(saved);
+    const writesBefore = preferenceWrites.length;
+    remote.offline(true);
+    const newChat = sidebar.getByRole("button", {
+      name: "New chat in folder Saved closed folder",
+      exact: true,
+    });
+    await expect(newChat).toBeDisabled();
+    await folder.click();
+    await expect(folder).toHaveAttribute("aria-expanded", "true");
+    await expect(
+      sidebar.locator(".sidebar-row").filter({ hasText: "Remote chat" }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath("offline-expanded.png"),
+    });
+    expect(
+      await remoteFrame
+        .locator("html")
+        .evaluate((_, key) => localStorage.getItem(key), key),
+    ).toBe(original);
+    remote.offline(false);
+    remote.complete("fresh-after-reconnect");
+    await expect(newChat).toBeEnabled({ timeout: 20000 });
+    await expect(folder).toHaveAttribute("aria-expanded", "false", {
+      timeout: 20000,
+    });
+    expect(
+      await remoteFrame
+        .locator("html")
+        .evaluate((_, key) => localStorage.getItem(key), key),
+    ).toBe(original);
+    expect(preferenceWrites.length).toBe(writesBefore);
+    expect(remote.writes).toEqual([]);
+    expect(local.writes).toEqual([]);
+  } finally {
+    await remote.close();
+    await local.close();
+  }
+});

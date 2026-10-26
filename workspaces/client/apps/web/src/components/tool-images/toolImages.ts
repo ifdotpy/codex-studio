@@ -1,4 +1,4 @@
-import type { Json, JsonValue } from "../../types";
+import type { Json, JsonInput, JsonValue } from "../../types";
 
 export interface ToolImage {
   kind: "path" | "inline";
@@ -92,7 +92,7 @@ export function toolImages(payload: Json): ToolImage[] {
 
 // Preserve text and errors in the raw event without serializing image data again.
 export function toolImageDisplayPayload(payload: Json): Json {
-  const block = (value: JsonValue): JsonValue => {
+  const block = (value: JsonInput): JsonInput => {
     const object = objectValue(value);
     if (!object) return value;
     if (object.type === "inputImage")

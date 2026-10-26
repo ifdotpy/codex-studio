@@ -1,11 +1,18 @@
+// @ts-check
+/** @import { ShellManifest } from "../scripts/build-manifests.ts" */
+const worker =
+  /** @type {ServiceWorkerGlobalScope & typeof globalThis & { STUDIO_SHELL?: ShellManifest }} */ (
+    self
+  );
 // Vite prefixes this file with the exact build and static asset lists.
-if (self.STUDIO_SHELL) {
-  const { build, initial, allowed } = self.STUDIO_SHELL;
+if (worker.STUDIO_SHELL) {
+  const { build, initial, allowed } = worker.STUDIO_SHELL;
   const prefix = "studio-shell-v1-";
   const cacheName = prefix + build;
   const paths = new Set(allowed);
   const manifestPath = "/__studio_shell_manifest__";
   const hashedAsset = /^\/assets\/[^/]+-[\w-]{8,}\.[a-z0-9]+$/;
+  /** @param {unknown} path */
   const staticPath = (path) =>
     typeof path === "string" &&
     (["/", "/manifest.webmanifest", "/apple-touch-icon.png"].includes(path) ||
@@ -14,10 +21,12 @@ if (self.STUDIO_SHELL) {
     const names = (await caches.keys())
       .filter((name) => name.startsWith(prefix))
       .reverse();
+    /** @type {{cache: Cache, manifest: ShellManifest, html: Response}[]} */
     const complete = [];
     for (const name of names) {
       const cache = await caches.open(name);
       // oxfmt-ignore
+      /** @type {ShellManifest | null | undefined} */
       const manifest = await (await cache.match(manifestPath))
         ?.json()
         .catch(() => null);
@@ -57,16 +66,19 @@ if (self.STUDIO_SHELL) {
         return entry.html;
     }
   };
+  /** @param {string} text */
   const isCurrentHTML = (text) =>
     text.includes(`name="studio-build" content="${build}"`);
+  /** @param {Response} response */
   const valid = (response) =>
     response.ok && response.type !== "opaque" && !response.redirected;
+  /** @param {Response} response */
   const currentHTML = async (response) =>
     valid(response) &&
     (response.headers.get("content-type") || "").includes("text/html") &&
     isCurrentHTML(await response.clone().text());
 
-  self.addEventListener("install", (event) => {
+  worker.addEventListener("install", (event) => {
     event.waitUntil(
       (async () => {
         const cache = await caches.open(cacheName);
@@ -106,7 +118,7 @@ if (self.STUDIO_SHELL) {
     );
   });
 
-  self.addEventListener("activate", (event) => {
+  worker.addEventListener("activate", (event) => {
     event.waitUntil(
       (async () => {
         const names = (await caches.keys()).filter((name) =>
@@ -122,14 +134,15 @@ if (self.STUDIO_SHELL) {
     );
   });
 
-  self.addEventListener("message", (event) => {
-    if (event.data?.type === "STUDIO_SKIP_WAITING") void self.skipWaiting();
+  worker.addEventListener("message", (event) => {
+    if (event.data?.type === "STUDIO_SKIP_WAITING") void worker.skipWaiting();
   });
 
-  self.addEventListener("fetch", (event) => {
+  worker.addEventListener("fetch", (event) => {
     const request = event.request;
     const url = new URL(request.url);
-    if (request.method !== "GET" || url.origin !== self.location.origin) return;
+    if (request.method !== "GET" || url.origin !== worker.location.origin)
+      return;
     if (request.mode === "navigate" && url.searchParams.has("studio-update")) {
       event.respondWith(fetch(new Request(request, { cache: "reload" })));
       return;
@@ -167,7 +180,7 @@ if (self.STUDIO_SHELL) {
             if (await currentHTML(response)) {
               if (!serverView)
                 await cache?.put("/", response.clone()).catch(() => {});
-            } else void self.registration.update().catch(() => {});
+            } else void worker.registration.update().catch(() => {});
             return response;
           });
           // Keep a late same-build response, but do not hold a cached page behind
@@ -219,17 +232,19 @@ if (self.STUDIO_SHELL) {
 
 // Sign-in alerts through Web Push (docs/web-push.md). The server encrypts a payload with
 // only the alert text and the card tag. Show only those fields: never a link from a push.
-self.addEventListener("push", (event) => {
+worker.addEventListener("push", (event) => {
+  /** @type {{title?: unknown, body?: unknown, tag?: unknown}} */
   let alert = {};
   try {
     alert = event.data?.json() ?? {};
   } catch {
     alert = {};
   }
+  /** @param {unknown} value @param {string} fallback */
   const text = (value, fallback) =>
     typeof value === "string" && value ? value.slice(0, 200) : fallback;
   event.waitUntil(
-    self.registration.showNotification(text(alert.title, "Sign-in needed"), {
+    worker.registration.showNotification(text(alert.title, "Sign-in needed"), {
       body: text(alert.body, "Open Studio to sign in."),
       tag: text(alert.tag, "studio-sign-in"),
       icon: "/apple-touch-icon.png",
@@ -237,19 +252,19 @@ self.addEventListener("push", (event) => {
   );
 });
 
-self.addEventListener("notificationclick", (event) => {
+worker.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
-      const windows = await self.clients.matchAll({
+      const windows = await worker.clients.matchAll({
         type: "window",
         includeUncontrolled: true,
       });
       const studio = windows.find(
-        (client) => new URL(client.url).origin === self.location.origin,
+        (client) => new URL(client.url).origin === worker.location.origin,
       );
       if (studio) await studio.focus();
-      else await self.clients.openWindow("/");
+      else await worker.clients.openWindow("/");
     })(),
   );
 });

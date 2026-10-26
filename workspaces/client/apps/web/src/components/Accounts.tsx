@@ -296,9 +296,9 @@ export function AccountCapacityView({
   account: Pick<Account, "status" | "email" | "label">;
   view: AccountLimitView;
   card?: boolean;
-  note?: ReactNode;
-  extraDetails?: ReactNode;
-  facts?: ReactNode;
+  note?: ReactNode | undefined;
+  extraDetails?: ReactNode | undefined;
+  facts?: ReactNode | undefined;
 }) {
   const { limits, buckets, remaining, error: limitsError } = view;
   const credits = jsonObject(jsonObject(limits?.data)?.rateLimitResetCredits);
@@ -586,7 +586,7 @@ export function AccountTransferStatus({
             <Button
               size="compact-xs"
               variant="subtle"
-              disabled={pending}
+              disabled={!!pending}
               onClick={() => onAction("retry")}
             >
               Retry
@@ -620,7 +620,7 @@ export function AccountTransferStatus({
 export function AccountTransferChip({
   transfer,
 }: {
-  transfer?: NonNullable<Agent["accountTransfer"]>;
+  transfer?: NonNullable<Agent["accountTransfer"]> | undefined;
 }) {
   if (!transfer || transfer.status !== "pending") return null;
   const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
@@ -662,7 +662,7 @@ export function AccountTransferConfirmation({
   onClose: () => void;
   target: Account | null;
   sourceProvider: string;
-  extend?: boolean;
+  extend?: boolean | undefined;
   onConfirm: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);

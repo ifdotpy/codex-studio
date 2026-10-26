@@ -1,3 +1,9 @@
+import { NativeSelect, Switch } from "@mantine/core";
+import type { PostBody } from "../../apiTypes";
+import type { ComponentHookCell } from "../componentTestFixtures";
+import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
+import assert from "node:assert/strict";
+import { required } from "../componentTestFixtures";
 import {
   createElement,
   isValidElement,
@@ -7,8 +13,31 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 import type { Agent } from "../../types";
 
+type SwitchFixtureProps = Omit<ComponentProps<typeof Switch>, "onChange"> & {
+  onChange(event: {
+    currentTarget: Pick<
+      Parameters<
+        NonNullable<ComponentProps<typeof Switch>["onChange"]>
+      >[0]["currentTarget"],
+      "checked"
+    >;
+  }): void;
+};
+type SelectFixtureProps = Omit<
+  ComponentProps<typeof NativeSelect>,
+  "onChange"
+> & {
+  onChange(event: {
+    currentTarget: Pick<
+      Parameters<
+        NonNullable<ComponentProps<typeof NativeSelect>["onChange"]>
+      >[0]["currentTarget"],
+      "value"
+    >;
+  }): void;
+};
 const h = vi.hoisted(() => ({
-  cells: new Map<string, any[]>(),
+  cells: new Map<string, ComponentHookCell[]>(),
   storage: new Map<string, unknown>(),
   scope: "",
   scoped: "",
@@ -27,10 +56,12 @@ vi.mock("react", async (load) => ({
       value: typeof initial === "function" ? initial() : initial,
     };
     return [
-      cells[index].value,
+      required(cells[index]).value,
       (value: unknown) => {
-        cells[index].value =
-          typeof value === "function" ? value(cells[index].value) : value;
+        required(cells[index]).value =
+          typeof value === "function"
+            ? value(required(cells[index]).value)
+            : value;
       },
     ];
   },
@@ -42,11 +73,11 @@ vi.mock("react", async (load) => ({
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
-    if (!previous || deps.some((value, i) => value !== previous.deps[i]))
+    if (!previous || deps.some((value, i) => value !== previous.deps?.[i]))
       cells[index] = { deps, value: compute() };
-    return cells[index].value;
+    return required(cells[index]).value;
   },
-  useEffect: (effect: () => unknown, deps: unknown[]) => {
+  useEffect: (effect: EffectCallback, deps: unknown[]) => {
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
@@ -56,10 +87,10 @@ vi.mock("react", async (load) => ({
       deps.some((value, i) => value !== previous.deps?.[i])
     ) {
       previous?.cleanup?.();
-      const cell = { deps, cleanup: undefined as unknown };
+      const cell: ComponentHookCell = { deps };
       cells[index] = cell;
       h.effects.push(() => {
-        cell.cleanup = effect();
+        cell.cleanup = effect() || undefined;
       });
     }
   },
@@ -96,21 +127,27 @@ vi.mock("./WorkerModelPicker", async (load) => ({
     retry: vi.fn(),
   }),
 }));
+import { AgentSetupPicker } from "./AgentSetupPicker";
 import { ExecutionSettings, ExecutionPermissions } from "./ExecutionSettings";
 import { ClaudeSettings } from "../ClaudeSettings";
 import { ExecutionSummaryTrigger } from "./ExecutionSummaryTrigger";
 
-function children(node: ReactNode): ReactElement<any>[] {
+function children(
+  node: ReactNode,
+): ReactElement<PropsWithChildren<Record<string, unknown>>>[] {
   if (Array.isArray(node)) return node.flatMap(children);
   if (!isValidElement<{ children?: ReactNode }>(node)) return [];
   return [node, ...children(node.props.children)];
 }
-function invoke(element: ReactElement<any>) {
-  const component = element.type as (props: any) => ReactElement<any>;
+function invoke(element: ReactElement<unknown>) {
+  const component: unknown = element.type;
+  assert.ok(typeof component === "function");
   h.scope = component.name + (element.key || "");
   h.cursor = 0;
   if (!h.cells.has(h.scope)) h.cells.set(h.scope, []);
-  return component(element.props);
+  const result: unknown = component(element.props);
+  assert.ok(isValidElement<PropsWithChildren<Record<string, unknown>>>(result));
+  return result;
 }
 const initial: Agent = {
   id: "lead",
@@ -120,6 +157,26 @@ const initial: Agent = {
   model: "gpt-6-astra",
   effort: "medium",
   status: "idle",
+};
+function render(
+  agent?: Agent,
+  permissions?: false,
+): {
+  controls: ReturnType<typeof invoke>;
+  model: ReactNode;
+  label: unknown;
+  picker: ComponentProps<typeof AgentSetupPicker>;
+  triggerAgent: Agent;
+};
+function render(
+  agent: Agent,
+  permissions: true,
+): {
+  controls: ReturnType<typeof invoke>;
+  model: string;
+  label: string;
+  picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
+  triggerAgent: Agent;
 };
 function render(agent = initial, permissions = false) {
   const controller = invoke(
@@ -162,13 +219,22 @@ function render(agent = initial, permissions = false) {
       controls,
       model: "",
       label: "",
-      picker: {} as any,
+      picker: {},
       triggerAgent: agent,
     };
   const picker = children(controls).find(
     (node) =>
       typeof node.type === "function" && node.type.name === "AgentSetupPicker",
   )!;
+  assert.ok(
+    isValidElement<ComponentProps<typeof ExecutionSummaryTrigger>>(
+      menu.props.trigger,
+    ),
+  );
+  assert.ok(
+    isValidElement<ComponentProps<typeof AgentSetupPicker>>(picker) &&
+      picker.type === AgentSetupPicker,
+  );
   const trigger = invoke(menu.props.trigger);
   const model = children(trigger).find(
     (node) => node.props.className === "execution-model",
@@ -231,7 +297,9 @@ test("queued settings and account changes keep their canonical scope", async () 
   h.post.mockResolvedValue(queued);
   render(active).picker.onModel("gpt-6-luna");
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
-  expect(h.post.mock.calls[0][1]).toMatchObject({ next_turn: true });
+  expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+    next_turn: true,
+  });
   expect(render(active).model).toBe("Luna 6");
   expect(render(queued).label).toContain("Lead Luna 6 High");
   expect(render({ ...initial, accountKey: "other" }).model).toBe("Astra 6");
@@ -338,7 +406,7 @@ test("newer same-field SSE wins over an older in-flight model response", async (
 for (const changed of [
   { ...initial, id: "other-chat" },
   { ...initial, accountKey: "other" },
-]) {
+] as const) {
   test(`an old response cannot cross ${changed.id === initial.id ? "account" : "chat"} scope`, async () => {
     let finish!: (agent: Agent) => void;
     h.post.mockImplementation(
@@ -379,9 +447,9 @@ test("an older same-domain request cannot replace the latest acknowledgment", as
   render().picker.onRole("orchestrator");
   render().picker.onModel("gpt-6-astra");
   expect(finish).toHaveLength(2);
-  finish[1]({ ...initial, model: "gpt-6-astra" });
+  required(finish[1])({ ...initial, model: "gpt-6-astra" });
   await Promise.resolve();
-  finish[0]({ ...initial, model: "gpt-6-luna" });
+  required(finish[0])({ ...initial, model: "gpt-6-luna" });
   await Promise.resolve();
   expect(render().model).toBe("Astra 6");
 });
@@ -398,7 +466,8 @@ for (const status of ["running", "approval"] as const) {
       true,
     ).controls;
     const permission = children(controls).find(
-      (node) => node.props["aria-label"] === "Full access without approval",
+      (node): node is ReactElement<SwitchFixtureProps> =>
+        node.props["aria-label"] === "Full access without approval",
     )!;
     expect(permission).toBeDefined();
     expect(permission.props.disabled).toBe(false);
@@ -420,7 +489,8 @@ for (const status of ["running", "approval"] as const) {
     await new Promise<void>(queueMicrotask);
     const controls = invoke(element);
     const permission = children(controls).find(
-      (node) => node.props.label === "Permission mode",
+      (node): node is ReactElement<SelectFixtureProps> =>
+        node.props.label === "Permission mode",
     )!;
     expect(permission).toBeDefined();
     expect(permission.props.disabled).toBe(false);
@@ -438,7 +508,8 @@ test("Codex explains when Ask takes effect for a turn started with Full", () => 
     true,
   ).controls;
   const permission = children(controls).find(
-    (node) => node.props["aria-label"] === "Full access without approval",
+    (node): node is ReactElement<SwitchFixtureProps> =>
+      node.props["aria-label"] === "Full access without approval",
   )!;
   expect(permission.props.description).toBe(
     "Ask policy changes apply from the next turn.",
@@ -448,7 +519,8 @@ test("Codex explains when Ask takes effect for a turn started with Full", () => 
 test("Codex describes the selected Ask mode truthfully", () => {
   const controls = render({ ...initial, yoloMode: false }, true).controls;
   const permission = children(controls).find(
-    (node) => node.props["aria-label"] === "Full access without approval",
+    (node): node is ReactElement<SwitchFixtureProps> =>
+      node.props["aria-label"] === "Full access without approval",
   )!;
   expect(permission.props.description).toBe("Tools ask for permission.");
 });
@@ -456,7 +528,8 @@ test("Codex describes the selected Ask mode truthfully", () => {
 test("a superseding Ask intent prevents reuse of a lost Full request identity", async () => {
   const control = (agent: Agent) =>
     children(render(agent, true).controls).find(
-      (node) => node.props["aria-label"] === "Full access without approval",
+      (node): node is ReactElement<SwitchFixtureProps> =>
+        node.props["aria-label"] === "Full access without approval",
     )!;
   const ask = { ...initial, yoloMode: false };
   const full = { ...initial, yoloMode: true };
@@ -476,26 +549,39 @@ test("a superseding Ask intent prevents reuse of a lost Full request identity", 
 for (const [first, opposite] of [
   ["bypassPermissions", "default"],
   ["default", "bypassPermissions"],
-]) {
+] as const) {
   test(`Claude replaces a superseded lost ${first} intent after reopening`, async () => {
-    let persisted = opposite;
+    let persisted: Extract<
+      PostBody<"/api/claude/session">,
+      { action: "settings" }
+    >["settings"]["permissionMode"] = opposite;
     let loseResponse = true;
-    const mutations: any[] = [];
-    h.post.mockImplementation(async (_path, body) => {
-      if (body.action === "settings") {
-        mutations.push(body);
-        persisted = body.settings.permissionMode;
-        if (loseResponse) throw new Error("response lost");
-        return {};
-      }
-      return { settings: { permissionMode: persisted }, turns: [], tasks: [] };
-    });
+    const mutations: Extract<
+      PostBody<"/api/claude/session">,
+      { action: "settings" }
+    >[] = [];
+    h.post.mockImplementation(
+      async (_path: string, body: PostBody<"/api/claude/session">) => {
+        if (body.action === "settings") {
+          mutations.push(body);
+          persisted = body.settings.permissionMode;
+          if (loseResponse) throw new Error("response lost");
+          return {};
+        }
+        return {
+          settings: { permissionMode: persisted },
+          turns: [],
+          tasks: [],
+        };
+      },
+    );
     const element = createElement(ClaudeSettings, {
       agent: { ...initial, provider: "claude" },
     });
     const control = () =>
       children(invoke(element)).find(
-        (node) => node.props.label === "Permission mode",
+        (node): node is ReactElement<SelectFixtureProps> =>
+          node.props.label === "Permission mode",
       )!;
     const reopen = async () => {
       for (const cell of h.cells.get("ClaudeSettings") || []) cell.cleanup?.();
@@ -523,31 +609,40 @@ for (const [first, opposite] of [
 }
 
 test("a late Claude success preserves the newer unresolved permission request", async () => {
-  let persisted = "default";
+  let persisted: Extract<
+    PostBody<"/api/claude/session">,
+    { action: "settings" }
+  >["settings"]["permissionMode"] = "default";
   let finish!: (value: unknown) => void;
-  const mutations: any[] = [];
-  h.post.mockImplementation((_path, body) => {
-    if (body.action === "settings") {
-      mutations.push(body);
-      persisted = body.settings.permissionMode;
-      return mutations.length === 1
-        ? new Promise((resolve) => {
-            finish = resolve;
-          })
-        : Promise.reject(new Error("response lost"));
-    }
-    return Promise.resolve({
-      settings: { permissionMode: persisted },
-      turns: [],
-      tasks: [],
-    });
-  });
+  const mutations: Extract<
+    PostBody<"/api/claude/session">,
+    { action: "settings" }
+  >[] = [];
+  h.post.mockImplementation(
+    (_path: string, body: PostBody<"/api/claude/session">) => {
+      if (body.action === "settings") {
+        mutations.push(body);
+        persisted = body.settings.permissionMode;
+        return mutations.length === 1
+          ? new Promise((resolve) => {
+              finish = resolve;
+            })
+          : Promise.reject(new Error("response lost"));
+      }
+      return Promise.resolve({
+        settings: { permissionMode: persisted },
+        turns: [],
+        tasks: [],
+      });
+    },
+  );
   const element = createElement(ClaudeSettings, {
     agent: { ...initial, provider: "claude" },
   });
   const control = () =>
     children(invoke(element)).find(
-      (node) => node.props.label === "Permission mode",
+      (node): node is ReactElement<SelectFixtureProps> =>
+        node.props.label === "Permission mode",
     )!;
   const reopen = async () => {
     for (const cell of h.cells.get("ClaudeSettings") || []) cell.cleanup?.();

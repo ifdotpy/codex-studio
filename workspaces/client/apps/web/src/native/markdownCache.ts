@@ -40,10 +40,12 @@ function unpack(value: Packed, strings: string[]): unknown {
 export class MarkdownCache {
   private entries = new Map<string, { json: string; bytes: number }>();
   private bytes = 0;
-  constructor(
-    private maxBytes = 4 * 1024 * 1024,
-    private maxEntries = 512,
-  ) {}
+  declare private maxBytes: number;
+  declare private maxEntries: number;
+  constructor(maxBytes = 4 * 1024 * 1024, maxEntries = 512) {
+    this.maxBytes = maxBytes;
+    this.maxEntries = maxEntries;
+  }
   get(text: string): unknown | undefined {
     const entry = this.entries.get(text);
     if (!entry) return undefined;

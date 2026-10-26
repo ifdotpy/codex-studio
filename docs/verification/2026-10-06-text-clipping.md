@@ -9,7 +9,7 @@ and 1440x900 dark with Appearance text at 24px.
 The mobile terminal is unavailable in the shared harness.
 The mobile sidebar scene runs only in the mobile profile.
 
-The detector is in `tests/client/layout/text-clipping.mjs`.
+The detector is in `tests/client/layout/text-clipping.ts`.
 The runner and isolated fixture are in `/tmp/ui-compare/clip-audit/`.
 See their README files for usage.
 All heavy commands use `/tmp/ui-compare/heavy.sh`.

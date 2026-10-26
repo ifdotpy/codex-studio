@@ -72,7 +72,8 @@ function server({ keys = false, signedIn = true } = {}) {
     throw new Error(`no fake for ${path}`);
   };
   const finish = (job: "login" | "setup") => {
-    const requestId = [...listeners.keys()][0];
+    const [requestId] = listeners.keys();
+    if (requestId === undefined) throw new Error("Missing vault job listener");
     if (job === "login") state.signedIn = true;
     const value = {
       requestId,
@@ -119,7 +120,8 @@ const desktop = (keysAfter: () => void) => {
     },
   } as never;
   return () => {
-    window.codexDesktop = original;
+    if (original === undefined) delete window.codexDesktop;
+    else window.codexDesktop = original;
   };
 };
 
@@ -161,7 +163,9 @@ export const PaperKeyThenVault: Story = {
       "My Project: the vault my-project is ready",
     );
     const setup = fake.state.posts.filter(([p]) => p === "/api/vault/setup");
-    await expect(setup[0][1]).toMatchObject({
+    const [firstSetup] = setup;
+    if (!firstSetup) throw new Error("Missing vault setup request");
+    await expect(firstSetup[1]).toMatchObject({
       projectId: "p1",
       prefix: "my-project",
       profile: "work",

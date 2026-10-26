@@ -24,7 +24,11 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
   return info;
 }
 
-export default function WorkspaceBadge({ agent }: { agent?: Agent }) {
+export default function WorkspaceBadge({
+  agent,
+}: {
+  agent?: Agent | undefined;
+}) {
   const info = workspaceBadgeInfo(agent);
   if (!info) return null;
   return (

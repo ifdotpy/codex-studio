@@ -164,7 +164,7 @@ The source owners are `runtime-store` for table and resource observers,
 the resource subscriber. Keep the HTTP classifier limited to the resource
 observer; do not remove the separate broad commit signal, explicit route
 notifications, or any non-SQL source. The tracked [Rust chat lifecycle
-verifier](../../workspaces/client/apps/web/scripts/verify-rust-chat-lifecycle.mjs)
+verifier](../../workspaces/client/apps/web/scripts/verify-rust-chat-lifecycle.ts)
 passed against real state on the `1ed0548b`-equivalent tree: one Luna chat was
 created (195 ms), acknowledged (252 ms), answered (7,019 ms), and deleted
 (1,443 ms). A 15-second steady window observed zero requests and zero errors;

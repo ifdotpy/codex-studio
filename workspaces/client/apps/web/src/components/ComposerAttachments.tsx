@@ -8,14 +8,8 @@ import { errorText } from "../api";
 import { IconAction } from "./ui/actions/IconAction";
 import FilePreview from "./FilePreview";
 
-export interface Attachment {
-  id: string;
-  name: string;
-  mime: string;
-  image: boolean;
-  size: number;
-  preview?: string;
-}
+export type { LocalMessageAttachment as Attachment } from "../types";
+import type { LocalMessageAttachment as Attachment } from "../types";
 export { attachmentLimit } from "../sync/uploads";
 export default function ComposerAttachments(p: {
   notify: (message: string) => void;

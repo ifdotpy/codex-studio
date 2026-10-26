@@ -1,12 +1,11 @@
 import { randomUUID } from "../uuid";
 import { serverLocalStorage } from "../servers/storage";
+import type { Account } from "./Accounts";
 
-export type AccountDeleteTarget = {
-  id: string;
-  provider?: string | null;
-  email?: string | null;
-  label: string;
-};
+export type AccountDeleteTarget = Pick<
+  Account,
+  "id" | "provider" | "email" | "label"
+>;
 
 export type ExternalAccountIdentity = {
   accountKey?: string;

@@ -223,13 +223,13 @@ function useCompactHeaderTools() {
 export default function Conversation(p: {
   id: string | null;
   visible?: boolean;
-  projectName?: string;
-  recentChats?: RecentProjectChat[];
-  syncWorkspaceId?: string;
-  agent?: Agent;
-  lead?: Agent;
-  room?: Room;
-  legacy?: Json;
+  projectName?: string | undefined;
+  recentChats?: RecentProjectChat[] | undefined;
+  syncWorkspaceId?: string | undefined;
+  agent?: Agent | undefined;
+  lead?: Agent | undefined;
+  room?: Room | undefined;
+  legacy?: Json | undefined;
   data: ConversationData;
   waitSource: ChatWaitSource;
   getDraft: DraftReader;
@@ -261,9 +261,9 @@ export default function Conversation(p: {
   limits: Json | null;
   limitsAccounts?: UsageAccount[];
   limitsLoading?: boolean;
-  jumpTarget?: { messageId: string; requestId: string };
+  jumpTarget?: { messageId: string; requestId: string } | undefined;
   onJumpHandled?: (requestId: string) => void;
-  limitsAccountLabel?: string;
+  limitsAccountLabel?: string | undefined;
   reloadLimits: () => void;
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();

@@ -7,6 +7,7 @@ import {
   ApiError,
   READ_DEADLINE_MS,
   type GetResult,
+  type GetOptions,
   type PostBody,
 } from "../api";
 import {
@@ -75,10 +76,7 @@ export function defaultWorkspaceMode(
   return defaultChatWorkspaceMode(system, nativeLayr?.ready === true);
 }
 
-type ChatReadOptions = {
-  query?: { account_key?: string; workers?: "1"; retry?: "1" };
-  signal?: AbortSignal;
-};
+type ChatReadOptions = Pick<GetOptions<"/api/models">, "query" | "signal">;
 type ChatReadPath =
   | "/api/accounts"
   | "/api/models"

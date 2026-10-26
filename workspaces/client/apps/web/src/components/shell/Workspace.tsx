@@ -48,7 +48,7 @@ import {
   type PostBody,
   type PostResult,
 } from "../../api";
-import type { Agent, Json, JsonValue, Snapshot } from "../../types";
+import type { Agent, Json, JsonInput, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelField } from "../models/ModelField";
 import {
@@ -65,10 +65,10 @@ import { WorkerLaunchDialog, type WorkerLaunch } from "./WorkerLaunchDialog";
 
 type Props = {
   initialSection?: string;
-  initialFocus?: { id: string; requestId: string; roomId?: string };
+  initialFocus?: { id: string; requestId: string; roomId?: string } | undefined;
   opened: boolean;
   onClose: () => void;
-  agent?: Agent;
+  agent?: Agent | undefined;
   data: Snapshot;
   allRequests: NonNullable<Snapshot["runtime"]>["requests"];
   onSelect: (id: string, messageId?: string) => void;
@@ -1668,7 +1668,7 @@ function Rules(c: Context) {
 }
 
 type RuleRecord = GetResult<"/api/rules">["rules"][number];
-type RuleAction = PostBody<"/api/rules">["action"];
+type RuleAction = NonNullable<PostBody<"/api/rules">["action"]>;
 type RuleDraft = {
   id: string;
   isNew?: boolean;
@@ -1711,7 +1711,10 @@ export function parseRuleDraft(value: Json | null): RuleDraft | null {
     !isRuleKind(value.kind)
   )
     return null;
-  const asNumberOrString = (candidate: JsonValue, fallback: number) =>
+  const asNumberOrString = (
+    candidate: JsonInput | undefined,
+    fallback: number,
+  ) =>
     typeof candidate === "number" || typeof candidate === "string"
       ? candidate
       : fallback;

@@ -1,3 +1,4 @@
+import type { components } from "../generated/api";
 import { afterEach, expect, it, vi } from "vitest";
 import { createSessionCostCache } from "./sessionCostCache";
 
@@ -24,14 +25,18 @@ it("isolates in-memory and persisted estimates for matching session IDs", () => 
     storageB = storage();
   const a = createSessionCostCache(storageA),
     b = createSessionCostCache(storageB);
-  const cost = (totalUSD: number) => ({
-    rootId: "same",
-    pricingState: "ready",
-    estimated: true,
-    unknownModels: [],
-    breakdown: {},
-    totalUSD,
-  });
+  const cost = (totalUSD: number) =>
+    ({
+      rootId: "same",
+      cacheAgeSeconds: 0,
+      pricedSamples: 0,
+      refreshing: false,
+      pricingState: "ready",
+      estimated: true,
+      unknownModels: [],
+      breakdown: { models: {}, providers: {} },
+      totalUSD,
+    }) satisfies components["schemas"]["SessionCostResponse"];
   a.storeSessionCost("state", "same", cost(1));
   expect(b.peekSessionCost("state", "same")).toBeNull();
   b.storeSessionCost("state", "same", cost(9));

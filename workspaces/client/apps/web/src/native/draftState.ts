@@ -1,14 +1,8 @@
 import { randomUUID } from "../uuid";
 import type { DraftJournal } from "./draftJournal";
-import type { DraftVersion } from "../sync/drafts";
 
-export type DraftView = {
-  drafts: Record<string, string>;
-  conflicts: DraftVersion[];
-  workspaceId: string;
-  revision: number;
-  error?: string;
-};
+import type { DraftView } from "./host";
+export type { DraftView } from "./host";
 type Invoke = <T>(method: string, params: unknown, id?: string) => Promise<T>;
 type Edit = { id: string; changes: Record<string, string> };
 
@@ -27,11 +21,14 @@ export class NativeDraftState {
   private listeners = new Set<() => void>();
   private snapshot: DraftView & { pending: boolean; localError: string };
 
-  constructor(
-    readonly workspace: string,
-    private invoke: Invoke,
-    private journal?: DraftJournal,
-  ) {
+  declare readonly workspace: string;
+  declare private invoke: Invoke;
+  declare private journal: DraftJournal | undefined;
+  constructor(workspace: string, invoke: Invoke, journal?: DraftJournal) {
+    this.workspace = workspace;
+    this.invoke = invoke;
+    this.journal = journal;
+
     this.committed = {
       drafts: {},
       conflicts: [],

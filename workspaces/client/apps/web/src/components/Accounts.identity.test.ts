@@ -33,10 +33,13 @@ const personal: Account = {
   source: "fixture",
 };
 const team: Account = {
-  ...personal,
   id: "team",
+  provider: "claude",
+  email: "same@example.test",
   label: "Team",
+  status: "ready",
   home: "/fixture/team",
+  source: "fixture",
 };
 beforeEach(() => {
   hooks.effects = [];

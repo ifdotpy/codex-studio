@@ -1,3 +1,7 @@
+import type {
+  ShellManifest,
+  RendererManifest,
+} from "./scripts/build-manifests.ts";
 import { defineConfig } from "vite";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -54,7 +58,7 @@ export default defineConfig({
             version: 1,
             build,
             apiSchema: API_SCHEMA_HASH,
-          }),
+          } satisfies RendererManifest),
         });
         const initial = new Set<string>([
           "/",
@@ -87,7 +91,7 @@ export default defineConfig({
         this.emitFile({
           type: "asset",
           fileName: "studio-sw.js",
-          source: `self.STUDIO_SHELL = ${JSON.stringify({ build, initial: [...initial], allowed })};\n${worker}`,
+          source: `self.STUDIO_SHELL = ${JSON.stringify({ build, initial: [...initial], allowed } satisfies ShellManifest)};\n${worker}`,
         });
       },
     },

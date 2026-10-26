@@ -2,12 +2,21 @@ import type { ServerAccessRequest } from "./accessContract";
 const prefix = "studio-server-management-v1:";
 const legacyKey = "studio-server-discovery-pending-v1";
 export class ServerManagementRequests {
+  private scope: string;
+  private storage: Storage;
+  private lock: (name: string, run: () => Promise<void>) => Promise<void>;
+  private send: (request: ServerAccessRequest) => Promise<void>;
   constructor(
-    private scope: string,
-    private storage: Storage,
-    private lock: (name: string, run: () => Promise<void>) => Promise<void>,
-    private send: (request: ServerAccessRequest) => Promise<void>,
-  ) {}
+    scope: string,
+    storage: Storage,
+    lock: (name: string, run: () => Promise<void>) => Promise<void>,
+    send: (request: ServerAccessRequest) => Promise<void>,
+  ) {
+    this.scope = scope;
+    this.storage = storage;
+    this.lock = lock;
+    this.send = send;
+  }
   private key(id: string) {
     return prefix + encodeURIComponent(this.scope) + ":" + id;
   }

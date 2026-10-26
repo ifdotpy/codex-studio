@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import type { NativeEvent } from "./host";
 // The shell owns every native audio identity. A server view cannot observe,
 // stop, or transcribe another view's recording, even with a copied token.
 type Invoke = (
@@ -6,8 +7,22 @@ type Invoke = (
   params: unknown,
   id?: string,
 ) => Promise<unknown>;
+// Native audio input views retain the host protocol's existing checks.
+type AudioParameters = Record<string, unknown> &
+  Record<
+    | "topic"
+    | "subscription"
+    | "session"
+    | "capture"
+    | "permit"
+    | "transfer"
+    | "value"
+    | "id",
+    string
+  >;
+type NativeAudioEvent = NativeEvent<{ id: string }>;
 type Listen = (callback: (value: unknown) => void) => Promise<() => void>;
-type AudioEvent = { event: string; value: unknown };
+type AudioEvent = NativeEvent;
 type Caller =
   | { frame: HTMLIFrameElement; origin: string; live: () => boolean }
   | {
@@ -21,7 +36,7 @@ type Subscription = {
   capture?: string;
   voice?: string;
 };
-export const audioFrameMethod = (method: string, params: any) =>
+export const audioFrameMethod = (method: string, params: unknown) =>
   [
     "desktop.requestMicrophone",
     "desktop.prepareTranscription",
@@ -39,7 +54,9 @@ export const audioFrameMethod = (method: string, params: any) =>
     "audio.unsubscribe",
   ].includes(method) ||
   (method === "view.subscribe" &&
-    ["microphone", "transcription", "voice"].includes(params?.topic));
+    ["microphone", "transcription", "voice"].includes(
+      (params as AudioParameters)?.topic,
+    ));
 
 export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
   const permits = new Map<string, Caller>();
@@ -99,7 +116,8 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
     });
   async function subscribeEvents() {
     if (!listen) throw new Error("Native audio events are unavailable.");
-    listening ??= listen((value: any) => {
+    listening ??= listen((input) => {
+      const value = input as NativeAudioEvent;
       const row = subscriptions.get(value?.event);
       if (!row || !row.caller.live() || closed) return;
       if (
@@ -156,10 +174,11 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
     },
     async request(
       method: string,
-      params: any,
+      input: unknown,
       id: string,
       caller: Caller,
     ): Promise<unknown> {
+      const params = input as AudioParameters;
       prune();
       if (closed || !caller.live()) throw new Error("The server view closed.");
       if (method === "desktop.requestMicrophone") {

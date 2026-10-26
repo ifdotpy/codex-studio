@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
 import {
   localSidebarBackend,
@@ -100,10 +101,12 @@ it("opens an offline saved folder without writes and restores its saved value af
     ],
   ).toBe(false);
   expect(backend.saved<Record<string, boolean>>(key, {})[field]).toBe(false);
+  assert.ok(sources[0] != null);
   sources[0].sidebar = { ...sources[0].sidebar };
   expect(wrap().backend.saved<Record<string, boolean>>(key, {})[field]).toBe(
     false,
   );
+  assert.ok(sources[1] != null);
   sources[1].online = true;
   expect(wrap().backend.saved<Record<string, boolean>>(key, {})[field]).toBe(
     false,
@@ -134,6 +137,7 @@ it("keeps offline Show more in memory and saves only an explicit later online ed
     "/remote": true,
   });
   expect(writes).not.toHaveBeenCalled();
+  assert.ok(sources[1] != null);
   sources[1].online = true;
   ({ model, backend } = wrap());
   previous = backend.saved<Record<string, boolean>>(key, {});
@@ -175,6 +179,7 @@ it("reports unrelated write failures without a visual override", () => {
 
 it("selection expansion stays in the session across snapshots and never writes on reconnect", () => {
   const { sources, writes, records, wrap } = setup();
+  assert.ok(sources[1] != null);
   sources[1].sidebar.collapsed = { "/remote": true };
   const { model, backend } = wrap();
   const field = model.projectKey("remote", "/remote");
@@ -199,8 +204,11 @@ it("selection expansion stays in the session across snapshots and never writes o
 
 it("ignores saved project collapse from the home and remote owners", () => {
   const { sources, writes, wrap } = setup();
+  assert.ok(sources[1] != null);
   sources[1].online = true;
+  assert.ok(sources[0] != null);
   sources[0].sidebar.collapsed = { "/local": false };
+  assert.ok(sources[1].sidebar.projects[0] != null);
   sources[1].sidebar.projects[0].projectAliases = [
     { serverId: "local", projectId: "/local", name: "local" },
   ];

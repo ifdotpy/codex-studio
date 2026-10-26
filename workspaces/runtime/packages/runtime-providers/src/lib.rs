@@ -25,3 +25,7 @@ pub use connection::{
 pub use initialize::{ClientName, initialize_params};
 pub use provider_kind::{ProviderKind, RequestIdScheme, UnknownProvider, WireProfile};
 pub use session::{BookError, PendingBook, RequestState, ResponseMatch};
+
+pub use studio_runtime_schema::provider_diagnostics;
+
+pub use studio_runtime_schema::supervisor_contract;

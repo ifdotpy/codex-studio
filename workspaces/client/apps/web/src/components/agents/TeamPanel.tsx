@@ -22,7 +22,7 @@ import {
 } from "./WorkerOverview";
 
 type Props = {
-  lead?: Agent | null;
+  lead?: Agent | null | undefined;
   workers: Agent[];
   retainedWorktrees?: Parameters<typeof TeamRetainedWorktrees>[0]["items"];
   accounts: Account[];

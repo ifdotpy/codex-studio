@@ -79,13 +79,13 @@ output-buffer allocations are excluded from the encoder allocation count.
 
 ### Reproduce the traffic sample
 
-The reusable [measurement script](../workspaces/tooling/apps/repository-checks/measure-sync-stream.mjs)
+The reusable [measurement script](../workspaces/tooling/apps/repository-checks/measure-sync-stream.ts)
 opens plain and Brotli-requested streams for the same interval, reports event and
 resource bytes/counts, and computes field churn for entity records. Supply an
 explicit resource file to include the desired chat IDs:
 
 ```sh
-node workspaces/tooling/apps/repository-checks/measure-sync-stream.mjs \
+node workspaces/tooling/apps/repository-checks/measure-sync-stream.ts \
   --url http://127.0.0.1:4620 --protocol 3 --seconds 30 \
   --resources-file /tmp/sync-resources.json --output /tmp/sync-report.json
 ```
@@ -203,13 +203,13 @@ implements whole-entity projection comparison; it does not use field patches.
 Reproduce with the private capture kept outside the checkout:
 
 ```sh
-node workspaces/tooling/apps/repository-checks/replay-view-scoped.mjs \
+node workspaces/tooling/apps/repository-checks/replay-view-scoped.ts \
   /path/to/events.sse /path/to/report.json
 ```
 
 The script reads the committed OpenAPI field/scope owners and the server encoder
 settings, verifies Brotli decompression against both inputs, and writes aggregate
 measurements without storing conversation text in this repository. The browser
-witness is `tests/sync/view-scoped-subscriptions-browser.spec.mjs`; it checks the
+witness is `tests/sync/view-scoped-subscriptions-browser.spec.ts`; it checks the
 real renderer's summary-only list, detail subscription on open, and removal
 after returning to the mobile list and advancing the grace period.

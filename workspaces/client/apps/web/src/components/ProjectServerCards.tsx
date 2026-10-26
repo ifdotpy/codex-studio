@@ -26,8 +26,8 @@ export default function ProjectServerCards({
 }: {
   project: LocationProject;
   servers: ProjectServerChoice[];
-  servicesFor?: (id: string) => ServerServices | undefined;
-  lastServer?: string;
+  servicesFor?: ((id: string) => ServerServices | undefined) | undefined;
+  lastServer?: string | undefined;
   onChoose: (location: ProjectLocation, settings: NewChatSettings) => void;
   onAdd: (server: string) => void;
   onCancel: () => void;
@@ -160,7 +160,7 @@ export default function ProjectServerCards({
                 <Button
                   variant="subtle"
                   size="xs"
-                  disabled={server.disabled}
+                  disabled={!!server.disabled}
                   onClick={() => onAdd(server.id)}
                 >
                   + Add folder on this server

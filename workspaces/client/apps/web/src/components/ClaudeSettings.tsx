@@ -18,7 +18,7 @@ import { busy, type Agent } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import AccountSignInNotice from "./AccountSignInNotice";
 import type { Account } from "./Accounts";
-import { requiresThinking } from "studio-claude-bridge/thinking.mjs";
+import { requiresThinking } from "studio-claude-bridge/thinking.ts";
 import "./claude-settings.css";
 
 function ClaudeDisclosure({
@@ -50,7 +50,7 @@ type ClaudeValues = {
     NonNullable<ClaudeSessionState["settings"]>["permissionMode"]
   >;
   thinking: boolean;
-  autoCompactWindow?: number;
+  autoCompactWindow?: number | undefined;
 };
 
 function permissionMode(value: string): ClaudeValues["permissionMode"] | null {
@@ -112,7 +112,7 @@ export function ClaudeSettings({
 }: {
   permissionsTargetId?: string;
   agent: Agent;
-  account?: Account;
+  account?: Account | undefined;
   onSignIn?: (accountKey: string) => void;
   onPermissionModeChange?: (
     mode: ClaudeValues["permissionMode"] | null,

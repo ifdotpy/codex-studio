@@ -1,4 +1,4 @@
-//! Desktop backend ownership rules ported from desktop/backend.cjs.
+//! Desktop backend ownership rules ported from desktop/backend.ts.
 use crate::backend::Backend;
 use serde::Deserialize;
 #[cfg(test)]
@@ -20,7 +20,7 @@ use std::{
 };
 use tokio::time::{Instant, sleep};
 
-// Desktop HTTP identity mirrors backend.cjs; backend.test.mjs checks parity.
+// Desktop HTTP identity mirrors backend.ts; backend.test.ts checks parity.
 // Backend builds are SHA-256 encoded as lowercase hex.
 const DESKTOP_PROTOCOL_VERSION: u8 = 1;
 const BACKEND_BUILD_HEX_LENGTH: usize = 64;
@@ -168,7 +168,7 @@ const RESTART_KEYS: &[&str] = &[
     "CODEX_AGENTS_SUPERVISOR_FALLBACK",
 ];
 // Names that the deleted Python backend saved (`retiredRestartKeys` of
-// desktop/restart-environment.cjs, the owner; backend.test.mjs checks parity).
+// desktop/restart-environment.ts, the owner; backend.test.ts checks parity).
 // They are accepted, never restored, and removed from the launch environment.
 const RETIRED_RESTART_KEYS: &[&str] = &["CODEX_AGENTS_PYTHON"];
 

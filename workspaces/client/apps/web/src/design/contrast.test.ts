@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { expect, test } from "vitest";
+import { assert, expect, test } from "vitest";
 import { theme } from "../theme";
 
 const read = (path: string) =>
@@ -9,6 +9,7 @@ const surfaceSource = read("../studio-theme.css");
 const kindDeclaration = read(
   "../components/chat-status/chatStatusModel.ts",
 ).match(/export type ChatIndicatorKind =([\s\S]*?);/)![1];
+assert(kindDeclaration !== undefined);
 const kinds = [...kindDeclaration.matchAll(/"(\w+)"/g)].map(
   (match) => match[1],
 );
@@ -23,21 +24,24 @@ function variables(scheme: "light" | "dark") {
   }
   for (const source of [surfaceSource, stateSource]) {
     for (const [, selector, body] of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      assert(selector !== undefined && body !== undefined);
       if (
         !selector.includes(":root") &&
         !selector.includes(`[data-mantine-color-scheme="${scheme}"]`) &&
         !selector.trim().endsWith("[data-mantine-color-scheme]")
       )
         continue;
-      for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g))
+      for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) {
+        assert(name !== undefined && value !== undefined);
         values[name] = value.trim();
+      }
     }
   }
   const resolve = (name: string): string => {
     expect(values[name], `${name} must have a named token owner`).toBeDefined();
-    return values[name].replace(/var\((--[\w-]+)\)/g, (_, token) =>
-      resolve(token),
-    );
+    const value = values[name];
+    assert(value !== undefined);
+    return value.replace(/var\((--[\w-]+)\)/g, (_, token) => resolve(token));
   };
   return resolve;
 }
@@ -49,15 +53,18 @@ function luminance(rgb: number[]) {
     .map((value) =>
       value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
     )
-    .reduce(
-      (sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index],
-      0,
-    );
+    .reduce((sum, value, index) => {
+      const weight = [0.2126, 0.7152, 0.0722][index];
+      if (weight === undefined)
+        throw new Error("Expected three color channels.");
+      return sum + value * weight;
+    }, 0);
 }
 function contrast(foreground: number[], background: number[]) {
   const [low, high] = [luminance(foreground), luminance(background)].sort(
     (a, b) => a - b,
   );
+  assert(high !== undefined && low !== undefined);
   return (high + 0.05) / (low + 0.05);
 }
 
@@ -102,9 +109,11 @@ for (const scheme of ["light", "dark"] as const) {
           soft === "transparent"
             ? 0
             : Number(soft.match(/([\d.]+)%/)![1]) / 100;
-        const tinted = background.map(
-          (channel, index) => channel * (1 - alpha) + foreground[index] * alpha,
-        );
+        const tinted = background.map((channel, index) => {
+          const frontChannel = foreground[index];
+          assert(frontChannel !== undefined);
+          return channel * (1 - alpha) + frontChannel * alpha;
+        });
         expect(
           contrast(foreground, tinted),
           `${kind} on ${surface} with soft tint`,

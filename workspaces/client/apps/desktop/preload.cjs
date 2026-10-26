@@ -1,9 +1,12 @@
+// @ts-check
+/** @type {typeof import("electron")} */
 const { contextBridge, ipcRenderer } = require("electron");
 
 {
   let gesture = 0;
   let lastAction = -Infinity;
   const owner = new URLSearchParams(location.search).get("studio-server");
+  /** @param {Event} event */
   const capture = (event) => {
     if (event.isTrusted) {
       gesture = performance.now() + 1200;
@@ -12,6 +15,13 @@ const { contextBridge, ipcRenderer } = require("electron");
   };
   window.addEventListener("click", capture, true);
   window.addEventListener("keydown", capture, true);
+  /**
+   * @template T
+   * @param {string} method
+   * @param {unknown} [value]
+   * @param {boolean} [needsGesture]
+   * @returns {Promise<T>}
+   */
   const invoke = (method, value, needsGesture = true) => {
     if (needsGesture) {
       if (gesture < performance.now())
@@ -27,9 +37,10 @@ const { contextBridge, ipcRenderer } = require("electron");
       new MutationObserver((records) => {
         for (const record of records)
           for (const node of record.removedNodes) {
+            if (!(node instanceof Element)) continue;
             const removed = [
               ...(node.querySelectorAll?.("iframe") || []),
-              ...(node.tagName === "IFRAME" ? [node] : []),
+              ...(node instanceof HTMLIFrameElement ? [node] : []),
             ];
             for (const frame of removed) {
               const serverId = new URL(frame.src).searchParams.get(
@@ -46,6 +57,7 @@ const { contextBridge, ipcRenderer } = require("electron");
           }
       }).observe(document.body, { childList: true, subtree: true });
     });
+  /** @type {Set<() => void>} */
   const subscriptions = new Set();
   window.addEventListener(
     "pagehide",
@@ -55,8 +67,14 @@ const { contextBridge, ipcRenderer } = require("electron");
     },
     { once: true },
   );
+  /**
+   * @template T
+   * @param {string} channel
+   * @param {(value:T)=>void} callback
+   */
   const subscribe = (channel, callback) => {
     if (typeof callback !== "function") throw new Error("Expected a callback.");
+    /** @param {import("electron").IpcRendererEvent} _event @param {T} value */
     const listener = (_event, value) => callback(value);
     ipcRenderer.on(channel, listener);
     const stop = () => {
@@ -66,60 +84,57 @@ const { contextBridge, ipcRenderer } = require("electron");
     subscriptions.add(stop);
     return stop;
   };
-  contextBridge.exposeInMainWorld(
-    "codexDesktop",
-    Object.freeze({
-      platform: process.platform,
-      serverViewOrigin: process.argv
-        .find((value) => value.startsWith("--studio-view-origin="))
-        ?.slice("--studio-view-origin=".length),
-      serverNativeAction: (serverId, method, value) => {
-        const needsGesture = !["transcribeAudio", "getBackendUpdate"].includes(
-          method,
-        );
-        if (owner !== serverId)
-          return Promise.reject(new Error("Use a button in this server view."));
-        return invoke(
-          "serverNativeAction",
-          { serverId, method, value },
-          needsGesture,
-        );
-      },
-      serverCredentialAction: (value) =>
-        invoke(
-          "serverCredentialAction",
-          value,
-          value.action === "pair" || value.action === "forget",
-        ),
-      onServerStream: (callback) =>
-        subscribe("codex-desktop-server-stream", callback),
-      requestMicrophone: () => invoke("requestMicrophone"),
-      prepareTranscription: () => invoke("prepareTranscription"),
-      transcribeAudio: (value) => invoke("transcribeAudio", value, false),
-      cancelTranscription: (id) => invoke("cancelTranscription", id),
-      onTranscriptionProgress: (callback) =>
-        subscribe("codex-desktop-transcription-progress", callback),
-      onNavigate: (callback) => subscribe("codex-desktop-navigate", callback),
-      getBackendUpdate: () => invoke("getBackendUpdate", undefined, false),
-      pickDirectory: () => invoke("pickDirectory"),
-      pickFiles: () => invoke("pickFiles"),
-      revealPath: (value) => invoke("revealPath", value),
-      saveFile: (value) => invoke("saveFile", value),
-      fileAction: (value) => invoke("fileAction", value),
-      openExternal: (value) => invoke("openExternal", value),
-      // An approved sign-in link opens after the server answer, so the 1.2 second click
-      // window can pass. It still needs a click or key press of the person in the last 30 s.
-      // The desktop holds the redirect port of a sign-in on another server (openSignIn with
-      // a forward).
-      signInForward: true,
-      openSignIn: (value) =>
-        performance.now() - lastAction <= 30000
-          ? invoke("openSignIn", value, false)
-          : Promise.reject(
-              new Error("Use a desktop button or keyboard action."),
-            ),
-      showVaultKeys: (value) => invoke("showVaultKeys", value),
-      notify: (value) => invoke("notify", value, false),
-    }),
-  );
+  /** @type {import("./api.ts").DesktopBridge} */
+  const bridge = {
+    platform: process.platform,
+    serverViewOrigin: process.argv
+      .find((value) => value.startsWith("--studio-view-origin="))
+      ?.slice("--studio-view-origin=".length),
+    serverNativeAction: (serverId, method, value) => {
+      const needsGesture = !["transcribeAudio", "getBackendUpdate"].includes(
+        method,
+      );
+      if (owner !== serverId)
+        return Promise.reject(new Error("Use a button in this server view."));
+      return invoke(
+        "serverNativeAction",
+        { serverId, method, value },
+        needsGesture,
+      );
+    },
+    serverCredentialAction: (value) =>
+      invoke(
+        "serverCredentialAction",
+        value,
+        value.action === "pair" || value.action === "forget",
+      ),
+    onServerStream: (callback) =>
+      subscribe("codex-desktop-server-stream", callback),
+    requestMicrophone: () => invoke("requestMicrophone"),
+    prepareTranscription: () => invoke("prepareTranscription"),
+    transcribeAudio: (value) => invoke("transcribeAudio", value, false),
+    cancelTranscription: (id) => invoke("cancelTranscription", id),
+    onTranscriptionProgress: (callback) =>
+      subscribe("codex-desktop-transcription-progress", callback),
+    onNavigate: (callback) => subscribe("codex-desktop-navigate", callback),
+    getBackendUpdate: () => invoke("getBackendUpdate", undefined, false),
+    pickDirectory: () => invoke("pickDirectory"),
+    pickFiles: () => invoke("pickFiles"),
+    revealPath: (value) => invoke("revealPath", value),
+    saveFile: (value) => invoke("saveFile", value),
+    fileAction: (value) => invoke("fileAction", value),
+    openExternal: (value) => invoke("openExternal", value),
+    // An approved sign-in link opens after the server answer, so the 1.2 second click
+    // window can pass. It still needs a click or key press of the person in the last 30 s.
+    // The desktop holds the redirect port of a sign-in on another server (openSignIn with
+    // a forward).
+    signInForward: true,
+    openSignIn: (value) =>
+      performance.now() - lastAction <= 30000
+        ? invoke("openSignIn", value, false)
+        : Promise.reject(new Error("Use a desktop button or keyboard action.")),
+    showVaultKeys: (value) => invoke("showVaultKeys", value),
+    notify: (value) => invoke("notify", value, false),
+  };
+  contextBridge.exposeInMainWorld("codexDesktop", Object.freeze(bridge));
 }

@@ -147,7 +147,7 @@ pub fn merge(master: &DraftVersion, fork: &DraftVersion) -> Result<DraftVersion,
     })
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct DraftView {
     pub drafts: BTreeMap<String, String>,
     pub conflicts: Vec<DraftVersion>,

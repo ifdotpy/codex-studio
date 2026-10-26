@@ -298,7 +298,7 @@ The install keeps the existing store and its machine identity.
 Run each command separately:
 
 ```sh
-STUDIO_GUEST_PYTHON=python3.13 node workspaces/runtime/apps/vm-guest/run-guest-suite.mjs
+STUDIO_GUEST_PYTHON=python3.13 node workspaces/runtime/apps/vm-guest/run-guest-suite.mts
 cargo test -j 4 --locked -p studio-runtime-services --lib layr_read::tests
 ```
 

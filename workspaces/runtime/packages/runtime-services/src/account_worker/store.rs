@@ -1486,7 +1486,7 @@ fn not_sent_reason(
 /// name, so it is read from the bridge source instead of being copied here.
 fn session_missing_flag() -> &'static str {
     static FLAG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(|| {
-        include_str!("../../../../../providers/apps/claude-bridge/session-store.mjs")
+        include_str!("../../../../../providers/apps/claude-bridge/session-store.ts")
             .split_once("export const SESSION_MISSING = \"")
             .and_then(|(_, rest)| rest.split_once('"'))
             .map(|(flag, _)| flag)

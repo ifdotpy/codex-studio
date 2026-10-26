@@ -1,5 +1,5 @@
 {
-  "workspaces/client/apps/desktop/dictation-permissions.test.mjs": [
+  "workspaces/client/apps/desktop/dictation-permissions.test.ts": [
     "return \"/tmp\";",
     "return \"/tmp/not-installed-studio\";",
     "__dirname: \"/tmp\","
@@ -7,10 +7,10 @@
   "workspaces/client/apps/desktop/install-update-test.py": [
     "{\"executable\": \"/tmp/Codex Studio.app/Contents/MacOS/studio-native-client\"},"
   ],
-  "workspaces/client/apps/desktop/recovery.test.mjs": [
+  "workspaces/client/apps/desktop/recovery.test.ts": [
     "\"/tmp/Codex Studio.app/Contents/MacOS/studio-native-client\","
   ],
-  "workspaces/client/apps/web/src/components/tool-images/toolImages.test.mjs": [
+  "workspaces/client/apps/web/src/components/tool-images/toolImages.test.ts": [
     "const path = \"/tmp/screenshot #1%:2\";",
     "assert.deepEqual(toolImages({ type: \"imageView\", path: \"/tmp/\" }), [",
     "{ kind: \"path\", source: \"/tmp/\", name: \"Image\" },",
@@ -31,26 +31,26 @@
     "await expect(remote.api.revealPath(\"/tmp/folder\")).rejects.toThrow(",
     "const delayedRemoteReveal = () => remote.revealPath(\"/tmp/remote-path\");"
   ],
-  "workspaces/client/apps/web/src/sync/entityProjection.test.mjs": [
-    "entityRow(\"workspace\", \"current\", { stateDir: \"/tmp/state\" }, 14),"
+  "workspaces/client/apps/web/src/sync/entityProjection.test.ts": [
+    "value: { stateDir: \"/tmp/state\" },"
   ],
-  "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.mjs": [
+  "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.ts": [
     "id: \"/tmp/fixture\",",
     "path: \"/tmp/fixture\",",
-    "cwd: \"/tmp/fixture\",",
-    "assert.equal(agents.find((a) => a.id === \"empty\").cwd, \"/tmp/fixture\");",
+    ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
+    "\"/tmp/fixture\",",
     "path: \"/tmp/fixture\","
   ],
-  "workspaces/client/apps/web/tests/accounts/project-settings-ui.spec.mjs": [
+  "workspaces/client/apps/web/tests/accounts/project-settings-ui.spec.ts": [
     "id: \"/tmp/fixture\",",
     "path: \"/tmp/fixture\",",
-    "cwd: \"/tmp/fixture\",",
+    ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
     "path: \"/tmp/fixture\","
   ],
-  "workspaces/client/apps/web/tests/sync/entity-fixture-contract.browser.spec.mjs": [
+  "workspaces/client/apps/web/tests/sync/entity-fixture-contract.browser.spec.ts": [
     "stateDir: \"/tmp/fixture\","
   ],
-  "workspaces/client/apps/web/tests/terminal/current-command-history-ui.spec.mjs": [
+  "workspaces/client/apps/web/tests/terminal/current-command-history-ui.spec.ts": [
     "text: JSON.stringify({ type: \"imageView\", path: \"/tmp/image.png\" }),"
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
@@ -65,14 +65,10 @@
     "let file = script(\"project_1\", \"/tmp/a'b/tool\").unwrap();",
     "\"#!/bin/sh\\nrm -f \\\"$0\\\"\\nexec '/tmp/a'\\\\''b/tool' keys --project 'project_1' --clear\\n\""
   ],
-  "workspaces/providers/apps/claude-bridge/command-background.test.mjs": [
-    "yield {type:'user',uuid:'u-1',message:{role:'user',content:[{type:'tool_result',tool_use_id:'toolu-1',content:'Command running in background with ID: bash-1. Output is being written to: /tmp/bash-1.output'}]},tool_use_result:{stdout:'',stderr:'',interrupted:false,backgroundTaskId:'bash-1',backgroundedByUser:true}};",
-    "yield {type:'system',subtype:'task_notification',task_id:'bash-1',tool_use_id:'toolu-1',status:'completed',output_file:'/tmp/bash-1.output',summary:'Background command completed (exit code 0)',uuid:'s-3'};"
-  ],
-  "workspaces/providers/apps/claude-bridge/disk-full.test.mjs": [
+  "workspaces/providers/apps/claude-bridge/disk-full.test.ts": [
     "cwd: \"/tmp/work\","
   ],
-  "workspaces/providers/apps/claude-bridge/session-store.test.mjs": [
+  "workspaces/providers/apps/claude-bridge/session-store.test.ts": [
     "cwd: \"/tmp/work\",",
     "cwd: \"/tmp/title\","
   ],
@@ -216,7 +212,7 @@
     "INSERT INTO runtime_assets VALUES('asset','{\\\"id\\\":\\\"asset\\\",\\\"agent\\\":\\\"agent\\\",\\\"name\\\":\\\"a.txt\\\",\\\"path\\\":\\\"/tmp/a.txt\\\",\\\"mime\\\":\\\"text/plain\\\",\\\"image\\\":false,\\\"size\\\":1,\\\"hash\\\":\\\"h\\\",\\\"created\\\":0}');\",",
     "\"path\": \"/tmp/a.txt\","
   ],
-  "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs": [
+  "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts": [
     "const { out, hostedCiPassed } = parseFlowArguments([\"/tmp/out\"]);",
     "parseFlowArguments([\"/tmp/out\", \"--hosted-ci-passed\"]).hostedCiPassed,",
     "() => parseFlowArguments([\"/tmp/out\", \"--skip\"]),"

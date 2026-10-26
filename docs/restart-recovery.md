@@ -180,7 +180,7 @@ existing crash-recovery cleanup before it accepts backend connections.
 
 The legacy supervisor can still be torn down when launchd rewrites or boots out
 the recovery job that started it. Do not disable, rewrite, or boot out that job
-while its supervisor owns live handles. `workspaces/client/apps/desktop/recovery.cjs` checks the
+while its supervisor owns live handles. `workspaces/client/apps/desktop/recovery.ts` checks the
 recovery job PID, supervisor parent PID, and supervisor status before a restart
 or bootout, and refuses the operation while that legacy owner has live handles.
 Wait for the legacy owner to exit or its handles to close, then retry the
@@ -260,7 +260,7 @@ the selected state before bootstrapping it. Leave any independent supervisor
 job in place. The CLI does not install or replace a supervisor job, rewrite
 `background-recovery.json`, or switch a desktop recovery configuration.
 The packaged desktop's recovery helper remains separately owned by
-[`recovery.cjs`](../workspaces/client/apps/desktop/recovery.cjs) and
+[`recovery.ts`](../workspaces/client/apps/desktop/recovery.ts) and
 [`recover_backend.py`](../workspaces/client/apps/desktop/recover_backend.py).
 
 The removed Python backend and `codex-supervisor enable` command have no rollback

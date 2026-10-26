@@ -9,9 +9,9 @@ export default function ChatStatus({
   provider,
   model,
 }: {
-  status?: ChatIndicator;
-  provider?: string;
-  model?: string;
+  status?: ChatIndicator | undefined;
+  provider?: string | undefined;
+  model?: string | undefined;
 }) {
   const visualRef = useVisualActivityRef<HTMLSpanElement>();
   if (!status || status.kind === "none" || status.kind === "paused")

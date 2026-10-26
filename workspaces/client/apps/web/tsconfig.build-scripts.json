@@ -1,0 +1,16 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": [
+    "scripts/audit-live-requests.ts",
+    "scripts/build-client-wasm.ts",
+    "scripts/check-client-wasm.ts",
+    "scripts/patch-rxdb-runtime.gc.ts",
+    "scripts/verify-precompressed-assets.ts",
+    "stryker.config.mjs"
+  ]
+}

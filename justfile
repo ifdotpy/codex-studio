@@ -1,9 +1,9 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments
 
-export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-config.mjs`
+export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-config.ts`
 
-facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.mjs"
+facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.ts"
 rust-target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
 rust-http-server := rust-target / "debug/studio-runtime-server"
 
@@ -20,23 +20,23 @@ build-server:
 
 [doc("Build the Rust release binaries once for HEAD into a shared directory with a commit and SHA-256 manifest. Default directory: CODEX_RELEASE_TARGET_DIR or ~/.cache/codex-studio/release-target.")]
 build-release-binaries dir="":
-    @node workspaces/client/apps/desktop/release-binaries.mjs build {{quote(dir)}}
+    @node workspaces/client/apps/desktop/release-binaries.ts build {{quote(dir)}}
 
 [doc("Check that the prebuilt release binaries in the directory match HEAD and their SHA-256 manifest.")]
 verify-release-binaries dir="":
-    @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
+    @node workspaces/client/apps/desktop/release-binaries.ts verify {{quote(dir)}}
 
 [doc("Deliver a commit (default HEAD) on this host. Linux uses its source release and systemd owner. macOS verifies a signed package and its upgrade canary, then uses the existing recovery owner. Use --app PATH for a prepared Mac package and --dry-run to verify without an install. Explicitly approved Mac installs may use --app PATH --skip-canary.")]
 deliver-server commit="HEAD" *args:
-    @node workspaces/runtime/apps/runtime-server/deliver.mjs "$@"
+    @node workspaces/runtime/apps/runtime-server/deliver.ts "$@"
 
 [doc("Check the package signing setup in seconds: configuration, file modes, keychain unlock, identity. Prints PASS or the exact FAIL reason, never the password. Run it before package-native.")]
 signing-check:
-    @node workspaces/client/apps/desktop/signing-check.mjs
+    @node workspaces/client/apps/desktop/signing-check.ts
 
 [doc("Native package cycle (checks signing first, then signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
 package-native out *flags:
-    @node workspaces/client/apps/native/package-flow.mjs {{quote(out)}} {{flags}}
+    @node workspaces/client/apps/native/package-flow.ts {{quote(out)}} {{flags}}
 
 [doc("List pnpm and Cargo packages discovered from their manifests.")]
 packages:
@@ -143,13 +143,13 @@ test-browser:
 [doc("Manual heavy check: combined multi-server browser routing and offline recovery.")]
 test-browser-multi-server:
     @pnpm --filter codex-agents-web run build
-    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec.mjs --workers=1
+    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.ts --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec --workers=1
 
 [doc("Manual client interaction benchmark: five cumulative builds, one browser worker, three samples each; no synthetic load. Output must be outside the checkout.")]
 benchmark-client-interactions baseline output:
     @pnpm --filter codex-agents-web run build:wasm
-    @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.mjs {{quote(baseline)}} {{quote(output)}}
-    @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec.mjs --workers=1
+    @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.ts {{quote(baseline)}} {{quote(output)}}
+    @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.ts --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec --workers=1
 
 [doc("Run the browser smoke subset included in the comprehensive tier and hosted CI.")]
 test-browser-smoke *args:
@@ -157,11 +157,11 @@ test-browser-smoke *args:
 
 [doc("Check the main user scenarios on the app installed on this Mac, with its own test chats. See docs/testing.md, Installed scenario smoke.")]
 smoke-installed *args:
-    @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.mjs")}} "$@"
+    @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.ts")}} "$@"
 
 [doc("Install a newer build over the current one on an isolated clone with real processes, before a live install. See docs/testing.md, Upgrade canary.")]
 upgrade-canary *args:
-    @node {{quote(justfile_directory() / "workspaces/tooling/apps/upgrade-canary/canary.mjs")}} "$@"
+    @node {{quote(justfile_directory() / "workspaces/tooling/apps/upgrade-canary/canary.ts")}} "$@"
 
 [doc("Run the full browser project as a manual heavy check.")]
 test-heavy:
@@ -179,11 +179,11 @@ test-native-profile-migration:
 test-native-webview:
     @pnpm --filter codex-agents-web run build
     @cargo build -p studio-native-client --features native-check --locked
-    @node workspaces/client/apps/native/check-native.mjs
+    @node workspaces/client/apps/native/check-native.ts
 
 [doc("Manual check: run real guest module worker aggregation and crash scenarios.")]
 test-guest-runner-processes:
-    @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mjs
+    @node --test workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mts
 
 [doc("Manual process check: run detached host_exec startup, replacement and guest broker scenarios.")]
 test-host-exec-processes:

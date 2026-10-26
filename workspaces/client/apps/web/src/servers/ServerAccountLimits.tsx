@@ -91,7 +91,7 @@ function ServerScope({
   services,
   children,
 }: {
-  services?: ServerServices;
+  services?: ServerServices | undefined;
   children: ReactNode;
 }) {
   return services ? (
@@ -108,7 +108,7 @@ export type AccountSource = {
   serverId: string;
   serverLabel: string;
   account: Account;
-  services?: ServerServices;
+  services?: ServerServices | undefined;
 };
 type Reading = AccountSource & { limits: AccountLimitsSnapshot | null };
 

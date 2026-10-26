@@ -33,7 +33,11 @@ export function ActionButton({
   return <Button variant={variant} color={color} {...props} />;
 }
 
-type HeaderProps = { title: ReactNode; actions?: ReactNode; help?: ReactNode };
+type HeaderProps = {
+  title: ReactNode;
+  actions?: ReactNode | undefined;
+  help?: ReactNode | undefined;
+};
 export function PanelHeader({ title, actions, help }: HeaderProps) {
   return (
     <header className="ui-panel-header">

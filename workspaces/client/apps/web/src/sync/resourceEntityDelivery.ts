@@ -16,7 +16,10 @@ type QueuedFrame = {
     dispose(): void;
   };
 };
-type Application = QueuedFrame & { cancelled: boolean; release?: () => void };
+type Application = QueuedFrame & {
+  cancelled: boolean;
+  release?: () => void;
+};
 
 /** One source's FIFO: persist each frame before publishing it. */
 export class ResourceEntityDelivery {
@@ -25,17 +28,26 @@ export class ResourceEntityDelivery {
   private running = false;
   private stopped = false;
 
+  declare private readonly persist: (
+    event: ResourceChangeEvent,
+    isCurrent: () => boolean,
+  ) => Promise<void>;
+  declare private readonly dispatch: (event: ResourceChangeEvent) => void;
+  declare private readonly failed:
+    | ((event: ResourceChangeEvent, error: unknown) => boolean | void)
+    | undefined;
   constructor(
-    private readonly persist: (
+    persist: (
       event: ResourceChangeEvent,
       isCurrent: () => boolean,
     ) => Promise<void>,
-    private readonly dispatch: (event: ResourceChangeEvent) => void,
-    private readonly failed?: (
-      event: ResourceChangeEvent,
-      error: unknown,
-    ) => boolean | void,
-  ) {}
+    dispatch: (event: ResourceChangeEvent) => void,
+    failed?: (event: ResourceChangeEvent, error: unknown) => boolean | void,
+  ) {
+    this.persist = persist;
+    this.dispatch = dispatch;
+    this.failed = failed;
+  }
 
   /** Source close silently cancels writes; the next source resumes durable cursors. */
   invalidate() {

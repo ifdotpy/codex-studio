@@ -1,11 +1,11 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import "../api";
-import type { Agent, JsonValue, Message } from "../types";
+import type { Agent, JsonInput, Message } from "../types";
 import { failureMessage } from "./turnFailureReason";
 
-const cachedErrors = new Map<string, Record<string, JsonValue>>();
-const inFlight = new Map<string, Promise<Record<string, JsonValue>>>();
+const cachedErrors = new Map<string, Record<string, JsonInput>>();
+const inFlight = new Map<string, Promise<Record<string, JsonInput>>>();
 
 export function failedTurnsNeedingLookup(
   items: Pick<Message, "turnId" | "turnStatus">[],
@@ -36,7 +36,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     scope: string;
     checked: string[];
     failed: string[];
-    errors: Record<string, JsonValue>;
+    errors: Record<string, JsonInput>;
     loading: string[];
   }>({ scope, checked: [], failed: [], errors: {}, loading: [] });
   const current = useMemo(
@@ -103,7 +103,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     const threadId = agent.threadId;
     const key = `${scope}:${requestKey}`;
     const existingRequest = inFlight.get(key);
-    let request: Promise<Record<string, JsonValue>>;
+    let request: Promise<Record<string, JsonInput>>;
     if (existingRequest) request = existingRequest;
     else {
       request = get("/api/analytics", {
@@ -117,7 +117,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
         },
         timeoutMs: 60000,
       }).then((data) => {
-        const recovered: Record<string, JsonValue> = {};
+        const recovered: Record<string, JsonInput> = {};
         for (const turn of data.turns || []) {
           if (
             turn.agentId === agentId &&

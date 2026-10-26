@@ -16,7 +16,7 @@ type Props = {
   presentation?: "list" | "select";
   id?: string;
   disabled?: boolean;
-  retainCurrent?: boolean;
+  retainCurrent?: boolean | undefined;
 };
 
 export function ModelField({
@@ -46,7 +46,7 @@ export function ModelField({
         size="sm"
         value={selectedValue}
         data-value={selectedValue}
-        disabled={disabled}
+        disabled={!!disabled}
         description={selected?.disabledReason}
         onChange={(event) => onChange(event.currentTarget.value)}
         className="model-select"

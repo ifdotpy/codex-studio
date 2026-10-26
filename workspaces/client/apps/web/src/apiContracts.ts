@@ -49,28 +49,28 @@ export type ApiPathsWithRequiredQuery<Paths extends {}> = {
 export type ApiGetOptions<
   Operation,
   Options extends {
-    timeoutMs?: number;
-    workspaceId?: string;
-    sessionToken?: string;
-    signal?: AbortSignal;
+    timeoutMs?: number | undefined;
+    workspaceId?: string | undefined;
+    sessionToken?: string | undefined;
+    signal?: AbortSignal | undefined;
   },
   Metadata,
 > = Options &
   (HasRequiredQuery<Operation> extends true
     ? { query: ApiQueryFor<Operation> }
-    : { query?: ApiQueryFor<Operation> }) &
+    : { query?: ApiQueryFor<Operation> | undefined }) &
   (
     | { etag?: never; readMetadata?: never }
-    | { etag?: string; readMetadata: Metadata }
+    | { etag?: string | undefined; readMetadata: Metadata }
   );
 
 export type ApiGetContract<
   Paths extends {},
   Options extends {
-    timeoutMs?: number;
-    workspaceId?: string;
-    sessionToken?: string;
-    signal?: AbortSignal;
+    timeoutMs?: number | undefined;
+    workspaceId?: string | undefined;
+    sessionToken?: string | undefined;
+    signal?: AbortSignal | undefined;
   },
   Metadata,
 > = {

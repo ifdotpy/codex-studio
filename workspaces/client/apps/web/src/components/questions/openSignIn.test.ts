@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canForwardSignIn, openSignInPage } from "./openSignIn";
 
@@ -93,7 +94,7 @@ it("passes a native sign-in forward as one request without opening early or retr
     "Port is occupied",
   );
   expect(invoke).toHaveBeenCalledOnce();
-  expect(invoke.mock.calls[0]).toEqual([
+  expect(required(invoke.mock.calls[0])).toEqual([
     "client_request",
     {
       request: expect.objectContaining({
@@ -122,7 +123,7 @@ it("captures the direct request owner's identity for native sign-in forwarding",
   };
   await openSignInPage(LINK, forward, "remote");
   expect(invoke).toHaveBeenCalledOnce();
-  expect(invoke.mock.calls[0][1].request.params).toEqual({
+  expect(required(required(invoke.mock.calls[0])[1]).request.params).toEqual({
     value: { url: LINK, forward },
     signInOwner: "remote",
   });

@@ -46,11 +46,7 @@ export function isVisibleSidebarAgent(
 
 /** Select the most recent activity, with ascending ID for timestamp ties. */
 export function mostRecentActivity<
-  T extends {
-    id: string;
-    updated?: number | null;
-    created?: number | null;
-  },
+  T extends Pick<Agent, "id" | "updated" | "created">,
 >(rows: T[]) {
   let selected: T | undefined;
   for (const row of rows) {
@@ -240,7 +236,10 @@ export function createSidebarCatalogSelector() {
           high = ids.length;
         while (low < high) {
           const mid = (low + high) >>> 1;
-          if (compare(ids[mid], id) <= 0) low = mid + 1;
+          const candidate = ids[mid];
+          if (candidate === undefined)
+            throw new Error("Missing sidebar ordering candidate");
+          if (compare(candidate, id) <= 0) low = mid + 1;
           else high = mid;
         }
         ids.splice(low, 0, id);

@@ -81,37 +81,16 @@ export type ResourceHeartbeatEvent =
 export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
-export type ResourceVersion = {
-  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"];
-  cursor?: components["schemas"]["SubscriptionCursor"];
-  replyKind?: components["schemas"]["SubscriptionReplyKind"];
-  /** Transient subscribed value; never sent through the entity persister. */
-  progress?: ResourceProgress;
-  epoch: string;
-  revision: number;
-  reason?: ResourceChangeEvent["reason"];
-  draftChanges?: components["schemas"]["DraftChangeBatch"];
-  /** Transient access metadata; never written to the entity cache. */
-  discoverySnapshot?: components["schemas"]["AccessSnapshot"];
-  /** Transient cursor interval and media session state. */
-  voiceRecords?: components["schemas"]["VoiceRecordBatch"];
-  /** Highest entity row represented by this StateResource revision, when present. */
-  entitySequence?: number;
-  /** Transcript cursor persisted before this notification; readers verify local coverage. */
-  transcriptSequence?: number;
-  /** A revision-only transcript change is the server's oversized-interval signal. */
-  transcriptReadRequired?: boolean;
-  /** The server cannot enumerate the exact changed rows; clients must reconcile. */
-  entitySequenceReset?: boolean;
-};
-
-export type ResourceProgressEvent =
-  components["schemas"]["ResourceProgressEvent"];
-export type ResourceProgress = ResourceProgressEvent extends infer Progress
-  ? Progress extends { resource: infer Resource; value: infer Value }
-    ? { resource: Resource; value: Value }
-    : never
-  : never;
+import type {
+  ResourceVersion,
+  ResourceProgress,
+  ResourceProgressEvent,
+} from "./subscriptions/contracts";
+export type {
+  ResourceVersion,
+  ResourceProgress,
+  ResourceProgressEvent,
+} from "./subscriptions/contracts";
 type Version = ResourceVersion;
 
 type Listener = (version?: ResourceVersion) => void;
@@ -170,7 +149,7 @@ type TabResourceRecovery = {
   resources: ResourceRef[];
 };
 
-type TabMessage = (
+export type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
@@ -187,7 +166,7 @@ type TabMessage = (
   | TabResourceRecovery
 ) & { apiSchemaHash: string; health?: ResourceConnectionHealth };
 
-type OutgoingMessage =
+export type OutgoingMessage =
   | {
       kind: "subscriptions";
       resources: ResourceRef[];
@@ -202,6 +181,9 @@ type OutgoingMessage =
   | { kind: "discover-subscriptions" }
   | { kind: "status"; status: ResourceConnectionState }
   | { kind: "resource-recovery"; resources: ResourceRef[] };
+export type OutgoingTabMessage = OutgoingMessage &
+  Pick<TabMessage, "workspaceId" | "tabId" | "apiSchemaHash" | "health">;
+
 export type ResourceEventsOptions = {
   api: Pick<
     import("../api").ServerApi,
@@ -215,9 +197,12 @@ export type ResourceEventsOptions = {
   >;
   sync: Pick<
     ReturnType<typeof import("./client").createSyncClient>,
-    "persistResourceEntityChanges" | "syncDatabase"
-  > &
-    Partial<
+    "persistResourceEntityChanges"
+  > & {
+    syncDatabase: () => Promise<
+      Pick<Awaited<ReturnType<typeof syncDatabase>>, "workspaceId">
+    >;
+  } & Partial<
       Pick<
         ReturnType<typeof import("./client").createSyncClient>,
         "readSubscriptionCursor" | "persistStagedEntityTransfer"
@@ -479,7 +464,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         apiSchemaHash: API_SCHEMA_HASH,
         workspaceId,
         tabId,
-      } satisfies TabMessage);
+      } satisfies OutgoingTabMessage);
     } catch {
       releaseStream();
       stopChannel();
@@ -1097,7 +1082,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function receiveResourceProgress(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid resource progress frame");
-    const candidate = value as unknown as Record<string, unknown>;
+    const candidate = value as Record<string, unknown>;
     const resource = candidate.resource as ResourceRef | undefined;
     if (
       !resource ||
@@ -1587,7 +1572,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   ) {
     type PreparedCursor = {
       resource: ResourceRef;
-      since?: components["schemas"]["SubscriptionCursor"];
+      since?: components["schemas"]["SubscriptionCursor"] | undefined;
     };
     const baseline: PreparedCursor[] = resources.map((resource) => ({
       resource,

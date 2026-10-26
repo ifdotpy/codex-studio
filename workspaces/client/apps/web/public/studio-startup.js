@@ -1,9 +1,12 @@
+// @ts-check
+/** @import { DesktopBridge } from "../../desktop/api.ts" */
 (() => {
   const updateUrl = new URL(window.location.href);
   if (updateUrl.searchParams.has("studio-update")) {
     updateUrl.searchParams.delete("studio-update");
     window.history.replaceState(null, "", updateUrl);
   }
+  /** @param {string} text */
   const notice = (text) => {
     const status = document.getElementById("studio-startup-status");
     const help = document.getElementById("studio-startup-help");
@@ -29,8 +32,10 @@
   window.addEventListener("unhandledrejection", () =>
     notice("Studio could not open."),
   );
+  /** @type {DesktopBridge | undefined} */
+  const desktop = window.codexDesktop;
   if (
-    window.codexDesktop ||
+    desktop ||
     !window.isSecureContext ||
     !("serviceWorker" in navigator) ||
     !document.querySelector('meta[name="studio-build"]')
@@ -54,12 +59,16 @@
             )
               return;
             checked = Date.now();
-            void registration.update().catch(() => {});
+            void registration
+              .update()
+              .catch // @ts-check
+              (() => {});
           };
           document.addEventListener("visibilitychange", update);
           window.addEventListener("online", update);
         })
-        .catch(() => {});
+        .catch // @ts-check
+        (() => {});
     },
     { once: true },
   );

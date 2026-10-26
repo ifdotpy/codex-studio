@@ -49,10 +49,12 @@ export function deskLink(vault: ProjectVault): string | null {
 }
 
 type JobOptions<T> = {
-  resources?: Pick<
-    typeof defaultResources,
-    "watchResourceChanges" | "watchResourceConnection"
-  >;
+  resources?:
+    | Pick<
+        typeof defaultResources,
+        "watchResourceChanges" | "watchResourceConnection"
+      >
+    | undefined;
   signal?: AbortSignal;
   onUpdate?: (job: T) => void;
 };

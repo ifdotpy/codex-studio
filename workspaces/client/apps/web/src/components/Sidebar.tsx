@@ -121,7 +121,7 @@ export type SidebarProps = {
   registeredProjectPaths?: ReadonlySet<string>;
   opened: string | null;
   selectionIdentity?: string;
-  lead?: Agent;
+  lead?: Agent | undefined;
   open: (id: string) => void;
   prepareChat?: (id: string) => void;
   newChat: (path?: string, folder?: string) => void;
@@ -358,8 +358,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const [dialog, setDialog] = useState<{
     title: string;
     path: string;
-    folder?: string;
-    parentId?: string;
+    folder?: string | undefined;
+    parentId?: string | undefined;
     agentId?: string;
   } | null>(null);
   const canOrganizeProjects = !!runtime?.projectOrganizationVersion;
@@ -507,7 +507,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const initialSelection = useRef<{
     opened: string;
     folder: typeof selectedFolder;
-    identity?: string;
+    identity?: string | undefined;
   } | null>(null);
   useEffect(() => {
     if (!initialSelection.current) {
@@ -1539,7 +1539,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           aria-label={`New chat in ${group.name}`}
                           aria-description={blocked || undefined}
                           aria-disabled={blocked ? true : undefined}
-                          data-disabled={blocked ? true : undefined}
+                          {...(blocked ? { "data-disabled": true } : {})}
                           onClick={() => {
                             if (!blocked) p.newChat(group.path || undefined);
                           }}
@@ -1990,7 +1990,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     <>
       {compact ? (
         <Drawer
-          zIndex={p.settings ? 190 : undefined}
+          {...(p.settings ? { zIndex: 190 } : {})}
           opened={p.mobile}
           onEnterTransitionEnd={() => {
             if (lastOpened.current)

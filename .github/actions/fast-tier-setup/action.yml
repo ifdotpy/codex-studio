@@ -58,4 +58,4 @@ runs:
       run: echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
     - name: Select the shared compilation budget
       shell: bash
-      run: echo "CARGO_BUILD_JOBS=$(node workspaces/tooling/apps/repository-checks/gate-config.mjs)" >> "$GITHUB_ENV"
+      run: echo "CARGO_BUILD_JOBS=$(node workspaces/tooling/apps/repository-checks/gate-config.ts)" >> "$GITHUB_ENV"

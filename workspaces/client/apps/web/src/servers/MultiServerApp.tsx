@@ -2,8 +2,10 @@ import { randomUUID } from "../uuid";
 import { ScreenContext } from "./ScreenContext";
 import {
   createScreenChannel,
+  screenSearchResults,
   type ScreenChannel,
   type ScreenMessage,
+  type ScreenSearchResults,
 } from "./screenChannel";
 import { ServerServicesProvider } from "./ServerServicesContext";
 import { createServerServices, type ServerServices } from "./serverServices";
@@ -76,7 +78,6 @@ import {
   parseSidebarShortcut,
   fontFamilies,
 } from "../studioPreferences";
-import type { GetResult } from "../api";
 import { alertsSince } from "../desktop/desktopAlerts";
 import "./servers.css";
 const uiOnly =
@@ -99,14 +100,14 @@ export default function MultiServerApp() {
 function MultiServerShell({
   localServices,
 }: {
-  localServices?: ServerServices;
+  localServices?: ServerServices | undefined;
 }) {
   const [failure, setFailure] = useState("");
   const [newChatDialog, setNewChatDialog] = useState<{
     project: LocationProject;
     server: string;
-    folder?: string;
-    binding?: { projectId: string; projectServerId: string };
+    folder?: string | undefined;
+    binding?: { projectId: string; projectServerId: string } | undefined;
   } | null>(null);
   const load = () => {
     try {
@@ -175,9 +176,8 @@ function MultiServerShell({
   useUiPreferenceSync(servers);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  type SearchRow = GetResult<"/api/search">["results"][number];
   const [searchResults, setSearchResults] = useState<
-    Record<string, { results: SearchRow[]; error?: string }>
+    Record<string, ScreenSearchResults>
   >({});
   const searchRequest = useRef("");
   const notificationState = useRef(
@@ -571,7 +571,7 @@ function MultiServerShell({
       preferences.sidebarFontSize + "px",
     );
   }, [preferences, setColorScheme]);
-  screenEvents.current = (id, data: any, channel) => {
+  screenEvents.current = (id, data, channel) => {
     if (screens.current.get(id) !== channel) return;
     if (
       data.kind === "studio-server-activity" &&
@@ -587,7 +587,7 @@ function MultiServerShell({
       const directory =
         project?.path ||
         view?.chats.find((row) => row.id === view.opened)?.path ||
-        data.path ||
+        (data.path as string) ||
         "";
       setNewChatDialog({
         server: id,
@@ -665,11 +665,11 @@ function MultiServerShell({
       setTerminals((old) => ({
         ...old,
         [id]: {
-          opened: value.opened,
-          height: Math.max(0, Math.min(4000, value.height)),
-          count: value.count,
-          active: value.active,
-          canCreate: value.canCreate,
+          opened: value.opened as boolean,
+          height: Math.max(0, Math.min(4000, value.height as number)),
+          count: value.count as number,
+          active: value.active as number,
+          canCreate: value.canCreate as boolean,
         },
       }));
     } else if (data.kind === "studio-server-toggle-sidebar") {
@@ -680,10 +680,8 @@ function MultiServerShell({
       data.kind === "studio-server-search-results" &&
       data.requestId === searchRequest.current
     ) {
-      setSearchResults((old) => ({
-        ...old,
-        [id]: { results: data.results || [], error: data.error },
-      }));
+      const results = screenSearchResults(data);
+      setSearchResults((old) => ({ ...old, [id]: results }));
     } else if (data.kind === "studio-server-navigation") {
       const value = data.navigation as ServerNavigation;
       publishPreferences(preferencesRef.current);
@@ -702,10 +700,13 @@ function MultiServerShell({
     } else if (
       data.kind === "studio-server-status" &&
       ["connecting", "live", "offline", "degraded", "schema-mismatch"].includes(
-        data.status,
+        data.status as string,
       )
     ) {
-      setStatus((old) => ({ ...old, [id]: data.status }));
+      setStatus((old) => ({
+        ...old,
+        [id]: data.status as ResourceConnectionState,
+      }));
       if (data.status === "live")
         setLastSeen((old) => ({ ...old, [id]: Date.now() / 1000 }));
     }

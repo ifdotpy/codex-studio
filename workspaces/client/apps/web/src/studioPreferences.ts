@@ -17,9 +17,14 @@ export const fontFamilies = {
   verdana: { label: "Verdana", css: "Verdana, Geneva, sans-serif" },
 } as const;
 
-export type StudioPreferences = Required<
-  components["schemas"]["AppearancePreferences"]
->;
+type AppearancePreferences = components["schemas"]["AppearancePreferences"];
+// Parsing materializes every default, so renderer preferences never contain undefined.
+export type StudioPreferences = {
+  [Key in keyof AppearancePreferences]-?: Exclude<
+    AppearancePreferences[Key],
+    undefined
+  >;
+};
 export type StudioFontFamily = StudioPreferences["fontFamily"];
 
 export const defaultStudioPreferences: StudioPreferences = {

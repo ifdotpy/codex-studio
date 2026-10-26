@@ -181,8 +181,8 @@ The existing package command still creates the combined application.
 Run a hidden check with a separate profile and an ephemeral port:
 
 ```sh
-node workspaces/client/apps/desktop/ui-only-smoke.mjs
-CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node workspaces/client/apps/desktop/ui-only-smoke.mjs
+node workspaces/client/apps/desktop/ui-only-smoke.ts
+CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node workspaces/client/apps/desktop/ui-only-smoke.ts
 ```
 
 ## Verification
@@ -212,7 +212,7 @@ The selected frame and shell keep two renderer processes.
 Run the same measurement against a package:
 
 ```sh
-CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node workspaces/client/apps/desktop/multi-server-memory.mjs
+CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node workspaces/client/apps/desktop/multi-server-memory.ts
 ```
 
 Browser diagnostics use Chromium with debugger sessions attached to each renderer.

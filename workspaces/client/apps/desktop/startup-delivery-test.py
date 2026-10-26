@@ -1082,7 +1082,7 @@ with (state / 'runtime.lock').open('r') as lease:
     def test_delivery_recovery_label_and_readonly_command_match_their_named_owners(self):
         import re
         here = Path(__file__).resolve().parent
-        paths = (here / 'recovery.cjs').read_text().split('function recoveryPaths(', 1)[1].split('\nfunction ', 1)[0]
+        paths = (here / 'recovery.ts').read_text().split('function recoveryPaths(', 1)[1].split('\nfunction ', 1)[0]
         compact = re.sub(r'\s+', '', paths)
         formula = 'createHash("sha256").update(canonical).digest("hex").slice(0,' + str(recovery.DELIVERY_RECOVERY_LABEL_HEX_LENGTH) + ')'
         self.assertIn(formula, compact)

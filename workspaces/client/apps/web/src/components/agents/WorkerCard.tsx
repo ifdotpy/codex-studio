@@ -46,7 +46,7 @@ function WorkerExcerpt({
   agentId: string;
   label: string;
   text: string;
-  truncated?: boolean;
+  truncated?: boolean | undefined;
   open: () => void;
 }) {
   const { save, saved } = useServerApi();
@@ -104,8 +104,8 @@ type WorkerCardProps = {
   deferred: boolean;
   open: () => void;
   previewResult: () => void;
-  remove?: () => void;
-  indicator?: ChatIndicator;
+  remove?: (() => void) | undefined;
+  indicator?: ChatIndicator | undefined;
 };
 
 export default function WorkerCard(props: WorkerCardProps) {

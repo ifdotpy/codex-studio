@@ -11,8 +11,8 @@ import {
   ApiError,
   get,
   errorText,
-  type GetOptions,
   type GetResult,
+  type GetOptions,
 } from "../../api";
 import { serverResourceScope } from "../../servers/registry";
 import type { Snapshot } from "../../types";
@@ -128,11 +128,10 @@ export function supportsDaybreakMode(
 
 type ModelCatalogSource = {
   scope: string;
-  cacheOwner?: object;
-  read: (options: {
-    query?: GetOptions<"/api/models">["query"];
-    signal?: AbortSignal;
-  }) => Promise<GetResult<"/api/models">>;
+  cacheOwner?: object | undefined;
+  read: (
+    options: Pick<GetOptions<"/api/models">, "query" | "signal">,
+  ) => Promise<GetResult<"/api/models">>;
   subscribeState: (
     accept: (snapshot: ModelCatalogProjection) => void,
     fail: (error: unknown | null) => void,
@@ -190,9 +189,9 @@ type ModelCatalogSnapshot = {
 };
 type ModelCatalogEntry = {
   snapshot: ModelCatalogSnapshot;
-  inFlight?: Promise<void>;
+  inFlight?: Promise<void> | undefined;
   listeners: Set<() => void>;
-  stopWatching?: () => void;
+  stopWatching?: (() => void) | undefined;
 };
 
 const emptyModelCatalog: ModelCatalogSnapshot = {

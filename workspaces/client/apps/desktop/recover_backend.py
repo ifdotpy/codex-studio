@@ -208,7 +208,7 @@ def startup_supervisor_handles(state, expected):
     return sorted(handles, key=lambda row: row["id"])
 
 
-# Owner: recovery.cjs::recoveryPaths. startup-delivery-test.py checks parity.
+# Owner: recovery.ts::recoveryPaths. startup-delivery-test.py checks parity.
 DELIVERY_RECOVERY_LABEL_PREFIX = "local.codex.agents.recovery."
 DELIVERY_RECOVERY_LABEL_HEX_LENGTH = 16
 # Limits for the owned, isolated configured-interpreter proof. Units: seconds and PID-line bytes.

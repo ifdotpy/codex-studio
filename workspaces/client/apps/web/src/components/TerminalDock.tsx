@@ -42,7 +42,7 @@ export default function TerminalDock({
   notify,
 }: {
   data: Snapshot | null;
-  agent?: Agent;
+  agent?: Agent | undefined;
   notify: (message: string) => void;
 }) {
   const {

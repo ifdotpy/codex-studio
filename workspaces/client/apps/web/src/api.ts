@@ -21,10 +21,19 @@ import createClient from "openapi-fetch";
 import type { FetchResponse } from "openapi-fetch";
 
 import type {
-  FilterKeys,
-  OperationRequestBodyContent,
-  PathsWithMethod,
-} from "openapi-typescript-helpers";
+  ApiPathsFor as PathsFor,
+  ApiOperation as Operation,
+  GetResult,
+  PostResult,
+  PostBody,
+} from "./apiTypes";
+export type {
+  ApiGetPath,
+  ApiPostPath,
+  GetResult,
+  PostResult,
+  PostBody,
+} from "./apiTypes";
 
 import type { paths } from "./generated/api";
 
@@ -37,7 +46,6 @@ import {
 
 import type {
   ApiGetOptions,
-  ApiSuccessBodyFor,
   ApiPathsWithRequiredQuery,
   ApiQueryFor,
 } from "./apiContracts";
@@ -46,15 +54,6 @@ import { onResume } from "./sync/resume";
 
 import { displayError } from "./errorPresentation";
 
-type Method = "get" | "post";
-
-type PathsFor<M extends Method> = PathsWithMethod<paths, M> & keyof paths;
-
-type Operation<Path extends keyof paths, M extends Method> = FilterKeys<
-  paths[Path],
-  M
->;
-
 type QueryOf<Op> = ApiQueryFor<Op>;
 
 type QueryOfPath<Path extends PathsFor<"get">> = Path extends keyof paths
@@ -62,9 +61,9 @@ type QueryOfPath<Path extends PathsFor<"get">> = Path extends keyof paths
   : never;
 
 type InternalGetOptions<Path extends PathsFor<"get">> = ApiOptions & {
-  query?: QueryOf<Operation<Path, "get">>;
-  etag?: string;
-  readMetadata?: ApiReadMetadata;
+  query?: QueryOf<Operation<Path, "get">> | undefined;
+  etag?: string | undefined;
+  readMetadata?: ApiReadMetadata | undefined;
 };
 
 type PathsWithRequiredQuery = ApiPathsWithRequiredQuery<paths>;
@@ -105,18 +104,17 @@ type PostFetchResponse<Path extends PathsFor<"post">> = FetchResponse<
   "application/json"
 >;
 
-export type ApiReadMetadata = { etag?: string; notModified?: boolean };
-
-export type ApiGetPath = PathsFor<"get">;
-
-export type ApiPostPath = PathsFor<"post">;
+export type ApiReadMetadata = {
+  etag?: string | undefined;
+  notModified?: boolean;
+};
 
 export type ApiOptions = {
-  timeoutMs?: number;
-  workspaceId?: string;
-  sessionToken?: string;
-  signal?: AbortSignal;
-  cache?: RequestCache;
+  timeoutMs?: number | undefined;
+  workspaceId?: string | undefined;
+  sessionToken?: string | undefined;
+  signal?: AbortSignal | undefined;
+  cache?: RequestCache | undefined;
 };
 
 export type GetOptions<Path extends PathsFor<"get">> = ApiGetOptions<
@@ -126,18 +124,6 @@ export type GetOptions<Path extends PathsFor<"get">> = ApiGetOptions<
 >;
 
 export type PostOptions = ApiOptions & { requestId?: string };
-
-export type GetResult<Path extends PathsFor<"get">> = ApiSuccessBodyFor<
-  Operation<Path, "get">
->;
-
-export type PostResult<Path extends PathsFor<"post">> = ApiSuccessBodyFor<
-  Operation<Path, "post">
->;
-
-export type PostBody<Path extends PathsFor<"post">> = NonNullable<
-  OperationRequestBodyContent<Operation<Path, "post">>
->;
 
 /** A read waits this long for a slow server. Only a lost connection should end it. */
 export const READ_DEADLINE_MS = 120_000;
@@ -206,16 +192,23 @@ export function isApiSchemaMismatchResponse(
 }
 
 export class ApiError extends Error {
+  public status: number;
+  public readonly response: unknown;
+  public readonly location: string[] | undefined;
   public readonly outcome?: string;
   public readonly catalogPending?: boolean;
 
   constructor(
     message: unknown,
-    public status: number,
-    public readonly response: unknown = message,
-    public readonly location?: string[],
+    status: number,
+    response: unknown = message,
+    location?: string[],
   ) {
     super(displayError(message) || `Request failed (${status})`);
+    this.status = status;
+    this.response = response;
+    this.location = location;
+
     if (isRecord(response)) {
       if (typeof response.outcome === "string") this.outcome = response.outcome;
       if (typeof response.catalogPending === "boolean")
@@ -225,8 +218,11 @@ export class ApiError extends Error {
 }
 
 export class ApiSchemaMismatchError extends ApiError {
-  constructor(public readonly markedResponse = false) {
+  public readonly markedResponse: boolean;
+  constructor(markedResponse = false) {
     super("Studio must be updated before using this tab.", 426);
+    this.markedResponse = markedResponse;
+
     this.name = "ApiSchemaMismatchError";
   }
 }

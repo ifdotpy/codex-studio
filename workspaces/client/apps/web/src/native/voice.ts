@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import type { NativeEvent } from "./host";
 import { listenNativeEvents, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
 export type NativeVoiceEvent = {
@@ -24,7 +25,9 @@ export function nativeVoice(
   return {
     async offer() {
       try {
-        listening = await listen((event: any) => {
+        listening = await listen((input) => {
+          // The native host owns voice events; retain its base checks.
+          const event = input as NativeEvent<NativeVoiceEvent>;
           if (!closed && event?.event === subscription) onEvent(event.value);
         });
         if (closed) throw new Error("Voice ended.");

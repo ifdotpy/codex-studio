@@ -1,6 +1,6 @@
 # Text clipping detector
 
-Import `detectTextClipping` from `text-clipping.mjs`.
+Import `detectTextClipping` from `text-clipping.ts`.
 Call it with `page.evaluate(detectTextClipping, { scene, profile })` after the page settles.
 
 The report contains the scene, profile, selector, text, rectangle, and reason.
@@ -21,7 +21,7 @@ Run the detector regression test:
 
 ```sh
 cd web
-npx playwright test --config playwright.config.ts --project=client text-clipping.spec.mjs
+npx playwright test --config playwright.config.ts --project=client text-clipping.spec.ts
 ```
 
 The scene runner is `/tmp/ui-compare/clip-audit/run.mjs`. See its README for the
@@ -40,7 +40,7 @@ selected worker count times the measured per-worker fixture scratch, capped at
 headroom. A failed quota or space probe excludes that candidate; `/tmp` is
 tested like every other candidate. Set `PLAYWRIGHT_SCRATCH_ROOT` to probe and
 select a specific root. The probe is implemented in
-[`scratch-root.mjs`](../scratch-root.mjs).
+[`scratch-root.ts`](../scratch-root.ts).
 Spawned fixture `TMPDIR`, `HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, and test
 state directories stay under this scratch root.
 
@@ -62,6 +62,6 @@ exist, the selector uses a conservative 2.1 GiB tree-PSS default. If headroom
 cannot fit one worker while retaining the reserve, the automatic runner refuses
 to start. The automatic worker count is the smaller CPU or memory limit. The
 selector and its current measured inputs live in
-[`playwright-workers.mjs`](../../playwright-workers.mjs). Use
+[`playwright-workers.ts`](../../playwright-workers.ts). Use
 `PLAYWRIGHT_WORKERS=<n>` to lower or otherwise manually choose concurrency;
 the override still must fit the measured memory ceiling and reserve.

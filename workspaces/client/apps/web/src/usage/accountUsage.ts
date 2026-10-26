@@ -1,14 +1,16 @@
 import { serverLocalStorage } from "../servers/storage";
-import type { JsonValue } from "../types";
+import type { JsonInput, JsonInputOf, Json } from "../types";
 import type { ApiError, GetResult } from "../api";
 import type { components } from "../generated/api";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "../generated/sharedValues";
 import { providerLimitData, providerRateLimitsDataDto } from "./providerLimits";
 
-export type JsonObject = { [key: string]: JsonValue };
+export type JsonObject = Json;
 
-type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
-type UsageLimitsResponse = GetResult<"/api/limits">;
+type AccountRateLimitsDto = JsonInputOf<
+  components["schemas"]["AccountRateLimitsDto"]
+>;
+type UsageLimitsResponse = JsonInputOf<GetResult<"/api/limits">>;
 type ClientLimitMetadata = { loading?: boolean; stale?: boolean };
 export type AccountLimitsReadError = Pick<ApiError, "message" | "status"> & {
   location?: string[];
@@ -35,7 +37,7 @@ export function limitsHydrationSucceeded(
 }
 
 export function jsonObject(
-  value: JsonValue | null | undefined,
+  value: JsonInput | null | undefined,
 ): JsonObject | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value
@@ -43,7 +45,7 @@ export function jsonObject(
 }
 
 function isAccountLimitsSnapshot(
-  value: JsonValue,
+  value: JsonInput,
 ): value is AccountLimitsSnapshot {
   const limits = jsonObject(value);
   const readError = jsonObject(limits?.readError);
@@ -83,7 +85,7 @@ function isAccountLimitsSnapshot(
 }
 
 export function accountLimits(
-  value: JsonValue | null | undefined,
+  value: JsonInput | null | undefined,
   accountKey: string,
   accountId?: string | null,
 ): AccountLimitsSnapshot | null {
@@ -109,7 +111,7 @@ export function shouldReplaceLimitsSnapshot(
 }
 
 export function limitsSnapshotIsFresh(
-  value: JsonValue | null | undefined,
+  value: JsonInput | null | undefined,
   accountKey: string,
   accountId?: string | null,
   now = Date.now() / 1000,
@@ -140,7 +142,7 @@ export function createAccountLimitsCache(
         storage.getItem(`codex-limits:${scope}`) || "{}",
       );
       for (const [key, value] of Object.entries(stored)) {
-        const snapshot = accountLimits(value as JsonValue, key);
+        const snapshot = accountLimits(value as JsonInput, key);
         if (snapshot) cache[key] = snapshot;
       }
     } catch {

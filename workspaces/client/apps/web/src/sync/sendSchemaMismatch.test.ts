@@ -1,3 +1,6 @@
+import { createRxDatabase, type RxCollection, type RxDatabase } from "rxdb";
+import { getRxStorageMemory } from "rxdb/plugins/storage-memory";
+import { SYNC_DOCUMENT_SCHEMA, type SyncDocument } from "./client";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
@@ -10,7 +13,13 @@ vi.mock("./client", async (load) => ({
   syncDatabase,
 }));
 
-afterEach(() => {
+let testDatabase:
+  | RxDatabase<{ outbox: RxCollection<SyncDocument> }>
+  | undefined;
+
+afterEach(async () => {
+  await testDatabase?.remove();
+  testDatabase = undefined;
   vi.resetModules();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -73,22 +82,23 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
       created: 1,
     }),
   };
-  const doc = {
-    id: "stable-id",
-    getLatest: () => record,
-    incrementalModify: async (
-      change: (value: typeof record) => typeof record,
-    ) => {
-      Object.assign(record, change({ ...record }));
-      return record;
+  testDatabase = await createRxDatabase<{ outbox: RxCollection<SyncDocument> }>(
+    {
+      name: "send-" + crypto.randomUUID(),
+      storage: getRxStorageMemory(),
+      multiInstance: false,
     },
-  };
+  );
+  const { outbox } = await testDatabase.addCollections({
+    outbox: { schema: SYNC_DOCUMENT_SCHEMA },
+  });
+  const doc = await outbox.insert({ ...record, seq: 0 });
   let send = await import("./send");
   expect(await send.deliver(doc)).toMatchObject({
     id: "stable-id",
     queued: true,
   });
-  expect(JSON.parse(record.payload)).toMatchObject({
+  expect(JSON.parse(doc.getLatest().payload)).toMatchObject({
     status: "queued",
     attempted: false,
     body: { id: "stable-id", text: "hello" },
@@ -108,7 +118,7 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
   expect(
     requests.filter((item) => item.endsWith("/api/messages")),
   ).toHaveLength(1);
-  expect(JSON.parse(record.payload)).toMatchObject({
+  expect(JSON.parse(doc.getLatest().payload)).toMatchObject({
     status: "accepted",
     body: { id: "stable-id", text: "hello" },
   });

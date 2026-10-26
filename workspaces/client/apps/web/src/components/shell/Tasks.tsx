@@ -126,7 +126,7 @@ function TaskEditor({
   busy,
   onClose,
 }: {
-  task?: ReviewTask;
+  task?: ReviewTask | undefined;
   tasks: ReviewTask[];
   write: Write;
   busy: boolean;

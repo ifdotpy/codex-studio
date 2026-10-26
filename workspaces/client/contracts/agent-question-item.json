@@ -1,5 +1,5 @@
 {
-  "description": "Provider item of a Claude AskUserQuestion call, as the Claude bridge emits it in item/completed. Both backends store it unchanged as the text of an output transcript row titled mcpToolCall, and the chat question card parses that text. Consumers: claude-bridge features.test.mjs, server question-history-contract.py, runtime-services notification_dispatch tests, web QuestionCard.test.ts.",
+  "description": "Provider item of a Claude AskUserQuestion call, as the Claude bridge emits it in item/completed. Both backends store it unchanged as the text of an output transcript row titled mcpToolCall, and the chat question card parses that text. Consumers: claude-bridge features.test.ts, server question-history-contract.py, runtime-services notification_dispatch tests, web QuestionCard.test.ts.",
   "item": {
     "id": "toolu_contract",
     "type": "mcpToolCall",

@@ -1,0 +1,230 @@
+import { hiddenElectronArguments } from "./hidden-electron.ts";
+import assert from "node:assert/strict";
+import type { ElectronApplication } from "playwright-core";
+import { serverFrameHost } from "./frame-owner.ts";
+import { _electron as electron } from "playwright-core";
+import { mkdtemp, access, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const root = path.dirname(fileURLToPath(import.meta.url));
+const folder = await mkdtemp(path.join(tmpdir(), "studio-ui-only-smoke-"));
+let desktop: ElectronApplication | null = null;
+try {
+  desktop = await electron.launch({
+    ...(process.env.CODEX_UI_EXECUTABLE
+      ? { executablePath: process.env.CODEX_UI_EXECUTABLE, args: ["--hidden"] }
+      : {
+          args: [root, "--hidden", "--ui-only", ...hiddenElectronArguments],
+        }),
+    env: {
+      ...process.env,
+      CODEX_DESKTOP_PROFILE: path.join(folder, "profile"),
+      CODEX_AGENTS_STATE_DIR: path.join(folder, "state"),
+      CODEX_UI_PORT: "0",
+    },
+  });
+  const page = await desktop.firstWindow();
+  await desktop.evaluate(({ BrowserWindow }) => {
+    for (const win of BrowserWindow.getAllWindows())
+      win.setBounds({ width: 1440, height: 960 });
+  });
+  page.setDefaultTimeout(15000);
+  const apiRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/"))
+      apiRequests.push(request.url());
+  });
+  await page.getByRole("dialog", { name: "Studio settings" }).waitFor();
+  assert.match(page.url(), /\?studio-ui-only=1$/);
+  assert.equal(
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
+    ),
+    false,
+  );
+  assert.equal(await page.locator("iframe").count(), 0);
+  assert.equal(
+    (await page.request.get(new URL("/api/session", page.url()).href)).status(),
+    404,
+  );
+  assert.deepEqual(apiRequests, []);
+  await assert.rejects(access(path.join(folder, "state")), /ENOENT/);
+  await page.evaluate(
+    ({ serverHost }) => {
+      const bridge = window.codexDesktop;
+      if (!bridge) throw new Error("The desktop bridge is unavailable.");
+      localStorage.setItem(
+        "studio-paired-servers-v1",
+        JSON.stringify([
+          {
+            id: "unpaired",
+            label: "Unpaired",
+            origin: "https://unpaired.tailnet.ts.net",
+            credentialId: "missing",
+          },
+        ]),
+      );
+      const frame = document.createElement("iframe");
+      const base = new URL(bridge.serverViewOrigin || location.origin);
+      if (bridge.serverViewOrigin) base.hostname = serverHost;
+      base.search = new URLSearchParams({
+        "studio-server": "unpaired",
+        ...(bridge.serverViewOrigin
+          ? {
+              "studio-parent": location.origin,
+              "studio-origin": "https://unpaired.tailnet.ts.net",
+              "studio-credential": "missing",
+            }
+          : {}),
+      }).toString();
+      frame.src = base.href;
+      frame.title = "unpaired";
+      document.body.append(frame);
+    },
+    { serverHost: serverFrameHost("unpaired") },
+  );
+  const serverFrame = await page
+    .locator('iframe[title="unpaired"]')
+    .contentFrame();
+  await serverFrame.locator("html").waitFor();
+  const attacker = page
+    .frames()
+    .find((frame) => frame.url().includes("studio-server=unpaired"));
+  assert.ok(attacker);
+  const parentDenied = await attacker.evaluate(async () => {
+    try {
+      if (!parent.codexDesktop?.getBackendUpdate)
+        throw new Error("The parent bridge is unavailable.");
+      await parent.codexDesktop.getBackendUpdate();
+      return false;
+    } catch (error) {
+      return error instanceof Error && error.name === "SecurityError";
+    }
+  });
+  assert.equal(
+    parentDenied,
+    true,
+    "A server frame cannot reach the parent native bridge",
+  );
+  assert.equal(
+    await attacker.evaluate(
+      () => typeof require === "undefined" && typeof process === "undefined",
+    ),
+    true,
+  );
+  const denied = await attacker.evaluate(async () => {
+    const bridge = window.codexDesktop;
+    if (!bridge) throw new Error("The desktop bridge is unavailable.");
+    if (!bridge.serverCredentialAction)
+      throw new Error(
+        "The desktop serverCredentialAction method is unavailable.",
+      );
+    const errors: string[] = [];
+    for (const request of [
+      {
+        action: "request",
+        method: "GET",
+        serverId: "other",
+        streamId: "omitted-owner",
+        credentialId: "missing",
+        url: "https://unpaired.tailnet.ts.net/api/session",
+        requestId: "once",
+      },
+      {
+        action: "request",
+        method: "GET",
+        serverId: "other",
+        frameOwner: "other",
+        streamId: "spoofed-owner",
+        credentialId: "missing",
+        url: "https://unpaired.tailnet.ts.net/api/session",
+        requestId: "once",
+      },
+      {
+        action: "request",
+        method: "GET",
+        serverId: "other",
+        frameOwner: "unpaired",
+        streamId: "once",
+        credentialId: "missing",
+        url: "https://unpaired.tailnet.ts.net/api/session",
+        requestId: "once",
+      },
+      {
+        action: "request",
+        method: "GET",
+        serverId: "unpaired",
+        frameOwner: "unpaired",
+        streamId: "once",
+        credentialId: "missing",
+        url: "https://unpaired.tailnet.ts.net/api/session",
+        requestId: "once",
+      },
+    ] satisfies import("./api.ts").CredentialRequest[]) {
+      try {
+        await bridge.serverCredentialAction(request);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    return errors;
+  });
+  assert.match(denied[0] ?? "", /Invalid server frame owner/);
+  assert.match(denied[1] ?? "", /Invalid server frame owner/);
+  assert.match(denied[2] ?? "", /Invalid server frame owner/);
+  assert.match(denied[3] ?? "", /server key|Secure key storage/);
+  const spoofedNative = await attacker.evaluate(async () => {
+    const bridge = window.codexDesktop;
+    if (!bridge) throw new Error("The desktop bridge is unavailable.");
+    if (!bridge.getBackendUpdate)
+      throw new Error("The desktop getBackendUpdate method is unavailable.");
+    if (!bridge.serverNativeAction)
+      throw new Error("The desktop serverNativeAction method is unavailable.");
+    try {
+      await bridge.serverNativeAction("local", "getBackendUpdate");
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.equal(spoofedNative, true);
+  console.log(
+    JSON.stringify({
+      uiOnly: true,
+      hidden: true,
+      stateCreated: false,
+      localApi: false,
+      frameOwnerDenied: true,
+      parentBridgeDenied: true,
+      spoofedNativeDenied: true,
+      executable: process.env.CODEX_UI_EXECUTABLE ? "packaged" : "development",
+    }),
+  );
+} finally {
+  if (desktop) {
+    const child = desktop.process();
+    assert.ok(child.pid);
+    const pid = child.pid;
+    // Playwright starts Electron in its own process group on Unix. Close its
+    // helpers too, because they can retain the test's transport after shutdown.
+    const watchdog = setTimeout(() => {
+      try {
+        if (process.platform === "win32") child.kill("SIGKILL");
+        else process.kill(-pid, "SIGKILL");
+      } catch (error) {
+        if (
+          !(error instanceof Error && "code" in error && error.code === "ESRCH")
+        )
+          throw error;
+      }
+    }, 5000);
+    watchdog.unref();
+    try {
+      await desktop.close();
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
+  await rm(folder, { recursive: true, force: true });
+}

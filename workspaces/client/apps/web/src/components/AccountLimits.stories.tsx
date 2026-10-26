@@ -20,6 +20,8 @@ function AccountLimitsFixture({
   settings?: boolean;
   light?: boolean;
 }) {
+  const [firstAccountFixture] = accountLimitFixtures;
+  if (!firstAccountFixture) throw new Error("Missing account limit fixture");
   const services = useMemo(() => {
     const value = createServerServices({
       id: "local",
@@ -114,7 +116,7 @@ function AccountLimitsFixture({
                 } as Agent
               }
               stateDir="limits-fixture"
-              limits={accountLimitFixtures[0].limits}
+              limits={firstAccountFixture.limits}
               accounts={accountLimitFixtures}
               reload={() => {}}
               opened
@@ -156,7 +158,7 @@ const meta = {
 } satisfies Meta<typeof AccountLimitsFixture>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const PopoverDark: Story = {
+export const PopoverDark = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement.ownerDocument.body);
     const popover = canvasElement.ownerDocument.querySelector(
@@ -213,13 +215,13 @@ export const PopoverDark: Story = {
       canvas.getByRole("button", { name: "Apply reset" }),
     ).toBeVisible();
   },
-};
+} satisfies Story;
 export const PopoverLight: Story = {
   args: { light: true },
   globals: { colorScheme: "light" },
   play: PopoverDark.play,
 };
-export const SettingsDark: Story = {
+export const SettingsDark = {
   args: { settings: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -234,7 +236,12 @@ export const SettingsDark: Story = {
     const controls = canvas.getAllByRole("button", {
       name: /Limit details for/,
     });
-    await userEvent.click(controls[0]);
+    const first = controls[0],
+      fourth = controls[3],
+      third = controls[2];
+    if (!first || !fourth || !third)
+      throw new Error("Missing limit detail controls");
+    await userEvent.click(first);
     await expect(
       canvas.getByRole("meter", { name: "Spark 5h remaining" }),
     ).toBeVisible();
@@ -242,7 +249,7 @@ export const SettingsDark: Story = {
     await expect(
       canvas.queryByRole("button", { name: "Apply reset" }),
     ).not.toBeInTheDocument();
-    await userEvent.click(controls[3]);
+    await userEvent.click(fourth);
     await expect(
       canvas.getByRole("meter", { name: "Opus 7d remaining" }),
     ).toBeVisible();
@@ -250,7 +257,7 @@ export const SettingsDark: Story = {
     await expect(
       canvasElement.querySelectorAll(".account-expanded"),
     ).toHaveLength(1);
-    await userEvent.click(controls[2]);
+    await userEvent.click(third);
     await expect(
       canvas.getByText("Limits temporarily unavailable"),
     ).toBeVisible();
@@ -258,7 +265,7 @@ export const SettingsDark: Story = {
       canvasElement.querySelectorAll(".account-expanded"),
     ).toHaveLength(1);
   },
-};
+} satisfies Story;
 export const SettingsLight: Story = {
   args: { settings: true, light: true },
   globals: { colorScheme: "light" },

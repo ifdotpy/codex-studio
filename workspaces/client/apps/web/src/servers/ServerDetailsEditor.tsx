@@ -19,7 +19,7 @@ export default function ServerDetailsEditor({
   alias: string;
   usedAliases: string[];
   disabled?: boolean;
-  saveName?: (value: string) => Promise<boolean>;
+  saveName?: ((value: string) => Promise<boolean>) | undefined;
   saveAlias: (value: string) => Promise<boolean>;
 }) {
   const [label, setLabel] = useState(name);

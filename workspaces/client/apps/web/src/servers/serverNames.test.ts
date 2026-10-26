@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 /// <reference lib="es2024.promise" />
 import { afterEach, expect, test, vi } from "vitest";
 import {
@@ -63,6 +64,7 @@ test("a signed status refresh changes only the name of its registered server", a
     pair: async () => server,
   });
   await refreshServerName(server);
+  assert.ok(fetch.mock.calls[0] != null);
   expect(fetch.mock.calls[0][0]).toBe(server);
   expect(readServers()).toEqual([{ ...server, label: "Igor MBP" }]);
   fetch.mockImplementation(
@@ -70,7 +72,7 @@ test("a signed status refresh changes only the name of its registered server", a
       new Response(JSON.stringify({ serverId: "different", label: "Wrong" })),
   );
   await expect(refreshServerName(server)).rejects.toThrow("another identity");
-  expect(readServers()[0].label).toBe("Igor MBP");
+  expect(readServers()[0]?.label).toBe("Igor MBP");
 });
 
 test("saved server names use their own stream with zero idle status reads", async () => {
@@ -103,6 +105,7 @@ test("saved server names use their own stream with zero idle status reads", asyn
     return release;
   });
   const stop = watchServerName(server, { watchResourceChanges });
+  assert.ok(watchResourceChanges.mock.calls[0] != null);
   expect(watchResourceChanges.mock.calls[0][0]).toEqual({
     kind: "multi-server",
   });
@@ -115,9 +118,9 @@ test("saved server names use their own stream with zero idle status reads", asyn
       discoverySnapshot: { identity: { serverId: id, label } },
     } as import("../sync/resourceEvents").ResourceVersion);
   deliver("other", "Wrong");
-  expect(readServers()[0].label).toBe("Old");
+  expect(readServers()[0]?.label).toBe("Old");
   deliver("remote", "New");
-  expect(readServers()[0].label).toBe("New");
+  expect(readServers()[0]?.label).toBe("New");
   // An old stream cannot restore a forgotten peer or overwrite a replacement.
   values.set(
     SERVER_REGISTRY_KEY,
@@ -126,7 +129,7 @@ test("saved server names use their own stream with zero idle status reads", asyn
     ]),
   );
   deliver("remote", "Stale");
-  expect(readServers()[0].label).toBe("Replacement");
+  expect(readServers()[0]?.label).toBe("Replacement");
   values.set(SERVER_REGISTRY_KEY, "[]");
   deliver("remote", "Removed");
   expect(readServers()).toEqual([]);
@@ -134,6 +137,6 @@ test("saved server names use their own stream with zero idle status reads", asyn
   expect(release).toHaveBeenCalledTimes(1);
   values.set(SERVER_REGISTRY_KEY, JSON.stringify([server]));
   deliver("remote", "Stopped");
-  expect(readServers()[0].label).toBe("Old");
+  expect(readServers()[0]?.label).toBe("Old");
   expect(fetch).not.toHaveBeenCalled();
 });

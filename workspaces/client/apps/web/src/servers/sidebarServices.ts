@@ -316,7 +316,7 @@ export function createMergedSidebarServices(
                     ...source,
                     sidebar: {
                       ...source.sidebar,
-                      sidebarOrder: result as unknown as NonNullable<
+                      sidebarOrder: result as NonNullable<
                         typeof source.sidebar.sidebarOrder
                       >,
                     },

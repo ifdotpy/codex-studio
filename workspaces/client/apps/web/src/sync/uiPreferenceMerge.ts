@@ -1,5 +1,5 @@
-import { MODEL_WHITELIST_PREFERENCE_KEY } from "../generated/sharedValues";
-import type { components } from "../generated/api";
+import { MODEL_WHITELIST_PREFERENCE_KEY } from "../generated/sharedValues.ts";
+import type { components } from "../generated/api.ts";
 export type PreferenceField = components["schemas"]["PreferenceField"];
 export type PreferenceFields = Record<string, PreferenceField>;
 export type PreferenceScope = "user" | "server";

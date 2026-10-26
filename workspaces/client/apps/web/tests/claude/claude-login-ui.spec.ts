@@ -1,0 +1,228 @@
+import { fixturePostBody } from "../mobile/browser-fixture.ts";
+import type { components } from "../../src/generated/api.ts";
+import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type {} from "./claude-login-ui.fixture.tsx";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve, join } from "node:path";
+import { test } from "../playwright.ts";
+
+test("claude login ui", async ({ page: runnerPage }) => {
+  const root = resolve(import.meta.dirname, "../../");
+
+  const cacheDir = await mkdtemp(join(tmpdir(), "claude-login-ui-"));
+  const server = await createServer({
+    configFile: false,
+    root,
+    cacheDir,
+    server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "fixture",
+        configureServer(server) {
+          server.middlewares.use("/check", (_req, res) => {
+            res.setHeader("Content-Type", "text/html");
+            res.end(
+              '<div id="root"></div><script type="module" src="/tests/claude/claude-login-ui.fixture.tsx"></script>',
+            );
+          });
+        },
+      },
+    ],
+  });
+  try {
+    await server.listen();
+    const page = runnerPage;
+    const failures: string[] = [];
+    page.on("pageerror", (e) => failures.push(e.message));
+    let receipt: components["schemas"]["ClaudeLoginResponse"] | null = null;
+    const starts: string[] = [];
+    const codes: string[] = [];
+    let unsafeNext = false;
+    let failNextCode = false;
+    await page.route("**/api/**", async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      if (url.pathname === "/api/sync/identity")
+        return route.fulfill({ status: 404, json: {} });
+      if (url.pathname === "/api/accounts/claude/login") {
+        if (req.method() === "POST") {
+          const body = fixturePostBody<"/api/accounts/claude/login">(req);
+          starts.push(body.login_id);
+          receipt = {
+            requestId: body.login_id,
+            accountKey: "claude",
+            status: "pending",
+            verificationUrl: unsafeNext
+              ? "https://claude.ai.evil.example/oauth/authorize"
+              : "https://claude.com/cai/oauth/authorize?fixture=1",
+          };
+          unsafeNext = false;
+        } else {
+          const status = receipt || {
+            requestId: url.searchParams.get("request_id") ?? "",
+            accountKey: "claude",
+            status: "starting",
+          };
+          assert.equal(status.requestId, url.searchParams.get("request_id"));
+          assert.equal(status.accountKey, "claude");
+          return route.fulfill({ json: status });
+        }
+        return route.fulfill({
+          json: receipt,
+        });
+      }
+      if (url.pathname.endsWith("/code")) {
+        assert.ok(receipt);
+        const body = fixturePostBody<"/api/accounts/claude/login/code">(req);
+        codes.push(body.code);
+        receipt = failNextCode
+          ? {
+              ...receipt,
+              status: "error",
+              error:
+                "Claude's completed sign-in check did not confirm this account. Start a new sign-in request.",
+            }
+          : { ...receipt, status: "ready", email: "me@example.com" };
+        failNextCode = false;
+        return route.fulfill({ json: receipt });
+      }
+      if (url.pathname.endsWith("/cancel")) {
+        assert.ok(receipt);
+        receipt = { ...receipt, status: "cancelled" };
+        return route.fulfill({ json: receipt });
+      }
+      return route.fulfill({
+        json: {
+          accounts: [
+            {
+              id: "claude",
+              home: "/fixture",
+              source: "fixture",
+              label: "Personal",
+              email: "me@example.com",
+              provider: "claude",
+              status: "signed_out",
+            },
+          ],
+          defaultAccountKey: "claude",
+          archivedAccounts: [],
+          defaultAccountGroups: [],
+          logins: [],
+          supportsDelete: false,
+          supportsDisconnect: false,
+          // Preserve the legacy signed_out spelling used by this fixture.
+        } satisfies Omit<
+          components["schemas"]["AccountsResponse"],
+          "accounts"
+        > & {
+          accounts: (Omit<components["schemas"]["Account"], "status"> & {
+            status: "signed_out";
+          })[];
+        },
+      });
+    });
+    const open = async () => {
+      await page.getByRole("button", { name: "Manage accounts" }).click();
+      await page
+        .getByRole("button", {
+          name: "Actions for me@example.com",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Sign in again", exact: true })
+        .click();
+    };
+    const resetToken = String(Date.now());
+    await page.addInitScript((token) => {
+      if (sessionStorage.getItem("claude-login-ui-reset") === token) return;
+      localStorage.removeItem("claude-sign-in:fixture:claude");
+      localStorage.removeItem("claude-add-sign-in:fixture");
+      sessionStorage.setItem("claude-login-ui-reset", token);
+    }, resetToken);
+    await page.goto(fixtureServerOrigin(server) + "check");
+    await page
+      .getByRole("button", { name: "Sign in to Claude", exact: true })
+      .click();
+    assert.equal(await page.evaluate(() => window.signInAccount), "claude");
+    await open();
+    await page
+      .getByRole("button", { name: "Start sign-in", exact: true })
+      .click();
+    await page
+      .getByRole("link", { name: "Open Claude sign-in" })
+      .waitFor({ timeout: 3000 });
+    const first = starts[0];
+    await page.reload();
+    await open();
+    await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
+    assert.equal(starts.length, 1);
+    await page.getByLabel("Final authorization response").fill("secret-code");
+    await page
+      .getByRole("button", { name: "Submit authorization response" })
+      .click();
+    await page
+      .getByText("Signed in as me@example.com. You can retry the message.")
+      .waitFor();
+    assert.deepEqual(codes, ["secret-code"]);
+    assert.equal(
+      await page.evaluate(() =>
+        JSON.stringify(localStorage).includes("secret-code"),
+      ),
+      false,
+    );
+    await page.reload();
+    await open();
+    unsafeNext = true;
+    await page.getByRole("button", { name: "Start new sign-in" }).click();
+    await page
+      .getByText("Claude returned an unsupported sign-in URL.")
+      .waitFor();
+    assert.notEqual(starts.at(-1), first);
+    assert.equal(
+      await page.getByRole("link", { name: "Open Claude sign-in" }).count(),
+      0,
+    );
+    await page.getByRole("button", { name: "Cancel sign-in" }).click();
+    await page.getByText("Sign-in cancelled.", { exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Check sign-in status" }).count(),
+      0,
+    );
+    const cancelled = starts.at(-1);
+    await page.getByRole("button", { name: "Start new sign-in" }).click();
+    await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
+    const afterCancel = starts.at(-1);
+    assert.notEqual(afterCancel, cancelled);
+
+    failNextCode = true;
+    await page.getByLabel("Final authorization response").fill("failed-code");
+    await page
+      .getByRole("button", { name: "Submit authorization response" })
+      .click();
+    await page
+      .getByText(
+        "Claude's completed sign-in check did not confirm this account. Start a new sign-in request.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "Check sign-in status" }).count(),
+      0,
+    );
+    await page.getByRole("button", { name: "Start new sign-in" }).click();
+    await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
+    assert.notEqual(starts.at(-1), afterCancel);
+    assert.deepEqual(failures, []);
+    console.log(
+      "PASS Claude re-auth menu, reload, code secrecy, terminal restart, unsafe URL, cancel",
+    );
+  } finally {
+    await runnerPage.close();
+    await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
