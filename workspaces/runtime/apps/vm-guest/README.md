@@ -11,7 +11,7 @@ owned by this app's installer and service unit. Focused check:
 `python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_service.py -v`
 from the repository root.
 
-`just test-fast` runs the whole suite with `node workspaces/runtime/apps/vm-guest/run-guest-suite.mjs`
+`just test-fast` runs the whole suite with `node workspaces/runtime/apps/vm-guest/run-guest-suite.mts`
 after `cargo build -p studio-process-supervisor --locked`. The runner needs Python 3.11 or newer
 (`STUDIO_GUEST_PYTHON` selects one), sets `STUDIO_SUPERVISOR_BINARY` to the built supervisor,
 and runs discovered test cases in bounded stdlib worker processes, so one large module

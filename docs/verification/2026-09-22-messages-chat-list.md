@@ -23,7 +23,7 @@ Verification on 2026-09-22:
   Its renderer reported healthy; backend PID 55850 remained active.
 - A final signature check detected an externally added Python cache file.
   The signer now prevents writes to the bundled cache directory.
-  `node desktop/signing-test.mjs` passed actual imports and strict signature
+  `node desktop/signing-test.ts` passed actual imports and strict signature
   checks across two resource versions. The installed signature passed afterward.
 
 Browser fixtures use isolated state and do not send model requests or OS notifications.
