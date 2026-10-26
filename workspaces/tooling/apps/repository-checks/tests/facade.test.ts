@@ -53,7 +53,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
-    assert.match(recipe.command, /vm-guest\/run-guest-suite\.mjs/);
+    assert.match(recipe.command, /vm-guest\/run-guest-suite\.mts/);
     assert.doesNotMatch(
       recipe.command,
       /--release|test-server-load|runtime_load|mutations/,
@@ -1438,4 +1438,69 @@ test("native startup check stays within temporary-state coverage", async () => {
     ),
     "fixture source",
   );
+});
+
+test("boundary type imports share generated contracts and named type owners without allowing runtime imports", () => {
+  const fixture = workspaceFixture();
+  try {
+    const desktop = fixture.add(
+      "desktop-app",
+      "workspaces/client/apps/desktop",
+    );
+    const web = fixture.add("web-app", "workspaces/client/apps/web");
+    const shared = fixture.add(
+      "shared-package",
+      "workspaces/client/packages/shared",
+    );
+    const cases: [string, string, boolean][] = [
+      [
+        desktop,
+        'import type { Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        desktop,
+        'export type { Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        desktop,
+        'import { type Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [desktop, 'import { Row } from "../web/src/generated/api.ts";', false],
+      [
+        desktop,
+        'import { type Row, value } from "../web/src/generated/api.ts";',
+        false,
+      ],
+      [desktop, 'import type { Row } from "../web/src/private.ts";', false],
+      [web, 'import type { DesktopApi } from "../desktop/api.ts";', true],
+      [web, 'export type { DesktopApi } from "../desktop/api.ts";', true],
+      [web, 'import { DesktopApi } from "../desktop/api.ts";', false],
+      [
+        desktop,
+        'import type { Row } from "../web/src/shared.generated.ts";',
+        true,
+      ],
+      [
+        shared,
+        'import type { Row } from "../../apps/web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        shared,
+        'import { Row } from "../../apps/web/src/generated/api.ts";',
+        false,
+      ],
+    ];
+    for (const [directory, source, allowed] of cases) {
+      const file = path.join(directory, "entry.ts");
+      writeFileSync(file, source);
+      const findings = boundaryFindings(fixture.root, fixture.packages, [file]);
+      assert.equal(findings.length === 0, allowed, source);
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });
