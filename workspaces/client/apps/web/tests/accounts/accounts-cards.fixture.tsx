@@ -1,9 +1,8 @@
 import type { AccountsState } from "../../src/components/Accounts.tsx";
-import { required } from "./fixture-helpers.ts";
 const initial: AccountsState = await (await fetch("/fixture-data")).json();
 declare global {
   interface Window {
-    accountsCardsFixture: { setTheme(value: "dark" | "light"): void };
+    setTheme: (value: "dark" | "light") => void;
   }
 }
 import React, { useState } from "react";
@@ -18,7 +17,7 @@ function Fixture() {
   const [data, setData] = useState<AccountsState>(initial);
   const [color, setColor] = useState<"dark" | "light">("dark");
   const [blocked, setBlocked] = useState(false);
-  window.accountsCardsFixture = { setTheme: setColor };
+  window.setTheme = setColor;
   return (
     <MantineProvider theme={theme} forceColorScheme={color}>
       <Modal
@@ -58,4 +57,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

@@ -5,7 +5,6 @@ import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import type { AccountRateLimitsDto } from "../playwright.ts";
 import type { Page, Locator } from "@playwright/test";
 import {
-  required,
   fixtureAccount,
   fixtureLead,
   fixtureSnapshot,
@@ -72,7 +71,8 @@ async function runAccountsUi(
       },
     ] satisfies Parameters<typeof fixtureAccount>[0][]
   ).map(fixtureAccount);
-  const archivedAccounts: Account[] = [];
+  const archivedAccounts: import("../../src/apiTypes.ts").JsonInputOf<Account>[] =
+    [];
   let defaultAccountKey = "default";
   const logins: AccountsState["logins"] = [];
   const claudeLogins = new Map<
@@ -90,7 +90,7 @@ async function runAccountsUi(
     makeLead("empty", "New conversation", "default", true),
   ];
   const bodies: FixtureRequest[] = [];
-  let delayed: (() => void) | undefined;
+  let delayed: (() => void) | null = null;
   let delayWork = false;
   let wrongLimitsAccount = false;
   let wrongAccountLimitsRead = false;
@@ -99,11 +99,18 @@ async function runAccountsUi(
   let delayedCosts: (() => void) | undefined;
   let snapshotLimits: Record<string, AccountRateLimitsDto> = {};
   let notifyEntityResources: NotifyResources = () => {};
-  let claudeQueue: components["schemas"]["QueueItem"][] = [];
+  let claudeQueue: (Omit<components["schemas"]["QueueItem"], "kind"> & {
+    agentId?: string;
+  })[] = [];
   let stateReads = 0;
   let lastStateReadAt = Date.now();
   let failClaudeSettings = false;
-  const claudeSession: components["schemas"]["ClaudeSessionStateResponse"] = {
+  const claudeSession: Omit<
+    components["schemas"]["ClaudeSessionStateResponse"],
+    "controlOperation"
+  > & {
+    controlOperation?: Partial<components["schemas"]["ClaudeControlOperation"]>;
+  } = {
     version: "2.1.fixture",
     settings: { permissionMode: "default", thinking: true },
     turns:
@@ -226,7 +233,7 @@ async function runAccountsUi(
     },
   });
   const server = createServer(async (req, res) => {
-    const url = new URL(required(req.url), "http://localhost");
+    const url = new URL(req.url!, "http://localhost");
     let rawBody: unknown = {};
     if (req.method === "POST") {
       let text = "";
@@ -290,7 +297,7 @@ async function runAccountsUi(
     ) {
       const body = fixtureRequest("/api/accounts/default", rawBody).body;
       if (url.pathname.endsWith("/default"))
-        defaultAccountKey = required(body.account_key);
+        defaultAccountKey = body.account_key!;
       if (url.pathname.endsWith("/discover")) discoverCount++;
       for (const receipt of logins) {
         if (
@@ -305,7 +312,7 @@ async function runAccountsUi(
     }
     if (url.pathname === "/api/agents/account") {
       const body = fixtureRequest("/api/agents/account", rawBody).body;
-      const agent = required(agents.find((a) => a.id === body.id));
+      const agent = agents.find((a) => a.id === body.id)!;
       agent.accountKey = body.account_key;
       return json(entityMutationFixtureResponse(stateForEntities, agent));
     }
@@ -323,9 +330,7 @@ async function runAccountsUi(
     if (url.pathname === "/api/limits/reset") return json({ outcome: "reset" });
     if (url.pathname === "/api/costs") {
       const accountKey = url.searchParams.get("account_key") || "default";
-      const todayUSD = required(
-        { default: 5, work: 12, other: 23 }[accountKey],
-      );
+      const todayUSD = { default: 5, work: 12, other: 23 }[accountKey]!;
       const reply = () =>
         json({ accountKey, data: { todayUSD, last30DaysUSD: todayUSD * 3 } });
       if (accountKey === "work" && delayCostWork) {
@@ -339,7 +344,7 @@ async function runAccountsUi(
     if (url.pathname === "/api/leads") {
       const body = fixtureRequest("/api/leads", rawBody).body;
       const lead = makeLead(
-        required(body.id),
+        body.id!,
         "Created conversation",
         body.account_key || defaultAccountKey,
         true,
@@ -375,9 +380,7 @@ async function runAccountsUi(
     }
     if (url.pathname === "/api/accounts/login/cancel") {
       const body = fixtureRequest("/api/accounts/login/cancel", rawBody).body;
-      const receipt = required(
-        logins.find((r) => r.requestId === body.login_id),
-      );
+      const receipt = logins.find((r) => r.requestId === body.login_id)!;
       receipt.status = "cancelled";
       if (!receipt.reauthAccountKey)
         accounts.splice(
@@ -419,7 +422,7 @@ async function runAccountsUi(
         );
       }
       transferReceipts.set(body.request_id, body);
-      const agent = required(agents.find((agent) => agent.id === body.id));
+      const agent = agents.find((agent) => agent.id === body.id)!;
       agent.accountKey = body.account_key;
       agent.provider =
         accounts.find((account) => account.id === body.account_key)?.provider ||
@@ -472,7 +475,6 @@ async function runAccountsUi(
           claudeSession.controlOperation = {
             turnId: body.turn_id,
             requestId: body.request_id,
-            phase: "recovery_required",
           };
           res.statusCode = 503;
           return json({ error: "Rollback receipt is not available yet." });
@@ -495,14 +497,12 @@ async function runAccountsUi(
         claudeLogins.set(receipt.requestId, receipt);
         return json(receipt);
       }
-      return json(
-        claudeLogins.get(required(url.searchParams.get("request_id"))) || {},
-      );
+      return json(claudeLogins.get(url.searchParams.get("request_id")!) || {});
     }
     if (url.pathname === "/api/claude/profiles") {
       const body = fixtureRequest("/api/claude/profiles", rawBody).body;
       const account = body.account_key
-        ? required(accounts.find((account) => account.id === body.account_key))
+        ? accounts.find((account) => account.id === body.account_key)!
         : fixtureAccount({
             id: "claude-added",
             label: "",
@@ -579,7 +579,7 @@ async function runAccountsUi(
       agents.push(benchAgent);
     }
     if (mode === "reauth") {
-      required(accounts[0]).accountId = "saved-default";
+      accounts[0]!.accountId = "saved-default";
       accounts.push(
         fixtureAccount({
           id: "claude",
@@ -590,8 +590,8 @@ async function runAccountsUi(
           accountId: "native-claude",
         }),
       );
-      required(agents[0]).accountKey = "claude";
-      required(agents[0]).provider = "claude";
+      agents[0]!.accountKey = "claude";
+      agents[0]!.provider = "claude";
       agents.push({
         ...makeLead("auth-worker", "Failed worker", "default", false),
         isLead: false,
@@ -627,9 +627,9 @@ async function runAccountsUi(
         .getByRole("button", { name: "Start sign-in", exact: true })
         .click();
       await login.getByRole("alert").waitFor();
-      const id = required(lostLoginAttempt).login_id;
+      const id = lostLoginAttempt!.login_id;
       assert.equal(
-        required(lostLoginAttempt).account_key,
+        lostLoginAttempt!.account_key,
         "default",
         "A Claude lead must restore its Codex worker account",
       );
@@ -643,8 +643,8 @@ async function runAccountsUi(
         "A lost reply must reuse the same sign-in",
       );
       assert.equal(
-        required(bodies.filter((r) => r.path === "/api/accounts/login").at(-1))
-          .body.login_id,
+        bodies.filter((r) => r.path === "/api/accounts/login").at(-1)!.body
+          .login_id,
         id,
       );
       await page.reload();
@@ -663,7 +663,7 @@ async function runAccountsUi(
         0,
         "Cached ready credentials do not confirm sign-in",
       );
-      required(logins[0]).nativeCompleted = true;
+      logins[0]!.nativeCompleted = true;
       const accountRefresh = page.waitForResponse(
         (response) =>
           response.request().method() === "GET" &&
@@ -676,11 +676,8 @@ async function runAccountsUi(
         "/api/accounts",
         await accountRefresh,
       );
-      assert.equal(required(refreshedAccounts.logins[0]).status, "ready");
-      assert.equal(
-        required(refreshedAccounts.logins[0]).resolvedAccountKey,
-        "default",
-      );
+      assert.equal(refreshedAccounts.logins[0]!.status, "ready");
+      assert.equal(refreshedAccounts.logins[0]!.resolvedAccountKey, "default");
       await login
         .getByText("Sign-in restored. Send a new instruction to continue.", {
           exact: false,
@@ -688,7 +685,7 @@ async function runAccountsUi(
         .waitFor();
       assert.equal(accounts.filter((a) => a.id === "default").length, 1);
       assert.equal(
-        required(agents.find((a) => a.id === "auth-worker")).accountKey,
+        agents.find((a) => a.id === "auth-worker")!.accountKey,
         "default",
       );
       assert.equal(
@@ -745,9 +742,7 @@ async function runAccountsUi(
     }
 
     if (mode === "benchmark") {
-      const benchAgent = required(
-        agents.find((agent) => agent.id === "claude-chat"),
-      );
+      const benchAgent = agents.find((agent) => agent.id === "claude-chat")!;
       const studioSettingsButton = page.locator(
         '.sidebar-header [aria-label="Studio settings"]',
       );
@@ -774,8 +769,7 @@ async function runAccountsUi(
             const button = document.querySelector<HTMLElement>(
               '.sidebar-header [aria-label="Studio settings"]',
             );
-            if (!button) throw new Error("Missing Studio settings button");
-            button.click();
+            button!.click();
             if (panel()) {
               observer.disconnect();
               resolve(performance.now() - started);
@@ -811,9 +805,7 @@ async function runAccountsUi(
         );
       });
       await page.locator(`[data-chat="${benchAgent.id}"]`).click();
-      await page
-        .getByRole("heading", { name: required(benchAgent.name) })
-        .waitFor();
+      await page.getByRole("heading", { name: benchAgent.name! }).waitFor();
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
@@ -899,14 +891,20 @@ async function runAccountsUi(
         snapshotsBefore,
         "Setting changes must not refresh the full state snapshot",
       );
-      const saveRequest = required(
-        bodies
-          .filter((request) => request.path === "/api/claude/session")
-          .filter((request) => request.body.action === "settings")
-          .at(-1),
-      );
+      const saveRequest = bodies
+        .filter(
+          (
+            request,
+          ): request is Extract<
+            FixtureRequest,
+            { path: "/api/claude/session" }
+          > =>
+            request.path === "/api/claude/session" &&
+            request.body.action === "settings",
+        )
+        .at(-1)!;
       assert.equal(saveRequest.body.id, benchAgent.id);
-      assert.match(required(saveRequest.body.request_id), /^[0-9a-f-]{36}$/);
+      assert.match(saveRequest.body.request_id!, /^[0-9a-f-]{36}$/);
       await page.setViewportSize({ width: 390, height: 844 });
       await page.setViewportSize({ width: 1440, height: 1000 });
       let saveResponse = settingsSavedResponse();
@@ -920,12 +918,18 @@ async function runAccountsUi(
         .fill("250000");
       await claude.getByLabel("Permission mode", { exact: true }).focus();
       assert.ok((await saveResponse).ok());
-      const finalSettings = required(
-        bodies
-          .filter((request) => request.path === "/api/claude/session")
-          .filter((request) => request.body.action === "settings")
-          .at(-1),
-      );
+      const finalSettings = bodies
+        .filter(
+          (
+            request,
+          ): request is Extract<
+            FixtureRequest,
+            { path: "/api/claude/session" }
+          > =>
+            request.path === "/api/claude/session" &&
+            request.body.action === "settings",
+        )
+        .at(-1)!;
       assert.deepEqual(finalSettings.body.settings, {
         permissionMode: "plan",
         thinking: false,
@@ -943,12 +947,18 @@ async function runAccountsUi(
           .inputValue(),
         "plan",
       );
-      const failedSettingsRequest = required(
-        bodies
-          .filter((request) => request.path === "/api/claude/session")
-          .filter((request) => request.body.action === "settings")
-          .at(-1),
-      ).body;
+      const failedSettingsRequest = bodies
+        .filter(
+          (
+            request,
+          ): request is Extract<
+            FixtureRequest,
+            { path: "/api/claude/session" }
+          > =>
+            request.path === "/api/claude/session" &&
+            request.body.action === "settings",
+        )
+        .at(-1)!.body;
       const failedRequestId = failedSettingsRequest.request_id;
       const failedStorageKey = `claude-control:claude:${benchAgent.id}:settings:${JSON.stringify({ settings: failedSettingsRequest.settings })}`;
       assert.equal(
@@ -964,12 +974,18 @@ async function runAccountsUi(
         .getByLabel("Permission mode", { exact: true })
         .selectOption("default");
       assert.ok((await saveResponse).ok());
-      const retriedRequestId = required(
-        bodies
-          .filter((request) => request.path === "/api/claude/session")
-          .filter((request) => request.body.action === "settings")
-          .at(-1),
-      ).body.request_id;
+      const retriedRequestId = bodies
+        .filter(
+          (
+            request,
+          ): request is Extract<
+            FixtureRequest,
+            { path: "/api/claude/session" }
+          > =>
+            request.path === "/api/claude/session" &&
+            request.body.action === "settings",
+        )
+        .at(-1)!.body.request_id;
       assert.equal(
         retriedRequestId,
         failedRequestId,
@@ -1164,8 +1180,7 @@ async function runAccountsUi(
     await expectAccount("work@example.com");
     await waitLimits("78% left");
     assert.equal(
-      required(bodies.find((r) => r.path === "/api/agents/account")).body
-        .account_key,
+      bodies.find((r) => r.path === "/api/agents/account")!.body.account_key,
       "work",
     );
 
@@ -1217,15 +1232,14 @@ async function runAccountsUi(
     await choose("another.long.account@example.com");
     await waitLimits("67% left");
     assert.ok(delayed, "B request is pending");
-    required(delayed)();
-    delayed = undefined;
+    (delayed as (() => void) | null)!();
+    delayed = null;
     delayWork = false;
     await page.waitForTimeout(100);
     assert.match(await limitText(), /67% left/);
     const updated = limits("other");
-    updated.at = required(updated.at) + 5;
-    required(required(required(updated.data).rateLimits).primary).usedPercent =
-      41;
+    updated.at! += 5;
+    updated.data!.rateLimits!.primary!.usedPercent = 41;
     snapshotLimits = { other: updated, default: limits("default") };
     stateForEntities.runtime.rateLimitsByAccount = snapshotLimits;
     notifyEntityResources([{ kind: "state" }]);
@@ -1242,9 +1256,7 @@ async function runAccountsUi(
       .getByRole("button", { name: "Use one reset credit", exact: true })
       .click();
     await page.getByText("Reset applied.", { exact: true }).waitFor();
-    const reset = required(
-      bodies.find((r) => r.path === "/api/limits/reset"),
-    ).body;
+    const reset = bodies.find((r) => r.path === "/api/limits/reset")!.body;
     assert.equal(reset.account_key, "other");
     assert.equal(reset.account_id, "native-other");
     assert.equal(reset.credit_id, "credit-other");
@@ -1282,8 +1294,8 @@ async function runAccountsUi(
     await page.locator('[data-chat="empty"]').click();
     await expectAccount("another.long.account@example.com");
     const otherQuota = await quotaValues();
-    required<() => void>(delayed)();
-    delayed = undefined;
+    (delayed as (() => void) | null)!();
+    delayed = null;
     delayWork = false;
     await page.waitForTimeout(100);
     assert.deepEqual(
@@ -1303,10 +1315,7 @@ async function runAccountsUi(
       exact: true,
     });
     await transferDialog.waitFor();
-    assert.equal(
-      required(agents.find((a) => a.id === "started")).accountKey,
-      "default",
-    );
+    assert.equal(agents.find((a) => a.id === "started")!.accountKey, "default");
     assert.equal(
       bodies.filter((r) =>
         ["/api/agents/account", "/api/agents/account-transfer"].includes(
@@ -1371,7 +1380,7 @@ async function runAccountsUi(
           ?.textContent === "Created conversation",
     );
     assert.equal(
-      required(bodies.find((r) => r.path === "/api/leads")).body.account_key,
+      bodies.find((r) => r.path === "/api/leads")!.body.account_key,
       undefined,
     );
 
@@ -1408,13 +1417,13 @@ async function runAccountsUi(
         .getAttribute("href"),
       "https://auth.openai.com/codex/device",
     );
-    const firstLogin = required(logins.at(-1)).requestId;
+    const firstLogin = logins.at(-1)!.requestId;
     await page.reload();
     dialog = await openStudioAccounts();
     codexSignIn = await addCodexAccount();
     await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 1, "reload resumes the existing native login");
-    assert.equal(required(logins[0]).requestId, firstLogin);
+    assert.equal(logins[0]!.requestId, firstLogin);
     const cancelResponse = page.waitForResponse((response) => {
       const request = response.request();
       return (
@@ -1431,16 +1440,14 @@ async function runAccountsUi(
     await codexSignIn
       .getByText("Sign-in cancelled.", { exact: true })
       .waitFor();
-    assert.equal(required(logins[0]).status, "cancelled");
+    assert.equal(logins[0]!.status, "cancelled");
     await codexSignIn
       .getByRole("button", { name: "Sign in", exact: true })
       .click();
     await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 2);
-    assert.notEqual(required(logins[1]).requestId, firstLogin);
-    required(
-      accounts.find((a) => a.id === required(logins.at(-1)).accountKey),
-    ).status = "ready";
+    assert.notEqual(logins[1]!.requestId, firstLogin);
+    accounts.find((a) => a.id === logins.at(-1)!.accountKey)!.status = "ready";
     notifyEntityResources([{ kind: "accounts" }]);
     await codexSignIn
       .getByText("Account connected.", { exact: false })
@@ -1463,7 +1470,7 @@ async function runAccountsUi(
       ),
       "No page overflow on narrow screen",
     );
-    const bounds = required(await dialog.boundingBox());
+    const bounds = (await dialog.boundingBox())!;
     assert.ok(
       bounds.x >= 0 && bounds.x + bounds.width <= 820,
       "Account manager fits narrow screen",
@@ -1481,7 +1488,7 @@ async function runAccountsUi(
     assert.ok(await picker.isVisible());
     await closeSettings();
     // A stalled read must release the per-account request slot after its deadline.
-    delayed = undefined;
+    delayed = null;
     await choose("work@example.com");
     delayWork = true;
     await quota.click();
@@ -1527,7 +1534,7 @@ async function runAccountsUi(
     claudeQueue = [
       {
         id: "claude-queued",
-        kind: "user",
+        agentId: claude.id,
         text: "Change the Claude task",
         // @ts-expect-error Historical queued status is deliberately invalid under the pending-only queue contract.
         status: "queued",
@@ -1539,9 +1546,7 @@ async function runAccountsUi(
     await page.locator(`[data-chat="${claude.id}"]`).click();
     await openSettings();
     await (
-      await accountTile(
-        required(accounts.find((account) => account.id === "claude")),
-      )
+      await accountTile(accounts.find((account) => account.id === "claude")!)
     ).waitFor();
     await closeSettings();
     await quota.click();
@@ -1567,9 +1572,10 @@ async function runAccountsUi(
           '[aria-label="Delete queued message 1"]',
         ),
     );
-    const cancellation = bodies
-      .filter((request) => request.path === "/api/queue")
-      .find((request) => request.body.action === "cancel");
+    const cancellation = bodies.find(
+      (request): request is Extract<FixtureRequest, { path: "/api/queue" }> =>
+        request.path === "/api/queue" && request.body.action === "cancel",
+    );
     assert.equal(cancellation?.body.id, "claude-queued");
     assert.equal(cancellation?.body.expectedText, "Change the Claude task");
     assert.ok(cancellation?.body.request_id);
@@ -1604,15 +1610,12 @@ async function runAccountsUi(
       .getByRole("button", { name: "Save Claude profile", exact: true })
       .click();
     await profile.getByText("Claude profile saved.", { exact: true }).waitFor();
-    const updatedProfile = required(
-      bodies.find((request) => request.path === "/api/claude/profiles"),
-    );
+    const updatedProfile = bodies.find(
+      (request) => request.path === "/api/claude/profiles",
+    )!;
     assert.equal(updatedProfile.body.account_key, "claude");
-    assert.equal(
-      required(updatedProfile.body.options).autoCompactWindow,
-      200000,
-    );
-    assert.deepEqual(required(updatedProfile.body.options).customModels, [
+    assert.equal(updatedProfile.body.options!.autoCompactWindow, 200000);
+    assert.deepEqual(updatedProfile.body.options!.customModels, [
       { id: "custom-claude", label: "Custom Claude" },
     ]);
     await profile.getByRole("button", { name: "Close", exact: true }).click();
@@ -1724,12 +1727,18 @@ async function runAccountsUi(
       .locator(".claude-advanced-content > .claude-save-status")
       .getByText("Saved", { exact: true })
       .waitFor();
-    const sessionSettings = required(
-      bodies
-        .filter((request) => request.path === "/api/claude/session")
-        .filter((request) => request.body.action === "settings")
-        .at(-1),
-    );
+    const sessionSettings = bodies
+      .filter(
+        (
+          request,
+        ): request is Extract<
+          FixtureRequest,
+          { path: "/api/claude/session" }
+        > =>
+          request.path === "/api/claude/session" &&
+          request.body.action === "settings",
+      )
+      .at(-1)!;
     assert.equal(sessionSettings.body.id, claude.id);
     assert.deepEqual(sessionSettings.body.settings, {
       permissionMode: "plan",
@@ -1738,11 +1747,17 @@ async function runAccountsUi(
     });
     assert.ok(
       bodies
-        .filter((request) => request.path === "/api/claude/session")
-        .filter((request) => request.body.action === "settings")
-        .every((request) =>
-          /^[0-9a-f-]{36}$/.test(required(request.body.request_id)),
-        ),
+        .filter(
+          (
+            request,
+          ): request is Extract<
+            FixtureRequest,
+            { path: "/api/claude/session" }
+          > =>
+            request.path === "/api/claude/session" &&
+            request.body.action === "settings",
+        )
+        .every((request) => /^[0-9a-f-]{36}$/.test(request.body.request_id!)),
       "Each autosave retains an exact request identity",
     );
     await claudeSettings
@@ -1831,24 +1846,25 @@ async function runAccountsUi(
     await claudeSettings
       .getByRole("button", { name: "Compact conversation", exact: true })
       .click();
-    const commandsSent = bodies
-      .filter((request) => request.path === "/api/claude/session")
-      .filter((request) => request.body.action === "command");
+    const commandsSent = bodies.filter(
+      (
+        request,
+      ): request is Extract<FixtureRequest, { path: "/api/claude/session" }> =>
+        request.path === "/api/claude/session" &&
+        request.body.action === "command",
+    );
     assert.deepEqual(
       commandsSent.map((request) => request.body.command),
       ["/fixture-skill check this", "/fixture-skill check this", "/compact"],
     );
-    assert.deepEqual(
-      required(commandsSent[1]).body,
-      required(commandsSent[0]).body,
-    );
+    assert.deepEqual(commandsSent[1]!.body, commandsSent[0]!.body);
     for (const request of commandsSent) {
       assert.equal(request.body.id, claude.id);
-      assert.match(required(request.body.request_id), /^[0-9a-f-]{36}$/);
+      assert.match(request.body.request_id!, /^[0-9a-f-]{36}$/);
     }
     assert.notEqual(
-      required(commandsSent[0]).body.request_id,
-      required(commandsSent[2]).body.request_id,
+      commandsSent[0]!.body.request_id,
+      commandsSent[2]!.body.request_id,
     );
     await claudeSettings
       .getByText("Conversation history", { exact: true })
@@ -1869,17 +1885,18 @@ async function runAccountsUi(
     await claudeSettings
       .locator('option[value="claude-turn-two"]')
       .waitFor({ state: "detached" });
-    const rollbacks = bodies
-      .filter((request) => request.path === "/api/claude/session")
-      .filter((request) => request.body.action === "rollback");
-    assert.equal(rollbacks.length, 2);
-    assert.equal(required(rollbacks[0]).body.id, claude.id);
-    assert.equal(required(rollbacks[0]).body.turn_id, "claude-turn-two");
-    assert.match(
-      required(required(rollbacks[0]).body.request_id),
-      /^[0-9a-f-]{36}$/,
+    const rollbacks = bodies.filter(
+      (
+        request,
+      ): request is Extract<FixtureRequest, { path: "/api/claude/session" }> =>
+        request.path === "/api/claude/session" &&
+        request.body.action === "rollback",
     );
-    assert.deepEqual(required(rollbacks[1]).body, required(rollbacks[0]).body);
+    assert.equal(rollbacks.length, 2);
+    assert.equal(rollbacks[0]!.body.id, claude.id);
+    assert.equal(rollbacks[0]!.body.turn_id, "claude-turn-two");
+    assert.match(rollbacks[0]!.body.request_id!, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(rollbacks[1]!.body, rollbacks[0]!.body);
     assert.equal(
       await claudeSettings
         .getByLabel("First turn to remove", { exact: true })
@@ -1897,9 +1914,7 @@ async function runAccountsUi(
     await page.locator('[data-chat="started"]').click();
     await openSettings();
     await (
-      await accountTile(
-        required(accounts.find((account) => account.id === "claude")),
-      )
+      await accountTile(accounts.find((account) => account.id === "claude")!)
     ).click();
     await transferDialog.waitFor();
     await transferDialog
@@ -1926,24 +1941,16 @@ async function runAccountsUi(
       (request) => request.path === "/api/agents/account-transfer",
     );
     assert.equal(forwardTransfers.length, 2);
-    assert.deepEqual(
-      required(forwardTransfers[0]).body,
-      required(forwardTransfers[1]).body,
-    );
-    assert.equal(required(forwardTransfers[0]).body.id, "started");
-    assert.equal(required(forwardTransfers[0]).body.account_key, "claude");
-    assert.match(
-      required(forwardTransfers[0]).body.request_id,
-      /^[0-9a-f-]{36}$/,
-    );
+    assert.deepEqual(forwardTransfers[0]!.body, forwardTransfers[1]!.body);
+    assert.equal(forwardTransfers[0]!.body.id, "started");
+    assert.equal(forwardTransfers[0]!.body.account_key, "claude");
+    assert.match(forwardTransfers[0]!.body.request_id, /^[0-9a-f-]{36}$/);
     await closeSettings();
     await page.reload();
     await page.locator('[data-chat="started"]').click();
     await openSettings();
     await (
-      await accountTile(
-        required(accounts.find((account) => account.id === "default")),
-      )
+      await accountTile(accounts.find((account) => account.id === "default")!)
     ).click();
     await transferDialog.waitFor();
     await transferDialog
@@ -1955,29 +1962,29 @@ async function runAccountsUi(
       .getByRole("button", { name: "Transfer chat", exact: true })
       .click();
     await transferDialog.waitFor({ state: "hidden" });
-    const reverseTransfer = required(
-      bodies
-        .filter((request) => request.path === "/api/agents/account-transfer")
-        .at(-1),
-    );
+    const reverseTransfer = bodies
+      .filter((request) => request.path === "/api/agents/account-transfer")
+      .at(-1)!;
     assert.equal(reverseTransfer.body.id, "started");
     assert.equal(reverseTransfer.body.account_key, "default");
     assert.notEqual(
       reverseTransfer.body.request_id,
-      required(forwardTransfers[0]).body.request_id,
+      forwardTransfers[0]!.body.request_id,
     );
     assert.equal(
-      required(agents.find((agent) => agent.id === "started")).provider,
+      agents.find((agent) => agent.id === "started")!.provider,
       "codex",
     );
 
     const claudeIndex = accounts.findIndex(
       (account) => account.id === "claude",
     );
-    const archivedClaude = required(accounts.splice(claudeIndex, 1)[0]);
-    archivedClaude.status = "signedOut";
-    archivedClaude.deleted = true;
-    archivedAccounts.push(archivedClaude);
+    const archivedClaude = accounts.splice(claudeIndex, 1)[0]!;
+    archivedAccounts.push({
+      ...archivedClaude,
+      status: "signedOut",
+      deleted: true,
+    });
     await page.reload();
     await page.locator(`[data-chat="${claude.id}"]`).click();
     await page
@@ -1996,7 +2003,7 @@ async function runAccountsUi(
       "Use your Claude subscription for",
     );
     await expect(archivedSignIn.locator("p")).toContainText(
-      required(archivedClaude.email),
+      archivedClaude.email!,
     );
     await archivedSignIn
       .getByRole("button", { name: "Start sign-in", exact: true })
@@ -2005,7 +2012,7 @@ async function runAccountsUi(
       .getByRole("link", { name: "Open Claude sign-in", exact: true })
       .waitFor();
     assert.equal(
-      required([...claudeLogins.values()].at(-1)).accountKey,
+      [...claudeLogins.values()].at(-1)!.accountKey,
       "claude",
       "archived chat sign-in retains its native identity",
     );
@@ -2051,11 +2058,9 @@ async function runAccountsUi(
     await debugPage?.screenshot({ path: join(evidence, "failure.png") });
     throw error;
   } finally {
-    if (delayed) delayed();
+    if (delayed) (delayed as () => void)();
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<Error | undefined>((resolve) => server.close(resolve));
   }
 }
 
