@@ -173,9 +173,6 @@ pub enum UsageObservation {
         reason: UsageGapReason,
     },
 }
-/// Temporary source compatibility while usage consumers migrate to the canonical type.
-/// Remove once the provider-identity worktrees are integrated.
-pub use crate::provider_kind::ProviderKind as UsageProvider;
 /// Invalid accounting evidence; callers must preserve this uncertainty.
 #[derive(Debug)]
 pub struct UsageParseError(pub String);
