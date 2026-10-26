@@ -4,6 +4,8 @@ mod claude_file_backups;
 mod claude_login;
 mod claude_repair_report;
 mod draft_replication;
+mod future_worker_account;
+mod future_worker_catalog_race;
 mod mcp_reconnect;
 mod multi_server_incoming;
 mod orchestration_settings;

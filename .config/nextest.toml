@@ -185,6 +185,7 @@ default-filter = '''
     | (package(=studio-client-core) & kind(lib) & (test(/^sign_in::tests::/) | test(/^desktop::tests::/)))
     | (package(=studio-native-client) & kind(lib) & test(/^tests::sign_in_host_/))
     | (package(=studio-runtime-http) & kind(lib) & test(/^routes::models::tests::/))
+    | (package(=studio-runtime-http) & kind(test) & binary(=integration) & test(/^future_worker_(account|catalog_race)::/))
     | (package(=studio-runtime-services) & kind(lib) & (test(/^account_driver::tests::auth_repair_regression_/) | test(/^account_driver::tests::auth_status_probe_marks_only_successful_parseable_results_conclusive$/)))
     | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(test) & binary(=integration) & test(/^claude_login(_actor)?::/))
 '''
@@ -322,6 +323,7 @@ default-filter = '''
     | (package(=studio-client-core) & kind(lib) & (test(/^sign_in::tests::/) | test(/^desktop::tests::/)))
     | (package(=studio-native-client) & kind(lib) & test(/^tests::sign_in_host_/))
     | (package(=studio-runtime-http) & kind(lib) & test(/^routes::models::tests::/))
+    | (package(=studio-runtime-http) & kind(test) & binary(=integration) & test(/^future_worker_(account|catalog_race)::/))
     | (package(=studio-runtime-services) & kind(lib) & (test(/^account_driver::tests::auth_repair_regression_/) | test(/^account_driver::tests::auth_status_probe_marks_only_successful_parseable_results_conclusive$/)))
     | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(test) & binary(=integration) & test(/^claude_login(_actor)?::/))
     | ((package(=studio-process-supervisor)) & ((kind(test) & binary(=clients))) & (test(supervisor_rejects_retired_protocol_before_admission)))
