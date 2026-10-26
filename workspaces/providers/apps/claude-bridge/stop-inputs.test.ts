@@ -1,12 +1,9 @@
 import type { Session, Item } from "./session-state.ts";
-import { randomUUID } from "node:crypto";
-const native = randomUUID();
-const prefix = randomUUID();
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { interruptInputQueue, type StopActive } from "./stop-inputs.ts";
 
-function fixture(nativeIds: string[] = [native]) {
+function fixture(nativeIds: string[] = ["native"]) {
   const item: Item & { id: string } = {
     id: "studio:id",
     type: "userMessage",
@@ -15,11 +12,10 @@ function fixture(nativeIds: string[] = [native]) {
     nativeId: nativeIds.at(-1),
     nativeIds,
   };
-  const session: Session = {
-    id: "session",
-    cwd: "/fixture",
+  // Cancellation reads only the mirror turns in this shared fixture.
+  const session = {
     turns: [{ id: "turn", items: [item] }],
-  };
+  } as Session;
   const active: StopActive = {
     input: { values: [] },
     pendingSteers: new Set([item.id]),
@@ -29,11 +25,11 @@ function fixture(nativeIds: string[] = [native]) {
 
 test("Stop requires cancellation of every native part of a Studio input", async () => {
   for (const receipt of [
-    { cancelled: [prefix, native], still_queued: [] },
-    { cancelled: [native], still_queued: [] },
-    { cancelled: [prefix, native], still_queued: [prefix] },
+    { cancelled: ["prefix", "native"], still_queued: [] },
+    { cancelled: ["native"], still_queued: [] },
+    { cancelled: ["prefix", "native"], still_queued: ["prefix"] },
   ]) {
-    const { item, session, active } = fixture([prefix, native]);
+    const { item, session, active } = fixture(["prefix", "native"]);
     active.q = {
       interrupt: async (options) => {
         assert.deepEqual(options, { cancelQueued: true });
@@ -51,15 +47,15 @@ test("Stop requires cancellation of every native part of a Studio input", async 
 });
 
 test("Stop withdraws the unyielded batch tail before background task control", async () => {
-  const { item, session, active } = fixture([prefix, native]);
+  const { item, session, active } = fixture(["prefix", "native"]);
   let withdrew = false;
   active.input.withdraw = () => {
     withdrew = true;
-    return [{ uuid: native, studioInputIdentity: item.id }];
+    return [{ uuid: "native", studioInputIdentity: item.id }];
   };
   active.q = {
     interrupt: async () => ({
-      cancelled: [prefix],
+      cancelled: ["prefix"],
       still_queued: ["foreign"],
     }),
   };

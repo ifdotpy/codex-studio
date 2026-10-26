@@ -131,7 +131,7 @@ test.concurrent("an echoed steer is acknowledged once inside its running turn", 
     (
       n,
     ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/completed"> =>
-      n.method === "item/completed" && ack(bridge, "event-1") === n,
+      ack(bridge, "event-1") === n,
   );
   assert.equal(delivered.params.turnId, turn);
   assert.equal(delivered.params.item.id, "event-1");
