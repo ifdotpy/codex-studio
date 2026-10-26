@@ -1,8 +1,6 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
-import { randomUUID } from "node:crypto";
-import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
-import { inputText } from "./sdk-fixtures.ts";
+import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 
 export {
   tool,
@@ -44,7 +42,7 @@ export function query({ prompt, options }: FixtureQuery) {
     > {
       const input = await prompt.next();
       if (input.done) return;
-      const count = Number(inputText(input.value));
+      const count = Number(input.value.message.content[0].text);
       yield { type: "user", isReplay: true, uuid: input.value.uuid };
       yield {
         type: "system",
@@ -71,7 +69,7 @@ export function query({ prompt, options }: FixtureQuery) {
         }
       yield {
         type: "assistant",
-        uuid: randomUUID(),
+        uuid: "a-1",
         message: {
           id: "message-1",
           model: "claude-opus-5-5",
@@ -80,8 +78,8 @@ export function query({ prompt, options }: FixtureQuery) {
         },
       };
       yield { type: "result", subtype: "success", usage, result: "done" };
-      await new Promise<void>((resolve) =>
-        abort.signal.addEventListener("abort", () => resolve(), { once: true }),
+      await new Promise<unknown>((resolve) =>
+        abort.signal.addEventListener("abort", resolve, { once: true }),
       );
     },
   };

@@ -20,12 +20,16 @@ async function running() {
     threadId: bridge.thread,
     input: [{ type: "text", text: "wait for permission" }],
   });
-  await bridge.note("item/commandExecution/requestApproval");
+  await bridge.note(
+    (note) => note.method === "item/commandExecution/requestApproval",
+  );
   return bridge;
 }
 test("a live permission switch reaches the query and Full releases its pending approval", async () => {
   const bridge = await running();
-  const options = await bridge.note("fixture/options");
+  const options = await bridge.note(
+    (note) => note.method === "fixture/options",
+  );
   assert.deepEqual(options.params, { allowed: true, mode: "default" });
   const settings = {
     permissionMode: "bypassPermissions",
@@ -36,11 +40,12 @@ test("a live permission switch reaches the query and Full releases its pending a
     { settings },
   );
   assert.equal(
-    (await bridge.note("fixture/mode")).params.mode,
+    (await bridge.note((note) => note.method === "fixture/mode")).params.mode,
     "bypassPermissions",
   );
   assert.equal(
-    (await bridge.note("fixture/permission")).params.behavior,
+    (await bridge.note((note) => note.method === "fixture/permission")).params
+      .behavior,
     "allow",
   );
   assert.equal(
@@ -59,8 +64,11 @@ test("a live permission switch reaches the query and Full releases its pending a
   );
   await bridge.writeSignal(".ask");
   const pending = await bridge.note(
-    "item/commandExecution/requestApproval",
-    (n) => n.params.itemId === "permission-two",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/commandExecution/requestApproval"> =>
+      n.method === "item/commandExecution/requestApproval" &&
+      n.params.itemId === "permission-two",
   );
   assert.equal(
     bridge.notes.some((n) => n.method === "fixture/second-permission"),
@@ -70,7 +78,8 @@ test("a live permission switch reaches the query and Full releases its pending a
     JSON.stringify({ id: pending.id, result: { decision: "decline" } }) + "\n",
   );
   assert.equal(
-    (await bridge.note("fixture/second-permission")).params.behavior,
+    (await bridge.note((note) => note.method === "fixture/second-permission"))
+      .params.behavior,
     "deny",
   );
 });

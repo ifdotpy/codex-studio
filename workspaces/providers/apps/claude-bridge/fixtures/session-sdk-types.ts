@@ -1,3 +1,4 @@
+import type { FixtureTextInput } from "../sdk-fixtures.ts";
 import type {
   SDKMessage,
   SDKUserMessage,
@@ -23,6 +24,19 @@ export type SessionFixtureQuery = Omit<
   options: Options & { cwd: string };
 };
 
+export type SessionFixtureTextQuery = Omit<SessionFixtureQuery, "prompt"> & {
+  prompt: AsyncGenerator<
+    FixtureTextInput & Required<Pick<SDKUserMessage, "uuid" | "session_id">>
+  >;
+};
+
 export type SessionFixtureStreamEvent = NonNullable<
   Extract<SessionFixtureMessage, { type?: "stream_event" | undefined }>["event"]
 >;
+
+// Legacy scripted messages use short UUID labels; their SDK payloads stay typed.
+export type SessionFixtureLegacyMessage = SessionFixtureMessage extends infer T
+  ? T extends unknown
+    ? Omit<T, "uuid"> & { uuid?: string }
+    : never
+  : never;
