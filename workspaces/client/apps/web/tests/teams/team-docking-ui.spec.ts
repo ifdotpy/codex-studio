@@ -1,3 +1,4 @@
+import { required } from "./helpers.ts";
 import {
   test,
   expect,
@@ -20,7 +21,9 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
   await mkdir(evidence, { recursive: true });
   const origin = readOnlyRust.origin;
   const snapshot = await readTestState(origin);
-  const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
+  const lead = required(
+    snapshot.threads.find((agent) => agent.name === "Release lead"),
+  );
   // A static roster row opens the real Team layout without another provider.
   snapshot.threads.push({
     ...lead,
@@ -61,14 +64,14 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
         await page
           .getByRole("button", {
             name:
-              page.viewportSize().width <= 760
+              required(page.viewportSize()).width <= 760
                 ? "Back to chats"
                 : "Toggle conversations",
             exact: true,
           })
           .click();
       await expect(sidebar).toBeVisible({ visible: sidebarOpen });
-      for (const scheme of ["light", "dark"]) {
+      for (const scheme of ["light", "dark"] as const) {
         await page.emulateMedia({ colorScheme: scheme });
         const contentRatio = scheme === "dark" ? 0.6 : 1;
         await page.evaluate((ratio) => {
@@ -113,7 +116,7 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
           await expect
             .poll(async () =>
               page.locator(".workspace").evaluate((workspace) => {
-                const panel = workspace.parentElement.querySelector("#team");
+                const panel = workspace.parentElement?.querySelector("#team");
                 if (!panel) return false;
                 const edge = panel.getBoundingClientRect().left;
                 return [
@@ -133,9 +136,9 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
               gutter: parseFloat(
                 getComputedStyle(workspace).getPropertyValue("--chat-gutter"),
               ),
-              composer: workspace
-                .querySelector("#composer")
-                .getBoundingClientRect().width,
+              composer:
+                workspace.querySelector("#composer")?.getBoundingClientRect()
+                  .width ?? 0,
             }));
           expect(
             Math.abs(

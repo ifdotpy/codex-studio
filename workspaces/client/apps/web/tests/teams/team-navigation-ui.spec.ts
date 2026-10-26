@@ -1,3 +1,6 @@
+import type { SyncEntity, AgentEntityDto } from "../playwright.ts";
+import { required } from "./helpers.ts";
+import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   test,
@@ -39,27 +42,16 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       }),
     },
   });
-  let page,
-    log = "";
-  proc.stderr.on("data", (data) => (log += data));
+  const page = fixturePage;
+  let log = "";
+  proc.stderr?.on("data", (data) => (log += data));
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(Error("Fixture timeout\n" + log)),
-        30000,
-      );
-      proc.stdout.once("data", (data) => {
-        clearTimeout(timeout);
-        resolve(Number(String(data).trim()));
-      });
-      proc.once("exit", () => {
-        clearTimeout(timeout);
-        reject(Error(log));
-      });
-    });
+    const port = await waitForFixturePort(proc);
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
-    const lead = initial.threads.find((agent) => agent.name === "Release lead");
+    const lead = required(
+      initial.threads.find((agent) => agent.name === "Release lead"),
+    );
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
     );
@@ -71,22 +63,27 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       false,
       "navigation workers must persist after result delivery; reviewers auto-archive",
     );
-    const worker = (n) =>
-      workers.find(
-        (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
+    const worker = (n: number) =>
+      required(
+        workers.find(
+          (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
+        ),
       );
     const longName =
       "Check approval and interrupted worker navigation across a large release team";
-    page = fixturePage;
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const scriptWorkerStates = (documents) => {
+    const scriptWorkerStates = (documents: SyncEntity[] | undefined) => {
       // The server seeds idle workers; the roster's mix of states is scripted here.
-      const desiredStatus = new Map(
+      const desiredStatus = new Map<string, AgentEntityDto["status"]>(
         workers.map((agent, index) => [
           worker(index).id,
-          { 3: "failed", 4: "paused", 7: "failed" }[index] ??
+          new Map<number, AgentEntityDto["status"]>([
+            [3, "failed"],
+            [4, "paused"],
+            [7, "failed"],
+          ]).get(index) ??
             (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
         ]),
       );
@@ -143,7 +140,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       exact: true,
     });
     const search = team.getByRole("searchbox", { name: "Find a subagent" });
-    const row = (n) => team.locator(`[data-worker="${worker(n).id}"]`);
+    const row = (n: number) => team.locator(`[data-worker="${worker(n).id}"]`);
     const openTeamFromHeader = async () => {
       await page
         .getByRole("button", { name: "Chat actions", exact: true })
@@ -249,7 +246,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         );
       }
     };
-    const groupIds = (name) =>
+    const groupIds = (name: string) =>
       team
         .getByRole("region", { name, exact: true })
         .locator("[data-worker]")
@@ -266,7 +263,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .sort(),
       JSON.stringify(
         (await groupIds("Working")).map(
-          (id) => workers.find((agent) => agent.id === id)?.name,
+          (id) => required(workers.find((agent) => agent.id === id))?.name,
         ),
       ),
     );
@@ -499,9 +496,9 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       ).toBeGreaterThanOrEqual(64);
       expect(
         await page.locator(".workspace-header").evaluate((header) => {
-          const title = header
-            .querySelector("#conversation-title")
-            .getBoundingClientRect();
+          const titleElement = header.querySelector("#conversation-title");
+          if (!titleElement) throw Error("Missing title");
+          const title = titleElement.getBoundingClientRect();
           return [...header.querySelectorAll("button, summary")].every(
             (control) => {
               const rect = control.getBoundingClientRect();
@@ -524,7 +521,9 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       assert.ok(
         await page.locator("#back-lead").evaluate((n) => {
           const r = n.getBoundingClientRect();
-          const header = n.closest("header").getBoundingClientRect();
+          const headerElement = n.closest("header");
+          if (!headerElement) throw Error("Missing header");
+          const header = headerElement.getBoundingClientRect();
           return r.top >= header.top && r.bottom <= header.bottom;
         }),
         "Back to main agent remains inside the mobile header",

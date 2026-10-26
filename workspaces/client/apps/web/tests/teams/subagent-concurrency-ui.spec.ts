@@ -1,3 +1,12 @@
+declare global {
+  interface Window {
+    limitStorageSetItem: Storage["setItem"];
+  }
+}
+import type { Page, BrowserContext, TestInfo } from "@playwright/test";
+import type { components } from "../../src/generated/api.ts";
+import { required } from "./helpers.ts";
+import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   spawnFixture as spawn,
@@ -10,7 +19,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -48,39 +57,31 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  let log = "",
-    browser;
-  server.stderr.on("data", (chunk) => {
+  let log = "";
+  const browser = _browser;
+  server.stderr?.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(Error(log || "Fixture timeout")),
-        30000,
-      );
-      server.stdout.once("data", (chunk) => {
-        clearTimeout(timer);
-        resolve(Number(String(chunk).trim()));
-      });
-      server.once("exit", () => {
-        clearTimeout(timer);
-        reject(Error(log || "Fixture exited"));
-      });
-    });
+    const port = await waitForFixturePort(server);
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = async () => readTestState(origin);
     const initial = await snapshot();
     const syncWorkspaceId = (
       await (await fetch(origin + "/api/sync/identity")).json()
     ).workspaceId;
-    const lead = initial.threads.find((agent) => agent.name === "Release lead");
-    const other = initial.threads.find(
-      (agent) => agent.name === "Other project",
+    const lead = required(
+      initial.threads.find((agent) => agent.name === "Release lead"),
+    );
+    const other = required(
+      initial.threads.find((agent) => agent.name === "Other project"),
     );
     assert(lead.agentModeSupported);
     assert(Number.isSafeInteger(lead.subagentConcurrencyVersion));
-    assert(lead.subagentConcurrencyVersion >= 2);
+    assert(
+      lead.subagentConcurrencyVersion != null &&
+        lead.subagentConcurrencyVersion >= 2,
+    );
     const activeWorkers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && agent.status === "running",
     );
@@ -88,16 +89,17 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
 
     assert.equal(typeof lead.concurrency, "number");
     const currentLead = async () =>
-      (await snapshot()).threads.find((agent) => agent.id === lead.id);
-    browser = _browser;
+      required(
+        (await snapshot()).threads.find((agent) => agent.id === lead.id),
+      );
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
       serviceWorkers: "block",
     });
     page.setDefaultTimeout(15000);
-    const errors = [],
-      writes = [],
-      prompts = [];
+    const errors: string[] = [],
+      writes: components["schemas"]["ConversationRequest"][] = [],
+      prompts: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.addInitScript(
       ({ stateDir, id }) => {
@@ -114,7 +116,9 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     let loseNextReply = false,
       raceNextRequest = false;
     await page.route("**/api/conversation", async (route) => {
-      const body = route.request().postDataJSON();
+      const body: components["schemas"]["ConversationRequest"] = route
+        .request()
+        .postDataJSON();
       if (body.subagent_concurrency === undefined && !body.agent_mode)
         return route.continue();
       writes.push(body);
@@ -158,7 +162,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       )
         prompts.push(request.url());
     });
-    const openSettings = async (targetPage) => {
+    const openSettings = async (targetPage: Page) => {
       await targetPage.locator("#conversation-title").waitFor();
       const trigger = targetPage.getByRole("button", {
         name: "Chat settings",
@@ -186,7 +190,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     const input = page.getByRole("textbox", {
       name: "Subagent parallelism",
     });
-    const waitConcurrency = (value) =>
+    const waitConcurrency = (value: number) =>
       page.waitForFunction(
         (value) =>
           document
@@ -194,7 +198,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
             ?.getAttribute("data-concurrency") === String(value),
         value,
       );
-    const waitRevision = (value) =>
+    const waitRevision = (value: number) =>
       page.waitForFunction(
         (value) =>
           document
@@ -213,17 +217,17 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await input.fill("64");
     await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(64);
-    assert.deepEqual(Object.keys(writes.at(-1)).sort(), [
+    assert.deepEqual(Object.keys(required(writes.at(-1))).sort(), [
       "expected_account_key",
       "expected_mode_revision",
       "id",
       "request_id",
       "subagent_concurrency",
     ]);
-    assert.equal(writes.at(-1).subagent_concurrency, 64);
-    assert.equal(writes.at(-1).expected_mode_revision, 0);
+    assert.equal(required(writes.at(-1)).subagent_concurrency, 64);
+    assert.equal(required(writes.at(-1)).expected_mode_revision, 0);
     assert.equal(
-      writes.at(-1).expected_account_key,
+      required(writes.at(-1)).expected_account_key,
       lead.accountKey || "default",
     );
     assert.equal((await currentLead()).concurrency, 64);
@@ -236,12 +240,12 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await expect(control.getByRole("radio")).toHaveCount(0);
     let state = await snapshot();
     assert.equal(
-      state.threads.find((agent) => agent.id === lead.id).concurrency,
+      required(state.threads.find((agent) => agent.id === lead.id)).concurrency,
       0,
     );
     for (const worker of activeWorkers)
       assert.equal(
-        state.threads.find((agent) => agent.id === worker.id).status,
+        required(state.threads.find((agent) => agent.id === worker.id)).status,
         "running",
       );
 
@@ -265,7 +269,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       exact: true,
     });
     await retry.waitFor();
-    const lost = writes.at(-1);
+    const lost = required(writes.at(-1));
     assert.equal(lost.expected_mode_revision, 3);
     assert.equal((await currentLead()).agentModeRevision, 4);
     await page.reload();
@@ -273,7 +277,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await retry.waitFor();
     await retry.click();
     await retry.waitFor({ state: "detached" });
-    assert.deepEqual(writes.at(-1), lost);
+    assert.deepEqual(required(writes.at(-1)), lost);
     assert.equal((await currentLead()).agentModeRevision, 4);
     await waitConcurrency(128);
     assert.equal((await currentLead()).concurrency, 128);
@@ -296,6 +300,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
             JSON.parse(key.slice("studio-agent-mode:".length))[2] === leadId,
         );
         if (!key) throw Error("No scoped setting record");
+        if (!key) throw Error("Missing stored setting");
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -314,7 +319,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: "Retry mode change", exact: true })
       .waitFor({ state: "detached" });
-    assert.deepEqual(writes.at(-1), legacy);
+    assert.deepEqual(required(writes.at(-1)), legacy);
     await waitConcurrency(0);
     assert.equal((await currentLead()).concurrency, 0);
     console.log("PASS exact migration retry for a saved legacy mode request");
@@ -328,8 +333,9 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await waitRevision(6);
     await page.waitForFunction(
       () =>
-        document.querySelector('.agent-mode-control input[type="number"]')
-          ?.value === "8",
+        document.querySelector<HTMLInputElement>(
+          '.agent-mode-control input[type="number"]',
+        )?.value === "8",
     );
     assert.equal(await retry.count(), 0);
     await input.fill("9");
@@ -374,7 +380,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Retry limit change", exact: true })
       .waitFor({ state: "detached" });
     assert.equal((await currentLead()).agentModeRevision, 7);
-    assert.deepEqual(writes.at(-1), noOp);
+    assert.deepEqual(required(writes.at(-1)), noOp);
     await waitConcurrency(9);
     console.log("PASS same-revision no-op receipt is accepted");
 
@@ -393,8 +399,9 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await page.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(17);
     assert.equal(
-      (await snapshot()).threads.find((agent) => agent.id === other.id)
-        .concurrency,
+      required(
+        (await snapshot()).threads.find((agent) => agent.id === other.id),
+      ).concurrency,
       17,
     );
     await closeSettings();
@@ -405,7 +412,10 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
 
     // Older projections may expose the legacy mode without numeric concurrency.
     // The UI must preserve durable request data byte-for-byte until upgraded.
-    const setBackendConcurrency = async (concurrency, requestId) => {
+    const setBackendConcurrency = async (
+      concurrency: number,
+      requestId: string,
+    ) => {
       const canonical = await currentLead();
       const response = await fetch(origin + "/api/conversation", {
         method: "POST",
@@ -429,6 +439,11 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       baseline,
       pending,
       target,
+    }: {
+      mode: components["schemas"]["AgentMode"];
+      baseline: number;
+      pending: Partial<components["schemas"]["ConversationRequest"]>;
+      target: number;
     }) => {
       const canonical = await setBackendConcurrency(
         baseline,
@@ -450,8 +465,8 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       });
       let oldProjectionResponses = 0;
       let oldLeadProjectionResponses = 0;
-      const projectionRequests = [];
-      const rollingWrites = [];
+      const projectionRequests: string[] = [];
+      const rollingWrites: components["schemas"]["ConversationRequest"][] = [];
       rollingPage.on("request", (request) => {
         if (request.url().includes("/api/sync/pull"))
           projectionRequests.push(request.url());
@@ -546,6 +561,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
               JSON.parse(entry.slice("studio-agent-mode:".length))[2] ===
                 leadId,
           );
+          if (!key) throw Error("Missing stored setting");
           return localStorage.getItem(key);
         }, lead.id),
         saved,
@@ -573,9 +589,15 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           saved,
         },
       );
-      const upgradedWrites = [];
-      let resolveUpgradeResponse;
-      const upgradeResponse = new Promise((resolve) => {
+      const upgradedWrites: components["schemas"]["ConversationRequest"][] = [];
+      type UpgradeResponse = {
+        status: number;
+        body: components["schemas"]["JsonValue"];
+      };
+      let resolveUpgradeResponse:
+        | ((value: UpgradeResponse) => void)
+        | undefined;
+      const upgradeResponse = new Promise<UpgradeResponse>((resolve) => {
         resolveUpgradeResponse = resolve;
       });
       await upgradedPage.route("**/api/conversation", async (route) => {
@@ -587,7 +609,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
             status: response.status(),
             body: await response.json(),
           };
-          resolveUpgradeResponse(result);
+          required(resolveUpgradeResponse)(result);
           await route.fulfill({ response });
           return;
         }

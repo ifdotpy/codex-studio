@@ -1,3 +1,6 @@
+import type { TestAgent } from "../playwright.ts";
+import { required } from "./helpers.ts";
+import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   stubEntityState,
@@ -23,16 +26,11 @@ test("Team panel ui", async ({
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
-    });
+    const port = await waitForFixturePort(fixture);
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
     const page = runnerPage;
@@ -40,7 +38,7 @@ test("Team panel ui", async ({
     await page.clock.setFixedTime(now);
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
-    const errors = [],
+    const errors: string[] = [],
       actions = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/action", (route) => {
@@ -52,11 +50,13 @@ test("Team panel ui", async ({
         },
       });
     });
-    const lead = snapshot.threads.find(
-      (agent) => agent.name === "Release lead",
+    const lead = required(
+      snapshot.threads.find((agent) => agent.name === "Release lead"),
     );
-    const member = snapshot.threads.find(
-      (agent) => agent.rootId === lead.id && !agent.isLead,
+    const member = required(
+      snapshot.threads.find(
+        (agent) => agent.rootId === lead.id && !agent.isLead,
+      ),
     );
     const rawError =
       "Command ['git', '-C', '/workspace/project', 'worktree', 'add', '-b', 'codex-agent/" +
@@ -75,7 +75,7 @@ test("Team panel ui", async ({
         result: "",
       },
     });
-    const active = {
+    const active: TestAgent = {
       ...member,
       id: "worker-active",
       name: "Active worker",
@@ -92,7 +92,7 @@ test("Team panel ui", async ({
       worktree: false,
       error: undefined,
     };
-    const needsYou = {
+    const needsYou: TestAgent = {
       ...member,
       id: "worker-answer",
       name: "Needs you",
@@ -101,7 +101,7 @@ test("Team panel ui", async ({
       worktree: false,
       error: undefined,
     };
-    const stalled = {
+    const stalled: TestAgent = {
       ...member,
       id: "worker-stalled",
       name: "Stalled worker",
@@ -249,11 +249,13 @@ test("Team panel ui", async ({
       } catch (error) {
         const state = await page.evaluate(() => ({
           teamCount: document.querySelectorAll("#team").length,
-          teams: [...document.querySelectorAll("#team")].map((team) => ({
-            text: team.innerText,
-            html: team.outerHTML.slice(0, 1200),
-            visible: team.getBoundingClientRect().width > 0,
-          })),
+          teams: [...document.querySelectorAll<HTMLElement>("#team")].map(
+            (team) => ({
+              text: team.innerText,
+              html: team.outerHTML.slice(0, 1200),
+              visible: team.getBoundingClientRect().width > 0,
+            }),
+          ),
           headings: document.querySelectorAll(".team-heading").length,
           viewport: window.innerWidth,
         }));
@@ -313,7 +315,10 @@ test("Team panel ui", async ({
       const card = panel
         .locator(".worker-entry")
         .filter({ has: page.locator(`[data-worker="${member.id}"]`) });
-      assert.ok((await card.boundingBox()).height < 250, "compact error card");
+      assert.ok(
+        required(await card.boundingBox()).height < 250,
+        "compact error card",
+      );
       assert.equal(await card.locator("pre").isVisible(), false);
       await panel.screenshot({ path: join(evidence, `team-${width}.png`) });
       await card.locator(".worker-error-details > .disclosure-control").click();
@@ -358,20 +363,19 @@ test("Team panel scrolls past retained worktrees to the last worker", async ({
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) =>
-      resolve(Number(String(chunk).trim())),
-    );
-    fixture.once("exit", () => reject(new Error(log)));
-  });
+  const port = await waitForFixturePort(fixture);
   const origin = `http://127.0.0.1:${port}`;
   const snapshot = await readTestState(origin);
-  const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
-  const member = snapshot.threads.find((agent) => agent.rootId === lead.id);
-  const workers = Array.from({ length: 24 }, (_, index) => ({
+  const lead = required(
+    snapshot.threads.find((agent) => agent.name === "Release lead"),
+  );
+  const member = required(
+    snapshot.threads.find((agent) => agent.rootId === lead.id),
+  );
+  const workers = Array.from({ length: 24 }, (_, index): TestAgent => ({
     ...member,
     id: `scroll-worker-${index}`,
     name: `Scroll worker ${String(index).padStart(2, "0")}`,
@@ -411,7 +415,7 @@ test("Team panel scrolls past retained worktrees to the last worker", async ({
     await expect(panel.locator(".worker-entry")).toHaveCount(24);
     const lastWorker = panel.locator(".worker-entry").last();
     await expect(lastWorker).not.toBeInViewport();
-    const box = await panel.boundingBox();
+    const box = required(await panel.boundingBox());
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.wheel(0, 100_000);
     await expect

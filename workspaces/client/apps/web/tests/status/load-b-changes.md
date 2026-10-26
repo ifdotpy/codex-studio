@@ -4,7 +4,7 @@ Base: `92794cb2` (`work/fast-browser-tests`). The production build passed.
 
 ## Findings and changes
 
-- `background/background-controls-ui.spec.mjs`: the fixture omitted
+- `background/background-controls-ui.spec.ts`: the fixture omitted
   `/api/workspace/tasks`, so the activity drawer received an empty feed and
   could not render `native-task`; the test then waited for that impossible row
   until its 60-second deadline. Serve the task feed through the fixture entity
@@ -108,7 +108,7 @@ These commands ran from `web` with the managed browser runtime environment;
 each used one Playwright worker and three repetitions.
 
 ```sh
-node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/background/background-controls-ui.spec.mjs --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-background-fixed
+node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/background/background-controls-ui.spec.ts --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-background-fixed
 ```
 
 Result: 3/3 passed (23.2s).

@@ -1,6 +1,14 @@
+import type { Snapshot } from "../../src/types.ts";
+import type { components } from "../../src/generated/api.ts";
+type PeerRequest =
+  | components["schemas"]["PeerTeamMoveRequest"]
+  | components["schemas"]["PeerTeamDeleteRequest"]
+  | components["schemas"]["PeerTeamSaveRequest"];
+import type {} from "./peer-teams-browser.fixture.tsx";
+import { required } from "./helpers.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { apiSchemaHeaders, test } from "../playwright.ts";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,10 +19,7 @@ test("Peer teams browser", async ({
 }) => {
   test.setTimeout(180_000);
   const root = resolve(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-peer-teams-"));
-  const entry = join(root, "peer-teams-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -27,23 +32,9 @@ test("Peer teams browser", async ({
           s.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<html><body><div id="root"></div><script type="module" src="/peer-teams-fixture.tsx"></script></body></html>',
+              '<html><body><div id="root"></div><script type="module" src="/tests/teams/peer-teams-browser.fixture.tsx"></script></body></html>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/peer-teams-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `
-   import React,{useState} from 'react'; import {createRoot} from 'react-dom/client'; import {MantineProvider} from '@mantine/core'; import '@mantine/core/styles.css';
-  import Sidebar from '/src/components/Sidebar.tsx';import TeamChats from '/src/components/shell/messages/TeamChats.tsx';import '/src/style.css';import '/src/workspace-layout.css';import '/src/appearance.css';import {theme} from '/src/theme.ts';
-   const a=(id,name,cwd='/p',extra={})=>({id,name,cwd,source:'managed',isLead:true,created:1,updated:1,...extra});
-   const initial={stateDir:'fixture',threads:[a('a','Alpha'),a('b','Beta','/p',{projectFolder:'f'}),a('c','Gamma'),a('x','Other project','/other'),a('w','Worker','/p',{isLead:false,rootId:'a'}),a('i','Imported','/p',{source:'imported'}),a('d','Deleted','/p',{deletedAt:1})],runtime:{peerTeamsVersion:1,peerTeams:[],projects:[{id:'p',path:'/p',name:'Project',peerTeamsRevision:0,folders:[{id:'f',name:'Folder',parentId:null}]}],rooms:[],requests:[],complaints:[],agents:[]}};
-   function Fixture(){const[data,setData]=useState(initial);const[opened,open]=useState('a');window.setFixture=setData;window.fixture=data;window.failRefresh=false;
-   const refresh=async()=>{if(window.failRefresh)throw Error('Refresh failed');const r=await fetch('/snapshot');setData(await r.json());};
-   return <MantineProvider theme={theme} defaultColorScheme="dark"><div style={{width:320,maxWidth:'100vw'}}><Sidebar data={data} opened={opened} open={open} newChat={()=>{}} addProject={()=>{}} changeProject={()=>{}} projectAccount={()=>{}} creating={false} rename={async()=>{}} remove={()=>{}} mobile={true} onSearch={()=>{}} close={()=>{}} refresh={refresh} indicators={new Map()} markUnread={()=>{}} markingRead={new Set()}/></div><TeamChats data={data} leadId={opened} refresh={refresh} notify={()=>{}}/></MantineProvider>}; createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -52,15 +43,15 @@ test("Peer teams browser", async ({
     await server.listen();
     const page = runnerPage;
     await page.setViewportSize({ width: 1100, height: 900 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    let state,
+    let state: Snapshot,
       mode = "lost",
-      requests = [];
+      requests: PeerRequest[] = [];
     await page.route("**/snapshot", (r) => r.fulfill({ json: state }));
-    const applied = new Map();
+    const applied = new Map<string, PeerRequest>();
     await page.route("**/api/peer-teams", async (route) => {
-      const body = route.request().postDataJSON();
+      const body: PeerRequest = route.request().postDataJSON();
       requests.push(body);
       if (mode === "stale")
         return route.fulfill({
@@ -80,10 +71,10 @@ test("Peer teams browser", async ({
           (t) => t.id === body.team_id,
         );
         for (const t of state.runtime.peerTeams)
-          t.members = t.members.filter((id) => id !== body.member);
-        if (target) target.members.push(body.member);
+          t.members = (t.members ?? []).filter((id) => id !== body.member);
+        if (target) (target.members ??= []).push(body.member);
         state.runtime.peerTeams = state.runtime.peerTeams.filter(
-          (t) => t.members.length >= 2,
+          (t) => (t.members ?? []).length >= 2,
         );
       } else
         state.runtime.peerTeams =
@@ -97,7 +88,8 @@ test("Peer teams browser", async ({
                   members: body.members,
                 },
               ];
-      state.runtime.projects[0].peerTeamsRevision++;
+      const project = required(state.runtime.projects[0]);
+      project.peerTeamsRevision = (project.peerTeamsRevision ?? 0) + 1;
       applied.set(body.request_id, body);
       if (mode === "lost") {
         mode = "ok";
@@ -108,11 +100,9 @@ test("Peer teams browser", async ({
         headers: apiSchemaHeaders(),
       });
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.waitForFunction(() => window.fixture);
-    state = await page.evaluate(() => window.fixture);
+    await page.goto(`${required(server.resolvedUrls?.local[0])}check`);
+    await page.waitForFunction(() => window.peerTeamsFixture.data);
+    state = await page.evaluate(() => window.peerTeamsFixture.data);
     const project = page.locator('[data-project-path="/p"]');
     const menu = async () => {
       await project.locator(":scope > .project-tree-heading").hover();
@@ -135,7 +125,7 @@ test("Peer teams browser", async ({
     await form.getByRole("button", { name: "Retry", exact: true }).click();
     await form.waitFor({ state: "detached" });
     assert.deepEqual(requests[0], requests[1]);
-    assert.equal(state.runtime.projects[0].peerTeamsRevision, 1);
+    assert.equal(required(state.runtime.projects[0]).peerTeamsRevision, 1);
     await page.getByRole("button", { name: /^Show old \(/ }).click();
     assert.equal(await project.locator('[data-chat="a"]').count(), 1);
     assert.equal(await project.locator('[data-chat="b"]').count(), 1);
@@ -178,12 +168,12 @@ test("Peer teams browser", async ({
       .click();
     form = page.getByRole("form", { name: "Edit team", exact: true });
     await form.getByLabel("Gamma", { exact: true }).check();
-    await page.evaluate(() => (window.failRefresh = true));
+    await page.evaluate(() => (window.peerTeamsFixture.failRefresh = true));
     await form.getByRole("button", { name: "Save team", exact: true }).click();
     await form.getByRole("alert").waitFor();
     assert.match(await form.innerText(), /change was saved/);
     const count = requests.length;
-    await page.evaluate(() => (window.failRefresh = false));
+    await page.evaluate(() => (window.peerTeamsFixture.failRefresh = false));
     await form.getByRole("button", { name: "Retry", exact: true }).click();
     await form.waitFor({ state: "detached" });
     assert.equal(requests.length, count);
@@ -200,7 +190,7 @@ test("Peer teams browser", async ({
       1,
     );
     state.threads.push({
-      ...state.threads.find((a) => a.id === "c"),
+      ...required(state.threads.find((a) => a.id === "c")),
       id: "e",
       name: "Epsilon",
     });
@@ -208,7 +198,11 @@ test("Peer teams browser", async ({
       { id: "t1", name: "First team", projectPath: "/p", members: ["a", "b"] },
       { id: "t2", name: "Second team", projectPath: "/p", members: ["c", "e"] },
     ];
-    await page.evaluate((s) => window.setFixture(s), state);
+    await page.evaluate((serialized) => {
+      // The fixture serializes its own snapshot across the browser boundary.
+      const snapshot: Snapshot = JSON.parse(serialized);
+      window.peerTeamsFixture.set(snapshot);
+    }, JSON.stringify(state));
     const second = page.locator('[data-peer-team="t2"]');
     const teamTarget = second.locator(".peer-team-toggle");
     const projectTarget = project.locator(
@@ -217,11 +211,13 @@ test("Peer teams browser", async ({
     await project.locator('[data-chat="a"]').dragTo(teamTarget);
     await second.locator('[data-chat="a"]').waitFor();
     assert.equal(await page.locator('[data-peer-team="t1"]').count(), 0);
-    assert.equal(requests.at(-1).action, "move");
+    assert.equal(required(requests.at(-1)).action, "move");
     await second.locator('[data-chat="a"]').dragTo(projectTarget);
     await page.waitForFunction(
       () =>
-        !window.fixture.runtime.peerTeams.some((t) => t.members.includes("a")),
+        !window.peerTeamsFixture.data.runtime.peerTeams.some((t) =>
+          t.members?.includes("a"),
+        ),
     );
     const beforeForeign = requests.length;
     await page.locator('[data-chat="x"]').dragTo(teamTarget);
@@ -255,7 +251,9 @@ test("Peer teams browser", async ({
     await second.locator('[data-chat="b"]').dragTo(projectTarget);
     await page.waitForFunction(
       () =>
-        !window.fixture.runtime.peerTeams.some((t) => t.members.includes("b")),
+        !window.peerTeamsFixture.data.runtime.peerTeams.some((t) =>
+          t.members?.includes("b"),
+        ),
     );
     await page.screenshot({
       path:
@@ -289,7 +287,11 @@ test("Peer teams browser", async ({
         updated: 1,
       },
     ];
-    await page.evaluate((s) => window.setFixture(s), state);
+    await page.evaluate((serialized) => {
+      // The fixture serializes its own snapshot across the browser boundary.
+      const snapshot: Snapshot = JSON.parse(serialized);
+      window.peerTeamsFixture.set(snapshot);
+    }, JSON.stringify(state));
     await page.locator('[data-room="peer"]').waitFor();
     assert.equal(await page.locator('[data-room="other"]').count(), 0);
     assert.equal(await page.locator('[data-room="unmarked"]').count(), 0);
@@ -300,7 +302,7 @@ test("Peer teams browser", async ({
     await form
       .getByLabel("Team name")
       .fill("A long team name that should fit a narrow sidebar");
-    const bounds = await form.boundingBox();
+    const bounds = required(await form.boundingBox());
     assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 360);
     assert.equal(
       await form.evaluate((e) => e.scrollWidth <= e.clientWidth),
