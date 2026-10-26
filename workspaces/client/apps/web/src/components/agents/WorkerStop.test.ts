@@ -3,9 +3,17 @@ import { it } from "vitest";
 import { agentStopReason } from "../../types.ts";
 
 it("identifies an explicit user or parent stop", () => {
-  for (const error of ["Stopped by user", "Stopped by agent Release lead"])
+  for (const error of [
+    "Stopped by user",
+    "Stopped by agent Release lead",
+  ] as const)
     assert.equal(
-      agentStopReason({ status: "paused", autoWake: false, error }),
+      agentStopReason({
+        id: "worker",
+        status: "paused",
+        autoWake: false,
+        error,
+      }),
       error,
     );
 });
@@ -17,9 +25,14 @@ it("preserves errors without an exact explicit stop", () => {
     "Stopped by user after an error",
     { message: "Stopped by user", codexErrorInfo: "other" },
     JSON.stringify({ message: "Stopped by user" }),
-  ])
+  ] as const)
     assert.equal(
-      agentStopReason({ status: "paused", autoWake: false, error }),
+      agentStopReason({
+        id: "worker",
+        status: "paused",
+        autoWake: false,
+        error,
+      }),
       "",
     );
   for (const state of [
@@ -27,6 +40,9 @@ it("preserves errors without an exact explicit stop", () => {
     { status: "interrupted", autoWake: false },
     { status: "paused", autoWake: true },
     { status: "paused" },
-  ])
-    assert.equal(agentStopReason({ ...state, error: "Stopped by user" }), "");
+  ] as const)
+    assert.equal(
+      agentStopReason({ id: "worker", ...state, error: "Stopped by user" }),
+      "",
+    );
 });
