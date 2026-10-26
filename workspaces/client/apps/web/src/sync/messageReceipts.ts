@@ -43,7 +43,15 @@ export function latestMessageReceipt(
 export function receiptOutgoing(
   entry: OutgoingMessage,
   receipt?: MessageReceipt,
-): OutgoingMessage {
+): OutgoingMessage;
+export function receiptOutgoing(
+  entry: Omit<OutgoingMessage, "id">,
+  receipt?: MessageReceipt,
+): Omit<OutgoingMessage, "id">;
+export function receiptOutgoing(
+  entry: Omit<OutgoingMessage, "id">,
+  receipt?: MessageReceipt,
+): Omit<OutgoingMessage, "id"> {
   // Only reconcile requests the server has already acknowledged. An unknown
   // HTTP outcome still uses the original idempotent send path.
   if (!receipt || !["accepted", "uncertain"].includes(entry.status))

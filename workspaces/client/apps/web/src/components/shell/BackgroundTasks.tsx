@@ -82,12 +82,12 @@ export const responseStopIdentity = (
 export const responseOwnerIdentityKey = (
   owner:
     | {
-        id?: string;
-        accountKey?: string | null;
-        epoch?: number | null;
-        inFlight?: boolean | null;
-        threadId?: string | null;
-        turnId?: string | null;
+        id?: string | undefined;
+        accountKey?: string | null | undefined;
+        epoch?: number | null | undefined;
+        inFlight?: boolean | null | undefined;
+        threadId?: string | null | undefined;
+        turnId?: string | null | undefined;
       }
     | undefined,
 ) =>
@@ -220,7 +220,7 @@ export default function BackgroundTasks({
 }: {
   opened: boolean;
   close: () => void;
-  afterClose?: () => void;
+  afterClose?: (() => void) | undefined;
   data: Snapshot;
   leadId?: string | undefined;
   openAgent: (id: string) => void;
@@ -241,7 +241,7 @@ export default function BackgroundTasks({
     [selection, setSelection] = useState<{
       scope?: string | undefined;
       id: string;
-      requested?: boolean;
+      requested?: boolean | undefined;
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
@@ -812,7 +812,7 @@ export function BackgroundTaskStrip({
   );
 }
 
-function TaskDetail({
+export function TaskDetail({
   task: summary,
   owner,
   now,

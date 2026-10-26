@@ -141,6 +141,7 @@ describe("upload recovery scheduling", () => {
       readonly name: string;
       constructor(name: string) {
         this.name = name;
+
         TestBroadcastChannel.channels.add(this);
       }
 
