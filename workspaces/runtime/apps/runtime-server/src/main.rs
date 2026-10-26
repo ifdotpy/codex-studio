@@ -163,14 +163,14 @@ fn main() -> std::process::ExitCode {
     runtime.shutdown_timeout(Duration::ZERO);
     let _finished = shutdown_finished.send(());
     if let Err(error) = result {
-        if let Some(store) = error.downcast_ref::<studio_runtime_store::StoreError>() {
-            if matches!(store, studio_runtime_store::StoreError::Migration { .. }) {
-                match serde_json::to_string(&studio_runtime_services::studio_errors::store_causes(
-                    store,
-                )) {
-                    Ok(causes) => eprintln!("runtime migration diagnostic: {causes}"),
-                    Err(_) => eprintln!("runtime migration diagnostic could not be encoded"),
-                }
+        if let Some(store) = error.downcast_ref::<studio_runtime_store::StoreError>()
+            && matches!(store, studio_runtime_store::StoreError::Migration { .. })
+        {
+            match serde_json::to_string(&studio_runtime_services::studio_errors::store_causes(
+                store,
+            )) {
+                Ok(causes) => eprintln!("runtime migration diagnostic: {causes}"),
+                Err(_) => eprintln!("runtime migration diagnostic could not be encoded"),
             }
         }
         eprintln!("{}", error_exit_log(&error.to_string()));
