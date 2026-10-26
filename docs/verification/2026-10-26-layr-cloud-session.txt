@@ -1,0 +1,201 @@
+$ rustc --edition=2021 /Users/igor/Projects/codex-agents/.worktrees/codex-agents/983722ef-35b9-5d81-a1e0-1e7b3019c02b/.agents/skills/layr/references/person-fixture.rs --extern layr_store=/Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/deps/liblayr_store-b5f8217582089bb3.rlib -L dependency=/Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/deps -o /Users/igor/.local/state/layr-m6/volume/session-remote/person-fixture
+[exit 0]
+$ /Users/igor/.local/state/layr-m6/volume/session-remote/person-fixture person /Users/igor/.local/state/layr-m6/volume/session-remote/person /Users/igor/.local/state/layr-m6/volume/session-remote/person.key
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr person show --json
+{"login":"reviewer@example.com","recipient":"age1qnjnum3rp0z4jl233yvzfy2w4nrx9au08tyjzk050dh2rmf6tetspguuz3","signing_key":"7742538d9d31f76ebcf42658ca1d1a649691648aa6df2bb00493e82dcf13468f","stores":[]}
+[exit 0]
+PASS agent identity has no paper slot
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr init app --from /Users/igor/.local/state/layr-m6/volume/session-remote/seed
+Initialized project app: line main at /Users/igor/.local/state/layr-m6/volume/session-remote/store/projects/app/lines/main (state 0567167)
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr remote add fixture file:///Users/igor/.local/state/layr-m6/volume/session-remote/objects --paper-key-out /Users/igor/.local/state/layr-m6/volume/session-remote/operator-paper
+paper key file: /Users/igor/.local/state/layr-m6/volume/session-remote/operator-paper
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr person keys --store file:///Users/igor/.local/state/layr-m6/volume/session-remote/objects
+recipient: age1qnjnum3rp0z4jl233yvzfy2w4nrx9au08tyjzk050dh2rmf6tetspguuz3
+signing key: 7742538d9d31f76ebcf42658ca1d1a649691648aa6df2bb00493e82dcf13468f
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr remote grant fixture --person reviewer@example.com --recipient age1qnjnum3rp0z4jl233yvzfy2w4nrx9au08tyjzk050dh2rmf6tetspguuz3 --invite-out /Users/igor/.local/state/layr-m6/volume/session-remote/invite.age
+granted store to reviewer@example.com
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr person accept --invite-file /Users/igor/.local/state/layr-m6/volume/session-remote/invite.age --remote file:///Users/igor/.local/state/layr-m6/volume/session-remote/objects
+accepted store 01a17724-1a6d-71a5-809b-00a7576952de recipient age1w3vc7s6nxp4rpspz7fxdcqz5rqma8pkhz39ur729kyxps4qp6fhqmzrsjc
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr person show --json
+{"login":"reviewer@example.com","recipient":"age1qnjnum3rp0z4jl233yvzfy2w4nrx9au08tyjzk050dh2rmf6tetspguuz3","signing_key":"7742538d9d31f76ebcf42658ca1d1a649691648aa6df2bb00493e82dcf13468f","stores":[{"project":"01a17724-1a6d-71a5-809b-00a7576952de","recipient":"age1w3vc7s6nxp4rpspz7fxdcqz5rqma8pkhz39ur729kyxps4qp6fhqmzrsjc","signedFrom":null,"writer":null}]}
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr access person-key reviewer@example.com 7742538d9d31f76ebcf42658ca1d1a649691648aa6df2bb00493e82dcf13468f
+pinned person reviewer@example.com
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr access grant person:reviewer@example.com maintainer
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr config check.unit 'test "$(cat answer.txt)" = fixed'
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr protect main --check unit --approvals 1 --approvers person:reviewer@example.com
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr push fixture
+push: 11 records, 1 states, 156 bytes
+[exit 0]
+RECIPE cloud-identity
+$ /bin/sh -ec 'layr person show --site "$LAYR_SITE" --json'
+{"login":"reviewer@example.com","recipient":"age1qnjnum3rp0z4jl233yvzfy2w4nrx9au08tyjzk050dh2rmf6tetspguuz3","signing_key":"7742538d9d31f76ebcf42658ca1d1a649691648aa6df2bb00493e82dcf13468f","stores":[{"project":"01a17724-1a6d-71a5-809b-00a7576952de","recipient":"age1w3vc7s6nxp4rpspz7fxdcqz5rqma8pkhz39ur729kyxps4qp6fhqmzrsjc","signedFrom":null,"writer":null}]}
+[exit 0]
+RECIPE cloud-remote
+$ /bin/sh -ec 'layr remote add "$LAYR_REMOTE" "$LAYR_CLOUD_URL"
+layr remote list --json'
+{"copies":[{"address":"layr+https://localhost:64481/app","id":"01a17724-1a10-720a-933c-360f700544c7:cloud","kind":"store","name":"cloud"},{"address":"file:///Users/igor/.local/state/layr-m6/volume/session-remote/objects","id":"01a17724-1a10-720a-933c-360f700544c7:fixture","kind":"store","last":{"actor":{"name":"igor","uid":501},"bytes_received":0,"bytes_sent":156,"direction":"push","id":"01a17724-1da2-7799-904f-a539d05dd0b0","machine":"01a17724-1a10-720a-933c-360f700544c7","overlays":[],"records_received":0,"records_sent":11,"remote":"fixture","result":"success","state_ids_received":[],"state_ids_sent":["01a17724-1a89-7544-8690-0567167b6618"],"states_received":0,"states_sent":1,"time":1793000218018,"url":"file:///Users/igor/.local/state/layr-m6/volume/session-remote/objects"},"machine":"01a17724-1a10-720a-933c-360f700544c7","name":"fixture","time":1793000218018}],"machines":[{"current":true,"id":"01a17724-1a10-720a-933c-360f700544c7","key":"0f011cc73f4dfbbeeae017e1e35f98fa258ba7e281ae4724678bb9199ec52331","name":"machine","trusted":true}],"remotes":[{"name":"cloud","url":"layr+https://localhost:64481/app"},{"name":"fixture","url":"file:///Users/igor/.local/state/layr-m6/volume/session-remote/objects"}]}
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr line new feature
+Created line feature at /Users/igor/.local/state/layr-m6/volume/session-remote/store/projects/app/lines/feature from 0567167
+[exit 0]
+RECIPE cloud-open
+$ /bin/sh -ec 'layr add -A
+layr save -m "$LAYR_MESSAGE"
+layr push "$LAYR_REMOTE"
+layr change list --json'
+[feature d1121d9] Fix the answer
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+push: 5 records, 1 states, 112 bytes
+[{"change_id":"01a17724-1a98-7722-a8ec-5290482814e3","message":"initial state","state":"01a17724-1a89-7544-8690-0567167b6618","versions":1},{"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","message":"Fix the answer","state":"01a17724-213d-7716-bfb6-d1121d9256a6","versions":1}]
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr change list --json
+[{"change_id":"01a17724-1a98-7722-a8ec-5290482814e3","message":"initial state","state":"01a17724-1a89-7544-8690-0567167b6618","versions":1},{"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","message":"Fix the answer","state":"01a17724-213d-7716-bfb6-d1121d9256a6","versions":1}]
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr try head --check unit
+layr: running 'sh -c test "$(cat answer.txt)" = fixed' in /Users/igor/.local/state/layr-m6/volume/session-remote/store/projects/app/lines/.try-effbe7d1fcd918ee (state d1121d9)
+layr: state d1121d9 exit 1
+[exit 1]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr comment 01a17724-2176-73ce-b5b8-767356b0c6a9 'Please fix the answer.' --path answer.txt --line 1 --json
+{"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-234d-7329-a5d3-da5770e0e8e1","line":1,"path":"answer.txt","text":"Please fix the answer.","version":"01a17724-213d-7716-bfb6-d1121d9256a6"}
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr push cloud
+push: 3 records, 0 states, 0 bytes
+[exit 0]
+RECIPE cloud-status
+$ /bin/sh -ec 'layr fetch "$LAYR_REMOTE"
+layr change show "$LAYR_CHANGE" --json'
+fetch: 0 records, 0 states, 0 bytes
+{"behavior":{"base":"01a17724-1a89-7544-8690-0567167b6618","base_source":"available","head":"01a17724-213d-7716-bfb6-d1121d9256a6","head_source":"available","probes":[]},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","comments":[{"actor":{"name":"igor","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-234d-7329-a5d3-da5770e0e8e1","line":1,"path":"answer.txt","text":"Please fix the answer.","time":1793000219469,"version":"01a17724-213d-7716-bfb6-d1121d9256a6"}],"versions":[{"attestations":[{"attestation_id":"01a17724-2337-70c8-8627-7be760f06789","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"check","payload_digest":"38589b59ee851b8859019934b70dc3311b7fcd5878e3177c12139ca2c77b0795","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"state"},"time":1793000219447}],"checks":[{"argv":["sh","-c","test \"$(cat answer.txt)\" = fixed"],"command":"sh -c test \"$(cat answer.txt)\" = fixed","exit":1,"seconds":0.015839708}],"state":{"author":{"email":"worker@example.com","name":"Worker","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"commit","line":"01a17724-20e4-7041-99e5-63b30402bce3","message":"Fix the answer","parents":["01a17724-1a89-7544-8690-0567167b6618"],"subvol":"01a17724-210a-76f9-a008-298a313e5bbd","time":1793000218998},"version":"v1"}]}
+[exit 0]
+PASS agent sees a failing check in change JSON
+PASS agent sees the review comment
+RECIPE cloud-update
+$ /bin/sh -ec 'layr add -A
+layr save --amend -m "$LAYR_MESSAGE"
+layr push "$LAYR_REMOTE"'
+[feature d2b74dd] Fix the answer
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+push: 2 records, 1 states, 111 bytes
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr change show 01a17724-2176-73ce-b5b8-767356b0c6a9 --json
+{"behavior":{"base":"01a17724-1a89-7544-8690-0567167b6618","base_source":"available","head":"01a17724-2508-7368-855a-d2b74dd76bfc","head_source":"available","probes":[]},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","comments":[{"actor":{"name":"igor","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-234d-7329-a5d3-da5770e0e8e1","line":1,"path":"answer.txt","text":"Please fix the answer.","time":1793000219469,"version":"01a17724-213d-7716-bfb6-d1121d9256a6"}],"versions":[{"attestations":[{"attestation_id":"01a17724-2337-70c8-8627-7be760f06789","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"check","payload_digest":"38589b59ee851b8859019934b70dc3311b7fcd5878e3177c12139ca2c77b0795","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"state"},"time":1793000219447}],"checks":[{"argv":["sh","-c","test \"$(cat answer.txt)\" = fixed"],"command":"sh -c test \"$(cat answer.txt)\" = fixed","exit":1,"seconds":0.015839708}],"state":{"author":{"email":"worker@example.com","name":"Worker","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"commit","line":"01a17724-20e4-7041-99e5-63b30402bce3","message":"Fix the answer","parents":["01a17724-1a89-7544-8690-0567167b6618"],"subvol":"01a17724-210a-76f9-a008-298a313e5bbd","time":1793000218998},"version":"v1"},{"attestations":[],"checks":[],"operation":{"actor":{"name":"igor","uid":501},"id":"01a17724-2572-7316-839a-408dd3078b48","kind":"amend","machine":"01a17724-1a10-720a-933c-360f700544c7","source":"01a17724-213d-7716-bfb6-d1121d9256a6","state":"01a17724-2508-7368-855a-d2b74dd76bfc","target_head":"01a17724-213d-7716-bfb6-d1121d9256a6","target_line":"01a17724-20e4-7041-99e5-63b30402bce3","time":1793000220018},"state":{"author":{"email":"worker@example.com","name":"Worker","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"commit","line":"01a17724-20e4-7041-99e5-63b30402bce3","message":"Fix the answer","parents":["01a17724-1a89-7544-8690-0567167b6618"],"subvol":"01a17724-24d7-70f4-b285-e27c303bad0a","time":1793000219971},"version":"v2"}]}
+[exit 0]
+PASS amend keeps ChangeId and old failing evidence
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr try 01a17724-2508-7368-855a-d2b74dd76bfc --check unit
+layr: running 'sh -c test "$(cat answer.txt)" = fixed' in /Users/igor/.local/state/layr-m6/volume/session-remote/store/projects/app/lines/.try-216c71e21c263b50 (state d2b74dd)
+layr: state d2b74dd exit 0
+[exit 0]
+RECIPE cloud-reply
+$ /bin/sh -ec 'layr comment "$LAYR_CHANGE" "$LAYR_REPLY" --reply-to "$LAYR_COMMENT" --json
+layr push "$LAYR_REMOTE"'
+{"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-271a-7170-a3ee-50df5014c547","reply_to":"01a17724-234d-7329-a5d3-da5770e0e8e1","text":"Fixed in the amended version.","version":"01a17724-2508-7368-855a-d2b74dd76bfc"}
+push: 3 records, 0 states, 0 bytes
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr change show 01a17724-2176-73ce-b5b8-767356b0c6a9 --json
+{"behavior":{"base":"01a17724-1a89-7544-8690-0567167b6618","base_source":"available","head":"01a17724-2508-7368-855a-d2b74dd76bfc","head_source":"available","probes":[]},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","comments":[{"actor":{"name":"igor","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-234d-7329-a5d3-da5770e0e8e1","line":1,"path":"answer.txt","text":"Please fix the answer.","time":1793000219469,"version":"01a17724-213d-7716-bfb6-d1121d9256a6"},{"actor":{"name":"igor","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-271a-7170-a3ee-50df5014c547","reply_to":"01a17724-234d-7329-a5d3-da5770e0e8e1","text":"Fixed in the amended version.","time":1793000220445,"version":"01a17724-2508-7368-855a-d2b74dd76bfc"}],"versions":[{"attestations":[{"attestation_id":"01a17724-2337-70c8-8627-7be760f06789","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"check","payload_digest":"38589b59ee851b8859019934b70dc3311b7fcd5878e3177c12139ca2c77b0795","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"state"},"time":1793000219447}],"checks":[{"argv":["sh","-c","test \"$(cat answer.txt)\" = fixed"],"command":"sh -c test \"$(cat answer.txt)\" = fixed","exit":1,"seconds":0.015839708}],"state":{"author":{"email":"worker@example.com","name":"Worker","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"commit","line":"01a17724-20e4-7041-99e5-63b30402bce3","message":"Fix the answer","parents":["01a17724-1a89-7544-8690-0567167b6618"],"subvol":"01a17724-210a-76f9-a008-298a313e5bbd","time":1793000218998},"version":"v1"},{"attestations":[{"attestation_id":"01a17724-26fa-77e3-ae09-8b5bd2aba9a0","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"check","payload_digest":"7f12128b5339e9f9555c665b1fb06676c79dcca4e4592f4641a0ad83f6309046","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"state"},"time":1793000220410}],"checks":[{"argv":["sh","-c","test \"$(cat answer.txt)\" = fixed"],"command":"sh -c test \"$(cat answer.txt)\" = fixed","exit":0,"seconds":0.0182005}],"operation":{"actor":{"name":"igor","uid":501},"id":"01a17724-2572-7316-839a-408dd3078b48","kind":"amend","machine":"01a17724-1a10-720a-933c-360f700544c7","source":"01a17724-213d-7716-bfb6-d1121d9256a6","state":"01a17724-2508-7368-855a-d2b74dd76bfc","target_head":"01a17724-213d-7716-bfb6-d1121d9256a6","target_line":"01a17724-20e4-7041-99e5-63b30402bce3","time":1793000220018},"state":{"author":{"email":"worker@example.com","name":"Worker","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"commit","line":"01a17724-20e4-7041-99e5-63b30402bce3","message":"Fix the answer","parents":["01a17724-1a89-7544-8690-0567167b6618"],"subvol":"01a17724-24d7-70f4-b285-e27c303bad0a","time":1793000219971},"version":"v2"}]}
+[exit 0]
+PASS reply retains its parent ID
+RECIPE cloud-approve
+$ /bin/sh -ec 'layr approve "$LAYR_STATE" --json
+layr push "$LAYR_REMOTE"'
+{"attestation":{"attestation_id":"01a17724-2870-7691-8105-423eaa82627e","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"approval","payload_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"state"},"time":1793000220784}}
+push: 2 records, 0 states, 0 bytes
+[exit 0]
+RECIPE cloud-person-approve
+$ /bin/sh -ec 'layr request approve "$LAYR_STATE" --person --remote "$LAYR_REMOTE" --into main --json'
+{"id":"01a17724-2a88-74b5-88d8-a33ef197c26e","request":{"ct":"YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBQcGlFSitrZjFwdUc5djRiQUNBQzR3L2FkMzN0OS9QeEw2cFp0UnBnaG1VCjhaOVVNT2QwUjVtaE5xd3FBeHFmb2VVM1BmMzNDblNCQVFlcnh5K3ZEUFkKLT4gQzhoXXBRJ2YtZ3JlYXNlIHkgJS4sMWoKbldmNnZVRVhlVnNGOFV4djM1L1dLVDVVNWlPVDJ6M3Y2YUtVaGZidkc1NDY5U0UKLS0tIGxUUm1NZXAzVElNdCtmNVZ0ZHZNTkxFRzROdEJHYk9sSkswUU9kRnAxMjQKVVFQuuFKlxQHoryHUsfzOWlvPinxSx0sBNmWCAJ4ZWpG4bsgjwkYMh56se32if7EJrOdU+K3+zMjUYyPpaFbMDW9UqnFVFiaVBjvWX+pfOApQtlKeXSPEeeXXJU4yCq7G40DI8TJPIPLu0kD73GMgTDq1sIsLzoaSxkC8NXQXoYzADZXANtD5xmwnoO83KEDXH0wJ+xUiI8E1mCUlCsbgsBzbEfJy6QyS1ObE3PUJsJSerA/xomPmC0C9tGX7N1Zsh0yozutMyeS8GnNRlnnhojAbOLVPb8IYscE7d/y492XF9l5cCJP9LVWRt68K4/5N0vHAVOHc0GMYtQHXaQ+fOwwB/d2pWNig9ZlFK9nfgFSPLuv3Bm7IFrxP1iPqXBHBwUtD+iuUqCOhjJ5NgDKoQS8FdE6/5e6q/c90lTi50+rjjkmti50FXzB9vaI5kKk1c55hPFKFOJ7hO3i8Rj5XyqGNFCVJYfR1OoRyLBE9d1CzPFFY0lKnyuJV5NygBa7YOo49DA3uWAE5rFFqhL2CXsFsnIAFcQ=","epoch":"root","id":"01a17724-2a88-74b5-88d8-a33ef197c26e","person":"reviewer@example.com","project":"01a17724-1a6d-71a5-809b-00a7576952de","sig":"6ada015d37668f1d172cf37cf93a5797e624af8b69ceac1ba1a48bf8008b201d7b0dda29ec7a286fbd8f6ca2ff15cad3f4fdaf5bf25695ab969da31a3ffefe04","v":2}}
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr requests apply --remote cloud --json
+[{"id":"01a17724-2a88-74b5-88d8-a33ef197c26e","reason":null,"record":"01a17724-2c6c-74b2-9f46-647e5d772aee","status":"applied"}]
+[exit 0]
+PASS executor applies the person approval
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr push cloud
+push: 2 records, 0 states, 0 bytes
+[exit 0]
+RECIPE cloud-queue-add
+$ /bin/sh -ec 'layr queue add "$LAYR_STATE" --into main --json
+layr push "$LAYR_REMOTE"'
+{"id":"01a17724-2de0-7322-a6d1-ba5aae94805f","into":"main","target_line":"01a17724-1a9c-713d-925d-53ae6b033b36","state":"01a17724-2508-7368-855a-d2b74dd76bfc","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","added_by":501,"time":1793000222176,"status":"pending","attempts":0}
+push: 2 records, 0 states, 0 bytes
+[exit 0]
+PASS queue pins the reviewed state
+RECIPE cloud-queue-remove
+$ /bin/sh -ec 'layr queue remove "$LAYR_QUEUE_ENTRY" --json
+layr push "$LAYR_REMOTE"'
+{"removed":"01a17724-2de0-7322-a6d1-ba5aae94805f"}
+push: 2 records, 0 states, 0 bytes
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr queue list --json
+[]
+[exit 0]
+PASS withdrawn entry is absent
+RECIPE cloud-queue-add
+$ /bin/sh -ec 'layr queue add "$LAYR_STATE" --into main --json
+layr push "$LAYR_REMOTE"'
+{"id":"01a17724-30f2-7222-9a02-ba06ca797cb3","into":"main","target_line":"01a17724-1a9c-713d-925d-53ae6b033b36","state":"01a17724-2508-7368-855a-d2b74dd76bfc","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","added_by":501,"time":1793000222962,"status":"pending","attempts":0}
+push: 2 records, 0 states, 0 bytes
+[exit 0]
+RECIPE cloud-merge
+$ /bin/sh -ec 'layr fetch "$LAYR_REMOTE"
+layr queue run --into main --json
+layr push "$LAYR_REMOTE"
+layr queue list --into main --json'
+fetch: 0 records, 0 states, 0 bytes
+[{"id":"01a17724-30f2-7222-9a02-ba06ca797cb3","into":"main","target_line":"01a17724-1a9c-713d-925d-53ae6b033b36","state":"01a17724-2508-7368-855a-d2b74dd76bfc","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","added_by":501,"time":1793000222962,"status":"done","attempts":1,"result":"01a17724-2508-7368-855a-d2b74dd76bfc"}]
+push: 2 records, 0 states, 0 bytes
+omitted: 1 auto state (use --auto)
+[{"id":"01a17724-30f2-7222-9a02-ba06ca797cb3","into":"main","target_line":"01a17724-1a9c-713d-925d-53ae6b033b36","state":"01a17724-2508-7368-855a-d2b74dd76bfc","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","added_by":501,"time":1793000222962,"status":"done","attempts":1,"result":"01a17724-2508-7368-855a-d2b74dd76bfc"}]
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr queue list --json
+[{"id":"01a17724-30f2-7222-9a02-ba06ca797cb3","into":"main","target_line":"01a17724-1a9c-713d-925d-53ae6b033b36","state":"01a17724-2508-7368-855a-d2b74dd76bfc","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","added_by":501,"time":1793000222962,"status":"done","attempts":1,"result":"01a17724-2508-7368-855a-d2b74dd76bfc"}]
+[exit 0]
+PASS queue records a successful merge result
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr show main:answer.txt
+fixed
+[exit 0]
+PASS main contains the fix
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr ref set release/m6-test 01a17724-2508-7368-855a-d2b74dd76bfc
+release/m6-test	d2b74dd
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr push cloud
+push: 2 records, 0 states, 0 bytes
+omitted: 1 auto state (use --auto)
+[exit 0]
+RECIPE cloud-release
+$ /bin/sh -ec 'layr release attach "$LAYR_RELEASE" "$LAYR_ARTIFACT" --expect "$LAYR_STATE" --remote "$LAYR_REMOTE" --json
+layr release files "$LAYR_RELEASE" --remote "$LAYR_REMOTE" --json'
+[{"name":"artifact.txt","size":19,"sha256":"67e5168d371d197d68ab096ef0a318ad377beba9f56ba1bfbb80b5cab5c340cd","object":"files/01a17724-3881-7008-8c89-4fa6dc5d6241.age"}]
+[{"name":"artifact.txt","size":19,"sha256":"67e5168d371d197d68ab096ef0a318ad377beba9f56ba1bfbb80b5cab5c340cd","object":"files/01a17724-3881-7008-8c89-4fa6dc5d6241.age"}]
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr release files release/m6-test --remote cloud --json
+[{"name":"artifact.txt","size":19,"sha256":"67e5168d371d197d68ab096ef0a318ad377beba9f56ba1bfbb80b5cab5c340cd","object":"files/01a17724-3881-7008-8c89-4fa6dc5d6241.age"}]
+[exit 0]
+PASS release file SHA-256 matches its source
+RECIPE cloud-clone
+$ /bin/sh -ec 'layr clone "$LAYR_CLOUD_URL" "$LAYR_PROJECT_COPY"'
+clone: 40 records, 3 states, 0 bytes
+[exit 0]
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr change show 01a17724-2176-73ce-b5b8-767356b0c6a9 --json
+{"behavior":{"base":"01a17724-2508-7368-855a-d2b74dd76bfc","base_source":"available","head":"01a17724-2508-7368-855a-d2b74dd76bfc","head_source":"available","probes":[]},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","comments":[{"actor":{"name":"igor","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-234d-7329-a5d3-da5770e0e8e1","line":1,"path":"answer.txt","text":"Please fix the answer.","time":1793000219469,"version":"01a17724-213d-7716-bfb6-d1121d9256a6"},{"actor":{"name":"igor","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-271a-7170-a3ee-50df5014c547","reply_to":"01a17724-234d-7329-a5d3-da5770e0e8e1","text":"Fixed in the amended version.","time":1793000220445,"version":"01a17724-2508-7368-855a-d2b74dd76bfc"}],"versions":[{"attestations":[{"attestation_id":"01a17724-2337-70c8-8627-7be760f06789","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"check","payload_digest":"38589b59ee851b8859019934b70dc3311b7fcd5878e3177c12139ca2c77b0795","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"state"},"time":1793000219447}],"checks":[{"argv":["sh","-c","test \"$(cat answer.txt)\" = fixed"],"command":"sh -c test \"$(cat answer.txt)\" = fixed","exit":1,"seconds":0.015839708}],"state":{"author":{"email":"worker@example.com","name":"Worker","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-213d-7716-bfb6-d1121d9256a6","kind":"commit","line":"01a17724-20e4-7041-99e5-63b30402bce3","message":"Fix the answer","parents":["01a17724-1a89-7544-8690-0567167b6618"],"subvol":"01a17724-210a-76f9-a008-298a313e5bbd","time":1793000218998},"version":"v1"},{"attestations":[{"attestation_id":"01a17724-26fa-77e3-ae09-8b5bd2aba9a0","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"check","payload_digest":"7f12128b5339e9f9555c665b1fb06676c79dcca4e4592f4641a0ad83f6309046","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"state"},"time":1793000220410},{"attestation_id":"01a17724-2870-7691-8105-423eaa82627e","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"approval","payload_digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","signer":"01a17724-1a10-720a-933c-360f700544c7","subject":{"id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"state"},"time":1793000220784},{"attestation_id":"01a17724-2c6c-74b2-9f46-647e5d772aee","change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","format":1,"kind":"approval","payload_digest":"77ddb6260e6c316dabb45a31563ef53d8646f48b5b25a907127fd42a70dd25e1","signer":"person:reviewer@example.com","subject":{"id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"state"},"time":1793000221804}],"checks":[{"argv":["sh","-c","test \"$(cat answer.txt)\" = fixed"],"command":"sh -c test \"$(cat answer.txt)\" = fixed","exit":0,"seconds":0.0182005}],"operation":{"actor":{"name":"igor","uid":501},"id":"01a17724-2572-7316-839a-408dd3078b48","kind":"amend","machine":"01a17724-1a10-720a-933c-360f700544c7","source":"01a17724-213d-7716-bfb6-d1121d9256a6","state":"01a17724-2508-7368-855a-d2b74dd76bfc","target_head":"01a17724-213d-7716-bfb6-d1121d9256a6","target_line":"01a17724-20e4-7041-99e5-63b30402bce3","time":1793000220018},"state":{"author":{"email":"worker@example.com","name":"Worker","uid":501},"change_id":"01a17724-2176-73ce-b5b8-767356b0c6a9","id":"01a17724-2508-7368-855a-d2b74dd76bfc","kind":"commit","line":"01a17724-20e4-7041-99e5-63b30402bce3","message":"Fix the answer","parents":["01a17724-1a89-7544-8690-0567167b6618"],"subvol":"01a17724-24d7-70f4-b285-e27c303bad0a","time":1793000219971},"version":"v2"}]}
+[exit 0]
+PASS fresh clone reads both exact-version check outcomes from encrypted remote objects
+PASS fresh clone reads the remote discussion thread
+$ /Users/igor/Projects/layr/.worktrees/cloud-agent-json/target/debug/layr show main:answer.txt
+fixed
+[exit 0]
+PASS fresh clone reads the merged main files
+PASS gateway stand-in completed without handler errors
+PASS gateway verifies a real person signature
+PASS push sends signed records through HTTPS
+PASS every skill recipe ran

@@ -382,9 +382,7 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
                     self.changed.notify_one();
                     Ok(())
                 }
-                _ => Err(
-                    crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
-                ),
+                _ => Err(crate::notification_dispatch::NotificationDispatchError::invalid()),
             }
         })
     }

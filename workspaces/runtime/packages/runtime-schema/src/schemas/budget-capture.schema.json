@@ -153,6 +153,7 @@
           "type": "null"
         }
       ],
+      "maxLength": 128,
       "title": "Threadid"
     },
     "tokenUsage": {
