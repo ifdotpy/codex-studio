@@ -32,6 +32,10 @@ unavailable, add a fast parity check that identifies the owner and checks every
 consumer. Numerically equal values with different purposes or units remain
 distinct contracts.
 
+Write code, tests, scripts, and tool configuration in TypeScript.
+[docs/typescript.md](docs/typescript.md) owns the rules for type sources,
+JavaScript exceptions, and compiler settings.
+
 Use hidden windows for automated desktop checks. Do not activate applications or
 inject operating-system input during tests. A successful fixture does not prove a
 live model request or a real reset-credit redemption.
