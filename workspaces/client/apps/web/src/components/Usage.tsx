@@ -46,13 +46,12 @@ import {
 import { accountDisplayName } from "../accountName";
 const Analytics = lazy(() => import("./Analytics"));
 
-export type UsageAccount = {
+import type { Account } from "./Accounts";
+export type UsageAccount = Pick<
+  Account,
+  "label" | "email" | "provider" | "plan" | "accountId"
+> & {
   key: string;
-  label: string;
-  email?: string | null;
-  provider?: string;
-  plan?: string | null;
-  accountId?: string | null;
   signedOut?: boolean;
   limits: UsageLimitSnapshot | null;
   loading: boolean;
