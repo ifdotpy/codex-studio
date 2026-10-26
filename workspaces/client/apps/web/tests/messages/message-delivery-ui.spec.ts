@@ -126,11 +126,7 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
   test.setTimeout(60_000);
   page.setDefaultTimeout(10_000);
   const { message, hit, box } = await setupUncertainRemovePointer(page);
-  test.fail(
-    true,
-    "Known delivery-control overlap; see workspaces/client/apps/web/tests/status/msg-known-failures.md.",
-  );
-  assert.equal(hit, "Quote message");
+  assert.equal(hit, "Remove message");
   await page.mouse.click(
     required(box).x + required(box).width / 2,
     required(box).y + required(box).height / 2,

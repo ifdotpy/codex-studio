@@ -113,11 +113,7 @@ test("remove-sending pointer hit target", async ({ page }) => {
   test.setTimeout(30_000);
   page.setDefaultTimeout(10_000);
   const { card, hit, center } = await setupSendingRemovePointer(page);
-  test.fail(
-    true,
-    "Known delivery-control overlap; see workspaces/client/apps/web/tests/status/msg-known-failures.md.",
-  );
-  assert.equal(hit, "Copy message");
+  assert.equal(hit, "Remove sending message");
   await page.mouse.click(center.x, center.y);
   await expect(card).toBeHidden({ timeout: 1000 });
 });
