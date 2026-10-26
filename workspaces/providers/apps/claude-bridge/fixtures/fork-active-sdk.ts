@@ -7,7 +7,7 @@ export interface ForkQueryEvent {
 function parseNativeFixtureRow(text: string): SessionStoreEntry {
   return JSON.parse(text);
 }
-export const resolveSettings = async () => ({ effective: {} });
+export { resolveSettings } from "../sdk-fixtures.ts";
 import type {
   SessionFixtureQuery,
   SessionFixtureMessage,

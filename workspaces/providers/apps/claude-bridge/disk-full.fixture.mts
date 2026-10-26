@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 import { randomUUID } from "node:crypto";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile } from "./sdk-fixtures.ts";

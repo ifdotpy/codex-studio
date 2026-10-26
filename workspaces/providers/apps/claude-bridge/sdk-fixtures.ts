@@ -32,3 +32,5 @@ export function waitForFile(
 ) {
   return waitForFileSignal(file, { ...options, childIpc: true });
 }
+
+export const resolveSettings = async () => ({ effective: {} });

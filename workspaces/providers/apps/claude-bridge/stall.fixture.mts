@@ -4,7 +4,7 @@ import type { FixtureQuery } from "./sdk-fixtures.ts";
 import { inputText } from "./sdk-fixtures.ts";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
-export const resolveSettings = async () => ({ effective: {} });
+export { resolveSettings } from "./sdk-fixtures.ts";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";

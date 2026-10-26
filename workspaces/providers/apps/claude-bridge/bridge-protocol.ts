@@ -112,13 +112,17 @@ export type BridgeTurnResult = {
   steered?: true | undefined;
 };
 // The bridge merges task events and their patches into one mutable task view.
-export type BridgeTask =
-  | Partial<
-      Omit<SDKTaskStartedMessage, "subtype"> &
-        SDKTaskUpdatedMessage["patch"] &
-        Pick<SDKTaskNotificationMessage, "output_file">
-    >
-  | SDKBackgroundTasksChangedMessage["tasks"][number];
+export type BridgeTask = Partial<
+  Omit<SDKTaskStartedMessage, "subtype"> &
+    Omit<SDKTaskUpdatedMessage["patch"], "status"> &
+    Pick<SDKTaskNotificationMessage, "output_file"> &
+    SDKBackgroundTasksChangedMessage["tasks"][number]
+> & {
+  status?:
+    | SDKTaskNotificationMessage["status"]
+    | SDKTaskUpdatedMessage["patch"]["status"]
+    | undefined;
+};
 export type BridgeCommand = Required<
   Pick<
     SlashCommand,

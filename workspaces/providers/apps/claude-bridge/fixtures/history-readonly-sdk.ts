@@ -1,4 +1,4 @@
-export const resolveSettings = async () => ({ effective: {} });
+export { resolveSettings } from "../sdk-fixtures.ts";
 export const query = () => {
   throw new Error("History must not start a query");
 };

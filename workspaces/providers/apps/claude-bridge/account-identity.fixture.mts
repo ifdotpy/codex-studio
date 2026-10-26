@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 export {
   tool,
@@ -24,6 +25,7 @@ export function query({ prompt }: FixtureQuery) {
     async *[Symbol.asyncIterator]() {
       const input = await prompt.next();
       if (!input.done) throw new Error("INPUT MUST NOT BE SUBMITTED");
+      yield* [];
     },
   };
 }

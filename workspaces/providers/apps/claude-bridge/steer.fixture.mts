@@ -20,7 +20,7 @@ export interface SteerFixtureOptions {
 }
 import { waitForFile } from "./sdk-fixtures.ts";
 
-export const resolveSettings = async () => ({ effective: {} });
+export { resolveSettings } from "./sdk-fixtures.ts";
 import fs from "node:fs";
 const mark = (file: string) => {
   fs.writeFileSync(file, "");

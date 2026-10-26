@@ -1,4 +1,3 @@
-import type { Item } from "./session-state.ts";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 export type InputGroup = {
