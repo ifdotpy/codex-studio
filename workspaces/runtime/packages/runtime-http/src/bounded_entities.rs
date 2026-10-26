@@ -727,7 +727,7 @@ mod tests {
     async fn state() -> (tempfile::TempDir, HttpState) {
         let root = tempfile::tempdir().expect("isolated source state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        let policy=studio_runtime_services::account_policy::AccountPolicyState::from_startup(Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture","label":"Source account","source":"fixture","provider":"codex","status":"signedOut"}},"logins":{}}"#),[]).expect("policy");
+        let policy=studio_runtime_services::account_policy::AccountPolicyState::from_startup(Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture","label":"Source account","source":"fixture","provider":"codex","status":"signedOut"}},"logins":{}}).to_string().as_bytes()),[]).expect("policy");
         let state = HttpState::new(
             "token".into(),
             "workspace".into(),
@@ -1223,7 +1223,7 @@ mod tests {
         let home = root.path().join("claude");
         state.account_policy = Some(Arc::new(
             studio_runtime_services::account_policy::AccountPolicyState::from_startup(
-                Some(json!({"version":1,"defaultAccountKey":"on-demand","accounts":{"on-demand":{"id":"on-demand","home":home,"label":"On demand","source":"fixture","provider":"claude","status":"ready"}},"logins":{}}).to_string().as_bytes()), [],
+                Some(json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"on-demand","accounts":{"on-demand":{"id":"on-demand","home":home,"label":"On demand","source":"fixture","provider":"claude","status":"ready"}},"logins":{}}).to_string().as_bytes()), [],
             ).expect("ready account"),
         ));
         state
@@ -1336,7 +1336,7 @@ mod tests {
         let home = root.path().join("profile");
         let account = json!({"id":"default","home":home,"label":"Fixture","source":"fixture","provider":"claude","status":"ready"});
         state.account_policy = Some(Arc::new(studio_runtime_services::account_policy::AccountPolicyState::from_startup(
-            Some(json!({"version":1,"defaultAccountKey":"default","accounts":{"default":account},"logins":{}}).to_string().as_bytes()), []
+            Some(json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":account},"logins":{}}).to_string().as_bytes()), []
         ).expect("ready account")));
         let cache =
             root.path()
@@ -1622,7 +1622,7 @@ mod tests {
         assert!(value["error"].as_str().is_some());
         state.account_policy = Some(Arc::new(
             studio_runtime_services::account_policy::AccountPolicyState::from_startup(
-                Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
+                Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{}}).to_string().as_bytes()),
                 [],
             )
             .expect("empty accounts"),

@@ -2149,7 +2149,7 @@ mod exit_logging_tests {
             store.transaction_with(move |tx| {
                 for id in ["a", "b"] {
                     let resume = serde_json::json!({"id":id,"accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","cause":"rate_limit","status":"scheduled","failedAt":900.0,"dueAt":990.0,"taskClaims":[],"updatedAt":980.0});
-                    let agent = serde_json::json!({"id":id,"rootId":id,"epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"usageResume":resume});
+                    let agent = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"usageResume":resume});
                     tx.execute("INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",[id,&agent.to_string()])?;
                     tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES (?1,?1,?2)",[id,&resume.to_string()])?;
                 }
@@ -2242,7 +2242,7 @@ mod exit_logging_tests {
                     ("a-broken", serde_json::json!({"afterId":""})),
                     ("b-valid", serde_json::json!({"afterId":"","proofAt":1.0})),
                 ] {
-                    let record = serde_json::json!({
+                    let record = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
                         "authResumeProofPending":{"default":pending},
                     });
@@ -2303,7 +2303,7 @@ mod exit_logging_tests {
                     } else {
                         serde_json::json!({"afterId":"", "proofAt":1.0})
                     };
-                    let record = serde_json::json!({
+                    let record = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
                         "authResumeProofPending":{"default":pending},
                     });

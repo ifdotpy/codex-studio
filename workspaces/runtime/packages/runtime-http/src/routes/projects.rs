@@ -1390,7 +1390,7 @@ mod local_registration_tests {
         let project_path = root.path().join("project");
         std::fs::create_dir_all(&project_path).expect("project directory");
         let policy = AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
+            Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes()),
             [],
         )
         .expect("account snapshot");
@@ -1466,7 +1466,7 @@ mod local_registration_tests {
             Arc::new(NoEffects),
         ));
         let policy = AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
+            Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes()),
             [],
         )
         .expect("account snapshot");

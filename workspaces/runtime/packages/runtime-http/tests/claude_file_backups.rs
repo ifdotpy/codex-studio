@@ -256,7 +256,7 @@ pub(crate) async fn fixture() -> (
     .await
     .unwrap();
     native.ready.notified().await;
-    let policy=AccountPolicyState::from_startup(Some(br#"{"version":1,"defaultAccountKey":"account","accounts":{"account":{"id":"account","provider":"claude","home":"/fixture","label":"Fixture","source":"Claude Code","status":"ready"}},"logins":{}}"#),[]).unwrap();
+    let policy=AccountPolicyState::from_startup(Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"account","accounts":{"account":{"id":"account","provider":"claude","home":"/fixture","label":"Fixture","source":"Claude Code","status":"ready"}},"logins":{}}).to_string().as_bytes()),[]).unwrap();
     let mut state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),

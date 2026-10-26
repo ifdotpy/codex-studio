@@ -2205,7 +2205,7 @@ mod install_root_tests {
             .expect("account registry directory creates");
         fs::write(
             &registry_path,
-            r#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}"#,
+            serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}).to_string().as_bytes(),
         )
         .expect("empty account registry writes");
         let registry_bytes = fs::read(&registry_path).expect("account registry reads");
@@ -2597,8 +2597,8 @@ mod voice_composition_tests {
             fs::write(
                 &registry_path,
                 json!({
-                    "version":1,"defaultAccountKey":"voice-account",
-                    "accounts":{"voice-account":{"id":"voice-account","home":directory,"label":"voice","source":"test","status":"signedOut"}},
+                    "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"voice-account",
+                    "accounts":{"voice-account":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-account","home":directory,"label":"voice","source":"test","status":"signedOut"}},
                     "logins":{},"deleteReceipts":{}
                 })
                 .to_string(),
@@ -2628,7 +2628,7 @@ mod voice_composition_tests {
     async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let agent_record = json!({
+        let agent_record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"voice-composed-agent", "rootId":"voice-composed-agent", "epoch":3,
             "status":"idle", "isLead":true, "threadId":"voice-thread", "accountKey":"voice-account"
         })
@@ -3094,7 +3094,7 @@ IFS= read -r release
         fs::write(
             &registry,
             json!({
-                "version": 1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey": "claude-test",
                 "accounts": {"claude-test": account},
                 "logins": {},

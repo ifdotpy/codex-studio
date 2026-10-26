@@ -40,7 +40,7 @@ async fn limits_exposes_agent_policy_and_accounts_exposes_only_safe_organization
             "private-account-uuid"
         ])
     );
-    let registry = json!({"version":1,"defaultAccountKey":"claude","logins":{},"accounts":{
+    let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"claude","logins":{},"accounts":{
         "claude":{"id":"claude","provider":"claude","home":"/fixture","label":"Claude","source":"Fixture","status":"ready",
             "_credentialIdentity":identity,"_organizationName":"Fixture organization"}
     }});

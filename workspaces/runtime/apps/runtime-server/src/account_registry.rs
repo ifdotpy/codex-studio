@@ -2085,6 +2085,10 @@ mod bounded_reconcile_tests {
                         epoch: 1,
                         status: AgentStatus::Queued,
                         extra: BTreeMap::from([
+                            (
+                                "provider".to_owned(),
+                                serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+                            ),
                             ("accountKey".to_owned(), serde_json::json!("account-a")),
                             ("workspaceMode".to_owned(), serde_json::json!("image")),
                             ("autoWake".to_owned(), serde_json::json!(true)),
@@ -2152,6 +2156,7 @@ mod bounded_reconcile_tests {
                         epoch: 1,
                         status: AgentStatus::Queued,
                         extra: BTreeMap::from([
+                            ("provider".to_owned(), serde_json::json!(studio_runtime_schema::ProviderKind::Codex)),
                             ("accountKey".to_owned(), serde_json::json!("default")),
                             ("workspaceMode".to_owned(), serde_json::json!("image")),
                             ("autoWake".to_owned(), serde_json::json!(true)),
@@ -2188,8 +2193,13 @@ mod bounded_reconcile_tests {
                     ("lead", None, AgentStatus::Queued),
                     ("worker", Some("lead"), AgentStatus::Running),
                 ] {
-                    let mut extra =
-                        BTreeMap::from([("accountKey".to_owned(), serde_json::json!("default"))]);
+                    let mut extra = BTreeMap::from([
+                        (
+                            "provider".to_owned(),
+                            serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+                        ),
+                        ("accountKey".to_owned(), serde_json::json!("default")),
+                    ]);
                     if let Some(parent) = parent {
                         extra.insert("parentId".to_owned(), serde_json::json!(parent));
                     }

@@ -779,7 +779,10 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         root_id: AgentId::from("event-parent"),
         epoch: 3,
         status: AgentStatus::Idle,
-        extra: Default::default(),
+        extra: std::collections::BTreeMap::from([(
+            "provider".into(),
+            serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+        )]),
     };
     parent
         .extra
@@ -936,7 +939,7 @@ async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() 
 
     let policy = Arc::new(
         studio_runtime_services::account_policy::AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"alternate","accounts":{"alternate":{"id":"alternate","home":"/alternate","label":"Alternate","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
+            Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"alternate","accounts":{"alternate":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"alternate","home":"/alternate","label":"Alternate","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes()),
             [],
         )
         .expect("configured account snapshot"),

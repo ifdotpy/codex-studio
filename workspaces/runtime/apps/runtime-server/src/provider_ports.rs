@@ -1036,7 +1036,7 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('agent-a',?1)",
-                    [r#"{"id":"agent-a","accountKey":"account-a"}"#],
+                    [serde_json::json!({"id":"agent-a","accountKey":"account-a","provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'accepted','{}')",
