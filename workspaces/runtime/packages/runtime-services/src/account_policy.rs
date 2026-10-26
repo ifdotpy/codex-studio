@@ -547,9 +547,16 @@ mod tests {
     #[test]
     fn debug_summaries_do_not_print_registry_or_limit_values_or_numeric_bytes() {
         let marker = "PRIVATE_ACCOUNT_MARKER_49371";
-        let registry = format!(
-            r#"{{"version":2,"defaultAccountKey":"default","accounts":{{"default":{{"id":"default","provider":"codex","home":"/tmp","label":"{marker}","source":"Codex CLI","status":"error","error":"{marker}"}}}},"logins":{{}}}}"#
-        );
+        let registry = json!({
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+            "defaultAccountKey": "default",
+            "accounts": {"default": {
+                "id": "default", "provider": "codex", "home": std::env::temp_dir(),
+                "label": marker, "source": "Codex CLI", "status": "error", "error": marker
+            }},
+            "logins": {}
+        })
+        .to_string();
         let limits = json!({
             "accountKey":"default", "at": 1.0, "data":{"extra":marker}, "error":marker
         });

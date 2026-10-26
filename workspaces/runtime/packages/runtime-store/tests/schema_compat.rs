@@ -147,6 +147,13 @@ async fn migration_2026_10_22_drops_python_cost_projection_once() {
         "fixture has the projection table, index and nine triggers"
     );
     let existing_record = r#"{"id":"existing-usage","agentId":"agent","rootId":"root","at":0.5,"model":"gpt-5","last":{"inputTokens":5,"outputTokens":1}}"#;
+    Connection::open(&analytics)
+        .expect("analytics fixture opens")
+        .execute(
+            "INSERT INTO analytics_agents(id,record) VALUES('agent',?1)",
+            [r#"{"id":"agent","rootId":"root","provider":"codex"}"#],
+        )
+        .expect("legacy usage has its owning agent");
     Connection::open(&analytics).expect("analytics fixture opens")
         .execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES('existing-usage','agent','root',0.5,?1)", [existing_record])
         .expect("usage fixture runs the original projection triggers");

@@ -124,9 +124,6 @@
   "workspaces/runtime/packages/runtime-services/tests/monitor_output_ui.rs": [
     ".unwrap_or_else(|| \"/tmp\".into());"
   ],
-  "workspaces/runtime/packages/runtime-services/src/account_policy.rs": [
-    "r#\"{{\"version\":1,\"defaultAccountKey\":\"default\",\"accounts\":{{\"default\":{{\"id\":\"default\",\"home\":\"/tmp\",\"label\":\"{marker}\",\"source\":\"Codex CLI\",\"status\":\"error\",\"error\":\"{marker}\"}}}},\"logins\":{{}}}}\"#"
-  ],
   "workspaces/runtime/packages/runtime-services/src/account_transfer_driver.rs": [
     "\"accountKey\":\"source\",\"provider\":\"codex\",\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\"}),",
     "\"accountKey\":\"source\",\"provider\":\"codex\",\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\"}),",

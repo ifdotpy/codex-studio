@@ -118,6 +118,7 @@ function Fixture() {
     : [
         {
           key: "own",
+          provider: "codex",
           label: "Own account",
           email: "own@example.test",
           accountId: "own-account",
@@ -133,7 +134,7 @@ function Fixture() {
                 key: "team",
                 label: "Team account",
                 email: "team@example.test",
-                provider: "openai",
+                provider: "codex",
                 accountId: "team-account",
                 limits: teamReady ? teamLimits : null,
                 loading: false,
