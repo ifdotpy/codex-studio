@@ -207,7 +207,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       } else if (body.action === "create") {
         const resultSchema = fixtureResultSchema(body.result_schema);
         const gate = body.gate;
-        const serializedGate =
+        const serializedGate: components["schemas"]["WorkItem"]["gate"] =
           gate && typeof gate === "object"
             ? gate.timeout_ms === undefined
               ? { command: gate.command }
