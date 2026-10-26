@@ -120,7 +120,7 @@ export function createCommandTransport({
   }
 
   function write(value: unknown) {
-    return new Promise<unknown>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         const error = new Error(
           "Command executor input timed out; outcome unknown",
@@ -151,7 +151,7 @@ export function createCommandTransport({
   function call(method: string, params: CommandParams) {
     if (closed) return Promise.reject(closed);
     const id = "studio-command:" + randomUUID();
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
       write({ id, method, params }).catch(() => {});
     });

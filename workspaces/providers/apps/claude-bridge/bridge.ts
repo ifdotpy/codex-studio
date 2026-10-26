@@ -1847,7 +1847,7 @@ async function startSession(
               request: value,
               serverName: (value as typeof value & { serverName?: string })
                 .serverName,
-              ...value,
+              ...(value as Omit<typeof value, "serverName">),
             },
             options.signal,
           ),
