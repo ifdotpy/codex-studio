@@ -170,6 +170,8 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & test(complaints::tests::))
     | (package(=studio-runtime-schema) & kind(lib) & test(queue_command::tests::))
     | (package(=studio-runtime-http) & kind(lib) & test(routes::queue_write::tests::))
+    | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::malformed_))
+    | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::typed_idle_evidence_preserves_pagination_extensions_and_unload_statuses))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & test(complaint_http_))
 '''
 
@@ -286,6 +288,8 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & test(complaints::tests::))
     | (package(=studio-runtime-schema) & kind(lib) & test(queue_command::tests::))
     | (package(=studio-runtime-http) & kind(lib) & test(routes::queue_write::tests::))
+    | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::malformed_))
+    | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::typed_idle_evidence_preserves_pagination_extensions_and_unload_statuses))
     | (package(=studio-runtime-http) & kind(test) & binary(=integration) & test(complaint_http_))
     | ((package(=studio-process-supervisor)) & ((kind(test) & binary(=clients))) & (test(supervisor_rejects_retired_protocol_before_admission)))
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(supervisor_rejects_python_identity_adoption)))
