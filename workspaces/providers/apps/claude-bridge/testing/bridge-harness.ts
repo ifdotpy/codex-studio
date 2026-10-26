@@ -112,6 +112,7 @@ export async function startBridge(
     temporaryBase?: string;
   } = {},
 ) {
+  const fixtureModule = fakeSdk instanceof URL;
   // SDK init always carries a native session id. Keep older scripted fixtures
   // faithful to that declaration; an explicit session_id still takes precedence.
   fakeSdk = (
@@ -124,10 +125,7 @@ export async function startBridge(
     await fs.mkdtemp(path.join(temporaryBase, prefix)),
   );
   for (const name of await fs.readdir(BRIDGE)) {
-    if (
-      (!name.endsWith(".mjs") && !name.endsWith(".ts")) ||
-      /\.test\.(mjs|ts)$/.test(name)
-    )
+    if (!/\.(mjs|mts|ts)$/.test(name) || /\.test\.(mjs|mts|ts)$/.test(name))
       continue;
     const source = await fs.readFile(path.join(BRIDGE, name), "utf8");
     await fs.writeFile(
@@ -143,10 +141,17 @@ export async function startBridge(
       ),
     );
   }
+  await fs.mkdir(path.join(root, "testing"));
+  await fs.copyFile(
+    path.join(BRIDGE, "testing/file-signals.ts"),
+    path.join(root, "testing/file-signals.ts"),
+  );
   await fs.writeFile(
     path.join(root, "fake.mts"),
-    `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.ts"))};\n` +
-      `const waitForFile=(file,options)=>waitForFileSignal(file,{...options,childIpc:true});\n` +
+    (fixtureModule
+      ? ""
+      : `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.ts"))};\n` +
+        `const waitForFile=(file,options)=>waitForFileSignal(file,{...options,childIpc:true});\n`) +
       (fakeSdk.includes("export const resolveSettings") ||
       fakeSdk.includes("export function resolveSettings")
         ? fakeSdk

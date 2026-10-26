@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 // Real bridge protocol with SDK-declared fixtures; no model requests.
 import { afterEach, expect, test } from "vitest";
 import { once } from "node:events";
@@ -24,7 +25,10 @@ async function start(b: Awaited<ReturnType<typeof startBridge>>, text: string) {
   ).turn.id;
 }
 async function done(b: Awaited<ReturnType<typeof startBridge>>, id: string) {
-  await b.note((n) => n.method === "turn/completed" && n.params.turn.id === id);
+  await b.note(
+    "turn/completed",
+    (n) => n.method === "turn/completed" && n.params.turn.id === id,
+  );
 }
 function observations(b: Awaited<ReturnType<typeof startBridge>>) {
   return b.notes
@@ -34,7 +38,12 @@ function observations(b: Awaited<ReturnType<typeof startBridge>>) {
 test("final stream usage is emitted before turn completion and replaces provisional assistant usage", async () => {
   const b = await setup();
   const id = await start(b, "hold-final");
-  await b.note((n) => n.params?.studioUsage?.kind === "response");
+  await b.note(
+    "thread/tokenUsage/updated",
+    (n) =>
+      n.method === "thread/tokenUsage/updated" &&
+      n.params.studioUsage.kind === "response",
+  );
   expect(b.notes.some((n) => n.method === "turn/completed")).toBe(false);
   const response = observations(b).filter((o) => o?.kind === "response");
   expect(response).toHaveLength(1);
@@ -51,7 +60,9 @@ test("final stream usage is emitted before turn completion and replaces provisio
   await b.writeSignal(".finish");
   await done(b, id);
   const usageIndex = b.notes.findIndex(
-    (n) => n.params?.studioUsage?.kind === "response",
+    (n) =>
+      n.method === "thread/tokenUsage/updated" &&
+      n.params.studioUsage.kind === "response",
   );
   expect(usageIndex).toBeLessThan(
     b.notes.findIndex((n) => n.method === "turn/completed"),
@@ -60,7 +71,10 @@ test("final stream usage is emitted before turn completion and replaces provisio
 test("every result is published before a steer echo can discard a deferred result", async () => {
   const b = await setup();
   const id = await start(b, "steer");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   await b.call("turn/steer", {
     threadId: b.thread,
     expectedTurnId: id,
@@ -68,6 +82,7 @@ test("every result is published before a steer echo can discard a deferred resul
     input: [{ type: "text", text: "continue" }],
   });
   await b.note(
+    "item/completed",
     (n) =>
       n.method === "item/completed" && n.params.item.clientId === "steer-1",
   );
@@ -91,12 +106,13 @@ test("equal per-turn results preserve cumulative totals and result-only turns ha
     .slice(before)
     .filter((n) => n.method === "thread/tokenUsage/updated");
   expect(notes).toHaveLength(1);
+  assert.ok(notes[0]);
   expect(notes[0].params.studioUsage).toMatchObject({
     kind: "cumulative",
     total: { output: 720 },
   });
-  expect(notes[0].params.responseId).toBeUndefined();
-  expect(notes[0].params.studioUsage.responseId).toBeUndefined();
+  expect(notes[0].params).not.toHaveProperty("responseId");
+  expect(notes[0].params.studioUsage).not.toHaveProperty("responseId");
 });
 for (const scenario of ["interrupted", "query-close"])
   test(scenario + " emits a gap rather than zero usage", async () => {
@@ -135,6 +151,7 @@ test("background subagent final usage survives completion of its owning Studio t
   await done(b, turn);
   await b.writeSignal(".finish");
   await b.note(
+    "item/completed",
     (n) =>
       n.method === "item/completed" &&
       n.params.item.text === "Subagent: background-finished",
@@ -183,12 +200,15 @@ test("emitted notifications match the shared Rust dispatch golden fixture", asyn
     notes.find((n) => n.params.studioUsage.kind === "cumulative"),
     notes.find((n) => n.params.studioUsage.kind === "gap"),
   ];
-  const normalized = selected.map((n) => ({
-    ...n.params,
-    threadId: "thread",
-    turnId: "turn",
-    studioUsage: { ...n.params.studioUsage, turnId: "turn" },
-  }));
+  const normalized = selected.map((n) => {
+    assert.ok(n);
+    return {
+      ...n.params,
+      threadId: "thread",
+      turnId: "turn",
+      studioUsage: { ...n.params.studioUsage, turnId: "turn" },
+    };
+  });
   expect(normalized).toEqual(golden);
 });
 
@@ -198,7 +218,12 @@ test("background response starts retain the tool originating turn across Studio 
   await done(b, owner);
   const next = await start(b, "background-next");
   await done(b, next);
-  const note = b.notes.find((n) => n.params?.studioUsage?.kind === "response");
+  const note = b.notes.find(
+    (n) =>
+      n.method === "thread/tokenUsage/updated" &&
+      n.params.studioUsage.kind === "response",
+  );
+  assert.ok(note && note.method === "thread/tokenUsage/updated");
   expect(note.params.studioUsage).toMatchObject({
     turnId: owner,
     parentToolUseId: "background-tool",
@@ -208,7 +233,10 @@ test("background response starts retain the tool originating turn across Studio 
 test("shutdown waits for delayed SDK close and flushes one unfinished response gap", async () => {
   const b = await setup();
   const turn = await start(b, "shutdown");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   await b.close();
   expect(observations(b)).toEqual([
     {
@@ -232,7 +260,10 @@ test("response context windows follow their own model rather than the query maxi
 test("turn interrupt reports unfinished usage as a gap rather than zero tokens", async () => {
   const b = await setup();
   const turn = await start(b, "interrupt");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
   await done(b, turn);
   expect(observations(b)).toEqual([
@@ -249,7 +280,10 @@ test("turn interrupt reports unfinished usage as a gap rather than zero tokens",
 test("shutdown bounds a stuck SDK consumer and still reports its gap once", async () => {
   const b = await setup({}, { STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50" });
   const turn = await start(b, "shutdown-stuck");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   await b.close();
   expect(observations(b)).toEqual([
     {
@@ -276,7 +310,10 @@ test("virtual-clock harness advances the bounded shutdown of a stuck SDK", async
   });
   bridges.push(b);
   const turn = await start(b, "shutdown-stuck");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   await b.close();
   expect(observations(b)).toEqual([
     {
@@ -300,15 +337,21 @@ test("discarding a stuck query drains unfinished subagent usage exactly once", a
   bridges.push(b);
   const turn = await start(b, "discard-stuck");
   await b.note(
+    "item/completed",
     (n) =>
       n.method === "item/completed" &&
       n.params.item.text === "Subagent: child-started",
   );
   await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
   await b.advanceUntil(
+    "turn/completed",
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
-  expect(observations(b).filter((o) => o.responseId === "response-1")).toEqual([
+  expect(
+    observations(b).filter(
+      (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+    ),
+  ).toEqual([
     {
       kind: "gap",
       responseId: "response-1",
@@ -319,7 +362,9 @@ test("discarding a stuck query drains unfinished subagent usage exactly once", a
   ]);
   await b.close();
   expect(
-    observations(b).filter((o) => o.responseId === "response-1"),
+    observations(b).filter(
+      (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+    ),
   ).toHaveLength(1);
 });
 
@@ -350,9 +395,15 @@ test("shutdown never spends the full CLI exit timeout on a stuck consumer", asyn
   });
   bridges.push(b);
   await start(b, "shutdown-timing");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   await b.close();
-  const timing = await b.note((n) => n.method === "fixture/shutdownTiming");
+  const timing = await b.note(
+    "fixture/shutdownTiming",
+    (n) => n.method === "fixture/shutdownTiming",
+  );
   expect(timing.params.durationMs).toBeLessThanOrEqual(2000);
 });
 
@@ -374,15 +425,22 @@ test("scripted Rust SDK close ends an aborted wait without inventing a successfu
       .filter((n) => n.method === "turn/completed")
       .some((n) => n.params.turn.status === "completed"),
   ).toBe(false);
-  expect(b.notes.some((n) => n.params?.item?.text === "Visible answer")).toBe(
-    false,
-  );
+  expect(
+    b.notes.some(
+      (n) =>
+        n.method === "item/completed" &&
+        n.params.item.text === "Visible answer",
+    ),
+  ).toBe(false);
 });
 
 test("intentional shutdown preserves an unfinished turn for reconciliation instead of publishing failure", async () => {
   const b = await setup();
   await start(b, "shutdown");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   await b.close();
   expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
   expect(observations(b)).toMatchObject([
@@ -403,9 +461,15 @@ for (const scenario of [
       });
       bridges.push(b);
       const turn = await start(b, scenario);
-      await b.note((n) => n.method === "provider/generationStarted");
+      await b.note(
+        "provider/generationStarted",
+        (n) => n.method === "provider/generationStarted",
+      );
       if (scenario === "shutdown-persist")
-        await b.note((n) => n.method === "fixture/persistFailureSettled");
+        await b.note(
+          "fixture/persistFailureSettled",
+          (n) => n.method === "fixture/persistFailureSettled",
+        );
       if (scenario === "shutdown-deferred") {
         await b.call("turn/steer", {
           threadId: b.thread,
@@ -414,13 +478,20 @@ for (const scenario of [
           input: [{ type: "text", text: "continue" }],
         });
         await b.writeSignal(".finish");
-        await b.note((n) => n.params?.studioUsage?.kind === "cumulative");
+        await b.note(
+          "thread/tokenUsage/updated",
+          (n) =>
+            n.method === "thread/tokenUsage/updated" &&
+            n.params.studioUsage.kind === "cumulative",
+        );
         await b.advanceTime(2000);
       }
       await b.close();
       expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
       expect(
-        observations(b).filter((o) => o.responseId === "response-1"),
+        observations(b).filter(
+          (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+        ),
       ).toEqual([
         {
           kind: "gap",
@@ -452,7 +523,10 @@ test("harness restart drives a virtual clock until the bridge exits", async () =
   });
   bridges.push(b);
   await start(b, "shutdown-deferred");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   const first = b.process;
   await b.restart();
   expect(first.exitCode !== null || first.signalCode !== null).toBe(true);
@@ -465,7 +539,10 @@ test("harness close reaps a bridge whose virtual clock cannot be driven", async 
   });
   bridges.push(b);
   await start(b, "shutdown-deferred");
-  await b.note((n) => n.method === "provider/generationStarted");
+  await b.note(
+    "provider/generationStarted",
+    (n) => n.method === "provider/generationStarted",
+  );
   const child = b.process;
   child.disconnect();
   await b.close();
@@ -489,7 +566,11 @@ test("unexpected SDK end still publishes one failed completion", async () => {
   ]);
 });
 
-for (const method of ["thread/resume", "claude/settings", "thread/unsubscribe"])
+for (const method of [
+  "thread/resume",
+  "claude/settings",
+  "thread/unsubscribe",
+] as const)
   test(
     method +
       " drains unfinished background usage before removing a stuck query",
@@ -513,11 +594,15 @@ for (const method of ["thread/resume", "claude/settings", "thread/unsubscribe"])
         },
       ];
       expect(
-        observations(b).filter((o) => o.responseId === "response-1"),
+        observations(b).filter(
+          (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+        ),
       ).toEqual(expected);
       await b.close();
       expect(
-        observations(b).filter((o) => o.responseId === "response-1"),
+        observations(b).filter(
+          (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+        ),
       ).toEqual(expected);
     },
   );
@@ -536,11 +621,15 @@ for (const scenario of ["shutdown-watchdog", "shutdown-watchdog-inflight"])
       bridges.push(b);
       const turn = await start(b, scenario);
       await b.note(
+        "item/started",
         (n) => n.method === "item/started" && n.params.item.id === "watch-tool",
       );
       if (scenario === "shutdown-watchdog-inflight") {
         await b.advanceTime(100);
-        await b.note((n) => n.method === "fixture/stallSaveBlocked");
+        await b.note(
+          "fixture/stallSaveBlocked",
+          (n) => n.method === "fixture/stallSaveBlocked",
+        );
       }
       const before = b.notes.length;
       await b.close();
@@ -556,7 +645,9 @@ for (const scenario of ["shutdown-watchdog", "shutdown-watchdog-inflight"])
       ).toEqual([]);
       expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
       expect(
-        observations(b).filter((o) => o.responseId === "response-1"),
+        observations(b).filter(
+          (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+        ),
       ).toEqual([
         {
           kind: "gap",
@@ -613,12 +704,16 @@ for (const scenario of ["no-stream-then-result", "no-stream-then-close"])
       const b = await setup();
       await done(b, await start(b, scenario));
       expect(
-        observations(b).filter((o) => o.responseId === "response-1"),
+        observations(b).filter(
+          (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+        ),
       ).toMatchObject([
         { kind: "gap", responseId: "response-1", reason: "noStream" },
       ]);
       expect(
-        observations(b).filter((o) => o.responseId === "response-1"),
+        observations(b).filter(
+          (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+        ),
       ).toHaveLength(1);
     },
   );
@@ -628,12 +723,16 @@ test("a deduplicated unfinished stream still permits a later final response for 
   await done(b, await start(b, "no-stream-then-result"));
   await done(b, await start(b, "normal"));
   expect(
-    observations(b).filter((o) => o.responseId === "response-1"),
+    observations(b).filter(
+      (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+    ),
   ).toMatchObject([
     { kind: "gap", responseId: "response-1", reason: "noStream" },
     { kind: "response", responseId: "response-1", tokens: { output: 720 } },
   ]);
   expect(
-    observations(b).filter((o) => o.responseId === "response-1"),
+    observations(b).filter(
+      (o) => o.kind !== "cumulative" && o.responseId === "response-1",
+    ),
   ).toHaveLength(2);
 });
