@@ -14,7 +14,7 @@ import {
   syncIdentityFixture,
   syncProtocolFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Ux Chat Ui", async ({
   browser: _testBrowser,

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { fixture } from "../web/tests/servers/multi-server-fixture.mjs";
+import { fixture } from "../web/tests/servers/multi-server-fixture.ts";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await realpath(
@@ -43,8 +44,8 @@ const local = await fixture("Home", false, {
     }
   },
 });
-let desktop;
-let desktopPid;
+let desktop: ElectronApplication | null = null;
+let desktopPid: number | undefined;
 try {
   const executablePath = process.env.CODEX_FRAMES_EXECUTABLE;
   desktop = await electron.launch({
@@ -80,7 +81,7 @@ try {
           },
         );
         if (url.pathname.endsWith("/pair") && response.status === 403)
-          globalThis.__testUnavailableReceived = true;
+          Reflect.set(globalThis, "__testUnavailableReceived", true);
         return response;
       };
     },
@@ -90,21 +91,33 @@ try {
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );
   await page.waitForFunction(() => !!window.codexDesktop);
   assert.match(
-    await page.evaluate(() =>
-      window.codexDesktop
-        .serverCredentialAction({
-          action: "pair",
-          origin: "https://remote.tailnet.ts.net",
-          requestId: "manual-without-gesture",
-        })
-        .catch((error) => error.message),
-    ),
+    await page.evaluate(() => {
+      const bridge = window.codexDesktop;
+      if (!bridge) throw new Error("The desktop bridge is unavailable.");
+      if (!bridge.serverCredentialAction)
+        throw new Error(
+          "The desktop serverCredentialAction method is unavailable.",
+        );
+      return (
+        bridge
+          // @ts-expect-error invitation is deliberately absent to check gesture validation first.
+          .serverCredentialAction({
+            action: "pair",
+            origin: "https://remote.tailnet.ts.net",
+            requestId: "manual-without-gesture",
+          })
+          .catch((error: unknown) =>
+            error instanceof Error ? error.message : String(error),
+          )
+          .then((value) => String(value))
+      );
+    }),
     /desktop button/,
   );
   local.discoverPeer(remote);
@@ -112,7 +125,7 @@ try {
   let rejected = false;
   for (let i = 0; i < 100; i++) {
     rejected = await desktop.evaluate(
-      () => !!globalThis.__testUnavailableReceived,
+      () => !!Reflect.get(globalThis, "__testUnavailableReceived"),
     );
     if (rejected) break;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -158,10 +171,10 @@ try {
     let watchdog;
     await Promise.race([
       desktop.close().catch(() => {}),
-      new Promise((resolve) => {
+      new Promise<void>((resolve) => {
         watchdog = setTimeout(() => {
           try {
-            process.kill(desktopPid, "SIGKILL");
+            process.kill(desktopPid ?? 0, "SIGKILL");
           } catch {}
           resolve();
         }, 5000);

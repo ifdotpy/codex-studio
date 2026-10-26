@@ -18,7 +18,10 @@ export type {
 } from "../../../desktop/api.ts";
 import type { CredentialResponse, StreamChunk } from "../../../desktop/api.ts";
 export class DesktopServerCredentials implements ServerCredentialAdapter {
-  constructor(private bridge: DesktopBridge) {}
+  private bridge: DesktopBridge;
+  constructor(bridge: DesktopBridge) {
+    this.bridge = bridge;
+  }
   async hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean> {
     const result = await this.bridge.serverCredentialAction!({
       action: "pairAttempt",

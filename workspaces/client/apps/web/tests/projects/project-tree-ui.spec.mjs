@@ -5,7 +5,7 @@ import {
   spawnFixture as spawn,
   readTestState,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath } from "node:fs/promises";

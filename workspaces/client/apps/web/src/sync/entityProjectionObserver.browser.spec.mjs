@@ -4,7 +4,7 @@ import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   test,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 async function openProjection() {
   const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
@@ -41,7 +41,7 @@ test("entity observer applies RxDB changes across tabs and resets before publica
 }) => {
   test.setTimeout(60_000);
   const { createFixtureViteServer: createServer } =
-    await import("../../tests/playwright.mjs");
+    await import("../../tests/playwright.ts");
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../..", import.meta.url)),

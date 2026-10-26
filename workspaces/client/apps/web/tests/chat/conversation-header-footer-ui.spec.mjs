@@ -4,7 +4,7 @@ import {
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("conversation header stays compact and usage facts remain visible", async ({
   browser,

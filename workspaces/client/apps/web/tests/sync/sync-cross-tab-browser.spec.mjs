@@ -7,7 +7,7 @@ import {
   apiSchemaHeaders,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test.use({ apiSchemaFixtureHeaders: false });
 
@@ -17,7 +17,7 @@ const runSyncCrossTabScenario = async (
   checkDuplicateBaseline = false,
 ) => {
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),

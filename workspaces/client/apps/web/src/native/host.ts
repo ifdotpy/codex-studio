@@ -1,3 +1,18 @@
+import type { DraftVersion } from "../generated/rustOwned.ts";
+
+export type HttpResponse = {
+  status: number;
+  headers: Record<string, string>;
+  base64: string;
+};
+
+export type DraftView = {
+  drafts: Record<string, string>;
+  conflicts: DraftVersion[];
+  workspaceId: string;
+  revision: number;
+  error?: string;
+};
 export type Invoke = (
   command: string,
   args: Record<string, unknown>,

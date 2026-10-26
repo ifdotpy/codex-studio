@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 
 test("Draft recovery", async ({ context: testContext }) => {
   test.setTimeout(180_000);

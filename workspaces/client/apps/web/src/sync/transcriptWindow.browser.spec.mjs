@@ -8,7 +8,7 @@ import {
   protocol3SseEvent,
   readApiSchemaHash,
   test,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../generated/sharedValues.ts";
 
 test("a transcript window streams without pulls and older history uses one bounded page", async ({

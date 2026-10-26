@@ -1,9 +1,23 @@
+import type {
+  BrowserProfileSnapshot,
+  BrowserProfileDatabase,
+  BrowserProfileStore,
+  BrowserProfileRecord,
+  BrowserProfileChunk,
+  EncodedProfileValue,
+} from "../web/src/native/importBrowserProfile.ts";
 // This function runs in the original Chromium origin. Keep it self-contained:
 // the offline exporter passes it to a hidden, sandboxed WebContents.
-export async function exportBrowserProfile(emitChunk) {
-  async function encode(value) {
+export async function exportBrowserProfile(
+  emitChunk?: (records: BrowserProfileRecord[]) => Promise<BrowserProfileChunk>,
+): Promise<BrowserProfileSnapshot> {
+  async function encode(value: unknown): Promise<EncodedProfileValue> {
     if (value === undefined) return ["undefined"];
-    if (value === null || ["string", "boolean"].includes(typeof value))
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "boolean"
+    )
       return ["value", value];
     if (typeof value === "number") {
       if (Object.is(value, -0)) return ["number", "-0"];
@@ -23,7 +37,7 @@ export async function exportBrowserProfile(emitChunk) {
       return ["blob", value.type, await encode(await value.arrayBuffer())];
     if (value instanceof ArrayBuffer) {
       const bytes = new Uint8Array(value);
-      const chunks = [];
+      const chunks: string[] = [];
       for (let offset = 0; offset < bytes.length; offset += 16384)
         chunks.push(
           String.fromCharCode(...bytes.subarray(offset, offset + 16384)),
@@ -43,14 +57,20 @@ export async function exportBrowserProfile(emitChunk) {
       ];
     if (Array.isArray(value))
       return ["array", await Promise.all(value.map(encode))];
-    if (Object.getPrototypeOf(value) === Object.prototype)
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      Object.getPrototypeOf(value) === Object.prototype
+    )
       return [
         "object",
         await Promise.all(
-          Object.entries(value).map(async ([key, item]) => [
-            key,
-            await encode(item),
-          ]),
+          Object.entries(value).map(
+            async ([key, item]): Promise<[string, EncodedProfileValue]> => [
+              key,
+              await encode(item),
+            ],
+          ),
         ),
       ];
     // Unknown structured values (including non-exportable keys) must stop the
@@ -59,7 +79,7 @@ export async function exportBrowserProfile(emitChunk) {
       `Unsupported saved value: ${Object.prototype.toString.call(value)}`,
     );
   }
-  const request = (value) =>
+  const request = <T>(value: IDBRequest<T>): Promise<T> =>
     new Promise((resolve, reject) => {
       value.onsuccess = () => resolve(value.result);
       value.onerror = () => reject(value.error);
@@ -67,13 +87,19 @@ export async function exportBrowserProfile(emitChunk) {
   const preferences = Object.fromEntries(
     Array.from({ length: localStorage.length }, (_, index) => {
       const key = localStorage.key(index);
-      return [key, localStorage.getItem(key)];
+      if (key === null) throw new Error("Saved preference key is unavailable.");
+      const value = localStorage.getItem(key);
+      if (value === null)
+        throw new Error("Saved preference value is unavailable.");
+      return [key, value];
     }),
   );
-  const databases = [];
+  const databases: BrowserProfileDatabase[] = [];
   for (const { name, version } of await indexedDB.databases()) {
+    if (name === undefined || version === undefined)
+      throw new Error("Saved database identity is unavailable.");
     const opened = indexedDB.open(name, version);
-    opened.onupgradeneeded = () => opened.transaction.abort();
+    opened.onupgradeneeded = () => opened.transaction?.abort();
     const db = await request(opened);
     try {
       const names = [...db.objectStoreNames];
@@ -82,14 +108,14 @@ export async function exportBrowserProfile(emitChunk) {
         continue;
       }
       const transaction = db.transaction(names, "readonly");
-      const completed = new Promise((resolve, reject) => {
+      const completed = new Promise<Event>((resolve, reject) => {
         transaction.oncomplete = resolve;
         transaction.onerror = transaction.onabort = () =>
           reject(transaction.error || new Error("Storage read aborted"));
       });
       // A schema rejection below still observes a possible transaction error.
       void completed.catch(() => {});
-      const pending = names.map((name) => {
+      const pending = names.map((name): BrowserProfileStore => {
         const store = transaction.objectStore(name);
         return {
           name,
@@ -112,11 +138,16 @@ export async function exportBrowserProfile(emitChunk) {
       // its increment is committed; deleted high keys must still be preserved.
       for (const store of stores) {
         if (!store.autoIncrement) continue;
-        store.nextKey = await new Promise((resolve, reject) => {
+        store.nextKey = await new Promise<number>((resolve, reject) => {
           const probe = db.transaction(store.name, "readwrite");
-          let key;
-          let failure;
-          probe.onabort = () => (failure ? reject(failure) : resolve(key));
+          let key: IDBValidKey | undefined;
+          let failure: DOMException | null | undefined;
+          probe.onabort = () =>
+            failure
+              ? reject(failure)
+              : typeof key === "number"
+                ? resolve(key)
+                : reject(new Error("Invalid generated key"));
           probe.oncomplete = () =>
             reject(new Error("Key probe unexpectedly committed"));
           const added = probe.objectStore(store.name).add({});
@@ -130,10 +161,10 @@ export async function exportBrowserProfile(emitChunk) {
         });
       }
       for (const store of stores) {
-        const records = [];
-        const chunks = [];
+        const records: BrowserProfileRecord[] = [];
+        const chunks: BrowserProfileChunk[] = [];
         let chunkBytes = 2;
-        let lower;
+        let lower: IDBValidKey | undefined;
         let more = true;
         const flush = async () => {
           if (!records.length || !emitChunk) return;
@@ -145,25 +176,25 @@ export async function exportBrowserProfile(emitChunk) {
           // Each bounded batch completes before Blob decoding or disk I/O.
           // The offline reader is the only process that opens this profile.
           const tx = db.transaction(store.name, "readonly");
-          const done = new Promise((resolve, reject) => {
+          const done = new Promise<Event>((resolve, reject) => {
             tx.oncomplete = resolve;
             tx.onerror = tx.onabort = () =>
               reject(tx.error || new Error("Storage read aborted"));
           });
           void done.catch(() => {});
           const source = tx.objectStore(store.name);
-          const range =
+          const range: IDBKeyRange | undefined =
             lower === undefined
               ? undefined
               : IDBKeyRange.lowerBound(lower, true);
           const [keys, values] = await Promise.all([
             request(source.getAllKeys(range, 32)),
-            request(source.getAll(range, 32)),
+            request<unknown[]>(source.getAll(range, 32)),
           ]);
           await done;
           more = keys.length === 32;
           for (let index = 0; index < keys.length; index++) {
-            const record = [
+            const record: BrowserProfileRecord = [
               await encode(keys[index]),
               await encode(values[index]),
             ];

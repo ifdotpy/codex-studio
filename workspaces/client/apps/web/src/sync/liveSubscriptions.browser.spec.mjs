@@ -10,7 +10,7 @@ import {
   expect,
   readApiSchemaHash,
   test,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 const sse = (name, value) =>
   `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;

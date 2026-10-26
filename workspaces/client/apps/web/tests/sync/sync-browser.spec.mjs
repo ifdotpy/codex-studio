@@ -6,7 +6,7 @@ import {
   readApiSchemaHash,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real RxDB/Dexie in Chromium, with an isolated HTTP fixture and no runtime.
 import { fileURLToPath } from "node:url";
 test("Sync Browser", async ({
@@ -32,7 +32,7 @@ test("Sync Browser", async ({
   };
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     optimizeDeps: { noDiscovery: true },

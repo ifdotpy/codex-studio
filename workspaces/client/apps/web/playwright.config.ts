@@ -2,9 +2,9 @@ import { defineConfig } from "@playwright/test";
 import { rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browserExecutablePath } from "./tests/browser-executable.mjs";
-import { choosePlaywrightScratchRoot } from "./tests/scratch-root.mjs";
-import { getPlaywrightWorkerSelection } from "./playwright-workers.mjs";
+import { browserExecutablePath } from "./tests/browser-executable.ts";
+import { choosePlaywrightScratchRoot } from "./tests/scratch-root.ts";
+import { getPlaywrightWorkerSelection } from "./playwright-workers.ts";
 
 const workerSelection = getPlaywrightWorkerSelection();
 const workerLimit = workerSelection.workers;
@@ -22,7 +22,7 @@ if (playwrightScratch.ownedRoot)
   process.once("exit", () =>
     rmSync(playwrightScratch.root, { recursive: true, force: true }),
   );
-if (!workerSelection.cached)
+if (!("cached" in workerSelection && workerSelection.cached))
   console.log(
     `Playwright worker bound=${workerSelection.bound} ${JSON.stringify(workerSelection)}`,
   );
@@ -65,10 +65,10 @@ const specialProjects =
 export default defineConfig({
   ...(outputDirectory ? { outputDir: outputDirectory } : {}),
   globalSetup: fileURLToPath(
-    new URL("./playwright-global-setup.mjs", import.meta.url),
+    new URL("./playwright-global-setup.ts", import.meta.url),
   ),
   globalTeardown: fileURLToPath(
-    new URL("./playwright-memory-teardown.mjs", import.meta.url),
+    new URL("./playwright-memory-teardown.ts", import.meta.url),
   ),
   testDir: ".",
   testMatch: [

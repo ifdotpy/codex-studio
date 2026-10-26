@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 
 test("claude login ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");

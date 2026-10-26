@@ -3,8 +3,8 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.mjs";
-import { spawnFixture, test, expect, rustUiFixture } from "../playwright.mjs";
+import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.ts";
+import { spawnFixture, test, expect, rustUiFixture } from "../playwright.ts";
 
 test("mutation projections propagate between pages sharing one browser context @sync", async ({
   browser,
