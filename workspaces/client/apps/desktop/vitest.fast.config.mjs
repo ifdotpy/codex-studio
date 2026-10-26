@@ -1,4 +1,4 @@
-import base from "./vitest.config.mjs";
+import base from "./vitest.config.ts";
 
 // Single owner of this package's short-tier witnesses; preserve file isolation.
 export default {

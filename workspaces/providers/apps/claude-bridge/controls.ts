@@ -37,7 +37,7 @@ export interface ControlDependencies {
 type Command = Pick<SlashCommand, "name"> & Partial<SlashCommand>;
 import { checkpointSourceMatches } from "./file-checkpoints.mjs";
 import { messageIndex } from "./history-index.mjs";
-import { nativeInputIds } from "./input-messages.mjs";
+import { nativeInputIds } from "./input-messages.ts";
 import { randomUUID } from "node:crypto";
 
 // Initialization is the CLI's authoritative list after native skill policy.

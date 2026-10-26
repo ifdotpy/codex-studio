@@ -1,7 +1,7 @@
 // @ts-check
 import { randomUUID } from "node:crypto";
 import { readHistoryIndex } from "./history-index.mjs";
-import { HUMAN_INPUT } from "./input-origin.generated.mjs";
+import { HUMAN_INPUT } from "./input-origin.generated.ts";
 import { nativeUuid } from "./native-history.mjs";
 
 /** @typedef {"init" | import("@anthropic-ai/claude-agent-sdk").SessionStartHookInput["source"]} TransitionSource */

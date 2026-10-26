@@ -1,5 +1,5 @@
-import { waitForFile } from "./testing/file-signals.mjs";
-import { startBridge as startScriptedBridge } from "./testing/bridge-harness.mjs";
+import { waitForFile } from "./testing/file-signals.ts";
+import { startBridge as startScriptedBridge } from "./testing/bridge-harness.ts";
 // Stalled tool calls through the real bridge with a scripted SDK. The fake CLI
 // emits a Bash tool_use and then never returns its result, as in the
 // 2026-10-17 incident. No model calls.
@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { bashTimeoutMs, findStall } from "./stall-watch.mjs";
+import { bashTimeoutMs, findStall } from "./stall-watch.ts";
 
 const GRACE_MS = 300;
 

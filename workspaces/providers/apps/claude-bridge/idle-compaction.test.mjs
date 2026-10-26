@@ -102,7 +102,7 @@ test("refuses a changed prefix, newer request, active query, and disabled auto c
 });
 
 test("the real bridge emits request-local cache telemetry and keeps it across a bridge restart", async () => {
-  const { startBridge } = await import("./testing/bridge-harness.mjs");
+  const { startBridge } = await import("./testing/bridge-harness.ts");
   const sdk = String.raw`
 export const resolveSettings=async()=>({effective:{}});
 export const tool=(name,description,schema,call)=>({name,description,schema,call});

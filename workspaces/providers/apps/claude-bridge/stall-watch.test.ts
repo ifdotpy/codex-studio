@@ -1,16 +1,22 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { watchStalls } from "./stall-watch.mjs";
+import { watchStalls, type WatchedQuery, type Stall } from "./stall-watch.ts";
 
 afterEach(() => vi.useRealTimers());
 
 test("the watchdog stays idle and fires the nearest deadline once", () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
-  const queries = new Map();
+  const queries = new Map<string, WatchedQuery>();
   const waits = new Map();
-  const recover = vi.fn((_session, active) => {
-    active.stall = {};
-  });
+  const recover = vi.fn(
+    (
+      _session: WatchedQuery["session"],
+      active: WatchedQuery,
+      _stall: Stall,
+    ) => {
+      active.stall = {};
+    },
+  );
   const arm = watchStalls(
     queries,
     waits,
@@ -21,9 +27,9 @@ test("the watchdog stays idle and fires the nearest deadline once", () => {
   expect(vi.getTimerCount()).toBe(0);
   vi.advanceTimersByTime(10000);
   expect(vi.getTimerCount()).toBe(0);
-  const active = {
-    turn: {},
-    session: {},
+  const active: WatchedQuery = {
+    turn: { id: "turn", items: [] },
+    session: { id: "session", cwd: "/fixture", turns: [] },
     lastEventAt: Date.now(),
     toolClocks: new Map([
       ["later", { startedAt: Date.now(), timeoutMs: 500 }],
@@ -37,7 +43,7 @@ test("the watchdog stays idle and fires the nearest deadline once", () => {
   expect(recover).not.toHaveBeenCalled();
   vi.advanceTimersByTime(1);
   expect(recover).toHaveBeenCalledTimes(1);
-  expect(recover.mock.calls[0][2].id).toBe("nearest");
+  expect(recover.mock.calls[0]?.[2].id).toBe("nearest");
   expect(vi.getTimerCount()).toBe(0);
   vi.advanceTimersByTime(10000);
   expect(recover).toHaveBeenCalledTimes(1);
@@ -48,16 +54,18 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
   vi.setSystemTime(0);
   const clock = { startedAt: 0, timeoutMs: null };
   const active = {
-    turn: {},
-    session: {},
+    turn: { id: "turn", items: [] },
+    session: { id: "session", cwd: "/fixture", turns: [] },
     lastEventAt: 0,
     toolClocks: new Map([["tool", clock]]),
   };
   const queries = new Map([["thread", active]]);
   const waits = new Map();
-  const recover = vi.fn((_session, query) => {
-    query.stall = {};
-  });
+  const recover = vi.fn(
+    (_session: WatchedQuery["session"], query: WatchedQuery, _stall: Stall) => {
+      query.stall = {};
+    },
+  );
   const arm = watchStalls(
     queries,
     waits,
@@ -86,7 +94,7 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
   active.turn = null;
   arm();
   expect(vi.getTimerCount()).toBe(0);
-  active.turn = {};
+  active.turn = { id: "turn", items: [] };
   arm();
   queries.clear();
   arm();
@@ -96,9 +104,9 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
 test("one timer follows the nearest query and preserves an unchanged deadline", () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
-  const makeActive = (timeoutMs) => ({
-    turn: {},
-    session: {},
+  const makeActive = (timeoutMs: number): WatchedQuery => ({
+    turn: { id: "turn", items: [] },
+    session: { id: "session", cwd: "/fixture", turns: [] },
     lastEventAt: 0,
     toolClocks: new Map([["tool", { startedAt: 0, timeoutMs }]]),
   });
@@ -123,13 +131,13 @@ test("one timer follows the nearest query and preserves an unchanged deadline", 
   expect(schedule).toHaveBeenCalledTimes(1);
   vi.advanceTimersByTime(300);
   expect(recover).toHaveBeenCalledTimes(1);
-  expect(recover.mock.calls[0][1]).toBe(nearest);
+  expect(recover.mock.calls[0]?.[1]).toBe(nearest);
   expect(vi.getTimerCount()).toBe(1);
   vi.advanceTimersByTime(299);
   expect(recover).toHaveBeenCalledTimes(1);
   vi.advanceTimersByTime(1);
   expect(recover).toHaveBeenCalledTimes(2);
-  expect(recover.mock.calls[1][1]).toBe(later);
+  expect(recover.mock.calls[1]?.[1]).toBe(later);
   expect(vi.getTimerCount()).toBe(0);
   schedule.mockRestore();
 });

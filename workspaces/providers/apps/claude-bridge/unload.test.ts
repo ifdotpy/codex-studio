@@ -6,7 +6,7 @@ import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 // Every query logs its start options, its inputs and its close to the cwd.
 const FAKE_SDK = String.raw`

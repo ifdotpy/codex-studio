@@ -5,7 +5,7 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { HANG_GUARD_MS } from "./testing/file-signals.mjs";
+import { HANG_GUARD_MS } from "./testing/file-signals.ts";
 
 test("test-side file waits preserve IPC while awaiting a delayed parent reply", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-file-signals-"));
@@ -17,7 +17,7 @@ test("test-side file waits preserve IPC while awaiting a delayed parent reply", 
     await fs.writeFile(
       script,
       `import { once } from 'node:events';
-import { waitForFile } from ${JSON.stringify(new URL("./testing/file-signals.mjs", import.meta.url).href)};
+import { waitForFile } from ${JSON.stringify(new URL("./testing/file-signals.ts", import.meta.url).href)};
 async function run() {
 const reply = once(process, 'message');
 await waitForFile(${JSON.stringify(file)});

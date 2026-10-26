@@ -11,6 +11,14 @@ are owned by this app's source and [`package.json`](package.json). Focused check
 `pnpm run test:server:bridge` from the repository root, as defined by the
 [root manifest](../../../../package.json).
 
+## Installation requirements
+
+The bridge needs Node.js with built-in TypeScript support enabled. The stable
+[launcher](bridge.mjs) owns the supported runtime requirement and refusal message;
+it checks support before loading the bridge or the authentication-refresh helper.
+Both entrypoints run TypeScript directly without a build step. Production packages
+and guest installs must retain the TypeScript sources alongside the launcher.
+
 ## Image input
 
 The [image module](images.ts) owns the default Claude image limits: 2000 pixels
@@ -41,7 +49,7 @@ installs. The ARM64 guest launches its own
 `/opt/codex-studio/claude_bridge/bridge.mjs`. Linux x64 modules support standalone
 x64 servers.
 
-Run `node testing/image-codec-witness.mjs` inside a deployed production bridge
+Run `node testing/image-codec-witness.ts` inside a deployed production bridge
 to verify the codecs without a model request. Run
 `node --test workspaces/client/apps/native/bridge-image-package.test.mjs` from
 the repository root to verify the Mac prune and its native codec load.
@@ -75,7 +83,7 @@ The bridge shows an uncertainty notice
 and never authorizes redelivery from that evidence.
 The next start resumes a fresh CLI, and retries reuse recorded user-message
 identities even for auto-steered input. Query-closing controls refuse unsettled
-unread input. [The lifecycle limits](stall-watch.mjs) own the echo grace and
+unread input. [The lifecycle limits](stall-watch.ts) own the echo grace and
 interrupt/exit deadlines in milliseconds.
 
 Stop finalizes an already deferred result as interrupted. If running Claude does
@@ -121,12 +129,12 @@ Earlier mirror turns remain visible, while new native history
 controls use only turns belonging to the current session. A local clear command
 has no native input boundary and cannot be selected for a history operation.
 
-Run `node testing/cli-history-witness.mjs` from this directory for the installed
+Run `node testing/cli-history-witness.ts` from this directory for the installed
 SDK/CLI witness. It uses disposable configuration below the user's cache and a
 local HTTP provider fixture, verifies both composite orders through fork,
 rollback and recovery, and proves clear/resume with three distinct identities.
 It makes no real model request and prints its retained evidence directory.
-`node testing/cli-history-compatibility-witness.mjs` also checks a local 503 retry
+`node testing/cli-history-compatibility-witness.ts` also checks a local 503 retry
 and a real ToolSearch session with tool references and deferred-tool attachments;
 both must retain exact input coverage through recovery, fork and rollback.
 
@@ -181,7 +189,7 @@ Codex identity and the existing Claude `accountId` remain unchanged.
 ## Token usage
 
 The bridge emits `thread/tokenUsage/updated` observations using the
-[generated usage contract](usage-contract.generated.d.mts). The
+[generated usage contract](usage-contract.generated.ts). The
 [SDK-typed normalizer](usage.ts) finalizes response usage from stream events
 at `message_stop` only after a non-null `message_delta.delta.stop_reason` proves
 completion. Stops without that evidence produce an `unconfirmedStop` gap.
@@ -216,10 +224,8 @@ cleanup path to report unfinished responses exactly once, even if SDK close is
 stuck. Intentional shutdown leaves an
 unfinished turn in progress for restart reconciliation rather than publishing a
 terminal failure. The bridge integration tests
-and inline scripted SDK remain outside the strict TypeScript program because
-the shared bridge harness is untyped; SDK data fixtures and normalizer unit tests
-remain strictly checked.
-Per-thread operation ordering consumes `provider-method-policy.generated.mjs`,
+use the shared TypeScript harness.
+Per-thread operation ordering consumes `provider-method-policy.generated.ts`,
 rendered by `studio-contracts` from the Rust
 [method policy](../../../runtime/packages/runtime-schema/src/provider_method_policy.rs).
 Refresh it with `pnpm run contracts:generate`; `pnpm run contracts:check` rejects drift.

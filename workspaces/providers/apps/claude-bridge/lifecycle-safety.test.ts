@@ -3,12 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.ts";
-import { nativeInputIds } from "./input-messages.mjs";
+import { nativeInputIds } from "./input-messages.ts";
 import { inputHistoryOutcome } from "./history-index.mjs";
 import { readNativeHistory } from "./native-history.mjs";
-import { waitForFile } from "./testing/file-signals.mjs";
-import { startBridge } from "./testing/bridge-harness.mjs";
-import { fixtureSessionApi } from "./testing/history-fixture.mjs";
+import { waitForFile } from "./testing/file-signals.ts";
+import { startBridge } from "./testing/bridge-harness.ts";
+import { fixtureSessionApi } from "./testing/history-fixture.ts";
 import { createSessionStore } from "./session-store.mjs";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
