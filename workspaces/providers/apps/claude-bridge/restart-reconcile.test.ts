@@ -1,3 +1,16 @@
+import type { Session, Turn } from "./session-state.ts";
+import type {
+  SessionStoreEntry,
+  SDKUserMessage,
+  SDKAssistantMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { NativeHistoryFilesystem } from "./native-history.ts";
+type Faults = {
+  unreadable?: boolean;
+  torn?: boolean;
+  changed?: boolean;
+  partial?: boolean;
+};
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import fs from "node:fs/promises";
@@ -12,14 +25,27 @@ const userId = "22222222-2222-4222-8222-222222222222";
 const replyId = "33333333-3333-4333-8333-333333333333";
 const nextId = "44444444-4444-4444-8444-444444444444";
 const cwd = "/native/project";
-const row = (type, uuid, parentUuid, content, extra = {}) => ({
+const row = (
+  type: string,
+  uuid: string,
+  parentUuid: string | null,
+  content: SDKUserMessage["message"]["content"],
+  extra: Partial<SessionStoreEntry> = {},
+): SessionStoreEntry & {
+  message: SDKUserMessage["message"] &
+    Partial<Pick<SDKAssistantMessage["message"], "id" | "stop_reason">>;
+} => ({
   type,
   uuid,
   parentUuid,
   sessionId,
   cwd,
   isSidechain: false,
-  message: { id: "msg-" + uuid, role: type, content },
+  message: {
+    id: "msg-" + uuid,
+    role: type === "user" ? "user" : "assistant",
+    content,
+  },
   ...extra,
 });
 const user = () => row("user", userId, null, "Finish the task");
@@ -42,9 +68,9 @@ const reply = () =>
 // The native transcript exists only in memory. File identity and replacement
 // checks exercise the production reader without a Claude process or account.
 function nativeFilesystem(
-  rows,
-  { unreadable = false, torn = false, changed = false } = {},
-) {
+  rows: SessionStoreEntry[],
+  { unreadable = false, torn = false, changed = false }: Faults = {},
+): NativeHistoryFilesystem {
   const raw = Buffer.from(
     rows.map((value) => JSON.stringify(value) + "\n").join("") +
       (torn ? '{"type":' : ""),
@@ -74,7 +100,7 @@ function nativeFilesystem(
         },
         async read(buffer, offset, length, position) {
           raw.copy(buffer, offset, position, position + length);
-          if (changed && ++reads > 1) buffer[0] ^= 1;
+          if (changed && ++reads > 1) buffer[0] = (buffer[0] ?? 0) ^ 1;
           return { bytesRead: length };
         },
         async close() {},
@@ -82,10 +108,14 @@ function nativeFilesystem(
     },
   };
 }
-async function loadStale(rows, options, check) {
+async function loadStale(
+  rows: SessionStoreEntry[],
+  options: Faults,
+  check: (turn: Turn) => void | Promise<void>,
+) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-restart-"));
   try {
-    const original = {
+    const original: Session = {
       id: sessionId,
       cwd,
       turns: [
@@ -103,8 +133,10 @@ async function loadStale(rows, options, check) {
         },
       ],
     };
+    const originalTurn = original.turns[0];
+    assert.ok(originalTurn);
     if (options.partial)
-      original.turns[0].items.push({
+      originalTurn.items.push({
         id: "msg-final",
         type: "agentMessage",
         text: "The task",
@@ -124,7 +156,9 @@ async function loadStale(rows, options, check) {
       },
     });
     const restored = await store.get(sessionId);
-    await check(restored.turns[0]);
+    const restoredTurn = restored.turns[0];
+    assert.ok(restoredTurn);
+    await check(restoredTurn);
     await store.persist(restored);
     const again = await createSessionStore(root).get(sessionId);
     assert.deepEqual(
@@ -223,27 +257,21 @@ for (const [name, rows, options] of [
     [user(), reply(), row("user", nextId, replyId, "Another task")],
     {},
   ],
-])
+] satisfies [string, SessionStoreEntry[], Faults][])
   test(`restart keeps ${name} uncertain`, async () => {
     await loadStale(rows, options, (turn) => {
       assert.equal(turn.status, "uncertain");
-      assert.match(turn.error.message, /could not confirm/);
+      assert.match(turn.error?.message ?? "", /could not confirm/);
     });
   });
 
 test("thread/read and resume deliver the recovered final reply without a model query", async () => {
   const bridge = await startBridge(
-    `
-    export const tool = () => ({});
-    export const createSdkMcpServer = value => value;
-    export const forkSession = () => { throw new Error("No fork expected"); };
-    export const getSessionMessages = () => { throw new Error("No SDK history read expected"); };
-    export const query = () => { throw new Error("No model query expected"); };
-  `,
+    new URL("./fixtures/history-readonly-sdk.ts", import.meta.url),
     "claude-restart-wire-",
   );
   try {
-    const session = {
+    const session: Session = {
       id: sessionId,
       cwd: bridge.root,
       turns: [
@@ -275,14 +303,17 @@ test("thread/read and resume deliver the recovered final reply without a model q
         .map((entry) => JSON.stringify({ ...entry, cwd: bridge.root }) + "\n")
         .join(""),
     );
-    for (const method of ["thread/read", "thread/resume"]) {
+    for (const method of ["thread/read", "thread/resume"] satisfies (
+      | "thread/read"
+      | "thread/resume"
+    )[]) {
       const result = await bridge.call(method, {
         threadId: sessionId,
         includeTurns: true,
       });
-      assert.equal(result.thread.turns[0].status, "completed");
+      assert.equal(result.thread.turns[0]?.status, "completed");
       assert.equal(
-        result.thread.turns[0].items.at(-1).text,
+        result.thread.turns[0]?.items.at(-1)?.text,
         "The task is complete.",
       );
     }
@@ -298,25 +329,20 @@ test("thread/read and resume deliver the recovered final reply without a model q
 test("restart replaces a partial mirror reply with all native text blocks", async () => {
   const final = reply();
   final.message.stop_reason = null;
+  assert.ok(Array.isArray(final.message.content));
   final.message.content.push({ type: "text", text: "The checks pass." });
   await loadStale([user(), final], { partial: true }, (turn) => {
     assert.equal(turn.status, "completed");
     const answers = turn.items.filter((item) => item.type === "agentMessage");
     assert.equal(answers.length, 1);
-    assert.equal(answers[0].text, "The task is complete.\nThe checks pass.");
-    assert.equal(answers[0].phase, "final_answer");
+    assert.equal(answers[0]?.text, "The task is complete.\nThe checks pass.");
+    assert.equal(answers[0]?.phase, "final_answer");
   });
 });
 
 test("bridge reads retain the unconfirmed outcome and reason without a model query", async () => {
   const bridge = await startBridge(
-    `
-    export const tool = () => ({});
-    export const createSdkMcpServer = value => value;
-    export const forkSession = () => { throw new Error("No fork expected"); };
-    export const getSessionMessages = () => { throw new Error("No SDK history read expected"); };
-    export const query = () => { throw new Error("No model query expected"); };
-  `,
+    new URL("./fixtures/history-readonly-sdk.ts", import.meta.url),
     "claude-uncertain-wire-",
   );
   try {
@@ -342,11 +368,14 @@ test("bridge reads retain the unconfirmed outcome and reason without a model que
       threadId: sessionId,
       includeTurns: true,
     });
-    assert.equal(result.thread.turns[0].status, "uncertain");
-    assert.match(result.thread.turns[0].error.message, /could not confirm/);
+    assert.equal(result.thread.turns[0]?.status, "uncertain");
+    assert.match(
+      result.thread.turns[0]?.error?.message ?? "",
+      /could not confirm/,
+    );
     const state = await bridge.call("claude/state", { threadId: sessionId });
-    assert.equal(state.turns[0].status, "uncertain");
-    assert.deepEqual(state.turns[0].error, result.thread.turns[0].error);
+    assert.equal(state.turns[0]?.status, "uncertain");
+    assert.deepEqual(state.turns[0]?.error, result.thread.turns[0]?.error);
     assert.equal(
       bridge.notes.some((entry) => entry.method === "turn/started"),
       false,

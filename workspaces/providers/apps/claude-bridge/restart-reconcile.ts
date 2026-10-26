@@ -1,10 +1,18 @@
+import type { Session, Turn, Item } from "./session-state.ts";
+import type { SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
+import type { HistoryReadOptions } from "./history-index.ts";
+import { object } from "./history-records.ts";
 import { nativeInputIds } from "./input-messages.ts";
 import { nativeUuid } from "./native-history.ts";
 import { readHistoryIndex } from "./history-index.ts";
 
 // A native user UUID binds the mirror turn to one transcript chain. Text and
 // timestamps alone cannot distinguish an earlier reply or a different branch.
-function outcome(session, turn, records) {
+function outcome(
+  session: Session,
+  turn: Turn,
+  records: { row: SessionStoreEntry }[] | undefined,
+): { status: "interrupted" } | { status: "completed"; item: Item } | null {
   const initial = turn.items.find((item) => item.type === "userMessage");
   const userId = nativeInputIds(initial)?.[0];
   if (!nativeUuid(userId) || !records) return null;
@@ -13,20 +21,23 @@ function outcome(session, turn, records) {
   if (anchors.length !== 1) return null;
   const anchor = anchors[0];
   if (
+    !anchor ||
     anchor.type !== "user" ||
     anchor.isSidechain !== false ||
     anchor.isCompactSummary
   )
     return null;
   const seen = new Set();
-  const counts = new Map();
+  const counts = new Map<string, number>();
   for (const row of rows)
     if (row.uuid) counts.set(row.uuid, (counts.get(row.uuid) || 0) + 1);
-  const pending = new Set();
-  let previous,
-    last,
-    responseId,
-    texts = [];
+  const pending = new Set<unknown>();
+  let previous: string | undefined,
+    last: SessionStoreEntry | undefined,
+    responseId: string | undefined;
+  let texts: string[] = [];
+  let lastBlocks: Record<string, unknown>[] = [];
+  let lastStopReason: unknown;
   for (const row of rows.slice(rows.indexOf(anchor))) {
     if (row.isSidechain === true) continue;
     if (
@@ -69,12 +80,18 @@ function outcome(session, turn, records) {
     if (row === anchor) {
       continue;
     }
-    const blocks = row.message?.content;
+    const message = object(row.message) ? row.message : undefined;
+    const blocks: unknown = message?.content;
     if (
       !Array.isArray(blocks) ||
-      blocks.some((block) => !block || typeof block.type !== "string")
+      !blocks.every(
+        (block: unknown): block is Record<string, unknown> =>
+          object(block) && typeof block.type === "string",
+      )
     )
       return null;
+    lastBlocks = blocks;
+    lastStopReason = message?.stop_reason;
     if (row.type === "user") {
       // A later input must belong to this turn (tool receipts or saved steers).
       const steer = turn.items.some(
@@ -94,10 +111,9 @@ function outcome(session, turn, records) {
       texts = [];
       responseId = undefined;
     } else {
-      if (row.isApiErrorMessage || typeof row.message.id !== "string")
-        return null;
-      if (responseId !== row.message.id) texts = [];
-      responseId = row.message.id;
+      if (row.isApiErrorMessage || typeof message?.id !== "string") return null;
+      if (responseId !== message.id) texts = [];
+      responseId = message.id;
       for (const block of blocks) {
         if (block.type === "text" && typeof block.text === "string")
           texts.push(block.text);
@@ -114,7 +130,7 @@ function outcome(session, turn, records) {
     last === anchor ||
     (last.type === "assistant" &&
       pending.size &&
-      last.message.content.some((block) => block.type === "tool_use"))
+      lastBlocks.some((block) => block.type === "tool_use"))
   )
     return { status: "interrupted" };
   // Tool receipts can deliberately end a turn (for example a permission denial).
@@ -123,8 +139,8 @@ function outcome(session, turn, records) {
   // Claude's resume classifier treats a final assistant reply without unresolved
   // calls as ended. Null stop_reason occurs in native streamed transcript rows.
   if (
-    ![undefined, null, "end_turn", "stop_sequence"].includes(
-      last.message.stop_reason,
+    ![undefined, null, "end_turn", "stop_sequence"].some(
+      (reason) => reason === lastStopReason,
     ) ||
     !texts.join("\n")
   )
@@ -132,8 +148,8 @@ function outcome(session, turn, records) {
   return {
     status: "completed",
     item: {
-      id: responseId,
-      nativeId: last.uuid,
+      ...(responseId !== undefined ? { id: responseId } : {}),
+      ...(last.uuid !== undefined ? { nativeId: last.uuid } : {}),
       type: "agentMessage",
       text: texts.join("\n"),
       phase: "final_answer",
@@ -141,7 +157,10 @@ function outcome(session, turn, records) {
   };
 }
 
-export async function reconcileRestartTurns(session, options) {
+export async function reconcileRestartTurns(
+  session: Session,
+  options?: HistoryReadOptions,
+) {
   const stale = session.turns.filter((turn) => turn.status === "inProgress");
   if (!stale.length) return;
   const index = await readHistoryIndex(session, options);
@@ -160,7 +179,7 @@ export async function reconcileRestartTurns(session, options) {
         turn.startOutcome = "accepted";
       if (
         item.delivery === "steer" &&
-        ["preparing", "submitted"].includes(item.deliveryStatus)
+        ["preparing", "submitted"].includes(item.deliveryStatus || "")
       ) {
         item.deliveryStatus = "delivered";
         delete item.error;

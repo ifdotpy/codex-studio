@@ -1,7 +1,37 @@
+import type {
+  SDKAssistantMessage,
+  Settings,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { CacheReport } from "./runtime-contract.generated.ts";
+import type { Session } from "./session-state.ts";
+import { object } from "./history-records.ts";
+type PrefixSession = Partial<
+  Pick<
+    Session,
+    | "cwd"
+    | "model"
+    | "approvalPolicy"
+    | "sandbox"
+    | "claude"
+    | "developerInstructions"
+    | "dynamicTools"
+    | "capabilityProfile"
+    | "moveProof"
+    | "moveTurnOptions"
+    | "idleCache"
+  >
+>;
+type RequestUsage = Partial<
+  Omit<SDKAssistantMessage["message"]["usage"], "cache_creation">
+> & {
+  cache_creation?: Partial<
+    NonNullable<SDKAssistantMessage["message"]["usage"]["cache_creation"]>
+  > | null;
+};
 import { createHash } from "node:crypto";
 
 // Only prefix inputs, never usage counters, transcript length, or lifecycle state.
-export function promptPrefix(s, effective = {}) {
+export function promptPrefix(s: PrefixSession, effective: Settings = {}) {
   return createHash("sha256")
     .update(
       JSON.stringify([
@@ -13,7 +43,7 @@ export function promptPrefix(s, effective = {}) {
         s.developerInstructions,
         s.dynamicTools,
         s.capabilityProfile,
-        s.moveProof?.options,
+        object(s.moveProof) ? s.moveProof.options : undefined,
         s.moveTurnOptions,
         effective,
       ]),
@@ -22,13 +52,16 @@ export function promptPrefix(s, effective = {}) {
 }
 
 export function cacheReport(
-  s,
-  usage,
-  requestId,
+  s: PrefixSession,
+  usage: RequestUsage,
+  requestId: string,
   now = Date.now(),
-  effective = {},
-) {
-  const n = (value) => (Number.isFinite(value) && value >= 0 ? value : 0);
+  effective: Settings = {},
+): CacheReport {
+  const n = (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? value
+      : 0;
   const writes = n(usage.cache_creation_input_tokens);
   const reads = n(usage.cache_read_input_tokens);
   const creation = usage.cache_creation;
@@ -58,15 +91,30 @@ export function cacheReport(
   };
 }
 
-export function idleRefusal(s, active, expected, effective = {}) {
+export function idleRefusal(
+  s: PrefixSession,
+  active: unknown,
+  expected: Pick<CacheReport, "prefix" | "requestId">,
+  effective: Settings = {},
+) {
   if (expected.prefix !== promptPrefix(s, effective)) return "prefix_changed";
   if (expected.requestId !== s.idleCache?.requestId) return "newer_request";
-  if (active?.turn || active?.tasks?.size || active?.input?.values?.length)
+  if (
+    object(active) &&
+    (active.turn ||
+      (object(active.tasks) && active.tasks.size) ||
+      (object(active.input) &&
+        Array.isArray(active.input.values) &&
+        active.input.values.length))
+  )
     return "active";
   return null;
 }
 
-export function compactionEnabled(effective, env = process.env) {
+export function compactionEnabled(
+  effective: Settings,
+  env: NodeJS.ProcessEnv = process.env,
+) {
   const disabled = ["1", "true", "yes", "on"].includes(
     String(env.DISABLE_COMPACT || "")
       .toLowerCase()

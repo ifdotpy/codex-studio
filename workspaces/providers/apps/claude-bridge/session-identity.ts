@@ -1,22 +1,26 @@
-// @ts-check
+import type { InputGroup } from "./input-messages.ts";
+import type { HistoryReadOptions } from "./history-index.ts";
+import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Session as NativeSession,
+  Turn as NativeTurn,
+  Item as NativeInputItem,
+  NativeInputAttempt,
+  PendingTransition,
+  TransitionSource,
+} from "./session-state.ts";
 import { randomUUID } from "node:crypto";
 import { readHistoryIndex } from "./history-index.ts";
 import { HUMAN_INPUT } from "./input-origin.generated.ts";
 import { nativeUuid } from "./native-history.ts";
 
-/** @typedef {"init" | import("@anthropic-ai/claude-agent-sdk").SessionStartHookInput["source"]} TransitionSource */
-/** @typedef {{inputId: string, turnId: string, attemptId: string}} NativeInputAttempt */
-/** @typedef {{id?: string, delivery?: string, deliveryStatus?: string, nativeSubmissionAttemptId?: string}} NativeInputItem */
-/** @typedef {{id?: string, clientUserMessageId?: string, startOutcome?: string, items?: NativeInputItem[], nativeSessionId?: string, nativeHistoryDetached?: boolean, fileCheckpointMessageId?: string, fileCheckpointSource?: unknown}} NativeTurn */
-/** @typedef {{from: string, target?: string, source: TransitionSource | "input", status: "pending" | "unknown", inputId?: string, turnId?: string, attemptId?: string}} PendingTransition */
-/** @typedef {{id: string, nativeId?: string, cwd: string, nativeHistoryCwd?: string, started?: boolean, pendingNativeSession?: PendingTransition, nativeSessionTransitionError?: string, nativeSessionTransitions?: {from: string, to: string, source: string}[], turns: NativeTurn[]}} NativeSession */
-
 /** Stable input identity is reused for redelivery; an SDK submission attempt is
  * never reused. Both the receipt and guard retain this exact turn/attempt key.
- * @param {NativeTurn | undefined} turn @param {NativeInputItem | undefined} item
- * @returns {NativeInputAttempt | null}
  */
-export function nativeInputAttempt(turn, item) {
+export function nativeInputAttempt(
+  turn: NativeTurn | undefined,
+  item: NativeInputItem | undefined,
+): NativeInputAttempt | null {
   const inputId =
     item?.delivery === "steer"
       ? item.id
@@ -28,16 +32,20 @@ export function nativeInputAttempt(turn, item) {
     ? { inputId, turnId: turn.id, attemptId: item.nativeSubmissionAttemptId }
     : null;
 }
-/** @param {NativeTurn} turn @param {NativeInputItem} item @returns {NativeInputAttempt} */
-export function newNativeInputAttempt(turn, item) {
+export function newNativeInputAttempt(
+  turn: NativeTurn,
+  item: NativeInputItem,
+): NativeInputAttempt {
   item.nativeSubmissionAttemptId = randomUUID();
   const attempt = nativeInputAttempt(turn, item);
   if (!attempt)
     throw new Error("A Claude input submission attempt identity is required");
   return attempt;
 }
-/** @param {Partial<NativeInputAttempt> | undefined} left @param {NativeInputAttempt | null | undefined} right */
-function sameAttempt(left, right) {
+function sameAttempt(
+  left: Partial<NativeInputAttempt> | undefined,
+  right: NativeInputAttempt | null | undefined,
+) {
   return (
     !!left &&
     !!right &&
@@ -52,12 +60,13 @@ function sameAttempt(left, right) {
 
 /** Persisted native identity comes only from init or the typed SessionStart hook.
  * Conversation-reset ids are UI conversation identities, not resumable sessions.
- * @param {NativeSession} session
- * @param {string | undefined} nativeId
- * @param {"init" | import("@anthropic-ai/claude-agent-sdk").SessionStartHookInput["source"]} source
- * @param {NativeTurn | undefined} turn
  */
-function transitionNativeSession(session, nativeId, source, turn) {
+function transitionNativeSession(
+  session: NativeSession,
+  nativeId: string | undefined,
+  source: TransitionSource,
+  turn: NativeTurn | undefined,
+) {
   // Some older SDK fixtures omit init identity. They supply no transition.
   if (nativeId === undefined) return;
   if (!nativeUuid(nativeId))
@@ -87,11 +96,12 @@ function transitionNativeSession(session, nativeId, source, turn) {
 
 /** An input that can clear/fork the native session must have a durable guard
  * in the existing pre-input save, before any part reaches the SDK.
- * @param {NativeSession} session
- * @param {{origin: string, blocks: {type: string, text?: string}[]}[]} groups
- * @param {NativeInputAttempt} attempt
  */
-export function guardNativeSessionInput(session, groups, attempt) {
+export function guardNativeSessionInput(
+  session: NativeSession,
+  groups: InputGroup[],
+  attempt: NativeInputAttempt,
+) {
   if (
     groups.some(
       (group) =>
@@ -119,9 +129,11 @@ export function guardNativeSessionInput(session, groups, attempt) {
 }
 
 /** A confirmed unread attempt cannot retire a later redelivery's guard.
- * @param {NativeSession} session @param {NativeInputAttempt | null | undefined} attempt
  */
-export function cancelNativeSessionInput(session, attempt) {
+export function cancelNativeSessionInput(
+  session: NativeSession,
+  attempt: NativeInputAttempt | null | undefined,
+) {
   const pending = session.pendingNativeSession;
   if (
     pending &&
@@ -138,11 +150,12 @@ export function cancelNativeSessionInput(session, attempt) {
 }
 
 /** Guard the native process initialization before spawning it.
- * @param {NativeSession} session
- * @param {(session: NativeSession) => Promise<unknown>} persist
- * @param {NativeInputAttempt | null} [attempt]
  */
-export async function guardNativeSessionStart(session, persist, attempt) {
+export async function guardNativeSessionStart(
+  session: NativeSession,
+  persist: (session: NativeSession) => Promise<unknown>,
+  attempt?: NativeInputAttempt | null,
+) {
   session.pendingNativeSession ||= {
     from: session.nativeId || session.id,
     source: "init",
@@ -154,26 +167,20 @@ export async function guardNativeSessionStart(session, persist, attempt) {
 
 const UNKNOWN_NATIVE_TRANSITION =
   "Claude native session transition outcome unknown; resume is blocked until native history confirms it.";
-/** @param {NativeSession} session @param {PendingTransition} intent */
-function unknownTransition(session, intent) {
+function unknownTransition(session: NativeSession, intent: PendingTransition) {
   session.pendingNativeSession = { ...intent, status: "unknown" };
   session.nativeSessionTransitionError = UNKNOWN_NATIVE_TRANSITION;
 }
 
 /** Save intent before mutating identity, then atomically save the transition.
  * A pre-input/start guard survives a crash before this first save can append.
- * @param {NativeSession} session
- * @param {string | undefined} nativeId
- * @param {TransitionSource} source
- * @param {NativeTurn | undefined} turn
- * @param {(session: NativeSession) => Promise<unknown>} persist
  */
 export async function persistNativeSession(
-  session,
-  nativeId,
-  source,
-  turn,
-  persist,
+  session: NativeSession,
+  nativeId: string | undefined,
+  source: TransitionSource,
+  turn: NativeTurn | undefined,
+  persist: (session: NativeSession) => Promise<unknown>,
 ) {
   if (!nativeUuid(nativeId))
     throw new Error("Claude returned an invalid native session identity");
@@ -216,10 +223,11 @@ export async function persistNativeSession(
 
 /** Resolve only a target whose complete SDK history proves its identity.
  * A target-less intent cannot be guessed from project/session names.
- * @param {NativeSession} session
- * @param {import("./history-index.ts").HistoryReadOptions} [options]
  */
-export async function reconcileNativeSession(session, options) {
+export async function reconcileNativeSession(
+  session: NativeSession,
+  options?: HistoryReadOptions,
+) {
   const pending = session.pendingNativeSession;
   if (!pending) return false;
   // Only this exact attempt's durable receipt can retire its guard. An older
@@ -283,8 +291,7 @@ export async function reconcileNativeSession(session, options) {
   return false;
 }
 
-/** @param {NativeSession} session */
-export function assertNativeSessionReady(session) {
+export function assertNativeSessionReady(session: NativeSession) {
   if (session.pendingNativeSession?.status === "unknown")
     throw Object.assign(
       new Error(
@@ -298,11 +305,12 @@ export function assertNativeSessionReady(session) {
 }
 
 /** @param {NativeSession} session
- * @param {() => NativeTurn | undefined} currentTurn
- * @param {(session: NativeSession) => Promise<unknown>} persist
- * @returns {import("@anthropic-ai/claude-agent-sdk").HookCallback}
  */
-export function sessionStartHook(session, currentTurn, persist) {
+export function sessionStartHook(
+  session: NativeSession,
+  currentTurn: () => NativeTurn | undefined,
+  persist: (session: NativeSession) => Promise<unknown>,
+): HookCallback {
   return async (input) => {
     if (
       input.hook_event_name === "SessionStart" &&

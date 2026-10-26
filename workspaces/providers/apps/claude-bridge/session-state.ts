@@ -1,3 +1,5 @@
+import type { ClaudeSettings } from "./thinking.ts";
+import type { BridgeMoveProof } from "./bridge-protocol.ts";
 import type {
   CacheReport,
   ToolDefinition,
@@ -39,6 +41,7 @@ export interface FileRestorePlan {
   }[];
 }
 export interface TurnError {
+  resetsAt?: number | undefined;
   message: string;
   codexErrorInfo?: string;
   data?: Record<string, unknown>;
@@ -154,17 +157,17 @@ export interface Session {
   approvalPolicy?: string;
   activePermissionProfile?: unknown;
   sandbox?: string;
-  claude?: import("./thinking.ts").ClaudeSettings;
+  claude?: ClaudeSettings;
   developerInstructions?: string;
   dynamicTools?: ToolDefinition[];
-  moveProof?: import("./bridge-protocol.ts").BridgeMoveProof;
+  idleCache?: CacheReport;
+  moveProof?: BridgeMoveProof;
   dynamicToolsJson?: string;
   capabilityProfile?: unknown;
   moveTurnOptions?: Partial<Options>;
   userMcp?: boolean;
   studioImageWorkspaceTempDir?: string;
   claudeVersion?: string;
-  idleCache?: CacheReport;
   contextWindow?: number;
   totalTokens?: number;
 }
