@@ -194,10 +194,11 @@ html[data-server-view] .workspace {
   .multi-server-shell {
     padding-top: 40px;
   }
+  /* The bar sits below the top safe area, not under a status bar. */
   .server-mobile-toggle {
     display: block;
     position: fixed;
-    inset: 0 0 auto;
+    inset: var(--viewport-surface-top, 0px) 0 auto;
     height: 40px;
     border-radius: 0;
     z-index: 201;
@@ -205,7 +206,7 @@ html[data-server-view] .workspace {
   .server-sidebar {
     display: none;
     position: fixed;
-    inset: 40px 0 0;
+    inset: calc(var(--viewport-surface-top, 0px) + 40px) 0 0;
     width: 100%;
     z-index: 200;
   }
@@ -303,4 +304,18 @@ html[data-server-view] .workspace {
 .shell-terminal-bar .terminal-dock-count {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Native shell, portrait top status strip: the edge rail's sidebar button
+   opens servers and chats, so the phone bar and its space are not shown. */
+html[data-viewport-top-strip] .multi-server-shell {
+  padding-top: 0;
+}
+html[data-viewport-top-strip] .server-mobile-toggle {
+  display: none;
+}
+@media (max-width: 760px) {
+  html[data-viewport-top-strip] .server-sidebar {
+    inset-block-start: var(--native-safe-top, 0px);
+  }
 }
