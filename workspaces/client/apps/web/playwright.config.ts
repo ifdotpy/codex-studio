@@ -73,7 +73,9 @@ export default defineConfig({
   testDir: ".",
   testMatch: [
     fileURLToPath(new URL("./tests/**/*.spec.mjs", import.meta.url)),
+    fileURLToPath(new URL("./tests/**/*.spec.ts", import.meta.url)),
     fileURLToPath(new URL("./src/**/*.spec.mjs", import.meta.url)),
+    fileURLToPath(new URL("./src/**/*.spec.ts", import.meta.url)),
   ],
   testIgnore: [
     fileURLToPath(new URL("../../../../.worktrees/**", import.meta.url)),

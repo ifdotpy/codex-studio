@@ -511,6 +511,29 @@ function cargoTarget(root) {
   return process.env.CARGO_TARGET_DIR || path.join(root, "target");
 }
 
+// One incremental TypeScript cache per checkout, outside the checkout.
+function typeCacheDirectory(root) {
+  return path.join(
+    cacheDirectory(),
+    "typescript",
+    createHash("sha256").update(root).digest("hex").slice(0, 16),
+  );
+}
+
+// docs/typescript.md: every tracked TypeScript project except the shared base is checked.
+function typescriptProjects(root) {
+  const listed = spawnSync(
+    "git",
+    ["ls-files", "--", "*tsconfig.json", "*tsconfig.*.json"],
+    { cwd: root, encoding: "utf8" },
+  );
+  if (listed.status !== 0)
+    throw new Error(`git ls-files failed: ${listed.stderr.trim()}`);
+  return listed.stdout
+    .split("\n")
+    .filter((file) => file && file !== "tsconfig.base.json");
+}
+
 function cacheDirectory() {
   return path.resolve(
     process.env.CODEX_STUDIO_CHECKS_CACHE ||
@@ -761,13 +784,24 @@ export function gateSteps(root, name) {
           },
         ]
       : []),
-    script("web type check", web, "typecheck:fast", { allowZeroTests: true }),
-    script("web API contract type check", web, "test:api-contract-types", {
-      allowZeroTests: true,
-    }),
-    script("client helper type check", tooling, "typecheck:client-helper", {
-      allowZeroTests: true,
-    }),
+    {
+      ...script("TypeScript projects", tooling, "", { allowZeroTests: true }),
+      commands: typescriptProjects(root).map((project) => [
+        "pnpm",
+        [
+          "exec",
+          "tsc",
+          "--project",
+          project,
+          "--incremental",
+          "--tsBuildInfoFile",
+          path.join(
+            typeCacheDirectory(root),
+            `${project.replaceAll(/[^a-zA-Z0-9._-]/g, "-")}.tsbuildinfo`,
+          ),
+        ],
+      ]),
+    },
     {
       ...script(
         "web unit tests",
@@ -962,11 +996,7 @@ export async function executeRecipe(root, name, steps, options = {}) {
       existsSync(debugBinary(root, "codex-process-supervisor")) &&
       existsSync(debugBinary(root, "examples/draft-server")),
   };
-  const typeCache = path.join(
-    cacheDirectory(),
-    "typescript",
-    createHash("sha256").update(root).digest("hex").slice(0, 16),
-  );
+  const typeCache = typeCacheDirectory(root);
   mkdirSync(typeCache, { recursive: true });
   const env = {
     CARGO_TARGET_DIR: cargoTarget(root),

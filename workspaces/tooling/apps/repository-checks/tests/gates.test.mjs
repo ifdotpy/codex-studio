@@ -284,9 +284,9 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
     const steps = gateSteps(process.cwd(), name);
     // Tools must start while type checks wait for WASM and web tests wait for Rust.
     const lane = (id) => steps.find((step) => step.id === id).lane;
-    assert.notEqual(lane("tooling"), lane("web type check"));
+    assert.notEqual(lane("tooling"), lane("TypeScript projects"));
     assert.notEqual(lane("tooling"), lane("web unit tests"));
-    assert.notEqual(lane("web type check"), lane("web unit tests"));
+    assert.notEqual(lane("TypeScript projects"), lane("web unit tests"));
     assert.ok(
       steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
     );
