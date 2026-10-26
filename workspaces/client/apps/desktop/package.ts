@@ -1,0 +1,317 @@
+import { buildLinuxVM } from "./native/linux-vm/build.ts";
+import { signingIdentity, signApplication, signCode } from "./signing.ts";
+import { setBundleDisplayName } from "./bundle-name.ts";
+import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.ts";
+import { pythonResources } from "./python-resources.ts";
+import {
+  cargoReleaseArguments,
+  prebuiltReleaseDirectory,
+} from "./release-binaries.ts";
+import { execFileSync } from "node:child_process";
+import { packager } from "@electron/packager";
+import { cp, mkdir, mkdtemp, rm, access, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const root = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(root, "../../../..");
+const packageOutput = path.resolve(
+  process.env.CODEX_DESKTOP_PACKAGE_OUT || path.join(root, "dist"),
+);
+const resourcesOnly = process.argv.includes("--resources-only");
+const uiOnly =
+  process.argv.includes("--ui-only") ||
+  process.env.CODEX_DESKTOP_UI_ONLY === "1";
+const identity = signingIdentity();
+const rendererDist = path.join(
+  repositoryRoot,
+  "workspaces/client/apps/web/dist",
+);
+const bridgeSource = path.join(
+  repositoryRoot,
+  "workspaces/providers/apps/claude-bridge",
+);
+await access(path.join(rendererDist, "index.html"));
+// With CODEX_RELEASE_TARGET_DIR set, reuse release binaries that were built for
+// this exact commit (release-binaries.ts verifies the commit and SHA-256 manifest);
+// otherwise build them here.
+const prebuiltRelease = uiOnly
+  ? null
+  : await prebuiltReleaseDirectory(repositoryRoot);
+if (!uiOnly && !prebuiltRelease) {
+  try {
+    execFileSync("cargo", cargoReleaseArguments(), {
+      cwd: repositoryRoot,
+      stdio: "inherit",
+    });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new Error(
+        "Desktop packaging requires Cargo; install the toolchain pinned in rust-toolchain.toml, then run `cargo build --release -p studio-runtime-server`.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+const cargoTargetDirectory =
+  prebuiltRelease ??
+  path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR || "target");
+const diagnosticsBinary = path.join(
+  cargoTargetDirectory,
+  "release/codex-diagnostics",
+);
+const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
+try {
+  const speech = path.join(stage, "studio-speech");
+  execFileSync("xcrun", [
+    "swiftc",
+    path.join(root, "native/speech.swift"),
+    "-O",
+    "-o",
+    speech,
+    "-Xlinker",
+    "-sectcreate",
+    "-Xlinker",
+    "__TEXT",
+    "-Xlinker",
+    "__info_plist",
+    "-Xlinker",
+    path.join(root, "native/speech-info.plist"),
+  ]);
+  signCode(speech, identity);
+  // File events for the Mac folder sync of VM projects (docs/vm-mac-sync.md).
+  const fsEvents = path.join(stage, "studio-fs-events");
+  if (!uiOnly) {
+    execFileSync("xcrun", [
+      "swiftc",
+      path.join(root, "native/fs-events.swift"),
+      "-O",
+      "-target",
+      "arm64-apple-macos13.0",
+      "-o",
+      fsEvents,
+    ]);
+    signCode(fsEvents, identity);
+  }
+  const linuxVM = uiOnly
+    ? undefined
+    : buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
+  const resources = path.join(stage, "workspace");
+  await mkdir(path.join(resources, "web"), { recursive: true });
+  if (!uiOnly) {
+    await mkdir(path.join(resources, "bin"), { recursive: true });
+    // layr-desk for the Desk disk, vault unlock and Pull on this Mac (docs/vault.md), from
+    // the vendored source; Studio installs the disk agent with this binary.
+    const layrDeskTarget = path.join(cargoTargetDirectory, "layr-desk");
+    execFileSync(
+      "cargo",
+      [
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        path.join(
+          repositoryRoot,
+          "workspaces/runtime/apps/layr-desk/Cargo.toml",
+        ),
+        "-p",
+        "layr-desk",
+        "--target-dir",
+        layrDeskTarget,
+      ],
+      {
+        cwd: repositoryRoot,
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          CARGO_PROFILE_RELEASE_DEBUG: "0",
+          CARGO_PROFILE_RELEASE_STRIP: "symbols",
+        },
+      },
+    );
+    const layrDesk = path.join(resources, "bin", "layr-desk");
+    await cp(path.join(layrDeskTarget, "release/layr-desk"), layrDesk);
+    signCode(layrDesk, identity);
+    await cp(diagnosticsBinary, path.join(resources, "bin/codex-diagnostics"));
+    for (const { binary } of runtimeBinaries) {
+      const name = runtimeBinaryName(binary);
+      const destination = path.join(resources, "bin", name);
+      await cp(path.join(cargoTargetDirectory, "release", name), destination);
+      signCode(destination, identity);
+    }
+    // The QUIC link to paired servers (docs/peer-link.md).
+    const peerLink = path.join(resources, "bin/studio-peer-link");
+    await cp(
+      path.join(cargoTargetDirectory, "release/studio-peer-link"),
+      peerLink,
+    );
+    signCode(peerLink, identity);
+    execFileSync(
+      "pnpm",
+      [
+        "--filter",
+        "studio-claude-bridge",
+        "--prod",
+        "deploy",
+        "--no-optional",
+        "--ignore-scripts",
+        "--node-linker=hoisted",
+        path.join(resources, "scripts/claude_bridge"),
+      ],
+      {
+        cwd: repositoryRoot,
+        stdio: "inherit",
+      },
+    );
+    await rm(path.join(resources, "scripts/claude_bridge/node_modules/.bin"), {
+      recursive: true,
+      force: true,
+    });
+    await cp(
+      bridgeSource,
+      path.join(resources, "workspaces/providers/apps/claude-bridge"),
+      {
+        recursive: true,
+        filter: (source) =>
+          path.basename(source) !== "node_modules" &&
+          !source.includes("/node_modules/") &&
+          path.basename(source) !== "dist" &&
+          path.basename(source) !== "coverage",
+      },
+    );
+    for (const [source, destination] of [
+      ["package.json", "package.json"],
+      ["pnpm-workspace.yaml", "pnpm-workspace.yaml"],
+      ["pnpm-lock.yaml", "pnpm-lock.yaml"],
+      ["patches/rxdb@17.6.0.patch", "patches/rxdb@17.6.0.patch"],
+    ] as const) {
+      const target = path.join(resources, destination);
+      await mkdir(path.dirname(target), { recursive: true });
+      await cp(path.join(repositoryRoot, source), target);
+    }
+    await cp(
+      path.join(repositoryRoot, "workspaces/runtime/apps/vm-guest"),
+      path.join(resources, "vm/guest"),
+      {
+        recursive: true,
+        filter: (source) =>
+          !source.includes("__pycache__") && !source.endsWith(".pyc"),
+      },
+    );
+    // The vendored layr and layr-desk sources, built inside the guest (docs/vm-layr.md,
+    // docs/vault.md).
+    for (const name of ["layr", "layr-desk"]) {
+      await cp(
+        path.join(repositoryRoot, "workspaces/runtime/apps", name),
+        path.join(resources, "vm", name),
+        { recursive: true },
+      );
+    }
+  }
+  await cp(rendererDist, path.join(resources, "web/dist"), {
+    recursive: true,
+  });
+  if (!uiOnly) {
+    await cp(
+      path.join(repositoryRoot, ".agents/skills"),
+      path.join(resources, ".agents/skills"),
+      { recursive: true },
+    );
+    for (const [source, destination] of [
+      ["README.md", "README.md"],
+      ["docs/cli.md", "CLI.md"],
+      ["docs/orchestration.md", "ORCHESTRATION.md"],
+    ] as const) {
+      await cp(
+        path.join(repositoryRoot, source),
+        path.join(resources, destination),
+      );
+    }
+  }
+  await writeFile(
+    path.join(resources, "studio-install.json"),
+    JSON.stringify({ mode: uiOnly ? "ui-only" : "combined" }),
+  );
+  // Contents/Resources/studio-build.json: the build stamp that paired servers compare
+  // (docs/peer-updates.md). A greater builtAt is a newer build.
+  const buildStamp = path.join(stage, "studio-build.json");
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8" }).trim();
+  await writeFile(
+    buildStamp,
+    JSON.stringify({
+      version: 1,
+      builtAt: Date.now() / 1000,
+      commit: git("rev-parse", "HEAD"),
+      commitTime: Number(git("log", "-1", "--format=%ct")),
+      branch: git("rev-parse", "--abbrev-ref", "HEAD"),
+    }),
+  );
+  const extraResources = [
+    resources,
+    speech,
+    buildStamp,
+    ...(uiOnly
+      ? []
+      : [
+          ...(linuxVM ? [linuxVM] : []),
+          fsEvents,
+          ...pythonResources.map((file) => path.join(root, file)),
+        ]),
+  ];
+  if (resourcesOnly) {
+    await mkdir(packageOutput, { recursive: true });
+    for (const source of extraResources) {
+      await cp(source, path.join(packageOutput, path.basename(source)), {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+      });
+    }
+    console.log(packageOutput);
+  } else {
+    const output = await packager({
+      dir: root,
+      name: "Codex Studio",
+      executableName: "Codex Studio",
+      icon: path.join(root, "assets/codex-studio.icns"),
+      appBundleId: "local.codex.agents",
+      appCategoryType: "public.app-category.developer-tools",
+      platform: "darwin",
+      arch: "arm64",
+      out: packageOutput,
+      overwrite: true,
+      asar: true,
+      prune: true,
+      extraResource: extraResources,
+      extendInfo: {
+        NSMicrophoneUsageDescription:
+          "Record dictation that you can review and convert to text.",
+        NSSpeechRecognitionUsageDescription:
+          "Convert your saved dictation to text on this computer.",
+      },
+      ignore: [
+        /^\/assets($|\/)/,
+        /^\/dist($|\/)/,
+        /^\/node_modules($|\/)/,
+        /^\/test\.ts$/,
+        /^\/multi-server-memory\.ts$/,
+        /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test|install-update-test)\.(?:mjs|cjs|py)$/,
+        /^\/recover_backend\.py$/,
+        /^\/install_update\.py$/,
+        /^\/__pycache__($|\/)/,
+        /^\/package\.ts$/,
+        /^\/README\.md$/,
+      ],
+    });
+    for (const directory of output) {
+      const application = path.join(directory, "Codex Studio.app");
+      setBundleDisplayName(application, "LAYR Studio");
+      signApplication(application, identity);
+    }
+    console.log(output.join("\n"));
+  }
+} finally {
+  await rm(stage, { recursive: true, force: true });
+}

@@ -12,7 +12,7 @@ import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { signingCheckReport } from "../../../../client/apps/desktop/signing-check.mjs";
+import { signingCheckReport } from "../../../../client/apps/desktop/signing-check.ts";
 
 const identity = "0123456789ABCDEF0123456789ABCDEF01234567";
 const password = "fixture-password-that-must-never-appear";
@@ -23,7 +23,7 @@ const desktop = fileURLToPath(
 );
 
 // A temporary HOME holds signing.json, the password file and an empty keychain
-// file. A fake security replaces the two security calls of signing.mjs.
+// file. A fake security replaces the two security calls of signing.ts.
 function fixture(options = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "signing-check-"));
   const config = path.join(root, ".config/codex-studio");
@@ -214,7 +214,7 @@ test("fails when the identity is not in the keychain", () =>
 test("the unlock error names the security cause and hides the password", () => {
   const output = execFileSync(
     process.execPath,
-    [path.join(desktop, "signing-test.mjs"), "--unlock-contract"],
+    [path.join(desktop, "signing-test.ts"), "--unlock-contract"],
     { encoding: "utf8" },
   );
   assert.match(output, /^PASS: /);

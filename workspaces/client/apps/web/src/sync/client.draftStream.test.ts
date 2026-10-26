@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
 import { firstValueFrom, filter } from "rxjs";
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 import type {
   ResourceChangeEvent,
   ResourceVersion,
@@ -300,10 +300,10 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
   expect(merged.payload).toContain("local-unsent");
   // A successful merged push publishes its own newer draft sequence.
   const confirmed = event(2, 3);
-  assert.ok(confirmed.resourceVersions[0] != null);
-  assert.ok(confirmed.resourceVersions[0].draftChanges!.documents[0] != null);
-  confirmed.resourceVersions[0].draftChanges!.documents[0].payload =
-    merged.payload;
+  const confirmedDocument =
+    confirmed.resourceVersions[0]?.draftChanges?.documents[0];
+  assert.ok(confirmedDocument);
+  confirmedDocument.payload = merged.payload;
   const confirmedWrite = firstValueFrom(
     db.drafts
       .findOne("phone:chat")

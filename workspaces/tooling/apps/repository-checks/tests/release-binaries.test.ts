@@ -11,7 +11,7 @@ import {
   releaseTargetEnvironment,
   verifyReleaseBinaries,
   writeReleaseManifest,
-} from "../../../../client/apps/desktop/release-binaries.mjs";
+} from "../../../../client/apps/desktop/release-binaries.ts";
 import {
   parseFlowArguments,
   planFlow,
@@ -22,7 +22,7 @@ const commitB = "b".repeat(40);
 
 test("desktop packaging uses the manifest-owned Electron version", async () => {
   const source = await readFile(
-    new URL("../../../../client/apps/desktop/package.mjs", import.meta.url),
+    new URL("../../../../client/apps/desktop/package.ts", import.meta.url),
     "utf8",
   );
   assert.doesNotMatch(
@@ -235,7 +235,7 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
       "check package start",
     ],
   );
-  assert.match(plan(false)[0].args[0], /desktop\/signing-check\.mjs$/);
+  assert.match(plan(false)[0].args[0], /desktop\/signing-check\.ts$/);
   assert.equal(plan(false)[1].args[0], "test-native-webview");
   const skipped = plan(true)[1];
   assert.equal(skipped.command, undefined);
