@@ -1,13 +1,21 @@
+import type { ComponentHookCell } from "./componentTestFixtures";
+import type { EffectCallback, PropsWithChildren } from "react";
+import assert from "node:assert/strict";
 import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
-import { createElement, type ReactElement, type ReactNode } from "react";
+import {
+  isValidElement,
+  createElement,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Agent, Message } from "../types";
 import type { Account } from "./Accounts";
 
 const h = vi.hoisted(() => ({
   cursor: 0,
-  cells: [] as any[],
+  cells: [] as ComponentHookCell[],
   effects: [] as Array<() => void>,
   get: vi.fn(),
   post: vi.fn(),
@@ -21,7 +29,7 @@ vi.mock("react", async (original) => ({
     };
     return [
       required(h.cells[index]).value,
-      (value: any) => {
+      (value: unknown) => {
         required(h.cells[index]).value =
           typeof value === "function"
             ? value(required(h.cells[index]).value)
@@ -36,17 +44,17 @@ vi.mock("react", async (original) => ({
   },
   useMemo: (compute: () => unknown) => compute(),
   useCallback: (callback: unknown) => callback,
-  useEffect: (effect: () => unknown, deps: unknown[]) => {
+  useEffect: (effect: EffectCallback, deps: unknown[]) => {
     const index = h.cursor++;
     const previous = h.cells[index];
     if (
       !previous ||
-      deps.some((value, i) => !Object.is(value, previous.deps[i]))
+      deps.some((value, i) => !Object.is(value, previous.deps?.[i]))
     ) {
       previous?.cleanup?.();
       h.cells[index] = { deps };
       h.effects.push(() => {
-        required(h.cells[index]).cleanup = effect();
+        required(h.cells[index]).cleanup = effect() || undefined;
       });
     }
   },
@@ -81,15 +89,17 @@ async function settle() {
 }
 function find(
   node: ReactNode,
-  predicate: (node: ReactElement<any>) => boolean,
-): ReactElement<any> | undefined {
+  predicate: (
+    node: ReactElement<PropsWithChildren<Record<string, unknown>>>,
+  ) => boolean,
+): ReactElement<PropsWithChildren<Record<string, unknown>>> | undefined {
   if (Array.isArray(node)) {
     for (const child of node) {
       const match = find(child, predicate);
       if (match) return match;
     }
-  } else if (node && typeof node === "object" && "props" in node) {
-    const element = node as ReactElement<any>;
+  } else if (isValidElement<PropsWithChildren<Record<string, unknown>>>(node)) {
+    const element = node;
     return predicate(element)
       ? element
       : find(element.props.children, predicate);
@@ -275,7 +285,8 @@ it("Claude account status and key updates do not reload settings; explicit retry
     turns: [],
     tasks: [],
   });
-  retry!.props.onClick();
+  assert.ok(typeof retry?.props.onClick === "function");
+  retry.props.onClick();
   render(read);
   await settle();
   expect(h.post).toHaveBeenCalledTimes(2);
@@ -312,7 +323,8 @@ it("repair scope changes hide old evidence without reads; refresh uses the curre
     render(read),
     (node) => node.props.children === "Refresh saved report",
   );
-  refresh!.props.onClick();
+  assert.ok(typeof refresh?.props.onClick === "function");
+  refresh.props.onClick();
   render(read);
   await settle();
   expect(h.get).toHaveBeenCalledTimes(2);

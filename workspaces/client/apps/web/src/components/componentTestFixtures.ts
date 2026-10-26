@@ -52,3 +52,11 @@ export function componentAttachment(
     ...overrides,
   };
 }
+
+/** State, memo, ref and effect slots retained by the component hook fixtures. */
+export type ComponentHookCell = {
+  value?: unknown;
+  current?: unknown;
+  deps?: unknown[] | undefined;
+  cleanup?: (() => void) | undefined;
+};

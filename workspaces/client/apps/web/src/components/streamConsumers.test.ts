@@ -1,9 +1,20 @@
-import { required } from "./componentTestFixtures";
+import type {
+  ResourceRef,
+  ResourceData,
+} from "../sync/subscriptions/contracts";
+import type { ComponentHookCell } from "./componentTestFixtures";
+import {
+  isValidElement,
+  type EffectCallback,
+  type PropsWithChildren,
+  type ComponentProps,
+} from "react";
+import { required, componentSnapshot } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ReactElement, ReactNode } from "react";
 const h = vi.hoisted(() => ({
   cursor: 0,
-  cells: [] as any[],
+  cells: [] as ComponentHookCell[],
   effects: [] as Array<() => void>,
   data: new Map<string, unknown>(),
   statuses: new Map<string, string>(),
@@ -15,7 +26,7 @@ const h = vi.hoisted(() => ({
   storage: {},
   writes: [] as string[],
   nullRefs: 0,
-  refs: [] as any[],
+  refs: [] as ResourceRef[],
   errors: new Map<string, Error>(),
 }));
 vi.mock("react", async (original) => {
@@ -23,7 +34,7 @@ vi.mock("react", async (original) => {
   const memo = (factory: () => unknown, deps: unknown[]) => {
     const index = h.cursor++;
     const old = h.cells[index];
-    if (!old || deps.some((value, i) => value !== old.deps[i]))
+    if (!old || deps.some((value, i) => value !== old.deps?.[i]))
       h.cells[index] = { deps, value: factory() };
     return required(h.cells[index]).value;
   };
@@ -36,7 +47,7 @@ vi.mock("react", async (original) => {
       };
       return [
         required(h.cells[index]).value,
-        (value: any) => {
+        (value: unknown) => {
           required(h.cells[index]).value =
             typeof value === "function"
               ? value(required(h.cells[index]).value)
@@ -55,14 +66,14 @@ vi.mock("react", async (original) => {
     useMemo: memo,
     useCallback: (callback: unknown, deps: unknown[]) =>
       memo(() => callback, deps),
-    useEffect: (effect: () => any, deps: unknown[]) => {
+    useEffect: (effect: EffectCallback, deps: unknown[]) => {
       const index = h.cursor++;
       const old = h.cells[index];
-      if (!old || !deps || deps.some((value, i) => value !== old.deps[i])) {
+      if (!old || !deps || deps.some((value, i) => value !== old.deps?.[i])) {
         old?.cleanup?.();
         h.cells[index] = { deps };
         h.effects.push(() => {
-          required(h.cells[index]).cleanup = effect();
+          required(h.cells[index]).cleanup = effect() || undefined;
         });
       }
     },
@@ -70,7 +81,7 @@ vi.mock("react", async (original) => {
   };
 });
 vi.mock("../sync/subscriptions", () => ({
-  useSubscription: (ref: any) => {
+  useSubscription: (ref: ResourceRef | null) => {
     if (ref) h.refs.push(ref);
     return {
       data: ref ? h.data.get(ref.kind) : undefined,
@@ -111,17 +122,15 @@ vi.mock("@xterm/addon-fit", () => ({
     fit() {}
   },
 }));
-import BackgroundTasks from "./shell/BackgroundTasks";
+import BackgroundTasks, {
+  BackgroundTaskStrip,
+  TaskDetail,
+} from "./shell/BackgroundTasks";
 import Tasks from "./shell/Tasks";
 import { UserMessage } from "./shell/messages/UserMessages";
 import { ShellView } from "./TerminalDock";
 import { useMessages } from "../hooks";
-const snapshot = () =>
-  ({
-    stateDir: "fixture",
-    threads: [{ id: "lead", epoch: 1 }],
-    runtime: { tasks: [], monitors: [], requests: [], complaints: [] },
-  }) as any;
+const snapshot = () => componentSnapshot([{ id: "lead", epoch: 1 }]);
 function render<T>(fn: () => T, offset = 0) {
   h.cursor = offset;
   const result = fn();
@@ -142,10 +151,28 @@ afterEach(() => {
   h.errors.clear();
   vi.unstubAllGlobals();
 });
-function elements(node: ReactNode): ReactElement<any>[] {
+function isTaskStrip(
+  node: ReactElement<unknown>,
+): node is ReactElement<ComponentProps<typeof BackgroundTaskStrip>> {
+  return (
+    isValidElement<ComponentProps<typeof BackgroundTaskStrip>>(node) &&
+    node.type === BackgroundTaskStrip
+  );
+}
+function isTaskDetail(
+  node: ReactElement<unknown>,
+): node is ReactElement<ComponentProps<typeof TaskDetail>> {
+  return (
+    isValidElement<ComponentProps<typeof TaskDetail>>(node) &&
+    node.type === TaskDetail
+  );
+}
+function elements(
+  node: ReactNode,
+): ReactElement<PropsWithChildren<Record<string, unknown>>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
-  if (node && typeof node === "object" && "props" in node) {
-    const element = node as ReactElement<any>;
+  if (isValidElement<PropsWithChildren<Record<string, unknown>>>(node)) {
+    const element = node;
     return [element, ...elements(element.props.children)];
   }
   return [];
@@ -159,33 +186,40 @@ const processProps = () => ({
   refresh: vi.fn(),
   notify: vi.fn(),
 });
-const commandProcess = () => ({
-  id: "command",
-  agent: "lead",
-  created: 2,
-  status: "running",
-  source: "codex_task",
-  key: "command-key",
-  generation: "generation",
-  accountKey: "default",
-  epoch: 1,
-  output: "Streamed command output",
-  capabilities: {
-    readOutput: true,
-    sendInput: true,
-    resize: false,
-    stop: true,
-  },
-});
+const commandProcess = () =>
+  ({
+    id: "command",
+    name: "command",
+    agent: "lead",
+    created: 2,
+    status: "running" as const,
+    source: "codex_task",
+    key: "command-key",
+    generation: "generation",
+    accountKey: "default",
+    epoch: 1,
+    output: "Streamed command output",
+    capabilities: {
+      readOutput: true,
+      sendInput: true,
+      resize: false,
+      stop: true,
+    },
+  }) satisfies ResourceData<
+    Extract<ResourceRef, { kind: "processes" }>
+  >["processes"][number];
 it("an open process panel and its selected detail need only two distinct resource subscriptions", () => {
   h.nullRefs = 100;
-  h.data.set("tasks", []);
-  h.data.set("processes", { processes: [commandProcess()] });
+  h.data.set(
+    "tasks",
+    [] satisfies ResourceData<Extract<ResourceRef, { kind: "tasks" }>>,
+  );
+  h.data.set("processes", {
+    processes: [commandProcess()],
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "processes" }>>);
   const view = render(() => BackgroundTasks(processProps()));
-  const detail = elements(view).find(
-    (node) => node.props.canStop !== undefined,
-  )!;
-  render(() => (detail.type as Function)(detail.props), 100);
+  const detail = elements(view).find(isTaskDetail)!;
+  render(() => TaskDetail(detail.props), 100);
   expect(h.refs).toEqual([
     { kind: "tasks", agentId: "lead" },
     { kind: "processes", agentId: "lead" },
@@ -199,7 +233,9 @@ it("process rows use streamed task-only records and authoritative process output
     { id: "stale", agent: "lead", created: 1, status: "running", kind: "tool" },
   ];
   const process = commandProcess();
-  h.data.set("processes", { processes: [process] });
+  h.data.set("processes", { processes: [process] } satisfies ResourceData<
+    Extract<ResourceRef, { kind: "processes" }>
+  >);
   h.data.set("tasks", [
     { ...process, kind: "command", tail: "Older task output" },
     {
@@ -216,12 +252,13 @@ it("process rows use streamed task-only records and authoritative process output
       created: 1,
       status: "running",
       kind: "tool",
+      // @ts-expect-error TaskEntityDto omits legacy itemId metadata; the renderer still tolerates it.
       itemId: "task:background",
     },
-  ]);
+  ] satisfies ResourceData<Extract<ResourceRef, { kind: "tasks" }>>);
   const read = () => BackgroundTasks(props);
   const view = render(read);
-  const rows = elements(view).filter((node) => node.props.select);
+  const rows = elements(view).filter(isTaskStrip);
   expect(rows.map((node) => node.props.task.id).sort()).toEqual([
     "claude",
     "command",
@@ -230,13 +267,13 @@ it("process rows use streamed task-only records and authoritative process output
   expect(
     rows.find((node) => node.props.task.id === "command")!.props.task.tail,
   ).toBe("Streamed command output");
-  const detail = elements(view).find(
-    (node) => node.props.canStop !== undefined,
-  )!;
-  const detailView = render(() => (detail.type as Function)(detail.props), 100);
+  const detail = elements(view).find(isTaskDetail)!;
+  const detailView = render(() => TaskDetail(detail.props), 100);
   expect(
-    elements(detailView).find((node) =>
-      node.props.className?.startsWith("task-output"),
+    elements(detailView).find(
+      (node) =>
+        typeof node.props.className === "string" &&
+        node.props.className.startsWith("task-output"),
     )!.props.children,
   ).toBe("Streamed command output");
   expect(detail.props.canStop).toBe(true);
@@ -249,20 +286,21 @@ it("process rows use streamed task-only records and authoritative process output
         cancelRequested: true,
       },
     ],
-  });
-  const updated = elements(render(read)).find(
-    (node) => node.props.canStop !== undefined,
-  )!;
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "processes" }>>);
+  const updated = elements(render(read)).find(isTaskDetail)!;
   expect(updated.key).toBe(detail.key);
   expect(updated.props.task).toMatchObject({
     tail: "Updated output",
     error: "Streamed error",
     cancelRequested: true,
   });
-  h.data.set("tasks", []);
+  h.data.set(
+    "tasks",
+    [] satisfies ResourceData<Extract<ResourceRef, { kind: "tasks" }>>,
+  );
   expect(
     elements(render(read))
-      .filter((node) => node.props.select)
+      .filter(isTaskStrip)
       .map((node) => node.props.task.id),
   ).toEqual(["command"]);
   expect(h.get).not.toHaveBeenCalled();
@@ -284,7 +322,9 @@ it.each([false, true])(
 );
 it("task-only stream failures remain visible beside available process rows", () => {
   h.nullRefs = 100;
-  h.data.set("processes", { processes: [commandProcess()] });
+  h.data.set("processes", {
+    processes: [commandProcess()],
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "processes" }>>);
   h.statuses.set("tasks", "error");
   h.errors.set("tasks", new Error("Task stream unavailable"));
   const nodes = elements(render(() => BackgroundTasks(processProps())));
@@ -294,14 +334,16 @@ it("task-only stream failures remain visible beside available process rows", () 
       .flatMap((node) => node.props.children)
       .join(""),
   ).toContain("Task stream unavailable");
-  expect(
-    nodes.filter((node) => node.props.select).map((node) => node.props.task.id),
-  ).toEqual(["command"]);
+  expect(nodes.filter(isTaskStrip).map((node) => node.props.task.id)).toEqual([
+    "command",
+  ]);
   expect(h.get).not.toHaveBeenCalled();
 });
 it("process owner/task events consume process records without GET /api/processes", () => {
   h.nullRefs = 100;
-  h.data.set("processes", { processes: [] });
+  h.data.set("processes", { processes: [] } satisfies ResourceData<
+    Extract<ResourceRef, { kind: "processes" }>
+  >);
   const props = {
     opened: true,
     close: vi.fn(),
@@ -312,7 +354,9 @@ it("process owner/task events consume process records without GET /api/processes
     notify: vi.fn(),
   };
   render(() => BackgroundTasks(props));
-  h.data.set("processes", { processes: [] });
+  h.data.set("processes", { processes: [] } satisfies ResourceData<
+    Extract<ResourceRef, { kind: "processes" }>
+  >);
   render(() =>
     BackgroundTasks({
       ...props,
@@ -327,26 +371,39 @@ it("process owner/task events consume process records without GET /api/processes
 });
 it("work changes consume the stream without GET /api/work", () => {
   h.nullRefs = 100;
-  h.data.set("agentDetail", { id: "lead", taskDefaultGate: null });
+  h.data.set("agentDetail", {
+    id: "lead",
+    taskDefaultGate: null,
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "agentDetail" }>>);
   const task = {
+    created: 1,
+    updated: 1,
+    version: 1,
     id: "work",
     rootId: "lead",
     title: "Before",
     status: "running",
-  };
-  h.data.set("work", { items: [task], tasks: [] });
+  } satisfies ResourceData<
+    Extract<ResourceRef, { kind: "work" }>
+  >["items"][number];
+  h.data.set("work", { items: [task], tasks: [] } satisfies ResourceData<
+    Extract<ResourceRef, { kind: "work" }>
+  >);
   const titles = () =>
     elements(render(() => Tasks({ agentId: "lead" })))
       .filter((node) => node.type === "strong")
       .map((node) => node.props.children);
   expect(titles()).toContain("Before");
-  h.data.set("work", { items: [{ ...task, title: "After" }], tasks: [] });
+  h.data.set("work", {
+    items: [{ ...task, title: "After" }],
+    tasks: [],
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "work" }>>);
   expect(titles()).toContain("After");
   expect(h.get).not.toHaveBeenCalled();
 });
 it("complaint version changes consume streamed detail without GET /api/complaint", () => {
   h.nullRefs = 100;
-  const props = {
+  const props: ComponentProps<typeof UserMessage> = {
     message: { id: "message", version: 1 },
     data: snapshot(),
     focused: false,
@@ -354,20 +411,20 @@ it("complaint version changes consume streamed detail without GET /api/complaint
     pendingKey: "replies",
     refresh: vi.fn(),
     notify: vi.fn(),
-  } as any;
+  };
   h.data.set("complaint", {
     id: "message",
     version: 1,
     text: "First",
     responses: [],
-  });
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "complaint" }>>);
   render(() => UserMessage(props));
   h.data.set("complaint", {
     id: "message",
     version: 2,
     text: "Updated",
     responses: [],
-  });
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "complaint" }>>);
   render(() =>
     UserMessage({ ...props, message: { ...props.message, version: 2 } }),
   );
@@ -380,8 +437,12 @@ it.each(["agent", "room"] as const)(
     h.data.set(
       kind === "agent" ? "transcript" : "room",
       kind === "agent"
-        ? { items: [{ id: "new", role: "assistant", text: "Streamed" }] }
-        : {
+        ? ({
+            items: [{ id: "new", role: "assistant", text: "Streamed" }],
+          } satisfies ResourceData<
+            Extract<ResourceRef, { kind: "transcript" }>
+          >)
+        : ({
             messages: [
               {
                 id: "new",
@@ -392,7 +453,7 @@ it.each(["agent", "room"] as const)(
               },
             ],
             room: { id: "team" },
-          },
+          } satisfies ResourceData<Extract<ResourceRef, { kind: "room" }>>),
     );
     const read = () =>
       useMessages("team", kind, false, "workspace", "workspace");
@@ -403,7 +464,10 @@ it.each(["agent", "room"] as const)(
 );
 it("keeps live agent transport after visiting a stale room in the same component", () => {
   h.nullRefs = 100;
-  h.data.set("room", { messages: [], room: { id: "team" } });
+  h.data.set("room", {
+    messages: [],
+    room: { id: "team" },
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "room" }>>);
   h.statuses.set("room", "stale");
   const agent = () =>
     useMessages("lead", "agent", true, "workspace", "workspace");
@@ -445,7 +509,7 @@ it("terminal hints apply Unicode appends without GET /api/terminals/output", asy
     offset: 2,
     status: "running",
     truncated: false,
-  });
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "terminal-output" }>>);
   const read = () => ShellView({ shell, notify: vi.fn() });
   render(read);
   await vi.waitFor(() => expect(h.writes).toEqual(["a🙂"]));
@@ -454,7 +518,7 @@ it("terminal hints apply Unicode appends without GET /api/terminals/output", asy
     offset: 3,
     status: "running",
     truncated: false,
-  });
+  } satisfies ResourceData<Extract<ResourceRef, { kind: "terminal-output" }>>);
   render(read);
   expect(h.writes).toEqual(["a🙂", "中"]);
   expect(h.get).not.toHaveBeenCalled();

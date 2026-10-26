@@ -1,10 +1,12 @@
+import type { ComponentHookCell } from "./componentTestFixtures";
+import type { EffectCallback } from "react";
 import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Agent, Snapshot } from "../types";
 
 const h = vi.hoisted(() => ({
   cursor: 0,
-  cells: [] as any[],
+  cells: [] as ComponentHookCell[],
   effects: [] as Array<() => unknown>,
   get: vi.fn(async () => ({
     items: [],
@@ -31,14 +33,14 @@ vi.mock("react", async (original) => {
       ];
     },
     useMemo: (compute: () => unknown) => compute(),
-    useEffect: (effect: () => unknown, deps: unknown[]) => {
+    useEffect: (effect: EffectCallback, deps: unknown[]) => {
       const index = h.cursor++;
       const previous = h.cells[index];
-      if (!previous || deps.some((value, i) => value !== previous.deps[i])) {
+      if (!previous || deps.some((value, i) => value !== previous.deps?.[i])) {
         previous?.cleanup?.();
         h.cells[index] = { deps };
         h.effects.push(() => {
-          required(h.cells[index]).cleanup = effect();
+          required(h.cells[index]).cleanup = effect() || undefined;
         });
       }
     },

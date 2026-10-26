@@ -1,3 +1,6 @@
+import type { ComponentHookCell } from "../componentTestFixtures";
+import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
+import assert from "node:assert/strict";
 import { required } from "../componentTestFixtures";
 import {
   createElement,
@@ -9,7 +12,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Agent } from "../../types";
 
 const h = vi.hoisted(() => ({
-  cells: new Map<string, any[]>(),
+  cells: new Map<string, ComponentHookCell[]>(),
   scope: "",
   scoped: "",
   cursor: 0,
@@ -43,11 +46,11 @@ vi.mock("react", async (load) => ({
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
-    if (!previous || deps.some((value, i) => value !== previous.deps[i]))
+    if (!previous || deps.some((value, i) => value !== previous.deps?.[i]))
       cells[index] = { deps, value: compute() };
     return required(cells[index]).value;
   },
-  useEffect: (effect: () => unknown, deps: unknown[]) => {
+  useEffect: (effect: EffectCallback, deps: unknown[]) => {
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
@@ -57,10 +60,10 @@ vi.mock("react", async (load) => ({
       deps.some((value, i) => value !== previous.deps?.[i])
     ) {
       previous?.cleanup?.();
-      const cell = { deps, cleanup: undefined as unknown };
+      const cell: ComponentHookCell = { deps };
       cells[index] = cell;
       h.effects.push(() => {
-        cell.cleanup = effect();
+        cell.cleanup = effect() || undefined;
       });
     }
   },
@@ -93,20 +96,26 @@ vi.mock("./WorkerModelPicker", async (load) => ({
     retry: vi.fn(),
   }),
 }));
+import { AgentSetupPicker } from "./AgentSetupPicker";
 import { ExecutionSettings } from "./ExecutionSettings";
 import { ExecutionSummaryTrigger } from "./ExecutionSummaryTrigger";
 
-function children(node: ReactNode): ReactElement<any>[] {
+function children(
+  node: ReactNode,
+): ReactElement<PropsWithChildren<Record<string, unknown>>>[] {
   if (Array.isArray(node)) return node.flatMap(children);
   if (!isValidElement<{ children?: ReactNode }>(node)) return [];
   return [node, ...children(node.props.children)];
 }
-function invoke(element: ReactElement<any>) {
-  const component = element.type as (props: any) => ReactElement<any>;
+function invoke(element: ReactElement<unknown>) {
+  const component: unknown = element.type;
+  assert.ok(typeof component === "function");
   h.scope = component.name + (element.key || "");
   h.cursor = 0;
   if (!h.cells.has(h.scope)) h.cells.set(h.scope, []);
-  return component(element.props);
+  const result: unknown = component(element.props);
+  assert.ok(isValidElement<PropsWithChildren<Record<string, unknown>>>(result));
+  return result;
 }
 const initial: Agent = {
   id: "lead",
@@ -157,6 +166,15 @@ function render(agent = initial) {
     (node) =>
       typeof node.type === "function" && node.type.name === "AgentSetupPicker",
   )!;
+  assert.ok(
+    isValidElement<ComponentProps<typeof ExecutionSummaryTrigger>>(
+      menu.props.trigger,
+    ),
+  );
+  assert.ok(
+    isValidElement<ComponentProps<typeof AgentSetupPicker>>(picker) &&
+      picker.type === AgentSetupPicker,
+  );
   const trigger = invoke(menu.props.trigger);
   const model = children(trigger).find(
     (node) => node.props.className === "execution-model",
