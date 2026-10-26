@@ -1,10 +1,9 @@
-import { requiredFixtureValue } from "./browser-fixture.ts";
 declare global {
   interface Window {
-    multiServerNotifications: (Pick<Notification, "title"> & {
+    __studioNotifications: (Pick<Notification, "title"> & {
       options?: NotificationOptions | undefined;
     })[];
-    restoreMultiServerDraftStorage: () => void;
+    __restoreDraftStorage: () => void;
   }
 }
 import type { ServerFixture } from "./browser-fixture.ts";
@@ -24,11 +23,12 @@ test("one UI routes overlapping chats to two and three signed servers without re
   test.setTimeout(180000);
   page.setDefaultTimeout(15000);
   const chatByServer = (id: string, root = page) => {
-    const alias = new Map([
-      ["local", "LOC"],
-      ["remote", "REM"],
-      ["third", "THI"],
-    ]).get(id);
+    const alias = (
+      { local: "LOC", remote: "REM", third: "THI" } satisfies Record<
+        string,
+        string
+      >
+    )[id as "local" | "remote" | "third"];
     if (!alias) throw new Error(`Unknown fixture server ${id}`);
     return root.locator("#chat-list .chat-row").filter({
       has: root.locator(`.chat-server-line[aria-label$=", ${alias}"]`),
@@ -41,12 +41,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     );
     const position = await chat.evaluate((element) => {
       const row = element.getBoundingClientRect();
-      const root = (
-        document.querySelector("#root") ??
-        (() => {
-          throw new Error("Missing fixture value");
-        })()
-      ).getBoundingClientRect();
+      const root = document.querySelector("#root")!.getBoundingClientRect();
       const visibleHeight = Math.min(row.bottom, root.bottom) - row.top;
       if (visibleHeight <= 0) throw new Error("server chat row is not visible");
       return {
@@ -69,34 +64,25 @@ test("one UI routes overlapping chats to two and three signed servers without re
   try {
     await context.addInitScript(
       ({ destinations }) => {
-        window.multiServerNotifications = [];
-        window.Notification = class
-          extends EventTarget
-          implements Notification
-        {
-          static permission: NotificationPermission = "granted";
-          static requestPermission =
-            async (): Promise<NotificationPermission> => "granted";
-          title: string;
-          options: NotificationOptions | undefined;
-          body = "";
-          dir: NotificationDirection = "auto";
-          lang = "";
-          tag = "";
-          icon = "";
-          badge = "";
-          data: unknown = null;
-          requireInteraction = false;
-          silent = null;
-          onclick: Notification["onclick"] = null;
-          onclose: Notification["onclose"] = null;
-          onerror: Notification["onerror"] = null;
-          onshow: Notification["onshow"] = null;
+        window.__studioNotifications = [];
+        // The browser fixture replaces only the Notification surface it exercises.
+        const notificationWindow = window as Omit<Window, "Notification"> & {
+          Notification: {
+            new (
+              title: string,
+              options?: NotificationOptions,
+            ): Pick<Notification, "title" | "close">;
+            permission: NotificationPermission;
+          };
+        };
+        notificationWindow.Notification = class {
+          static permission = "granted" as const;
+          declare title: string;
+          declare options: NotificationOptions | undefined;
           constructor(title: string, options?: NotificationOptions) {
-            super();
             this.title = title;
             this.options = options;
-            window.multiServerNotifications.push(this);
+            window.__studioNotifications.push(this);
           }
           close() {}
         };
@@ -221,20 +207,16 @@ test("one UI routes overlapping chats to two and three signed servers without re
     expect(remote.pairs[0]).toBe(remote.pairs[1]);
     const cdp = await context.newCDPSession(page);
     await cdp.send("Performance.enable");
-    const browserCdp = await requiredFixtureValue(
-      context.browser(),
-    ).newBrowserCDPSession();
+    const browserCdp = await context.browser()!.newBrowserCDPSession();
     const measurements = [];
     const measure = async (
       servers: number,
       stage: string,
       startupMs: number,
     ) => {
-      let heap = requiredFixtureValue(
-        (await cdp.send("Performance.getMetrics")).metrics.find(
-          (row) => row.name === "JSHeapUsedSize",
-        ),
-      ).value;
+      let heap = (await cdp.send("Performance.getMetrics")).metrics.find(
+        (row) => row.name === "JSHeapUsedSize",
+      )!.value;
       for (const frame of page
         .frames()
         .filter((frame) => frame !== page.mainFrame())) {
@@ -243,18 +225,17 @@ test("one UI routes overlapping chats to two and three signed servers without re
           frameCdp = await context.newCDPSession(frame);
         } catch (error) {
           if (
-            error instanceof Error &&
-            error.message.includes("part of the parent frame's session")
+            (error as Error).message.includes(
+              "part of the parent frame's session",
+            )
           )
             continue;
           throw error;
         }
         await frameCdp.send("Performance.enable");
-        heap += requiredFixtureValue(
-          (await frameCdp.send("Performance.getMetrics")).metrics.find(
-            (row) => row.name === "JSHeapUsedSize",
-          ),
-        ).value;
+        heap += (await frameCdp.send("Performance.getMetrics")).metrics.find(
+          (row) => row.name === "JSHeapUsedSize",
+        )!.value;
         await frameCdp.detach();
       }
       const processes = await browserCdp.send("SystemInfo.getProcessInfo");
@@ -539,7 +520,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       await expect
         .poll(() =>
           page.evaluate(() =>
-            window.multiServerNotifications.some((row) =>
+            window.__studioNotifications.some((row) =>
               row.title.includes("Local chat: Reply ready"),
             ),
           ),
@@ -575,7 +556,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       .click();
     await expect.poll(() => remote.writes.length).toBe(1);
     expect(local.writes).toHaveLength(0);
-    expect(requiredFixtureValue(remote.writes[0]).text).toBe("remote draft");
+    expect(remote.writes[0]!.text).toBe("remote draft");
     await page
       .getByRole("button", { name: "Search chats", exact: true })
       .click();
@@ -592,7 +573,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     remote.offline(false);
     await expect(chatByServer("remote")).toBeVisible();
     await page.evaluate(() => {
-      window.multiServerNotifications = [];
+      window.__studioNotifications = [];
     });
     local.complete();
     third.complete();
@@ -600,11 +581,11 @@ test("one UI routes overlapping chats to two and three signed servers without re
       page.getByLabel("2 unread chats", { exact: true }),
     ).toHaveCount(0);
     await expect
-      .poll(() => page.evaluate(() => window.multiServerNotifications.length))
+      .poll(() => page.evaluate(() => window.__studioNotifications.length))
       .toBe(2);
     expect(
       await page.evaluate(() =>
-        window.multiServerNotifications.map((notice) => notice.title).sort(),
+        window.__studioNotifications.map((notice) => notice.title).sort(),
       ),
     ).toEqual([
       "Local: Local chat: Reply ready",
@@ -626,7 +607,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       await page
         .getByRole("button", {
           name:
-            requiredFixtureValue(page.viewportSize()).width <= 760
+            page.viewportSize()!.width <= 760
               ? "Back to chats"
               : "Toggle conversations",
           exact: true,
@@ -683,7 +664,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await remoteFrame
       .getByRole("button", {
         name:
-          requiredFixtureValue(page.viewportSize()).width <= 760
+          page.viewportSize()!.width <= 760
             ? "Back to chats"
             : "Toggle conversations",
         exact: true,
@@ -702,7 +683,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       const original = Storage.prototype.setItem;
       const put = IDBObjectStore.prototype.put,
         add = IDBObjectStore.prototype.add;
-      window.restoreMultiServerDraftStorage = () => {
+      window.__restoreDraftStorage = () => {
         Storage.prototype.setItem = original;
         IDBObjectStore.prototype.put = put;
         IDBObjectStore.prototype.add = add;
@@ -741,7 +722,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await expect(remoteFrame.locator("#message")).toHaveValue(
       "unsaved draft must stay open",
     );
-    await remoteWindow.evaluate(() => window.restoreMultiServerDraftStorage());
+    await remoteWindow.evaluate(() => window.__restoreDraftStorage());
     draftQuotaFault = false;
     await remoteWindow.evaluate(async () => {
       const registration =
@@ -811,9 +792,7 @@ test("phone HTTPS Serve route opens the normal App and its local session", async
       return response.status;
     });
     expect(sent).toBe(200);
-    expect(requiredFixtureValue(local.writes[0])._canvasToken).toBe(
-      "local-only",
-    );
+    expect(local.writes[0]!._canvasToken).toBe("local-only");
   } finally {
     await page.goto("about:blank").catch(() => {});
     await local.close();
