@@ -61,7 +61,7 @@ export type ApiGetOptions<
     : { query?: ApiQueryFor<Operation> | undefined }) &
   (
     | { etag?: never; readMetadata?: never }
-    | { etag?: string; readMetadata: Metadata }
+    | { etag?: string | undefined; readMetadata: Metadata }
   );
 
 export type ApiGetContract<
