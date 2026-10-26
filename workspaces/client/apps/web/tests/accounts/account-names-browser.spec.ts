@@ -195,10 +195,7 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
       ["light", 390],
     ] as const) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate(
-        (value) => window.accountNamesFixture.setTheme(value),
-        theme,
-      );
+      await page.evaluate((value) => window.setTheme(value), theme);
       await expect(page.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
         theme,

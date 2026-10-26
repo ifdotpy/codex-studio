@@ -217,14 +217,9 @@ test("Account settings errors", async () => {
         code: "new-code",
         metadata: { region: "fixture" },
       };
-      await page.evaluate(
-        (value) => window.accountErrorsFixture.changeError(value),
-        changed,
-      );
+      await page.evaluate((value) => window.changeError(value), changed);
       limitsHttpFailure = true;
-      await page.evaluate(() =>
-        window.accountErrorsFixture.showSurface("accounts"),
-      );
+      await page.evaluate(() => window.showSurface("accounts"));
       const manager = page.locator(".accounts-manager-inline");
       await manager.waitFor();
       await details(changed, manager);
@@ -328,10 +323,7 @@ test("Account settings errors", async () => {
       assert.equal(await limits.getByText(/7d\s+80%\s+left/).count(), 1);
       await page.keyboard.press("Escape");
       for (const section of ["rules", "changes", "tools"]) {
-        await page.evaluate(
-          (value) => window.accountErrorsFixture.showSurface(value),
-          section,
-        );
+        await page.evaluate((value) => window.showSurface(value), section);
         if (section === "tools")
           await page
             .getByText("Some tools could not load. View details.", {

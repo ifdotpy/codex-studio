@@ -109,7 +109,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       folders: [{ id: "review", name: "Review", parentId: null }],
     },
   ];
-  const archivedAccounts: Account[] = [];
+  const archivedAccounts: import("../../src/apiTypes.ts").JsonInputOf<Account>[] =
+    [];
   let conflict = false;
   const defaultAccountKey = "default";
   const makeLead = (
@@ -218,13 +219,13 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       if (body.action === "set_worker_base") {
         assert.equal(body.expected_revision, project!.workerBaseRevision);
         project!.workerBaseRef = body.base_ref;
-        project!.workerBaseRevision = project!.workerBaseRevision! + 1;
+        project!.workerBaseRevision!++;
         return json(project);
       }
       assert.equal(body.expected_revision, project!.accountRevision);
       project!.accountKey = body.account_key;
       project!.accountKeys = body.account_keys;
-      project!.accountRevision = project!.accountRevision! + 1;
+      project!.accountRevision!++;
       return json(project);
     }
     if (url.pathname === "/api/transcript/stream") {
@@ -344,10 +345,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       await page.emulateMedia({ colorScheme });
       await dialog.evaluate(
         () =>
-          new Promise((resolve) =>
-            requestAnimationFrame(() =>
-              requestAnimationFrame(() => resolve(undefined)),
-            ),
+          new Promise<number>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
           ),
       );
       await page.screenshot({
@@ -421,7 +420,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       },
     );
     const removed = accounts.splice(2, 1)[0]!;
-    archivedAccounts.push(Object.assign(removed, { deleted: true }));
+    archivedAccounts.push({ ...removed, deleted: true });
     projects[0]!.accountKey = removed.id;
     projects[0]!.accountKeys = ["work", removed.id];
     await page.reload();

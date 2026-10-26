@@ -194,7 +194,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .click();
     assert.equal(
-      await page.evaluate(() => window.claudeSettingsAuthFixture.signInAccount),
+      await page.evaluate(() => window.signInAccount),
       "claude-work",
     );
     await page

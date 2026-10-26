@@ -144,15 +144,11 @@ test("Native runtime status", async ({ context }) => {
       return route.fulfill({ json: { accounts: [], data: null } });
     });
     await page.goto(fixtureUrl(server, "check"));
-    await page.waitForFunction(
-      () => !!window.nativeRuntimeFixture?.setRuntimeOpen,
-    );
+    await page.waitForFunction(() => !!window.setRuntimeOpen);
     await page.clock.install();
     await page.clock.runFor(12000);
     assert.equal(reads, 0, "Closed panel must not read diagnostics");
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setRuntimeOpen!(true),
-    );
+    await page.evaluate(() => window.setRuntimeOpen!(true));
     await page.getByText("Version details", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Codex runtime" });
     const providerPanel = page.getByRole("region", {
@@ -204,9 +200,7 @@ test("Native runtime status", async ({ context }) => {
       0,
     );
     await page.keyboard.press("Escape");
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setWarningAccount!("claude"),
-    );
+    await page.evaluate(() => window.setWarningAccount!("claude"));
     await page.getByRole("button", { name: "Warnings", exact: true }).click();
     await warningsDialog
       .locator("p")
@@ -230,9 +224,7 @@ test("Native runtime status", async ({ context }) => {
       },
     };
     const readsBeforeRefresh = reads;
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-accounts")
@@ -251,9 +243,7 @@ test("Native runtime status", async ({ context }) => {
         },
       },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -272,9 +262,7 @@ test("Native runtime status", async ({ context }) => {
       },
       providerVersions: { checkedAt: 1790092590, providers: [] },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -302,9 +290,7 @@ test("Native runtime status", async ({ context }) => {
         warnings: [],
       },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await panel.waitFor({ state: "detached" });
     await providerPanel.waitFor();
     assert.match(
@@ -317,17 +303,13 @@ test("Native runtime status", async ({ context }) => {
     body = {
       providerVersions: { checkedAt: 1790092610, providers: [] },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".provider-version-status")
         ?.textContent.includes("No connected provider CLIs were found"),
     );
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setRuntimeOpen!(false),
-    );
+    await page.evaluate(() => window.setRuntimeOpen!(false));
     const beforeClose = reads;
     await page.clock.runFor(30000);
     assert.equal(reads, beforeClose, "Close must stop polling");
@@ -339,32 +321,24 @@ test("Native runtime status", async ({ context }) => {
         const request = new Request(input, init);
         if (new URL(request.url).pathname === "/api/desktop") {
           window.fetch = original;
-          window.nativeRuntimeFixture.delayedRuntimeSignal = request.signal;
+          window.delayedRuntimeSignal = request.signal;
           return new Promise<Response>((resolve) => {
-            window.nativeRuntimeFixture.finishOldRuntimeRead = resolve;
+            window.finishOldRuntimeRead = resolve;
           });
         }
         return original(input, init);
       };
-      window.nativeRuntimeFixture.setRuntimeOpen!(true);
+      window.setRuntimeOpen!(true);
     });
-    await page.waitForFunction(
-      () => !!window.nativeRuntimeFixture.finishOldRuntimeRead,
-    );
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setRuntimeOpen!(false),
-    );
-    await page.waitForFunction(
-      () => window.nativeRuntimeFixture.delayedRuntimeSignal!.aborted,
-    );
+    await page.waitForFunction(() => !!window.finishOldRuntimeRead);
+    await page.evaluate(() => window.setRuntimeOpen!(false));
+    await page.waitForFunction(() => window.delayedRuntimeSignal!.aborted);
     body = { nativeRuntime: initial };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setRuntimeOpen!(true),
-    );
+    await page.evaluate(() => window.setRuntimeOpen!(true));
     await page.getByText("Version details", { exact: true }).click();
     await panel.waitFor();
     await page.evaluate(() =>
-      window.nativeRuntimeFixture.finishOldRuntimeRead!(
+      window.finishOldRuntimeRead!(
         new Response(JSON.stringify({ nativeRuntime: null }), {
           headers: { "Content-Type": "application/json" },
         }),

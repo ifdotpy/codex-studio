@@ -102,7 +102,8 @@ test("account project ui", async ({ browser: _browser }) => {
       folders: [{ id: "review", name: "Review", parentId: null }],
     },
   ];
-  const archivedAccounts: Account[] = [];
+  const archivedAccounts: import("../../src/apiTypes.ts").JsonInputOf<Account>[] =
+    [];
   let loseCreation = false;
   let holdCreation = false;
   let releaseCreation: (() => void) | undefined;
@@ -275,7 +276,7 @@ test("account project ui", async ({ browser: _browser }) => {
       );
       assert.notEqual(index, -1);
       const deleted = accounts.splice(index, 1)[0]!;
-      archivedAccounts.push(Object.assign(deleted, { deleted: true }));
+      archivedAccounts.push({ ...deleted, deleted: true });
       return json({
         accounts,
         archivedAccounts,
@@ -309,13 +310,13 @@ test("account project ui", async ({ browser: _browser }) => {
       if (body.action === "set_worker_base") {
         assert.equal(body.expected_revision, project!.workerBaseRevision);
         project!.workerBaseRef = body.base_ref;
-        project!.workerBaseRevision = project!.workerBaseRevision! + 1;
+        project!.workerBaseRevision!++;
         return json(project);
       }
       assert.equal(body.expected_revision, project!.accountRevision);
       project!.accountKey = body.account_key;
       project!.accountKeys = body.account_keys;
-      project!.accountRevision = project!.accountRevision! + 1;
+      project!.accountRevision!++;
       return json(project);
     }
     if (url.pathname === "/api/conversation") {
@@ -1008,10 +1009,8 @@ test("account project ui", async ({ browser: _browser }) => {
     }, pendingKey);
     await page.evaluate(
       () =>
-        new Promise((resolve) =>
-          requestAnimationFrame(() =>
-            requestAnimationFrame(() => resolve(undefined)),
-          ),
+        new Promise<number>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
         ),
     );
     assert.equal(
@@ -1029,10 +1028,8 @@ test("account project ui", async ({ browser: _browser }) => {
     }, pendingKey);
     await page.evaluate(
       () =>
-        new Promise((resolve) =>
-          requestAnimationFrame(() =>
-            requestAnimationFrame(() => resolve(undefined)),
-          ),
+        new Promise<number>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
         ),
     );
     assert.equal(
@@ -1072,10 +1069,8 @@ test("account project ui", async ({ browser: _browser }) => {
     await delayedCreate;
     await page.evaluate(
       () =>
-        new Promise((resolve) =>
-          requestAnimationFrame(() =>
-            requestAnimationFrame(() => resolve(undefined)),
-          ),
+        new Promise<number>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
         ),
     );
     assert.equal(

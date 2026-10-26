@@ -21,19 +21,17 @@ export type PickerScene =
   | "chat-account"
   | "project"
   | "shared";
-type UnifiedPickerHarness = {
-  whitelist: (value: Parameters<typeof writeModelWhitelist>[0]) => void;
-  calls: PickerCall[];
-  agent: Agent;
-  updateAgent?: (agent: Agent) => void;
-  scene?: (scene: PickerScene) => void;
-  scheme?: (scheme: "light" | "dark") => void;
-  reset?: () => void;
-  created: string;
-};
+
 declare global {
   interface Window {
-    unifiedPickerFixture: UnifiedPickerHarness;
+    whitelist: (value: Parameters<typeof writeModelWhitelist>[0]) => void;
+    pickerCalls: PickerCall[];
+    agent: Agent;
+    updateAgent: (agent: Agent) => void;
+    scene: (scene: PickerScene) => void;
+    scheme: (scheme: "light" | "dark") => void;
+    pickerReset: () => void;
+    created: string;
   }
 }
 const fixtureRoot = document.getElementById("root");
@@ -116,13 +114,8 @@ const initial: Agent = {
   workerDefaults: { model: "gpt-6-luna", effort: "high", fastMode: false },
   reviewDefaults: { model: null, effort: null },
 };
-// Partial fixture view: render initializes the harness callbacks before the spec calls them.
-window.unifiedPickerFixture = {
-  whitelist: (value) => writeModelWhitelist(value, "local"),
-  calls: [],
-  agent: initial,
-  created: "",
-};
+window.whitelist = (value) => writeModelWhitelist(value, "local");
+window.pickerCalls = [];
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(
@@ -165,9 +158,9 @@ window.fetch = async (input, options) => {
       | "/api/projects"
       | "/api/peer-teams"
     >(requestOptions.body);
-    window.unifiedPickerFixture.calls.push({ endpoint: u.pathname, ...body });
+    window.pickerCalls.push({ endpoint: u.pathname, ...body });
     if (u.pathname === "/api/conversation") {
-      const next = { ...window.unifiedPickerFixture.agent };
+      const next = { ...window.agent };
       if (body.worker_defaults)
         next.workerDefaults = {
           model: body.worker_defaults.model,
@@ -184,7 +177,7 @@ window.fetch = async (input, options) => {
           fastMode: body.fast_mode,
           daybreakEnabled: body.daybreak_enabled,
         });
-      window.unifiedPickerFixture.updateAgent!(next);
+      window.updateAgent!(next);
       result = next;
     } else if (u.pathname === "/api/agents/account-transfer") {
       result = {
@@ -197,8 +190,8 @@ window.fetch = async (input, options) => {
         moved: 0,
         completed: 0,
       };
-      window.unifiedPickerFixture.updateAgent!({
-        ...window.unifiedPickerFixture.agent,
+      window.updateAgent!({
+        ...window.agent,
         workerDefaults: {
           accountKey: body.account_key,
           model:
@@ -242,18 +235,15 @@ function Fixture() {
     [scene, setScene] = useState<PickerScene>("picker"),
     [scheme, setScheme] = useState<"light" | "dark">("dark"),
     [account, setAccount] = useState("account-0");
-  window.unifiedPickerFixture.agent = agent;
-  window.unifiedPickerFixture.updateAgent = (value) =>
-    flushSync(() => setAgent(value));
-  window.unifiedPickerFixture.scene = (value) =>
-    flushSync(() => setScene(value));
-  window.unifiedPickerFixture.scheme = (value) =>
-    flushSync(() => setScheme(value));
-  window.unifiedPickerFixture.reset = () =>
+  window.agent = agent;
+  window.updateAgent = (value) => flushSync(() => setAgent(value));
+  window.scene = (value) => flushSync(() => setScene(value));
+  window.scheme = (value) => flushSync(() => setScheme(value));
+  window.pickerReset = () =>
     flushSync(() => {
       setAgent(initial);
       setScene("picker");
-      window.unifiedPickerFixture.calls = [];
+      window.pickerCalls = [];
     });
   const data: Snapshot = fixtureSnapshot([]);
   data.stateDir = "fixture";
@@ -275,7 +265,7 @@ function Fixture() {
               retry: () => {},
             }}
             onAccountChange={(key) => {
-              window.unifiedPickerFixture.calls.push({
+              window.pickerCalls.push({
                 path: "account-selection",
                 key,
               });
@@ -350,7 +340,7 @@ function Fixture() {
             initialPath="/fixture/project"
             refresh={async () => {}}
             created={(id) => {
-              window.unifiedPickerFixture.created = id;
+              window.created = id;
             }}
           />
         )}

@@ -306,10 +306,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       ["dark", 390],
     ] as const) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate(
-        (color) => window.accountsCardsFixture.setTheme(color),
-        color,
-      );
+      await page.evaluate((color) => window.setTheme(color), color);
       await expect(page.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
         color,

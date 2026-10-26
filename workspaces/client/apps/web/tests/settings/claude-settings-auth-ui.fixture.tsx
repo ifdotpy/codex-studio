@@ -3,7 +3,7 @@ import type { Account } from "../../src/components/Accounts.tsx";
 import { fixtureAccount } from "./fixture-helpers.ts";
 declare global {
   interface Window {
-    claudeSettingsAuthFixture: { signInAccount: string };
+    signInAccount: string;
   }
 }
 const fixtureRoot = document.getElementById("root");
@@ -37,7 +37,7 @@ function Fixture() {
         agent={agent}
         account={account}
         onSignIn={(key) => {
-          window.claudeSettingsAuthFixture = { signInAccount: key };
+          window.signInAccount = key;
           setLogin(true);
         }}
       />

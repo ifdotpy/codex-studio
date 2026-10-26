@@ -3,22 +3,17 @@ import { emitRuntimeChange } from "./native-runtime-resource-events.fixture.ts";
 import { fixtureAccount } from "./fixture-helpers.ts";
 import type { AccountsState } from "../../src/components/Accounts.tsx";
 import type { ResourceRef } from "../../src/sync/resourceEvents.ts";
-type NativeRuntimeHarness = {
-  setRuntimeOpen?: (opened: boolean) => void;
-  setWarningAccount?: (key: string) => void;
-  emitRuntimeChange: (kind: ResourceRef["kind"]) => void;
-  delayedRuntimeSignal?: AbortSignal;
-  finishOldRuntimeRead?: ((response: Response) => void) | null;
-};
+
 declare global {
   interface Window {
-    nativeRuntimeFixture: NativeRuntimeHarness;
+    setRuntimeOpen: (opened: boolean) => void;
+    setWarningAccount: (key: string) => void;
+    emitRuntimeChange: (kind: ResourceRef["kind"]) => void;
+    delayedRuntimeSignal: AbortSignal;
+    finishOldRuntimeRead: ((response: Response) => void) | null;
   }
 }
-// Partial fixture view: render initializes the harness callbacks before the spec calls them.
-window.nativeRuntimeFixture = {
-  emitRuntimeChange,
-};
+window.emitRuntimeChange = emitRuntimeChange;
 const fixtureRoot = document.getElementById("root");
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -70,8 +65,8 @@ function Fixture() {
   const [opened, setOpened] = useState(false);
   const [integrated, setIntegrated] = useState(false);
   const [warningAccount, setWarningAccount] = useState("default");
-  window.nativeRuntimeFixture.setRuntimeOpen = setOpened;
-  window.nativeRuntimeFixture.setWarningAccount = setWarningAccount;
+  window.setRuntimeOpen = setOpened;
+  window.setWarningAccount = setWarningAccount;
   return (
     <MantineProvider>
       <main style={{ maxWidth: 600, padding: 12 }}>

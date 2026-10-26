@@ -95,17 +95,13 @@ test("Daybreak settings", async ({ context }) => {
       }),
     );
     await page.goto(fixtureUrl(server, "check"));
-    await page.waitForFunction(
-      () => !!window.daybreakFixture?.reset,
-      undefined,
-      {
-        timeout: 5_000,
-      },
-    );
+    await page.waitForFunction(() => !!window.reset, undefined, {
+      timeout: 5_000,
+    });
     const reset = async (options?: DaybreakReset) => {
       await page.evaluate((options) => {
         localStorage.clear();
-        window.daybreakFixture.reset!(options);
+        window.reset!(options);
       }, options);
       await page
         .getByRole("button", {
@@ -126,14 +122,13 @@ test("Daybreak settings", async ({ context }) => {
     const settled = async () =>
       page.waitForFunction(
         () =>
-          window.daybreakFixture.refreshCount ===
-            window.daybreakFixture.calls.length &&
-          window.daybreakFixture.calls.length > 0,
+          window.refreshCount === window.calls.length &&
+          window.calls.length > 0,
       );
     const clearActivity = () =>
       page.evaluate(() => {
-        window.daybreakFixture.calls = [];
-        window.daybreakFixture.refreshCount = 0;
+        window.calls = [];
+        window.refreshCount = 0;
       });
 
     const enable = async (defaults = false) => {
@@ -161,17 +156,14 @@ test("Daybreak settings", async ({ context }) => {
     assert.equal(await modelOptionDisabled(model(), "daybreak-only"), true);
     await enable();
     await settled();
-    assert.deepEqual(
-      await page.evaluate(() => window.daybreakFixture.calls[0]),
-      {
-        id: "first",
-        expected_account_key: "default",
-        model: "gpt-5.6-sol",
-        effort: "high",
-        fast_mode: true,
-        daybreak_enabled: true,
-      },
-    );
+    assert.deepEqual(await page.evaluate(() => window.calls[0]), {
+      id: "first",
+      expected_account_key: "default",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      fast_mode: true,
+      daybreak_enabled: true,
+    });
     assert.equal(await modelValue(model()), "gpt-5.6-sol");
     assert.equal(await mode().isChecked(), true);
     assert.equal(await modelOptionDisabled(model(), "gpt-6-astra"), true);
@@ -187,15 +179,15 @@ test("Daybreak settings", async ({ context }) => {
       await page.screenshot({ path: process.env.SCREENSHOT });
     // A stale replication snapshot must not erase the acknowledged mode.
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent!({
-        ...window.daybreakFixture.agent,
+      window.setAgent!({
+        ...window.agent,
         tail: "Unrelated update",
       }),
     );
     assert.equal(await mode().isChecked(), true);
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent!({
-        ...window.daybreakFixture.agent,
+      window.setAgent!({
+        ...window.agent,
         model: "gpt-5.6-sol",
         daybreakEnabled: true,
       }),
@@ -204,8 +196,8 @@ test("Daybreak settings", async ({ context }) => {
       () => new Promise((resolve) => requestAnimationFrame(resolve)),
     );
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent!({
-        ...window.daybreakFixture.agent,
+      window.setAgent!({
+        ...window.agent,
         daybreakEnabled: false,
       }),
     );
@@ -227,9 +219,7 @@ test("Daybreak settings", async ({ context }) => {
     await settled();
     assert.equal(await modelValue(model()), "gpt-5.6-sol");
     assert.equal(
-      await page.evaluate(
-        () => window.daybreakFixture.calls[0]!.daybreak_enabled,
-      ),
+      await page.evaluate(() => window.calls[0]!.daybreak_enabled),
       false,
     );
     await reset({ agent: { model: "gpt-5.6-terra" } });
@@ -263,20 +253,17 @@ test("Daybreak settings", async ({ context }) => {
     );
 
     await reset({
+      // Partial fixture view: this negative model fixture omits serviceTiers.
       models: [
         {
           model: "gpt-6-astra",
-          serviceTiers: [],
           supportedReasoningEfforts: [{ reasoningEffort: "high" }],
         },
-      ],
+      ] as import("../../src/components/agents/WorkerModelPicker.tsx").WorkerModelInfo[],
     });
     assert.equal(await mode().count(), 0);
     assert.equal(await modelOptionDisabled(model(), "gpt-6-astra"), false);
-    assert.deepEqual(
-      await page.evaluate(() => window.daybreakFixture.calls),
-      [],
-    );
+    assert.deepEqual(await page.evaluate(() => window.calls), []);
     await reset({ agent: { model: "gpt-daybreak-blue-latest" } });
     assert.equal(
       await modelOptionDisabled(model(), "gpt-daybreak-blue-latest"),
@@ -297,27 +284,23 @@ test("Daybreak settings", async ({ context }) => {
 
     await reset({ agent: { status: "running" } });
     await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
-    await page.evaluate(() => (window.daybreakFixture.fail = "network"));
+    await page.evaluate(() => (window.fail = "network"));
     await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
-    const request = await page.evaluate(() => window.daybreakFixture.calls[0]);
+    const request = await page.evaluate(() => window.calls[0]);
     assert.equal(request!.next_turn, true);
     assert.equal(request!.daybreak_enabled, true);
     assert.equal(
-      await page.evaluate(() => window.daybreakFixture.agent.daybreakEnabled),
+      await page.evaluate(() => window.agent.daybreakEnabled),
       false,
     );
     assert.match(await page.locator("body").innerText(), /next turn/i);
     await page.reload();
-    await page.waitForFunction(
-      () => !!window.daybreakFixture?.reset,
-      undefined,
-      {
-        timeout: 5_000,
-      },
-    );
+    await page.waitForFunction(() => !!window.reset, undefined, {
+      timeout: 5_000,
+    });
     await page
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
@@ -326,7 +309,7 @@ test("Daybreak settings", async ({ context }) => {
       .click();
     await settled();
     assert.deepEqual(
-      await page.evaluate(() => window.daybreakFixture.calls[0]),
+      await page.evaluate(() => window.calls[0]),
       request,
       "Retry retains the exact mode and request identity",
     );
@@ -337,14 +320,14 @@ test("Daybreak settings", async ({ context }) => {
 
     await reset({ agent: { status: "running" } });
     await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
-    await page.evaluate(() => (window.daybreakFixture.fail = "network"));
+    await page.evaluate(() => (window.fail = "network"));
     await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent!({
-        ...window.daybreakFixture.agent,
+      window.setAgent!({
+        ...window.agent,
         accountKey: "second",
         model: "gpt-5.6-terra",
         daybreakEnabled: false,
@@ -370,7 +353,7 @@ test("Daybreak settings", async ({ context }) => {
       },
     });
     assert.equal(await mode().isChecked(), false);
-    await page.evaluate(() => (window.daybreakFixture.fail = "rejected"));
+    await page.evaluate(() => (window.fail = "rejected"));
     await enable();
     await page
       .getByRole("alert")
@@ -396,21 +379,18 @@ test("Daybreak settings", async ({ context }) => {
     });
     await enable(true);
     await settled();
-    assert.deepEqual(
-      await page.evaluate(() => window.daybreakFixture.calls[0]),
-      {
-        id: "first",
-        expected_account_key: "default",
-        worker_defaults: {
-          account_key: null,
-          model: "gpt-5.6-sol",
-          effort: "high",
-          fast_mode: false,
-          daybreak_enabled: true,
-          delegation_depth: 1,
-        },
+    assert.deepEqual(await page.evaluate(() => window.calls[0]), {
+      id: "first",
+      expected_account_key: "default",
+      worker_defaults: {
+        account_key: null,
+        model: "gpt-5.6-sol",
+        effort: "high",
+        fast_mode: false,
+        daybreak_enabled: true,
+        delegation_depth: 1,
       },
-    );
+    });
     assert.equal(
       await modelOptionDisabled(model(true), "__model_default__"),
       true,

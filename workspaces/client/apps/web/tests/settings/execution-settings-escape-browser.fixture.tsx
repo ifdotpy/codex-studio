@@ -18,6 +18,7 @@ const agent: Agent = {
   status: "idle",
   created: 1,
 };
+// Partial fixture view: the base models omit serviceTiers.
 const models = [
   {
     model: "gpt-6-astra",
@@ -25,9 +26,8 @@ const models = [
       { reasoningEffort: "low" },
       { reasoningEffort: "high" },
     ],
-    serviceTiers: [],
   },
-];
+] as import("../../src/components/agents/WorkerModelPicker.tsx").WorkerModelInfo[];
 function Fixture() {
   const [parent, setParent] = useState(true),
     [opened, setOpened] = useState(false),

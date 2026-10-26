@@ -77,25 +77,21 @@ test("Chat settings is one compact Team panel with account eligibility and no ta
       .getByRole("combobox", { name: "Delegation depth", exact: true })
       .selectOption("2");
     await page.waitForFunction(() =>
-      window.chatSettingsFixture.calls.some(
-        (call) => call.worker_defaults?.delegation_depth === 2,
-      ),
+      window.calls.some((call) => call.worker_defaults?.delegation_depth === 2),
     );
     await modal
       .getByRole("textbox", { name: "Subagent parallelism", exact: true })
       .fill("0");
     await modal.getByRole("button", { name: "Apply", exact: true }).click();
     await page.waitForFunction(() =>
-      window.chatSettingsFixture.calls.some(
-        (call) => call.subagent_concurrency === 0,
-      ),
+      window.calls.some((call) => call.subagent_concurrency === 0),
     );
     await expect(
       modal.getByRole("checkbox", { name: "Work 2", exact: true }),
     ).toBeVisible();
     await modal.getByRole("checkbox", { name: "Work 2", exact: true }).click();
     await page.waitForFunction(() =>
-      window.chatSettingsFixture.calls.some((call) =>
+      window.calls.some((call) =>
         call.excluded_account_keys?.includes("account-1"),
       ),
     );

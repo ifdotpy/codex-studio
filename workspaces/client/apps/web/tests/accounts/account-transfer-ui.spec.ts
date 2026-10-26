@@ -793,8 +793,8 @@ test("Account Transfer Ui", async ({
     assert.equal(
       bodies.filter(
         (b) =>
-          b.path === "/api/agents/account-transfer" &&
-          b.body.action === "finish_history",
+          fixtureRequest("/api/agents/account-transfer", b.body).body.action ===
+          "finish_history",
       ).length,
       0,
       "history needs no extra action",

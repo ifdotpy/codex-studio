@@ -28,33 +28,31 @@ export type CanonicalReset = {
   > & { workerDefaults?: Partial<NonNullable<Agent["workerDefaults"]>> | null };
   defaults?: boolean;
 };
-type CanonicalHarness = {
-  catalogRequests: string[];
-  calls: PostBody<"/api/conversation">[];
-  transfers: PostBody<"/api/agents/account-transfer">[];
-  transferFail: boolean;
-  transferHold: boolean;
-  transferReply: Partial<PostResult<"/api/agents/account-transfer">> | null;
-  pendingTransferProjection: Agent | null;
-  reply: Agent | null;
-  fail: string | null;
-  hold: boolean;
-  refreshFailure: boolean;
-  refreshHold: boolean;
-  refreshCount: number;
-  catalogHold: boolean;
-  catalogRelease: (() => void) | null;
-  release: (() => void) | null;
-  refreshRelease: (() => void) | null;
-  transferRelease: (() => void) | null;
-  serverAccount: string | null;
-  agent: Agent;
-  setAgent?: (value: Agent) => void;
-  reset?: (options?: CanonicalReset) => void;
-};
+
 declare global {
   interface Window {
-    canonicalSettingsFixture: CanonicalHarness;
+    catalogRequests: string[];
+    calls: PostBody<"/api/conversation">[];
+    transfers: PostBody<"/api/agents/account-transfer">[];
+    transferFail: boolean;
+    transferHold: boolean;
+    transferReply: Partial<PostResult<"/api/agents/account-transfer">> | null;
+    pendingTransferProjection: Agent | null;
+    reply: Agent | null;
+    canonicalFail: string | null;
+    hold: boolean;
+    refreshFailure: boolean;
+    refreshHold: boolean;
+    refreshCount: number;
+    catalogHold: boolean;
+    catalogRelease: (() => void) | null;
+    canonicalRelease: (() => void) | null;
+    refreshRelease: (() => void) | null;
+    transferRelease: (() => void) | null;
+    serverAccount: string | null;
+    agent: Agent;
+    setAgent: (value: Agent) => void;
+    canonicalReset: (options?: CanonicalReset) => void;
   }
 }
 const fixtureRoot = document.getElementById("root");
@@ -110,41 +108,31 @@ const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna"].map(
     availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
   }),
 );
-// Partial fixture view: render initializes the harness callbacks before the spec calls them.
-window.canonicalSettingsFixture = {
-  catalogRequests: [],
-  calls: [],
-  transfers: [],
-  transferFail: false,
-  transferHold: false,
-  transferReply: null,
-  pendingTransferProjection: null,
-  reply: null,
-  fail: null,
-  hold: false,
-  refreshFailure: false,
-  refreshHold: false,
-  refreshCount: 0,
-  catalogHold: false,
-  catalogRelease: null,
-  release: null,
-  refreshRelease: null,
-  transferRelease: null,
-  serverAccount: null,
-  agent: initial,
-};
-window.canonicalSettingsFixture.calls = [];
-window.canonicalSettingsFixture.transfers = [];
-window.canonicalSettingsFixture.transferFail = false;
-window.canonicalSettingsFixture.transferHold = false;
-window.canonicalSettingsFixture.transferReply = null;
-window.canonicalSettingsFixture.pendingTransferProjection = null;
-window.canonicalSettingsFixture.reply = null;
-window.canonicalSettingsFixture.fail = null;
-window.canonicalSettingsFixture.hold = false;
-window.canonicalSettingsFixture.refreshFailure = false;
-window.canonicalSettingsFixture.refreshHold = false;
-window.canonicalSettingsFixture.refreshCount = 0;
+window.catalogRequests = [];
+window.calls = [];
+window.transfers = [];
+window.transferFail = false;
+window.transferHold = false;
+window.transferReply = null;
+window.pendingTransferProjection = null;
+window.reply = null;
+window.canonicalFail = null;
+window.hold = false;
+window.refreshFailure = false;
+window.refreshHold = false;
+window.refreshCount = 0;
+window.calls = [];
+window.transfers = [];
+window.transferFail = false;
+window.transferHold = false;
+window.transferReply = null;
+window.pendingTransferProjection = null;
+window.reply = null;
+window.canonicalFail = null;
+window.hold = false;
+window.refreshFailure = false;
+window.refreshHold = false;
+window.refreshCount = 0;
 const fixtureResponse = (value: unknown, init: ResponseInit = {}) =>
   new Response(JSON.stringify(value), {
     ...init,
@@ -161,11 +149,9 @@ window.fetch = async (input, options) => {
     true,
   );
   if (String(url).startsWith("/api/models?")) {
-    window.canonicalSettingsFixture.catalogRequests.push(url);
-    if (window.canonicalSettingsFixture.catalogHold)
-      await new Promise<void>(
-        (resolve) => (window.canonicalSettingsFixture.catalogRelease = resolve),
-      );
+    window.catalogRequests.push(url);
+    if (window.catalogHold)
+      await new Promise<void>((resolve) => (window.catalogRelease = resolve));
     return fixtureResponse({
       data: String(url).includes("account_key=claude")
         ? [
@@ -184,15 +170,11 @@ window.fetch = async (input, options) => {
     const body = fixturePostBody<"/api/agents/account-transfer">(
       requestOptions?.body,
     );
-    window.canonicalSettingsFixture.transfers.push(body);
-    if (window.canonicalSettingsFixture.transferHold)
-      await new Promise<void>(
-        (resolve) =>
-          (window.canonicalSettingsFixture.transferRelease = resolve),
-      );
-    if (window.canonicalSettingsFixture.transferFail)
-      throw new TypeError("Connection lost");
-    const result = window.canonicalSettingsFixture.transferReply || {
+    window.transfers.push(body);
+    if (window.transferHold)
+      await new Promise<void>((resolve) => (window.transferRelease = resolve));
+    if (window.transferFail) throw new TypeError("Connection lost");
+    const result = window.transferReply || {
       id: body.request_id,
       leadId: "first",
       scope: body.scope,
@@ -210,40 +192,33 @@ window.fetch = async (input, options) => {
         },
       ],
     };
-    window.canonicalSettingsFixture.pendingTransferProjection = partialAgent({
-      ...window.canonicalSettingsFixture.agent,
+    window.pendingTransferProjection = partialAgent({
+      ...window.agent,
       workerDefaults: {
-        ...window.canonicalSettingsFixture.agent.workerDefaults,
+        ...window.agent.workerDefaults,
         accountKey: body.account_key,
       },
     });
     return fixtureResponse(result);
   }
   if (url != "/api/conversation") return nativeFetch(url, requestOptions);
-  window.canonicalSettingsFixture.calls.push(
-    fixturePostBody<"/api/conversation">(requestOptions?.body),
-  );
+  window.calls.push(fixturePostBody<"/api/conversation">(requestOptions?.body));
   if (
-    window.canonicalSettingsFixture.serverAccount &&
-    window.canonicalSettingsFixture.calls.at(-1)!.expected_account_key !==
-      window.canonicalSettingsFixture.serverAccount
+    window.serverAccount &&
+    window.calls.at(-1)!.expected_account_key !== window.serverAccount
   )
     return fixtureResponse(
       { error: "The account changed. Select the model again" },
       { status: 409 },
     );
-  if (window.canonicalSettingsFixture.hold)
-    await new Promise<void>(
-      (resolve) => (window.canonicalSettingsFixture.release = resolve),
-    );
-  if (window.canonicalSettingsFixture.fail === "network")
+  if (window.hold)
+    await new Promise<void>((resolve) => (window.canonicalRelease = resolve));
+  if (window.canonicalFail === "network")
     throw new TypeError("Connection lost");
   return fixtureResponse(
-    window.canonicalSettingsFixture.fail
-      ? { error: "Rejected" }
-      : window.canonicalSettingsFixture.reply,
+    window.canonicalFail ? { error: "Rejected" } : window.reply,
     {
-      status: window.canonicalSettingsFixture.fail ? 409 : 200,
+      status: window.canonicalFail ? 409 : 200,
     },
   );
 };
@@ -274,32 +249,31 @@ function Fixture() {
   const [agent, setAgent] = useState<Agent>(initial),
     [mount, setMount] = useState(0),
     [defaults, setDefaults] = useState(false);
-  window.canonicalSettingsFixture.setAgent = (value) =>
-    flushSync(() => setAgent(value));
-  window.canonicalSettingsFixture.agent = agent;
-  window.canonicalSettingsFixture.reset = (options) =>
+  window.setAgent = (value) => flushSync(() => setAgent(value));
+  window.agent = agent;
+  window.canonicalReset = (options) =>
     flushSync(() => {
       setAgent(partialAgent({ ...initial, ...options?.agent }));
       setDefaults(!!options?.defaults);
       setMount((value) => value + 1);
-      window.canonicalSettingsFixture.catalogRequests = [];
-      window.canonicalSettingsFixture.calls = [];
-      window.canonicalSettingsFixture.transfers = [];
-      window.canonicalSettingsFixture.transferFail = false;
-      window.canonicalSettingsFixture.transferHold = false;
-      window.canonicalSettingsFixture.transferReply = null;
-      window.canonicalSettingsFixture.pendingTransferProjection = null;
-      window.canonicalSettingsFixture.catalogHold = false;
-      window.canonicalSettingsFixture.reply = null;
-      window.canonicalSettingsFixture.fail = null;
-      window.canonicalSettingsFixture.hold = false;
-      window.canonicalSettingsFixture.refreshFailure = false;
-      window.canonicalSettingsFixture.refreshHold = false;
-      window.canonicalSettingsFixture.refreshCount = 0;
-      window.canonicalSettingsFixture.release = null;
-      window.canonicalSettingsFixture.refreshRelease = null;
-      window.canonicalSettingsFixture.transferRelease = null;
-      window.canonicalSettingsFixture.serverAccount = null;
+      window.catalogRequests = [];
+      window.calls = [];
+      window.transfers = [];
+      window.transferFail = false;
+      window.transferHold = false;
+      window.transferReply = null;
+      window.pendingTransferProjection = null;
+      window.catalogHold = false;
+      window.reply = null;
+      window.canonicalFail = null;
+      window.hold = false;
+      window.refreshFailure = false;
+      window.refreshHold = false;
+      window.refreshCount = 0;
+      window.canonicalRelease = null;
+      window.refreshRelease = null;
+      window.transferRelease = null;
+      window.serverAccount = null;
     });
   // @ts-expect-error stale fixture: ModelCatalogSource now requires subscribeState.
   const catalogSource: NonNullable<ContextType<typeof ModelCatalogReader>> = {
@@ -340,19 +314,15 @@ function Fixture() {
           team={team}
           catalog={{ models, loading: false, error: "", retry: () => {} }}
           refresh={async () => {
-            window.canonicalSettingsFixture.refreshCount++;
-            if (window.canonicalSettingsFixture.refreshHold)
+            window.refreshCount++;
+            if (window.refreshHold)
               await new Promise<void>(
-                (resolve) =>
-                  (window.canonicalSettingsFixture.refreshRelease = resolve),
+                (resolve) => (window.refreshRelease = resolve),
               );
-            if (window.canonicalSettingsFixture.refreshFailure)
-              throw new Error("Snapshot unavailable");
-            if (window.canonicalSettingsFixture.pendingTransferProjection) {
-              window.canonicalSettingsFixture.setAgent!(
-                window.canonicalSettingsFixture.pendingTransferProjection,
-              );
-              window.canonicalSettingsFixture.pendingTransferProjection = null;
+            if (window.refreshFailure) throw new Error("Snapshot unavailable");
+            if (window.pendingTransferProjection) {
+              window.setAgent!(window.pendingTransferProjection);
+              window.pendingTransferProjection = null;
             }
           }}
         />
@@ -362,20 +332,16 @@ function Fixture() {
             agent={agent}
             catalog={{ models, loading: false, error: "", retry: () => {} }}
             refresh={async () => {
-              window.canonicalSettingsFixture.refreshCount++;
-              if (window.canonicalSettingsFixture.refreshHold)
+              window.refreshCount++;
+              if (window.refreshHold)
                 await new Promise<void>(
-                  (resolve) =>
-                    (window.canonicalSettingsFixture.refreshRelease = resolve),
+                  (resolve) => (window.refreshRelease = resolve),
                 );
-              if (window.canonicalSettingsFixture.refreshFailure)
+              if (window.refreshFailure)
                 throw new Error("Snapshot unavailable");
-              if (window.canonicalSettingsFixture.pendingTransferProjection) {
-                window.canonicalSettingsFixture.setAgent!(
-                  window.canonicalSettingsFixture.pendingTransferProjection,
-                );
-                window.canonicalSettingsFixture.pendingTransferProjection =
-                  null;
+              if (window.pendingTransferProjection) {
+                window.setAgent!(window.pendingTransferProjection);
+                window.pendingTransferProjection = null;
               }
             }}
           />

@@ -7,14 +7,12 @@ import {
   fixtureFetchInput,
   fixturePostBody,
 } from "./fixture-helpers.ts";
-type ChatSettingsHarness = {
-  calls: PostBody<"/api/conversation">[];
-  agent: Agent;
-  updateAgent?: (agent: Agent) => void;
-};
+
 declare global {
   interface Window {
-    chatSettingsFixture: ChatSettingsHarness;
+    calls: PostBody<"/api/conversation">[];
+    agent: Agent;
+    updateAgent: (agent: Agent) => void;
   }
 }
 const fixtureRoot = document.getElementById("root");
@@ -94,11 +92,7 @@ const initial: Agent = {
   },
   reviewDefaults: { model: null, effort: null },
 };
-// Partial fixture view: render initializes the harness callbacks before the spec calls them.
-window.chatSettingsFixture = {
-  calls: [],
-  agent: initial,
-};
+window.calls = [];
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(
@@ -136,8 +130,8 @@ window.fetch = async (input, options) => {
   else if (u.pathname === "/api/accounts") result = accountsData;
   else if (u.pathname === "/api/conversation") {
     const body = fixturePostBody<"/api/conversation">(requestOptions?.body);
-    window.chatSettingsFixture.calls.push(body);
-    const next = { ...window.chatSettingsFixture.agent };
+    window.calls.push(body);
+    const next = { ...window.agent };
     if (body.worker_defaults)
       next.workerDefaults = {
         ...next.workerDefaults,
@@ -161,7 +155,7 @@ window.fetch = async (input, options) => {
         fastMode: body.fast_mode,
         daybreakEnabled: body.daybreak_enabled,
       });
-    window.chatSettingsFixture.updateAgent!(next);
+    window.updateAgent!(next);
     result = next;
   }
   if (!result) return nativeFetch(input, options);
@@ -172,9 +166,8 @@ window.fetch = async (input, options) => {
 function Fixture() {
   const [agent, setAgent] = useState<Agent>(initial),
     [opened, setOpened] = useState(true);
-  window.chatSettingsFixture.agent = agent;
-  window.chatSettingsFixture.updateAgent = (value) =>
-    flushSync(() => setAgent(value));
+  window.agent = agent;
+  window.updateAgent = (value) => flushSync(() => setAgent(value));
   const state = {
     data: accountsData,
     setData: () => {},
