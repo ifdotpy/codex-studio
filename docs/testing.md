@@ -135,6 +135,15 @@ puts the caches on an automatic state.
 `target/` (about 11 GB) is regenerable. Starting the line copies it as an APFS
 clone in 5 to 15 seconds. Cargo rebuilds only what changed.
 
+Two traps in a line started from an automatic state:
+
+- Its index also holds ignored files, such as `node_modules`. Stage named
+  paths with `layr add <path>`. Do not use `layr add -A`.
+- Test binaries keep absolute paths that Cargo compiled in, such as
+  `env!("CARGO_BIN_EXE_<name>")`, which still name the line that built the
+  cache. Run `cargo clean -p <crate>` for a crate whose tests start its own
+  binary, before you trust its results.
+
 ### Run the gates
 
 ```sh
