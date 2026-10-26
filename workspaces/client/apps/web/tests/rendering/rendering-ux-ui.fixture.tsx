@@ -78,6 +78,5 @@ function Harness() {
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing rendering fixture root");
+const root = document.getElementById("root")!;
 createRoot(root).render(<Harness />);

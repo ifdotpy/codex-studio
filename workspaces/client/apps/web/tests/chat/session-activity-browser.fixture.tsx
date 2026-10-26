@@ -13,14 +13,8 @@ declare global {
     };
   }
 }
-window.sessionActivityFixture = {
-  opened: [],
-  time: Date.now(),
-  activities: [],
-  setActivities: () => {
-    throw new Error("Fixture not mounted");
-  },
-};
+// Activities and setters are assigned by the first render before use.
+window.sessionActivityFixture = {} as Window["sessionActivityFixture"];
 const now = Date.now() / 1000;
 window.sessionActivityFixture.opened = [];
 window.sessionActivityFixture.time = Date.now();
@@ -80,6 +74,5 @@ function Fixture() {
     </>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing fixture root");
+const root = document.getElementById("root")!;
 createRoot(root).render(<Fixture />);

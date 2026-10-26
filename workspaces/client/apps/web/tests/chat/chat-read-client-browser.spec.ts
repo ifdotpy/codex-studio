@@ -17,7 +17,13 @@ test("chat read client browser", async ({ browser: _browser }) => {
   const root = join(import.meta.dirname, "../../");
   const workspaceId = "c".repeat(32);
   const syncAgent = { ...initialAgent };
-  const syncSnapshot: EntityFixtureState = {
+  type ReadSnapshot = Omit<EntityFixtureState, "runtime"> & {
+    runtime: Omit<
+      NonNullable<EntityFixtureState["runtime"]>,
+      "sidebarOrder" | "rateLimits"
+    >;
+  };
+  const syncSnapshot = {
     stateDir: "/state",
     chats: [],
     edges: [],
@@ -34,11 +40,13 @@ test("chat read client browser", async ({ browser: _browser }) => {
       rules: [],
       work: [],
       nativeNotices: [],
-      sidebarOrder: { groups: null, revision: 0 },
-      rateLimits: null,
+      sidebarOrder: [],
+      rateLimits: [],
       rateLimitsByAccount: {},
     },
   };
+  // The fixture retains legacy arrays for sidebarOrder and rateLimits.
+  const readSnapshot: ReadSnapshot = syncSnapshot;
   let notifyState:
     | Parameters<
         NonNullable<
@@ -74,7 +82,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
               res: Parameters<Connect.NextHandleFunction>[1],
               next: Connect.NextFunction,
             ) {
-              const url = new URL(req.url ?? "", "http://fixture.local");
+              const url = new URL(req.url!, "http://fixture.local");
               if (
                 req.method === "POST" &&
                 url.pathname === "/api/test/read-state"
@@ -91,7 +99,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
               }
               if (
                 handleEntitySyncFixtureRequest(req, res, {
-                  snapshot: syncSnapshot,
+                  snapshot: readSnapshot as EntityFixtureState,
                   workspaceId,
                   onStreamReady(notify) {
                     notifyState = notify;
@@ -210,7 +218,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
       1,
     );
     assert.equal(
-      await page.evaluate(() => window.chatReadFixture.calls[0]?.workspace),
+      await page.evaluate(() => window.chatReadFixture.calls[0].workspace),
       "first",
     );
     await page.evaluate(() => {
@@ -222,7 +230,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.chatReadFixture.state?.read),
+      await page.evaluate(() => window.chatReadFixture.state!.read),
       true,
     );
     assert.equal(
@@ -232,11 +240,11 @@ test("chat read client browser", async ({ browser: _browser }) => {
     assert.equal(
       await page.evaluate(
         () =>
-          window.chatReadFixture.previousControls?.observeRead ===
+          window.chatReadFixture.previousControls!.observeRead ===
             window.chatReadFixture.controls.observeRead &&
-          window.chatReadFixture.previousControls?.markUnread ===
+          window.chatReadFixture.previousControls!.markUnread ===
             window.chatReadFixture.controls.markUnread &&
-          window.chatReadFixture.previousControls?.readStateFor ===
+          window.chatReadFixture.previousControls!.readStateFor ===
             window.chatReadFixture.controls.readStateFor,
       ),
       true,
@@ -261,7 +269,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
     await page.reload();
     await ready();
     assert.equal(
-      await page.evaluate(() => window.chatReadFixture.state?.read),
+      await page.evaluate(() => window.chatReadFixture.state!.read),
       false,
     );
     assert.equal(
@@ -277,8 +285,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
       () => window.chatReadFixture.state?.read === true,
     );
     await page.evaluate(() => {
-      const state = window.chatReadFixture.state;
-      if (!state) throw new Error("Missing read state");
+      const state = window.chatReadFixture.state!;
       window.chatReadFixture.setAgent({
         ...window.chatReadFixture.agent,
         readState: { ...state, read: false, revision: state.revision + 1 },
@@ -286,7 +293,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.chatReadFixture.state?.read),
+      await page.evaluate(() => window.chatReadFixture.state!.read),
       false,
     );
     assert.equal(
@@ -295,8 +302,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
       "Another device's Unread does not trigger auto-read on the unchanged visible result",
     );
     await page.evaluate(() => {
-      const state = window.chatReadFixture.state;
-      if (!state) throw new Error("Missing read state");
+      const state = window.chatReadFixture.state!;
       window.chatReadFixture.setAgent({
         ...window.chatReadFixture.agent,
         readState: { ...state, read: true, revision: state.revision + 1 },
@@ -547,13 +553,11 @@ test("chat read client browser", async ({ browser: _browser }) => {
     );
     assert.equal(
       await page.evaluate(() => {
-        const rootNode = document.querySelector("#messages");
-        if (!rootNode) throw new Error("Missing messages root");
+        const rootNode = document.querySelector("#messages")!;
         const root = rootNode.getBoundingClientRect();
         const latestNode = document.querySelector(
           '[data-message="activity-silent-b"]',
-        );
-        if (!latestNode) throw new Error("Missing latest message");
+        )!;
         const latest = latestNode.getBoundingClientRect();
         return (
           Math.min(root.bottom, latest.bottom) > Math.max(root.top, latest.top)
@@ -563,8 +567,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
       "latest B is below the transcript viewport",
     );
     await page.evaluate(() => {
-      const root = document.querySelector("#messages");
-      if (!root) throw new Error("Missing messages root");
+      const root = document.querySelector("#messages")!;
       root.scrollTop = root.scrollHeight;
       root.dispatchEvent(new Event("scroll"));
     });
@@ -632,8 +635,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
       window.chatReadFixture.foreground = true;
       window.chatReadFixture.setPhase("commentary");
       window.chatReadFixture.setTurnStatus("completed");
-      const turn = document.querySelector<HTMLElement>("[data-turn]");
-      if (!turn) throw new Error("Missing turn");
+      const turn = document.querySelector<HTMLElement>("[data-turn]")!;
       turn.dataset.outcome = "active";
       window.chatReadFixture.setOffset(0);
     });
@@ -643,8 +645,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
       0,
     );
     await page.evaluate(() => {
-      const turn = document.querySelector<HTMLElement>("[data-turn]");
-      if (!turn) throw new Error("Missing turn");
+      const turn = document.querySelector<HTMLElement>("[data-turn]")!;
       turn.dataset.outcome = "completed";
     });
     await page.waitForFunction(
@@ -695,8 +696,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
     await page.waitForFunction(() => !!window.chatReadFixture.releaseLost);
     await page.evaluate(() => {
       void window.chatReadFixture.markUnread();
-      const release = window.chatReadFixture.releaseLost;
-      if (!release) throw new Error("Missing held reply");
+      const release = window.chatReadFixture.releaseLost!;
       release();
     });
     await page.waitForFunction(

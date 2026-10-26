@@ -68,8 +68,7 @@ async function createHarness(
 async function expectMessageInViewport(page: Page, id: string) {
   await page.waitForFunction(
     (messageId) => {
-      const root = document.querySelector("#messages");
-      if (!root) throw new Error("Missing messages root");
+      const root = document.querySelector("#messages")!;
       const message = Array.from(
         root.querySelectorAll<HTMLElement>("[data-message]"),
       ).find((candidate) => candidate.dataset.message === messageId);
@@ -102,8 +101,7 @@ test("forward paging keeps the reading row mounted and at its viewport offset", 
     const originalOffset = await anchor.evaluate(
       (node) =>
         node.getBoundingClientRect().top -
-        (document.querySelector("#messages")?.getBoundingClientRect().top ??
-          Number.NaN),
+        document.querySelector("#messages")!.getBoundingClientRect().top,
     );
     expect(originalOffset).toBeCloseTo(-56, 0);
     await page.evaluate(() => window.historyAnchorFixture.appendForwardPage());
@@ -115,8 +113,7 @@ test("forward paging keeps the reading row mounted and at its viewport offset", 
       window.historyAnchorFixture.releaseScroll();
     });
     const restored = await page.evaluate(() => {
-      const root = document.querySelector("#messages");
-      if (!root) throw new Error("Missing messages root");
+      const root = document.querySelector("#messages")!;
       const message = document.querySelector('[data-message="message-19"]');
       return message
         ? {

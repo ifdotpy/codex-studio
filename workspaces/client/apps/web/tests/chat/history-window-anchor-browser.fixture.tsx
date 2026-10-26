@@ -21,18 +21,8 @@ const params = new URLSearchParams(location.search);
 const start = Number(params.get("start")),
   count = Number(params.get("count"));
 const disableNativeAnchoring = params.get("disableNativeAnchoring") === "true";
-const notMounted = () => {
-  throw new Error("Fixture not mounted");
-};
-window.historyAnchorFixture = {
-  scrollToTopAsUser: notMounted,
-  scrollToMessage: notMounted,
-  commitViewportAnchor: notMounted,
-  prependPage: notMounted,
-  appendForwardPage: notMounted,
-  jumpToOldest: notMounted,
-  releaseScroll: notMounted,
-};
+// Methods are assigned during the first render before the spec invokes them.
+window.historyAnchorFixture = {} as Window["historyAnchorFixture"];
 const makeRows = (start: number, count: number): HistoryGroup[] =>
   Array.from({ length: count }, (_, n) => {
     const id = "message-" + (start + n);
@@ -51,10 +41,7 @@ const makeRows = (start: number, count: number): HistoryGroup[] =>
 function Harness() {
   const [rows, setRows] = useState(() => makeRows(start, count));
   const scroll = useRef<HTMLDivElement>(null);
-  const scrollRoot = () => {
-    if (!scroll.current) throw new Error("Missing scroll root");
-    return scroll.current;
-  };
+
   const hasRecentScrollInput = React.useCallback(
     () =>
       performance.now() -
@@ -63,7 +50,7 @@ function Harness() {
     [],
   );
   window.historyAnchorFixture.scrollToTopAsUser = () => {
-    const root = scrollRoot();
+    const root = scroll.current!;
     root.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
     const holdScroll = (event: Event) => event.stopImmediatePropagation();
     root.addEventListener("scroll", holdScroll, true);
@@ -72,18 +59,18 @@ function Harness() {
     root.removeEventListener("scroll", holdScroll, true);
   };
   window.historyAnchorFixture.scrollToMessage = (index) => {
-    const root = scrollRoot();
+    const root = scroll.current!;
     root.scrollTop = index * 72 - 16;
     root.dispatchEvent(new Event("scroll"));
   };
   window.historyAnchorFixture.commitViewportAnchor = () =>
-    scrollRoot().dispatchEvent(new Event("scroll"));
+    scroll.current!.dispatchEvent(new Event("scroll"));
   window.historyAnchorFixture.prependPage = (start) =>
     flushSync(() =>
       setRows((current) => [...makeRows(start, 120), ...current]),
     );
   window.historyAnchorFixture.appendForwardPage = () => {
-    const root = scrollRoot();
+    const root = scroll.current!;
     const holdScroll = (event: Event) => event.stopImmediatePropagation();
     root.addEventListener("scroll", holdScroll, true);
     flushSync(() => setRows((current) => [...current, ...makeRows(160, 60)]));
@@ -92,7 +79,7 @@ function Harness() {
       root.removeEventListener("scroll", holdScroll, true);
   };
   window.historyAnchorFixture.jumpToOldest = () => {
-    const root = scrollRoot();
+    const root = scroll.current!;
     root.dispatchEvent(new Event("studio-history-reset-anchor"));
     const holdScroll = (event: Event) => event.stopImmediatePropagation();
     root.addEventListener("scroll", holdScroll, true);
@@ -129,11 +116,9 @@ function Harness() {
     </div>
   );
 }
-const root = document.querySelector("#root");
-if (!root) throw new Error("Missing fixture root");
+const root = document.querySelector("#root")!;
 createRoot(root).render(<Harness />);
-const messages = document.querySelector("#messages");
-if (!messages) throw new Error("Missing messages root");
+const messages = document.querySelector("#messages")!;
 messages.addEventListener("wheel", () => {
   window.historyAnchorFixture.__lastInput = performance.now();
 });

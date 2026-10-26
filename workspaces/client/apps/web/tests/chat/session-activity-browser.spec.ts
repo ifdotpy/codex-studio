@@ -105,11 +105,7 @@ test("session activity browser", async ({ browser: _browser }) => {
     await page.evaluate(() =>
       window.sessionActivityFixture.setActivities(
         Array.from({ length: 40 }, (_, index) => ({
-          ...(() => {
-            const item = window.sessionActivityFixture.activities[index % 4];
-            if (!item) throw new Error("Missing activity");
-            return item;
-          })(),
+          ...window.sessionActivityFixture.activities[index % 4],
           id: `many-${index}`,
         })),
       ),
@@ -132,9 +128,9 @@ test("session activity browser", async ({ browser: _browser }) => {
     });
     await strip.getByText("14h 2m", { exact: true }).waitFor();
     await page.evaluate(() =>
-      window.sessionActivityFixture.setActivities(
-        window.sessionActivityFixture.activities.slice(0, 1),
-      ),
+      window.sessionActivityFixture.setActivities([
+        window.sessionActivityFixture.activities[0],
+      ]),
     );
     assert.equal(await strip.getByRole("button", { name: /Show/ }).count(), 0);
     await page.evaluate(() => window.sessionActivityFixture.setActivities([]));
