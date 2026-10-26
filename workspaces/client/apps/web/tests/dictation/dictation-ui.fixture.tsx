@@ -8,7 +8,12 @@ declare global {
     audioBytes: number;
     deferTranscription: boolean;
     finishTranscription:
-      | ((value: Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>) => void)
+      | ((
+          value: Pick<
+            Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>,
+            "text"
+          >,
+        ) => void)
       | null;
     retryOK: boolean;
     emitAudio: () => void;
@@ -16,16 +21,6 @@ declare global {
     failStop: boolean;
   }
 }
-window.attemptId = "";
-window.audioBytes = 0;
-window.deferTranscription = false;
-window.finishTranscription = null;
-window.retryOK = false;
-window.emitAudio = () => {
-  throw new Error("Audio fixture unavailable");
-};
-window.captureStopped = 0;
-window.failStop = false;
 const root = document.getElementById("root")!;
 import type { DesktopBridge } from "../../src/desktop.ts";
 import React, { useState } from "react";
@@ -36,7 +31,24 @@ import "../../src/studio-theme.css";
 import { theme } from "../../src/theme.ts";
 import { Dictation } from "../../src/components/Dictation.tsx";
 // Base bridge fixture supplies only the five methods used by dictation.
-const bridgeFixture = {
+type BridgeView = Omit<
+  Pick<
+    DesktopBridge,
+    | "requestMicrophone"
+    | "prepareTranscription"
+    | "onTranscriptionProgress"
+    | "cancelTranscription"
+    | "transcribeAudio"
+  >,
+  "transcribeAudio"
+> & {
+  transcribeAudio: (
+    ...args: Parameters<DesktopBridge["transcribeAudio"]>
+  ) => Promise<
+    Pick<Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>, "text">
+  >;
+};
+const bridgeFixture: BridgeView = {
   requestMicrophone: async () => true,
   prepareTranscription: async () => "permit",
   onTranscriptionProgress: (callback) => {
@@ -61,18 +73,9 @@ const bridgeFixture = {
       throw Error("Recognition unavailable; recording preserved.");
     return {
       text: "Recovered spoken instruction",
-      provider: "fixture",
-      onDevice: true,
     };
   },
-} satisfies Pick<
-  DesktopBridge,
-  | "requestMicrophone"
-  | "prepareTranscription"
-  | "onTranscriptionProgress"
-  | "cancelTranscription"
-  | "transcribeAudio"
->;
+};
 // The base document omits platform and unrelated desktop capabilities.
 function partialBridge(value: unknown): DesktopBridge {
   return value as DesktopBridge;

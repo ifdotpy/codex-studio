@@ -6,7 +6,7 @@ export const captureAudio: typeof capture = async (onChunk) => {
   return {
     sampleRate: 16000,
     stop: async () => {
-      window.captureStopped++;
+      window.captureStopped = (window.captureStopped || 0) + 1;
       if (window.failStop)
         throw new Error("Final chunk not confirmed. Earlier audio saved.");
     },

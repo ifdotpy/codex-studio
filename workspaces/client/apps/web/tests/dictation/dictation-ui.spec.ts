@@ -1,4 +1,3 @@
-import type { DesktopBridge } from "../../src/desktop.ts";
 import { fixtureOrigin } from "../misc-fixture.ts";
 import type {} from "./dictation-ui.fixture.tsx";
 import { createFixtureViteServer, test } from "../playwright.ts";
@@ -159,9 +158,7 @@ test("Dictation ui", async ({
       () => document.querySelectorAll("audio").length === 0,
     );
     await page.evaluate(() =>
-      window.finishTranscription!({ text: "Late response" } as Awaited<
-        ReturnType<DesktopBridge["transcribeAudio"]>
-      >),
+      window.finishTranscription!({ text: "Late response" }),
     );
     await page.waitForTimeout(100);
     assert.equal(
@@ -236,12 +233,7 @@ test("Dictation ui", async ({
     await page.getByRole("button", { name: "Retry transcription" }).click();
     await page.waitForFunction(() => !!window.finishTranscription);
     await page.evaluate(() =>
-      window.speechProgress!({
-        completed: 1,
-        total: 3,
-      } as Parameters<
-        Parameters<DesktopBridge["onTranscriptionProgress"]>[0]
-      >[0]),
+      window.speechProgress!({ id: window.attemptId, completed: 1, total: 3 }),
     );
     await page
       .getByText("Transcribing… 1 of 3 parts", { exact: true })
