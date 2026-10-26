@@ -2,7 +2,7 @@ import type { Server, ServerResponse } from "node:http";
 import type { ViteDevServer } from "vite";
 import type { Route } from "@playwright/test";
 import type { TranscriptPageResponse } from "../playwright.ts";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { JsonInputOf, PostBody, PostResult } from "../../src/apiTypes.ts";
 import type {
   PendingUpload,
   PendingUploadContent,
@@ -26,6 +26,8 @@ import {
   syncProtocolFixture,
   test,
 } from "../playwright.ts";
+
+type FixtureTranscriptPage = JsonInputOf<TranscriptPageResponse>;
 
 // Posts here come from the generated branch route or this fixture's send callback.
 function readFixtureWrite(
@@ -128,11 +130,11 @@ test("Ux Chat Ui", async ({
           return;
         }
         if (path === "/api/fixture-live-update") {
-          latestItems = latestItems.map((item) => {
-            if (item.id === "item-13")
-              item.text = "Latest message after live update";
-            return item;
-          });
+          latestItems = latestItems.map((item) =>
+            item.id === "item-13"
+              ? { ...item, text: "Latest message after live update" }
+              : item,
+          );
           transcriptSeq++;
           publishTranscriptChange();
           response.statusCode = 204;
@@ -206,7 +208,7 @@ test("Ux Chat Ui", async ({
     page.on("pageerror", (error) => errors.push(error.message));
     await page.setViewportSize({ width: 1100, height: 800 });
     page.setDefaultTimeout(10000);
-    const records: TranscriptPageResponse["items"] = Array.from(
+    const records: FixtureTranscriptPage["items"] = Array.from(
       { length: 14 },
       (_, index) => ({
         id: `item-${index}`,
@@ -242,7 +244,7 @@ test("Ux Chat Ui", async ({
     };
     const snapshot = (
       id: string | null | undefined,
-    ): TranscriptPageResponse => ({
+    ): FixtureTranscriptPage => ({
       items: id === "lead" ? latestItems : [],
       nextCursor: id === "lead" ? "item-10" : null,
       historyVersion,
@@ -325,7 +327,7 @@ test("Ux Chat Ui", async ({
             nextCursor,
             nextAfterCursor,
             historyVersion,
-          } satisfies Omit<TranscriptPageResponse, "truncated">,
+          } satisfies Omit<FixtureTranscriptPage, "truncated">,
         });
       }
       if (path === "/api/branch") {
