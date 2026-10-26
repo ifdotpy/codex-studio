@@ -62,15 +62,20 @@ function fixture() {
   copyFileSync(hookSource, path.join(root, ".githooks", "pre-commit"));
   chmodSync(path.join(root, ".githooks", "pre-commit"), 0o755);
   copyFileSync(checkSource, checkerPath);
+  copyFileSync(
+    path.join(path.dirname(checkSource), "javascript-policy.ts"),
+    path.join(path.dirname(checkerPath), "javascript-policy.ts"),
+  );
   for (const config of [".oxlintrc.json", ".oxfmtrc.json"]) {
     copyFileSync(path.join(repositoryRoot, config), path.join(root, config));
   }
-  for (const dependency of ["oxlint", "oxfmt"]) {
+  for (const dependency of ["oxlint", "oxfmt", "typescript"]) {
     symlinkSync(
       path.join(repositoryRoot, "node_modules", dependency),
       path.join(root, "node_modules", dependency),
       process.platform === "win32" ? "junction" : "dir",
     );
+    if (dependency === "typescript") continue;
     symlinkSync(
       path.join(repositoryRoot, "node_modules", ".bin", dependency),
       path.join(root, "node_modules", ".bin", dependency),
@@ -106,7 +111,79 @@ function commitFixture(root: string) {
 }
 
 try {
-  for (const extension of ["js", "cts", "mts"]) {
+  {
+    const root = fixture();
+    stage(root, "unlisted.js", "// @ts-check\nexport {};\n");
+    const result = runHook(root);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr + result.stdout,
+      /not a documented runtime exception/,
+    );
+  }
+  {
+    const root = fixture();
+    const file = "workspaces/client/apps/desktop/preload.cjs";
+    stage(
+      root,
+      "tsconfig.json",
+      '{\n  "compilerOptions": {\n    "allowJs": true\n  },\n  "include": ["**/*.cjs"]\n}\n',
+    );
+    stage(root, file, "module.exports = {};\n");
+    writeFileSync(
+      path.join(root, file),
+      "// @ts-check\nmodule.exports = {};\n",
+    );
+    assert.match(runHook(root).stderr, /must start with/);
+    stage(root, file, "// @ts-check\nmodule.exports = {};\n");
+    stage(
+      root,
+      "tsconfig.json",
+      '{\n  "compilerOptions": {\n    "allowJs": true\n  },\n  "include": ["missing.cjs"]\n}\n',
+    );
+    writeFileSync(
+      path.join(root, "tsconfig.json"),
+      '{\n  "compilerOptions": {\n    "allowJs": true\n  },\n  "include": ["**/*.cjs"]\n}\n',
+    );
+    assert.match(runHook(root).stderr, /not included by a tracked tsconfig/);
+    stage(
+      root,
+      "tsconfig.json",
+      '{\n  "compilerOptions": {\n    "allowJs": true\n  },\n  "include": ["**/*.cjs"]\n}\n',
+    );
+    const accepted = runHook(root);
+    assert.equal(accepted.status, 0, accepted.stderr + accepted.stdout);
+    commitFixture(root);
+    stage(root, "tsconfig.json", null);
+    assert.match(
+      runHook(root).stderr,
+      /not included by a tracked tsconfig/,
+      "deleting the covering project must not leave an unchecked exception",
+    );
+  }
+
+  for (const source of [
+    "export type Unsafe = any;\n",
+    "// @ts-ignore reason\nexport const value = 1;\n",
+    "// @ts-nocheck reason\nexport const value = 1;\n",
+    "// @ts-expect-error\nexport const value = 1;\n",
+  ]) {
+    const root = fixture();
+    stage(root, "invalid.ts", source);
+    assert.notEqual(runHook(root).status, 0, source);
+  }
+  {
+    const root = fixture();
+    stage(
+      root,
+      "negative.ts",
+      "// @ts-expect-error value deliberately violates its declared string type\nexport const value: string = 1;\n",
+    );
+    const result = runHook(root);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+  }
+
+  for (const extension of ["ts", "cts", "mts"]) {
     const root = fixture();
     stage(root, `desktop/staged-broken.${extension}`, "const = ;\n");
     const tree = git(root, "write-tree");
@@ -166,7 +243,7 @@ try {
       rules: { "no-console": "off" },
     };
     stage(root, ".oxlintrc.json", `${JSON.stringify(strictConfig, null, 2)}\n`);
-    stage(root, "web/src/configured.js", 'console.log("staged rule");\n');
+    stage(root, "web/src/configured.ts", 'console.log("staged rule");\n');
     writeFileSync(
       path.join(root, ".oxlintrc.json"),
       `${JSON.stringify(relaxedConfig, null, 2)}\n`,
@@ -191,7 +268,7 @@ try {
     };
     const workingConfig = { ...stagedConfig, semi: true };
     stage(root, ".oxfmtrc.json", `${JSON.stringify(stagedConfig, null, 2)}\n`);
-    stage(root, "web/src/format-config.js", 'export const value = "ok"\n');
+    stage(root, "web/src/format-config.ts", 'export const value = "ok"\n');
     writeFileSync(
       path.join(root, ".oxfmtrc.json"),
       `${JSON.stringify(workingConfig, null, 2)}\n`,
@@ -214,7 +291,7 @@ try {
 
   {
     const root = fixture();
-    stage(root, "desktop/source outside web.js", "export const valid = 1;\n");
+    stage(root, "desktop/source outside web.ts", "export const valid = 1;\n");
     const result = runHook(root);
     assert.equal(result.status, 0, result.stderr || result.stdout);
   }
@@ -284,7 +361,7 @@ try {
     const root = fixture();
     unlinkSync(path.join(root, "node_modules", ".bin", "oxlint"));
     unlinkSync(path.join(root, "node_modules", ".bin", "oxfmt"));
-    stage(root, "web/src/no-tools.js", "export const value = 1;\n");
+    stage(root, "web/src/no-tools.ts", "export const value = 1;\n");
     const result = runHook(root);
     assert.notEqual(
       result.status,

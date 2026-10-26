@@ -1,3 +1,7 @@
+import {
+  javascriptFindings,
+  JAVASCRIPT_EXCEPTIONS,
+} from "../javascript-policy.ts";
 import type {
   LocatedPackage,
   WorkspacePackage,
@@ -53,6 +57,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
+    assert.match(recipe.command, /javascript-check/);
     assert.match(recipe.command, /vm-guest\/run-guest-suite\.mts/);
     assert.doesNotMatch(
       recipe.command,
@@ -1466,8 +1471,16 @@ test("boundary type imports share generated contracts and named type owners with
       [
         desktop,
         'import { type Row } from "../web/src/generated/api.ts";',
-        true,
+        false,
       ],
+      [
+        desktop,
+        'export { type Row } from "../web/src/generated/api.ts";',
+        false,
+      ],
+      [desktop, 'import { type Row } from "../web/src/native/host.ts";', false],
+      [desktop, 'export { type Row } from "../web/src/native/host.ts";', false],
+      [desktop, 'type Row = import("../web/src/native/host.ts").Row;', true],
       [desktop, 'import { Row } from "../web/src/generated/api.ts";', false],
       [
         desktop,
@@ -1500,6 +1513,114 @@ test("boundary type imports share generated contracts and named type owners with
       const findings = boundaryFindings(fixture.root, fixture.packages, [file]);
       assert.equal(findings.length === 0, allowed, source);
     }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const declaration of ["import", "export"]) {
+  test(`boundary inline ${declaration} type specifiers retain runtime crossings`, () => {
+    const fixture = workspaceFixture();
+    try {
+      const desktop = fixture.add(
+        "desktop-app",
+        "workspaces/client/apps/desktop",
+      );
+      fixture.add("web-app", "workspaces/client/apps/web");
+      for (const owner of ["generated/api.ts", "native/host.ts"]) {
+        const file = path.join(desktop, "entry.ts");
+        const source = `${declaration} { type Row } from "../web/src/${owner}";`;
+        writeFileSync(file, source);
+        assert.notEqual(
+          boundaryFindings(fixture.root, fixture.packages, [file]).length,
+          0,
+          source,
+        );
+      }
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("JavaScript policy rejects unlisted tracked output, unchecked exceptions and missing project coverage", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "studio-js-policy-"));
+  const exception = JAVASCRIPT_EXCEPTIONS[0];
+  assert.ok(exception);
+  const file = path.join(root, exception.file);
+  const config = "tsconfig.json";
+  const generated = "generated/output.js";
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    mkdirSync(path.join(root, "generated"));
+    writeFileSync(path.join(root, generated), "// @ts-check\n");
+    writeFileSync(
+      path.join(root, config),
+      JSON.stringify({
+        compilerOptions: { allowJs: true },
+        include: ["**/*.cjs"],
+      }),
+    );
+    writeFileSync(file, "export {};\n");
+    const tracked = [exception.file, generated, config];
+    assert.ok(
+      javascriptFindings(root, tracked).some((finding) =>
+        finding.includes(generated),
+      ),
+      "tracked generated JS is not implicitly exempt",
+    );
+    assert.ok(
+      javascriptFindings(root, tracked).some((finding) =>
+        finding.includes("@ts-check"),
+      ),
+    );
+    writeFileSync(file, "// @ts-check\nexport {};\n");
+    assert.deepEqual(javascriptFindings(root, tracked, [exception.file]), []);
+    assert.ok(
+      javascriptFindings(root, [exception.file], [exception.file]).some(
+        (finding) => finding.includes("tsconfig"),
+      ),
+    );
+    writeFileSync(
+      path.join(root, config),
+      JSON.stringify({
+        compilerOptions: { allowJs: true },
+        exclude: ["**/*.cjs"],
+      }),
+    );
+    assert.ok(
+      javascriptFindings(root, tracked, [exception.file]).some((finding) =>
+        finding.includes("tsconfig"),
+      ),
+      "excluded files are not project roots",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native configuration owner permits erased type queries while keeping runtime boundaries", () => {
+  const fixture = workspaceFixture();
+  try {
+    const web = fixture.add("web-app", "workspaces/client/apps/web");
+    fixture.add("native-app", "workspaces/client/apps/native");
+    const file = path.join(web, "entry.ts");
+    writeFileSync(
+      file,
+      'type Configuration = typeof import("../native/src-tauri/tauri.conf.json");',
+    );
+    assert.deepEqual(
+      boundaryFindings(fixture.root, fixture.packages, [file]),
+      [],
+    );
+    writeFileSync(
+      file,
+      'import configuration from "../native/src-tauri/tauri.conf.json";',
+    );
+    assert.equal(
+      boundaryFindings(fixture.root, fixture.packages, [file]).length,
+      1,
+    );
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

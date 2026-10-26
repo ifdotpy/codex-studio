@@ -23,7 +23,7 @@ type WorkerMemoryProfile = {
 };
 
 // These documents are written by this module and inherited by its own workers.
-function parseWorkerSelection(
+export function parseWorkerSelection(
   text: string,
 ): Partial<ReturnType<typeof workerSelection>> {
   return JSON.parse(text);

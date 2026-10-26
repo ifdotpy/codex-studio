@@ -61,6 +61,8 @@ Provisioning also stages the Claude bridge workspace and the pinned pnpm
 workspace metadata under `/opt/codex-studio`. The guest installs the same
 non-optional production dependency set from the frozen lockfile, while
 `/opt/codex-studio/claude_bridge/bridge.mjs` remains the stable entrypoint.
+The guest Node runtime must meet the bridge
+[installation requirements](../../../providers/apps/claude-bridge/README.md#installation-requirements).
 
 Install Python 3.11 or later, rsync 3 or later, btrfs-progs, git, util-linux, procps,
 and lsof.

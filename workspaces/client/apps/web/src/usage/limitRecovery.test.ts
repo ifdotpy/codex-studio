@@ -1,4 +1,5 @@
-import type { Agent } from "../types";
+import type { AccountLimitsSnapshot } from "./accountUsage";
+import type { JsonInputOf, Agent } from "../types";
 import type { components } from "../generated/api";
 import assert from "node:assert/strict";
 import { test } from "vitest";
@@ -30,13 +31,22 @@ const decision = (
   overage: "unavailable",
   ...overrides,
 });
-const limits = (data = {}, overrides = {}) => ({
-  accountKey: "work",
-  at: now,
-  data: { rateLimits: data },
-  eligibility: decision(),
-  ...overrides,
-});
+type UsageLimitsResponse = JsonInputOf<
+  components["schemas"]["UsageLimitsResponse"]
+>;
+type RecoveryLimits = UsageLimitsResponse &
+  Pick<AccountLimitsSnapshot, "stale" | "loading">;
+const limits = (
+  data: JsonInputOf<components["schemas"]["RateLimitBucket"]> = {},
+  overrides: Partial<RecoveryLimits> = {},
+) =>
+  ({
+    accountKey: "work",
+    at: now,
+    data: { rateLimits: data },
+    eligibility: decision(),
+    ...overrides,
+  }) satisfies RecoveryLimits;
 
 test("recovery consumes the Rust decision and validates its identity and validity", () => {
   const available = limits(

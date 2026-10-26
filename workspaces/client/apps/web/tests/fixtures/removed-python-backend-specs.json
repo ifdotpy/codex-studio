@@ -137,7 +137,7 @@
     "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
   },
   {
-    "file": "tests/messages/simple-messages-ui.spec.mjs",
+    "file": "tests/messages/simple-messages-ui.spec.ts",
     "tests": ["\"simple messages ui\""],
     "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
   },

@@ -1,9 +1,13 @@
+import type { StallReport } from "./stall-watch.ts";
+import type {
+  CacheReport,
+  ToolDefinition,
+} from "./runtime-contract.generated.ts";
 import type {
   Options,
   RewindFilesResult,
   SessionMessage,
   SessionStartHookInput,
-  Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 
 // The bridge owns its mutable mirror and recovery receipts. Native messages,
@@ -16,7 +20,7 @@ export interface NativeInputAttempt {
 }
 export interface PendingTransition extends Partial<NativeInputAttempt> {
   from: string;
-  target?: string;
+  target?: string | undefined;
   source: TransitionSource | "input";
   status: "pending" | "unknown";
 }
@@ -32,80 +36,104 @@ export interface FileRestorePlan {
     file: string;
     before: FileIdentity | null;
     expected: FileIdentity | null;
-    backup?: string;
+    backup?: string | undefined;
   }[];
 }
 export interface TurnError {
+  resetsAt?: number | undefined;
   message: string;
-  codexErrorInfo?: string;
-  data?: Record<string, unknown>;
+  codexErrorInfo?: string | undefined;
+  data?:
+    | (Record<string, unknown> & {
+        claudeToolStall?: StallReport | undefined;
+        claudeStopTimeout?: boolean | undefined;
+      })
+    | undefined;
 }
 export interface Item {
-  id?: string;
-  type?: string;
-  nativeId?: string;
-  nativeIds?: string[];
-  nativeSubmissionAttemptId?: string;
-  delivery?: string;
-  deliveryStatus?: string;
-  content?: unknown;
-  text?: string;
-  thinking?: string;
-  phase?: string;
-  studioNotice?: boolean;
-  error?: string;
-  status?: string;
-  tool?: string;
-  arguments?: Record<string, unknown>;
-  command?: string;
-  cwd?: string;
-  aggregatedOutput?: string;
-  exitCode?: number | null;
-  result?: unknown;
-  server?: string;
-  changes?: { path: string; kind: { type: string }; diff: string }[];
+  id?: string | undefined;
+  type?: string | undefined;
+  nativeId?: string | undefined;
+  nativeIds?: string[] | undefined;
+  nativeSubmissionAttemptId?: string | undefined;
+  delivery?: string | undefined;
+  deliveryStatus?: string | undefined;
+  content?: unknown | undefined;
+  text?: string | undefined;
+  thinking?: string | boolean | undefined;
+  nativeSubagent?: boolean | undefined;
+  canMoveToBackground?: boolean | undefined;
+  backgroundTaskId?: string | undefined;
+  backgroundedByUser?: boolean | undefined;
+  outputFile?: string | undefined;
+  stalled?: boolean | undefined;
+  compactionMetadata?:
+    | import("@anthropic-ai/claude-agent-sdk").SDKCompactBoundaryMessage["compact_metadata"]
+    | undefined;
+  clientId?: string | undefined;
+  elapsedSeconds?: number | undefined;
+  phase?: string | undefined;
+  studioNotice?: boolean | undefined;
+  error?: string | undefined;
+  status?: string | undefined;
+  tool?: string | undefined;
+  arguments?: Record<string, unknown> | undefined;
+  command?: unknown;
+  cwd?: string | undefined;
+  aggregatedOutput?: string | undefined;
+  exitCode?: number | null | undefined;
+  result?: unknown | undefined;
+  server?: string | undefined;
+  changes?: {
+    path: unknown;
+    kind: { type: string };
+    diff: unknown;
+  }[];
 }
 export interface Turn {
+  synthetic?: boolean | undefined;
   id: string;
-  clientUserMessageId?: string;
-  status?: string;
-  startOutcome?: string;
+  clientUserMessageId?: string | undefined;
+  status?: string | undefined;
+  startOutcome?: string | undefined;
   items: Item[];
-  nativeSessionId?: string;
-  nativeHistoryDetached?: boolean;
-  nativeMessageId?: string;
-  fileCheckpointMessageId?: string;
-  fileCheckpointSource?: { nativeId: string; cwd: string };
-  idleCompaction?: boolean;
-  interrupted?: boolean;
-  error?: TurnError;
-  stallError?: TurnError;
-  limitError?: { codexErrorInfo: string; resetsAt?: number };
-  apiErrorInfo?: string;
+  nativeSessionId?: string | undefined;
+  nativeHistoryDetached?: boolean | undefined;
+  nativeMessageId?: string | undefined;
+  fileCheckpointMessageId?: string | undefined;
+  fileCheckpointSource?: { nativeId: string | undefined; cwd: string };
+  idleCompaction?: boolean | undefined;
+  interrupted?: boolean | undefined;
+  error?: TurnError | undefined;
+  stallError?: TurnError | undefined;
+  limitError?:
+    | { codexErrorInfo: string | undefined; resetsAt?: number }
+    | undefined;
+  apiErrorInfo?: string | undefined;
 }
 export interface ControlReceipt {
   kind: "rollback";
   turnId: string;
-  restoreFiles?: boolean;
-  fileMessageId?: string;
+  restoreFiles?: boolean | undefined;
+  fileMessageId?: string | undefined;
   status: "submitted" | "forked" | "rewind_submitted" | "rewound" | "completed";
   sourceNativeId: string;
-  targetNativeId?: string;
+  targetNativeId?: string | undefined;
   createdAt: string;
   retainedCount: number;
-  sourceMessages?: SessionMessage[];
-  previousTurns?: Turn[];
+  sourceMessages?: SessionMessage[] | undefined;
+  previousTurns?: Turn[] | undefined;
   upToMessageId: string | null;
-  filePlan?: FileRestorePlan;
-  fileResult?: RewindFilesResult;
-  fileBackupReleaseAuthorized?: boolean;
-  fileBackupReleased?: boolean;
+  filePlan?: FileRestorePlan | undefined;
+  fileResult?: RewindFilesResult | undefined;
+  fileBackupReleaseAuthorized?: boolean | undefined;
+  fileBackupReleased?: boolean | undefined;
   result?: {
     threadId: string;
     nativeId: string;
     removedTurns: number;
-    filesRestored?: boolean;
-    fileResult?: RewindFilesResult;
+    filesRestored?: boolean | undefined;
+    fileResult?: RewindFilesResult | undefined;
   };
 }
 export interface JournalRepairReport {
@@ -119,39 +147,45 @@ export interface Session {
   id: string;
   cwd: string;
   turns: Turn[];
-  nativeId?: string;
-  nativeHistoryCwd?: string;
-  started?: boolean;
-  ephemeral?: boolean;
-  pendingNativeSession?: PendingTransition;
-  nativeSessionTransitionError?: string;
+  nativeId?: string | undefined;
+  nativeHistoryCwd?: string | undefined;
+  started?: boolean | undefined;
+  ephemeral?: boolean | undefined;
+  pendingNativeSession?: PendingTransition | undefined;
+  nativeSessionTransitionError?: string | undefined;
   nativeSessionTransitions?: {
     from: string;
     to: string;
     source: TransitionSource;
   }[];
-  controlRequests?: Record<string, ControlReceipt>;
-  historyBranches?: { requestId: string; nativeId: string; turns: Turn[] }[];
-  journalRepair?: JournalRepairReport;
-  createdAt?: number;
-  updatedAt?: number;
-  preview?: string;
-  name?: string | null;
-  model?: Options["model"];
-  approvalPolicy?: string;
-  activePermissionProfile?: unknown;
-  sandbox?: string;
-  claude?: Settings;
-  developerInstructions?: string;
-  dynamicTools?: unknown[];
-  dynamicToolsJson?: string;
-  capabilityProfile?: unknown;
-  moveTurnOptions?: Partial<Options>;
-  userMcp?: boolean;
-  studioImageWorkspaceTempDir?: string;
-  claudeVersion?: string;
-  contextWindow?: number;
-  totalTokens?: number;
+  controlRequests?: Record<string, ControlReceipt> | undefined;
+  historyBranches?: {
+    requestId: string | undefined;
+    nativeId: string;
+    turns: Turn[];
+  }[];
+  journalRepair?: JournalRepairReport | undefined;
+  createdAt?: number | undefined;
+  updatedAt?: number | undefined;
+  preview?: string | undefined;
+  name?: string | null | undefined;
+  model?: Options["model"] | undefined;
+  approvalPolicy?: string | undefined;
+  activePermissionProfile?: unknown | undefined;
+  sandbox?: string | undefined;
+  claude?: import("./thinking.ts").ClaudeSettings | undefined;
+  developerInstructions?: string | undefined;
+  dynamicTools?: ToolDefinition[] | undefined;
+  moveProof?: import("./bridge-protocol.ts").BridgeMoveProof | undefined;
+  dynamicToolsJson?: string | undefined;
+  capabilityProfile?: unknown | undefined;
+  moveTurnOptions?: Partial<Options> | undefined;
+  userMcp?: boolean | undefined;
+  studioImageWorkspaceTempDir?: string | undefined;
+  claudeVersion?: string | undefined;
+  idleCache?: CacheReport | undefined;
+  contextWindow?: number | undefined;
+  totalTokens?: number | undefined;
 }
 export interface SessionMetadata {
   id: string;
@@ -174,7 +208,7 @@ export interface Thread {
   name: string | null;
   historyVersion: string;
   turns: Turn[];
-  journalRepair?: JournalRepairReport;
+  journalRepair?: JournalRepairReport | undefined;
   status: { type: "active" | "idle" };
   modelProvider: "claude";
 }

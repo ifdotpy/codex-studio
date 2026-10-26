@@ -1,3 +1,4 @@
+import type { components } from "../generated/api";
 import assert from "node:assert/strict";
 import {
   limitsReadSucceeded,
@@ -18,12 +19,13 @@ const value = (
   accountKey: string,
   at = 10,
   usedPercent = 42,
-): AccountLimitsSnapshot => ({
-  accountKey,
-  at,
-  data: { accountId: accountKey, rateLimits: { primary: { usedPercent } } },
-  error: null,
-});
+): AccountLimitsSnapshot =>
+  ({
+    accountKey,
+    at,
+    data: { accountId: accountKey, rateLimits: { primary: { usedPercent } } },
+    error: null,
+  }) satisfies components["schemas"]["AccountRateLimitsDto"];
 let scope = 0;
 beforeEach(() => {
   const records = new Map<string, string>();

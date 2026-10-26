@@ -770,7 +770,7 @@ export async function fixture(
           publicKey: value.publicKey,
           tailscaleUser: value.tailscaleUser,
           status,
-          ...(reachability === undefined ? {} : { reachability }),
+          reachability,
           created: 1,
           lastSeen: Math.floor(Date.now() / 1000),
           autoPair: true,
