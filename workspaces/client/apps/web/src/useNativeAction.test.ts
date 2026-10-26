@@ -1,3 +1,4 @@
+import { assert } from "vitest";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Agent } from "./types";
 const selected = vi.hoisted(() => ({
@@ -54,7 +55,8 @@ it("retries an uncertain action with its original request and server after anoth
   expect(requestB.action).toBe("review");
   expect(requestA.request_id).not.toBe(requestB.request_id);
   await expect(a.submit(agent, "compact")).rejects.toThrow("Unknown outcome");
-  expect(postA.mock.calls[1]?.[1]).toEqual(requestA);
+  assert(postA.mock.calls[1] !== undefined);
+  expect(postA.mock.calls[1][1]).toEqual(requestA);
   expect(postB).toHaveBeenCalledTimes(1);
   expect(b.pending(agent.id)).toEqual(requestB);
 });

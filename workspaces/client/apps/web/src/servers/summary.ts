@@ -50,7 +50,9 @@ export async function fetchServerSummary(
     const value = (await window.codexDesktop.serverCredentialAction!({
       action: "summary",
       serverId: server.id,
-      credentialId: server.credentialId,
+      ...(server.credentialId === undefined
+        ? {}
+        : { credentialId: server.credentialId }),
       url: request.url,
       method: "GET",
       headers: [...request.headers],

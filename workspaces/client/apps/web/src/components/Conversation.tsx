@@ -1783,16 +1783,8 @@ export default function Conversation(p: {
                 onReorder={(ids) =>
                   messageQueue.reorder(
                     mergeQueueOrder(
-                      messageQueue.items.map((item) => {
-                        if (item.id === undefined)
-                          throw new Error("Missing queue item ID");
-                        return item.id;
-                      }),
-                      queue.map((item) => {
-                        if (item.id === undefined)
-                          throw new Error("Missing queue item ID");
-                        return item.id;
-                      }),
+                      messageQueue.items.map((item) => item.id),
+                      queue.map((item) => item.id),
                       ids,
                     ),
                   )

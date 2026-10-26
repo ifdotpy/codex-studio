@@ -34,7 +34,7 @@ export function createDraftConflictHandler() {
   type Version = Pick<SyncDocument, "payload" | "_deleted">;
   const acknowledged = new Map<
     string,
-    { latest: Version; previous?: Version }
+    { latest: Version; previous?: Version | undefined }
   >();
   const same = draftConflictHandler.isEqual;
   const conflictHandler: RxConflictHandler<SyncDocument> = {

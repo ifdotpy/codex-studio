@@ -1,3 +1,4 @@
+import { assert } from "vitest";
 import { expect, it, vi } from "vitest";
 import { DraftJournal } from "./draftJournal";
 import { NativeDraftState, type DraftView } from "./draftState";
@@ -52,7 +53,9 @@ it("restores exact uncertain requests and later text after restart", async () =>
   expect(restarted.getSnapshot().pending).toBe(true);
   await restarted.retry();
   expect(invoke.mock.calls[0]).toEqual(lost.mock.calls[0]);
-  expect(invoke.mock.calls[1]?.[2]).not.toBe(invoke.mock.calls[0]?.[2]);
+  assert(invoke.mock.calls[1] !== undefined);
+  assert(invoke.mock.calls[0] !== undefined);
+  expect(invoke.mock.calls[1][2]).not.toBe(invoke.mock.calls[0][2]);
   expect(storage.length).toBe(0);
   expect(restarted.getSnapshot()).toMatchObject({
     pending: false,

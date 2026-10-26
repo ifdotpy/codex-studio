@@ -23,8 +23,32 @@ export function nativeVoice(
   return {
     async offer() {
       try {
-        listening = await listen((event: any) => {
-          if (!closed && event?.event === subscription) onEvent(event.value);
+        listening = await listen((event) => {
+          if (
+            closed ||
+            !event ||
+            typeof event !== "object" ||
+            !("event" in event) ||
+            event.event !== subscription ||
+            !("value" in event)
+          )
+            return;
+          const value = event.value;
+          if (
+            !value ||
+            typeof value !== "object" ||
+            !("type" in value) ||
+            typeof value.type !== "string"
+          )
+            return;
+          if (
+            ["state", "data", "message"].some(
+              (key) =>
+                key in value && typeof Reflect.get(value, key) !== "string",
+            )
+          )
+            return;
+          onEvent(value as NativeVoiceEvent);
         });
         if (closed) throw new Error("Voice ended.");
         await request("view.subscribe", {
