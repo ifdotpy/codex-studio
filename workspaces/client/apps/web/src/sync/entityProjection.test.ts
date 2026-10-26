@@ -732,8 +732,14 @@ it("projects entity rows and preserves server sequence ordering", () => {
   const initial = applyEntityRows(
     state,
     [
-      { id: "state:ready", payload: "ignored", seq: 1 } satisfies EntityRow,
-      { id: "other:agent", payload: "ignored", seq: 1 } satisfies EntityRow,
+      { id: "state:ready", payload: "ignored", seq: 1 } satisfies Omit<
+        EntityRow,
+        "payload"
+      >,
+      { id: "other:agent", payload: "ignored", seq: 1 } satisfies Omit<
+        EntityRow,
+        "payload"
+      >,
       entityRow(
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
@@ -768,7 +774,10 @@ it("projects entity rows and preserves server sequence ordering", () => {
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
       ),
-      { id: "other:agent", payload: "ignored", seq: 3 } satisfies EntityRow,
+      { id: "other:agent", payload: "ignored", seq: 3 } satisfies Omit<
+        EntityRow,
+        "payload"
+      >,
     ],
     true,
   );
@@ -1878,10 +1887,9 @@ it("applies v4 structured entity rows without parsing JSON strings", () => {
     [
       {
         id: upsert.id,
-        payload: "",
         seq: 2,
         _deleted: true,
-      } satisfies EntityRow,
+      } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
@@ -1983,9 +1991,8 @@ it("projects independent account limits and preserves them across workspace upda
       {
         id: "entity:rateLimit:alpha",
         seq: 5,
-        payload: "{}",
         _deleted: true,
-      } satisfies EntityRow,
+      } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
@@ -2020,14 +2027,13 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
     [
       {
         id: "entity:workspace:current",
-        payload: "",
         entity: {
           collection: "workspace",
           id: "current",
           value: { stateDir: "fixture" },
         },
         seq: 1,
-      } satisfies EntityRow,
+      } satisfies Omit<EntityRow, "payload">,
       entityRow({ collection: "studioError", id: item.id, value: item }, 2),
     ],
     true,
@@ -2039,20 +2045,18 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
     [
       {
         id: "entity:workspace:current",
-        payload: "",
         entity: {
           collection: "workspace",
           id: "current",
           value: { stateDir: "fixture" },
         },
         seq: 1,
-      } satisfies EntityRow,
+      } satisfies Omit<EntityRow, "payload">,
       {
         id: `entity:studioError:${item.id}`,
         seq: 3,
-        payload: "{}",
         _deleted: true,
-      } satisfies EntityRow,
+      } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
@@ -2088,9 +2092,8 @@ it("projects queue stream upserts and deletion without endpoint reads", () => {
       {
         id: "entity:queue:chat",
         seq: 2,
-        payload: "{}",
         _deleted: true,
-      } satisfies EntityRow,
+      } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
@@ -2213,7 +2216,7 @@ for (const { entity, select } of sourceCases)
           seq: 2,
           payload: "{}",
           _deleted: true,
-        } satisfies EntityRow,
+        } satisfies Omit<EntityRow, "payload">,
       ],
       true,
     );
