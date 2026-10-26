@@ -101,9 +101,11 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
         onChange={p.onEffort}
         disabled={!!p.readOnlyReason || p.disabled || p.effortDisabled}
       />
-      {p.role !== "review" && (
-        <ModeToggles {...p} disabled={!!p.readOnlyReason || p.disabled} />
-      )}
+      <ModeToggles
+        {...p}
+        daybreakAvailable={p.role !== "review" && p.daybreakAvailable}
+        disabled={!!p.readOnlyReason || p.disabled}
+      />
     </Stack>
   );
 }

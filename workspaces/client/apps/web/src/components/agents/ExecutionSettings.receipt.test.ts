@@ -118,7 +118,7 @@ vi.mock("./WorkerModelPicker", async (load) => ({
   useWorkerModels: () => ({
     models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
       model,
-      serviceTiers: [],
+      serviceTiers: [{ id: "priority" }],
       supportedReasoningEfforts: [{ reasoningEffort: "high" }],
     })),
     loading: false,
@@ -184,7 +184,7 @@ function render(agent = initial, permissions = false) {
       catalog: {
         models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
           model,
-          serviceTiers: [],
+          serviceTiers: [{ id: "priority" }],
           supportedReasoningEfforts: [],
         })),
         loading: false,
@@ -331,6 +331,92 @@ test("review settings use their canonical response without a refresh", async () 
   expect(render().label).toContain("Review Luna 6 Medium");
   await new Promise<void>(queueMicrotask);
   expect(h.refresh).not.toHaveBeenCalled();
+});
+
+for (const role of ["orchestrator", "worker", "review"] as const) {
+  test(`${role} saves explicit Fast false and retains the canonical response before SSE`, async () => {
+    const agent: Agent = {
+      ...initial,
+      fastMode: true,
+      workerDefaults: { model: "gpt-6-astra", effort: "high", fastMode: true },
+      reviewDefaults: { model: "gpt-6-astra", effort: "high", fastMode: true },
+    };
+    const canonical: Agent = {
+      ...agent,
+      ...(role === "orchestrator"
+        ? { fastMode: false }
+        : role === "worker"
+          ? {
+              workerDefaults: {
+                model: "gpt-6-astra",
+                effort: "high",
+                fastMode: false,
+              },
+            }
+          : {
+              reviewDefaults: {
+                model: "gpt-6-astra",
+                effort: "high",
+                fastMode: false,
+              },
+            }),
+    };
+    h.post.mockResolvedValue(canonical);
+    render(agent).picker.onRole(role);
+    expect(render(agent).picker.fastAvailable).toBe(true);
+    expect(render(agent).picker.fast).toBe(true);
+    expect(render(agent).label).toContain(
+      role === "orchestrator"
+        ? "Lead Astra 6 Medium (codex) Fast"
+        : role === "worker"
+          ? "Workers Astra 6 High (codex) Fast"
+          : "Review Astra 6 High (codex) Fast",
+    );
+    render(agent).picker.onFast();
+    await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+    const body: PostBody<"/api/conversation"> = required(
+      required(h.post.mock.calls[0])[1],
+    );
+    expect(
+      role === "review"
+        ? body.review_defaults?.fast_mode
+        : role === "worker"
+          ? body.worker_defaults?.fast_mode
+          : body.fast_mode,
+    ).toBe(false);
+    expect(render(agent).picker.fast).toBe(false);
+    expect(render(agent).label).not.toContain(
+      role === "orchestrator"
+        ? "Lead Astra 6 Medium (codex) Fast"
+        : role === "worker"
+          ? "Workers Astra 6 High (codex) Fast"
+          : "Review Astra 6 High (codex) Fast",
+    );
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(render(canonical).picker.fast).toBe(false);
+  });
+}
+
+test("review Fast receipts yield to a newer Fast-only SSE update", async () => {
+  const agent: Agent = {
+    ...initial,
+    reviewDefaults: { model: "gpt-6-astra", effort: null, fastMode: false },
+  };
+  h.post.mockResolvedValue({
+    ...agent,
+    reviewDefaults: { ...agent.reviewDefaults, fastMode: true },
+  });
+  render(agent).picker.onRole("review");
+  render(agent).picker.onFast();
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+  expect(render(agent).picker.fast).toBe(true);
+  expect(
+    render({
+      ...agent,
+      reviewDefaults: { model: "gpt-6-astra", effort: null, fastMode: true },
+    }).picker.fast,
+  ).toBe(true);
+  expect(render(agent).picker.fast).toBe(false);
 });
 
 test("unrelated earlier SSE does not suppress a later acknowledged model", async () => {
