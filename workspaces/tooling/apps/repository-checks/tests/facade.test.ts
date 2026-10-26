@@ -86,9 +86,7 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
     readFileSync(`${web}/package.json`, "utf8"),
   );
   const scripts = manifest.scripts;
-  assert.ok(scripts);
-  const smoke = scripts["test:browser:smoke:prepared"];
-  assert.ok(smoke);
+  const smoke = scripts!["test:browser:smoke:prepared"];
   const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
   assert.ok(grep, "package.json owns the smoke selector");
   assert.match(title, new RegExp(grep));
@@ -102,7 +100,6 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   assert.match(fast, /"src\/sync\/entityTransfer\.test\.ts"/);
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   const browserJob = workflow.split("  fast-browser-smoke:")[1];
-  assert.ok(browserJob);
   assert.match(
     browserJob,
     /playwright install chromium[\s\S]+just test-browser-smoke --prepared/,
@@ -331,7 +328,7 @@ test("Cargo uses nextest filters and keeps package and test selectors narrow", (
   assert.deepEqual(
     commandFor("/repo", item, "test", "cli::tests::help", {
       name: "help renders",
-    })[0]?.[1].slice(-2),
+    })[0][1].slice(-2),
     ["--filterset", "test(~cli::tests::help) and test(~help renders)"],
   );
   assert.deepEqual(
@@ -375,10 +372,9 @@ test("nextest empty-selection and missing-runner errors stay actionable", () => 
   );
   assert.equal(nextestSelectionError(0), null);
   const missing = nextestError("error: no such command: `nextest`");
-  assert.ok(missing);
-  assert.match(missing, /cargo-nextest 0\.9\.146 is required/);
+  assert.match(missing!, /cargo-nextest 0\.9\.146 is required/);
   assert.match(
-    missing,
+    missing!,
     /cargo install cargo-nextest --version 0\.9\.146 --locked/,
   );
   assert.equal(nextestError("error: failed to compile package"), null);
@@ -439,7 +435,7 @@ esac
     const absent = await execute(root, item, "", true);
     assert.equal(absent.exitCode, 1);
     assert.match(
-      absent.errors?.[0] ?? "",
+      absent.errors![0],
       /cargo install cargo-nextest --version 0\.9\.146 --locked/,
     );
     assert.ok(absent.logPath);
@@ -568,7 +564,6 @@ test("hosted non-Rust checks consume prepared inputs and cannot compile Cargo", 
   const remaining = workflow
     .split("  fast-rest:\n")[1]
     ?.split("  fast-rust:\n")[0];
-  assert.ok(remaining);
   assert.match(remaining, /needs: rust-build-tests/);
   assert.match(remaining, /name: prepared-check-inputs/);
   assert.doesNotMatch(remaining, /client-build-setup|cargo build|clippy/);
@@ -717,10 +712,7 @@ test("Playwright JSON reports enforce process and test outcome status", () => {
 
   const malformed = evaluatePlaywrightReport("{bad json", 0);
   assert.equal(malformed.exitCode, 1);
-  assert.match(
-    malformed.errors[0] ?? "",
-    /^Playwright JSON report is invalid:/,
-  );
+  assert.match(malformed.errors[0], /^Playwright JSON report is invalid:/);
 
   const invalidStats = evaluatePlaywrightReport(
     JSON.stringify({ stats: { expected: -1 } }),
@@ -763,15 +755,9 @@ process.exit(1);`;
     assert.equal(result.passed, 322);
     assert.equal(result.skipped, 11);
     assert.ok(
-      readFileSync(
-        result.reportPath ?? assert.fail("missing report path"),
-        "utf8",
-      ).includes('"unexpected":1'),
+      readFileSync(result.reportPath!, "utf8").includes('"unexpected":1'),
     );
-    assert.match(
-      (result.errors ?? []).join(" "),
-      /Playwright exited with code 1/,
-    );
+    assert.match(result.errors!.join(" "), /Playwright exited with code 1/);
   } finally {
     if (originalCache === undefined)
       delete process.env.CODEX_STUDIO_CHECKS_CACHE;
@@ -796,9 +782,7 @@ test("browser wrapper rejects a missing JSON report even after process success",
       },
     );
     assert.equal(result.exitCode, 1);
-    assert.ok(
-      (result.errors ?? []).includes("Playwright JSON report is missing"),
-    );
+    assert.ok(result.errors!.includes("Playwright JSON report is missing"));
   } finally {
     if (originalCache === undefined)
       delete process.env.CODEX_STUDIO_CHECKS_CACHE;
@@ -820,7 +804,7 @@ test("zero-test package command is a failure unless explicitly allowed", async (
     },
   );
   assert.equal(result.exitCode, 1);
-  assert.ok(result.errors?.includes("native runner executed zero tests"));
+  assert.ok(result.errors!.includes("native runner executed zero tests"));
 });
 
 test("composed runs name and log a failed constituent step", async () => {
@@ -1006,7 +990,6 @@ test("check-affected selects a changed package and transitive workspace dependen
     });
     fixture.add("unrelated-d", "workspaces/client/apps/d");
     const aItem = fixture.packages[0];
-    assert.ok(aItem);
     aItem.manifest = path.join(a, "package.json");
     assert.deepEqual(
       affectedPlan(fixture.root, "origin/main", fixture.packages, [
@@ -1097,7 +1080,6 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
   const version = readFileSync(manifest, "utf8").match(
     /^wasm-bindgen\s*=\s*"=([^"\s]+)"/m,
   )?.[1];
-  assert.ok(version);
   const bin = path.join(root, "bin");
   const cache = path.join(root, "cache");
   const cargoHome = path.join(root, "cargo-home");
@@ -1167,7 +1149,7 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
       "--locked",
     ]);
     assert.equal(
-      calls[1]?.[0],
+      calls[1][0],
       path.join(
         env.CARGO_TARGET_DIR,
         "wasm32-unknown-unknown/release/studio_client_wasm.wasm",
@@ -1361,10 +1343,9 @@ test("repository gates use manifest packages without the retired backend", () =>
     readFileSync("package.json", "utf8"),
   );
   const scripts = manifest.scripts;
-  assert.ok(scripts);
-  assert.equal(scripts["typecheck:runtime"], undefined);
-  assert.equal(scripts["test:server:python"], undefined);
-  assert.match(scripts["test:server:bridge"] ?? "", /studio-claude-bridge/);
+  assert.equal(scripts!["typecheck:runtime"], undefined);
+  assert.equal(scripts!["test:server:python"], undefined);
+  assert.match(scripts!["test:server:bridge"]!, /studio-claude-bridge/);
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   assert.doesNotMatch(
     workflow,
