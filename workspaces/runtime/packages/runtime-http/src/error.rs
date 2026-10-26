@@ -2,6 +2,10 @@ use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use studio_runtime_schema::studio_errors::Cause;
+pub(crate) use studio_runtime_schema::studio_errors::HttpErrorKind as InternalErrorKind;
+pub(crate) use studio_runtime_services::studio_errors::store_error_kind;
+use studio_runtime_services::studio_errors::{json_cause, store_causes};
 
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 
@@ -17,71 +21,14 @@ pub struct ApiError {
     outcome: Option<crate::generated::ErrorResponseOutcome>,
     content_type: Option<&'static str>,
     internal_cause: Option<InternalErrorKind>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum InternalErrorKind {
-    HandlerPanic,
-    StoreConfiguration,
-    StoreData,
-    StoreDatabase,
-    StoreIo,
-    StoreOwnership,
-    StoreSchema,
-    StoreConcurrency,
-    ResponseBodyRead,
-    CostsComputation,
-    CostsState,
-    Unclassified,
-}
-
-impl InternalErrorKind {
-    pub(crate) fn log_class(self) -> &'static str {
-        match self {
-            Self::HandlerPanic => "handler_panic",
-            Self::StoreConfiguration => "store_configuration",
-            Self::StoreData => "store_data",
-            Self::StoreDatabase => "store_database",
-            Self::StoreIo => "store_io",
-            Self::StoreOwnership => "store_ownership",
-            Self::StoreSchema => "store_schema",
-            Self::StoreConcurrency => "store_concurrency",
-            Self::ResponseBodyRead => "response_body_read",
-            Self::CostsComputation => "costs_computation",
-            Self::CostsState => "costs_state",
-            Self::Unclassified => "unclassified",
-        }
-    }
-
-    pub(crate) fn from_store_error(error: &studio_runtime_store::StoreError) -> Self {
-        use studio_runtime_store::StoreError;
-        match error {
-            StoreError::StateDirectory(_) => Self::StoreIo,
-            StoreError::AlreadyOwned => Self::StoreOwnership,
-            StoreError::MissingDatabase(_) | StoreError::UnsafeStateDirectory => {
-                Self::StoreConfiguration
-            }
-            StoreError::SchemaMismatch(_)
-            | StoreError::SchemaObjectMismatch { .. }
-            | StoreError::RecordContract(_) => Self::StoreSchema,
-            StoreError::InvalidSyncObject { .. }
-            | StoreError::InvalidStoredRecord { .. }
-            | StoreError::InvalidStoredObject { .. }
-            | StoreError::InvalidSyncObjectField { .. }
-            | StoreError::Json(_)
-            | StoreError::SchemaValidation(_) => Self::StoreData,
-            StoreError::Sqlite(_)
-            | StoreError::CommitOutcomeUnknown(_)
-            | StoreError::CommitActorOutcomeUnknown(_)
-            | StoreError::WriterActorInitialization(_)
-            | StoreError::WriterActorControl(_) => Self::StoreDatabase,
-            StoreError::WriterPoisoned | StoreError::ReadTaskFailed => Self::StoreConcurrency,
-        }
-    }
+    diagnostic_causes: Vec<Cause>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct InternalErrorCause(pub InternalErrorKind);
+
+#[derive(Clone, Debug)]
+pub(crate) struct DiagnosticCauses(pub Vec<Cause>);
 
 impl ApiError {
     pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
@@ -92,15 +39,24 @@ impl ApiError {
             outcome: None,
             content_type: None,
             internal_cause: None,
+            diagnostic_causes: Vec::new(),
         }
     }
 
     /// Mark a rejected preflight as safely retryable; callers must use this
     /// only when the operation has not been persisted or sent to a child.
     pub(crate) fn not_applied(message: impl Into<String>) -> Self {
-        let mut error = Self::new(StatusCode::BAD_REQUEST, message);
-        error.outcome = Some(crate::generated::ErrorResponseOutcome::NotApplied);
-        error
+        Self::new(StatusCode::BAD_REQUEST, message).with_not_applied()
+    }
+
+    /// Use only at a boundary that proves rollback or refusal before any effect.
+    pub(crate) fn with_not_applied(mut self) -> Self {
+        self.outcome = Some(crate::generated::ErrorResponseOutcome::NotApplied);
+        self
+    }
+
+    pub(crate) fn outcome(&self) -> Option<&crate::generated::ErrorResponseOutcome> {
+        self.outcome.as_ref()
     }
 
     pub(crate) fn validation(location: Vec<serde_json::Value>) -> Self {
@@ -111,6 +67,7 @@ impl ApiError {
             outcome: None,
             content_type: None,
             internal_cause: None,
+            diagnostic_causes: Vec::new(),
         }
     }
 
@@ -144,10 +101,23 @@ impl ApiError {
     /// Refuse an operation when persisted data cannot be trusted. Keep the
     /// affected identity in the safe response, without exposing field values.
     pub(crate) fn invalid_stored(object: &str, id: &str) -> Self {
-        Self::new(
+        let mut error = Self::new(
             STORED_DATA_UNAVAILABLE,
             format!("Stored data {object}/{id} is unavailable"),
-        )
+        );
+        error.internal_cause = Some(InternalErrorKind::StoreData);
+        error.diagnostic_causes.push(Cause::StoredRecord {
+            object: object.into(),
+            id: id.into(),
+            pointer: None,
+        });
+        error
+    }
+
+    pub(crate) fn json(error: serde_json::Error) -> Self {
+        let mut result = Self::internal_with_cause(InternalErrorKind::StoreData);
+        result.diagnostic_causes.push(json_cause(&error));
+        result
     }
 }
 
@@ -159,7 +129,7 @@ impl From<studio_runtime_store::StoreError> for ApiError {
 }
 
 impl ApiError {
-    /// HTTP status of this error; a 4xx or 503 provider error means the request had no effect.
+    /// HTTP status alone never establishes whether a mutation took effect.
     pub(crate) fn status(&self) -> StatusCode {
         self.status
     }
@@ -170,8 +140,9 @@ impl ApiError {
 
     pub(crate) fn stored(error: studio_runtime_store::StoreError) -> Self {
         use studio_runtime_store::StoreError;
-        let cause = InternalErrorKind::from_store_error(&error);
-        match error {
+        let cause = store_error_kind(&error);
+        let causes = store_causes(&error);
+        let mut result = match error {
             StoreError::InvalidSyncObject { scope, id } => Self::invalid_stored(&scope, &id),
             StoreError::InvalidStoredObject { table, id }
             | StoreError::InvalidStoredRecord { object: table, id } => {
@@ -196,7 +167,10 @@ impl ApiError {
             | StoreError::WriterActorControl(_)
             | StoreError::CommitActorOutcomeUnknown(_)
             | StoreError::ReadTaskFailed => Self::internal_with_cause(cause),
-        }
+        };
+        result.internal_cause = Some(cause);
+        result.diagnostic_causes = causes;
+        result
     }
 }
 
@@ -206,16 +180,27 @@ impl IntoResponse for ApiError {
         if let Some(location) = self.location {
             body["location"] = location;
         }
-        if let Some(outcome) = self.outcome
+        if let Some(outcome) = &self.outcome
             && let Ok(outcome) = serde_json::to_value(outcome)
         {
             body["outcome"] = outcome;
         }
         let mut response = (self.status, Json(body)).into_response();
-        if self.status == StatusCode::INTERNAL_SERVER_ERROR
-            && let Some(cause) = self.internal_cause
-        {
+        if let Some(outcome) = self.outcome {
+            let certainty = match outcome {
+                crate::generated::ErrorResponseOutcome::NotApplied => {
+                    studio_runtime_schema::studio_errors::EffectCertainty::NotApplied
+                }
+            };
+            response.extensions_mut().insert(certainty);
+        }
+        if let Some(cause) = self.internal_cause {
             response.extensions_mut().insert(InternalErrorCause(cause));
+        }
+        if !self.diagnostic_causes.is_empty() {
+            response
+                .extensions_mut()
+                .insert(DiagnosticCauses(self.diagnostic_causes));
         }
         if let Some(content_type) = self.content_type
             && let Ok(value) = HeaderValue::from_str(content_type)
@@ -277,6 +262,34 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_store::StoreError;
+
+    #[tokio::test]
+    async fn proven_precommit_refusal_preserves_status_location_and_explicit_outcome() {
+        let error = ApiError::stored(StoreError::InvalidSyncObjectField {
+            scope: "runtime_work".into(),
+            id: "task".into(),
+            pointer: "/status".into(),
+            reason: "password=private-canary".into(),
+        })
+        .with_not_applied();
+        assert!(matches!(
+            error.outcome(),
+            Some(crate::generated::ErrorResponseOutcome::NotApplied)
+        ));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let facts = response
+            .extensions()
+            .get::<super::DiagnosticCauses>()
+            .expect("typed facts");
+        assert!(
+            matches!(&facts.0[0],studio_runtime_schema::studio_errors::Cause::StoredRecord{pointer:Some(pointer),..} if pointer=="/status")
+        );
+        let body = to_bytes(response.into_body(), 4096).await.expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+        assert_eq!(body["outcome"], "not_applied");
+        assert!(!body.to_string().contains("private-canary"));
+    }
 
     #[tokio::test]
     async fn not_applied_outcome_is_optional_in_the_common_error_envelope() {

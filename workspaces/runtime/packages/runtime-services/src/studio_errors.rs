@@ -7,6 +7,8 @@
 //! only the owner can decide. Studio never runs a command or sends input from
 //! this list. A dismissed row stays hidden.
 use rusqlite::OptionalExtension;
+mod causes;
+pub use causes::{json_cause, store_causes, store_error_kind};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use studio_runtime_schema::shared_values::{

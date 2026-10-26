@@ -543,7 +543,7 @@ mod response_safety_tests {
             &mut output,
             "POST /api/agents",
             Some("request-123"),
-            crate::error::InternalErrorKind::from_store_error(&error),
+            crate::error::store_error_kind(&error),
         )
         .expect("diagnostic log writes");
         let output = String::from_utf8(output).expect("log is UTF-8");
