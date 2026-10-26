@@ -1,8 +1,3 @@
-declare global {
-  interface Window {
-    projectTreeFixture: { originalSetItem: Storage["setItem"] };
-  }
-}
 import {
   test,
   expect,
@@ -443,13 +438,11 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await waitForOrderReceipt();
     const beforeFailure = await chatOrder();
     await page.evaluate(() => {
-      window.projectTreeFixture = {
-        originalSetItem: Storage.prototype.setItem,
-      };
+      window.originalSetItem = Storage.prototype.setItem;
       Storage.prototype.setItem = function (key, value) {
         if (key.startsWith("codex-sidebar-order:"))
           throw new Error("Storage full fixture");
-        return window.projectTreeFixture.originalSetItem.call(this, key, value);
+        return window.originalSetItem.call(this, key, value);
       };
     });
     await chatButton(keyboardId).press("Alt+ArrowDown");
@@ -462,7 +455,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       .getByText(/Could not save sidebar order:.*Storage full fixture/)
       .waitFor();
     await page.evaluate(() => {
-      Storage.prototype.setItem = window.projectTreeFixture.originalSetItem;
+      Storage.prototype.setItem = window.originalSetItem;
     });
     const savedChatOrder = await chatOrder();
     // Cross-project drags cannot change an agent's working directory.

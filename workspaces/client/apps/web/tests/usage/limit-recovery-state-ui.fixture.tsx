@@ -47,6 +47,7 @@ export type LimitSnapshot = {
 };
 declare global {
   interface Window {
+    // fixtureActions is a tuple array in tests/performance/sidebar-incremental-render.fixture.tsx.
     recoveryActions: string[];
     applyLimitSnapshot: (snapshot: LimitSnapshot) => void;
   }

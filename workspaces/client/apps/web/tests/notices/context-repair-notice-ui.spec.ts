@@ -1,7 +1,10 @@
 import type { Agent } from "../../src/types.ts";
 import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
-import type { ContextRepairAgent } from "./context-repair-notice-ui.fixture.tsx";
+import type {
+  ContextRepairAgent,
+  ContextRepairSnapshot,
+} from "./context-repair-notice-ui.fixture.tsx";
 import { test } from "../playwright.ts";
 // Render the actual banner: ordinary monitor waits are quiet, failures stay visible.
 import assert from "node:assert/strict";
@@ -75,12 +78,10 @@ test("Context repair notice ui", async ({
       visible: boolean,
       text?: RegExp,
     ) => {
-      await page.evaluate(
-        (snapshot) => window.applyContextRepairSnapshot(snapshot),
-        JSON.stringify({
-          label,
-          agent: value,
-        }),
+      await page.evaluate<void, unknown>(
+        (snapshot) =>
+          window.applyContextRepairSnapshot(snapshot as ContextRepairSnapshot),
+        { label, agent: value },
       );
       await page.locator(`main[data-case="${label}"]`).waitFor();
       assert.equal(

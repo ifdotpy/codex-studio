@@ -15,6 +15,7 @@ export type RecoveryHarness = {
 };
 declare global {
   interface Window {
+    // fixture stores scroll handlers in tests/performance/scroll-restart.fixture.tsx.
     uploadRecoveryBrowserFixture: RecoveryHarness;
     scope: string;
     notices: string[];

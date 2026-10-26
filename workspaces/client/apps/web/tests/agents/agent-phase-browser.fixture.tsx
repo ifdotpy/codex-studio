@@ -27,6 +27,7 @@ declare global {
   interface Window {
     // Renamed from reads: sync/transient-progress-browser.fixture.tsx declares window.reads as read counters.
     agentPhaseReads: unknown[][];
+    // renders is number in tests/performance/draft-render-performance.fixture.tsx.
     chatRenders: Record<string, number>;
     setConnection: (
       value: "offline" | "connecting" | "live",

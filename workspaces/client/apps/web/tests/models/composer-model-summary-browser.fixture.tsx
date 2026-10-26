@@ -56,7 +56,14 @@ const reader: React.ContextType<typeof ModelCatalogReader> = {
     return () => {};
   },
 };
-const lead: Agent = {
+type ComposerLead = Omit<Agent, "workerDefaults"> & {
+  workerDefaults: Omit<NonNullable<Agent["workerDefaults"]>, "fastMode">;
+};
+// The base one-off composer lead omits workerDefaults.fastMode.
+function partialComposerLead(value: ComposerLead): Agent {
+  return value as Agent;
+}
+const lead = partialComposerLead({
   id: "lead",
   isLead: true,
   source: "managed",
@@ -65,9 +72,9 @@ const lead: Agent = {
   model: "opus",
   effort: "high",
   status: query.has("active") ? "running" : "idle",
-  workerDefaults: { model: "sol", effort: "high", fastMode: false },
+  workerDefaults: { model: "sol", effort: "high" },
   reviewDefaults: { model: null, effort: null },
-};
+});
 const agent = query.has("worker")
   ? { ...lead, id: "worker", isLead: false, rootId: "lead" }
   : lead;
