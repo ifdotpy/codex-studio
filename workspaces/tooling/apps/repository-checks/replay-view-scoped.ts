@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 // Offline replay only: no server reads or writes. Payloads stay outside the checkout.
 import { readFile, writeFile } from "node:fs/promises";
-import type {
-  components,
-  JsonValue,
-} from "../../../client/apps/web/src/generated/api.ts";
+import type { components } from "../../../client/apps/web/src/generated/api.ts";
 import type { OpenAPI3 } from "openapi-typescript";
 import {
   createBrotliCompress,
@@ -106,10 +103,10 @@ for (const frame of frames) {
     for (const row of batch.documents) {
       if (row.collection === "agent") {
         const mapped: Omit<typeof row, "value"> & {
-          value?: Record<string, JsonValue | undefined>;
+          value?: Record<string, unknown>;
         } = { ...row, collection: "agentSummary" };
         if (row.op === "upsert") {
-          const value: Record<string, JsonValue | undefined> = { ...row.value };
+          const value: Record<string, unknown> = { ...row.value };
           mapped.value = Object.fromEntries(
             summaryFields
               .filter((field) => field in value)

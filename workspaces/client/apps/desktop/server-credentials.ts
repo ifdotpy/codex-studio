@@ -1,13 +1,11 @@
+import type { StudioServerIdentity } from "../web/src/servers/serverIdentity.ts";
 import type { components } from "../web/src/generated/api.ts";
 import type { SafeStorage } from "electron";
 import type { ServerRequest, PairRequest } from "./api.ts";
 export type Invitation = components["schemas"]["AccessInvitation"];
-export type PairReceipt = {
-  id: string;
-  origin: string;
-  label: string;
-  credentialId: string;
-};
+export type PairReceipt = Required<
+  Pick<StudioServerIdentity, "id" | "origin" | "label" | "credentialId">
+>;
 export type PairInput = PairRequest;
 type Draft = {
   origin: string;
@@ -106,6 +104,7 @@ function createServerCredentials({
       throw error;
     }
     secure();
+    // The private paired-server document is written only by change() and encrypted by secure storage.
     return JSON.parse(
       safeStorage.decryptString(Buffer.from(encrypted, "base64")),
     );

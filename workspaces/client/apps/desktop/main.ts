@@ -1,3 +1,4 @@
+import type { components } from "../web/src/generated/api.ts";
 import type {
   BrowserWindow as ElectronWindow,
   MenuItem,
@@ -266,6 +267,12 @@ function saveName(value: unknown) {
     throw new Error("Invalid file name.");
   return name;
 }
+/** The local Rust HTTP server owns these generated response contracts. */
+async function readServerResponse<T>(
+  response: Response,
+): Promise<Partial<T> & { error?: string }> {
+  return response.json();
+}
 async function resolvedFile(
   event: NativeEvent,
   target: NonNullable<
@@ -288,7 +295,8 @@ async function resolvedFile(
     signal: AbortSignal.timeout(15000),
     redirect: "error",
   });
-  const info = await response.json();
+  const info =
+    await readServerResponse<components["schemas"]["FileInfo"]>(response);
   if (!response.ok || info.error)
     throw new Error(info.error || "Cannot resolve the selected file.");
   trusted(event);
@@ -346,13 +354,13 @@ function nativeDownload(
       );
   });
 }
-function signInForward(value: SignInForward) {
+function signInForward(value: SignInForward): SignInForward {
   if (!value || typeof value !== "object")
     throw new Error("Invalid sign-in forward.");
   const forward = {
     server: string(value.server, 200),
     bridgeId: string(value.bridgeId, 32),
-    host: value.host,
+    host: string(value.host, 16),
     port: value.port,
     path: string(value.path, 2048),
     expiresAt: value.expiresAt,
@@ -360,7 +368,9 @@ function signInForward(value: SignInForward) {
   };
   if (
     !/^[0-9a-f]{32}$/.test(forward.bridgeId) ||
-    !["127.0.0.1", "localhost", "::1"].includes(forward.host) ||
+    (forward.host !== "127.0.0.1" &&
+      forward.host !== "localhost" &&
+      forward.host !== "::1") ||
     !Number.isInteger(forward.port) ||
     forward.port < 1024 ||
     forward.port > 65535 ||
@@ -368,7 +378,7 @@ function signInForward(value: SignInForward) {
     !Number.isFinite(forward.expiresAt)
   )
     throw new Error("Invalid sign-in forward.");
-  return forward;
+  return { ...forward, host: forward.host };
 }
 // This Mac's Studio server binds the port strictly and relays the one redirect
 // (codex_browser_bridge.open_remote_forward). The request is a local window request.
@@ -378,7 +388,11 @@ async function holdSignInPort(forward: SignInForward) {
     signal: AbortSignal.timeout(10000),
     redirect: "error",
   });
-  const token = (await session.json().catch(() => ({}))).token;
+  const token = (
+    await readServerResponse<components["schemas"]["SessionResponse"]>(
+      session,
+    ).catch((): Partial<components["schemas"]["SessionResponse"]> => ({}))
+  ).token;
   if (!session.ok || typeof token !== "string")
     throw new Error("The Studio server on this computer is unavailable.");
   const response = await fetch(`${backend.origin}/api/browser/forward`, {
@@ -392,7 +406,9 @@ async function holdSignInPort(forward: SignInForward) {
     signal: AbortSignal.timeout(20000),
     redirect: "error",
   });
-  const result = await response.json().catch(() => ({}));
+  const result = await readServerResponse<
+    components["schemas"]["BrowserForwardResult"]
+  >(response).catch((): { error?: string } => ({}));
   if (!response.ok)
     throw new Error(
       result.error || "This computer could not hold the sign-in port.",
@@ -483,8 +499,12 @@ async function nativeAction(
           value,
           credentials: serverCredentials,
           trusted: () => trusted(event),
-        }).catch((error) => {
-          if (error.code === "invite_unavailable")
+        }).catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "invite_unavailable"
+          )
             return { notApplied: "invite_unavailable" };
           throw error;
         });
@@ -1292,7 +1312,8 @@ else
 
       return start();
     })
-    .catch((error) => {
+    .catch((error: unknown) => {
+      if (!(error instanceof Error)) throw error;
       console.error(error.stack || error);
       if (!hidden && !backgroundRecovery)
         dialog.showErrorBox(`${productName} cannot start`, error.message);

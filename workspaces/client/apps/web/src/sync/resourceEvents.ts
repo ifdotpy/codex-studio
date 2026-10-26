@@ -195,9 +195,12 @@ export type ResourceEventsOptions = {
   >;
   sync: Pick<
     ReturnType<typeof import("./client").createSyncClient>,
-    "persistResourceEntityChanges" | "syncDatabase"
-  > &
-    Partial<
+    "persistResourceEntityChanges"
+  > & {
+    syncDatabase: () => Promise<
+      Pick<Awaited<ReturnType<typeof syncDatabase>>, "workspaceId">
+    >;
+  } & Partial<
       Pick<
         ReturnType<typeof import("./client").createSyncClient>,
         "readSubscriptionCursor" | "persistStagedEntityTransfer"
@@ -1541,7 +1544,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   ) {
     type PreparedCursor = {
       resource: ResourceRef;
-      since?: components["schemas"]["SubscriptionCursor"];
+      since?: components["schemas"]["SubscriptionCursor"] | undefined;
     };
     const baseline: PreparedCursor[] = resources.map((resource) => ({
       resource,
@@ -1576,7 +1579,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
                         .catch(() => undefined);
                   return {
                     resource,
-                    ...(since === undefined ? {} : { since }),
+                    since,
                   };
                 }),
               )),

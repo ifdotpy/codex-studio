@@ -46,7 +46,7 @@ const _: () = assert!(
         < HOST_RUNTIME_SHUTDOWN_WAIT.as_millis()
 );
 const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
-/// Where `native/linux-vm/build.mjs` writes the helper in a source checkout.
+/// Where `native/linux-vm/build.ts` writes the helper in a source checkout.
 const LINUX_VM_HELPER_RELATIVE: &str =
     "workspaces/client/apps/desktop/native/linux-vm/studio-linux-vm";
 

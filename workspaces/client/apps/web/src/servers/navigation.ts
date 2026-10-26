@@ -60,8 +60,8 @@ export type ServerCommand =
       settings?: NewChatSettings;
       path?: string;
       folder?: string;
-      projectId?: string;
-      projectServerId?: string;
+      projectId?: string | undefined;
+      projectServerId?: string | undefined;
     }
   | { action: "add-project" }
   | { action: "refresh" }

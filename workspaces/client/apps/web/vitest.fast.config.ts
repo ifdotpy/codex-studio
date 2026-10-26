@@ -27,6 +27,7 @@ export default {
       "src/hooks/snapshotRecovery.test.ts",
       "src/servers/serverNames.test.ts",
       "src/servers/serverRows.test.ts",
+      "src/servers/screenChannel.test.ts",
       "src/renameRequest.test.ts",
       "src/sync/drafts.publication.test.ts",
       "src/sync/transcriptCache.test.ts",
@@ -57,7 +58,7 @@ export default {
       "src/components/agents/AgentProgress.test.ts",
       "src/components/agents/ExecutionSettings.receipt.test.ts",
       "src/components/models/modelOption.test.ts",
-      "src/components/chat-status/chatStatusModel.test.mjs",
+      "src/components/chat-status/chatStatusModel.test.ts",
       "src/sync/outboxWriteFailure.test.ts",
       "src/sync/useOutbox.test.ts",
       "src/pythonBackendRemoval.test.ts",
@@ -65,9 +66,9 @@ export default {
       "src/scrollFollowFixture.test.ts",
       "src/receiptSummaryFixture.test.ts",
       "src/transcriptPageBounds.test.ts",
-      "src/components/message-delivery/messageDelivery.test.mjs",
+      "src/components/message-delivery/messageDelivery.test.ts",
       "src/components/claudeRepairModel.test.ts",
-      "src/components/turnHistoryModel.test.mjs",
+      "src/components/turnHistoryModel.test.ts",
       "src/components/useTurnErrors.test.ts",
       "src/components/conversation/transcript/TurnHistory.uncertain.test.ts",
       "src/components/shell/WorkerPermissions.test.ts",
@@ -106,6 +107,8 @@ export default {
       "src/sync/uiPreferenceBridge.test.ts",
       // Prevent idle polling and lost draft notifications during a refresh.
       "src/native/useNativeDrafts.test.ts",
+      // Reserved preference keys survive profile import.
+      "src/native/importBrowserProfile.test.ts",
       // An authoritative delete readback must settle even when another refresh owns the current render generation.
       "src/hooks/snapshotDeleteReadback.test.ts",
       "src/chatDeleteScope.test.ts",

@@ -23,7 +23,7 @@ const desktop = fileURLToPath(
 );
 
 // A temporary HOME holds signing.json, the password file and an empty keychain
-// file. A fake security replaces the two security calls of signing.mjs.
+// file. A fake security replaces the two security calls of signing.ts.
 function fixture(options: { json?: string } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "signing-check-"));
   const config = path.join(root, ".config/codex-studio");
@@ -232,7 +232,7 @@ test("fails when the identity is not in the keychain", () =>
 test("the unlock error names the security cause and hides the password", () => {
   const output = execFileSync(
     process.execPath,
-    [path.join(desktop, "signing-test.mjs"), "--unlock-contract"],
+    [path.join(desktop, "signing-test.ts"), "--unlock-contract"],
     { encoding: "utf8" },
   );
   assert.match(output, /^PASS: /);

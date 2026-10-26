@@ -109,7 +109,11 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 
 The repository checks add three focused commands: `just contracts-check` runs
 the generated API and persisted-state checks in read-only mode; `just boundaries-check`
-checks manifest-declared imports and workspace direction; and
+checks manifest-declared imports and workspace direction. Type-only imports may cross
+workspace boundaries for generated contracts and the shared type owners listed with
+their purposes in the [facade](../workspaces/tooling/apps/repository-checks/facade.ts);
+runtime imports retain the declared-dependency and documented-exception rules.
+
 `just check-affected <base>` checks changed packages and reverse dependents
 discovered from workspace manifests. It widens to all packages for root policy
 or unowned-file changes and prints the reason per selected package.
@@ -219,7 +223,7 @@ are the root reference examples. Keep runner selectors extension-neutral
 on this host, against its live backend. On Linux it checks the `codex-studio`
 user service and the delivered release under
 `~/.local/share/codex-studio/server/current`; macOS keeps the application bundle layout. Run it after an install. The
-[script](../workspaces/tooling/apps/installed-smoke/smoke.mjs) owns the steps and
+[script](../workspaces/tooling/apps/installed-smoke/smoke.ts) owns the steps and
 their time limits:
 
 1. Refuse to run while the backend is younger than 60 s, while another backend of

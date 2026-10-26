@@ -134,7 +134,7 @@ just package-native /tmp/out --hosted-ci-passed
 Every package is signed with one persistent certificate. A new certificate
 changes the application identity, and macOS then asks again for the permissions
 that the user already gave. The build refuses ad hoc signing. The signer is
-[signing.mjs](../desktop/signing.mjs).
+[signing.ts](../desktop/signing.ts).
 
 Agents must run `just signing-check` before `just package-native`.
 

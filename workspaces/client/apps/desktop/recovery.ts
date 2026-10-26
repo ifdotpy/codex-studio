@@ -1,14 +1,7 @@
 import { execFileSync } from "node:child_process";
 import type { App } from "electron";
-import type { SavedEnvironment } from "./restart-environment.ts";
-export type SavedRecovery = SavedEnvironment & {
-  supervisorEnabled?: unknown;
-  python?: string;
-  runtimeServer?: string;
-  processSupervisor?: string;
-  backend?: string;
-  enabled?: boolean;
-};
+import type { SavedRecovery } from "./restart-environment.ts";
+export type { SavedRecovery } from "./restart-environment.ts";
 export type RecoveryRun = (
   file: string,
   args: string[],
@@ -35,7 +28,11 @@ import { promisify } from "node:util";
 const installedApplicationPath =
   "/Applications/Codex Studio.app/Contents/Resources/app.asar";
 import { executable, stateDirectory, runtimeServer } from "./backend.ts";
-import { restartKeys, savedLaunchEnvironment } from "./restart-environment.ts";
+import {
+  readRecoveryConfig,
+  restartKeys,
+  savedLaunchEnvironment,
+} from "./restart-environment.ts";
 const runFile = promisify(execFile);
 
 function processSupervisor(resources: string, env: NodeJS.ProcessEnv) {
@@ -167,7 +164,7 @@ function recoveryPaths(env = process.env, home = os.homedir()) {
 function recoveryPreference(env = process.env) {
   const { config } = recoveryPaths(env);
   try {
-    return JSON.parse(fs.readFileSync(config, "utf8")).enabled === true;
+    return readRecoveryConfig(config).enabled === true;
   } catch (caughterror) {
     if (!(caughterror instanceof Error)) throw caughterror;
     const error: NodeJS.ErrnoException = caughterror;
@@ -180,7 +177,7 @@ function supervisorPreference(env = process.env) {
     return env.CODEX_AGENTS_SUPERVISOR_MODE === "1";
   const { config } = recoveryPaths(env);
   try {
-    const saved = JSON.parse(fs.readFileSync(config, "utf8"));
+    const saved = readRecoveryConfig(config);
     if (
       saved.supervisorEnabled !== undefined &&
       typeof saved.supervisorEnabled !== "boolean"
@@ -275,7 +272,7 @@ async function assertRecoveryBootoutSafe({
   const jobPid = Number(serviceOutput.match(/^\s*pid\s*=\s*(\d+)\s*$/m)?.[1]);
   if (!Number.isSafeInteger(jobPid) || jobPid <= 0) return;
 
-  let owner;
+  let owner: unknown;
   try {
     owner = JSON.parse(
       fs.readFileSync(path.join(files.state, "supervisor.lock"), "utf8"),
@@ -289,6 +286,11 @@ async function assertRecoveryBootoutSafe({
     );
   }
   if (
+    !owner ||
+    typeof owner !== "object" ||
+    !("pid" in owner) ||
+    typeof owner.pid !== "number" ||
+    !("startTime" in owner) ||
     !Number.isSafeInteger(owner.pid) ||
     owner.pid <= 0 ||
     typeof owner.startTime !== "string"
@@ -325,7 +327,7 @@ async function assertRecoveryBootoutSafe({
     );
   if (Number(parentOutput.trim()) !== jobPid) return;
 
-  let health;
+  let health: unknown;
   try {
     const result = await run(python, [
       "-B",
@@ -342,7 +344,12 @@ async function assertRecoveryBootoutSafe({
       `Cannot safely stop the recovery LaunchAgent while its supervisor is live: ${error.message}`,
     );
   }
-  if (!Array.isArray(health.handles))
+  if (
+    !health ||
+    typeof health !== "object" ||
+    !("handles" in health) ||
+    !Array.isArray(health.handles)
+  )
     throw new Error(
       "Cannot safely stop the recovery LaunchAgent while its supervisor status is unavailable.",
     );
@@ -427,7 +434,7 @@ async function configureRecovery({
     restartEnvironment && typeof restartEnvironment === "object";
   let saved: SavedRecovery = {};
   try {
-    saved = JSON.parse(fs.readFileSync(files.config, "utf8"));
+    saved = readRecoveryConfig(files.config);
   } catch (caughterror) {
     if (!(caughterror instanceof Error)) throw caughterror;
     const error: NodeJS.ErrnoException = caughterror;

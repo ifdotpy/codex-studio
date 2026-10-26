@@ -824,8 +824,60 @@ fn subscription_scopes_ts(
     text
 }
 
+// Packaging keeps these validators standalone; the generator checks their literal copies.
+const BACKEND_KIND_CONSUMERS: &[(&str, &str, usize)] = &[
+    (
+        "workspaces/client/apps/desktop/backend.ts",
+        "data.backendKind !== {value}",
+        1,
+    ),
+    (
+        "workspaces/client/apps/desktop/recover_backend.py",
+        "data.get(\"backendKind\") != {value}",
+        2,
+    ),
+    (
+        "workspaces/client/packages/client-core/src/startup.rs",
+        "#[serde(rename = {value})]\n    Rust,",
+        1,
+    ),
+];
+
+fn check_backend_kind_consumer(
+    path: &str,
+    pattern: &str,
+    count: usize,
+    source: &str,
+) -> Result<(), String> {
+    let expected = pattern.replace("{value}", &json_string(crate::desktop::BACKEND_KIND));
+    if source.matches(&expected).count() != count {
+        return Err(format!(
+            "{path} must contain {count} backend validators using desktop::BACKEND_KIND from runtime-schema/src/desktop.rs"
+        ));
+    }
+    Ok(())
+}
+
+fn check_backend_kind_parity(root: &Path) -> Result<(), String> {
+    for (path, pattern, count) in BACKEND_KIND_CONSUMERS {
+        let source =
+            std::fs::read_to_string(root.join(path)).map_err(|error| format!("{path}: {error}"))?;
+        check_backend_kind_consumer(path, pattern, *count, &source)?;
+    }
+    Ok(())
+}
+
+fn supervisor_handshake_schema() -> Value {
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_deserialize()
+        .into_generator()
+        .into_root_schema_for::<crate::supervisor_contract::SupervisorHandshakeV2Result>()
+        .to_value()
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
+    check_backend_kind_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
@@ -844,6 +896,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         serde_json::json!({"$ref":"#/components/schemas/UsageObservation"});
     openapi["components"]["schemas"]["SyncIdentityResponse"]["properties"]["syncProtocol"]["const"] =
         serde_json::json!(crate::sync_protocol::SYNC_IDENTITY_PROTOCOL_VERSION);
+    let identity_version =
+        openapi["components"]["schemas"]["SyncIdentityResponse"]["properties"]["syncProtocol"]
+            .as_object_mut()
+            .ok_or("SyncIdentityResponse.syncProtocol must be a schema object")?;
+    identity_version.remove("minimum");
+    identity_version.remove("maximum");
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -1040,7 +1098,6 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
         generator.subschema_for::<crate::supervisor_contract::HealthResult>();
-        generator.subschema_for::<crate::supervisor_contract::SupervisorHandshakeV2Result>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();
@@ -1048,9 +1105,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
         generator.subschema_for::<studio_client_domain::drafts::DraftView>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
+        let mut schemas = generator.take_definitions(true);
+        schemas.insert(
+            "SupervisorHandshakeV2Result".into(),
+            supervisor_handshake_schema(),
+        );
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},
-            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+            "paths":{}, "components":{"schemas":schemas}
         });
         rendered.push(Rendered {
             path: web("rustOwned.ts"),
@@ -1092,11 +1154,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn backend_kind_parity_rejects_drift_in_every_packaged_validator() {
+        let root = repository_root();
+        check_backend_kind_parity(&root).expect("packaged validators agree with Rust owner");
+        for (path, pattern, count) in BACKEND_KIND_CONSUMERS {
+            let source = std::fs::read_to_string(root.join(path)).expect("consumer source");
+            let expected = pattern.replace("{value}", &json_string(crate::desktop::BACKEND_KIND));
+            for (offset, _) in source.match_indices(&expected) {
+                let mut drifted = source.clone();
+                drifted.replace_range(
+                    offset..offset + expected.len(),
+                    &pattern.replace("{value}", "\"drift\""),
+                );
+                let error = check_backend_kind_consumer(path, pattern, *count, &drifted)
+                    .expect_err("each consumer must reject a changed backend identifier");
+                assert!(
+                    error.contains(path) && error.contains("desktop::BACKEND_KIND"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn supervisor_handshake_accepts_success_and_error_wire_replies() {
+        let schema = supervisor_handshake_schema();
+        let validator = jsonschema::validator_for(&schema).expect("handshake schema compiles");
+        for value in [
+            serde_json::json!({"ok":true,"protocol":2}),
+            serde_json::json!({"error":"Supervisor protocol mismatch"}),
+        ] {
+            let decoded: crate::supervisor_contract::SupervisorHandshakeV2Result =
+                serde_json::from_value(value.clone()).expect("wire reply deserializes");
+            assert_eq!(decoded.ok, value["ok"].as_bool().unwrap_or_default());
+            assert!(
+                validator.is_valid(&value),
+                "schema must accept wire reply {value}"
+            );
+        }
+        assert!(!validator.is_valid(&serde_json::json!({"ok":"true"})));
+    }
+
+    #[test]
+    fn sync_identity_schema_has_only_the_named_version_constraint() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        let version = &document["components"]["schemas"]["SyncIdentityResponse"]["properties"]["syncProtocol"];
+        assert_eq!(
+            version["const"],
+            serde_json::json!(crate::sync_protocol::SYNC_IDENTITY_PROTOCOL_VERSION)
+        );
+        assert!(version.get("minimum").is_none());
+        assert!(version.get("maximum").is_none());
+    }
+
+    #[test]
     fn runtime_metadata_contract_exposes_backend_and_usage_observations() {
         let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
         assert_eq!(
             document.pointer("/components/schemas/DesktopResponse/properties/backendKind/const"),
-            Some(&serde_json::json!("rust"))
+            Some(&serde_json::json!(crate::desktop::BACKEND_KIND))
         );
         assert_eq!(
             document

@@ -3,12 +3,12 @@ import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { signingIdentity, signApplication } from "../desktop/signing.mjs";
-import { setBundleDisplayName } from "../desktop/bundle-name.mjs";
+import { signingIdentity, signApplication } from "../desktop/signing.ts";
+import { setBundleDisplayName } from "../desktop/bundle-name.ts";
 import {
   prebuiltReleaseDirectory,
   releaseTargetEnvironment,
-} from "../desktop/release-binaries.mjs";
+} from "../desktop/release-binaries.ts";
 import { packageRecoveryHelpers } from "./recovery-package.ts";
 import { pruneBridgeImageCodecs } from "./bridge-image-package.ts";
 
@@ -46,7 +46,7 @@ try {
   );
   execFileSync(
     process.execPath,
-    [path.join(root, "../desktop/package.mjs"), "--resources-only"],
+    [path.join(root, "../desktop/package.ts"), "--resources-only"],
     {
       cwd: repository,
       stdio: "inherit",

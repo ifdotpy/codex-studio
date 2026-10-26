@@ -18,7 +18,16 @@ const defaultRoot = path.resolve(scriptDirectory, "../../../..");
 const mode = process.argv[2];
 const check = process.argv[3];
 const repositoryRoot = defaultRoot;
-const codeExtensions = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"]);
+const codeExtensions = new Set([
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".cts",
+  ".mts",
+]);
 const formatExtensions = new Set([
   ...codeExtensions,
   ".css",

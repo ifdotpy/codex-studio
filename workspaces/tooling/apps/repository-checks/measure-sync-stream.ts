@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 // Read-only traffic sampling. Payload recording is explicit and server state is untouched.
 import http from "node:http";
-import type {
-  components,
-  JsonValue,
-} from "../../../client/apps/web/src/generated/api.ts";
+import type { components } from "../../../client/apps/web/src/generated/api.ts";
 import { createWriteStream } from "node:fs";
 import https from "node:https";
 import { createBrotliDecompress } from "node:zlib";
@@ -42,7 +39,7 @@ if (!values.url || !Number.isFinite(seconds) || seconds <= 0)
   throw new Error(
     "Usage: --url URL --seconds N [--protocol 3] [--resources JSON | --resources-file FILE] [--output FILE]",
   );
-const resources: components["schemas"]["ResourceRef"][] = JSON.parse(
+const resources: unknown = JSON.parse(
   values["resources-file"]
     ? await readFile(values["resources-file"], "utf8")
     : values.resources || '[{"kind":"state"},{"kind":"drafts"}]',
@@ -53,6 +50,24 @@ url.searchParams.set("protocol", values.protocol ?? protocolVersion);
 url.searchParams.set("resources", JSON.stringify(resources));
 url.searchParams.set("tokenRates", String(values["token-rates"]));
 const byteLength = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+// Studio's generated contract owns resource events; the server validates the wire shape.
+function resourceEvent(
+  source: string,
+): components["schemas"]["ResourceChangeEvent"] {
+  return JSON.parse(source);
+}
+// Old recordings used a JSON payload string; it has no current server contract.
+function legacyEntityValue(source: string) {
+  const parsed: unknown = JSON.parse(source);
+  const value =
+    parsed && typeof parsed === "object" && "value" in parsed
+      ? parsed.value
+      : null;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value }
+    : null;
+}
 
 function sample(acceptEncoding: string) {
   return new Promise((resolve, reject) => {
@@ -95,10 +110,7 @@ function sample(acceptEncoding: string) {
         { references: number; resourceAndVersionBytes: number }
       >,
     };
-    const previousEntities = new Map<
-      string,
-      Record<string, JsonValue | undefined>
-    >();
+    const previousEntities = new Map<string, Record<string, unknown>>();
     const recording =
       acceptEncoding === "identity" && values.record
         ? createWriteStream(values.record, { mode: 0o600 })
@@ -179,8 +191,7 @@ function sample(acceptEncoding: string) {
               .map((line) => line.slice(5).trimStart())
               .join("\n");
             if (!data) continue;
-            const event: components["schemas"]["ResourceChangeEvent"] =
-              JSON.parse(data);
+            const event = resourceEvent(data);
             if (event.reason === "initial") {
               stats.initialCount++;
               stats.initialBytes += Buffer.byteLength(frame);
@@ -214,16 +225,14 @@ function sample(acceptEncoding: string) {
                 });
                 entity.count++;
                 entity.bytes += byteLength(row);
-                const payload: { value?: Record<string, JsonValue> } | null =
+                const payload =
                   "payload" in row &&
                   typeof row.payload === "string" &&
                   row.payload
-                    ? JSON.parse(row.payload)
+                    ? legacyEntityValue(row.payload)
                     : null;
-                const value: Record<string, JsonValue | undefined> | null =
-                  ("value" in row ? { ...row.value } : null) ??
-                  payload?.value ??
-                  null;
+                const value: Record<string, unknown> | null =
+                  ("value" in row ? { ...row.value } : null) ?? payload ?? null;
                 const key = `${collection}:${row.id}`;
                 const previous = previousEntities.get(key);
                 if (value && previous) {
@@ -235,7 +244,7 @@ function sample(acceptEncoding: string) {
                   });
                   churn.updates++;
                   churn.wholeValueBytes += byteLength(value);
-                  const changed: Record<string, JsonValue> = {};
+                  const changed: Record<string, unknown> = {};
                   for (const field of new Set([
                     ...Object.keys(previous),
                     ...Object.keys(value),

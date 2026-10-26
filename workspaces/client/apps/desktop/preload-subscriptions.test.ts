@@ -1,11 +1,13 @@
+import assert from "node:assert/strict";
+import type { DesktopBridge } from "./api.ts";
 import { test, expect } from "vitest";
 import vm from "node:vm";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 test("preload releases stream and progress subscribers when its frame leaves", async () => {
   const ipc = new EventEmitter();
-  const events = {};
-  let bridge;
+  const events: Record<string, () => void> = {};
+  let bridge: DesktopBridge | undefined;
   vm.runInNewContext(
     await readFile(new URL("./preload.cjs", import.meta.url), "utf8"),
     {
@@ -13,17 +15,21 @@ test("preload releases stream and progress subscribers when its frame leaves", a
       URLSearchParams,
       location: { search: "" },
       window: {
-        addEventListener: (name, listener) => (events[name] = listener),
+        addEventListener: (name: string, listener: () => void) =>
+          (events[name] = listener),
       },
       performance: { now: () => 0 },
       require: () => ({
         ipcRenderer: ipc,
         contextBridge: {
-          exposeInMainWorld: (_name, value) => (bridge = value),
+          exposeInMainWorld: (_name: string, value: DesktopBridge) =>
+            (bridge = value),
         },
       }),
     },
   );
+  assert(bridge);
+  assert(bridge.onServerStream);
   bridge.onServerStream(() => {});
   bridge.onTranscriptionProgress(() => {});
   expect(ipc.listenerCount("codex-desktop-server-stream")).toBe(1);

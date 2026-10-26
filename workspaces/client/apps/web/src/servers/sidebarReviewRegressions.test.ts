@@ -196,10 +196,13 @@ it("an explicit reorder converts legacy combined ranks without changing unknown 
   assert.ok(order);
   const oldOrder = [...order].reverse();
   const legacyKey = JSON.stringify(["combined-sidebar", group]);
-  a.sidebar.sidebarOrder!.groups![legacyKey] = oldOrder;
+  const savedGroups = a.sidebar.sidebarOrder?.groups;
+  assert.ok(savedGroups);
+  savedGroups[legacyKey] = oldOrder;
   const nativeGroup = JSON.stringify(["items", "/local", null]);
-  assert.ok(a.sidebar.sidebarOrder!.groups![nativeGroup] != null);
-  a.sidebar.sidebarOrder!.groups![nativeGroup].push("unknown-native-id");
+  const nativeOrder = savedGroups[nativeGroup];
+  assert.ok(nativeOrder);
+  nativeOrder.push("unknown-native-id");
   const model = mergeSidebar([a, b]);
   assert.ok(model.order[group] != null);
   expect(model.order[group].slice(0, 4)).toEqual(oldOrder);

@@ -15,14 +15,14 @@ import {
 import {
   parseFlowArguments,
   planFlow,
-} from "../../../../client/apps/native/package-flow.mjs";
+} from "../../../../client/apps/native/package-flow.ts";
 
 const commitA = "a".repeat(40);
 const commitB = "b".repeat(40);
 
 test("desktop packaging uses the manifest-owned Electron version", async () => {
   const source = await readFile(
-    new URL("../../../../client/apps/desktop/package.mjs", import.meta.url),
+    new URL("../../../../client/apps/desktop/package.ts", import.meta.url),
     "utf8",
   );
   assert.doesNotMatch(
@@ -282,10 +282,7 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
     ),
     false,
   );
-  assert.match(
-    plan(false).at(-1)?.args?.[0] ?? "",
-    /check-package-start\.mjs$/,
-  );
+  assert.match(plan(false).at(-1)?.args?.[0] ?? "", /check-package-start\.ts$/);
   assert.equal(
     parseFlowArguments(["/tmp/out", "--hosted-ci-passed"]).hostedCiPassed,
     true,
