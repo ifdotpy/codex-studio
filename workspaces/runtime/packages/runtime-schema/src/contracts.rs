@@ -982,12 +982,31 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .into_generator();
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
         generator.subschema_for::<crate::idle_compaction::CacheReport>();
+        let mut schemas = generator.take_definitions(true);
+        for name in ["RateLimitBucketDto", "RateLimitWindowDto", "JsonValue"] {
+            schemas.insert(name.into(), openapi["components"]["schemas"][name].clone());
+        }
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Bridge runtime contracts","version":"1"},
-            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+            "paths":{}, "components":{"schemas":schemas}
         });
         rendered.push(Rendered {
             path: "workspaces/providers/apps/claude-bridge/runtime-contract.generated.ts".into(),
+            text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_deserialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<crate::pricing::PricingArtifact>();
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Pricing artifact","version":"1"},
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: web("pricing.ts"),
             text: api_types(root, &document, "--rust-owned")?,
         });
     }
@@ -1011,11 +1030,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
+        generator.subschema_for::<crate::supervisor_contract::HealthResult>();
+        generator.subschema_for::<crate::supervisor_contract::SupervisorHandshakeV2Result>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();
         generator.subschema_for::<studio_client_domain::protocol::Response>();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
+        generator.subschema_for::<studio_client_domain::drafts::DraftView>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},
@@ -1072,6 +1094,30 @@ mod tests {
                 .pointer("/components/schemas/AnalyticsUsageRecord/properties/studioUsage/$ref"),
             Some(&serde_json::json!("#/components/schemas/UsageObservation"))
         );
+    }
+
+    #[test]
+    fn stored_attempt_contract_exposes_provider_request_correlation() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        for (field, kind) in [
+            ("requestTicket", "string"),
+            ("connectionGeneration", "integer"),
+        ] {
+            assert_eq!(
+                document.pointer(&format!(
+                    "/components/schemas/StartAttemptRecordResponse/properties/{field}/type"
+                )),
+                Some(&serde_json::json!(kind))
+            );
+            assert_eq!(
+                document.pointer(&format!(
+                    "/components/schemas/ExecutionAttempt/properties/{field}/anyOf/0/$ref"
+                )),
+                Some(&serde_json::json!(format!(
+                    "#/components/schemas/StartAttemptRecordResponse/properties/{field}"
+                )))
+            );
+        }
     }
 
     #[test]
