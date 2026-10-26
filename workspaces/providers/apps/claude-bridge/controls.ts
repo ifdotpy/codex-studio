@@ -439,7 +439,10 @@ export async function forkAtTurn(
         "threadId" | "lastTurnId" | "excludeTurns"
       >
     >,
-  deps: ControlDependencies,
+  deps: Pick<
+    ControlDependencies,
+    "persist" | "getSessionMessages" | "forkSession" | "randomUUID"
+  >,
 ) {
   // Native reads can wait while the source receives more output. Keep the
   // branch descriptor and its boundary independent of those later changes.
