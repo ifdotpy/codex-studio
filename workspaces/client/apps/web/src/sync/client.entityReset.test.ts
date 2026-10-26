@@ -6,11 +6,10 @@ import { READ_RECOVERY_MAX_ATTEMPTS, readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
   ApiError: class extends Error {
-    constructor(
-      message: string,
-      public status: number,
-    ) {
+    public status: number;
+    constructor(message: string, status: number) {
       super(message);
+      this.status = status;
     }
   },
   createRxDatabase: vi.fn(),
