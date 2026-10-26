@@ -647,7 +647,8 @@ async function runMessageReceiptScenario(
         );
       try {
         const meta = await read(`transcript:${agentId}`);
-        const payload: { order: string[] } = JSON.parse(meta.payload);
+        const payload: import("../../src/sync/client.ts").TranscriptProjectionMeta =
+          JSON.parse(meta.payload);
         const items = await Promise.all(
           payload.order.map((key) => read(`transcript:item:${agentId}:${key}`)),
         );
