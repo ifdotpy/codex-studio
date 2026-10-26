@@ -302,7 +302,14 @@ it("keeps explicit delivery modes queued until a message is dispatched", () => {
   assert.equal(
     outgoingTranscript(
       [],
-      [{ ...receipt, receipt: { id: "one", status: "pending" } }],
+      [
+        {
+          ...receipt,
+          receipt: { status: "pending" } as NonNullable<
+            OutgoingMessage["receipt"]
+          >,
+        },
+      ],
     ).items[0].deliveryStatus,
     "pending",
   );
@@ -522,18 +529,17 @@ it("shows failed and uncertain receipts until the transcript confirms their outc
 it("creates local receipt rows with display content and accepted queue status", () => {
   const missingReceipt: OutgoingMessage = {
     ...receipt,
-    receipt: undefined,
-    attachments: undefined,
     status: "accepted",
+    receipt: undefined,
     displayText: "Edited draft",
+    attachments: undefined,
     created: 1234,
     error: "receipt unavailable",
     body: {
-      id: "one",
       room: "lead",
       text: "Original text",
       delivery: "after_turn",
-    },
+    } as OutgoingMessage["body"],
   };
   const row = outgoingTranscript([], [missingReceipt]).items[0];
   assert.equal(row.id, "lead:one");
@@ -550,12 +556,26 @@ it("creates local receipt rows with display content and accepted queue status", 
 
   const queued = outgoingTranscript(
     [],
-    [{ ...receipt, receipt: { id: "one", status: "reserved" } }],
+    [
+      {
+        ...receipt,
+        receipt: { status: "reserved" } as NonNullable<
+          OutgoingMessage["receipt"]
+        >,
+      },
+    ],
   ).items[0];
   assert.equal(queued.deliveryStatus, "accepted");
   const waiting = outgoingTranscript(
     [],
-    [{ ...receipt, receipt: { id: "one", status: "pending" } }],
+    [
+      {
+        ...receipt,
+        receipt: { status: "pending" } as NonNullable<
+          OutgoingMessage["receipt"]
+        >,
+      },
+    ],
   ).items[0];
   assert.equal(waiting.deliveryStatus, "pending");
   const missing = outgoingTranscript([], [{ ...receipt, receipt: undefined }])
@@ -567,7 +587,9 @@ it("creates local receipt rows with display content and accepted queue status", 
       {
         ...receipt,
         status: "queued",
-        receipt: { id: "one", status: "pending" },
+        receipt: { status: "pending" } as NonNullable<
+          OutgoingMessage["receipt"]
+        >,
       },
     ],
   ).items[0];
