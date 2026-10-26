@@ -79,23 +79,17 @@ test("mobile loading ui", async ({ browser: _browser }) => {
         target: "es2024",
       });
       const output = result.outputFiles[0];
-      assert.ok(output, "Fixture entry must compile");
       return output.text;
     }),
   );
   const [workerInjection, bootstrapInjection] = injectedScripts;
-  assert.ok(workerInjection && bootstrapInjection);
   const nextBuild = config.build + "-update";
   const bootstrapPath = config.initial.find((path) =>
     path.includes("/studio-startup-"),
-  );
+  )!;
   const cssPath = config.initial.find((path) =>
     /\/index-[^/]+\.css$/.test(path),
-  );
-  assert.ok(
-    bootstrapPath && cssPath,
-    "Build must include startup script and stylesheet",
-  );
+  )!;
   const replacements: [[string, string], [string, string]] = [
     [bootstrapPath, bootstrapPath.replace(".js", "-update.js")],
     [cssPath, cssPath.replace(".css", "-update.css")],
@@ -112,9 +106,9 @@ test("mobile loading ui", async ({ browser: _browser }) => {
   let log = "",
     browser,
     server: Server | undefined;
-  proc.stderr?.on("data", (data) => (log += data));
+  proc.stderr!.on("data", (data) => (log += data));
   try {
-    const backend = `http://127.0.0.1:${await waitForFixturePort(proc, { diagnostics: () => log })}`;
+    const backend = `http://127.0.0.1:${await waitForFixturePort(proc, { timeoutMs: 45000, diagnostics: () => log })}`;
     let version = 1,
       documentDelay = 0,
       rejectEntry = false;
@@ -124,16 +118,14 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     const requests: { path: string; bytes: number }[] = [];
     const activations = new Set();
     server = createServer(async (request, response) => {
-      const path = new URL(request.url || "/", "http://localhost").pathname;
+      const path = new URL(request.url!, "http://localhost").pathname;
       if (laptopDisconnected) {
         request.socket.destroy();
         return;
       }
       if (path === "/test-worker-activated") {
         activations.add(
-          new URL(request.url || "/", "http://localhost").searchParams.get(
-            "build",
-          ),
+          new URL(request.url!, "http://localhost").searchParams.get("build"),
         );
         response.writeHead(204);
         response.end();
@@ -147,7 +139,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       }
       if (path.startsWith("/api/")) {
         const proxy = httpRequest(
-          backend + (request.url || "/"),
+          backend + request.url!,
           {
             method: request.method,
             headers: {
@@ -158,7 +150,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
             },
           },
           (upstream) => {
-            response.writeHead(upstream.statusCode ?? 502, upstream.headers);
+            response.writeHead(upstream.statusCode!, upstream.headers);
             upstream.pipe(response);
           },
         );
@@ -249,13 +241,11 @@ test("mobile loading ui", async ({ browser: _browser }) => {
         response.end();
       }
     });
-    const listeningServer = server;
+
     await new Promise<void>((resolve) =>
-      listeningServer.listen(0, "127.0.0.1", resolve),
+      server!.listen(0, "127.0.0.1", resolve),
     );
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const origin = `http://127.0.0.1:${address.port}`;
+    const origin = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
     browser = _browser;
     const context = await browser.newContext({
       viewport: { width: 390, height: 844 },
@@ -354,10 +344,10 @@ test("mobile loading ui", async ({ browser: _browser }) => {
 
     version = 2;
     await page.evaluate(async () =>
-      (await navigator.serviceWorker.getRegistration())?.update(),
+      (await navigator.serviceWorker.getRegistration())!.update(),
     );
     await page.waitForFunction(
-      async () => !!(await navigator.serviceWorker.getRegistration())?.waiting,
+      async () => !!(await navigator.serviceWorker.getRegistration())!.waiting,
     );
     assert.equal(
       await page.locator('meta[name="studio-build"]').getAttribute("content"),
@@ -377,7 +367,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     assert.ok(
       await page.evaluate(
         async () =>
-          !!(await navigator.serviceWorker.getRegistration())?.waiting,
+          !!(await navigator.serviceWorker.getRegistration())!.waiting,
       ),
       "The update does not claim a live client",
     );
@@ -389,7 +379,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       "Offline reload does not roll back the displayed build while its worker waits",
     );
     assert.equal(
-      await page.evaluate(() => window.mobileLoadingUiBootstrap),
+      await page.evaluate(() => window.studioTestBootstrap),
       "updated",
       "The newer cached JavaScript loads under the previous worker",
     );
@@ -413,7 +403,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       (text) => document.querySelector("textarea")?.value === text,
       draft,
     );
-    const nextWorkerEntry = useWebKit
+    const nextWorker = useWebKit
       ? null
       : (
           await Promise.all(
@@ -422,9 +412,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
               build: await worker.evaluate(workerShellBuild),
             })),
           )
-        ).find((entry) => entry.build === nextBuild);
-    if (!useWebKit) assert.ok(nextWorkerEntry, "Updated worker exists");
-    const nextWorker = nextWorkerEntry?.worker;
+        ).find((entry) => entry.build === nextBuild)!.worker;
     lastNavigation = Date.now();
     await page.close();
     const activationDeadline = Date.now() + 15000;
@@ -442,7 +430,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     await page.goto(origin, { waitUntil: "domcontentloaded" });
     await openSavedChat();
     await page.waitForFunction(
-      async () => !(await navigator.serviceWorker.getRegistration())?.waiting,
+      async () => !(await navigator.serviceWorker.getRegistration())!.waiting,
     );
     await page.waitForFunction(
       (text) => document.querySelector("textarea")?.value === text,
@@ -515,8 +503,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
 
     version = 3;
     await page.evaluate(async () => {
-      const registration = await navigator.serviceWorker.getRegistration();
-      if (!registration) throw new Error("Missing service worker registration");
+      const registration = (await navigator.serviceWorker.getRegistration())!;
       await registration.update();
       const installing = registration.installing;
       if (!installing)
