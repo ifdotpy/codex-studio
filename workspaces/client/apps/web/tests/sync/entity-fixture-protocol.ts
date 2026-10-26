@@ -6,12 +6,7 @@ import type {
   SyncPullResponse,
   SyncPullResetResponse,
 } from "../playwright.ts";
-import type {
-  ApiGetPath,
-  ApiPostPath,
-  GetResult,
-  PostBody,
-} from "../../src/apiTypes.ts";
+import type { ApiGetPath, GetResult, PostBody } from "../../src/apiTypes.ts";
 
 /** This fixture's stdout protocol is emitted by our own Node child. */
 function parseFixtureReply(line: string) {
@@ -169,11 +164,13 @@ export function fixtureObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** The fixture receives request bodies from the renderer under test. */
-export function fixturePostBody<Path extends ApiPostPath>(
+/** Both intercepted mutations consume only their generated request ID field. */
+export function fixtureRequestId(
   value: unknown,
-): PostBody<Path> {
-  return value as PostBody<Path>;
+): PostBody<"/api/answer">["id"] {
+  const body = fixtureObject(value);
+  assert.ok(typeof body.id === "string");
+  return body.id;
 }
 
 export function fixtureItem<T>(items: readonly T[], index: number): T {
