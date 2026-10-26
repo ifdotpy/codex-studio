@@ -1,13 +1,16 @@
+import type { components } from "../../src/generated/api.ts";
+import { required } from "./fixture-helpers.ts";
+import type { CanonicalReset } from "./execution-settings-canonical-browser.fixture.tsx";
+import type {} from "./execution-settings-canonical-browser.fixture.tsx";
+import { fixtureUrl } from "./fixture-helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
-  apiSchemaHeaders,
   apiSchemaHandshakeSse,
 } from "../playwright.ts";
 import { setupControl, chooseSetupValue } from "../fixtures/setup-controls.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,10 +20,8 @@ import { test, expect } from "../playwright.ts";
 test("execution settings canonical browser", async ({ page }) => {
   test.setTimeout(180000);
   const root = join(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const { createServer } = await import("vite");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-settings-canonical-"));
-  const entry = join(root, "settings-canonical-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -50,12 +51,9 @@ test("execution settings canonical browser", async ({ page }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/settings-canonical-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/settings/execution-settings-canonical-browser.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/settings-canonical-fixture.tsx") return entry;
         },
         load(id) {
           if (
@@ -73,21 +71,15 @@ test("execution settings canonical browser", async ({ page }) => {
               ],
               { cwd: root, encoding: "utf8" },
             );
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {ModelCatalogReader} from '/src/components/agents/WorkerModelPicker.tsx';import {watchResourceReads} from '/src/components/watchResourceReads.ts';import {get} from '/src/api.ts';const fixtureModelRead=options=>get('/api/models',options);
-  const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'low',fastMode:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
-  const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}],availableAccessPrograms:{cyber:['standard','daybreakBlue']}}));
-  window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.transferHold=false;window.transferReply=null;window.pendingTransferProjection=null;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshHold=false;window.refreshCount=0;const fixtureResponse=(value,init={})=>new Response(JSON.stringify(value),{...init,headers:{'Content-Type':'application/json',...${JSON.stringify(apiSchemaHeaders())},...(init.headers||{})}});const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);if(window.catalogHold)await new Promise(resolve=>window.catalogRelease=resolve);return fixtureResponse({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models})}if(url=='/api/agents/account-transfer'){const body=JSON.parse(options.body);window.transfers.push(body);if(window.transferHold)await new Promise(resolve=>window.transferRelease=resolve);if(window.transferFail)throw new TypeError('Connection lost');const result=window.transferReply||{id:body.request_id,leadId:'first',scope:body.scope,status:'completed',targetAccountKey:body.account_key,completed:2,moved:2,total:3,leftOnSource:[{id:'w-claude',name:'Claude worker',provider:'claude',reason:'Uses claude'}]};window.pendingTransferProjection={...window.agent,workerDefaults:{...window.agent.workerDefaults,accountKey:body.account_key}};return fixtureResponse(result)}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return fixtureResponse({error:'The account changed. Select the model again'},{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return fixtureResponse(window.fail?{error:'Rejected'}:window.reply,{status:window.fail?409:200})};
-  function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.transferHold=false;window.transferReply=null;window.pendingTransferProjection=null;window.catalogHold=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshHold=false;window.refreshCount=0;window.release=null;window.refreshRelease=null;window.transferRelease=null;window.serverAccount=null;});return <MantineProvider><ModelCatalogReader.Provider value={{scope:'settings-canonical-'+mount,read:fixtureModelRead,watchResourceReads}}><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',label:'',email:'first@example.com',status:'ready'},{id:'second',label:'',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',provider:'claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} team={[{id:'w1',name:'Codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w2',name:'Second codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w3',name:'Claude worker',rootId:'first',provider:'claude',accountKey:'claude'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable');if(window.pendingTransferProjection){window.setAgent(window.pendingTransferProjection);window.pendingTransferProjection=null}}}/>{!defaults && <ExecutionSettings key={"permissions:"+mount} permissionsOnly agent={agent} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable');if(window.pendingTransferProjection){window.setAgent(window.pendingTransferProjection);window.pendingTransferProjection=null}}}/>}</ModelCatalogReader.Provider></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
   });
-  const failures = [];
+  const failures: string[] = [];
   try {
     await server.listen();
     await page.setViewportSize({ width: 390, height: 700 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error.message);
@@ -109,17 +101,15 @@ test("execution settings canonical browser", async ({ page }) => {
         json: {
           workspaceId: "1234567890abcdef1234567890abcdef",
           syncProtocol: 2,
-        },
+        } satisfies components["schemas"]["SyncIdentityResponse"],
       }),
     );
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.waitForFunction(() => !!window.reset);
-    const reset = async (options) => {
+    await page.goto(fixtureUrl(server, "check"));
+    await page.waitForFunction(() => window.canonicalSettingsFixture?.ready);
+    const reset = async (options?: CanonicalReset) => {
       await page.evaluate((options) => {
         localStorage.clear();
-        window.reset(options);
+        window.canonicalSettingsFixture.reset(options);
       }, options);
       await page
         .getByRole("button", {
@@ -135,7 +125,7 @@ test("execution settings canonical browser", async ({ page }) => {
           { exact: true },
         ),
       );
-    const value = async (expected, defaults = false) => {
+    const value = async (expected: string, defaults = false) => {
       await page.waitForFunction(
         ({ expected, defaults }) => {
           const label = defaults
@@ -145,8 +135,9 @@ test("execution settings canonical browser", async ({ page }) => {
             [...document.querySelectorAll('[role="radiogroup"]')]
               .find(
                 (node) =>
-                  document.getElementById(node.getAttribute("aria-labelledby"))
-                    ?.textContent === label,
+                  document.getElementById(
+                    node.getAttribute("aria-labelledby") || "",
+                  )?.textContent === label,
               )
               ?.getAttribute("data-value") === expected
           );
@@ -155,22 +146,27 @@ test("execution settings canonical browser", async ({ page }) => {
         { timeout: 2500 },
       );
     };
-    const check = async (name, run) => {
+    const check = async (name: string, run: () => Promise<void>) => {
       if (process.env.CASE && process.env.CASE !== name) return;
       try {
         await run();
         console.log(`PASS ${name}`);
       } catch (error) {
-        failures.push(`${name}: ${error.message}`);
-        console.error(`FAIL ${name}: ${error.message}`);
+        failures.push(
+          `${name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        console.error(
+          `FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
         console.error(
           JSON.stringify(
             await page.evaluate(() => ({
-              calls: window.calls,
-              transfers: window.transfers,
-              refreshCount: window.refreshCount,
-              catalogRequests: window.catalogRequests,
-              text: document.querySelector('[role="dialog"]')?.innerText,
+              calls: window.canonicalSettingsFixture.calls,
+              transfers: window.canonicalSettingsFixture.transfers,
+              refreshCount: window.canonicalSettingsFixture.refreshCount,
+              catalogRequests: window.canonicalSettingsFixture.catalogRequests,
+              text: document.querySelector<HTMLElement>('[role="dialog"]')
+                ?.innerText,
             })),
           ),
         );
@@ -179,38 +175,61 @@ test("execution settings canonical browser", async ({ page }) => {
     await check("canonical", async () => {
       await reset();
       await page.evaluate(
-        () => (window.reply = { ...window.agent, effort: "medium" }),
+        () =>
+          (window.canonicalSettingsFixture.reply = {
+            ...window.canonicalSettingsFixture.agent,
+            effort: "medium",
+          }),
       );
       await effort().selectOption("high");
       await value("medium");
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, tail: "Unrelated snapshot" }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          tail: "Unrelated snapshot",
+        }),
       );
       await value("medium");
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, effort: "medium" }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          effort: "medium",
+        }),
       );
       await page.waitForTimeout(50);
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, effort: "max" }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          effort: "max",
+        }),
       );
       await value("max");
     });
     await check("confirmed-response-before-refresh", async () => {
       await reset();
       await page.evaluate(() => {
-        window.reply = { ...window.agent, effort: "medium" };
-        window.refreshHold = true;
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
+          effort: "medium",
+        };
+        window.canonicalSettingsFixture.refreshHold = true;
       });
       await effort().selectOption("high");
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.refreshRelease,
+      );
       await value("medium");
       assert.equal(await effort().isDisabled(), false);
       assert.equal(await page.getByText("Saving…", { exact: true }).count(), 0);
-      assert.equal(await page.evaluate(() => window.refreshCount), 1);
+      assert.equal(
+        await page.evaluate(() => window.canonicalSettingsFixture.refreshCount),
+        1,
+      );
       await page.evaluate(() => {
-        window.refreshFailure = true;
-        window.refreshRelease();
+        window.canonicalSettingsFixture.refreshFailure = true;
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.refreshRelease,
+        )();
       });
       await page
         .getByRole("alert")
@@ -222,16 +241,28 @@ test("execution settings canonical browser", async ({ page }) => {
     await check("server-confirmation-required", async () => {
       await reset();
       await page.evaluate(() => {
-        window.hold = true;
-        window.reply = { ...window.agent, effort: "medium" };
+        window.canonicalSettingsFixture.hold = true;
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
+          effort: "medium",
+        };
       });
       await effort().selectOption("high");
-      await page.waitForFunction(() => !!window.release);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.release,
+      );
       await value("low");
       assert.equal(await effort().isDisabled(), true);
       assert.equal(await page.getByText("Saved", { exact: true }).count(), 0);
-      assert.equal(await page.evaluate(() => window.refreshCount), 0);
-      await page.evaluate(() => window.release());
+      assert.equal(
+        await page.evaluate(() => window.canonicalSettingsFixture.refreshCount),
+        0,
+      );
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.release,
+        )(),
+      );
       await value("medium");
       assert.equal(await effort().isDisabled(), false);
     });
@@ -241,11 +272,14 @@ test("execution settings canonical browser", async ({ page }) => {
         const target = field === "model" ? "gpt-5.6-sol" : true;
         await page.evaluate(
           ({ field, target }) => {
-            window.hold = true;
-            window.refreshHold = true;
-            window.reply = { ...window.agent, [field]: target };
-            window.release = null;
-            window.refreshRelease = null;
+            window.canonicalSettingsFixture.hold = true;
+            window.canonicalSettingsFixture.refreshHold = true;
+            window.canonicalSettingsFixture.reply = {
+              ...window.canonicalSettingsFixture.agent,
+              [field]: target,
+            };
+            window.canonicalSettingsFixture.release = null;
+            window.canonicalSettingsFixture.refreshRelease = null;
           },
           { field, target },
         );
@@ -254,33 +288,50 @@ test("execution settings canonical browser", async ({ page }) => {
           name: field === "fastMode" ? "Fast mode" : "Daybreak",
           exact: true,
         });
-        if (field === "model") await selectModel(model, target);
+        if (field === "model") await selectModel(model, String(target));
         else await toggle.click();
-        await page.waitForFunction(() => !!window.release);
+        await page.waitForFunction(
+          () => !!window.canonicalSettingsFixture.release,
+        );
         if (field === "model")
           assert.equal(await modelValue(model), "gpt-6-astra");
         else await expect(toggle).not.toBeChecked();
-        assert.equal(await page.evaluate(() => window.refreshCount), 0);
-        await page.evaluate(() => window.release());
-        await page.waitForFunction(() => !!window.refreshRelease);
+        assert.equal(
+          await page.evaluate(
+            () => window.canonicalSettingsFixture.refreshCount,
+          ),
+          0,
+        );
+        await page.evaluate(() =>
+          window.canonicalSettingsFixture.required(
+            window.canonicalSettingsFixture.release,
+          )(),
+        );
+        await page.waitForFunction(
+          () => !!window.canonicalSettingsFixture.refreshRelease,
+        );
         if (field === "model")
           await expect.poll(() => modelValue(model)).toBe(target);
         else await expect(toggle).toBeChecked();
         await expect(model).not.toHaveAttribute("aria-disabled", "true");
         assert.equal(await effort().isDisabled(), false);
-        await page.evaluate(() => window.refreshRelease());
+        await page.evaluate(() =>
+          window.canonicalSettingsFixture.required(
+            window.canonicalSettingsFixture.refreshRelease,
+          )(),
+        );
       }
     });
     await check("review-and-permissions-confirmation-required", async () => {
       await reset({ defaults: true });
       await page.getByText("Review", { exact: true }).click();
       await page.evaluate(() => {
-        window.hold = true;
-        window.refreshHold = true;
-        window.release = null;
-        window.refreshRelease = null;
-        window.reply = {
-          ...window.agent,
+        window.canonicalSettingsFixture.hold = true;
+        window.canonicalSettingsFixture.refreshHold = true;
+        window.canonicalSettingsFixture.release = null;
+        window.canonicalSettingsFixture.refreshRelease = null;
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
           reviewDefaults: { model: "gpt-5.6-sol", effort: "high" },
         };
       });
@@ -288,43 +339,74 @@ test("execution settings canonical browser", async ({ page }) => {
         exact: true,
       });
       await selectModel(reviewModel, "gpt-5.6-luna");
-      await page.waitForFunction(() => !!window.release);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.release,
+      );
       assert.equal(await modelValue(reviewModel), "__model_default__");
-      await page.evaluate(() => window.release());
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.release,
+        )(),
+      );
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.refreshRelease,
+      );
       await expect.poll(() => modelValue(reviewModel)).toBe("gpt-5.6-sol");
       await expect(reviewModel).not.toHaveAttribute("aria-disabled", "true");
-      await page.evaluate(() => window.refreshRelease());
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.refreshRelease,
+        )(),
+      );
       await reset();
       await page.keyboard.press("Escape");
       await page.getByText("Permissions", { exact: true }).click();
       await page.evaluate(() => {
-        window.hold = true;
-        window.refreshHold = true;
-        window.release = null;
-        window.refreshRelease = null;
-        window.reply = { ...window.agent, yoloMode: true };
+        window.canonicalSettingsFixture.hold = true;
+        window.canonicalSettingsFixture.refreshHold = true;
+        window.canonicalSettingsFixture.release = null;
+        window.canonicalSettingsFixture.refreshRelease = null;
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
+          yoloMode: true,
+        };
       });
       const permission = page.getByRole("switch", {
         name: "Full access without approval",
         exact: true,
       });
       await permission.click();
-      await page.waitForFunction(() => !!window.release);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.release,
+      );
       await expect(permission).not.toBeChecked();
       await expect(permission).toBeDisabled();
-      await page.evaluate(() => window.release());
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.release,
+        )(),
+      );
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.refreshRelease,
+      );
       await expect(permission).toBeChecked();
       await expect(permission).toBeEnabled();
-      await page.evaluate(() => window.refreshRelease());
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.refreshRelease,
+        )(),
+      );
     });
     await check("account-default-transfer-confirmation", async () => {
       // Moving existing subagents is an explicit action of its own; the receipt
       // rules of a transfer are unchanged.
       await reset({
         defaults: true,
-        agent: { workerDefaults: { accountKey: "second" } },
+        agent: {
+          workerDefaults: {
+            accountKey: "second",
+          },
+        },
       });
       const account = setupControl(
         page.getByLabel("Subagent account", { exact: true }),
@@ -333,23 +415,30 @@ test("execution settings canonical browser", async ({ page }) => {
         name: /^Move 3 existing subagents to /,
       });
       await page.evaluate(() => {
-        window.transferHold = true;
-        window.refreshHold = true;
-        window.transferRelease = null;
-        window.refreshRelease = null;
+        window.canonicalSettingsFixture.transferHold = true;
+        window.canonicalSettingsFixture.refreshHold = true;
+        window.canonicalSettingsFixture.transferRelease = null;
+        window.canonicalSettingsFixture.refreshRelease = null;
       });
       await move.click();
-      await page.waitForFunction(() => !!window.transferRelease);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.transferRelease,
+      );
       assert.deepEqual(
         await page.evaluate(() =>
-          window.transfers.map((row) => [row.account_key, row.scope]),
+          window.canonicalSettingsFixture.transfers.map((row) => [
+            row.account_key,
+            row.scope,
+          ]),
         ),
         [["second", "subagents"]],
       );
       assert.equal(await account.isDisabled(), true);
       await page.evaluate(() => {
-        window.transferReply = {
-          id: window.transfers[0].request_id,
+        window.canonicalSettingsFixture.transferReply = {
+          id: window.canonicalSettingsFixture.required(
+            window.canonicalSettingsFixture.transfers[0],
+          ).request_id,
           leadId: "first",
           targetAccountKey: "second",
           scope: "subagents",
@@ -359,9 +448,13 @@ test("execution settings canonical browser", async ({ page }) => {
           moved: 0,
           waitingCount: 2,
         };
-        window.transferRelease();
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.transferRelease,
+        )();
       });
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.refreshRelease,
+      );
       assert.equal(await account.inputValue(), "second");
       assert.equal(await account.isDisabled(), false);
       await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
@@ -371,24 +464,36 @@ test("execution settings canonical browser", async ({ page }) => {
         await page.getByText(/Account transfer complete/).count(),
         0,
       );
-      await page.evaluate(() => window.refreshRelease());
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.refreshRelease,
+        )(),
+      );
       // Replay confirms the old operation with the saved request id.
       await reset({
         defaults: true,
-        agent: { workerDefaults: { accountKey: "second" } },
+        agent: {
+          workerDefaults: {
+            accountKey: "second",
+          },
+        },
       });
       await page.evaluate(() => {
         localStorage.setItem(
           'subagent-account-transfer:["first","second"]',
           JSON.stringify({ target: "second", request_id: "previous-request" }),
         );
-        window.transferHold = true;
+        window.canonicalSettingsFixture.transferHold = true;
       });
       await move.click();
-      await page.waitForFunction(() => !!window.transferRelease);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.transferRelease,
+      );
       await page.evaluate(() => {
-        const requestId = window.transfers[0].request_id;
-        window.transferReply = {
+        const requestId = window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.transfers[0],
+        ).request_id;
+        window.canonicalSettingsFixture.transferReply = {
           id: "existing-operation",
           leadId: "first",
           targetAccountKey: "second",
@@ -402,37 +507,59 @@ test("execution settings canonical browser", async ({ page }) => {
             },
           },
         };
-        window.transferRelease();
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.transferRelease,
+        )();
       });
       await expect(
         page.getByText("Account transfer accepted.", { exact: true }),
       ).toBeVisible();
       assert.equal(
-        await page.evaluate(() => window.transfers[0].request_id),
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.transfers[0],
+            ).request_id,
+        ),
         "previous-request",
       );
       await reset({
         defaults: true,
-        agent: { workerDefaults: { accountKey: "second" } },
+        agent: {
+          workerDefaults: {
+            accountKey: "second",
+          },
+        },
       });
-      await page.evaluate(() => (window.transferHold = true));
+      await page.evaluate(
+        () => (window.canonicalSettingsFixture.transferHold = true),
+      );
       await move.click();
-      await page.waitForFunction(() => !!window.transferRelease);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.transferRelease,
+      );
       await page.evaluate(() => {
-        window.transferReply = {
-          id: window.transfers[0].request_id,
+        window.canonicalSettingsFixture.transferReply = {
+          id: window.canonicalSettingsFixture.required(
+            window.canonicalSettingsFixture.transfers[0],
+          ).request_id,
           leadId: "first",
           targetAccountKey: "second",
           scope: "team",
           status: "completed",
         };
-        window.transferRelease();
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.transferRelease,
+        )();
       });
       await expect(page.getByRole("alert")).toContainText(
         "The server did not confirm this account transfer.",
       );
       assert.equal(await account.inputValue(), "second");
-      assert.equal(await page.evaluate(() => window.refreshCount), 0);
+      assert.equal(
+        await page.evaluate(() => window.canonicalSettingsFixture.refreshCount),
+        0,
+      );
       await expect(
         page.getByRole("button", { name: "Retry", exact: true }),
       ).toBeVisible();
@@ -441,7 +568,9 @@ test("execution settings canonical browser", async ({ page }) => {
       await reset({
         defaults: true,
         agent: {
-          workerDefaults: { accountKey: "second" },
+          workerDefaults: {
+            accountKey: "second",
+          },
           accountTransfer: {
             id: "pending-transfer",
             scope: "subagents",
@@ -453,9 +582,9 @@ test("execution settings canonical browser", async ({ page }) => {
         },
       });
       await page.evaluate(() => {
-        window.transferHold = true;
-        window.refreshHold = true;
-        window.transferReply = {
+        window.canonicalSettingsFixture.transferHold = true;
+        window.canonicalSettingsFixture.refreshHold = true;
+        window.canonicalSettingsFixture.transferReply = {
           id: "pending-transfer",
           leadId: "first",
           targetAccountKey: "second",
@@ -467,51 +596,70 @@ test("execution settings canonical browser", async ({ page }) => {
       await page
         .getByRole("button", { name: "Cancel remaining", exact: true })
         .click();
-      await page.waitForFunction(() => !!window.transferRelease);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.transferRelease,
+      );
       await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
-      await page.evaluate(() => window.transferRelease());
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.transferRelease,
+        )(),
+      );
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.refreshRelease,
+      );
       await expect(
         page.getByRole("button", { name: "Cancel remaining", exact: true }),
       ).toHaveCount(0);
       await expect(page.getByText("2 waiting", { exact: true })).toHaveCount(0);
       assert.equal(await effort(true).isDisabled(), false);
       await page.evaluate(() => {
-        window.setAgent({
-          ...window.agent,
-          accountTransfer: { ...window.agent.accountTransfer, waitingCount: 9 },
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          accountTransfer: {
+            ...window.canonicalSettingsFixture.agent.accountTransfer,
+            waitingCount: 9,
+          },
         });
       });
       await expect(page.getByText("9 waiting", { exact: true })).toHaveCount(0);
       await page.evaluate(() => {
-        window.setAgent({
-          ...window.agent,
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
           accountTransfer: {
-            ...window.agent.accountTransfer,
+            ...window.canonicalSettingsFixture.agent.accountTransfer,
             updated: 3,
             waitingCount: 1,
           },
         });
       });
       await expect(page.getByText("1 waiting", { exact: true })).toBeVisible();
-      await page.evaluate(() => window.refreshRelease());
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.refreshRelease,
+        )(),
+      );
     });
     await check("replay", async () => {
       await reset({ agent: { status: "running" } });
-      await page.evaluate(() => (window.fail = "network"));
+      await page.evaluate(
+        () => (window.canonicalSettingsFixture.fail = "network"),
+      );
       await effort().selectOption("high");
       await page.getByRole("button", { name: "Check settings save" }).waitFor();
-      const request = await page.evaluate(() => window.calls[0]);
+      const request = await page.evaluate(
+        () => window.canonicalSettingsFixture.calls[0],
+      );
       await page.reload();
-      await page.waitForFunction(() => !!window.reset);
+      await page.waitForFunction(() => window.canonicalSettingsFixture?.ready);
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
       await page.getByRole("button", { name: "Check settings save" }).waitFor();
       await page.evaluate(
         () =>
-          (window.reply = {
-            ...window.agent,
+          (window.canonicalSettingsFixture.reply = {
+            ...window.canonicalSettingsFixture.agent,
             pendingSettings: {
               model: "gpt-6-astra",
               effort: "max",
@@ -521,7 +669,10 @@ test("execution settings canonical browser", async ({ page }) => {
       );
       await page.getByRole("button", { name: "Check settings save" }).click();
       await value("max");
-      assert.deepEqual(await page.evaluate(() => window.calls[0]), request);
+      assert.deepEqual(
+        await page.evaluate(() => window.canonicalSettingsFixture.calls[0]),
+        request,
+      );
       assert.equal(
         await page.getByRole("button", { name: "Check settings save" }).count(),
         0,
@@ -537,12 +688,14 @@ test("execution settings canonical browser", async ({ page }) => {
     });
     await check("account-scope", async () => {
       await reset({ agent: { status: "running" } });
-      await page.evaluate(() => (window.fail = "network"));
+      await page.evaluate(
+        () => (window.canonicalSettingsFixture.fail = "network"),
+      );
       await effort().selectOption("high");
       await page.getByRole("button", { name: "Check settings save" }).waitFor();
       await page.evaluate(() =>
-        window.setAgent({
-          ...window.agent,
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
           accountKey: "second",
           effort: "medium",
         }),
@@ -559,8 +712,8 @@ test("execution settings canonical browser", async ({ page }) => {
         0,
       );
       await page.evaluate(() =>
-        window.setAgent({
-          ...window.agent,
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
           accountKey: "default",
           effort: "low",
         }),
@@ -573,15 +726,28 @@ test("execution settings canonical browser", async ({ page }) => {
     await check("late-scope-response", async () => {
       await reset();
       await page.evaluate(() => {
-        window.hold = true;
-        window.reply = { ...window.agent, effort: "high" };
+        window.canonicalSettingsFixture.hold = true;
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
+          effort: "high",
+        };
       });
       await effort().selectOption("high");
-      await page.waitForFunction(() => !!window.release);
-      await page.evaluate(() =>
-        window.setAgent({ ...window.agent, id: "second", effort: "medium" }),
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.release,
       );
-      await page.evaluate(() => window.release());
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          id: "second",
+          effort: "medium",
+        }),
+      );
+      await page.evaluate(() =>
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.release,
+        )(),
+      );
       const button = page.getByRole("button", {
         name: "Main agent settings",
         exact: true,
@@ -590,7 +756,10 @@ test("execution settings canonical browser", async ({ page }) => {
         await button.click();
       await value("medium");
       await page.waitForTimeout(50);
-      assert.equal(await page.evaluate(() => window.refreshCount), 0);
+      assert.equal(
+        await page.evaluate(() => window.canonicalSettingsFixture.refreshCount),
+        0,
+      );
     });
     await check("subagent-account-for-new-subagents", async () => {
       await reset({
@@ -622,8 +791,8 @@ test("execution settings canonical browser", async ({ page }) => {
       // A new account saves the defaults only. Its catalog has no Luna, so its
       // recommended model replaces it in the same save. Nothing moves.
       await page.evaluate(() => {
-        window.reply = {
-          ...window.agent,
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
           workerDefaults: {
             accountKey: "claude",
             model: "claude-opus-4-6",
@@ -633,9 +802,16 @@ test("execution settings canonical browser", async ({ page }) => {
         };
       });
       await account.selectOption("claude");
-      await page.waitForFunction(() => window.calls.length === 1);
+      await page.waitForFunction(
+        () => window.canonicalSettingsFixture.calls.length === 1,
+      );
       assert.deepEqual(
-        await page.evaluate(() => window.calls[0].worker_defaults),
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.calls[0],
+            ).worker_defaults,
+        ),
         {
           account_key: "claude",
           model: "claude-opus-4-6",
@@ -645,9 +821,17 @@ test("execution settings canonical browser", async ({ page }) => {
           delegation_depth: 1,
         },
       );
-      assert.equal(await page.evaluate(() => window.transfers.length), 0);
+      assert.equal(
+        await page.evaluate(
+          () => window.canonicalSettingsFixture.transfers.length,
+        ),
+        0,
+      );
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, ...window.reply }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          ...window.canonicalSettingsFixture.reply,
+        }),
       );
       await expect(
         page.getByLabel("Subagent account", { exact: true }),
@@ -665,15 +849,20 @@ test("execution settings canonical browser", async ({ page }) => {
         .waitFor();
       assert.deepEqual(
         await page.evaluate(() =>
-          window.transfers.map((row) => [row.account_key, row.scope]),
+          window.canonicalSettingsFixture.transfers.map((row) => [
+            row.account_key,
+            row.scope,
+          ]),
         ),
         [["claude", "subagents"]],
       );
       await page.evaluate(() =>
-        window.setAgent({
-          ...window.agent,
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
           accountTransfer: {
-            id: window.transfers[0].request_id,
+            id: window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.transfers[0],
+            ).request_id,
             scope: "subagents",
             status: "completed",
             targetAccountKey: "claude",
@@ -707,20 +896,24 @@ test("execution settings canonical browser", async ({ page }) => {
         "block",
       );
       // A lost transfer response offers Retry with the same request id.
-      await page.evaluate(() => (window.transferFail = true));
+      await page.evaluate(
+        () => (window.canonicalSettingsFixture.transferFail = true),
+      );
       await move.click();
       await page
         .getByRole("alert")
         .filter({ hasText: "Connection lost" })
         .waitFor();
-      await page.evaluate(() => (window.transferFail = false));
+      await page.evaluate(
+        () => (window.canonicalSettingsFixture.transferFail = false),
+      );
       await dialog.getByRole("button", { name: "Retry", exact: true }).click();
       await dialog
         .getByRole("status")
         .filter({ hasText: "Account transfer accepted." })
         .waitFor();
       const ids = await page.evaluate(() =>
-        window.transfers.map((row) => row.request_id),
+        window.canonicalSettingsFixture.transfers.map((row) => row.request_id),
       );
       assert.equal(ids.length, 3);
       assert.equal(ids[1], ids[2], "retry keeps the request id");
@@ -728,8 +921,8 @@ test("execution settings canonical browser", async ({ page }) => {
       // Automatic saves the defaults without a transfer.
       await expect.poll(() => account.isEnabled()).toBe(true);
       await page.evaluate(() => {
-        window.reply = {
-          ...window.agent,
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
           workerDefaults: {
             accountKey: null,
             model: "claude-opus-4-6",
@@ -740,14 +933,23 @@ test("execution settings canonical browser", async ({ page }) => {
       });
       await account.selectOption("");
       await page.waitForFunction(() =>
-        window.calls.some((call) => call.worker_defaults?.account_key === null),
+        window.canonicalSettingsFixture.calls.some(
+          (call) => call.worker_defaults?.account_key === null,
+        ),
       );
       const automaticSave = await page.evaluate(() =>
-        window.calls.find((call) => call.worker_defaults?.account_key === null),
+        window.canonicalSettingsFixture.calls.find(
+          (call) => call.worker_defaults?.account_key === null,
+        ),
       );
       assert.ok(automaticSave);
-      assert.equal(automaticSave.worker_defaults.account_key, null);
-      assert.equal(await page.evaluate(() => window.transfers.length), 3);
+      assert.equal(required(automaticSave.worker_defaults).account_key, null);
+      assert.equal(
+        await page.evaluate(
+          () => window.canonicalSettingsFixture.transfers.length,
+        ),
+        3,
+      );
       await reset();
       assert.equal(await account.count(), 0);
     });
@@ -786,20 +988,25 @@ test("execution settings canonical browser", async ({ page }) => {
     await check("defaults-and-refresh-failure", async () => {
       await reset({ defaults: true });
       await page.evaluate(() => {
-        window.reply = {
-          ...window.agent,
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
           workerDefaults: {
             model: "gpt-5.6-luna",
             effort: "medium",
             fastMode: false,
           },
         };
-        window.refreshFailure = true;
+        window.canonicalSettingsFixture.refreshFailure = true;
       });
       await effort(true).selectOption("max");
       await value("medium", true);
       assert.equal(
-        await page.evaluate(() => window.calls[0].expected_account_key),
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.calls[0],
+            ).expected_account_key,
+        ),
         "default",
       );
       await page
@@ -807,8 +1014,8 @@ test("execution settings canonical browser", async ({ page }) => {
         .filter({ hasText: "Settings saved." })
         .waitFor();
       await page.evaluate(() =>
-        window.setAgent({
-          ...window.agent,
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
           workerDefaults: {
             model: "gpt-5.6-luna",
             effort: "medium",
@@ -818,8 +1025,8 @@ test("execution settings canonical browser", async ({ page }) => {
       );
       await page.waitForTimeout(50);
       await page.evaluate(() =>
-        window.setAgent({
-          ...window.agent,
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
           workerDefaults: {
             model: "gpt-5.6-luna",
             effort: "low",
@@ -834,8 +1041,8 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.getByText("Review", { exact: true }).click();
       const reviewModel = page.locator("#review-model");
       await page.evaluate(() => {
-        window.reply = {
-          ...window.agent,
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
           reviewDefaults: { model: "gpt-5.6-luna", effort: null },
         };
       });
@@ -843,9 +1050,16 @@ test("execution settings canonical browser", async ({ page }) => {
       await page
         .locator('input[type="radio"][data-value="gpt-5.6-luna"]:visible')
         .click();
-      await page.waitForFunction(() => window.calls.length === 1);
+      await page.waitForFunction(
+        () => window.canonicalSettingsFixture.calls.length === 1,
+      );
       assert.deepEqual(
-        await page.evaluate(() => window.calls[0].review_defaults),
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.calls[0],
+            ).review_defaults,
+        ),
         {
           model: "gpt-5.6-luna",
           effort: null,
@@ -853,12 +1067,12 @@ test("execution settings canonical browser", async ({ page }) => {
       );
       assert.equal(await modelValue(reviewModel), "gpt-5.6-luna");
       await page.evaluate(() => {
-        window.setAgent({
-          ...window.agent,
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
           reviewDefaults: { model: "gpt-5.6-luna", effort: null },
         });
-        window.reply = {
-          ...window.agent,
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
           reviewDefaults: { model: "gpt-5.6-luna", effort: "high" },
         };
       });
@@ -866,9 +1080,16 @@ test("execution settings canonical browser", async ({ page }) => {
         page.getByLabel("Default review reasoning", { exact: true }),
         "high",
       );
-      await page.waitForFunction(() => window.calls.length === 2);
+      await page.waitForFunction(
+        () => window.canonicalSettingsFixture.calls.length === 2,
+      );
       assert.deepEqual(
-        await page.evaluate(() => window.calls[1].review_defaults),
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.calls[1],
+            ).review_defaults,
+        ),
         {
           model: "gpt-5.6-luna",
           effort: "high",
@@ -878,14 +1099,21 @@ test("execution settings canonical browser", async ({ page }) => {
     await check("rejected-does-not-pin-old-snapshot", async () => {
       await reset();
       await page.evaluate(() => {
-        window.hold = true;
-        window.fail = "rejected";
+        window.canonicalSettingsFixture.hold = true;
+        window.canonicalSettingsFixture.fail = "rejected";
       });
       await effort().selectOption("high");
-      await page.waitForFunction(() => !!window.release);
+      await page.waitForFunction(
+        () => !!window.canonicalSettingsFixture.release,
+      );
       await page.evaluate(() => {
-        window.setAgent({ ...window.agent, effort: "medium" });
-        window.release();
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          effort: "medium",
+        });
+        window.canonicalSettingsFixture.required(
+          window.canonicalSettingsFixture.release,
+        )();
       });
       await page.getByRole("alert").waitFor();
       await value("medium");
@@ -893,34 +1121,52 @@ test("execution settings canonical browser", async ({ page }) => {
     await check("rejected-after-confirmed-before-snapshot", async () => {
       await reset();
       await page.evaluate(
-        () => (window.reply = { ...window.agent, effort: "medium" }),
+        () =>
+          (window.canonicalSettingsFixture.reply = {
+            ...window.canonicalSettingsFixture.agent,
+            effort: "medium",
+          }),
       );
       await effort().selectOption("high");
       await value("medium");
-      await page.evaluate(() => (window.fail = "rejected"));
+      await page.evaluate(
+        () => (window.canonicalSettingsFixture.fail = "rejected"),
+      );
       await effort().selectOption("max");
       await page.getByRole("alert").waitFor();
       await value("medium");
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, effort: "max" }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          effort: "max",
+        }),
       );
       await value("max");
     });
     await check("newer-snapshot-handoff", async () => {
       await reset();
       await page.evaluate(
-        () => (window.reply = { ...window.agent, effort: "medium" }),
+        () =>
+          (window.canonicalSettingsFixture.reply = {
+            ...window.canonicalSettingsFixture.agent,
+            effort: "medium",
+          }),
       );
       await effort().selectOption("high");
       await value("medium");
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, effort: "max" }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          effort: "max",
+        }),
       );
       await value("max");
     });
     await check("stale-account-submission", async () => {
       await reset({ agent: { status: "running" } });
-      await page.evaluate(() => (window.serverAccount = "second"));
+      await page.evaluate(
+        () => (window.canonicalSettingsFixture.serverAccount = "second"),
+      );
       await effort().selectOption("high");
       await page
         .getByRole("alert")
@@ -928,7 +1174,12 @@ test("execution settings canonical browser", async ({ page }) => {
         .waitFor();
       await value("low");
       assert.equal(
-        await page.evaluate(() => window.calls[0].expected_account_key),
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.calls[0],
+            ).expected_account_key,
+        ),
         "default",
       );
       assert.equal(
@@ -951,7 +1202,9 @@ test("execution settings canonical browser", async ({ page }) => {
           "next-turn-settings:first",
           JSON.stringify(legacy),
         );
-        window.reset({ agent: { accountKey: "second", effort: "medium" } });
+        window.canonicalSettingsFixture.reset({
+          agent: { accountKey: "second", effort: "medium" },
+        });
       }, legacy);
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
@@ -961,10 +1214,15 @@ test("execution settings canonical browser", async ({ page }) => {
         await page.getByRole("button", { name: "Check settings save" }).count(),
         0,
       );
-      assert.deepEqual(await page.evaluate(() => window.calls), []);
+      assert.deepEqual(
+        await page.evaluate(() => window.canonicalSettingsFixture.calls),
+        [],
+      );
       assert.deepEqual(
         await page.evaluate(() =>
-          JSON.parse(localStorage.getItem("next-turn-settings:first")),
+          JSON.parse(
+            localStorage.getItem("next-turn-settings:first") || "null",
+          ),
         ),
         legacy,
       );
@@ -980,8 +1238,11 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.keyboard.press("Escape");
       await page.getByText("Permissions", { exact: true }).click();
       await page.evaluate(() => {
-        window.reply = { ...window.agent, yoloMode: true };
-        window.refreshFailure = true;
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
+          yoloMode: true,
+        };
+        window.canonicalSettingsFixture.refreshFailure = true;
       });
       const permission = page.getByRole("switch", {
         name: "Full access without approval",
@@ -994,28 +1255,55 @@ test("execution settings canonical browser", async ({ page }) => {
         .waitFor();
       assert.equal(await permission.isChecked(), true);
       assert.equal(
-        await page.evaluate(() => window.calls[0].expected_account_key),
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.calls[0],
+            ).expected_account_key,
+        ),
         "default",
       );
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, tail: "Unrelated snapshot" }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          tail: "Unrelated snapshot",
+        }),
       );
       assert.equal(await permission.isChecked(), true);
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, yoloMode: true }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          yoloMode: true,
+        }),
       );
       await page.waitForTimeout(50);
       await page.evaluate(() =>
-        window.setAgent({ ...window.agent, yoloMode: false }),
+        window.canonicalSettingsFixture.setAgent({
+          ...window.canonicalSettingsFixture.agent,
+          yoloMode: false,
+        }),
       );
       assert.equal(await permission.isChecked(), false);
       await page.evaluate(() => {
-        window.reply = { ...window.agent, yoloMode: false };
-        window.refreshFailure = false;
+        window.canonicalSettingsFixture.reply = {
+          ...window.canonicalSettingsFixture.agent,
+          yoloMode: false,
+        };
+        window.canonicalSettingsFixture.refreshFailure = false;
       });
       await permission.click();
-      await page.waitForFunction(() => window.refreshCount === 2);
-      assert.equal(await page.evaluate(() => window.calls[1].yolo_mode), true);
+      await page.waitForFunction(
+        () => window.canonicalSettingsFixture.refreshCount === 2,
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.canonicalSettingsFixture.required(
+              window.canonicalSettingsFixture.calls[1],
+            ).yolo_mode,
+        ),
+        true,
+      );
       assert.equal(await permission.isChecked(), false);
     });
     expect(errors).toEqual([]);

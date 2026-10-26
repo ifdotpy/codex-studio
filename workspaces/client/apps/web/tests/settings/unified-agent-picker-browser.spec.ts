@@ -1,3 +1,7 @@
+import type { components } from "../../src/generated/api.ts";
+import type {} from "./unified-agent-picker-browser.fixture.tsx";
+import { required } from "./fixture-helpers.ts";
+import { fixtureUrl } from "./fixture-helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -24,7 +28,6 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
     process.env.PICKER_SCREENSHOTS ||
     join(tmpdir(), "studio-unified-picker-shots");
   await mkdir(output, { recursive: true });
-  const entry = join(root, "unified-picker-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -54,43 +57,30 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="/unified-picker-fixture.tsx"></script>',
+              '<meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="/tests/settings/unified-agent-picker-browser.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/unified-picker-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {theme} from '/src/theme.ts';import '/src/style.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {SettingsRow} from '/src/components/ui/primitives.tsx';import '/src/appearance.css';import {AccountTiles} from '/src/components/AccountTiles.tsx';import ProjectAccount from '/src/components/ProjectAccount.tsx';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';import {writeModelWhitelist} from '/src/components/models/modelWhitelist.ts';window.whitelist=value=>writeModelWhitelist(value,'local');
-      const accounts=Array.from({length:7},(_,i)=>({id:'account-'+i,home:'/fixture/'+i,label:i<3?'Work '+(i+1):'Personal '+(i-2),email:'fixture'+i+'@example.com',source:'fixture',provider:i<4?'codex':'claude',status:i===6?'signedOut':'ready'}));
-      const codex=['gpt-6-astra','gpt-6-luna'].map((model,i)=>({model,displayName:i?'Luna':'Astra',isDefault:!i,provider:'codex',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:i?[]:[{id:'priority'}],availableAccessPrograms:{cyber:i?['standard']:['standard','daybreakBlue']}}));
-      const claudeRow=(model,displayName,extra)=>({model,displayName,provider:'claude',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[],...extra});const claude=[claudeRow('default','Claude · Default (recommended)',{isDefault:true,resolvedModel:'claude-opus-5-5'}),claudeRow('opus','Claude · Opus 5.5',{resolvedModel:'claude-opus-5-5'}),claudeRow('claude-sonnet-5-5','Claude Sonnet 5.5',{})];
-      const initial={id:'lead',accountKey:'account-0',provider:'codex',name:'Lead',source:'managed',model:'gpt-6-astra',effort:'medium',fastMode:false,daybreakEnabled:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true,workerDefaults:{model:'gpt-6-luna',effort:'high',fastMode:false},reviewDefaults:{model:null,effort:null}};
-      window.calls=[];const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?input.url:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;const u=new URL(url,location.origin);let result;if(u.pathname==='/api/limits'){const key=u.searchParams.get('account_key'),i=Number(key?.split('-')[1]);result={accountKey:key,at:Date.now()/1000,data:{rateLimits:{limitId:i<4?'codex':'claude',primary:{usedPercent:[20,60,95,100,25,70,100][i],windowDurationMins:300,resetsAt:Date.now()/1000+3600}}}};}else if(u.pathname==='/api/models'){result={data:u.searchParams.get('workers')?'1'===u.searchParams.get('workers')?[...codex,...claude]:codex:Number(u.searchParams.get('account_key')?.split('-')[1])>=4?claude:codex};}else if(options?.method==='POST'){const body=JSON.parse(options.body);window.calls.push({endpoint:u.pathname,...body});if(u.pathname==='/api/conversation'){const next={...window.agent};if(body.worker_defaults)next.workerDefaults={model:body.worker_defaults.model,effort:body.worker_defaults.effort,fastMode:body.worker_defaults.fast_mode,daybreakEnabled:body.worker_defaults.daybreak_enabled,accountKey:body.worker_defaults.account_key};else if(body.review_defaults)next.reviewDefaults=body.review_defaults;else Object.assign(next,{model:body.model,effort:body.effort,fastMode:body.fast_mode,daybreakEnabled:body.daybreak_enabled});window.updateAgent(next);result=next;}else if(u.pathname==='/api/agents/account-transfer'){result={id:body.request_id,leadId:body.id,scope:body.scope,status:'completed',targetAccountKey:body.account_key,total:0,moved:0,completed:0};window.updateAgent({...window.agent,workerDefaults:{accountKey:body.account_key,model:Number(body.account_key.split('-')[1])>=4?claude[0].model:codex[0].model,effort:'medium',fastMode:false}});}else if(u.pathname==='/api/projects')result={id:'project',path:'/fixture/project',name:'Project',created:1,accountKey:body.account_key,accountKeys:body.account_keys,accountRevision:1};else if(u.pathname==='/api/peer-teams')result={room:{id:'shared'}};}if(result===undefined)return nativeFetch(url,options);return new Response(JSON.stringify(result),{headers:{'Content-Type':'application/json'}});};
-      function Fixture(){const[agent,setAgent]=useState(initial),[scene,setScene]=useState('picker'),[scheme,setScheme]=useState('dark'),[account,setAccount]=useState('account-0');window.agent=agent;window.updateAgent=value=>flushSync(()=>setAgent(value));window.scene=value=>flushSync(()=>setScene(value));window.scheme=value=>flushSync(()=>setScheme(value));window.reset=()=>flushSync(()=>{setAgent(initial);setScene('picker');window.calls=[]});const data={stateDir:'fixture',threads:[],runtime:{rooms:[],projects:[{id:'project',path:'/fixture/project',name:'Project',created:1}]}};return <MantineProvider theme={theme} forceColorScheme={scheme}><main style={{padding:20,maxWidth:720,margin:'0 auto'}}><h2>Agent setup</h2>{scene==='picker'?<ExecutionSettings agent={agent} accounts={accounts} catalog={{models:agent.provider==='claude'?claude:codex,loading:false,error:'',retry:()=>{}}} onAccountChange={key=>{window.calls.push({path:'account-selection',key});const provider=accounts.find(a=>a.id===key).provider;setAgent({...agent,accountKey:key,provider,model:provider==='claude'?claude[0].model:codex[0].model,effort:'medium'});}} refresh={async()=>{}}/>:scene==='rows'?<div className="chat-settings-panel chat-settings-rows">{['orchestrator','worker','review'].map(role=><SettingsRow key={role} label={role==='orchestrator'?'Model':role==='worker'?'Workers':'Review'}><ExecutionSettings settingsRow initialRole={role} agent={agent} accounts={accounts} catalog={{models:agent.provider==='claude'?claude:codex,loading:false,error:'',retry:()=>{}}} onAccountChange={()=>{}} refresh={async()=>{}}/></SettingsRow>)}</div>:scene==='chat-account'?<AccountTiles label="Account" accounts={accounts} value={account} onChange={setAccount}/>:scene==='project'?<ProjectAccount path="/fixture/project" project={{id:'project',path:'/fixture/project',name:'Project',created:1,accountKey:'account-0',accountKeys:accounts.map(a=>a.id)}} defaultAccountKey="account-0" accounts={{accounts,defaultAccountKey:'account-0'}} saved={async()=>{}}/>:<SharedChatCreate data={data} accounts={{accounts,defaultAccountKey:'account-0'}} initialPath="/fixture/project" refresh={async()=>{}} created={id=>{window.created=id}}/>}</main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
   });
-  const results = [];
+  const results: unknown[] = [];
   const contexts = [];
   try {
     await server.listen();
-    const url = server.resolvedUrls.local[0] + "check";
+    const url = fixtureUrl(server, "check");
     for (const [profile, width, scheme] of [
       ["dark", 1440, "dark"],
       ["light", 1440, "light"],
       ["mobile", 390, "dark"],
-    ]) {
+    ] as const) {
       const context = await browser.newContext({
         viewport: { width, height: 900 },
         colorScheme: scheme,
       });
       contexts.push(context);
       const page = await context.newPage();
-      const errors = [];
+      const errors: string[] = [];
       page.on("pageerror", (error) => {
         errors.push(error.message);
         console.error(error.message);
@@ -115,16 +105,19 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           json: {
             workspaceId: "1234567890abcdef1234567890abcdef",
             syncProtocol: 2,
-          },
+          } satisfies components["schemas"]["SyncIdentityResponse"],
         }),
       );
       await page.goto(url);
       await page.waitForFunction(
-        () => typeof window.scheme === "function",
+        () => window.unifiedPickerFixture?.ready,
         null,
         { timeout: 30000 },
       );
-      await page.evaluate((scheme) => window.scheme(scheme), scheme);
+      await page.evaluate(
+        (scheme) => window.unifiedPickerFixture.scheme(scheme),
+        scheme,
+      );
       const trigger = page.getByRole("button", {
         name: "Main agent settings",
         exact: true,
@@ -144,14 +137,22 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       await expect(
         page.getByRole("listbox", { name: "Main agent model" }),
       ).toBeVisible();
-      const capture = async (scene) => {
+      const capture = async (scene: string) => {
         if (process.env.PICKER_CLIP_DETECTOR) {
-          const { detectTextClipping } = await import(
-            process.env.PICKER_CLIP_DETECTOR
-          );
-          results.push(
-            ...(await page.evaluate(detectTextClipping, { scene, profile })),
-          );
+          const {
+            detectTextClipping,
+          }: {
+            detectTextClipping: (args: {
+              scene: string;
+              profile: string;
+            }) => unknown;
+          } = await import(process.env.PICKER_CLIP_DETECTOR);
+          const clipping: unknown = await page.evaluate(detectTextClipping, {
+            scene,
+            profile,
+          });
+          assert.ok(Array.isArray(clipping));
+          results.push(...clipping);
         }
       };
       await expect(page.locator('[role="meter"]').first()).toHaveAttribute(
@@ -167,13 +168,17 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "high",
       );
       await page.waitForFunction(() =>
-        window.calls.some((call) => call.effort === "high"),
+        window.unifiedPickerFixture.calls.some(
+          (call) => call.effort === "high",
+        ),
       );
       await page
         .getByRole("switch", { name: "Fast mode", exact: true })
         .click();
       await page.waitForFunction(() =>
-        window.calls.some((call) => call.fast_mode === true),
+        window.unifiedPickerFixture.calls.some(
+          (call) => call.fast_mode === true,
+        ),
       );
       await page.getByText("Worker", { exact: true }).click();
       await expect(
@@ -186,7 +191,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       // A new subagent account saves the defaults; nothing moves.
       await page.waitForFunction(() =>
-        window.calls.some(
+        window.unifiedPickerFixture.calls.some(
           (call) =>
             call.endpoint === "/api/conversation" &&
             call.worker_defaults?.account_key === "account-4",
@@ -195,7 +200,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       assert.equal(
         await page.evaluate(
           () =>
-            window.calls.filter(
+            window.unifiedPickerFixture.calls.filter(
               (call) => call.endpoint === "/api/agents/account-transfer",
             ).length,
         ),
@@ -229,11 +234,13 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .click();
       const luna = page.getByRole("option", { name: "Luna 6", exact: true });
       await expect(luna).toBeVisible();
-      const mark = await page.evaluate(() => window.calls.length);
+      const mark = await page.evaluate(
+        () => window.unifiedPickerFixture.calls.length,
+      );
       await luna.click();
       await page.waitForFunction(
         (mark) =>
-          window.calls
+          window.unifiedPickerFixture.calls
             .slice(mark)
             .some(
               (call) =>
@@ -246,7 +253,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       assert.equal(
         await page.evaluate(
           (mark) =>
-            window.calls
+            window.unifiedPickerFixture.calls
               .slice(mark)
               .filter(
                 (call) => call.endpoint === "/api/agents/account-transfer",
@@ -270,8 +277,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       // Restore automatic workers, so review defaults have the Codex catalog accepted by the backend.
       await page.evaluate(() =>
-        window.updateAgent({
-          ...window.agent,
+        window.unifiedPickerFixture.updateAgent({
+          ...window.unifiedPickerFixture.agent,
           workerDefaults: {
             model: "gpt-6-luna",
             effort: "high",
@@ -286,7 +293,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .getByRole("option", { name: "Astra 6 recommended", exact: true })
         .click();
       await page.waitForFunction(() =>
-        window.calls.some(
+        window.unifiedPickerFixture.calls.some(
           (call) => call.review_defaults?.model === "gpt-6-astra",
         ),
       );
@@ -314,8 +321,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       await capture("orchestrator-claude");
       await page.evaluate(() => {
-        window.reset();
-        window.scene("rows");
+        window.unifiedPickerFixture.reset();
+        window.unifiedPickerFixture.scene("rows");
       });
       const mainRow = page.getByRole("button", {
         name: "Main agent settings",
@@ -353,8 +360,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         [mainRow, "Orchestrator"],
         [workersRow, "Worker"],
         [reviewRow, "Review"],
-      ]) {
-        await row.click();
+      ] as const) {
+        await required(row).click();
         await expect(
           page.getByRole("radio", { name: role, exact: true }),
         ).toBeChecked();
@@ -381,14 +388,20 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       assert.equal(
         await page.evaluate(
           () =>
-            window.calls.filter((call) => call.review_defaults).at(-1)
-              .expected_account_key,
+            window.unifiedPickerFixture.required(
+              window.unifiedPickerFixture.calls
+                .filter((call) => call.review_defaults)
+                .at(-1),
+            ).expected_account_key,
         ),
         "account-0",
       );
       await capture("chat-settings-model-rows");
-      for (const scene of ["chat-account", "project", "shared"]) {
-        await page.evaluate((scene) => window.scene(scene), scene);
+      for (const scene of ["chat-account", "project", "shared"] as const) {
+        await page.evaluate(
+          (scene) => window.unifiedPickerFixture.scene(scene),
+          scene,
+        );
         if (scene === "shared")
           await page
             .getByRole("button", { name: "Settings for agent 1" })
@@ -414,10 +427,12 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
             .getByRole("button", { name: "Save accounts", exact: true })
             .click();
           await page.waitForFunction(() =>
-            window.calls.some(
+            window.unifiedPickerFixture.calls.some(
               (call) =>
                 call.endpoint === "/api/projects" &&
-                !call.account_keys.includes("account-4"),
+                !window.unifiedPickerFixture
+                  .required(call.account_keys)
+                  .includes("account-4"),
             ),
           );
         } else if (scene === "shared") {
@@ -436,17 +451,24 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
             .getByRole("button", { name: "Create", exact: true })
             .click();
           await page.waitForFunction(() =>
-            window.calls.some((call) => call.endpoint === "/api/peer-teams"),
+            window.unifiedPickerFixture.calls.some(
+              (call) => call.endpoint === "/api/peer-teams",
+            ),
           );
           assert.deepEqual(
             await page.evaluate(() => {
-              const participant = window.calls.find(
-                (call) => call.endpoint === "/api/peer-teams",
-              ).participants[0];
+              const request = window.unifiedPickerFixture.required(
+                window.unifiedPickerFixture.calls.find(
+                  (call) => call.endpoint === "/api/peer-teams",
+                ),
+              );
+              const participant = window.unifiedPickerFixture.required(
+                request.participants,
+              )[0];
               return [
-                participant.account_key,
-                participant.model,
-                participant.effort,
+                window.unifiedPickerFixture.required(participant).account_key,
+                window.unifiedPickerFixture.required(participant).model,
+                window.unifiedPickerFixture.required(participant).effort,
               ];
             }),
             ["account-5", "default", "high"],
@@ -454,8 +476,11 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         }
       }
       await page.evaluate(() => {
-        window.reset();
-        window.whitelist(["codex:gpt-6-astra", "claude:claude-sonnet-5-5"]);
+        window.unifiedPickerFixture.reset();
+        window.unifiedPickerFixture.whitelist([
+          "codex:gpt-6-astra",
+          "claude:claude-sonnet-5-5",
+        ]);
       });
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
@@ -466,10 +491,17 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "account-4",
       );
       await expect
-        .poll(() => page.evaluate(() => window.agent.workerDefaults.model))
+        .poll(() =>
+          page.evaluate(
+            () =>
+              window.unifiedPickerFixture.required(
+                window.unifiedPickerFixture.agent.workerDefaults,
+              ).model,
+          ),
+        )
         .toBe("claude-sonnet-5-5");
       await expect(page.getByRole("option", { name: /Opus/ })).toHaveCount(0);
-      await page.evaluate(() => window.whitelist(null));
+      await page.evaluate(() => window.unifiedPickerFixture.whitelist(null));
       assert.deepEqual(errors, []);
     }
     await writeFile(
@@ -478,7 +510,15 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
     );
     console.log(`Clipping measurements: ${output}`);
     assert.deepEqual(
-      results.filter((row) => !row.intentional),
+      results.filter(
+        (row) =>
+          !(
+            row &&
+            typeof row === "object" &&
+            "intentional" in row &&
+            row.intentional
+          ),
+      ),
       [],
     );
   } finally {

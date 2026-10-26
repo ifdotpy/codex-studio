@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
+import { chromium, webkit } from "playwright-core";
+import { createFixtureViteServer } from "../playwright.ts";
+import type { Page, Locator } from "@playwright/test";
+import type { JsonInput } from "../../src/apiTypes.ts";
+import { accountErrorFailure } from "./account-errors-data.ts";
+import {
+  fixtureUrl,
+  fixtureSnapshot,
+  required,
+  type SyncFixture,
+  type NotifyResources,
+} from "./fixture-helpers.ts";
+import type {} from "./account-errors.fixture.tsx";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,23 +26,21 @@ import {
 test("Account settings errors", async () => {
   test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../..//", import.meta.url));
-  const require = createRequire(join(root, "package.json"));
-  const { chromium, webkit } = require("playwright-core");
-  const { createServer } = await import(require.resolve("vite"));
   const negative = process.env.NEGATIVE === "1";
   const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
-  const entry = join(root, "account-error-fixture.tsx");
-  const failure = {
-    message: "Provider request failed",
-    code: "providerFailure",
-    data: { message: "A nested provider reason", retryAfter: 17 },
-    additionalDetails: ["Retain this field"],
-  };
-  const loginError = negative ? failure : failure.message;
+  const failure = accountErrorFailure;
   const workspaceId = "0123456789abcdef0123456789abcdef";
-  const resourceStreams = new Set();
-  const syncFixture = {
-    snapshot: { runtime: {}, stateDir: "fixture", chats: [], edges: [] },
+  const resourceStreams = new Set<{
+    notify: NotifyResources;
+    resources: Parameters<NotifyResources>[0];
+  }>();
+  const syncFixture: SyncFixture = {
+    snapshot: fixtureSnapshot({
+      runtime: {},
+      stateDir: "fixture",
+      chats: [],
+      edges: [],
+    }),
     workspaceId,
     epoch: "account-errors-fixture",
     onStreamReady(notify, resources) {
@@ -40,7 +50,7 @@ test("Account settings errors", async () => {
     },
   };
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-account-errors-"));
-  const server = await createServer({
+  const server = await createFixtureViteServer({
     configFile: false,
     root,
     cacheDir,
@@ -49,18 +59,19 @@ test("Account settings errors", async () => {
       {
         name: "account-error-fixture",
         configureServer(server) {
+          server.middlewares.use("/fixture-data", (_req, res) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ negative }));
+          });
           server.middlewares.use((req, res, next) => {
             if (!handleEntitySyncFixtureRequest(req, res, syncFixture)) next();
           });
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<html><body><div id="root"></div><script type="module" src="/account-error-fixture.tsx"></script></body></html>',
+              '<html><body><div id="root"></div><script type="module" src="/tests/accounts/account-errors.fixture.tsx"></script></body></html>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/account-error-fixture.tsx") return entry;
         },
         load(id) {
           if (negative && id === join(root, "src/components/AccountSignIn.tsx"))
@@ -69,16 +80,6 @@ test("Account settings errors", async () => {
               ["show", "f72c2ce:web/src/components/AccountSignIn.tsx"],
               { cwd: root, encoding: "utf8" },
             );
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';
-  import AccountSignIn from '/src/components/AccountSignIn.tsx';import Accounts from '/src/components/Accounts.tsx';import Workspace from '/src/components/shell/Workspace.tsx';
-  const initial=${JSON.stringify(failure)};const agent={id:'lead',rootId:'lead',isLead:true,source:'managed',status:'idle',model:'gpt-6',name:'Fixture lead',created:1,cwd:'/fixture'};
-  localStorage.setItem('account-sign-in:fixture',JSON.stringify('request'));
-  function Harness(){const [error,setError]=useState(initial);const [surface,setSurface]=useState('signin');window.changeError=setError;window.showSurface=setSurface;
-  const state={scope:'fixture',data:{accounts:[{id:'default',label:'Fixture account',status:'ready',error}],defaultAccountKey:'default',logins:[{requestId:'request',accountKey:'default',status:'error',error:${JSON.stringify(loginError)}}]},setData:()=>{},refresh:async()=>{},error:''};
-  const data={stateDir:'fixture',threads:[agent],runtime:{agents:[agent],requests:[],complaints:[],userMessages:[],userTasks:[]},board:{},nodes:[agent],edges:[],chats:[]};
-  return <MantineProvider><p data-shell>Saved conversation remains available</p>{surface==='signin'?<AccountSignIn state={state} opened={true}/>:surface==='accounts'?<Accounts state={state} managerOnly onError={()=>{}}/>:<Workspace key={surface} opened={true} initialSection={surface} agent={agent} data={data} allRequests={[]} onClose={()=>window.showSurface('signin')} onSelect={()=>{}} refresh={async()=>{}} notify={()=>{}}/>}</MantineProvider>}
-  createRoot(document.getElementById('root')).render(<Harness/>);`;
         },
       },
     ],
@@ -98,8 +99,8 @@ test("Account settings errors", async () => {
       viewport: { width: 1100, height: 850 },
     });
     page.setDefaultTimeout(5000);
-    const errors = [],
-      mutations = [];
+    const errors: string[] = [],
+      mutations: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let limitsHttpFailure = false;
     let limitsRecovered = false;
@@ -168,9 +169,7 @@ test("Account settings errors", async () => {
                     : {},
       });
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(`${fixtureUrl(server)}/check`);
     if (negative) {
       for (let i = 0; i < 100 && !errors.length; i++)
         await page.waitForTimeout(25);
@@ -186,20 +185,28 @@ test("Account settings errors", async () => {
         "PASS negative control: original AccountSignIn throws React object-child error",
       );
     } else {
-      async function details(expected, scope = page) {
+      async function details(
+        expected: JsonInput,
+        scope: Page | Locator = page,
+      ) {
         const button = scope
           .getByRole("button", { name: "Error details", exact: true })
           .first();
         await button.click();
         assert.deepEqual(
           JSON.parse(
-            await scope
-              .getByRole("button", { name: "Hide error details", exact: true })
-              .first()
-              .locator("..")
-              .locator(":scope > span")
-              .last()
-              .textContent(),
+            required(
+              await scope
+                .getByRole("button", {
+                  name: "Hide error details",
+                  exact: true,
+                })
+                .first()
+                .locator("..")
+                .locator(":scope > span")
+                .last()
+                .textContent(),
+            ),
           ),
           expected,
         );
@@ -213,9 +220,14 @@ test("Account settings errors", async () => {
         code: "new-code",
         metadata: { region: "fixture" },
       };
-      await page.evaluate((value) => window.changeError(value), changed);
+      await page.evaluate(
+        (value) => window.accountErrorsFixture.changeError(value),
+        changed,
+      );
       limitsHttpFailure = true;
-      await page.evaluate(() => window.showSurface("accounts"));
+      await page.evaluate(() =>
+        window.accountErrorsFixture.showSurface("accounts"),
+      );
       const manager = page.locator(".accounts-manager-inline");
       await manager.waitFor();
       await details(changed, manager);
@@ -226,7 +238,7 @@ test("Account settings errors", async () => {
       await limits
         .getByRole("button", { name: "Error details", exact: true })
         .click();
-      const httpDiagnostic = JSON.parse(
+      const httpDiagnostic: import("../../src/apiTypes.ts").Json = JSON.parse(
         await limits
           .getByRole("button", { name: "Hide error details", exact: true })
           .locator("..")
@@ -319,7 +331,10 @@ test("Account settings errors", async () => {
       assert.equal(await limits.getByText(/7d\s+80%\s+left/).count(), 1);
       await page.keyboard.press("Escape");
       for (const section of ["rules", "changes", "tools"]) {
-        await page.evaluate((value) => window.showSurface(value), section);
+        await page.evaluate(
+          (value) => window.accountErrorsFixture.showSurface(value),
+          section,
+        );
         if (section === "tools")
           await page
             .getByText("Some tools could not load. View details.", {

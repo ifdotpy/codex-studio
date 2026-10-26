@@ -1,4 +1,15 @@
-import { createRequire } from "node:module";
+import type { Page } from "@playwright/test";
+import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
+import {
+  required,
+  fixtureUrl,
+  fixtureAccount,
+  fixtureAccounts,
+  fixtureRequest,
+  type FixtureRequest,
+} from "./fixture-helpers.ts";
+import type {} from "./accounts-cards.fixture.tsx";
+import { createFixtureViteServer } from "../playwright.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,89 +23,94 @@ import {
 } from "../playwright.ts";
 
 // Exercise the Accounts manager through its Studio settings host and native menus.
-async function fixture(page) {
+async function fixture(page: Page) {
   const root = join(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
   const evidence = await mkdtemp(join(tmpdir(), "studio-accounts-cards-"));
-  const entry = join(root, "accounts-cards-fixture.tsx");
-  const accounts = [
-    {
-      id: "personal",
-      provider: "codex",
-      label: "Personal",
-      email: "personal@example.com",
-      status: "ready",
-      plan: "pro",
-    },
-    {
-      id: "work",
-      provider: "codex",
-      label: "Work",
-      email: "work@example.com",
-      status: "ready",
-      plan: "plus",
-    },
-    {
-      id: "expired",
-      provider: "codex",
-      label: "Travel",
-      email: "travel@example.com",
-      status: "signedOut",
-    },
-    {
-      id: "error",
-      provider: "codex",
-      label: "Second workspace",
-      email: "another.long.account@example.com",
-      status: "error",
-      error: {
-        message: "The account needs attention.",
-        code: "fixture-error",
-        details: { reason: "Expired credentials" },
+  const accounts: Account[] = (
+    [
+      {
+        id: "personal",
+        provider: "codex",
+        label: "Personal",
+        email: "personal@example.com",
+        status: "ready",
+        plan: "pro",
       },
-    },
-    {
-      id: "claude",
-      provider: "claude",
-      label: "Claude personal",
-      email: "claude@example.com",
-      status: "ready",
-      plan: "max",
-    },
-    {
-      id: "claude-work",
-      provider: "claude",
-      label: "Claude work",
-      email: "claude.work@example.com",
-      status: "ready",
-      plan: "pro",
-    },
-    {
-      id: "claude-expired",
-      provider: "claude",
-      label: "Claude travel",
-      email: "claude.travel@example.com",
-      status: "signedOut",
-    },
-  ].map((account) => ({
-    ...account,
-    home: `/fixture/${account.id}`,
-    source: account.provider,
-    accountId: `native-${account.id}`,
-  }));
+      {
+        id: "work",
+        provider: "codex",
+        label: "Work",
+        email: "work@example.com",
+        status: "ready",
+        plan: "plus",
+      },
+      {
+        id: "expired",
+        provider: "codex",
+        label: "Travel",
+        email: "travel@example.com",
+        status: "signedOut",
+      },
+      {
+        id: "error",
+        provider: "codex",
+        label: "Second workspace",
+        email: "another.long.account@example.com",
+        status: "error",
+        // @ts-expect-error Structured account error intentionally verifies diagnostic rendering beyond the wire string.
+        error: {
+          message: "The account needs attention.",
+          code: "fixture-error",
+          details: { reason: "Expired credentials" },
+        },
+      },
+      {
+        id: "claude",
+        provider: "claude",
+        label: "Claude personal",
+        email: "claude@example.com",
+        status: "ready",
+        plan: "max",
+      },
+      {
+        id: "claude-work",
+        provider: "claude",
+        label: "Claude work",
+        email: "claude.work@example.com",
+        status: "ready",
+        plan: "pro",
+      },
+      {
+        id: "claude-expired",
+        provider: "claude",
+        label: "Claude travel",
+        email: "claude.travel@example.com",
+        status: "signedOut",
+      },
+    ] satisfies Parameters<typeof fixtureAccount>[0][]
+  ).map((account) =>
+    fixtureAccount({
+      ...account,
+      // @ts-expect-error The structured error from the diagnostic negative case is intentionally outside the string wire contract.
+      error: account.error,
+      home: `/fixture/${account.id}`,
+      source: account.provider,
+      accountId: `native-${account.id}`,
+    }),
+  );
   let defaultAccountKey = "personal";
   let loseDeleteResponse = true;
-  const bodies = [];
-  const deleted = new Set();
-  const data = () => ({
-    accounts,
-    archivedAccounts: [],
-    defaultAccountKey,
-    logins: [],
-    supportsDisconnect: true,
-    supportsDelete: true,
-  });
+  const bodies: FixtureRequest[] = [];
+  const deleted = new Set<string>();
+  const data = (): AccountsState =>
+    fixtureAccounts({
+      accounts,
+      archivedAccounts: [],
+      defaultAccountKey,
+      logins: [],
+      supportsDisconnect: true,
+      supportsDelete: true,
+    });
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -104,7 +120,9 @@ async function fixture(page) {
         headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       });
     if (path === "/api/sync/stream") {
-      const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+      const resources: import("../playwright.ts").ResourceRef[] = JSON.parse(
+        url.searchParams.get("resources") || "[]",
+      );
       return route.fulfill({
         contentType: "text/event-stream",
         body: apiSchemaHandshakeSse(
@@ -124,21 +142,24 @@ async function fixture(page) {
       });
     }
     if (route.request().method() === "POST") {
-      const body = route.request().postDataJSON();
-      bodies.push({ path, body });
-      const account = accounts.find(
-        (account) => account.id === body.account_key,
-      );
-      if (path === "/api/accounts/default")
-        defaultAccountKey = body.account_key;
+      const request = fixtureRequest(path, route.request().postDataJSON());
+      bodies.push(request);
+      const accountKey =
+        "account_key" in request.body ? request.body.account_key : undefined;
+      const account = accounts.find((account) => account.id === accountKey);
+      if (request.path === "/api/accounts/default")
+        defaultAccountKey = required(request.body.account_key);
       if (path === "/api/accounts/disconnect") {
-        account.disconnected = true;
-        if (defaultAccountKey === account.id) defaultAccountKey = "personal";
+        required(account).disconnected = true;
+        if (defaultAccountKey === required(account).id)
+          defaultAccountKey = "personal";
       }
-      if (path === "/api/accounts/reconnect") account.disconnected = false;
-      if (path === "/api/accounts/delete") {
+      if (path === "/api/accounts/reconnect")
+        required(account).disconnected = false;
+      if (request.path === "/api/accounts/delete") {
+        const body = request.body;
         if (!deleted.has(body.request_id)) {
-          accounts.splice(accounts.indexOf(account), 1);
+          accounts.splice(accounts.indexOf(required(account)), 1);
           deleted.add(body.request_id);
         }
         if (loseDeleteResponse) {
@@ -148,9 +169,16 @@ async function fixture(page) {
       }
     }
     if (path === "/api/limits") {
-      const key = url.searchParams.get("account_key");
+      const key = required(url.searchParams.get("account_key"));
       const usedPercent =
-        { personal: 18, work: 85, claude: 100, "claude-work": 45 }[key] ?? 10;
+        (
+          {
+            personal: 18,
+            work: 85,
+            claude: 100,
+            "claude-work": 45,
+          } satisfies Record<string, number>
+        )[key] ?? 10;
       return route.fulfill({
         json: {
           accountKey: key,
@@ -170,7 +198,7 @@ async function fixture(page) {
       json: path.startsWith("/api/accounts") ? data() : {},
     });
   });
-  const server = await createServer({
+  const server = await createFixtureViteServer({
     configFile: false,
     root,
     cacheDir: join(evidence, "cache"),
@@ -189,26 +217,22 @@ async function fixture(page) {
       {
         name: "accounts-cards-fixture",
         configureServer(server) {
+          server.middlewares.use("/fixture-data", (_req, res) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify(data()));
+          });
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/accounts-cards-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/accounts/accounts-cards.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/accounts-cards-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{MantineProvider,Modal,Tabs}from'@mantine/core';import Accounts from'/src/components/Accounts.tsx';import{theme,modalSizes}from'/src/theme.ts';import'@mantine/core/styles.css';import'/src/style.css';import'/src/appearance.css';
-        function Fixture(){const[data,setData]=useState(${JSON.stringify(data())});const[color,setColor]=useState('dark');const[blocked,setBlocked]=useState(false);window.setTheme=setColor;return <MantineProvider theme={theme} forceColorScheme={color}><Modal opened title="Studio settings" size={modalSizes.settings} onClose={()=>{}} closeOnEscape={!blocked} transitionProps={{duration:0}} classNames={{body:'studio-settings-body'}}><div className="studio-settings-panel"><Tabs defaultValue="accounts" className="studio-settings-tabs"><Tabs.List aria-label="Studio settings"><Tabs.Tab value="accounts">Accounts</Tabs.Tab><Tabs.Tab value="appearance">Appearance</Tabs.Tab></Tabs.List><Tabs.Panel value="accounts" pt="md"><section className="settings-group" aria-label="Studio accounts"><Accounts managerOnly state={{data,setData,error:'',scope:'cards',refresh:async()=>data}} onError={()=>{}} onModalOpenChange={setBlocked}/></section></Tabs.Panel></Tabs></div></Modal></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
   });
   await server.listen();
-  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/check`);
+  await page.goto(`${fixtureUrl(server)}/check`);
   return { evidence, bodies, close: () => server.close() };
 }
 
@@ -216,7 +240,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
   page,
 }) => {
   test.setTimeout(90_000);
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const f = await fixture(page);
   try {
@@ -283,15 +307,18 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       ["dark", 1440],
       ["light", 1440],
       ["dark", 390],
-    ]) {
+    ] as const) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate((color) => window.setTheme(color), color);
+      await page.evaluate(
+        (color) => window.accountsCardsFixture.setTheme(color),
+        color,
+      );
       await expect(page.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
         color,
       );
-      const a = await personal.boundingBox();
-      const b = await work.boundingBox();
+      const a = required(await personal.boundingBox());
+      const b = required(await work.boundingBox());
       expect(b.y).toBeGreaterThan(a.y);
       expect(b.x).toBe(a.x);
       expect(a.height).toBeLessThanOrEqual(80);
@@ -332,7 +359,10 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       });
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
-    const actions = async (row, email) => {
+    const actions = async (
+      row: import("@playwright/test").Locator,
+      email: string,
+    ) => {
       await expect(page.getByRole("menu")).not.toBeVisible();
       await row
         .getByRole("button", { name: `Actions for ${email}`, exact: true })
@@ -469,7 +499,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
     );
     expect(deletes).toHaveLength(2);
     expect(deletes[0]).toEqual(deletes[1]);
-    expect(deletes[0].body.request_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(required(deletes[0]).body.request_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(errors).toEqual([]);
     console.log(`Accounts card screenshots: ${f.evidence}`);
   } finally {

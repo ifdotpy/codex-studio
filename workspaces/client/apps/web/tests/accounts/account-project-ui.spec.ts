@@ -1,3 +1,20 @@
+import type { Account } from "../../src/components/Accounts.tsx";
+import type { Project } from "../../src/types.ts";
+import type { AccountRateLimitsDto } from "../playwright.ts";
+import type { BrowserContext, TestInfo } from "@playwright/test";
+import {
+  required,
+  fixtureAccount,
+  fixtureLead,
+  fixtureSnapshot,
+  fixtureContentTypes,
+  fixtureUrl,
+  fixtureRequest,
+  type FixtureRequest,
+  type NotifyResources,
+  readFixtureResponse,
+  fixtureAgentEntity,
+} from "./fixture-helpers.ts";
 import {
   handleEntitySyncFixtureRequest,
   entityMutationFixtureResponse,
@@ -16,7 +33,7 @@ import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -37,33 +54,35 @@ test("account project ui", async ({ browser: _browser }) => {
     process.env.STUDIO_WEB_DIST ||
     join(root, "workspaces/client/apps/web/dist");
   const evidence = await mkdtemp(join(tmpdir(), "codex-project-account-ui-"));
-  const accounts = [
-    {
-      id: "default",
-      email: "personal@example.com",
-      label: "Personal",
-      plan: "pro",
-      source: "Codex",
-      status: "ready",
-    },
-    {
-      id: "work",
-      email: "work@example.com",
-      label: "Work",
-      plan: "plus",
-      source: "CodexBar",
-      status: "ready",
-    },
-    {
-      id: "other",
-      email: "another.long.account@example.com",
-      label: "Second workspace",
-      plan: "pro",
-      source: "Profile",
-      status: "ready",
-    },
-  ];
-  const projects = [
+  const accounts: Account[] = (
+    [
+      {
+        id: "default",
+        email: "personal@example.com",
+        label: "Personal",
+        plan: "pro",
+        source: "Codex",
+        status: "ready",
+      },
+      {
+        id: "work",
+        email: "work@example.com",
+        label: "Work",
+        plan: "plus",
+        source: "CodexBar",
+        status: "ready",
+      },
+      {
+        id: "other",
+        email: "another.long.account@example.com",
+        label: "Second workspace",
+        plan: "pro",
+        source: "Profile",
+        status: "ready",
+      },
+    ] satisfies Parameters<typeof fixtureAccount>[0][]
+  ).map(fixtureAccount);
+  const projects: Project[] = [
     {
       id: "/tmp/fixture",
       path: "/tmp/fixture",
@@ -84,37 +103,27 @@ test("account project ui", async ({ browser: _browser }) => {
       folders: [{ id: "review", name: "Review", parentId: null }],
     },
   ];
-  const archivedAccounts = [];
+  const archivedAccounts: Account[] = [];
   let loseCreation = false;
   let holdCreation = false;
-  let releaseCreation;
+  let releaseCreation: (() => void) | undefined;
   let defaultAccountKey = "default";
   let conflict = false;
-  const makeLead = (id, name, accountKey, empty) => ({
-    id,
-    rootId: id,
-    name,
-    accountKey,
-    empty,
-    threadId: empty ? null : `thread-${id}`,
-    isLead: true,
-    source: "managed",
-    status: "idle",
-    model: "gpt-6-astra",
-    created: Date.now() / 1000,
-    inFlight: false,
-    canSend: true,
-    cwd: "/tmp/fixture",
-  });
+  const makeLead = (
+    id: string,
+    name: string,
+    accountKey: string,
+    empty: boolean,
+  ) => fixtureLead(id, name, accountKey, empty, "/tmp/fixture");
   const agents = [
     makeLead("started", "Started conversation", "default", false),
     makeLead("empty", "New conversation", "default", true),
   ];
-  const bodies = [];
-  let delayed = null;
+  const bodies: FixtureRequest[] = [];
+  let delayed: (() => void) | undefined;
   let delayWork = false;
-  let snapshotLimits = {};
-  const limits = (key) => {
+  let snapshotLimits: Record<string, AccountRateLimitsDto> = {};
+  const limits = (key: string): AccountRateLimitsDto => {
     const codex = {
       limitId: "codex",
       planType: "pro",
@@ -159,7 +168,7 @@ test("account project ui", async ({ browser: _browser }) => {
     };
   };
   const syncWorkspaceId = syncIdentityFixture().workspaceId;
-  const stateForEntities = {
+  const stateForEntities = fixtureSnapshot({
     stateDir: evidence,
     threads: agents,
     chats: [],
@@ -173,21 +182,20 @@ test("account project ui", async ({ browser: _browser }) => {
       monitors: [],
       tasks: [],
       work: [],
-      userTasks: [],
       rateLimitsByAccount: snapshotLimits,
     },
-  };
-  const stateListeners = new Set();
+  });
+  const stateListeners = new Set<NotifyResources>();
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url, "http://localhost");
-    let body = {};
+    const url = new URL(required(req.url), "http://localhost");
+    let rawBody: unknown = {};
     if (req.method === "POST") {
       let text = "";
       for await (const chunk of req) text += chunk;
-      body = JSON.parse(text || "{}");
-      bodies.push({ path: url.pathname, body });
+      rawBody = JSON.parse(text || "{}");
+      bodies.push(fixtureRequest(url.pathname, rawBody));
     }
-    const json = (data) => {
+    const json = (data: Record<string, unknown>) => {
       res.setHeader("Content-Type", "application/json");
       res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
       const reply =
@@ -195,7 +203,7 @@ test("account project ui", async ({ browser: _browser }) => {
           ? entityMutationFixtureResponse(stateForEntities, data)
           : data;
       res.end(JSON.stringify(reply));
-      if (reply._syncEntities?.length) {
+      if (Array.isArray(reply._syncEntities) && reply._syncEntities.length) {
         for (const notify of stateListeners) notify([{ kind: "state" }]);
       }
     };
@@ -203,7 +211,10 @@ test("account project ui", async ({ browser: _browser }) => {
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
-        subscriptionUpdate: body,
+        subscriptionUpdate:
+          url.pathname === "/api/sync/subscriptions"
+            ? fixtureRequest("/api/sync/subscriptions", rawBody).body
+            : undefined,
         onStreamReady: (notify) => {
           stateListeners.add(notify);
           return () => stateListeners.delete(notify);
@@ -243,8 +254,9 @@ test("account project ui", async ({ browser: _browser }) => {
       url.pathname === "/api/accounts/discover" ||
       url.pathname === "/api/accounts/default"
     ) {
+      const body = fixtureRequest("/api/accounts/default", rawBody).body;
       if (url.pathname.endsWith("/default"))
-        defaultAccountKey = body.account_key;
+        defaultAccountKey = required(body.account_key);
       return json({
         accounts,
         archivedAccounts,
@@ -254,12 +266,13 @@ test("account project ui", async ({ browser: _browser }) => {
       });
     }
     if (url.pathname === "/api/accounts/delete") {
+      const body = fixtureRequest("/api/accounts/delete", rawBody).body;
       const index = accounts.findIndex(
         (account) => account.id === body.account_key,
       );
       assert.notEqual(index, -1);
-      const [deleted] = accounts.splice(index, 1);
-      archivedAccounts.push({ ...deleted, deleted: true });
+      const deleted = required(accounts.splice(index, 1)[0]);
+      archivedAccounts.push(Object.assign(deleted, { deleted: true }));
       return json({
         accounts,
         archivedAccounts,
@@ -269,6 +282,7 @@ test("account project ui", async ({ browser: _browser }) => {
       });
     }
     if (url.pathname === "/api/projects") {
+      const body = fixtureRequest("/api/projects", rawBody).body;
       if (req.method === "GET") return json({ items: projects });
       let project = projects.find((item) => item.path === body.path);
       if (conflict) {
@@ -279,9 +293,9 @@ test("account project ui", async ({ browser: _browser }) => {
       }
       if (!project) {
         project = {
-          id: body.path,
-          path: body.path,
-          name: body.path.split("/").at(-1),
+          id: required(body.path),
+          path: required(body.path),
+          name: required(body.path).split("/").at(-1),
           created: 1,
           accountRevision: 0,
           workerBaseRevision: 0,
@@ -290,24 +304,31 @@ test("account project ui", async ({ browser: _browser }) => {
       }
       if (body.action == null && body.account_key == null) return json(project);
       if (body.action === "set_worker_base") {
-        assert.equal(body.expected_revision, project.workerBaseRevision);
-        project.workerBaseRef = body.base_ref;
-        project.workerBaseRevision++;
+        assert.equal(
+          body.expected_revision,
+          required(project).workerBaseRevision,
+        );
+        required(project).workerBaseRef = body.base_ref;
+        required(project).workerBaseRevision =
+          required(required(project).workerBaseRevision) + 1;
         return json(project);
       }
-      assert.equal(body.expected_revision, project.accountRevision);
-      project.accountKey = body.account_key;
-      project.accountKeys = body.account_keys;
-      project.accountRevision++;
+      assert.equal(body.expected_revision, required(project).accountRevision);
+      required(project).accountKey = body.account_key;
+      required(project).accountKeys = body.account_keys;
+      required(project).accountRevision =
+        required(required(project).accountRevision) + 1;
       return json(project);
     }
     if (url.pathname === "/api/conversation") {
-      const agent = agents.find((a) => a.id === body.id);
+      const body = fixtureRequest("/api/conversation", rawBody).body;
+      const agent = required(agents.find((a) => a.id === body.id));
       agent.cwd = body.cwd;
       return json(agent);
     }
     if (url.pathname === "/api/agents/account") {
-      const agent = agents.find((a) => a.id === body.id);
+      const body = fixtureRequest("/api/agents/account", rawBody).body;
+      const agent = required(agents.find((a) => a.id === body.id));
       agent.accountKey = body.account_key;
       const syncEntities = updateEntitySyncFixture(stateForEntities);
       return json({ ...agent, _syncEntities: syncEntities });
@@ -328,10 +349,11 @@ test("account project ui", async ({ browser: _browser }) => {
     if (url.pathname === "/api/costs")
       return json({ data: { todayUSD: 12, last30DaysUSD: 40 } });
     if (url.pathname === "/api/leads") {
+      const body = fixtureRequest("/api/leads", rawBody).body;
       let lead = agents.find((item) => item.id === body.id);
       if (!lead) {
         lead = makeLead(
-          body.id,
+          required(body.id),
           "Created conversation",
           body.account_key ||
             projects.find((item) => item.path === body.cwd)?.accountKey ||
@@ -358,12 +380,14 @@ test("account project ui", async ({ browser: _browser }) => {
       return json({ records: [], delivered: [], cursor: 0 });
 
     if (url.pathname === "/api/accounts/login") {
-      accounts.push({
-        id: "signed-in",
-        email: null,
-        label: "New account",
-        status: "pending",
-      });
+      accounts.push(
+        fixtureAccount({
+          id: "signed-in",
+          email: null,
+          label: "New account",
+          status: "pending",
+        }),
+      );
       return json({
         accountKey: "signed-in",
         loginId: "login-fixture",
@@ -391,9 +415,7 @@ test("account project ui", async ({ browser: _browser }) => {
       const file = await readFile(path);
       res.setHeader(
         "Content-Type",
-        { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
-          extname(path)
-        ] || "application/octet-stream",
+        fixtureContentTypes[extname(path)] || "application/octet-stream",
       );
       res.end(file);
     } catch {
@@ -401,7 +423,7 @@ test("account project ui", async ({ browser: _browser }) => {
       res.end();
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   let browser;
   let debugPage;
   try {
@@ -411,9 +433,10 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     debugPage = page;
     page.setDefaultTimeout(10000);
-    const syncPullRequests = [],
-      stateRequests = [],
-      syncPullResponses = [];
+    const syncPullRequests: string[] = [],
+      stateRequests: string[] = [],
+      syncPullResponses: Array<{ after: string | null; accountKey: unknown }> =
+        [];
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
       if (path === "/api/sync/pull") syncPullRequests.push(request.url());
@@ -422,24 +445,23 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     await page.route("**/api/sync/pull**", async (route) => {
       const response = await route.fetch();
-      const payload = await response.json();
-      const entity = payload.documents
-        ?.filter((document) => document.op === "upsert")
-        .find(
-          (entity) => entity.collection === "agent" && entity.id === "empty",
-        );
+      const payload = await readFixtureResponse("/api/sync/pull", response);
+      const entity = fixtureAgentEntity(
+        "documents" in payload ? payload.documents : [],
+        "empty",
+      );
       syncPullResponses.push({
         after: new URL(route.request().url()).searchParams.get("after"),
         accountKey: entity?.value?.accountKey,
       });
       await route.fulfill({ response, body: JSON.stringify(payload) });
     });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error.message);
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.goto(fixtureUrl(server));
     await page.locator("[data-chat]").first().waitFor();
     assert.ok(
       syncPullRequests.some(
@@ -521,11 +543,11 @@ test("account project ui", async ({ browser: _browser }) => {
     await picker.waitFor();
     await page.waitForFunction(
       () =>
-        document.querySelector(
+        document.querySelector<HTMLElement>(
           '[role="group"][aria-label="Main agent account"]',
         )?.dataset.value === "default",
     );
-    const choose = async (email) => {
+    const choose = async (email: string) => {
       await openSettings();
       const mutationResponse = page.waitForResponse(
         (response) =>
@@ -540,7 +562,9 @@ test("account project ui", async ({ browser: _browser }) => {
       return mutationResponse;
     };
     const accountMutationResponse = await choose("work@example.com");
-    const accountMutationBody = await accountMutationResponse.json();
+    const accountMutationBody: ReturnType<
+      typeof entityMutationFixtureResponse
+    > = await accountMutationResponse.json();
     console.log(
       "ACCOUNT ENTITY MUTATION RESPONSE",
       JSON.stringify({
@@ -550,11 +574,14 @@ test("account project ui", async ({ browser: _browser }) => {
         rows: accountMutationBody._syncEntities,
       }),
     );
-    const changedAgentEntity = accountMutationBody._syncEntities
-      .filter((document) => document.op === "upsert")
-      .find((entity) => entity.collection === "agent" && entity.id === "empty");
+    const changedAgentEntity = required(
+      fixtureAgentEntity(accountMutationBody._syncEntities, "empty"),
+    );
     assert.equal(changedAgentEntity.value.accountKey, "work");
-    assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
+    assert.equal(
+      required(agents.find((a) => a.id === "empty")).accountKey,
+      "work",
+    );
     const freshPage = await browser.newPage({
       viewport: { width: 1440, height: 900 },
     });
@@ -566,11 +593,19 @@ test("account project ui", async ({ browser: _browser }) => {
         url.searchParams.get("scope") === "state:entities:v1"
       );
     });
-    await freshPage.goto(`http://127.0.0.1:${server.address().port}`);
-    const initialEntityPullBody = await (await initialEntityPull).json();
-    const pulledEmptyLead = initialEntityPullBody.documents
-      .filter((document) => document.op === "upsert")
-      .find((entity) => entity.collection === "agent" && entity.id === "empty");
+    await freshPage.goto(fixtureUrl(server));
+    const initialEntityPullBody = await readFixtureResponse(
+      "/api/sync/pull",
+      await initialEntityPull,
+    );
+    const pulledEmptyLead = required(
+      fixtureAgentEntity(
+        "documents" in initialEntityPullBody
+          ? initialEntityPullBody.documents
+          : [],
+        "empty",
+      ),
+    );
     assert.equal(pulledEmptyLead.value.accountKey, "work");
     await freshPage.locator('[data-chat="empty"]').click();
     await freshPage
@@ -586,7 +621,7 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     await freshPage.waitForFunction(
       () =>
-        document.querySelector(
+        document.querySelector<HTMLElement>(
           '[role="group"][aria-label="Main agent account"]',
         )?.dataset.value === "work",
     );
@@ -612,19 +647,23 @@ test("account project ui", async ({ browser: _browser }) => {
     console.log(
       "ACCOUNT ENTITY SYNC AFTER MUTATION",
       JSON.stringify({
-        mutationResponseAccountKey: agents.find((a) => a.id === "empty")
-          .accountKey,
+        mutationResponseAccountKey: required(
+          agents.find((a) => a.id === "empty"),
+        ).accountKey,
         pulls: latestPull,
         renderedTileValue: await picker.getAttribute("data-value"),
       }),
     );
     await page.waitForFunction(
       () =>
-        document.querySelector(
+        document.querySelector<HTMLElement>(
           '[role="group"][aria-label="Main agent account"]',
         )?.dataset.value === "work",
     );
-    assert.equal(agents.find((a) => a.id === "empty").cwd, "/tmp/fixture");
+    assert.equal(
+      required(agents.find((a) => a.id === "empty")).cwd,
+      "/tmp/fixture",
+    );
     assert.equal(
       await page
         .getByRole("dialog", { name: "Choose project folder", exact: true })
@@ -655,8 +694,8 @@ test("account project ui", async ({ browser: _browser }) => {
       .click();
     await page.waitForFunction(
       () =>
-        document.querySelector(".directory-location")?.textContent ===
-        "/anywhere/arbitrary",
+        document.querySelector<HTMLElement>(".directory-location")
+          ?.textContent === "/anywhere/arbitrary",
     );
     await folder
       .getByRole("button", { name: "Add project", exact: true })
@@ -666,8 +705,11 @@ test("account project ui", async ({ browser: _browser }) => {
       projects.some((project) => project.path === "/anywhere/arbitrary"),
       "Add project creates the selected directory as a project",
     );
-    assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
-    const newChat = async (name) => {
+    assert.equal(
+      required(agents.find((a) => a.id === "empty")).accountKey,
+      "work",
+    );
+    const newChat = async (name: string) => {
       await closeSettings();
       let newChatButton;
       if (name.startsWith("folder ")) {
@@ -710,7 +752,7 @@ test("account project ui", async ({ browser: _browser }) => {
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
     };
-    const openProject = async (name) => {
+    const openProject = async (name: string) => {
       await closeSettings();
       await page.locator(".mantine-Modal-overlay").waitFor({
         state: "hidden",
@@ -732,8 +774,8 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     await closeSettings();
     await page.locator('[data-chat="started"]').click();
-    agents[0].status = "running";
-    agents[0].inFlight = true;
+    required(agents[0]).status = "running";
+    required(agents[0]).inFlight = true;
     await openProject("fixture");
     const selection = dialog.getByRole("group", {
       name: "Default account for new chats",
@@ -743,7 +785,7 @@ test("account project ui", async ({ browser: _browser }) => {
       name: "Accounts shown first for this project",
       exact: true,
     });
-    const addMembership = async (key) => {
+    const addMembership = async (key: string) => {
       const tile = memberships.locator(`[data-account-key="${key}"]`);
       if ((await tile.getAttribute("aria-pressed")) !== "true")
         await tile.click();
@@ -761,19 +803,19 @@ test("account project ui", async ({ browser: _browser }) => {
       "other",
       "Conflict keeps selected account",
     );
-    assert.equal(projects[0].accountKey, "work");
+    assert.equal(required(projects[0]).accountKey, "work");
     conflict = false;
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(projects[0].accountKey, "other");
+    assert.equal(required(projects[0]).accountKey, "other");
     assert.deepEqual(
-      new Set(projects[0].accountKeys),
+      new Set(required(projects[0]).accountKeys),
       new Set(["work", "other"]),
     );
     assert.equal(
-      agents[0].accountKey,
+      required(agents[0]).accountKey,
       "default",
       "Existing running session keeps its account",
     );
@@ -781,17 +823,17 @@ test("account project ui", async ({ browser: _browser }) => {
       (r) => r.path === "/api/projects" && r.body.account_key != null,
     );
     assert.deepEqual(
-      saves[0].body,
-      saves[1].body,
+      required(saves[0]).body,
+      required(saves[1]).body,
       "Retry keeps account and revision",
     );
     await openProject("fixture");
     await dialog.getByLabel("Default worker base ref").fill("origin/main");
     await dialog.getByRole("button", { name: "Save worker base" }).click();
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(projects[0].workerBaseRef, "origin/main");
+    assert.equal(required(projects[0]).workerBaseRef, "origin/main");
     assert.deepEqual(
-      bodies.filter((r) => r.path === "/api/projects").at(-1).body,
+      required(bodies.filter((r) => r.path === "/api/projects").at(-1)).body,
       {
         action: "set_worker_base",
         path: "/tmp/fixture",
@@ -808,7 +850,7 @@ test("account project ui", async ({ browser: _browser }) => {
       .click();
     await dialog.waitFor({ state: "hidden" });
     assert.equal(
-      bodies.filter((r) => r.path === "/api/projects").at(-1).body
+      required(bodies.filter((r) => r.path === "/api/projects").at(-1)).body
         .expected_revision,
       0,
       "Virtual project uses revision zero",
@@ -816,12 +858,13 @@ test("account project ui", async ({ browser: _browser }) => {
     await newChat("fixture");
     await page.waitForFunction(
       () =>
-        document.querySelector("#conversation-title")?.textContent ===
-        "Created conversation",
+        document.querySelector<HTMLElement>("#conversation-title")
+          ?.textContent === "Created conversation",
     );
-    assert.equal(agents.at(-1).accountKey, "other");
+    assert.equal(required(agents.at(-1)).accountKey, "other");
     assert.equal(
-      bodies.filter((r) => r.path === "/api/leads").at(-1).body.account_key,
+      required(bodies.filter((r) => r.path === "/api/leads").at(-1)).body
+        .account_key,
       "other",
     );
     await choose("personal@example.com");
@@ -829,12 +872,12 @@ test("account project ui", async ({ browser: _browser }) => {
     await openSettings();
     await page.waitForFunction(
       () =>
-        document.querySelector(
+        document.querySelector<HTMLElement>(
           '[role="group"][aria-label="Main agent account"]',
         )?.dataset.value === "work",
     );
     assert.equal(
-      agents.at(-1).accountKey,
+      required(agents.at(-1)).accountKey,
       "work",
       "Project choice overrides previous empty chat account",
     );
@@ -849,15 +892,15 @@ test("account project ui", async ({ browser: _browser }) => {
       before + 1,
       "Explicit New chat creates a new chat",
     );
-    const previousSelection = agents.at(-1);
+    const previousSelection = required(agents.at(-1));
     loseCreation = true;
     await newChat("Lumina");
     await page
       .getByRole("button", { name: "Retry chat request", exact: true })
       .waitFor();
-    const lostRequest = bodies
-      .filter((r) => r.path === "/api/leads")
-      .at(-1).body;
+    const lostRequest = required(
+      bodies.filter((r) => r.path === "/api/leads").at(-1),
+    ).body;
     // Existing clients store one pending request under the legacy key.
     await page.evaluate(
       ({ key, request }) => {
@@ -867,16 +910,16 @@ test("account project ui", async ({ browser: _browser }) => {
       },
       { key: `codex-pending-creation:${evidence}`, request: lostRequest },
     );
-    projects[1].accountKey = "default";
+    required(projects[1]).accountKey = "default";
     await page.locator(`[data-chat="${previousSelection.id}"]`).click();
     const defaultCreate = page.waitForResponse((response) =>
       response.url().endsWith("/api/leads"),
     );
     await startGeneralNewChat();
     await defaultCreate;
-    const defaultRequest = bodies
-      .filter((r) => r.path === "/api/leads")
-      .at(-1).body;
+    const defaultRequest = required(
+      bodies.filter((r) => r.path === "/api/leads").at(-1),
+    ).body;
     assert.equal(
       defaultRequest.cwd,
       previousSelection.cwd,
@@ -896,9 +939,9 @@ test("account project ui", async ({ browser: _browser }) => {
       bodies.filter((r) => r.path === "/api/leads").length,
       beforeFolder + 1,
     );
-    const folderRequest = bodies
-      .filter((r) => r.path === "/api/leads")
-      .at(-1).body;
+    const folderRequest = required(
+      bodies.filter((r) => r.path === "/api/leads").at(-1),
+    ).body;
     assert.equal(folderRequest.cwd, lostRequest.cwd);
     assert.equal(folderRequest.project_folder, "review");
     assert.notEqual(folderRequest.id, lostRequest.id);
@@ -909,7 +952,8 @@ test("account project ui", async ({ browser: _browser }) => {
     await startGeneralNewChat();
     await inFolder;
     assert.equal(
-      bodies.filter((r) => r.path === "/api/leads").at(-1).body.project_folder,
+      required(bodies.filter((r) => r.path === "/api/leads").at(-1)).body
+        .project_folder,
       "review",
       "New chat keeps the selected logical folder",
     );
@@ -929,9 +973,9 @@ test("account project ui", async ({ browser: _browser }) => {
       beforeOtherProject + 1,
       "A pending request must allow a chat in another project",
     );
-    const otherRequest = bodies
-      .filter((r) => r.path === "/api/leads")
-      .at(-1).body;
+    const otherRequest = required(
+      bodies.filter((r) => r.path === "/api/leads").at(-1),
+    ).body;
     await page.reload();
     await page
       .getByRole("button", { name: "Retry chat request", exact: true })
@@ -939,7 +983,7 @@ test("account project ui", async ({ browser: _browser }) => {
       .waitFor();
     const retryOther = page
       .locator(".sync-status")
-      .filter({ hasText: otherRequest.cwd });
+      .filter({ hasText: required(otherRequest.cwd) });
     await retryOther
       .getByRole("button", { name: "Retry chat request", exact: true })
       .click();
@@ -947,7 +991,7 @@ test("account project ui", async ({ browser: _browser }) => {
       () => document.querySelectorAll(".sync-status button").length === 1,
     );
     assert.deepEqual(
-      bodies.filter((r) => r.path === "/api/leads").at(-1).body,
+      required(bodies.filter((r) => r.path === "/api/leads").at(-1)).body,
       otherRequest,
       "Each project retains its exact request after reload",
     );
@@ -958,19 +1002,19 @@ test("account project ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Retry chat request", exact: true })
       .waitFor({ state: "hidden" });
     assert.deepEqual(
-      bodies.filter((r) => r.path === "/api/leads").at(-1).body,
+      required(bodies.filter((r) => r.path === "/api/leads").at(-1)).body,
       lostRequest,
       "The legacy request retains its identity and original account",
     );
     assert.equal(
-      agents.find((item) => item.id === lostRequest.id).accountKey,
+      required(agents.find((item) => item.id === lostRequest.id)).accountKey,
       "other",
       "Committed request retains selected server account",
     );
     for (const request of [lostRequest, otherRequest])
       assert.equal(agents.filter((item) => item.id === request.id).length, 1);
     const pendingKey = `codex-pending-creation:${evidence}:request:external`;
-    await page.evaluate((key) => {
+    await page.evaluate((key: string) => {
       const value = JSON.stringify({
         id: "external",
         previous: null,
@@ -985,7 +1029,9 @@ test("account project ui", async ({ browser: _browser }) => {
     await page.evaluate(
       () =>
         new Promise((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => resolve(undefined)),
+          ),
         ),
     );
     assert.equal(
@@ -995,7 +1041,7 @@ test("account project ui", async ({ browser: _browser }) => {
       1,
       "Requests saved by another tab must become visible",
     );
-    await page.evaluate((key) => {
+    await page.evaluate((key: string) => {
       localStorage.removeItem(key);
       window.dispatchEvent(
         new StorageEvent("storage", { key, newValue: null }),
@@ -1004,7 +1050,9 @@ test("account project ui", async ({ browser: _browser }) => {
     await page.evaluate(
       () =>
         new Promise((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => resolve(undefined)),
+          ),
         ),
     );
     assert.equal(
@@ -1040,12 +1088,14 @@ test("account project ui", async ({ browser: _browser }) => {
     await page
       .locator("#message")
       .fill("Keep this selected chat and its draft");
-    releaseCreation();
+    required(releaseCreation)();
     await delayedCreate;
     await page.evaluate(
       () =>
         new Promise((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => resolve(undefined)),
+          ),
         ),
     );
     assert.equal(
@@ -1073,7 +1123,7 @@ test("account project ui", async ({ browser: _browser }) => {
         (element) => getComputedStyle(element).opacity === "1",
         await dialog.elementHandle(),
       );
-      const bounds = await dialog.boundingBox();
+      const bounds = required(await dialog.boundingBox());
       assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
       assert.ok(
         await dialog.evaluate(
@@ -1110,7 +1160,7 @@ test("account project ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Delete account", exact: true })
       .click();
     await otherRow.waitFor({ state: "detached" });
-    assert.equal(archivedAccounts[0].id, "other");
+    assert.equal(required(archivedAccounts[0]).id, "other");
     await deletion.waitFor({ state: "hidden" });
     await page
       .getByRole("dialog", { name: "Studio settings", exact: true })
@@ -1139,15 +1189,15 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.equal(await saveAccounts.isDisabled(), false);
     await saveAccounts.click();
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(projects[0].accountKey, "work");
-    assert.deepEqual(projects[0].accountKeys, ["work"]);
+    assert.equal(required(projects[0]).accountKey, "work");
+    assert.deepEqual(required(projects[0]).accountKeys, ["work"]);
     await newChat("fixture");
     await page.waitForFunction(
       () =>
-        document.querySelector("#conversation-title")?.textContent ===
-        "Created conversation",
+        document.querySelector<HTMLElement>("#conversation-title")
+          ?.textContent === "Created conversation",
     );
-    assert.equal(agents.at(-1).accountKey, "work");
+    assert.equal(required(agents.at(-1)).accountKey, "work");
     assert.deepEqual(errors, []);
     assert.ok(
       syncPullRequests.some(
@@ -1189,6 +1239,8 @@ test("account project ui", async ({ browser: _browser }) => {
   } finally {
     if (delayed) delayed();
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });

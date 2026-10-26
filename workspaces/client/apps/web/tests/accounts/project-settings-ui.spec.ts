@@ -1,3 +1,18 @@
+import type { Account } from "../../src/components/Accounts.tsx";
+import type { Project } from "../../src/types.ts";
+
+import type { BrowserContext, TestInfo } from "@playwright/test";
+import {
+  required,
+  fixtureAccount,
+  fixtureLead,
+  fixtureSnapshot,
+  fixtureContentTypes,
+  fixtureUrl,
+  fixtureRequest,
+  type FixtureRequest,
+  type NotifyResources,
+} from "./fixture-helpers.ts";
 import {
   handleEntitySyncFixtureRequest,
   entityMutationFixtureResponse,
@@ -12,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -33,42 +48,46 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     process.env.STUDIO_WEB_DIST ||
     join(root, "workspaces/client/apps/web/dist");
   const evidence = await mkdtemp(join(tmpdir(), "codex-project-account-ui-"));
-  const accounts = [
-    {
-      id: "default",
-      email: "personal@example.com",
-      label: "Personal",
-      plan: "pro",
-      source: "Codex",
-      status: "ready",
-    },
-    {
-      id: "work",
-      email: "work@example.com",
-      label: "Work",
-      plan: "plus",
-      source: "CodexBar",
-      status: "ready",
-    },
-    {
-      id: "other",
-      email: "another.long.account@example.com",
-      label: "Second workspace",
-      plan: "pro",
-      source: "Profile",
-      status: "ready",
-    },
-  ];
+  const accounts: Account[] = (
+    [
+      {
+        id: "default",
+        email: "personal@example.com",
+        label: "Personal",
+        plan: "pro",
+        source: "Codex",
+        status: "ready",
+      },
+      {
+        id: "work",
+        email: "work@example.com",
+        label: "Work",
+        plan: "plus",
+        source: "CodexBar",
+        status: "ready",
+      },
+      {
+        id: "other",
+        email: "another.long.account@example.com",
+        label: "Second workspace",
+        plan: "pro",
+        source: "Profile",
+        status: "ready",
+      },
+    ] satisfies Parameters<typeof fixtureAccount>[0][]
+  ).map(fixtureAccount);
   accounts.push(
-    ...Array.from({ length: 4 }, (_, index) => ({
-      id: `extra-${index}`,
-      label: `Workspace ${index + 1}`,
-      email: `workspace${index + 1}@example.com`,
-      provider: "codex",
-      status: "ready",
-    })),
+    ...Array.from({ length: 4 }, (_, index) =>
+      fixtureAccount({
+        id: `extra-${index}`,
+        label: `Workspace ${index + 1}`,
+        email: `workspace${index + 1}@example.com`,
+        provider: "codex",
+        status: "ready",
+      }),
+    ),
   );
-  const projects = [
+  const projects: Project[] = [
     {
       id: "/tmp/fixture",
       path: "/tmp/fixture",
@@ -91,32 +110,22 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       folders: [{ id: "review", name: "Review", parentId: null }],
     },
   ];
-  const archivedAccounts = [];
+  const archivedAccounts: Account[] = [];
   let conflict = false;
   const defaultAccountKey = "default";
-  const makeLead = (id, name, accountKey, empty) => ({
-    id,
-    rootId: id,
-    name,
-    accountKey,
-    empty,
-    threadId: empty ? null : `thread-${id}`,
-    isLead: true,
-    source: "managed",
-    status: "idle",
-    model: "gpt-6-astra",
-    created: Date.now() / 1000,
-    inFlight: false,
-    canSend: true,
-    cwd: "/tmp/fixture",
-  });
+  const makeLead = (
+    id: string,
+    name: string,
+    accountKey: string,
+    empty: boolean,
+  ) => fixtureLead(id, name, accountKey, empty, "/tmp/fixture");
   const agents = [
     makeLead("started", "Started conversation", "default", false),
     makeLead("empty", "New conversation", "default", true),
   ];
-  const bodies = [];
+  const bodies: FixtureRequest[] = [];
   const syncWorkspaceId = syncIdentityFixture().workspaceId;
-  const stateForEntities = {
+  const stateForEntities = fixtureSnapshot({
     stateDir: evidence,
     threads: agents,
     chats: [],
@@ -129,28 +138,27 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       monitors: [],
       tasks: [],
       work: [],
-      userTasks: [],
       rateLimitsByAccount: {},
     },
-  };
-  const stateListeners = new Set();
+  });
+  const stateListeners = new Set<NotifyResources>();
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url, "http://localhost");
-    let body = {};
+    const url = new URL(required(req.url), "http://localhost");
+    let rawBody: unknown = {};
     if (req.method === "POST") {
       let text = "";
       for await (const chunk of req) text += chunk;
-      body = JSON.parse(text || "{}");
-      bodies.push({ path: url.pathname, body });
+      rawBody = JSON.parse(text || "{}");
+      bodies.push(fixtureRequest(url.pathname, rawBody));
     }
-    const json = (data) => {
+    const json = (data: Record<string, unknown>) => {
       res.setHeader("Content-Type", "application/json");
       const reply =
         req.method === "POST" && res.statusCode < 400 && !data._syncEntities
           ? entityMutationFixtureResponse(stateForEntities, data)
           : data;
       res.end(JSON.stringify(reply));
-      if (reply._syncEntities?.length) {
+      if (Array.isArray(reply._syncEntities) && reply._syncEntities.length) {
         for (const notify of stateListeners) notify([{ kind: "state" }]);
       }
     };
@@ -158,7 +166,10 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
-        subscriptionUpdate: body,
+        subscriptionUpdate:
+          url.pathname === "/api/sync/subscriptions"
+            ? fixtureRequest("/api/sync/subscriptions", rawBody).body
+            : undefined,
         onStreamReady: (notify) => {
           stateListeners.add(notify);
           return () => stateListeners.delete(notify);
@@ -182,6 +193,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       });
     }
     if (url.pathname === "/api/projects") {
+      const body = fixtureRequest("/api/projects", rawBody).body;
       let project = projects.find((item) => item.path === body.path);
       if (conflict) {
         res.statusCode = 409;
@@ -191,9 +203,9 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       }
       if (!project) {
         project = {
-          id: body.path,
-          path: body.path,
-          name: body.path.split("/").at(-1),
+          id: required(body.path),
+          path: required(body.path),
+          name: required(body.path).split("/").at(-1),
           created: 1,
           accountRevision: 0,
           workerBaseRevision: 0,
@@ -201,15 +213,20 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         projects.push(project);
       }
       if (body.action === "set_worker_base") {
-        assert.equal(body.expected_revision, project.workerBaseRevision);
-        project.workerBaseRef = body.base_ref;
-        project.workerBaseRevision++;
+        assert.equal(
+          body.expected_revision,
+          required(project).workerBaseRevision,
+        );
+        required(project).workerBaseRef = body.base_ref;
+        required(project).workerBaseRevision =
+          required(required(project).workerBaseRevision) + 1;
         return json(project);
       }
-      assert.equal(body.expected_revision, project.accountRevision);
-      project.accountKey = body.account_key;
-      project.accountKeys = body.account_keys;
-      project.accountRevision++;
+      assert.equal(body.expected_revision, required(project).accountRevision);
+      required(project).accountKey = body.account_key;
+      required(project).accountKeys = body.account_keys;
+      required(project).accountRevision =
+        required(required(project).accountRevision) + 1;
       return json(project);
     }
     if (url.pathname === "/api/transcript/stream") {
@@ -256,9 +273,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       const file = await readFile(path);
       res.setHeader(
         "Content-Type",
-        { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
-          extname(path)
-        ] || "application/octet-stream",
+        fixtureContentTypes[extname(path)] || "application/octet-stream",
       );
       res.end(file);
     } catch {
@@ -266,7 +281,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       res.end();
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const page = await _browser.newPage({
       viewport: { width: 1440, height: 900 },
@@ -276,7 +291,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     const accountResponse = page.waitForResponse((response) =>
       response.url().endsWith("/api/accounts"),
     );
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.goto(fixtureUrl(server));
     await accountResponse;
     await page
       .getByText("personal@example.com", { exact: true })
@@ -326,13 +341,15 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       ["dark", 1440, "dark"],
       ["light", 1440, "light"],
       ["mobile", 390, "dark"],
-    ]) {
+    ] as const) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
       await page.emulateMedia({ colorScheme });
       await dialog.evaluate(
         () =>
           new Promise((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => resolve(undefined)),
+            ),
           ),
       );
       await page.screenshot({
@@ -349,7 +366,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         });
         await defaults.scrollIntoViewIfNeeded();
       }
-      const bounds = await dialog.boundingBox();
+      const bounds = required(await dialog.boundingBox());
       assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
       assert.ok(
         await dialog.evaluate(
@@ -370,10 +387,10 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     await accountSave.click();
     await dialog.waitFor({ state: "hidden" });
     const requests = bodies.filter((item) => item.path === "/api/projects");
-    assert.deepEqual(requests[0].body, requests[1].body);
-    assert.equal(projects[0].accountKey, "other");
+    assert.deepEqual(required(requests[0]).body, required(requests[1]).body);
+    assert.equal(required(projects[0]).accountKey, "other");
     assert.deepEqual(
-      projects[0].accountKeys,
+      required(projects[0]).accountKeys,
       accounts.map((account) => account.id),
     );
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -384,8 +401,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     await defaults.locator('[data-account-key="work"]').click();
     await accountSave.click();
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(projects[0].accountKey, "work");
-    assert.ok(!projects[0].accountKeys.includes("other"));
+    assert.equal(required(projects[0]).accountKey, "work");
+    assert.ok(!required(required(projects[0]).accountKeys).includes("other"));
     await openProject();
     assert.equal(
       await dialog.getByLabel("Default worker environment").count(),
@@ -397,7 +414,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       .click();
     await dialog.waitFor({ state: "hidden" });
     assert.deepEqual(
-      bodies.filter((item) => item.path === "/api/projects").at(-1).body,
+      required(bodies.filter((item) => item.path === "/api/projects").at(-1))
+        .body,
       {
         action: "set_worker_base",
         path: "/tmp/fixture",
@@ -405,10 +423,10 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         expected_revision: 1,
       },
     );
-    const removed = accounts.splice(2, 1)[0];
-    archivedAccounts.push({ ...removed, deleted: true });
-    projects[0].accountKey = removed.id;
-    projects[0].accountKeys = ["work", removed.id];
+    const removed = required(accounts.splice(2, 1)[0]);
+    archivedAccounts.push(Object.assign(removed, { deleted: true }));
+    required(projects[0]).accountKey = removed.id;
+    required(projects[0]).accountKeys = ["work", removed.id];
     await page.reload();
     await page.locator("[data-chat]").first().waitFor();
     await openProject();
@@ -424,8 +442,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     await defaults.locator('[data-account-key="work"]').click();
     await accountSave.click();
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(projects[0].accountKey, "work");
-    assert.deepEqual(projects[0].accountKeys, ["work"]);
+    assert.equal(required(projects[0]).accountKey, "work");
+    assert.deepEqual(required(projects[0]).accountKeys, ["work"]);
     console.log(
       JSON.stringify({
         evidence,
@@ -441,6 +459,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     );
   } finally {
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });

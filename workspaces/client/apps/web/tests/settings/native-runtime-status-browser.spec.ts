@@ -1,6 +1,8 @@
+import type { components } from "../../src/generated/api.ts";
+import type {} from "./native-runtime-status-browser.fixture.tsx";
+import { fixtureUrl } from "./fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,10 +12,8 @@ test("Native runtime status", async ({ context }) => {
   test.setTimeout(45_000);
 
   const root = fileURLToPath(new URL("../..//", import.meta.url));
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const { createServer } = await import("vite");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-native-runtime-ui-"));
-  const entry = join(root, "native-runtime-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -27,7 +27,7 @@ test("Native runtime status", async ({ context }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<html><body><div id="root"></div><script type="module" src="/native-runtime-fixture.tsx"></script></body></html>',
+              '<html><body><div id="root"></div><script type="module" src="/tests/settings/native-runtime-status-browser.fixture.tsx"></script></body></html>',
             );
           });
         },
@@ -36,23 +36,10 @@ test("Native runtime status", async ({ context }) => {
             id === "../sync/resourceEvents" &&
             importer?.endsWith("watchResourceReads.ts")
           )
-            return "virtual:runtime-resource-events";
-          if (id === "/native-runtime-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id === "virtual:runtime-resource-events")
-            return `const subscribers=new Map();
-window.emitRuntimeChange=(kind)=>{for(const callback of subscribers.get(kind)||[])callback({epoch:'fixture',revision:Date.now()});};
-export function watchResourceChanges(resource,callback){let group=subscribers.get(resource.kind);if(!group)subscribers.set(resource.kind,group=new Set());group.add(callback);callback({epoch:'fixture',revision:0});return()=>group.delete(callback);}
-export function watchResourceConnection(listener){listener('live','open');return()=>{};}`;
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider,Modal,Button} from '@mantine/core';import '@mantine/core/styles.css';
-  import NativeRuntimeStatus from '/src/components/NativeRuntimeStatus.tsx';import Accounts from '/src/components/Accounts.tsx';import '/src/studio-theme.css';import '/src/appearance.css';
-  import ConversationWarnings from '/src/components/ConversationWarnings.tsx'; import {StudioErrorsProvider} from '/src/components/StudioErrors.tsx';
-  const accounts=[{id:'default',label:'Personal',status:'ready'},{id:'work',label:'Work with a very long account label for narrow screens',status:'ready'},{id:'claude',label:'Claude profile',provider:'claude',status:'ready'}];
-  const notices=[{id:'codex-warning',accountKey:'default',message:'Codex account version warning'},{id:'claude-warning',accountKey:'claude',message:'Claude account version warning'}];
-  function Fixture(){const [opened,setOpened]=useState(false);const [integrated,setIntegrated]=useState(false);const [warningAccount,setWarningAccount]=useState('default');window.setRuntimeOpen=setOpened;window.setWarningAccount=setWarningAccount;
-  return <MantineProvider><main style={{maxWidth:600,padding:12}}><NativeRuntimeStatus opened={opened&&!integrated} accounts={accounts}/><Button onClick={()=>setIntegrated(true)}>Manage accounts</Button><Modal opened={integrated} onClose={()=>setIntegrated(false)} title='Accounts'><Accounts managerOnly state={{data:{accounts,defaultAccountKey:'default'},setData:()=>{},refresh:async()=>{},error:'',scope:'fixture'}} onError={()=>{}}/></Modal><StudioErrorsProvider><ConversationWarnings scope='version-warning' notices={notices} accountKey={warningAccount} messages={[]}/></StudioErrorsProvider></main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+            return join(
+              import.meta.dirname,
+              "native-runtime-resource-events.fixture.ts",
+            );
         },
       },
     ],
@@ -63,6 +50,7 @@ export function watchResourceConnection(listener){listener('live','open');return
     selected: {
       version: "0.116.0",
       sourcePath: "/private/very/long/path/codex",
+      path: "/private/very/long/path/codex",
       sha256: "fixture",
     },
     candidates: [
@@ -79,26 +67,33 @@ export function watchResourceConnection(listener){listener('live','open');return
       },
     ],
     accounts: {
-      default: { status: "current", version: "0.116.0" },
+      default: {
+        status: "current",
+        version: "0.116.0",
+        targetVersion: "0.116.0",
+        updatedAt: 0,
+      },
       work: {
         status: "waiting",
+        updatedAt: 0,
         version: "0.115.0",
         targetVersion: "0.116.0",
         reason: "Waiting for active turns to finish",
       },
     },
-  };
+  } satisfies components["schemas"]["NativeRuntimeStatus"];
   try {
     await server.listen();
     const page = await context.newPage();
     await page.setViewportSize({ width: 1100, height: 850 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error);
     });
     let reads = 0;
-    const providerWarning = {
+    const providerWarning: components["schemas"]["ProviderVersionWarning"] = {
+      at: 0,
       id: "provider-version:default",
       accountKey: "default",
       provider: "codex",
@@ -107,7 +102,9 @@ export function watchResourceConnection(listener){listener('live','open');return
       message:
         "Codex CLI 0.153.3 is older than this repository's lowest recorded tested version (0.153.4). It may work poorly or fail. You can continue at your own risk.",
     };
-    const currentProviderStatus = {
+    const currentProviderStatus: components["schemas"]["ProviderVersion"] = {
+      at: 0,
+      error: null,
       id: "provider-version:default",
       accountKey: "default",
       provider: "codex",
@@ -118,7 +115,12 @@ export function watchResourceConnection(listener){listener('live','open');return
       baseline: "0.153.4",
       message: providerWarning.message,
     };
-    let body = {
+    let body: Partial<
+      Pick<
+        components["schemas"]["DesktopResponse"],
+        "nativeRuntime" | "providerVersions"
+      >
+    > = {
       nativeRuntime: initial,
       providerVersions: {
         checkedAt: 1790092579,
@@ -140,14 +142,12 @@ export function watchResourceConnection(listener){listener('live','open');return
       }
       return route.fulfill({ json: { accounts: [], data: null } });
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.waitForFunction(() => !!window.setRuntimeOpen);
+    await page.goto(fixtureUrl(server, "check"));
+    await page.waitForFunction(() => window.nativeRuntimeFixture?.ready);
     await page.clock.install();
     await page.clock.runFor(12000);
     assert.equal(reads, 0, "Closed panel must not read diagnostics");
-    await page.evaluate(() => window.setRuntimeOpen(true));
+    await page.evaluate(() => window.nativeRuntimeFixture.setRuntimeOpen(true));
     await page.getByText("Version details", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Codex runtime" });
     const providerPanel = page.getByRole("region", {
@@ -199,7 +199,9 @@ export function watchResourceConnection(listener){listener('live','open');return
       0,
     );
     await page.keyboard.press("Escape");
-    await page.evaluate(() => window.setWarningAccount("claude"));
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.setWarningAccount("claude"),
+    );
     await page.getByRole("button", { name: "Warnings", exact: true }).click();
     await warningsDialog
       .locator("p")
@@ -217,11 +219,15 @@ export function watchResourceConnection(listener){listener('live','open');return
     body = {
       nativeRuntime: {
         ...initial,
-        accounts: { work: { status: "updating", targetVersion: "0.116.0" } },
+        accounts: {
+          work: { status: "updating", targetVersion: "0.116.0", updatedAt: 0 },
+        },
       },
     };
     const readsBeforeRefresh = reads;
-    await page.evaluate(() => window.emitRuntimeChange("desktop"));
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
+    );
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-accounts")
@@ -232,10 +238,19 @@ export function watchResourceConnection(listener){listener('live','open');return
       nativeRuntime: {
         ...initial,
         status: "failed",
-        accounts: { work: { status: "failed", reason: "Handshake failed" } },
+        accounts: {
+          work: {
+            status: "failed",
+            targetVersion: "0.116.0",
+            updatedAt: 0,
+            reason: "Handshake failed",
+          },
+        },
       },
     };
-    await page.evaluate(() => window.emitRuntimeChange("desktop"));
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
+    );
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -252,9 +267,11 @@ export function watchResourceConnection(listener){listener('live','open');return
         candidates: [],
         accounts: {},
       },
-      providerVersions: { checkedAt: 1790092590, providers: [] },
+      providerVersions: { checkedAt: 1790092590, providers: [], warnings: [] },
     };
-    await page.evaluate(() => window.emitRuntimeChange("desktop"));
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
+    );
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -262,7 +279,9 @@ export function watchResourceConnection(listener){listener('live','open');return
     );
     assert.equal(await panel.locator("time").count(), 0);
 
-    const claudeOnly = {
+    const claudeOnly: components["schemas"]["ProviderVersion"] = {
+      at: 0,
+      error: null,
       id: "provider-version:claude",
       accountKey: "claude",
       provider: "claude",
@@ -281,7 +300,9 @@ export function watchResourceConnection(listener){listener('live','open');return
         warnings: [],
       },
     };
-    await page.evaluate(() => window.emitRuntimeChange("desktop"));
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
+    );
     await panel.waitFor({ state: "detached" });
     await providerPanel.waitFor();
     assert.match(
@@ -291,14 +312,20 @@ export function watchResourceConnection(listener){listener('live','open');return
     assert.match(await providerPanel.innerText(), /Running version: Unknown/);
     assert.match(await providerPanel.innerText(), /Claude Code 2\.1\.277/);
     assert.match(await providerPanel.innerText(), /Running version unknown/);
-    body = { providerVersions: { checkedAt: 1790092610, providers: [] } };
-    await page.evaluate(() => window.emitRuntimeChange("desktop"));
+    body = {
+      providerVersions: { checkedAt: 1790092610, providers: [], warnings: [] },
+    };
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
+    );
     await page.waitForFunction(() =>
       document
         .querySelector(".provider-version-status")
         ?.textContent.includes("No connected provider CLIs were found"),
     );
-    await page.evaluate(() => window.setRuntimeOpen(false));
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.setRuntimeOpen(false),
+    );
     const beforeClose = reads;
     await page.clock.runFor(30000);
     assert.equal(reads, beforeClose, "Close must stop polling");
@@ -310,24 +337,32 @@ export function watchResourceConnection(listener){listener('live','open');return
         const request = new Request(input, init);
         if (new URL(request.url).pathname === "/api/desktop") {
           window.fetch = original;
-          window.delayedRuntimeSignal = request.signal;
-          return new Promise((resolve) => {
-            window.finishOldRuntimeRead = resolve;
+          window.nativeRuntimeFixture.delayedRuntimeSignal = request.signal;
+          return new Promise<Response>((resolve) => {
+            window.nativeRuntimeFixture.finishOldRuntimeRead = resolve;
           });
         }
         return original(input, init);
       };
-      window.setRuntimeOpen(true);
+      window.nativeRuntimeFixture.setRuntimeOpen(true);
     });
-    await page.waitForFunction(() => !!window.finishOldRuntimeRead);
-    await page.evaluate(() => window.setRuntimeOpen(false));
-    await page.waitForFunction(() => window.delayedRuntimeSignal.aborted);
+    await page.waitForFunction(
+      () => !!window.nativeRuntimeFixture.finishOldRuntimeRead,
+    );
+    await page.evaluate(() =>
+      window.nativeRuntimeFixture.setRuntimeOpen(false),
+    );
+    await page.waitForFunction(
+      () => window.nativeRuntimeFixture.delayedRuntimeSignal.aborted,
+    );
     body = { nativeRuntime: initial };
-    await page.evaluate(() => window.setRuntimeOpen(true));
+    await page.evaluate(() => window.nativeRuntimeFixture.setRuntimeOpen(true));
     await page.getByText("Version details", { exact: true }).click();
     await panel.waitFor();
     await page.evaluate(() =>
-      window.finishOldRuntimeRead(
+      window.nativeRuntimeFixture.required(
+        window.nativeRuntimeFixture.finishOldRuntimeRead,
+      )(
         new Response(JSON.stringify({ nativeRuntime: null }), {
           headers: { "Content-Type": "application/json" },
         }),

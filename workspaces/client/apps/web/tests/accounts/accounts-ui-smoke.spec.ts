@@ -1,3 +1,21 @@
+import type { components } from "../../src/generated/api.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
+
+import type { AccountRateLimitsDto } from "../playwright.ts";
+import type { Page, Locator } from "@playwright/test";
+import {
+  required,
+  fixtureAccount,
+  fixtureLead,
+  fixtureSnapshot,
+  fixtureContentTypes,
+  fixtureUrl,
+  fixtureRequest,
+  type FixtureRequest,
+  type NotifyResources,
+  readFixtureResponse,
+} from "./fixture-helpers.ts";
 import {
   test,
   expect,
@@ -16,78 +34,76 @@ import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-async function runAccountsUi(mode, { page: fixturePage }) {
+async function runAccountsUi(
+  mode: "default" | "reauth" | "benchmark",
+  { page: fixturePage }: { page: Page },
+) {
   installApiSchemaFixtureHeaders(fixturePage);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const webDist =
     process.env.STUDIO_WEB_DIST ||
     join(root, "workspaces/client/apps/web/dist");
   const evidence = await mkdtemp(join(tmpdir(), "codex-accounts-ui-"));
-  const accounts = [
-    {
-      id: "default",
-      email: "personal@example.com",
-      label: "Personal",
-      plan: "pro",
-      source: "Codex",
-      status: "ready",
-    },
-    {
-      id: "work",
-      email: "work@example.com",
-      label: "Work",
-      plan: "plus",
-      source: "CodexBar",
-      status: "ready",
-    },
-    {
-      id: "other",
-      email: "another.long.account@example.com",
-      label: "Second workspace",
-      plan: "pro",
-      source: "Profile",
-      status: "ready",
-    },
-  ];
-  const archivedAccounts = [];
+  const accounts: Account[] = (
+    [
+      {
+        id: "default",
+        email: "personal@example.com",
+        label: "Personal",
+        plan: "pro",
+        source: "Codex",
+        status: "ready",
+      },
+      {
+        id: "work",
+        email: "work@example.com",
+        label: "Work",
+        plan: "plus",
+        source: "CodexBar",
+        status: "ready",
+      },
+      {
+        id: "other",
+        email: "another.long.account@example.com",
+        label: "Second workspace",
+        plan: "pro",
+        source: "Profile",
+        status: "ready",
+      },
+    ] satisfies Parameters<typeof fixtureAccount>[0][]
+  ).map(fixtureAccount);
+  const archivedAccounts: Account[] = [];
   let defaultAccountKey = "default";
-  const logins = [];
-  const claudeLogins = new Map();
-  const makeLead = (id, name, accountKey, empty) => ({
-    id,
-    rootId: id,
-    name,
-    accountKey,
-    empty,
-    threadId: empty ? null : `thread-${id}`,
-    isLead: true,
-    source: "managed",
-    status: "idle",
-    model: "gpt-6-astra",
-    created: Date.now() / 1000,
-    inFlight: false,
-    canSend: true,
-    cwd: "/Users/igor/Projects/lumina",
-  });
+  const logins: AccountsState["logins"] = [];
+  const claudeLogins = new Map<
+    string,
+    PostResult<"/api/accounts/claude/login">
+  >();
+  const makeLead = (
+    id: string,
+    name: string,
+    accountKey: string,
+    empty: boolean,
+  ) => fixtureLead(id, name, accountKey, empty, "/Users/igor/Projects/lumina");
   const agents = [
     makeLead("started", "Started conversation", "default", false),
     makeLead("empty", "New conversation", "default", true),
   ];
-  const bodies = [];
-  let delayed = null;
+  const bodies: FixtureRequest[] = [];
+  let delayed: (() => void) | undefined;
   let delayWork = false;
   let wrongLimitsAccount = false;
   let wrongAccountLimitsRead = false;
   let discoverCount = 0;
   let delayCostWork = false;
-  let delayedCosts;
-  let snapshotLimits = {};
-  let notifyEntityResources = () => {};
-  let claudeQueue = [];
+  let delayedCosts: (() => void) | undefined;
+  let snapshotLimits: Record<string, AccountRateLimitsDto> = {};
+  let notifyEntityResources: NotifyResources = () => {};
+  let claudeQueue: components["schemas"]["QueueItem"][] = [];
   let stateReads = 0;
   let lastStateReadAt = Date.now();
   let failClaudeSettings = false;
-  const claudeSession = {
+  const claudeSession: components["schemas"]["ClaudeSessionStateResponse"] = {
     version: "2.1.fixture",
     settings: { permissionMode: "default", thinking: true },
     turns:
@@ -112,9 +128,12 @@ async function runAccountsUi(mode, { page: fixturePage }) {
   };
   let failClaudeRollback = true;
   let failClaudeCommand = true;
-  const transferReceipts = new Map();
+  const transferReceipts = new Map<
+    string,
+    PostBody<"/api/agents/account-transfer">
+  >();
   let loseTransferResponse = true;
-  const limits = (key) => {
+  const limits = (key: string): AccountRateLimitsDto => {
     if (key === "claude") {
       const main = {
         limitId: "claude",
@@ -191,7 +210,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     };
   };
   const syncWorkspaceId = syncIdentityFixture().workspaceId;
-  const stateForEntities = {
+  const stateForEntities = fixtureSnapshot({
     stateDir: evidence,
     threads: agents,
     chats: [],
@@ -203,20 +222,19 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       monitors: [],
       tasks: [],
       work: [],
-      userTasks: [],
       rateLimitsByAccount: snapshotLimits,
     },
-  };
+  });
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url, "http://localhost");
-    let body = {};
+    const url = new URL(required(req.url), "http://localhost");
+    let rawBody: unknown = {};
     if (req.method === "POST") {
       let text = "";
       for await (const chunk of req) text += chunk;
-      body = JSON.parse(text || "{}");
-      bodies.push({ path: url.pathname, body });
+      rawBody = JSON.parse(text || "{}");
+      bodies.push(fixtureRequest(url.pathname, rawBody));
     }
-    const json = (data) => {
+    const json = (data: unknown) => {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(data));
     };
@@ -270,8 +288,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       url.pathname === "/api/accounts/discover" ||
       url.pathname === "/api/accounts/default"
     ) {
+      const body = fixtureRequest("/api/accounts/default", rawBody).body;
       if (url.pathname.endsWith("/default"))
-        defaultAccountKey = body.account_key;
+        defaultAccountKey = required(body.account_key);
       if (url.pathname.endsWith("/discover")) discoverCount++;
       for (const receipt of logins) {
         if (
@@ -285,7 +304,8 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json({ accounts, archivedAccounts, defaultAccountKey, logins });
     }
     if (url.pathname === "/api/agents/account") {
-      const agent = agents.find((a) => a.id === body.id);
+      const body = fixtureRequest("/api/agents/account", rawBody).body;
+      const agent = required(agents.find((a) => a.id === body.id));
       agent.accountKey = body.account_key;
       return json(entityMutationFixtureResponse(stateForEntities, agent));
     }
@@ -303,7 +323,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     if (url.pathname === "/api/limits/reset") return json({ outcome: "reset" });
     if (url.pathname === "/api/costs") {
       const accountKey = url.searchParams.get("account_key") || "default";
-      const todayUSD = { default: 5, work: 12, other: 23 }[accountKey];
+      const todayUSD = required(
+        { default: 5, work: 12, other: 23 }[accountKey],
+      );
       const reply = () =>
         json({ accountKey, data: { todayUSD, last30DaysUSD: todayUSD * 3 } });
       if (accountKey === "work" && delayCostWork) {
@@ -315,8 +337,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     if (url.pathname === "/api/projects" && req.method === "GET")
       return json({ items: [] });
     if (url.pathname === "/api/leads") {
+      const body = fixtureRequest("/api/leads", rawBody).body;
       const lead = makeLead(
-        body.id,
+        required(body.id),
         "Created conversation",
         body.account_key || defaultAccountKey,
         true,
@@ -325,17 +348,20 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json(lead);
     }
     if (url.pathname === "/api/accounts/login") {
+      const body = fixtureRequest("/api/accounts/login", rawBody).body;
       const previous = logins.find((r) => r.requestId === body.login_id);
       if (previous) return json(previous);
       const id = body.account_key || `signed-in-${logins.length}`;
       if (!body.account_key)
-        accounts.push({
-          id,
-          email: body.email || null,
-          label: body.label || "New account",
-          status: "pending",
-        });
-      const receipt = {
+        accounts.push(
+          fixtureAccount({
+            id,
+            email: body.email || null,
+            label: body.label || "New account",
+            status: "pending",
+          }),
+        );
+      const receipt: AccountsState["logins"][number] = {
         requestId: body.login_id,
         accountKey: id,
         ...(body.account_key ? { reauthAccountKey: id } : {}),
@@ -348,7 +374,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json(receipt);
     }
     if (url.pathname === "/api/accounts/login/cancel") {
-      const receipt = logins.find((r) => r.requestId === body.login_id);
+      const body = fixtureRequest("/api/accounts/login/cancel", rawBody).body;
+      const receipt = required(
+        logins.find((r) => r.requestId === body.login_id),
+      );
       receipt.status = "cancelled";
       if (!receipt.reauthAccountKey)
         accounts.splice(
@@ -362,6 +391,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return res.end();
     }
     if (url.pathname === "/api/queue") {
+      const body = fixtureRequest("/api/queue", rawBody).body;
       if (req.method === "POST" && body.action === "cancel")
         claudeQueue = claudeQueue.filter((item) => item.id !== body.id);
       return json({
@@ -377,6 +407,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       });
     }
     if (url.pathname === "/api/agents/account-transfer") {
+      const body = fixtureRequest("/api/agents/account-transfer", rawBody).body;
       const previous = transferReceipts.get(body.request_id);
       if (previous) {
         assert.deepEqual(body, previous);
@@ -388,7 +419,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         );
       }
       transferReceipts.set(body.request_id, body);
-      const agent = agents.find((agent) => agent.id === body.id);
+      const agent = required(agents.find((agent) => agent.id === body.id));
       agent.accountKey = body.account_key;
       agent.provider =
         accounts.find((account) => account.id === body.account_key)?.provider ||
@@ -406,6 +437,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       );
     }
     if (url.pathname === "/api/claude/session") {
+      const body = fixtureRequest("/api/claude/session", rawBody).body;
       if (body.action === "state") return json(claudeSession);
       if (body.action === "settings") {
         if (failClaudeSettings) {
@@ -440,6 +472,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
           claudeSession.controlOperation = {
             turnId: body.turn_id,
             requestId: body.request_id,
+            phase: "recovery_required",
           };
           res.statusCode = 503;
           return json({ error: "Rollback receipt is not available yet." });
@@ -451,8 +484,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json({ error: "Unsupported fixture Claude action" });
     }
     if (url.pathname === "/api/accounts/claude/login") {
+      const body = fixtureRequest("/api/accounts/claude/login", rawBody).body;
       if (req.method === "POST") {
-        const receipt = {
+        const receipt: PostResult<"/api/accounts/claude/login"> = {
           requestId: body.login_id,
           accountKey: body.account_key,
           status: "pending",
@@ -461,12 +495,20 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         claudeLogins.set(receipt.requestId, receipt);
         return json(receipt);
       }
-      return json(claudeLogins.get(url.searchParams.get("request_id")) || {});
+      return json(
+        claudeLogins.get(required(url.searchParams.get("request_id"))) || {},
+      );
     }
     if (url.pathname === "/api/claude/profiles") {
+      const body = fixtureRequest("/api/claude/profiles", rawBody).body;
       const account = body.account_key
-        ? accounts.find((account) => account.id === body.account_key)
-        : { id: "claude-added", provider: "claude", status: "ready" };
+        ? required(accounts.find((account) => account.id === body.account_key))
+        : fixtureAccount({
+            id: "claude-added",
+            label: "",
+            provider: "claude",
+            status: "ready",
+          });
       Object.assign(account, {
         ...(typeof body.label === "string" ? { label: body.label } : {}),
         claudeOptions: body.options,
@@ -490,9 +532,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       const file = await readFile(path);
       res.setHeader(
         "Content-Type",
-        { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
-          extname(path)
-        ] || "application/octet-stream",
+        fixtureContentTypes[extname(path)] || "application/octet-stream",
       );
       res.end(file);
     } catch {
@@ -500,28 +540,30 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       res.end();
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   let debugPage;
   try {
     const page = fixturePage;
     await fixturePage.setViewportSize({ width: 1440, height: 900 });
     debugPage = page;
     page.setDefaultTimeout(10000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error.stack);
     });
     if (mode === "benchmark") {
-      accounts.push({
-        id: "claude",
-        email: "claude@example.com",
-        label: "Claude Code",
-        provider: "claude",
-        status: "ready",
-        accountId: "native-claude",
-      });
-      const benchAgent = {
+      accounts.push(
+        fixtureAccount({
+          id: "claude",
+          email: "claude@example.com",
+          label: "Claude Code",
+          provider: "claude",
+          status: "ready",
+          accountId: "native-claude",
+        }),
+      );
+      const benchAgent: import("../../src/types.ts").Agent = {
         ...makeLead("claude-chat", "Claude conversation", "claude", false),
         provider: "claude",
         model: "default",
@@ -537,17 +579,19 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       agents.push(benchAgent);
     }
     if (mode === "reauth") {
-      accounts[0].accountId = "saved-default";
-      accounts.push({
-        id: "claude",
-        email: "claude@example.com",
-        label: "Claude",
-        provider: "claude",
-        status: "ready",
-        accountId: "native-claude",
-      });
-      agents[0].accountKey = "claude";
-      agents[0].provider = "claude";
+      required(accounts[0]).accountId = "saved-default";
+      accounts.push(
+        fixtureAccount({
+          id: "claude",
+          email: "claude@example.com",
+          label: "Claude",
+          provider: "claude",
+          status: "ready",
+          accountId: "native-claude",
+        }),
+      );
+      required(agents[0]).accountKey = "claude";
+      required(agents[0]).provider = "claude";
       agents.push({
         ...makeLead("auth-worker", "Failed worker", "default", false),
         isLead: false,
@@ -558,7 +602,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
           "Your refresh token was revoked. Please log out and sign in again.",
       });
     }
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.goto(fixtureUrl(server));
     if (mode === "reauth") {
       await page.locator('[data-chat="started"]').click();
       await page
@@ -567,11 +611,14 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       let login = page.getByRole("dialog", {
         name: /Sign in to Codex.*personal@example\.com/,
       });
-      let lostLoginAttempt;
+      let lostLoginAttempt: PostBody<"/api/accounts/login"> | undefined;
       await page.route(
         "**/api/accounts/login",
         async (route) => {
-          lostLoginAttempt = route.request().postDataJSON();
+          lostLoginAttempt = fixtureRequest(
+            "/api/accounts/login",
+            route.request().postDataJSON(),
+          ).body;
           await route.abort();
         },
         { times: 1 },
@@ -580,9 +627,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .getByRole("button", { name: "Start sign-in", exact: true })
         .click();
       await login.getByRole("alert").waitFor();
-      const id = lostLoginAttempt.login_id;
+      const id = required(lostLoginAttempt).login_id;
       assert.equal(
-        lostLoginAttempt.account_key,
+        required(lostLoginAttempt).account_key,
         "default",
         "A Claude lead must restore its Codex worker account",
       );
@@ -596,8 +643,8 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         "A lost reply must reuse the same sign-in",
       );
       assert.equal(
-        bodies.filter((r) => r.path === "/api/accounts/login").at(-1).body
-          .login_id,
+        required(bodies.filter((r) => r.path === "/api/accounts/login").at(-1))
+          .body.login_id,
         id,
       );
       await page.reload();
@@ -616,7 +663,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         0,
         "Cached ready credentials do not confirm sign-in",
       );
-      logins[0].nativeCompleted = true;
+      required(logins[0]).nativeCompleted = true;
       const accountRefresh = page.waitForResponse(
         (response) =>
           response.request().method() === "GET" &&
@@ -625,9 +672,15 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await login
         .getByRole("button", { name: "Check status", exact: true })
         .click();
-      const refreshedAccounts = await (await accountRefresh).json();
-      assert.equal(refreshedAccounts.logins[0].status, "ready");
-      assert.equal(refreshedAccounts.logins[0].resolvedAccountKey, "default");
+      const refreshedAccounts = await readFixtureResponse(
+        "/api/accounts",
+        await accountRefresh,
+      );
+      assert.equal(required(refreshedAccounts.logins[0]).status, "ready");
+      assert.equal(
+        required(refreshedAccounts.logins[0]).resolvedAccountKey,
+        "default",
+      );
       await login
         .getByText("Sign-in restored. Send a new instruction to continue.", {
           exact: false,
@@ -635,7 +688,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .waitFor();
       assert.equal(accounts.filter((a) => a.id === "default").length, 1);
       assert.equal(
-        agents.find((a) => a.id === "auth-worker").accountKey,
+        required(agents.find((a) => a.id === "auth-worker")).accountKey,
         "default",
       );
       assert.equal(
@@ -692,7 +745,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     }
 
     if (mode === "benchmark") {
-      const benchAgent = agents.find((agent) => agent.id === "claude-chat");
+      const benchAgent = required(
+        agents.find((agent) => agent.id === "claude-chat"),
+      );
       const studioSettingsButton = page.locator(
         '.sidebar-header [aria-label="Studio settings"]',
       );
@@ -704,19 +759,23 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await page.setViewportSize({ width: 1440, height: 1000 });
       const openMs = await page.evaluate(
         () =>
-          new Promise((resolve) => {
+          new Promise<number>((resolve) => {
             const started = performance.now();
             const panel = () =>
-              document.querySelector('[data-testid="studio-settings"]');
+              document.querySelector<HTMLElement>(
+                '[data-testid="studio-settings"]',
+              );
             const observer = new MutationObserver(() => {
               if (!panel()) return;
               observer.disconnect();
               resolve(performance.now() - started);
             });
             observer.observe(document.body, { childList: true, subtree: true });
-            document
-              .querySelector('.sidebar-header [aria-label="Studio settings"]')
-              .click();
+            const button = document.querySelector<HTMLElement>(
+              '.sidebar-header [aria-label="Studio settings"]',
+            );
+            if (!button) throw new Error("Missing Studio settings button");
+            button.click();
             if (panel()) {
               observer.disconnect();
               resolve(performance.now() - started);
@@ -742,7 +801,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       const claudeStreamReconfigured = page.waitForResponse((response) => {
         const url = new URL(response.url());
         if (!url.pathname.endsWith("/api/sync/stream")) return false;
-        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        const resources: import("../playwright.ts").ResourceRef[] = JSON.parse(
+          url.searchParams.get("resources") || "[]",
+        );
         return resources.some(
           (resource) =>
             resource.kind === "session-cost" &&
@@ -750,7 +811,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         );
       });
       await page.locator(`[data-chat="${benchAgent.id}"]`).click();
-      await page.getByRole("heading", { name: benchAgent.name }).waitFor();
+      await page
+        .getByRole("heading", { name: required(benchAgent.name) })
+        .waitFor();
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
@@ -763,7 +826,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         page.waitForResponse(
           (response) =>
             response.url().endsWith("/api/claude/session") &&
-            response.request().postDataJSON()?.action === "settings",
+            fixtureRequest(
+              "/api/claude/session",
+              response.request().postDataJSON(),
+            ).body.action === "settings",
         );
       const claude = settings.getByRole("region", {
         name: "Claude settings",
@@ -833,15 +899,14 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         snapshotsBefore,
         "Setting changes must not refresh the full state snapshot",
       );
-      const saveRequest = bodies
-        .filter(
-          (request) =>
-            request.path === "/api/claude/session" &&
-            request.body.action === "settings",
-        )
-        .at(-1);
+      const saveRequest = required(
+        bodies
+          .filter((request) => request.path === "/api/claude/session")
+          .filter((request) => request.body.action === "settings")
+          .at(-1),
+      );
       assert.equal(saveRequest.body.id, benchAgent.id);
-      assert.match(saveRequest.body.request_id, /^[0-9a-f-]{36}$/);
+      assert.match(required(saveRequest.body.request_id), /^[0-9a-f-]{36}$/);
       await page.setViewportSize({ width: 390, height: 844 });
       await page.setViewportSize({ width: 1440, height: 1000 });
       let saveResponse = settingsSavedResponse();
@@ -855,13 +920,12 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .fill("250000");
       await claude.getByLabel("Permission mode", { exact: true }).focus();
       assert.ok((await saveResponse).ok());
-      const finalSettings = bodies
-        .filter(
-          (request) =>
-            request.path === "/api/claude/session" &&
-            request.body.action === "settings",
-        )
-        .at(-1);
+      const finalSettings = required(
+        bodies
+          .filter((request) => request.path === "/api/claude/session")
+          .filter((request) => request.body.action === "settings")
+          .at(-1),
+      );
       assert.deepEqual(finalSettings.body.settings, {
         permissionMode: "plan",
         thinking: false,
@@ -879,18 +943,17 @@ async function runAccountsUi(mode, { page: fixturePage }) {
           .inputValue(),
         "plan",
       );
-      const failedSettingsRequest = bodies
-        .filter(
-          (request) =>
-            request.path === "/api/claude/session" &&
-            request.body.action === "settings",
-        )
-        .at(-1).body;
+      const failedSettingsRequest = required(
+        bodies
+          .filter((request) => request.path === "/api/claude/session")
+          .filter((request) => request.body.action === "settings")
+          .at(-1),
+      ).body;
       const failedRequestId = failedSettingsRequest.request_id;
       const failedStorageKey = `claude-control:claude:${benchAgent.id}:settings:${JSON.stringify({ settings: failedSettingsRequest.settings })}`;
       assert.equal(
         await page.evaluate(
-          (key) => JSON.parse(localStorage.getItem(key) || "null"),
+          (key: string) => JSON.parse(localStorage.getItem(key) || "null"),
           failedStorageKey,
         ),
         failedRequestId,
@@ -901,13 +964,12 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .getByLabel("Permission mode", { exact: true })
         .selectOption("default");
       assert.ok((await saveResponse).ok());
-      const retriedRequestId = bodies
-        .filter(
-          (request) =>
-            request.path === "/api/claude/session" &&
-            request.body.action === "settings",
-        )
-        .at(-1).body.request_id;
+      const retriedRequestId = required(
+        bodies
+          .filter((request) => request.path === "/api/claude/session")
+          .filter((request) => request.body.action === "settings")
+          .at(-1),
+      ).body.request_id;
       assert.equal(
         retriedRequestId,
         failedRequestId,
@@ -1006,7 +1068,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await studio.getByRole("tab", { name: "Accounts", exact: true }).click();
       return studio;
     };
-    const accountTile = async (account) => {
+    const accountTile = async (account: Account) => {
       const group = accountTileGroup(page, "Main agent account");
       const provider = account.provider || "codex";
       const providerControl = group.getByRole("radio", {
@@ -1021,7 +1083,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       }
       return accountTileButton(page, "Main agent account", account.label);
     };
-    const expectAccountTileSelected = async (account) => {
+    const expectAccountTileSelected = async (account: Account) => {
       await expect(
         accountTileButton(page, "Main agent account", account.label),
       ).toHaveAttribute("aria-pressed", "true");
@@ -1039,14 +1101,14 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         )
         .toEqual(["65", "65", "65"]);
     };
-    const expectAccount = async (email) => {
+    const expectAccount = async (email: string) => {
       await openSettings();
       const selected = accounts.find((account) => account.email === email);
       assert.ok(selected, `fixture account exists for ${email}`);
       await expectAccountTileSelected(selected);
       await closeSettings();
     };
-    const choose = async (email) => {
+    const choose = async (email: string) => {
       await openSettings();
       const selected = accounts.find((account) => account.email === email);
       assert.ok(selected, `fixture account exists for ${email}`);
@@ -1063,7 +1125,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       name: "Account limits details",
       exact: true,
     });
-    const inspectLimits = async (check) => {
+    const inspectLimits = async <T>(check: (panel: Locator) => Promise<T>) => {
       const wasOpen = (await quota.getAttribute("aria-expanded")) === "true";
       if (!wasOpen) await quota.click();
       await details.waitFor();
@@ -1075,11 +1137,11 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return result;
     };
     const limitText = () => inspectLimits((panel) => panel.innerText());
-    const waitLimits = (text) =>
+    const waitLimits = (text: string) =>
       inspectLimits((panel) =>
         panel.getByText(text, { exact: true }).first().waitFor(),
       );
-    const waitCost = (text) =>
+    const waitCost = (text: string) =>
       inspectLimits(() =>
         page
           .getByRole("region", { name: "Local cost estimates" })
@@ -1102,7 +1164,8 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await expectAccount("work@example.com");
     await waitLimits("78% left");
     assert.equal(
-      bodies.find((r) => r.path === "/api/agents/account").body.account_key,
+      required(bodies.find((r) => r.path === "/api/agents/account")).body
+        .account_key,
       "work",
     );
 
@@ -1154,14 +1217,15 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await choose("another.long.account@example.com");
     await waitLimits("67% left");
     assert.ok(delayed, "B request is pending");
-    delayed();
-    delayed = null;
+    required(delayed)();
+    delayed = undefined;
     delayWork = false;
     await page.waitForTimeout(100);
     assert.match(await limitText(), /67% left/);
     const updated = limits("other");
-    updated.at += 5;
-    updated.data.rateLimits.primary.usedPercent = 41;
+    updated.at = required(updated.at) + 5;
+    required(required(required(updated.data).rateLimits).primary).usedPercent =
+      41;
     snapshotLimits = { other: updated, default: limits("default") };
     stateForEntities.runtime.rateLimitsByAccount = snapshotLimits;
     notifyEntityResources([{ kind: "state" }]);
@@ -1178,7 +1242,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("button", { name: "Use one reset credit", exact: true })
       .click();
     await page.getByText("Reset applied.", { exact: true }).waitFor();
-    const reset = bodies.find((r) => r.path === "/api/limits/reset").body;
+    const reset = required(
+      bodies.find((r) => r.path === "/api/limits/reset"),
+    ).body;
     assert.equal(reset.account_key, "other");
     assert.equal(reset.account_id, "native-other");
     assert.equal(reset.credit_id, "credit-other");
@@ -1216,8 +1282,8 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await page.locator('[data-chat="empty"]').click();
     await expectAccount("another.long.account@example.com");
     const otherQuota = await quotaValues();
-    delayed();
-    delayed = null;
+    required<() => void>(delayed)();
+    delayed = undefined;
     delayWork = false;
     await page.waitForTimeout(100);
     assert.deepEqual(
@@ -1237,7 +1303,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       exact: true,
     });
     await transferDialog.waitFor();
-    assert.equal(agents.find((a) => a.id === "started").accountKey, "default");
+    assert.equal(
+      required(agents.find((a) => a.id === "started")).accountKey,
+      "default",
+    );
     assert.equal(
       bodies.filter((r) =>
         ["/api/agents/account", "/api/agents/account-transfer"].includes(
@@ -1298,11 +1367,11 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#conversation-title")?.textContent ===
-        "Created conversation",
+        document.querySelector<HTMLElement>("#conversation-title")
+          ?.textContent === "Created conversation",
     );
     assert.equal(
-      bodies.find((r) => r.path === "/api/leads").body.account_key,
+      required(bodies.find((r) => r.path === "/api/leads")).body.account_key,
       undefined,
     );
 
@@ -1339,19 +1408,20 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .getAttribute("href"),
       "https://auth.openai.com/codex/device",
     );
-    const firstLogin = logins.at(-1).requestId;
+    const firstLogin = required(logins.at(-1)).requestId;
     await page.reload();
     dialog = await openStudioAccounts();
     codexSignIn = await addCodexAccount();
     await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 1, "reload resumes the existing native login");
-    assert.equal(logins[0].requestId, firstLogin);
+    assert.equal(required(logins[0]).requestId, firstLogin);
     const cancelResponse = page.waitForResponse((response) => {
       const request = response.request();
       return (
         new URL(response.url()).pathname === "/api/accounts/login/cancel" &&
         request.method() === "POST" &&
-        request.postDataJSON().login_id === firstLogin
+        fixtureRequest("/api/accounts/login", request.postDataJSON()).body
+          .login_id === firstLogin
       );
     });
     await codexSignIn
@@ -1361,14 +1431,16 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await codexSignIn
       .getByText("Sign-in cancelled.", { exact: true })
       .waitFor();
-    assert.equal(logins[0].status, "cancelled");
+    assert.equal(required(logins[0]).status, "cancelled");
     await codexSignIn
       .getByRole("button", { name: "Sign in", exact: true })
       .click();
     await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 2);
-    assert.notEqual(logins[1].requestId, firstLogin);
-    accounts.find((a) => a.id === logins.at(-1).accountKey).status = "ready";
+    assert.notEqual(required(logins[1]).requestId, firstLogin);
+    required(
+      accounts.find((a) => a.id === required(logins.at(-1)).accountKey),
+    ).status = "ready";
     notifyEntityResources([{ kind: "accounts" }]);
     await codexSignIn
       .getByText("Account connected.", { exact: false })
@@ -1377,12 +1449,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("button", { name: "Close", exact: true })
       .click();
     await page.setViewportSize({ width: 820, height: 844 });
-    await page.waitForFunction(
-      () =>
-        document.querySelector(".server-account-row") &&
-        getComputedStyle(document.querySelector(".server-account-row"))
-          .display === "grid",
-    );
+    await page.waitForFunction(() => {
+      const row = document.querySelector<HTMLElement>(".server-account-row");
+      return row && getComputedStyle(row).display === "grid";
+    });
     const newAccountRow = dialog
       .locator(".server-account-row")
       .filter({ hasText: "smoke@example.test" });
@@ -1393,7 +1463,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       ),
       "No page overflow on narrow screen",
     );
-    const bounds = await dialog.boundingBox();
+    const bounds = required(await dialog.boundingBox());
     assert.ok(
       bounds.x >= 0 && bounds.x + bounds.width <= 820,
       "Account manager fits narrow screen",
@@ -1411,7 +1481,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     assert.ok(await picker.isVisible());
     await closeSettings();
     // A stalled read must release the per-account request slot after its deadline.
-    delayed = null;
+    delayed = undefined;
     await choose("work@example.com");
     delayWork = true;
     await quota.click();
@@ -1435,15 +1505,17 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       ),
       /\$12.00/,
     );
-    accounts.push({
-      id: "claude",
-      email: "claude@example.com",
-      label: "Claude Code",
-      provider: "claude",
-      status: "ready",
-      accountId: "native-claude",
-    });
-    const claude = {
+    accounts.push(
+      fixtureAccount({
+        id: "claude",
+        email: "claude@example.com",
+        label: "Claude Code",
+        provider: "claude",
+        status: "ready",
+        accountId: "native-claude",
+      }),
+    );
+    const claude: import("../../src/types.ts").Agent = {
       ...makeLead("claude-chat", "Claude conversation", "claude", false),
       provider: "claude",
       model: "default",
@@ -1455,8 +1527,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     claudeQueue = [
       {
         id: "claude-queued",
-        agentId: claude.id,
+        kind: "user",
         text: "Change the Claude task",
+        // @ts-expect-error Historical queued status is deliberately invalid under the pending-only queue contract.
         status: "queued",
         requestedDelivery: "next_turn",
         created: Date.now() / 1000,
@@ -1466,7 +1539,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await page.locator(`[data-chat="${claude.id}"]`).click();
     await openSettings();
     await (
-      await accountTile(accounts.find((account) => account.id === "claude"))
+      await accountTile(
+        required(accounts.find((account) => account.id === "claude")),
+      )
     ).waitFor();
     await closeSettings();
     await quota.click();
@@ -1487,12 +1562,14 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("button", { name: "Delete queued message 1", exact: true })
       .click();
     await page.waitForFunction(
-      () => !document.querySelector('[aria-label="Delete queued message 1"]'),
+      () =>
+        !document.querySelector<HTMLElement>(
+          '[aria-label="Delete queued message 1"]',
+        ),
     );
-    const cancellation = bodies.find(
-      (request) =>
-        request.path === "/api/queue" && request.body.action === "cancel",
-    );
+    const cancellation = bodies
+      .filter((request) => request.path === "/api/queue")
+      .find((request) => request.body.action === "cancel");
     assert.equal(cancellation?.body.id, "claude-queued");
     assert.equal(cancellation?.body.expectedText, "Change the Claude task");
     assert.ok(cancellation?.body.request_id);
@@ -1527,12 +1604,15 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("button", { name: "Save Claude profile", exact: true })
       .click();
     await profile.getByText("Claude profile saved.", { exact: true }).waitFor();
-    const updatedProfile = bodies.find(
-      (request) => request.path === "/api/claude/profiles",
+    const updatedProfile = required(
+      bodies.find((request) => request.path === "/api/claude/profiles"),
     );
     assert.equal(updatedProfile.body.account_key, "claude");
-    assert.equal(updatedProfile.body.options.autoCompactWindow, 200000);
-    assert.deepEqual(updatedProfile.body.options.customModels, [
+    assert.equal(
+      required(updatedProfile.body.options).autoCompactWindow,
+      200000,
+    );
+    assert.deepEqual(required(updatedProfile.body.options).customModels, [
       { id: "custom-claude", label: "Custom Claude" },
     ]);
     await profile.getByRole("button", { name: "Close", exact: true }).click();
@@ -1644,13 +1724,12 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .locator(".claude-advanced-content > .claude-save-status")
       .getByText("Saved", { exact: true })
       .waitFor();
-    const sessionSettings = bodies
-      .filter(
-        (request) =>
-          request.path === "/api/claude/session" &&
-          request.body.action === "settings",
-      )
-      .at(-1);
+    const sessionSettings = required(
+      bodies
+        .filter((request) => request.path === "/api/claude/session")
+        .filter((request) => request.body.action === "settings")
+        .at(-1),
+    );
     assert.equal(sessionSettings.body.id, claude.id);
     assert.deepEqual(sessionSettings.body.settings, {
       permissionMode: "plan",
@@ -1659,12 +1738,11 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     });
     assert.ok(
       bodies
-        .filter(
-          (request) =>
-            request.path === "/api/claude/session" &&
-            request.body.action === "settings",
-        )
-        .every((request) => /^[0-9a-f-]{36}$/.test(request.body.request_id)),
+        .filter((request) => request.path === "/api/claude/session")
+        .filter((request) => request.body.action === "settings")
+        .every((request) =>
+          /^[0-9a-f-]{36}$/.test(required(request.body.request_id)),
+        ),
       "Each autosave retains an exact request identity",
     );
     await claudeSettings
@@ -1753,23 +1831,24 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await claudeSettings
       .getByRole("button", { name: "Compact conversation", exact: true })
       .click();
-    const commandsSent = bodies.filter(
-      (request) =>
-        request.path === "/api/claude/session" &&
-        request.body.action === "command",
-    );
+    const commandsSent = bodies
+      .filter((request) => request.path === "/api/claude/session")
+      .filter((request) => request.body.action === "command");
     assert.deepEqual(
       commandsSent.map((request) => request.body.command),
       ["/fixture-skill check this", "/fixture-skill check this", "/compact"],
     );
-    assert.deepEqual(commandsSent[1].body, commandsSent[0].body);
+    assert.deepEqual(
+      required(commandsSent[1]).body,
+      required(commandsSent[0]).body,
+    );
     for (const request of commandsSent) {
       assert.equal(request.body.id, claude.id);
-      assert.match(request.body.request_id, /^[0-9a-f-]{36}$/);
+      assert.match(required(request.body.request_id), /^[0-9a-f-]{36}$/);
     }
     assert.notEqual(
-      commandsSent[0].body.request_id,
-      commandsSent[2].body.request_id,
+      required(commandsSent[0]).body.request_id,
+      required(commandsSent[2]).body.request_id,
     );
     await claudeSettings
       .getByText("Conversation history", { exact: true })
@@ -1790,16 +1869,17 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await claudeSettings
       .locator('option[value="claude-turn-two"]')
       .waitFor({ state: "detached" });
-    const rollbacks = bodies.filter(
-      (request) =>
-        request.path === "/api/claude/session" &&
-        request.body.action === "rollback",
-    );
+    const rollbacks = bodies
+      .filter((request) => request.path === "/api/claude/session")
+      .filter((request) => request.body.action === "rollback");
     assert.equal(rollbacks.length, 2);
-    assert.equal(rollbacks[0].body.id, claude.id);
-    assert.equal(rollbacks[0].body.turn_id, "claude-turn-two");
-    assert.match(rollbacks[0].body.request_id, /^[0-9a-f-]{36}$/);
-    assert.deepEqual(rollbacks[1].body, rollbacks[0].body);
+    assert.equal(required(rollbacks[0]).body.id, claude.id);
+    assert.equal(required(rollbacks[0]).body.turn_id, "claude-turn-two");
+    assert.match(
+      required(required(rollbacks[0]).body.request_id),
+      /^[0-9a-f-]{36}$/,
+    );
+    assert.deepEqual(required(rollbacks[1]).body, required(rollbacks[0]).body);
     assert.equal(
       await claudeSettings
         .getByLabel("First turn to remove", { exact: true })
@@ -1817,7 +1897,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await page.locator('[data-chat="started"]').click();
     await openSettings();
     await (
-      await accountTile(accounts.find((account) => account.id === "claude"))
+      await accountTile(
+        required(accounts.find((account) => account.id === "claude")),
+      )
     ).click();
     await transferDialog.waitFor();
     await transferDialog
@@ -1844,16 +1926,24 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       (request) => request.path === "/api/agents/account-transfer",
     );
     assert.equal(forwardTransfers.length, 2);
-    assert.deepEqual(forwardTransfers[0].body, forwardTransfers[1].body);
-    assert.equal(forwardTransfers[0].body.id, "started");
-    assert.equal(forwardTransfers[0].body.account_key, "claude");
-    assert.match(forwardTransfers[0].body.request_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(
+      required(forwardTransfers[0]).body,
+      required(forwardTransfers[1]).body,
+    );
+    assert.equal(required(forwardTransfers[0]).body.id, "started");
+    assert.equal(required(forwardTransfers[0]).body.account_key, "claude");
+    assert.match(
+      required(forwardTransfers[0]).body.request_id,
+      /^[0-9a-f-]{36}$/,
+    );
     await closeSettings();
     await page.reload();
     await page.locator('[data-chat="started"]').click();
     await openSettings();
     await (
-      await accountTile(accounts.find((account) => account.id === "default"))
+      await accountTile(
+        required(accounts.find((account) => account.id === "default")),
+      )
     ).click();
     await transferDialog.waitFor();
     await transferDialog
@@ -1865,29 +1955,29 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("button", { name: "Transfer chat", exact: true })
       .click();
     await transferDialog.waitFor({ state: "hidden" });
-    const reverseTransfer = bodies
-      .filter((request) => request.path === "/api/agents/account-transfer")
-      .at(-1);
+    const reverseTransfer = required(
+      bodies
+        .filter((request) => request.path === "/api/agents/account-transfer")
+        .at(-1),
+    );
     assert.equal(reverseTransfer.body.id, "started");
     assert.equal(reverseTransfer.body.account_key, "default");
     assert.notEqual(
       reverseTransfer.body.request_id,
-      forwardTransfers[0].body.request_id,
+      required(forwardTransfers[0]).body.request_id,
     );
     assert.equal(
-      agents.find((agent) => agent.id === "started").provider,
+      required(agents.find((agent) => agent.id === "started")).provider,
       "codex",
     );
 
     const claudeIndex = accounts.findIndex(
       (account) => account.id === "claude",
     );
-    const [archivedClaude] = accounts.splice(claudeIndex, 1);
-    archivedAccounts.push({
-      ...archivedClaude,
-      status: "signedOut",
-      deleted: true,
-    });
+    const archivedClaude = required(accounts.splice(claudeIndex, 1)[0]);
+    archivedClaude.status = "signedOut";
+    archivedClaude.deleted = true;
+    archivedAccounts.push(archivedClaude);
     await page.reload();
     await page.locator(`[data-chat="${claude.id}"]`).click();
     await page
@@ -1906,7 +1996,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       "Use your Claude subscription for",
     );
     await expect(archivedSignIn.locator("p")).toContainText(
-      archivedClaude.email,
+      required(archivedClaude.email),
     );
     await archivedSignIn
       .getByRole("button", { name: "Start sign-in", exact: true })
@@ -1915,7 +2005,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("link", { name: "Open Claude sign-in", exact: true })
       .waitFor();
     assert.equal(
-      [...claudeLogins.values()].at(-1).accountKey,
+      required([...claudeLogins.values()].at(-1)).accountKey,
       "claude",
       "archived chat sign-in retains its native identity",
     );
@@ -1963,7 +2053,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
   } finally {
     if (delayed) delayed();
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 }
 

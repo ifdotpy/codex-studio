@@ -1,3 +1,6 @@
+import type { EntityEnvelope } from "../playwright.ts";
+import assert from "node:assert/strict";
+import type { components } from "../../src/generated/api.ts";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,48 +28,52 @@ for (const provider of ["codex", "claude"])
       stdio: ["pipe", "pipe", "pipe"],
     });
     let log = "";
-    server.stderr.on("data", (chunk) => (log += chunk));
+    server.stderr?.on("data", (chunk) => (log += chunk));
     try {
       const port = await waitForFixturePort(server, { diagnostics: () => log });
       const origin = `http://127.0.0.1:${port}`;
       const lead = (await readTestState(origin)).runtime.agents.find(
         (agent) => agent.name === "Release lead",
       );
+      assert.ok(lead);
       await page.route("**/api/accounts", async (route) => {
         const response = await route.fetch();
-        const data = await response.json();
+        const data: components["schemas"]["AccountsResponse"] =
+          await response.json();
         const base = data.accounts[0];
-        const providers =
+        assert.ok(base);
+        const providers: components["schemas"]["Account"]["provider"][] =
           provider === "codex"
             ? ["codex", "codex", "codex", "claude", "claude"]
             : ["claude", "codex", "codex", "codex", "claude"];
-        data.accounts = providers.map((accountProvider, index) => ({
-          ...base,
-          id: index ? `eligibility-${index}` : base.id,
-          accountId: index ? `eligibility-${index}` : base.accountId,
-          provider: accountProvider,
-          status: "ready",
-          label:
-            index === 0
-              ? "Current account with a very long organization name"
-              : index === 1
+        data.accounts = providers.map((accountProvider, index) =>
+          Object.assign(structuredClone(base), {
+            id: index ? `eligibility-${index}` : base.id,
+            accountId: index ? `eligibility-${index}` : base.accountId,
+            provider: accountProvider,
+            status: "ready",
+            label:
+              index === 0
+                ? "Current account with a very long organization name"
+                : index === 1
+                  ? "ifdotpy+alexcodex@gmail.example.com"
+                  : index === 2
+                    ? "A very long account name for the enterprise workspace"
+                    : `Claude code ${index}`,
+            email:
+              index === 1
                 ? "ifdotpy+alexcodex@gmail.example.com"
-                : index === 2
-                  ? "A very long account name for the enterprise workspace"
-                  : `Claude code ${index}`,
-          email:
-            index === 1
-              ? "ifdotpy+alexcodex@gmail.example.com"
-              : "magritte+long.organization.name@tutamail.example.com",
-        }));
+                : "magritte+long.organization.name@tutamail.example.com",
+          }),
+        );
         await route.fulfill({ response, json: data });
       });
       await page.route("**/api/limits?**", (route) =>
         route.fulfill({
           json: {
-            accountKey: new URL(route.request().url()).searchParams.get(
-              "account_key",
-            ),
+            accountKey:
+              new URL(route.request().url()).searchParams.get("account_key") ||
+              "",
             at: Date.now() / 1000,
             data: {
               rateLimits: {
@@ -77,7 +84,7 @@ for (const provider of ["codex", "claude"])
                 },
               },
             },
-          },
+          } satisfies components["schemas"]["AccountRateLimitsDto"],
         }),
       );
       await page.route("**/api/claude/session", (route) =>
@@ -85,16 +92,24 @@ for (const provider of ["codex", "claude"])
           json: {
             settings: { permissionMode: "acceptEdits", thinking: true },
             turns: [],
-          },
+          } satisfies components["schemas"]["ClaudeSessionStateResponse"],
         }),
       );
       await page.route("**/api/sync/pull*", async (route) => {
         const response = await route.fetch();
-        const data = await response.json();
+        const data: components["schemas"]["SyncPullResponse"] =
+          await response.json();
         for (const document of data.documents || []) {
+          if (!("payload" in document)) continue;
           if (document._deleted) continue;
-          const entity = JSON.parse(document.payload);
-          if (entity.collection === "agent" && entity.id === lead.id) {
+          const entity: EntityEnvelope = JSON.parse(document.payload);
+          if (
+            entity.collection === "agent" &&
+            entity.id === lead.id &&
+            entity.value &&
+            typeof entity.value === "object" &&
+            !Array.isArray(entity.value)
+          ) {
             Object.assign(entity.value, { provider, yoloMode: false });
             document.payload = JSON.stringify(entity);
           }
@@ -134,7 +149,7 @@ for (const provider of ["codex", "claude"])
       );
       const measurements = [];
       for (const width of [1440, 390, 320])
-        for (const scheme of ["light", "dark"]) {
+        for (const scheme of ["light", "dark"] as const) {
           await page.setViewportSize({
             width,
             height: width === 1440 ? 900 : 844,

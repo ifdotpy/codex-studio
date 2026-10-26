@@ -1,7 +1,13 @@
+import type { components } from "../../src/generated/api.ts";
+declare global {
+  interface Window {
+    __workspaceBeforeSettingsNavigation: Element | null;
+  }
+}
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
-const linuxVmConfiguration = {
+const linuxVmConfiguration: components["schemas"]["LinuxVMSettingsResponse"] = {
   settings: {
     cpus: 4,
     memoryBytes: 4294967296,
