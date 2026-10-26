@@ -72,12 +72,14 @@ async function pages(interval: StagedEntityInterval | undefined) {
   return result;
 }
 describe("complete bounded entity transfer", () => {
-  it("removes only the selected staging while another interval remains usable", async () => {
+  it("leaves completed staging with its interval owner until disposal", async () => {
     const storage = new MemoryStaging();
     const assembler = new EntityTransferAssembler(storage);
-    await assembler.receive(parts([batch(0, 1)], "removed")[0]);
+    const removed = await assembler.receive(parts([batch(0, 1)], "removed")[0]);
     const kept = await assembler.receive(parts([batch(0, 1)], "kept")[0]);
     await assembler.remove([{ kind: "agentDetail", agentId: "removed" }]);
+    expect(await pages(removed)).toEqual([batch(0, 1)]);
+    await removed?.dispose();
     expect(
       [...storage.rows.keys()].some((key) => key.startsWith("removed:")),
     ).toBe(false);

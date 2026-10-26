@@ -292,7 +292,9 @@ export class EntityTransferAssembler {
     for (const [scope, pending] of this.pending) {
       if (!removed.has(subscriptionKey(pending.frame.resource))) continue;
       this.pending.delete(scope);
-      await this.storage.remove(`${pending.frame.transferId}:`);
+      // Completed intervals belong to their FIFO operation until disposal.
+      if (!pending.complete)
+        await this.storage.remove(`${pending.frame.transferId}:`);
     }
   }
   async receive(value: unknown): Promise<StagedEntityInterval | undefined> {
@@ -308,7 +310,9 @@ export class EntityTransferAssembler {
         pending.frame.epoch !== frame.epoch ||
         pending.frame.transferId !== frame.transferId)
     ) {
-      await this.storage.remove(`${pending.frame.transferId}:`);
+      // Completed intervals belong to their FIFO operation until disposal.
+      if (!pending.complete)
+        await this.storage.remove(`${pending.frame.transferId}:`);
       this.pending.delete(scope);
       pending = undefined;
     }

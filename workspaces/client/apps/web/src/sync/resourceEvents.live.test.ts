@@ -2528,3 +2528,56 @@ it("staged application must not overtake an earlier resource frame", async () =>
   expect(listener.mock.calls.map(([value]) => value?.revision)).toEqual([2, 3]);
   expect(f.source.closed).toBe(false);
 });
+
+it("completed staged intervals retain their pages while queued behind an ordinary frame", async () => {
+  const f = await fixture(false, true, false, false);
+  const published: number[] = [];
+  f.transport.watchResourceChanges({ kind: "state" }, (value) => {
+    if (value) published.push(value.revision);
+  });
+  let release!: () => void;
+  f.persist.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const applied: number[] = [];
+  f.staged.mockImplementation(async (interval) => {
+    for await (const page of interval.pages()) applied.push(page.through);
+  });
+  const common = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    reason: "change",
+  };
+  f.source.emit("resources", {
+    ...common,
+    revision: 1,
+    resources: [{ kind: "state" }],
+    resourceVersions: [{ revision: 1 }],
+  });
+  for (const revision of [2, 3]) {
+    f.source.emit("entity-transfer", {
+      ...common,
+      revision,
+      resource: { kind: "state" },
+      cursor: { workspaceId: "workspace", seq: revision },
+      replyKind: "snapshot",
+      transferId: `interval-${revision}`,
+      pageIndex: 0,
+      partIndex: 0,
+      partCount: 1,
+      complete: true,
+      data: JSON.stringify({ after: 0, through: revision, documents: [] }),
+    });
+  }
+  await vi.advanceTimersByTimeAsync(0);
+  expect(published).toEqual([]);
+  release();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(published).toEqual([1, 2, 3]);
+  expect(applied).toEqual([2, 3]);
+  expect(f.source.closed).toBe(false);
+});
