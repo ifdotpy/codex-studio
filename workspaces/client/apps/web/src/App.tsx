@@ -10,6 +10,7 @@ import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
 import { useDuoSurface } from "./layout/useDuoSurface";
+import { usePublishPanePath } from "./layout/PanePathShell";
 import { layoutQueries } from "./layout/layout-contract.generated";
 import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
 import {
@@ -727,6 +728,20 @@ export default function App({ active = true }: { active?: boolean }) {
     panel: panePath?.panelKind ?? null,
     mode: panePath?.mode ?? "single",
   };
+  const closePaneSidebar = useCallback(() => {
+    setPaneSidebar(false);
+    setPaneFullScreen(!paneNavigation.current.panel);
+  }, []);
+  usePublishPanePath(
+    serverViewId,
+    active && panePath
+      ? {
+          layout: panePath,
+          toggleSidebar,
+          closeSidebar: closePaneSidebar,
+        }
+      : null,
+  );
   const closePane = () => {
     setTeamOpen(false);
     setWideTeamOpen(false);

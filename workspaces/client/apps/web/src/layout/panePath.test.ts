@@ -158,6 +158,18 @@ describe("Duo pane path", () => {
       expect(result.panes.conversation?.height).toBe(635);
     },
   );
+  it("keeps native navigation headers below the top strip and paints through Home", () => {
+    const result = deriveWorkspaceLayout({
+      ...base,
+      viewport: { x: 0, y: 0, width: 653, height: 951 },
+      host: { x: 0, y: 0, width: 653, height: 917 },
+      safeInsets: { top: 0, right: 0, bottom: 34, left: 0 },
+      overlayInsetTop: 82,
+      panePath: { ...state, panel: "team", hinge: { status: "closed" } },
+    }).panePath!;
+    expect(result.panes.panel?.y).toBe(82);
+    expect(result.panes.panel?.height).toBe(869);
+  });
   it("leaves desktop and fine primary touch input unchanged", () => {
     expect(layout({ primaryCoarse: false })).toBeNull();
     expect(

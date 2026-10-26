@@ -304,7 +304,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
     </aside>
   );
   if (inPath) return content;
-  if (!compact) return p.collapsed && !probing ? null : content;
+  if (!compact) return !inPath && p.collapsed && !probing ? null : content;
   return (
     <Drawer
       opened={p.opened}

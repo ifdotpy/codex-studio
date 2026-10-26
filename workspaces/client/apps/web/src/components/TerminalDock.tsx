@@ -261,13 +261,15 @@ export default function TerminalDock({
   const createRef = useRef(create);
   createRef.current = create;
   const activeCount = entries.filter((entry) => running(entry.status)).length;
-  const shownHeight = geometry.height;
-  const heightStep = resolveLayoutLength(
-    "resize.step",
-    Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+  const rootFont = Number.parseFloat(
+    getComputedStyle(document.documentElement).fontSize,
   );
+  const shownHeight = panePath
+    ? resolveLayoutLength("terminal.closedBar", rootFont)
+    : geometry.height;
+  const heightStep = resolveLayoutLength("resize.step", rootFont);
   useEffect(() => {
-    if (!shellTerminal || panePath) return;
+    if (!shellTerminal) return;
     postToShell(
       {
         kind: "studio-server-terminal",

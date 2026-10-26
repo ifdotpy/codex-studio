@@ -26,6 +26,7 @@ export function useWorkspaceLayout(options: {
     primaryCoarse: boolean;
     available: LayoutRect;
     safeInsets: SafeInsets;
+    overlayInsetTop: number;
     hinge: NonNullable<PanePathInput["hinge"]>;
   }>({
     host: emptyRect,
@@ -36,6 +37,7 @@ export function useWorkspaceLayout(options: {
     primaryCoarse: false,
     available: emptyRect,
     safeInsets: { top: 0, right: 0, bottom: 0, left: 0 },
+    overlayInsetTop: 0,
     hinge: { status: "unknown" },
   });
   const rowRef = useCallback(
@@ -111,6 +113,11 @@ export function useWorkspaceLayout(options: {
           ),
         },
         safeInsets: { top, right, bottom, left },
+        overlayInsetTop: number(
+          view
+            .getComputedStyle(root)
+            .getPropertyValue("--viewport-overlay-inset-top"),
+        ),
         hinge,
       };
       setGeometry((old) =>
@@ -129,6 +136,7 @@ export function useWorkspaceLayout(options: {
         "data-viewport-short-landscape",
         "data-duo-proportions",
         "data-native-hinge",
+        "data-viewport-top-strip",
       ],
     });
     view.addEventListener("resize", update);

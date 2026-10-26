@@ -39,3 +39,16 @@ to the viewport. Other panes keep their transform slides. The title text
 starts inside the conversation column, clear of the sidebar and top rail.
 The passive bottom-band helper has no background during the pane path;
 the extended panes supply that paint.
+
+## Paired-server navigation
+
+The active `App` owns the pane path state. `PanePathShellContext` publishes
+its derived presentation to `MultiServerApp`. The combined shell renders
+that sidebar rectangle and forwards toggle and close actions to the screen.
+It does not derive another layout or copy the active screen state.
+
+`useWorkspaceLayout` reads `--viewport-overlay-inset-top` in CSS pixels.
+The layout owner applies that clearance to navigation panes only, so their
+headers start below the native top rail. The conversation keeps its title
+band at the viewport top. A previous desktop collapse preference does not
+hide a sidebar selected by the pane path.

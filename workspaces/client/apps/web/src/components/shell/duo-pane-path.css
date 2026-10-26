@@ -138,3 +138,32 @@
     transition: none;
   }
 }
+
+/* The paired shell consumes the active screen's pane rect instead of a second layout. */
+.multi-server-shell[data-pane-path] {
+  display: block;
+}
+.multi-server-shell[data-pane-path] > .server-views {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+}
+.multi-server-shell[data-pane-path] > .server-mobile-toggle {
+  display: none;
+}
+.multi-server-shell[data-pane-path][data-shell-terminal="closed"] > #sidebar {
+  padding-bottom: calc(
+    var(--viewport-safe-bottom) + var(--shell-terminal-height)
+  );
+}
+.multi-server-shell[data-pane-path] > .shell-terminal-bar {
+  display: flex;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: var(--shell-sidebar-width);
+  height: var(--shell-terminal-height);
+  z-index: var(--layout-layers-navigation);
+  background: var(--sidebar);
+}

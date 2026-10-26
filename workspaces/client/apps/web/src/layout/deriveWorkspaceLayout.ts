@@ -53,6 +53,8 @@ export interface WorkspaceLayoutInput {
   viewport: LayoutRect;
   rootFontPx: number;
   safeInsets?: SafeInsets;
+  /** Native navigation top clearance in CSS pixels; conversation may scroll below its title. */
+  overlayInsetTop?: number;
   hostExcludesSafeInsets?: boolean;
   preferredPanelWidthRem?: number;
   workspaceOpen?: boolean;
@@ -198,7 +200,14 @@ function derivePanePath(
   const bottomInset = finiteNonnegative(input.safeInsets?.bottom ?? 0);
   for (const name of ["sidebar", "panel"] as const) {
     const pane = panes[name];
-    if (pane) pane.height += bottomInset;
+    if (pane) {
+      const topInset = Math.max(
+        0,
+        finiteNonnegative(input.overlayInsetTop ?? 0) - pane.y,
+      );
+      pane.y += topInset;
+      pane.height = Math.max(0, pane.height + bottomInset - topInset);
+    }
   }
   return {
     mode: pair ? "pair" : "single",
