@@ -117,6 +117,8 @@ default-filter = '''
     | (package(=studio-client-core) & kind(lib) & (test(/^sign_in::tests::/) | test(/^desktop::tests::/)))
     | (package(=studio-native-client) & kind(lib) & test(/^tests::sign_in_host_/))
     | (package(=studio-runtime-http) & kind(lib) & test(/^routes::models::tests::/))
+    | (package(=studio-runtime-services) & kind(lib) & (test(/^account_driver::tests::auth_repair_regression_/) | test(/^account_driver::tests::auth_status_probe_marks_only_successful_parseable_results_conclusive$/)))
+    | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(test) & binary(=integration) & test(/^claude_login(_actor)?::/))
 '''
 
 # These real Git process chains keep their existing deadlines without competing
@@ -193,6 +195,8 @@ default-filter = '''
     | (package(=studio-client-core) & kind(lib) & (test(/^sign_in::tests::/) | test(/^desktop::tests::/)))
     | (package(=studio-native-client) & kind(lib) & test(/^tests::sign_in_host_/))
     | (package(=studio-runtime-http) & kind(lib) & test(/^routes::models::tests::/))
+    | (package(=studio-runtime-services) & kind(lib) & (test(/^account_driver::tests::auth_repair_regression_/) | test(/^account_driver::tests::auth_status_probe_marks_only_successful_parseable_results_conclusive$/)))
+    | ((package(=studio-runtime-services) | package(=studio-runtime-http)) & kind(test) & binary(=integration) & test(/^claude_login(_actor)?::/))
     | ((package(=studio-process-supervisor)) & ((kind(test) & binary(=clients))) & (test(supervisor_rejects_retired_protocol_before_admission)))
     | ((package(=studio-runtime-providers)) & (kind(lib)) & (test(supervisor_rejects_python_identity_adoption)))
     | ((package(=studio-runtime-process) | package(=studio-runtime-server)) & ((kind(test) & binary(=integration))) & (test(/^provider_stdio::final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled$/) | test(/^provider_stdio::writes_after_confirmed_exit_are_not_sent_and_do_not_block_ack_or_stdout$/) | test(/^provider_stdio::a_reserved_write_arriving_after_completion_is_rejected_without_delaying_reap$/) | test(/^provider_stdio::stdin_epipe_before_leader_exit_still_drains_final_stdout$/) | test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/) | test(/^provider_stdio::cancellation_stops_the_entire_owned_process_group$/) | test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/) | test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/) | test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/) | test(/^wave7_p01_registry::rust_direct_claude_launch_runs_the_scripted_bridge_turn$/) | test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)))

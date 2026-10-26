@@ -644,7 +644,7 @@ impl LoginService {
                             }
                         }
                     },
-                    Some(LoginEvent::Exited(success))=>break Some(success),None=>break None,
+                    Some(LoginEvent::Exited(code))=>break code.map(|code|code==0),None=>break None,
                 }
             }
         };
@@ -792,22 +792,20 @@ impl LoginService {
         let mut output = Vec::new();
         let deadline = tokio::time::sleep(PROBE_DEADLINE);
         tokio::pin!(deadline);
-        let exited_successfully = loop {
+        let exit_code = loop {
             tokio::select! {
                 _=&mut deadline=>break None,
                 command=commands.recv()=>match command {
                     Some(Command::Code(_, reply))=>{drop(reply.send(Err(LoginError::Unavailable)));},
                     Some(Command::Cancel)|None=>break None,
                 },
-                event=child.next_event()=>match event?{Some(LoginEvent::Output(bytes))=>append_tail(&mut output,&bytes),Some(LoginEvent::Diagnostic(_))=>{},Some(LoginEvent::Exited(success))=>break Some(success),None=>break None}
+                event=child.next_event()=>match event?{Some(LoginEvent::Output(bytes))=>append_tail(&mut output,&bytes),Some(LoginEvent::Diagnostic(_))=>{},Some(LoginEvent::Exited(code))=>break code,None=>break None}
             }
         };
         child.close().await?;
         self.record_child(id, None).await?;
-        let (metadata, conclusive) = crate::account_driver::claude::auth_status_probe_from_output(
-            &output,
-            exited_successfully,
-        );
+        let (metadata, conclusive) =
+            crate::account_driver::claude::auth_status_probe_from_output(&output, exit_code);
         let path = launch.config.join(".claude.json");
         let metadata = blocking(move || {
             Ok(crate::account_driver::claude_identity::with_native_identity(metadata, &path))

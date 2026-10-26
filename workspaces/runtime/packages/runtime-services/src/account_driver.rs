@@ -4131,57 +4131,121 @@ exit 0
     }
 
     #[test]
+    fn auth_repair_regression_native_signed_out_status_is_conclusive_after_exit_one() {
+        use serde_json::json;
+        // The maintained CLI's authStatus emits this negative result and exits 1.
+        let (metadata, conclusive) = claude::auth_status_probe_from_output(
+            br#"{"loggedIn":false,"authMethod":"none"}"#,
+            Some(1),
+        );
+        assert_eq!(metadata.status, AuthStatus::SignedOut);
+        assert!(
+            conclusive,
+            "a complete native signed-out result is not an unknown operation"
+        );
+        assert!(
+            !claude::auth_status_probe_from_output(
+                br#"{"loggedIn":false,"authMethod":"none"}"#,
+                Some(2),
+            )
+            .1
+        );
+        assert!(claude::auth_status_probe_from_output(
+            br#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty","analyticsDisabled":false,"projectsDirectory":null,"configDirectory":"/fixture"}"#,
+            Some(1),
+        ).1);
+        for (key, value) in [
+            ("apiProvider", json!(1)),
+            ("analyticsDisabled", json!("false")),
+            ("projectsDirectory", json!([])),
+            ("configDirectory", Value::Null),
+            ("forcedLoginMethod", json!(true)),
+            ("apiKeySource", json!({})),
+            ("email", json!([])),
+            ("orgId", json!(7)),
+            ("orgName", json!({})),
+            ("subscriptionType", json!(false)),
+            ("allowedProviders", json!({})),
+            ("allowedProviders", json!(["anthropic", 1])),
+        ] {
+            let mut invalid = json!({"loggedIn":false,"authMethod":"none"});
+            invalid[key] = value;
+            assert!(
+                !claude::auth_status_probe_from_output(
+                    &serde_json::to_vec(&invalid).unwrap(),
+                    Some(1)
+                )
+                .1,
+                "malformed {key} stays unknown"
+            );
+        }
+
+        for output in [
+            b"not-json".as_slice(),
+            br#"{"error":"status failed"}"#.as_slice(),
+            br#"{"loggedIn":false}"#.as_slice(),
+            br#"{"loggedIn":false,"authMethod":null}"#.as_slice(),
+            br#"{"loggedIn":false,"authMethod":"none","error":"status failed"}"#.as_slice(),
+            br#"{"loggedIn":true,"loggedIn":false,"authMethod":"none"}"#.as_slice(),
+        ] {
+            assert!(!claude::auth_status_probe_from_output(output, Some(1)).1);
+        }
+        assert!(
+            !claude::auth_status_probe_from_output(
+                br#"{"loggedIn":false,"authMethod":"none"}"#,
+                None,
+            )
+            .1
+        );
+    }
+
+    #[test]
     fn auth_status_probe_marks_only_successful_parseable_results_conclusive() {
         use AuthStatus::{Ready, SignedOut};
 
         let cases = [
             (None, br#"{"loggedIn":false}"#.as_slice(), SignedOut, false),
             (
-                Some(false),
+                Some(1),
                 br#"{"loggedIn":false}"#.as_slice(),
                 SignedOut,
                 false,
             ),
-            (Some(true), b"not-json".as_slice(), AuthStatus::Error, false),
-            (Some(true), b"{}".as_slice(), SignedOut, false),
+            (Some(0), b"not-json".as_slice(), AuthStatus::Error, false),
+            (Some(0), b"{}".as_slice(), SignedOut, false),
+            (Some(0), br#"{"loggedIn":1}"#.as_slice(), SignedOut, false),
             (
-                Some(true),
-                br#"{"loggedIn":1}"#.as_slice(),
-                SignedOut,
-                false,
-            ),
-            (
-                Some(true),
+                Some(0),
                 br#"{"loggedIn":true}"#.as_slice(),
                 SignedOut,
                 false,
             ),
             (
-                Some(true),
+                Some(0),
                 br#"{"loggedIn":true,"authMethod":7}"#.as_slice(),
                 SignedOut,
                 false,
             ),
             (
-                Some(true),
+                Some(0),
                 br#"{"loggedIn":true,"authMethod":"claude.ai","email":7}"#.as_slice(),
                 AuthStatus::Error,
                 false,
             ),
             (
-                Some(true),
+                Some(0),
                 br#"{"loggedIn":false,"futureProviderField":{"value":1}}"#.as_slice(),
                 SignedOut,
                 true,
             ),
             (
-                Some(true),
+                Some(0),
                 br#"{"loggedIn":true,"loggedIn":false}"#.as_slice(),
                 SignedOut,
                 true,
             ),
             (
-                Some(true),
+                Some(0),
                 br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test"}"#
                     .as_slice(),
                 Ready,

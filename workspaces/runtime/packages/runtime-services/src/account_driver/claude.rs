@@ -23,15 +23,50 @@ pub fn auth_metadata_from_output(stdout: &[u8], succeeded: bool) -> AuthMetadata
 }
 
 /// Parse an auth-status child result, distinguishing a conclusive provider
-/// response from timeout, EOF, cancellation, failed exit, or invalid JSON.
+/// response from timeout, EOF, cancellation, unexpected exits, or invalid JSON.
 pub(crate) fn auth_status_probe_from_output(
     stdout: &[u8],
-    exited_successfully: Option<bool>,
+    exit_code: Option<i32>,
 ) -> (AuthMetadata, bool) {
-    match exited_successfully {
-        Some(succeeded) => super::parse_claude_status_with_outcome(stdout, succeeded),
-        None => (auth_metadata_from_output(stdout, false), false),
+    match exit_code {
+        Some(0) => super::parse_claude_status_with_outcome(stdout, true),
+        Some(1) if native_signed_out_status(stdout) => (AuthMetadata::signed_out(), true),
+        _ => (auth_metadata_from_output(stdout, false), false),
     }
+}
+
+/// The CLI's authStatus serializes its login boolean and exits with that boolean ? 0 : 1.
+/// Accept only its negative status shape; an error envelope is not that result.
+fn native_signed_out_status(stdout: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Status {
+        logged_in: bool,
+        auth_method: String,
+        #[serde(flatten)]
+        metadata: Map<String, Value>,
+    }
+    let Ok(status) = serde_json::from_slice::<Status>(stdout) else {
+        return false;
+    };
+    !status.logged_in
+        && status.auth_method == "none"
+        && status
+            .metadata
+            .iter()
+            .all(|(key, value)| match key.as_str() {
+                "apiProvider" | "configDirectory" | "forcedLoginMethod" | "apiKeySource" => {
+                    value.is_string()
+                }
+                "analyticsDisabled" => value.is_boolean(),
+                "projectsDirectory" | "email" | "orgId" | "orgName" | "subscriptionType" => {
+                    value.is_null() || value.is_string()
+                }
+                "allowedProviders" => value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(Value::is_string)),
+                _ => false,
+            })
 }
 
 impl<R: ProviderAuthReader> AccountDriver<R> {
