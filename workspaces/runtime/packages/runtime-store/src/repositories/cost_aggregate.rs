@@ -1074,7 +1074,7 @@ pub fn cost_groups(
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_cost_aggregate;
+    use super::{JournalPartition, ensure_cost_aggregate};
     use crate::analytics_capture::{AnalyticsCaptureRepository, CaptureTable};
     use crate::{RuntimeStore, StoreError};
     use rusqlite::Connection;

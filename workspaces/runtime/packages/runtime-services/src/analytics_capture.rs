@@ -691,7 +691,13 @@ pub(crate) fn capture_logged_effect(
     if let Effect::Analytics { ledger_since, .. } = effect {
         prepared.ledger_since = *ledger_since;
     }
-    prepared.usage_unknown = unknown_usage_receipt(tx, &prepared.agent, &prepared.params)?;
+    prepared.usage_unknown = unknown_usage_receipt(
+        tx,
+        &prepared.agent,
+        &prepared.params,
+        prepared.usage.as_ref(),
+        prepared.legacy_usage.as_ref(),
+    )?;
     let prepared = std::sync::Arc::new(prepared);
     let mut decision = decide(
         CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?,
