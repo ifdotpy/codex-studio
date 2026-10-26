@@ -66,9 +66,7 @@ test("Radio browser", async ({
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     let mode = "lost";
-    let releaseResponse: () => void = () => {
-      throw new Error("Missing held response");
-    };
+    let releaseResponse: (() => void) | undefined;
     let transcriptReads = 0;
     const requests: PostBody<"/api/peer-teams">[] = [];
     await page.route("**/api/sync/identity", (r) =>
@@ -194,6 +192,7 @@ test("Radio browser", async ({
       0,
     );
     const acceptedPosts = requests.length;
+    assert.ok(releaseResponse, "The fixture captured the held response");
     releaseResponse();
     await expect(input).toBeEnabled({ timeout: 2000 });
     assert.equal(await input.inputValue(), "");
@@ -203,7 +202,9 @@ test("Radio browser", async ({
     );
     await page.evaluate(() => {
       window.radioFixture.holdRefresh = false;
-      window.radioFixture.rejectRefresh(Error("Refresh unavailable"));
+      const reject = window.radioFixture.rejectRefresh;
+      if (!reject) throw new Error("Missing held fixture refresh");
+      reject(Error("Refresh unavailable"));
     });
     await page.waitForFunction(() =>
       window.radioFixture.notifications?.includes("Refresh unavailable"),

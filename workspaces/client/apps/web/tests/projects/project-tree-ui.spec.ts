@@ -19,6 +19,7 @@ import { _electron } from "@playwright/test";
 import type { ElectronApplication, Page } from "@playwright/test";
 import type { PostBody, PostResult } from "../../src/api.ts";
 import type { ApiPostPath } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "../misc-fixture.ts";
 import { required } from "../../src/components/componentTestFixtures.ts";
 import { waitForFixturePort } from "../fixture-readiness.ts";
 test("project pointer and keyboard order persist, and a click collapses the project", async ({
@@ -127,7 +128,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       )
         return;
       try {
-        const body = request.postDataJSON();
+        const body = fixturePostBody<"/api/projects">(request.postDataJSON());
         if (body.action === "reorder" && body.migration)
           sidebarMigrations.push({
             token: request.headers()["x-canvas-token"],

@@ -16,12 +16,15 @@ const webRoot = fileURLToPath(new URL("../..", import.meta.url));
 // (tauri-codegen inject_nonce_token, tauri manager replace_csp_nonce). The
 // tooling check native-style-policy.test.ts guards that configuration.
 async function nativeDocumentPolicy() {
-  const { security } = JSON.parse(
-    await readFile(
-      new URL("../../../native/src-tauri/tauri.conf.json", import.meta.url),
-      "utf8",
-    ),
-  ).app;
+  // The repository owns this native-host configuration.
+  const config: typeof import("../../../native/src-tauri/tauri.conf.json") =
+    JSON.parse(
+      await readFile(
+        new URL("../../../native/src-tauri/tauri.conf.json", import.meta.url),
+        "utf8",
+      ),
+    );
+  const { security } = config.app;
   const index = await readFile(join(webRoot, "index.html"), "utf8");
   const disabled = security.dangerousDisableAssetCspModification ?? false;
   const styleNonce =

@@ -7,8 +7,8 @@ declare global {
       opened: string | null;
       refreshCalls: number;
       holdRefresh: boolean;
-      releaseRefresh: () => void;
-      rejectRefresh: (reason: Error) => void;
+      releaseRefresh?: () => void;
+      rejectRefresh?: (reason: Error) => void;
       failRefresh: boolean;
       notifications: string[];
     };
@@ -72,8 +72,6 @@ window.radioFixture = {
   opened: null,
   refreshCalls: 0,
   holdRefresh: false,
-  releaseRefresh: () => {},
-  rejectRefresh: () => {},
   failRefresh: false,
   notifications: [],
 };
