@@ -1,3 +1,8 @@
+import type {
+  Audit,
+  AuditItem,
+  AuditInput,
+} from "../scripts/uiTeamScaleAudit.ts";
 import { describe, expect, it } from "vitest";
 import {
   LEAD_INPUT_WAIT_ANOMALY_MS,
@@ -17,17 +22,31 @@ import {
   mergeAudits,
   startOrderInversions,
   toolCalls,
-} from "../scripts/uiTeamScaleAudit.mjs";
+} from "../scripts/uiTeamScaleAudit.ts";
 
 // Shapes follow the persisted transcript items of a live 512-worker run.
-const userItem = (at, inputs) => ({ role: "user", at, inputs });
-const childInput = (agent, at, status = "completed") => ({
+const userItem = (at: number, inputs: AuditInput[]): AuditItem => ({
+  role: "user",
+  at,
+  inputs,
+});
+const childInput = (
+  agent: string,
+  at: number,
+  status = "completed",
+): AuditInput => ({
   id: `child:${agent}:turn`,
   kind: "child_result",
   at,
   text: JSON.stringify({ agent_id: agent, result: "TOKEN", status }),
 });
-const toolItem = (id, tool, status, message = "", turnId = "t1") => ({
+const toolItem = (
+  id: string,
+  tool: string,
+  status: string,
+  message = "",
+  turnId = "t1",
+): AuditItem => ({
   role: "output",
   toolStatus: status,
   turnId,
@@ -40,15 +59,16 @@ const toolItem = (id, tool, status, message = "", turnId = "t1") => ({
     contentItems: message ? [{ text: message, type: "inputText" }] : [],
   }),
 });
-const answer = (text, turnId = "t1") => ({
+const answer = (text: string, turnId = "t1"): AuditItem => ({
   role: "assistant",
   phase: "final_answer",
   text,
   turnId,
   turnStatus: "completed",
 });
-const kinds = (audit) => audit.failures.map((entry) => entry.kind);
-const anomalyKinds = (audit) => audit.anomalies.map((entry) => entry.kind);
+const kinds = (audit: Audit) => audit.failures.map((entry) => entry.kind);
+const anomalyKinds = (audit: Audit) =>
+  audit.anomalies.map((entry) => entry.kind);
 
 describe("worker audit", () => {
   const healthy = [
@@ -65,7 +85,7 @@ describe("worker audit", () => {
       text: JSON.stringify({ id: "exec-1", type: "commandExecution" }),
     },
     answer("TOKEN"),
-  ];
+  ] satisfies AuditItem[];
 
   it("passes one delivered task, one turn and answered tool calls", () => {
     const audit = auditWorker("w1", healthy);
@@ -75,7 +95,7 @@ describe("worker audit", () => {
   it("fails duplicate turns, failed turns, duplicate deliveries and unanswered calls", () => {
     const items = [
       ...healthy,
-      healthy[0],
+      healthy.at(0) ?? userItem(10, []),
       { ...answer("again", "t2"), turnStatus: "failed" },
       { ...toolItem("exec-2", "x", "inProgress"), turnId: "t2" },
     ];
@@ -353,22 +373,38 @@ describe("start order", () => {
 
 describe("helpers", () => {
   it("bounds concurrency and keeps the order", async () => {
-    const pending = Array.from({ length: 4 }, () => Promise.withResolvers());
-    const started = [];
+    const pending = Array.from({ length: 4 }, () =>
+      Promise.withResolvers<void>(),
+    );
+    const started: number[] = [];
     const results = mapLimited([3, 1, 2, 0], 2, async (value, index) => {
       started.push(value);
-      await pending[index].promise;
+      const deferred = pending[index];
+      if (!deferred) throw new Error("Missing deferred fixture");
+      await deferred.promise;
       return value * 10;
     });
     expect(started).toEqual([3, 1]);
-    pending[1].resolve();
-    await pending[1].promise;
+    pending.at(1)?.resolve();
+    await pending.at(1)?.promise;
     await Promise.resolve();
     expect(started).toEqual([3, 1, 2]);
-    pending[2].resolve();
-    pending[0].resolve();
-    pending[3].resolve();
+    pending.at(2)?.resolve();
+    pending.at(0)?.resolve();
+    pending.at(3)?.resolve();
     expect(await results).toEqual([30, 10, 20, 0]);
+  });
+
+  it("passes undefined entries to the task without leaving result holes", async () => {
+    expect(
+      await mapLimited([undefined, 1], 2, async (value, index) => ({
+        value,
+        index,
+      })),
+    ).toEqual([
+      { value: undefined, index: 0 },
+      { value: 1, index: 1 },
+    ]);
   });
 
   it("summarises failures and anomalies by kind", () => {
@@ -439,8 +475,10 @@ it("treats journalctl's empty status 1 as no matches, while preserving other fai
     { kind: "journalUnavailable", unit: "studio", error: "No journal access" },
   ]);
   expect(
-    auditJournalResult({ status: 2, stdout: "", stderr: "" }, "studio")
-      .anomalies[0].kind,
+    auditJournalResult(
+      { status: 2, stdout: "", stderr: "" },
+      "studio",
+    ).anomalies.at(0)?.kind,
   ).toBe("journalUnavailable");
 });
 

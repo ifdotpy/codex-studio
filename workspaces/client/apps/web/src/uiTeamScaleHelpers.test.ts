@@ -1,3 +1,14 @@
+import assert from "node:assert/strict";
+import type { components, AgentEntityDto } from "./generated/api.ts";
+import type {
+  DialogControl,
+  FrameReceiver,
+  ObservedAgent,
+  EntitySubscriber,
+  CriteriaMetrics,
+  RoleSettings,
+} from "../scripts/uiTeamScaleHelpers.ts";
+type Schemas = components["schemas"];
 import { describe, expect, it, vi } from "vitest";
 import {
   ECHO_LATENCY_LIMIT_MS,
@@ -27,9 +38,9 @@ import {
   sqliteLockErrors,
   stageDeadlineMs,
   workerToken,
-} from "../scripts/uiTeamScaleHelpers.mjs";
+} from "../scripts/uiTeamScaleHelpers.ts";
 
-const passing = {
+const passing: CriteriaMetrics = {
   uiAllVisibleMs: 5_000,
   started: 3,
   replied: 3,
@@ -167,7 +178,11 @@ describe("ui team scale helpers", () => {
 
   it("reports account distribution and provider retries without failing", () => {
     const tracker = createTeamTracker("lead", "TAG", 3);
-    const retrying = (at) => ({ phase: "retrying", at });
+    const retrying = (at: number) =>
+      ({
+        phase: "retrying",
+        at,
+      }) satisfies AgentEntityDto["nativeStatus"];
     tracker.observe({ id: "w1", rootId: "lead", accountKey: "b" }, 0);
     tracker.observe({ id: "w2", rootId: "lead", accountKey: "a" }, 0);
     tracker.observe({ id: "w3", rootId: "lead", accountKey: "a" }, 0);
@@ -221,7 +236,18 @@ describe("ui team scale helpers", () => {
 
   it("reads the lock error counter only when it is a count", () => {
     expect(
-      sqliteLockErrors({ sqliteContention: { lockError: { lockErrors: 2 } } }),
+      sqliteLockErrors({
+        sqliteContention: {
+          lockError: {
+            lockErrors: 2,
+            longestTransactionMs: 0,
+            longTransactions: 0,
+            transactions: 0,
+            writeWaitMs: 0,
+            writeWaits: 0,
+          },
+        },
+      }),
     ).toBe(2);
     expect(sqliteLockErrors({})).toBeNull();
   });
@@ -266,15 +292,25 @@ describe("ui team scale helpers", () => {
 // A strict dialog driver rejects obsolete popovers and records user actions.
 // Only controls belonging to the selected role/provider exist in this fixture.
 function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
-  const actions = [];
+  const actions: string[] = [];
   let role = "Lead";
   let provider = "Codex";
-  const locate = (scope, kind, { name, selected } = {}) => {
+  const selectors = new WeakMap<Pick<DialogControl, "click">, string>();
+  const locate = (
+    scope: string,
+    kind: Parameters<DialogControl["getByRole"]>[0],
+    {
+      name,
+      selected,
+    }: NonNullable<Parameters<DialogControl["getByRole"]>[1]> = {},
+  ): DialogControl => {
     if (scope === "dialog") {
       const prefix = role === "Lead" ? "Main agent" : "Default subagent";
       const account =
         role === "Lead" ? "Main agent account" : "Subagent account";
-      const names = {
+      const names: Partial<
+        Record<Parameters<DialogControl["getByRole"]>[0], string[]>
+      > = {
         radiogroup: [
           "Agent role",
           `${account} provider`,
@@ -287,12 +323,14 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
       expect(names[kind], `Unexpected control ${kind}:${name}`).toContain(name);
     }
     const path = `${scope}/${kind}:${name}`;
-    const node = {
+    const node: DialogControl = {
       getByRole: (kind, options) => locate(path, kind, options),
       locator: (selector) => ({
         click: async () => {
+          assert.ok(typeof selector === "string");
           const name = /^label\[for="([^"]+)"\]$/.exec(selector)?.[1];
           expect(name).toBeDefined();
+          assert.ok(name);
           actions.push(name);
           if (
             scope === "dialog" &&
@@ -307,13 +345,18 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
         },
       }),
       and: (selector) => {
-        expect(selector).toMatch(/^\[data-(?:account-key|value)=/);
+        expect(selectors.get(selector)).toMatch(
+          /^\[data-(?:account-key|value)=/,
+        );
         return node;
       },
       first: () => node,
-      getAttribute: async () => (kind === "radio" ? name : selectedAccount),
+      getAttribute: async () =>
+        kind === "radio" && typeof name === "string" ? name : selectedAccount,
       count: async () => (fast ? 1 : 0),
-      setChecked: async (checked) => actions.push(`Fast mode ${checked}`),
+      setChecked: async (checked) => {
+        actions.push(`Fast mode ${checked}`);
+      },
       click: async () => {
         if (kind === "button") {
           expect(name).toEqual(/^Select account /);
@@ -333,19 +376,26 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
   };
   return {
     actions,
-    locator: (selector) => selector,
-    getByRole: (kind, options) => locate("dialog", kind, options),
+    locator: (selector: string) => {
+      const locator = { click: async () => {} };
+      selectors.set(locator, selector);
+      return locator;
+    },
+    getByRole: (
+      kind: Parameters<DialogControl["getByRole"]>[0],
+      options?: Parameters<DialogControl["getByRole"]>[1],
+    ) => locate("dialog", kind, options),
   };
 }
 
 describe("current New chat setup", () => {
-  const codex = {
+  const codex: Omit<RoleSettings, "model"> = {
     profile: { provider: "codex", fastMode: false },
     accountKey: "default",
     uiModel: "gpt-6-luna",
     effort: "low",
   };
-  const claude = (model) => ({
+  const claude = (model: string): Omit<RoleSettings, "model"> => ({
     profile: { provider: "claude", fastMode: false },
     accountKey: "claude-local",
     uiModel: model,
@@ -390,7 +440,9 @@ describe("current New chat setup", () => {
   });
 });
 
-const resourceFrame = (documents) => ({
+const resourceFrame = (
+  documents: Schemas["SyncEntity"][],
+): Schemas["ResourceChangeEvent"] => ({
   protocol: 4,
   workspaceId: "workspace",
   epoch: "epoch",
@@ -401,18 +453,42 @@ const resourceFrame = (documents) => ({
     { revision: 3, entityChanges: { after: 1, through: 3, documents } },
   ],
 });
-const upsert = (collection, id, value) => ({
-  collection,
-  id,
-  seq: 3,
-  op: "upsert",
-  value: { id, ...value },
-});
+type Upsert = Extract<
+  Schemas["SyncEntity"],
+  { op: "upsert"; collection: "agentSummary" | "agentDetail" | "event" }
+>;
+type UpsertArgs =
+  | [
+      collection: "agentSummary",
+      id: string,
+      value: Omit<Schemas["AgentSummaryEntityDto"], "id">,
+    ]
+  | [
+      collection: "agentDetail",
+      id: string,
+      value: Omit<Schemas["AgentDetailEntityDto"], "id">,
+    ]
+  | [
+      collection: "event",
+      id: string,
+      value: Omit<Schemas["EventEntityDto"], "id">,
+    ];
+function upsert(...[collection, id, value]: UpsertArgs): Upsert {
+  // Each fixture supplies its collection's fields; these sparse entity DTOs
+  // share their optional keys and their required identity.
+  if (collection === "agentSummary")
+    return { collection, id, seq: 3, op: "upsert", value: { id, ...value } };
+  if (collection === "agentDetail")
+    return { collection, id, seq: 3, op: "upsert", value: { id, ...value } };
+  return { collection, id, seq: 3, op: "upsert", value: { id, ...value } };
+}
 
 it("merges current summary/detail streams for owned agents and observes input events and deletions", async () => {
-  const feeds = new Map();
-  const observed = [];
-  const events = [];
+  const feeds = new Map<string, FrameReceiver>();
+  const observed: ObservedAgent[] = [];
+  const events: Parameters<
+    NonNullable<Parameters<typeof createEntityReader>[2]>
+  >[0][] = [];
   const close = vi.fn();
   const pull = createEntityReader(
     async (resource, receive) => {
@@ -424,6 +500,7 @@ it("merges current summary/detail streams for owned agents and observes input ev
   );
   await pull();
   const state = feeds.get(JSON.stringify({ kind: "state" }));
+  assert.ok(state);
   state(
     "resources",
     resourceFrame([
@@ -442,13 +519,14 @@ it("merges current summary/detail streams for owned agents and observes input ev
   const lead = feeds.get(
     JSON.stringify({ kind: "agentDetail", agentId: "lead" }),
   );
+  assert.ok(lead);
   lead(
     "resources",
     resourceFrame([
       upsert("agentDetail", "lead", {
         effort: "low",
         fastMode: false,
-        workerDefaults: { model: "gpt-6-luna" },
+        workerDefaults: { model: "gpt-6-luna", effort: null, fastMode: false },
       }),
     ]),
   );
@@ -469,6 +547,7 @@ it("merges current summary/detail streams for owned agents and observes input ev
   const worker = feeds.get(
     JSON.stringify({ kind: "agentDetail", agentId: "worker" }),
   );
+  assert.ok(worker);
   worker(
     "resources",
     resourceFrame([upsert("agentDetail", "worker", { lastAnswer: "TOKEN" })]),
@@ -500,7 +579,18 @@ it("assembles the server's multipart entity-transfer envelope before applying do
   const receive = createEntityFrameReader(accept);
   const documents = [upsert("agentSummary", "lead", { model: "gpt-6-luna" })];
   const data = JSON.stringify({ after: 1, through: 3, documents });
-  const frame = {
+  const frame: Omit<
+    Schemas["ResourceEntityTransferEvent"],
+    "partIndex" | "data"
+  > = {
+    complete: false,
+    cursor: { seq: 3, workspaceId: "workspace" },
+    epoch: "epoch",
+    reason: "change",
+    replyKind: "delta",
+    resource: { kind: "state" },
+    revision: 3,
+    workspaceId: "workspace",
     protocol: 4,
     transferId: "transfer",
     pageIndex: 0,
@@ -532,14 +622,16 @@ it("reads split SSE bytes through the advertised protocol and closes its owned c
   const mock = vi
     .spyOn(globalThis, "fetch")
     .mockImplementation(async (url, options) => {
+      assert.ok(url instanceof URL);
+      assert.ok(options?.signal);
       expect(url.searchParams.get("protocol")).toBe("4");
-      expect(JSON.parse(url.searchParams.get("resources"))).toEqual([
+      expect(JSON.parse(url.searchParams.get("resources") ?? "null")).toEqual([
         { kind: "agentDetail", agentId: "lead" },
       ]);
       return new Response(
         new ReadableStream({
           start(controller) {
-            options.signal.addEventListener("abort", () =>
+            options?.signal?.addEventListener("abort", () =>
               controller.error(new Error("aborted")),
             );
             const bytes = new TextEncoder().encode(wire);
@@ -587,9 +679,9 @@ it("checks owned cleanup while retaining unrelated loaded thread counts only as 
 });
 
 it("reads the current TeamSummary strong counts without summing All with its statuses", () => {
-  const selectors = [];
+  const selectors: string[] = [];
   const document = {
-    querySelector: (selector) => {
+    querySelector: (selector: string) => {
       selectors.push(selector);
       if (selector === '#team [data-team-count="all"] strong')
         return { textContent: "3" };
@@ -598,7 +690,7 @@ it("reads the current TeamSummary strong counts without summing All with its sta
       if (selector === '#team .worker-group [aria-expanded="false"]') return {};
       return null;
     },
-    querySelectorAll: (selector) =>
+    querySelectorAll: (selector: string) =>
       selector === "#team [data-worker]" ? [{}] : [],
   };
   expect(readTeamUiCounts(document)).toMatchObject({
@@ -629,7 +721,20 @@ it("accepts only catalogue aliases resolving to the approved paid-test model", (
 it("stages several transfer pages until the final complete marker and rejects missing pages", () => {
   const accept = vi.fn();
   const receive = createEntityFrameReader(accept);
-  const page = (index, after, through, complete) => ({
+  const page = (
+    index: number,
+    after: number,
+    through: number,
+    complete: boolean,
+  ): Schemas["ResourceEntityTransferEvent"] => ({
+    protocol: 4,
+    cursor: { seq: through, workspaceId: "workspace" },
+    epoch: "epoch",
+    reason: "change",
+    replyKind: "delta",
+    resource: { kind: "state" },
+    revision: 3,
+    workspaceId: "workspace",
     transferId: "multi",
     pageIndex: index,
     partIndex: 0,
@@ -647,7 +752,7 @@ it("stages several transfer pages until the final complete marker and rejects mi
   expect(() => receive.assertComplete()).toThrow(/incomplete/);
   receive("entity-transfer", page(2, 2, 3, true));
   expect(accept).toHaveBeenCalledTimes(1);
-  expect(accept.mock.calls[0][0]).toHaveLength(3);
+  expect(accept.mock.calls.at(0)?.at(0)).toHaveLength(3);
   expect(() => receive.assertComplete()).not.toThrow();
   const missing = createEntityFrameReader(vi.fn());
   missing("entity-transfer", page(0, 0, 1, false));
@@ -658,15 +763,24 @@ it("stages several transfer pages until the final complete marker and rejects mi
 });
 
 it("cannot certify observations interrupted before a required transfer completes", async () => {
-  let receive;
-  let failed;
+  let receive: FrameReceiver | undefined;
+  let failed: Parameters<EntitySubscriber>[2] | undefined;
   const pull = createEntityReader(async (_resource, accept, onError) => {
     receive = accept;
     failed = onError;
     return { close: async () => {} };
   }, vi.fn());
   await pull();
+  assert.ok(receive && failed);
   receive("entity-transfer", {
+    protocol: 4,
+    cursor: { seq: 1, workspaceId: "workspace" },
+    epoch: "epoch",
+    reason: "change",
+    replyKind: "delta",
+    resource: { kind: "state" },
+    revision: 3,
+    workspaceId: "workspace",
     transferId: "interrupted",
     pageIndex: 0,
     partIndex: 0,
@@ -733,7 +847,7 @@ it("reports the evidence-only queue baseline, end and delta in the summary", () 
 });
 
 it("validates the actual post-create lead and worker defaults through proven aliases", () => {
-  const lead = {
+  const lead: Parameters<typeof assertCreatedTeamProfiles>[1] = {
     model: "claude-sonnet-5-5",
     uiModelValues: ["sonnet", "claude-sonnet-5-5"],
     effort: "low",
@@ -751,7 +865,7 @@ it("validates the actual post-create lead and worker defaults through proven ali
     accountKey: "claude",
     effort: "low",
     fastMode: false,
-    workerDefaults: { model: "default", effort: "low" },
+    workerDefaults: { model: "default", effort: "low", fastMode: false },
   };
   expect(() => assertCreatedTeamProfiles(entity, lead, worker)).not.toThrow();
   expect(() =>

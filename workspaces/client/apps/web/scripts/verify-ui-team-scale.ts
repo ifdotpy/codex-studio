@@ -3,12 +3,21 @@
 // of a real Studio backend. Never run from the ordinary test tiers. Headless
 // Chromium only; no window is activated and no operating-system input is sent.
 import assert from "node:assert/strict";
-import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
+import { runScaleVerifier } from "./scaleVerifierTeardown.ts";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, realpath, rename, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { chromium } from "playwright";
+import type { components } from "../src/generated/api.ts";
+import type { Audit, AuditItem, Counters } from "./uiTeamScaleAudit.ts";
+import type {
+  ObservedAgent,
+  SpawnTimeline,
+  TeamOptions,
+  CriteriaMetrics,
+  TeamSummaryMetrics,
+} from "./uiTeamScaleHelpers.ts";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -22,7 +31,7 @@ import {
   scaleProfile,
   parseWorkerWorkspace,
   showsUpstreamLimit,
-} from "./scaleVerifierHelpers.mjs";
+} from "./scaleVerifierHelpers.ts";
 import {
   CLEANUP_DEADLINE_MS,
   DIAGNOSTICS_INTERVAL_MS,
@@ -51,7 +60,7 @@ import {
   sqliteWriteWaits,
   stageDeadlineMs,
   summaryText,
-} from "./uiTeamScaleHelpers.mjs";
+} from "./uiTeamScaleHelpers.ts";
 import {
   AUDIT_FETCH_CONCURRENCY,
   JOURNAL_GREP,
@@ -68,17 +77,90 @@ import {
   mergeAudits,
   startOrderInversions,
   toolCalls,
-} from "./uiTeamScaleAudit.mjs";
+} from "./uiTeamScaleAudit.ts";
 
+type Schemas = components["schemas"];
+type HttpRow = {
+  at: string;
+  method: string;
+  path: string | undefined;
+  status: number | null;
+  elapsedMs: number | null;
+};
+type Probe = {
+  armed: boolean;
+  longTasks: { startMs: number; durationMs: number }[];
+  frameGaps: { atMs: number; gapMs: number }[];
+  echoMs: number[];
+};
+declare global {
+  interface Window {
+    __uiProbe: Probe;
+  }
+}
+type TeamTracker = ReturnType<typeof createTeamTracker>;
+type EntityReader = ReturnType<typeof createEntityReader>;
+type ProcessTable = ReturnType<typeof readProcessTable>;
+type Sample = {
+  atMs: number;
+  ui: ReturnType<typeof readTeamUiCounts> & { rafRoundtripMs: number };
+  backendAgents: number;
+  started: number;
+  replied: number;
+  backendCpuPercent: number | null;
+  backendRssMiB: number | null;
+  providerProcesses: number;
+  providerCpuPercent: number | null;
+  providerRssMiB: number;
+  error?: never;
+};
+type RunJournal = {
+  runTag: string;
+  runId: string;
+  options: TeamOptions;
+  startedAt: string;
+  http: HttpRow[];
+  samples: (Sample | { atMs: number; error: string })[];
+  diagnostics: {
+    series: (ReturnType<typeof compactDiagnostics> & { atMs: number })[];
+    before?: ReturnType<typeof compactDiagnostics>;
+    after?: ReturnType<typeof compactDiagnostics>;
+    countersBefore?: Counters;
+    countersAfter?: Counters;
+  };
+  leadId: string | null;
+  result: ReturnType<typeof evaluateCriteria> | null;
+  cleanup:
+    | { state: string; leadId?: string | null }
+    | Awaited<ReturnType<typeof cleanup>>;
+  backend?: {
+    pid: number;
+    build: Schemas["DesktopResponse"]["backendBuild"];
+    stateDir: string;
+  };
+  roles?: {
+    lead: Awaited<ReturnType<typeof resolveRole>>;
+    worker: Awaited<ReturnType<typeof resolveRole>>;
+  };
+  baselineProviderProcesses?: number;
+  audit?: Audit;
+  metrics?: CriteriaMetrics & TeamSummaryMetrics & Record<string, unknown>;
+  workerTimeline?: SpawnTimeline[];
+  teamVisibleScreenshot?: { path: string; atMs: number; teamCount: number };
+  chatOpenMs?: number;
+  prompt?: string;
+  promptSentAtMs?: number;
+  sendClickMs?: number;
+  deadlineMs?: number;
+  deadlineReached?: boolean;
+  pageErrors?: string[];
+  error?: string;
+  uiProbe?: Probe | null;
+};
 const REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../../..",
 );
-const WEB_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const { chromium } = createRequire(join(WEB_ROOT, "package.json"))(
-  "playwright",
-);
-
 // Browser viewport; wide enough that the team panel is a side panel.
 const VIEWPORT = { width: 1440, height: 900 };
 // Deadline of one HTTP request and of one UI step, milliseconds.
@@ -117,14 +199,14 @@ function mainCheckout() {
   return common.status === 0 ? dirname(common.stdout.trim()) : REPO_ROOT;
 }
 
-async function writeJson(path, value) {
+async function writeJson(path: string, value: unknown) {
   await writeFile(`${path}.next`, `${JSON.stringify(value, null, 2)}\n`, {
     mode: 0o600,
   });
   await rename(`${path}.next`, path);
 }
 
-async function assertOutsideCheckout(directory) {
+async function assertOutsideCheckout(directory: string) {
   const [repo, actual] = await Promise.all([
     realpath(REPO_ROOT),
     realpath(directory),
@@ -138,15 +220,25 @@ async function assertOutsideCheckout(directory) {
   );
 }
 
-function createApi(origin, token, journal) {
+// Studio HTTP responses use the Rust-generated endpoint contracts; existing
+// run-specific assertions remain at their consumers.
+function createApi(
+  origin: string,
+  token: string,
+  journal: { http: HttpRow[] },
+) {
   const headers = {
     "content-type": "application/json",
     origin,
     "x-canvas-token": token,
   };
-  return async function api(method, path, body) {
+  return async function api<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
     const startedAt = performance.now();
-    const record = {
+    const record: HttpRow = {
       at: new Date().toISOString(),
       method,
       path: path.split("?")[0],
@@ -167,16 +259,16 @@ function createApi(origin, token, journal) {
         response.ok,
         `${method} ${path} returned HTTP ${response.status}: ${text.slice(0, 300)}`,
       );
-      return text ? JSON.parse(text) : null;
+      return JSON.parse(text || "null");
     } finally {
       record.elapsedMs = Math.round(performance.now() - startedAt);
     }
   };
 }
 
-function compactDiagnostics(value) {
+function compactDiagnostics(value: Schemas["DiagnosticsResponse"]) {
   const routes = value?.httpRequestMetrics?.routes ?? [];
-  const worst = routes.reduce(
+  const worst = routes.reduce<(typeof routes)[number] | null>(
     (best, route) =>
       route.latencyMs.p95 > (best?.latencyMs.p95 ?? -1) ? route : best,
     null,
@@ -202,7 +294,7 @@ function compactDiagnostics(value) {
 }
 
 // Full command lines are searched so that a leaked `sleep` of the run is found.
-function processesMentioning(needle) {
+function processesMentioning(needle: string) {
   const found = [];
   for (const entry of readdirSync("/proc")) {
     if (!/^[1-9]\d*$/.test(entry)) continue;
@@ -220,7 +312,11 @@ function processesMentioning(needle) {
   return found;
 }
 
-function providerPids(table, backendPid, names) {
+function providerPids(
+  table: ProcessTable,
+  backendPid: number,
+  names: string[],
+) {
   return new Set(
     names.flatMap((name) =>
       sampleProviderProcesses(table, backendPid, name).perProcess.map(
@@ -230,8 +326,13 @@ function providerPids(table, backendPid, names) {
   );
 }
 
-const PROBE_SOURCE = ({ frameGapRecordMs }) => {
-  const probe = { armed: false, longTasks: [], frameGaps: [], echoMs: [] };
+const PROBE_SOURCE = ({ frameGapRecordMs }: { frameGapRecordMs: number }) => {
+  const probe: Probe = {
+    armed: false,
+    longTasks: [],
+    frameGaps: [],
+    echoMs: [],
+  };
   window.__uiProbe = probe;
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries())
@@ -241,7 +342,7 @@ const PROBE_SOURCE = ({ frameGapRecordMs }) => {
       });
   }).observe({ type: "longtask", buffered: true });
   let last = performance.now();
-  const frame = (now) => {
+  const frame = (now: number) => {
     if (probe.armed && now - last >= frameGapRecordMs)
       probe.frameGaps.push({
         atMs: Math.round(now),
@@ -251,7 +352,7 @@ const PROBE_SOURCE = ({ frameGapRecordMs }) => {
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
-  let keydownAt = null;
+  let keydownAt: number | null = null;
   document.addEventListener(
     "keydown",
     (event) => {
@@ -276,24 +377,39 @@ const PROBE_SOURCE = ({ frameGapRecordMs }) => {
   );
 };
 
-async function resolveRole(api, accounts, profile) {
-  const accountKeys = scaleAccountKeys(accounts, profile);
-  const catalog = await api(
+async function resolveRole(
+  api: ReturnType<typeof createApi>,
+  accounts: Schemas["AccountsResponse"]["accounts"],
+  profile: ReturnType<typeof scaleProfile>,
+) {
+  const accountKeys: string[] = scaleAccountKeys(accounts, profile);
+  const accountKey = accountKeys[0];
+  assert.ok(accountKey);
+  const catalog = await api<Schemas["ModelCatalogResponse"]>(
     "GET",
-    `/api/models?account_key=${encodeURIComponent(accountKeys[0])}`,
+    `/api/models?account_key=${encodeURIComponent(accountKey)}`,
   );
   const candidate = requireScaleModel(catalog, profile);
+  assert.ok(typeof candidate.model === "string");
+  const model = candidate.resolvedModel ?? candidate.model;
+  assert.ok(typeof model === "string");
   return {
     profile,
-    accountKey: accountKeys[0],
+    accountKey,
     uiModel: candidate.model,
     uiModelValues: approvedModelUiValues(catalog, candidate),
-    model: candidate.resolvedModel ?? candidate.model,
+    model,
     effort: profile.effort,
   };
 }
 
-async function main({ setCleanup, setRemaining }) {
+async function main({
+  setCleanup,
+  setRemaining,
+}: {
+  setCleanup(callback: () => Promise<void>): void;
+  setRemaining(callback: () => unknown): void;
+}) {
   const defaults = { project: mainCheckout() };
   const options = parseArgs(process.argv.slice(2), defaults);
   if (options.help) {
@@ -315,7 +431,7 @@ async function main({ setCleanup, setRemaining }) {
   await mkdir(runDir, { recursive: true, mode: 0o700 });
   await assertOutsideCheckout(runDir);
   const journalPath = join(runDir, "evidence.json");
-  const journal = {
+  const journal: RunJournal = {
     runTag,
     runId,
     options: { ...options, workerWorkspace },
@@ -332,13 +448,14 @@ async function main({ setCleanup, setRemaining }) {
   await save();
   process.stdout.write(`Run ${runTag}; evidence ${journalPath}\n`);
 
-  const session = await (
+  const session: Schemas["SessionResponse"] = await (
     await fetch(new URL("/api/session", options.origin))
   ).json();
   assert.ok(session.token, "Backend did not provide its session token.");
   const api = createApi(options.origin, session.token, journal);
-  const desktop = await api("GET", "/api/desktop");
+  const desktop = await api<Schemas["DesktopResponse"]>("GET", "/api/desktop");
   const backendPid = desktop.pid;
+  assert.ok(typeof backendPid === "number");
   assert.ok(
     Number.isSafeInteger(backendPid),
     "Backend did not report its pid.",
@@ -348,10 +465,14 @@ async function main({ setCleanup, setRemaining }) {
     build: desktop.backendBuild,
     stateDir: desktop.stateDir,
   };
-  const projects = (await api("GET", "/api/projects")).items;
+  const projects = (
+    await api<Schemas["ProjectReadResponse"]>("GET", "/api/projects")
+  ).items;
   const project = projects.find((item) => item.path === options.project);
   assert.ok(project, `${options.project} is not a registered project.`);
-  const accounts = (await api("GET", "/api/accounts")).accounts;
+  const accounts = (
+    await api<Schemas["AccountsResponse"]>("GET", "/api/accounts")
+  ).accounts;
   const lead = await resolveRole(api, accounts, scaleProfile(options.lead));
   const workerRole = await resolveRole(
     api,
@@ -365,7 +486,10 @@ async function main({ setCleanup, setRemaining }) {
     PROVIDER_PROCESS_NAMES,
   );
   journal.baselineProviderProcesses = baselineProviderPids.size;
-  const rawDiagnosticsBefore = await api("GET", "/api/diagnostics");
+  const rawDiagnosticsBefore = await api<Schemas["DiagnosticsResponse"]>(
+    "GET",
+    "/api/diagnostics",
+  );
   const diagnosticsBefore = compactDiagnostics(rawDiagnosticsBefore);
   journal.diagnostics.before = diagnosticsBefore;
   journal.diagnostics.countersBefore =
@@ -373,18 +497,21 @@ async function main({ setCleanup, setRemaining }) {
 
   const runStart = performance.now();
   const runMs = () => Math.round(performance.now() - runStart);
-  const agents = new Map();
+  const agents = new Map<string, ObservedAgent>();
 
-  let leadId = null;
-  let tracker = null;
-  const pending = [];
-  const onAgent = (value) => {
+  let leadId: string | null = null;
+  const teamTracker: { current: TeamTracker | null } = { current: null };
+  const pending: [ObservedAgent, number][] = [];
+  const onAgent = (value: ObservedAgent) => {
     agents.set(value.id, value);
     if (value.deleted) return;
-    if (tracker) tracker.observe(value, runMs());
+    if (teamTracker.current) teamTracker.current.observe(value, runMs());
     else pending.push([value, runMs()]);
   };
-  const protocol = await api("GET", "/api/sync/protocol");
+  const protocol = await api<Schemas["SyncProtocolResponse"]>(
+    "GET",
+    "/api/sync/protocol",
+  );
   const pull = createEntityReader(
     (resource, receive, failed) =>
       openEntityStream({
@@ -401,12 +528,12 @@ async function main({ setCleanup, setRemaining }) {
 
   const browser = await chromium.launch({ headless: true });
   let samplerRunning = false;
-  let sampler = null;
-  let promptSentAtMs = null;
-  const uiApiLatenciesMs = [];
-  let runError = null;
-  let leadResponseId = null;
-  let messageAgentId = null;
+  let sampler: Promise<void> | null = null;
+  let promptSentAtMs: number | null = null;
+  const uiApiLatenciesMs: { path: string; elapsedMs: number }[] = [];
+  let runError: unknown = null;
+  let leadResponseId: string | null = null;
+  let messageAgentId: string | null = null;
   setRemaining(() => ({
     evidence: journalPath,
     leadId: leadId ?? leadResponseId ?? messageAgentId,
@@ -431,7 +558,10 @@ async function main({ setCleanup, setRemaining }) {
       if (leadId) {
         await pull();
         pull.assertComplete();
-        const identity = await api("GET", "/api/sync/identity");
+        const identity = await api<Schemas["SyncIdentityResponse"]>(
+          "GET",
+          "/api/sync/identity",
+        );
         journal.audit = await auditRun({
           stateDir: desktop.stateDir,
           workspaceId: identity.workspaceId,
@@ -442,13 +572,15 @@ async function main({ setCleanup, setRemaining }) {
           since: journal.startedAt,
           leadId,
           runTag,
-          workerIds: (tracker?.workers() ?? []).map((row) => row.id),
+          workerIds: (teamTracker.current?.workers() ?? []).map(
+            (row) => row.id,
+          ),
           entities: agents,
           timeline: journal.workerTimeline ?? [],
-          rel: (ms) =>
+          rel: (ms: number | null) =>
             ms === null || promptSentAtMs === null ? null : ms - promptSentAtMs,
-          tracker,
-          throttling: tracker?.throttling(runMs()) ?? { events: 0 },
+          tracker: teamTracker.current,
+          throttling: teamTracker.current?.throttling(runMs()) ?? { events: 0 },
           diagnostics: {
             before: journal.diagnostics.countersBefore,
             after: journal.diagnostics.countersAfter,
@@ -464,7 +596,10 @@ async function main({ setCleanup, setRemaining }) {
     } catch (error) {
       journal.audit = {
         failures: [
-          { kind: "auditFailed", error: String(error?.stack ?? error) },
+          {
+            kind: "auditFailed",
+            error: String(error instanceof Error ? error.stack : error),
+          },
         ],
         anomalies: [],
       };
@@ -495,8 +630,18 @@ async function main({ setCleanup, setRemaining }) {
       await save();
       const summaryPath = join(runDir, "summary.txt");
       if (journal.metrics) {
-        await writeFile(summaryPath, summaryText(journal));
-        process.stdout.write(`\n${summaryText(journal)}`);
+        assert.ok(journal.result);
+        await writeFile(
+          summaryPath,
+          summaryText({
+            ...journal,
+            result: journal.result,
+            metrics: journal.metrics,
+          }),
+        );
+        process.stdout.write(
+          `\n${summaryText({ ...journal, result: journal.result, metrics: journal.metrics })}`,
+        );
       }
       const cleanupOk =
         journal.cleanup.state === OWNED_CLEANUP_VERIFIED_STATE ||
@@ -514,7 +659,7 @@ async function main({ setCleanup, setRemaining }) {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     page.setDefaultTimeout(UI_STEP_TIMEOUT_MS);
-    const pageErrors = [];
+    const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("requestfinished", async (request) => {
       if (
@@ -570,7 +715,7 @@ async function main({ setCleanup, setRemaining }) {
         try {
           await pull();
           const uiStart = performance.now();
-          const ui = await page.evaluate(readTeamUiCounts);
+          const ui = await page.evaluate(readTeamUiCounts, undefined);
           const uiRoundtripMs = Math.round(performance.now() - uiStart);
           if (ui.teamPanelClosed)
             await page
@@ -584,7 +729,9 @@ async function main({ setCleanup, setRemaining }) {
               sampleProviderProcesses(table, backendPid, name).perProcess,
           );
           const wallMs = performance.now() - previousCpu.at;
-          const workersSeen = tracker ? tracker.summary() : null;
+          const workersSeen = teamTracker.current
+            ? teamTracker.current.summary()
+            : null;
           if (
             promptSentAtMs !== null &&
             ui.teamCount > 0 &&
@@ -633,7 +780,12 @@ async function main({ setCleanup, setRemaining }) {
             nextDiagnosticsAt = performance.now() + DIAGNOSTICS_INTERVAL_MS;
             journal.diagnostics.series.push({
               atMs: runMs(),
-              ...compactDiagnostics(await api("GET", "/api/diagnostics")),
+              ...compactDiagnostics(
+                await api<Schemas["DiagnosticsResponse"]>(
+                  "GET",
+                  "/api/diagnostics",
+                ),
+              ),
             });
           }
           if (promptSentAtMs !== null && performance.now() >= nextEchoAt) {
@@ -644,7 +796,10 @@ async function main({ setCleanup, setRemaining }) {
         } catch (error) {
           journal.samples.push({
             atMs: runMs(),
-            error: String(error?.message ?? error).slice(0, 300),
+            error: String(error instanceof Error ? error.message : error).slice(
+              0,
+              300,
+            ),
           });
         }
         await sleep(
@@ -705,8 +860,9 @@ async function main({ setCleanup, setRemaining }) {
       .locator(`[data-chat="${leadId}"][aria-current="true"]`)
       .waitFor();
     journal.chatOpenMs = Math.round(performance.now() - startClickAt);
-    tracker = createTeamTracker(leadId, runTag, options.workers);
-    for (const [value, at] of pending.splice(0)) tracker.observe(value, at);
+    teamTracker.current = createTeamTracker(leadId, runTag, options.workers);
+    for (const [value, at] of pending.splice(0))
+      teamTracker.current.observe(value, at);
     process.stdout.write(
       `Lead chat ${leadId} opened in ${journal.chatOpenMs} ms\n`,
     );
@@ -724,10 +880,11 @@ async function main({ setCleanup, setRemaining }) {
       await sleep(POLL_MS);
       leadEntity = agents.get(leadId);
     }
+    assert.ok(leadEntity);
     assertCreatedTeamProfiles(leadEntity, lead, workerRole);
 
     // The team limit is a user setting; raise it in the UI when it is too low.
-    if (!(leadEntity.concurrency >= options.workers)) {
+    if (!((leadEntity.concurrency ?? NaN) >= options.workers)) {
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
@@ -736,7 +893,7 @@ async function main({ setCleanup, setRemaining }) {
       await field.blur();
       for (
         let waited = 0;
-        !(agents.get(leadId)?.concurrency >= options.workers);
+        !((agents.get(leadId)?.concurrency ?? NaN) >= options.workers);
         waited += POLL_MS
       ) {
         checkAborted();
@@ -777,7 +934,7 @@ async function main({ setCleanup, setRemaining }) {
     let lastLine = "";
     for (;;) {
       checkAborted();
-      const summary = tracker.summary();
+      const summary = teamTracker.current.summary();
       const line = `visible ${summary.visible}/${options.workers} started ${summary.started} replied ${summary.replied} lead ${summary.leadReportedAtMs === null ? "waiting" : "reported"}`;
       if (line !== lastLine)
         process.stdout.write(
@@ -804,7 +961,10 @@ async function main({ setCleanup, setRemaining }) {
     journal.pageErrors = pageErrors;
   } catch (error) {
     runError = error;
-    journal.error = String(error?.stack ?? error).slice(0, 2000);
+    journal.error = String(error instanceof Error ? error.stack : error).slice(
+      0,
+      2000,
+    );
     process.stderr.write(`Run failed: ${journal.error}\n`);
   } finally {
     samplerRunning = false;
@@ -816,33 +976,43 @@ async function main({ setCleanup, setRemaining }) {
 
   // Measurements.
   try {
-    const probe = browser.contexts()[0]?.pages()[0]
-      ? await browser
-          .contexts()[0]
-          .pages()[0]
-          .evaluate(() => window.__uiProbe)
+    const probePage = browser.contexts()[0]?.pages()[0];
+    const probe = probePage
+      ? await probePage.evaluate(() => window.__uiProbe)
       : null;
-    const rawDiagnosticsAfter = await api("GET", "/api/diagnostics");
+    const rawDiagnosticsAfter = await api<Schemas["DiagnosticsResponse"]>(
+      "GET",
+      "/api/diagnostics",
+    );
     const diagnosticsAfter = compactDiagnostics(rawDiagnosticsAfter);
     journal.diagnostics.after = diagnosticsAfter;
     journal.diagnostics.countersAfter =
       diagnosticsCounters(rawDiagnosticsAfter);
-    const summary = tracker?.summary() ?? {
+    const summary = teamTracker.current?.summary() ?? {
       started: 0,
       replied: 0,
       leadReportedAtMs: null,
       missingTokens: [],
+      accountDistribution: {},
     };
-    const throttling = tracker?.throttling(runMs()) ?? {
+    const throttling = teamTracker.current?.throttling(runMs()) ?? {
       events: 0,
       agents: 0,
       waitMs: 0,
     };
-    const good = journal.samples.filter((sample) => !sample.error);
-    const rel = (ms) =>
+    const good = journal.samples.filter(
+      (sample): sample is Sample => !sample.error,
+    );
+    const rel = (ms: number | null) =>
       ms === null || promptSentAtMs === null ? null : ms - promptSentAtMs;
-    const peak = (key) =>
-      good.reduce((best, sample) => Math.max(best, sample[key] ?? 0), 0);
+    const peak = (
+      key:
+        | "backendCpuPercent"
+        | "backendRssMiB"
+        | "providerCpuPercent"
+        | "providerRssMiB"
+        | "providerProcesses",
+    ) => good.reduce((best, sample) => Math.max(best, sample[key] ?? 0), 0);
     // The diagnostics endpoint is the instrument, not a user path: reported
     // on its own and excluded from the API p95 pass limit.
     const apiRows = [
@@ -851,14 +1021,17 @@ async function main({ setCleanup, setRemaining }) {
         elapsedMs: row.elapsedMs,
       })),
       ...uiApiLatenciesMs,
-    ].filter((row) => row.elapsedMs !== null);
+    ].filter(
+      (row): row is { path: string | undefined; elapsedMs: number } =>
+        row.elapsedMs !== null,
+    );
     const allApiMs = apiRows
       .filter((row) => row.path !== DIAGNOSTICS_PATH)
       .map((row) => row.elapsedMs);
     const diagnosticsApiMs = apiRows
       .filter((row) => row.path === DIAGNOSTICS_PATH)
       .map((row) => row.elapsedMs);
-    const workerRows = tracker?.workers() ?? [];
+    const workerRows = teamTracker.current?.workers() ?? [];
     const workerTimeline = workerRows.map((row) => ({
       ...row,
       startedAfterPromptMs: rel(row.startedAtMs),
@@ -870,7 +1043,7 @@ async function main({ setCleanup, setRemaining }) {
     const afterPrompt = good.filter(
       (sample) => promptSentAtMs !== null && sample.atMs >= promptSentAtMs,
     );
-    journal.metrics = {
+    const metrics = {
       uiFirstVisibleMs: rel(
         firstReachedMs(afterPrompt, (s) => s.ui.teamCount, 1),
       ),
@@ -969,17 +1142,20 @@ async function main({ setCleanup, setRemaining }) {
           upstreamLimit: showsUpstreamLimit(row.error),
         })),
     };
+    journal.metrics = metrics;
     journal.uiProbe = probe;
     journal.workerTimeline = workerTimeline;
     journal.result = runError
       ? { passed: false, failures: ["runFailed"], checks: {} }
-      : evaluateCriteria(journal.metrics, options.workers);
+      : evaluateCriteria(metrics, options.workers);
     if (journal.deadlineReached) journal.result.failures.push("stageDeadline");
     journal.result.passed &&= !journal.deadlineReached;
   } catch (error) {
     journal.result = {
       passed: false,
-      failures: [`measurementFailed: ${error?.message}`],
+      failures: [
+        `measurementFailed: ${error instanceof Error ? error.message : error}`,
+      ],
       checks: {},
     };
     runError ??= error;
@@ -1007,13 +1183,32 @@ async function auditRun({
   tracker,
   throttling,
   diagnostics,
+}: {
+  stateDir: string;
+  workspaceId: string;
+  origin: string;
+  token: string;
+  backendPid: number;
+  journalUnit: string;
+  since: string;
+  leadId: string;
+  runTag: string;
+  workerIds: string[];
+  entities: Map<string, ObservedAgent>;
+  timeline: SpawnTimeline[];
+  rel: (ms: number | null) => number | null;
+  tracker: TeamTracker | null;
+  throttling: { events: number };
+  diagnostics: { before: Counters | undefined; after: Counters | undefined };
 }) {
   const api = createApi(origin, token, { http: [] });
-  const transcript = async (id) => {
-    const items = [];
-    let before = null;
+  const transcript = async (id: string) => {
+    const items: AuditItem[] = [];
+    let before: string | null | undefined = null;
     do {
-      const page = await api(
+      const page: Schemas["TranscriptPageResponse"] = await api<
+        Schemas["TranscriptPageResponse"]
+      >(
         "GET",
         `/api/transcript/page?id=${encodeURIComponent(id)}&limit=${TRANSCRIPT_PAGE_LIMIT}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
       );
@@ -1022,8 +1217,8 @@ async function auditRun({
     } while (before);
     return items;
   };
-  const parts = [];
-  const desktop = await api("GET", "/api/desktop");
+  const parts: Partial<Audit>[] = [];
+  const desktop = await api<Schemas["DesktopResponse"]>("GET", "/api/desktop");
   if (desktop.pid !== backendPid)
     parts.push({
       failures: [
@@ -1034,7 +1229,10 @@ async function auditRun({
   const lead = auditLead(leadItems, workerIds, `${runTag}_ALL_REPLIED`);
   parts.push(lead);
   const requests = (
-    await api("GET", `/api/tool-requests?agent=${encodeURIComponent(leadId)}`)
+    await api<Schemas["ToolRequestList"]>(
+      "GET",
+      `/api/tool-requests?agent=${encodeURIComponent(leadId)}`,
+    )
   ).requests;
   parts.push(auditToolRequests(requests, toolCalls(leadItems)));
   const workers = await mapLimited(
@@ -1045,13 +1243,13 @@ async function auditRun({
   parts.push(...workers);
   parts.push({
     failures: workerIds.flatMap((id) =>
-      entities.has(id) ? auditWorkerEntity(entities.get(id)) : [],
+      entities.get(id) ? auditWorkerEntity(entities.get(id) ?? { id }) : [],
     ),
   });
   const summary = tracker?.summary();
   parts.push({
     failures: auditLeadReport(
-      (tracker?.leadReports() ?? []).map(rel),
+      (tracker?.leadReports() ?? []).map(rel).filter((ms) => ms !== null),
       rel(summary?.lastReplyMs ?? null),
     ),
   });
@@ -1115,8 +1313,32 @@ async function cleanup({
   backendPid,
   baselineProviderPids,
   baselineLoadedThreads,
+}: {
+  api: ReturnType<typeof createApi>;
+  pull: EntityReader;
+  agents: Map<string, ObservedAgent>;
+  leadId: string;
+  runTag: string;
+  backendPid: number;
+  baselineProviderPids: Set<number>;
+  baselineLoadedThreads: number | null;
 }) {
-  const state = {
+  const state: {
+    state: string;
+    leadId: string;
+    deleteRequest: string | null;
+    remaining: number | null;
+    leakedProviderPids: number[];
+    sharedAppServersAdded: number | null;
+    loadedThreads: number | null;
+    baselineLoadedThreads: number | null;
+    loadedThreadAudit: string;
+    providerProcessAudit: string;
+    leakedProcesses: ReturnType<typeof processesMentioning>;
+    observationError?: string;
+    ownedAgents?: number;
+    elapsedMs?: number;
+  } = {
     state: "started",
     leadId,
     deleteRequest: null,
@@ -1139,7 +1361,9 @@ async function cleanup({
   const ownedIdentity = new Set([leadId]);
   try {
     await pull().catch((error) => {
-      state.observationError = String(error?.message ?? error);
+      state.observationError = String(
+        error instanceof Error ? error.message : error,
+      );
     });
     state.ownedAgents = owned().length;
     for (const agent of owned()) {
@@ -1152,7 +1376,7 @@ async function cleanup({
       await api("POST", "/api/conversation/delete", { id: leadId });
       state.deleteRequest = "confirmed";
     } catch (error) {
-      state.deleteRequest = `unknown: ${String(error?.message ?? error).slice(0, 200)}`;
+      state.deleteRequest = `unknown: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`;
     }
     for (;;) {
       await pull();
@@ -1175,7 +1399,7 @@ async function cleanup({
         (pid) => !baselineProviderPids.has(pid) && !providerLeaks.includes(pid),
       ).length;
       state.loadedThreads = compactDiagnostics(
-        await api("GET", DIAGNOSTICS_PATH),
+        await api<Schemas["DiagnosticsResponse"]>("GET", DIAGNOSTICS_PATH),
       ).loadedThreads;
       const toolLeaks = processesMentioning(runTag);
       state.leakedProviderPids = providerLeaks;
@@ -1185,7 +1409,9 @@ async function cleanup({
         pull.assertComplete();
       } catch (error) {
         complete = false;
-        state.observationError = String(error?.message ?? error);
+        state.observationError = String(
+          error instanceof Error ? error.message : error,
+        );
       }
       if (complete && cleanupVerified(state)) {
         state.state = OWNED_CLEANUP_VERIFIED_STATE;
@@ -1198,7 +1424,7 @@ async function cleanup({
       await sleep(POLL_MS * 4);
     }
   } catch (error) {
-    state.state = `FAILED: ${String(error?.message ?? error).slice(0, 300)}`;
+    state.state = `FAILED: ${String(error instanceof Error ? error.message : error).slice(0, 300)}`;
   }
   state.elapsedMs = Math.round(performance.now() - startedAt);
   process.stdout.write(
@@ -1212,6 +1438,6 @@ runScaleVerifier(main, {
     aborted = true;
   },
 }).catch((error) => {
-  process.stderr.write(`${error?.stack ?? error}\n`);
+  process.stderr.write(`${error instanceof Error ? error.stack : error}\n`);
   process.exitCode = 1;
 });
