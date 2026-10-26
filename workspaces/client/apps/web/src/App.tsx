@@ -3669,17 +3669,21 @@ export default function App({ active = true }: { active?: boolean }) {
       <ProjectDeleteDialog {...projectDeletion.dialog} />
       <Modal
         opened={!!modal}
-        {...(modal?.title === "New chat"
-          ? { padding: "var(--studio-model-dialog-padding)" }
-          : {})}
+        padding={
+          modal?.title === "New chat"
+            ? "var(--studio-model-dialog-padding)"
+            : undefined
+        }
         closeOnEscape={modal?.title !== "New chat"}
         onClose={() => setModal(null)}
         title={modal?.title}
-        {...(modal?.title === "Project settings"
-          ? { size: modalSizes.settings }
-          : modal?.title === "New chat"
-            ? { size: "var(--studio-model-dialog-size)" }
-            : {})}
+        size={
+          modal?.title === "Project settings"
+            ? modalSizes.settings
+            : modal?.title === "New chat"
+              ? "var(--studio-model-dialog-size)"
+              : undefined
+        }
       >
         <div className={modal?.title === "New chat" ? undefined : "picker"}>
           {modal?.body}

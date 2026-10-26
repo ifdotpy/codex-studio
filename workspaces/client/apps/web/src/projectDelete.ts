@@ -102,21 +102,20 @@ function confirmedReply(
 
 /** A saved confirmed intention survives remounts; only explicit recovery may replay its exact body. */
 export class ProjectDeleteIntent {
-  phase: "submitting" | "unknown" | "rejected" | "deleted" = "submitting";
-  error = "";
-  result: DeleteReply | null = null;
-  private started = false;
   readonly request: DeleteRequest;
   readonly name: string;
   readonly scope: string[];
   private readonly storage: IntentStorage;
+  phase: "submitting" | "unknown" | "rejected" | "deleted" = "submitting";
+  error = "";
+  result: DeleteReply | null = null;
+  private started = false;
   constructor(
     request: DeleteRequest,
     name: string,
     scope: string[],
     storage: IntentStorage,
   ) {
-    this.request = request;
     this.name = name;
     this.scope = scope;
     this.storage = storage;

@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { DesktopBridge } from "./api.ts";
 import { test, expect } from "vitest";
 import vm from "node:vm";
@@ -28,10 +27,8 @@ test("preload releases stream and progress subscribers when its frame leaves", a
       }),
     },
   );
-  assert(bridge);
-  assert(bridge.onServerStream);
-  bridge.onServerStream(() => {});
-  bridge.onTranscriptionProgress(() => {});
+  bridge!.onServerStream!(() => {});
+  bridge!.onTranscriptionProgress(() => {});
   expect(ipc.listenerCount("codex-desktop-server-stream")).toBe(1);
   expect(ipc.listenerCount("codex-desktop-transcription-progress")).toBe(1);
   events.pagehide?.();
