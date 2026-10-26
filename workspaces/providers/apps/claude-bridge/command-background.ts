@@ -1,5 +1,5 @@
 import type { ActiveQuery, BackgroundTask } from "./bridge.ts";
-import type { BridgeParams } from "./bridge-protocol.ts";
+import type { BridgeParams, BridgeResult } from "./bridge-protocol.ts";
 import type {
   SDKTaskStartedMessage,
   SDKTaskUpdatedMessage,
@@ -91,7 +91,7 @@ export async function moveCommandToBackground(
     BridgeParams<"thread/commandExecution/background">,
     "turnId" | "itemId"
   >,
-) {
+): Promise<BridgeResult<"thread/commandExecution/background">> {
   if (!active?.turn || active.turn.id !== params.turnId)
     throw new Error("The command belongs to a different Claude turn");
   const item = active.tools.get(params.itemId);
