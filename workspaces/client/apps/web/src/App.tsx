@@ -1167,6 +1167,7 @@ export default function App({ active = true }: { active?: boolean }) {
     setRoomContext(lead?.id || null);
     setOpened(id);
     setSidebar(false);
+    if (paneActive.current) setPaneSidebar(false);
     setTeamOpen(false);
   });
   useEffect(() => {

@@ -220,6 +220,10 @@ test("Team opened on a narrow PWA stays mounted when the window becomes wide", a
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
     await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Team", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath("phone-team.png") });
     const search = page.getByRole("searchbox", { name: "Find a subagent" });
     await search.fill("Pane");
     await expect(search).toBeFocused();
@@ -432,6 +436,48 @@ test("A side panel enters with a horizontal slide", async ({
     await expect
       .poll(async () => (await panel.boundingBox())?.x)
       .toBeCloseTo(433.5, 1);
+  } finally {
+    await cdp.detach().catch(() => {});
+    await fixture.close();
+  }
+});
+
+test("Picking a chat from the native closed sidebar returns to the conversation", async ({
+  page,
+  context,
+}) => {
+  const { fixture, cdp } = await openPaneFixture(page, context);
+  try {
+    await page.locator("#message").fill("Keep the closed-display draft");
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+      insets: { top: 0, right: 0, bottom: 34, left: 0 },
+    });
+    await page.evaluate(() => {
+      document.documentElement.dataset.nativeHinge = "closed";
+      window.dispatchEvent(new Event("studio-native-viewport"));
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator(".workspace")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Toggle conversations", exact: true })
+      .click();
+    await expect(page.locator("#sidebar")).toBeVisible();
+    await expect(page.locator(".workspace")).toBeHidden();
+    await page
+      .locator("#sidebar")
+      .getByRole("button")
+      .filter({ hasText: "Local Saved pin" })
+      .filter({ has: page.locator("strong") })
+      .first()
+      .click();
+    await expect(page.locator("#sidebar")).toBeHidden();
+    await expect(page.locator(".workspace")).toBeVisible();
+    await expect(page.locator("#message")).toHaveValue(
+      "Keep the closed-display draft",
+    );
+    await page.screenshot({
+      path: test.info().outputPath("closed-conversation.png"),
+    });
   } finally {
     await cdp.detach().catch(() => {});
     await fixture.close();
