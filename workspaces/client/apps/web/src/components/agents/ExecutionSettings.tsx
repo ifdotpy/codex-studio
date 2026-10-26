@@ -678,7 +678,11 @@ function ScopedExecutionSettings({
       badges: [],
       disabledReason: "Unavailable for review.",
     });
-  const submit = async (request: ConversationBody, notice = "") => {
+  const submit = async (
+    request: ConversationBody,
+    notice = "",
+    freshWorkerSelection?: { accountKey: string | null; model: string | null },
+  ) => {
     if (readOnlyReason) return;
     if (onDraftChange) {
       onDraftChange(request);
@@ -705,6 +709,31 @@ function ScopedExecutionSettings({
     };
     let confirmed = false;
     try {
+      const defaults = request.worker_defaults;
+      const accountKey = defaults?.account_key ?? null;
+      const model = defaults?.model ?? null;
+      const changedSelection =
+        defaults &&
+        (accountKey !== (current.account_key ?? null) ||
+          model !== current.model);
+      const alreadyFresh =
+        freshWorkerSelection?.accountKey === accountKey &&
+        freshWorkerSelection?.model === model;
+      if (changedSelection && !alreadyFresh) {
+        // Model choices and automatic model repair can change future-worker
+        // selection without going through the account tile's preflight.
+        const offered = await readWorkerModels(
+          catalogReader,
+          accountKey || accountOf(agent),
+          !accountKey,
+        );
+        if (!mounted.current) return;
+        const selected = modelForValue(offered, model || agent.model);
+        if (!selected || selected.hidden)
+          throw new Error(
+            "This model is not available for the selected worker accounts.",
+          );
+      }
       // A lost response must not leave the control saving forever.
       const canonical = await post(
         "/api/conversation",
@@ -829,7 +858,11 @@ function ScopedExecutionSettings({
         setStatus(null);
       }
     }
-    if (next) await submit(next);
+    if (next)
+      await submit(next, "", {
+        accountKey: target,
+        model: next.worker_defaults?.model ?? null,
+      });
   };
   // Moving existing subagents is a separate, explicit action.
   const moveExisting = async (target: string) => {
