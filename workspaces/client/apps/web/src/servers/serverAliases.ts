@@ -20,7 +20,7 @@ export function defaultServerAlias(
   used: Iterable<string> = [],
 ) {
   const taken = new Set(used);
-  const host = new URL(server.origin).hostname.split(".")[0];
+  const host = new URL(server.origin).hostname.split(".")[0] ?? "";
   const preferred =
     server.id === "local"
       ? DEFAULT_LOCAL_SERVER_ALIAS

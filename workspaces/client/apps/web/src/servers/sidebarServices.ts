@@ -58,8 +58,12 @@ export function sidebarProject(
   }
   return {
     ...projected,
-    organizationRevision: source.project.organizationRevision,
-    peerTeamsRevision: source.project.peerTeamsRevision,
+    ...(source.project.organizationRevision === undefined
+      ? {}
+      : { organizationRevision: source.project.organizationRevision }),
+    ...(source.project.peerTeamsRevision === undefined
+      ? {}
+      : { peerTeamsRevision: source.project.peerTeamsRevision }),
     folders: (projected.folders || []).filter((folder) =>
       source.project.folders?.some(
         (native) =>

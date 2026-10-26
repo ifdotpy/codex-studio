@@ -15,20 +15,21 @@ export type LocationProject = {
   id: string;
   path: string;
   name: string;
-  homeServerId?: string | null;
-  compact?: boolean;
-  locations?: ProjectLocation[] | null;
+  homeServerId?: string | null | undefined;
+  compact?: boolean | undefined;
+  locations?: ProjectLocation[] | null | undefined;
   projectAliases?:
     | { serverId: string; projectId: string; name: string }[]
-    | null;
+    | null
+    | undefined;
 };
 export type ProjectServerChoice = {
   id: string;
   label: string;
   disabled?: boolean;
   serverId?: string;
-  system?: string;
-  connection?: StudioServer;
+  system?: string | undefined;
+  connection?: StudioServer | undefined;
 };
 export function projectServerChoices(
   servers: StudioServer[],

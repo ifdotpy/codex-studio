@@ -12,7 +12,7 @@ export type SubscriptionState<T> = {
   status: SubscriptionStatus;
   error: Error | null;
 };
-export type SubscriptionOptions = { graceMs?: number };
+export type SubscriptionOptions = { graceMs?: number | undefined };
 /** Retain interest after the final consumer leaves, in milliseconds. */
 export const DEFAULT_SUBSCRIPTION_GRACE_MS = 20_000;
 /** Maximum inactive domain snapshots retained by one server module, in entries. */

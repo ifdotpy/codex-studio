@@ -70,7 +70,7 @@ type Intention = {
     | "uncertain"
     | "failed";
   attempted?: boolean;
-  error?: string;
+  error?: string | undefined;
   receipt?: StoredMessageReceipt;
   created: number;
   displayPending?: boolean;
@@ -91,7 +91,7 @@ type SendResult =
       id: string;
       queued: boolean;
       status: Intention["status"];
-      error?: string;
+      error?: string | undefined;
     };
 
 const queuedDocuments = (docs: any[]) =>
@@ -487,7 +487,10 @@ export function createOutbox(options: {
       await Promise.all(
         Array.from({ length: Math.min(4, roomBatches.length) }, async () => {
           while (nextRoom < roomBatches.length) {
-            const { room, batches } = roomBatches[nextRoom++];
+            const batch = roomBatches[nextRoom++];
+            if (batch === undefined)
+              throw new Error("The receipt batch is missing.");
+            const { room, batches } = batch;
             const controller = controllers.get(room)!;
             for (const ids of batches) {
               if (deletedRooms.has(room) || controller.signal.aborted) break;

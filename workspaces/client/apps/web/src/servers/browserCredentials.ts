@@ -140,7 +140,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
     }
     const request = new Request(origin + "/api/multi-server/v1/pair", {
       method: "POST",
-      body: draft.body,
+      ...(draft.body === undefined ? {} : { body: draft.body }),
       headers: { "Content-Type": "application/json" },
       signal: AbortSignal.timeout(15000),
     });
