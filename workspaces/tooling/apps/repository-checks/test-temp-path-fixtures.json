@@ -37,14 +37,14 @@
   "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.ts": [
     "id: \"/tmp/fixture\",",
     "path: \"/tmp/fixture\",",
-    "cwd: \"/tmp/fixture\",",
-    "assert.equal(agents.find((a) => a.id === \"empty\").cwd, \"/tmp/fixture\");",
+    ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
+    "\"/tmp/fixture\",",
     "path: \"/tmp/fixture\","
   ],
   "workspaces/client/apps/web/tests/accounts/project-settings-ui.spec.ts": [
     "id: \"/tmp/fixture\",",
     "path: \"/tmp/fixture\",",
-    "cwd: \"/tmp/fixture\",",
+    ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
     "path: \"/tmp/fixture\","
   ],
   "workspaces/client/apps/web/tests/sync/entity-fixture-contract.browser.spec.mjs": [
