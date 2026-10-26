@@ -1379,13 +1379,15 @@ describe("entity pull reset wiring", () => {
         seq: 11,
       });
       const emptyDelta = event(11, "delta");
-      assert.ok(emptyDelta.resourceVersions![0] != null);
-      delete emptyDelta.resourceVersions![0].entityChanges;
+      const emptyDeltaVersion = emptyDelta.resourceVersions?.[0];
+      assert.ok(emptyDeltaVersion);
+      delete emptyDeltaVersion.entityChanges;
       let current = true;
       storageInstance.findDocumentsById.mockImplementationOnce(async () => {
         current = false;
-        assert.ok(emptyDelta.resourceVersions![0] != null);
-        delete emptyDelta.resourceVersions![0].cursor;
+        const currentVersion = emptyDelta.resourceVersions?.[0];
+        assert.ok(currentVersion);
+        delete currentVersion.cursor;
         return [];
       });
       await expect(

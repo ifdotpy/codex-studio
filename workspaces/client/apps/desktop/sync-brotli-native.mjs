@@ -93,10 +93,10 @@ try {
     ],
   );
 
-  const entry = path.join(folder, "main.cjs");
+  const entry = path.join(folder, "main.ts");
   await writeFile(
     entry,
-    `const {app,BrowserWindow}=require('electron');globalThis.syncTestCredentials=require(${JSON.stringify(path.join(root, "server-credentials.cjs"))});app.setPath('userData',${JSON.stringify(path.join(folder, "profile"))});app.whenReady().then(()=>{const window=new BrowserWindow({show:false});window.loadURL('about:blank');});`,
+    `const {app,BrowserWindow}=require('electron');globalThis.syncTestCredentials=require(${JSON.stringify(path.join(root, "server-credentials.ts"))});app.setPath('userData',${JSON.stringify(path.join(folder, "profile"))});app.whenReady().then(()=>{const window=new BrowserWindow({show:false});window.loadURL('about:blank');});`,
   );
   desktop = await electron.launch({
     args: [

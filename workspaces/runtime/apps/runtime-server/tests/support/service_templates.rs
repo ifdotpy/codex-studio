@@ -58,7 +58,7 @@ fn launchctl_boundary_passes_the_exact_domain_and_reports_failure() {
 fn default_local_server_port_copies_match_service_layout_owner() {
     let owner = service_layout().unwrap();
     let diagnostics = include_str!("../../../diagnostics/src/main.rs");
-    let desktop = include_str!("../../../../../client/apps/desktop/backend.cjs");
+    let desktop = include_str!("../../../../../client/apps/desktop/backend.ts");
     assert!(
         diagnostics.contains(&format!("const DEFAULT_PORT: u16 = {};", owner.port)),
         "diagnostics DEFAULT_PORT must match runtime-server/service-layout.json (default local server TCP port)"
