@@ -178,7 +178,7 @@ async function loadTransport() {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers();
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
@@ -193,6 +193,8 @@ beforeEach(() => {
   vi.stubGlobal("location", { origin: "http://studio.test" });
   vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
   vi.stubGlobal("EventSource", Source);
+  const { readSubscriptionCursor } = await import("./client");
+  vi.mocked(readSubscriptionCursor).mockReset().mockResolvedValue(undefined);
 });
 
 describe("shared resource event transport", () => {
@@ -1552,6 +1554,137 @@ describe("shared resource event transport", () => {
     stopStatus();
     expect(Source.instances.every((source) => source.closed)).toBe(true);
     expect(syncDatabase).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens one owner stream when cursor reads take longer than its peer heartbeat", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const { readSubscriptionCursor } = await import("./client");
+    vi.mocked(readSubscriptionCursor).mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), 3_001),
+        ),
+    );
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("BroadcastChannel", Channel);
+    const transport = await loadTransport();
+    const changed = vi.fn();
+    const stop = transport.watchResourceChanges({ kind: "state" }, changed);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(Source.instances).toHaveLength(1);
+    expect(readSubscriptionCursor).toHaveBeenCalledOnce();
+    Source.instances[0]!.open();
+    Source.instances[0]!.emit("resources", {
+      protocol: 4,
+      workspaceId,
+      epoch: "slow-cursor-owner",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "state" }],
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(changed).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it("fences a pending opening when its resource selection changes", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const { readSubscriptionCursor } = await import("./client");
+    vi.mocked(readSubscriptionCursor).mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), 3_001),
+        ),
+    );
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("BroadcastChannel", Channel);
+    const transport = await loadTransport();
+    const stopState = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const stopQueue = transport.watchResourceChanges(
+      { kind: "queue", agentId: "later" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(Source.instances).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(Source.instances).toHaveLength(1);
+    expect(
+      JSON.parse(
+        new URL(Source.instances[0]!.url, location.origin).searchParams.get(
+          "resources",
+        )!,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        { kind: "state" },
+        { kind: "queue", agentId: "later" },
+      ]),
+    );
+    expect(readSubscriptionCursor).toHaveBeenCalledTimes(3);
+    stopQueue();
+    stopState();
+  });
+
+  it("an obsolete cursor read cannot release the resumed owner's pending opening", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const { readSubscriptionCursor } = await import("./client");
+    vi.mocked(readSubscriptionCursor).mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), 3_001),
+        ),
+    );
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("BroadcastChannel", Channel);
+    const transport = await loadTransport();
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.advanceTimersByTimeAsync(1_000);
+    const visibility = vi
+      .mocked(document.addEventListener)
+      .mock.calls.find(
+        ([name]) => name === "visibilitychange",
+      )![1] as EventListener;
+    Object.assign(document, { hidden: true });
+    visibility(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    Object.assign(document, { hidden: false });
+    for (const resume of resumeListeners) resume();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(Source.instances).toHaveLength(1);
+    expect(readSubscriptionCursor).toHaveBeenCalledTimes(2);
+    stop();
   });
 
   it("keeps a quiet stream live across repeated server heartbeat intervals", async () => {

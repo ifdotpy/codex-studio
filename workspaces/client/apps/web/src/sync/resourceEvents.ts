@@ -295,6 +295,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let channel: BroadcastChannel | undefined;
 
   let source: ServerEventSource | undefined;
+  let pendingOpening: { generation: number; selection: string } | undefined;
   let reconnecting = false;
 
   let sourceOpened = false;
@@ -1432,6 +1433,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function closeSource() {
+    pendingOpening = undefined;
     validatedServerFrameAt = undefined;
     clearTimeout(subscriptionTimer);
     subscriptionTimer = undefined;
@@ -1520,8 +1522,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       updateSubscriptions(resources, tokenRates);
       return;
     }
+    const selection = JSON.stringify([resources.map(resourceKey), tokenRates]);
+    if (
+      pendingOpening?.generation === subscriptionGeneration &&
+      pendingOpening.selection === selection
+    )
+      return;
     closeSource();
     const openingGeneration = subscriptionGeneration;
+    const opening = { generation: openingGeneration, selection };
+    pendingOpening = opening;
     const since = await Promise.all(
       resources.map(async (resource) => ({
         resource,
@@ -1531,7 +1541,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
               .readSubscriptionCursor?.(resource)
               .catch(() => undefined),
       })),
-    );
+    ).finally(() => {
+      if (pendingOpening === opening) pendingOpening = undefined;
+    });
     if (openingGeneration !== subscriptionGeneration || !coordinatorActive)
       return;
     wireResources = resources;
