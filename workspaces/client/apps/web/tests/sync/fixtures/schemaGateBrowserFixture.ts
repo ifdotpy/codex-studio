@@ -85,11 +85,11 @@ export function installSchemaGateFixture(
     declare addEventListener: EventSource["addEventListener"];
     declare removeEventListener: EventSource["removeEventListener"];
     static CONNECTING = 0 as const;
+    static OPEN = 1 as const;
+    static CLOSED = 2 as const;
     readonly CONNECTING = TestEventSource.CONNECTING;
     readonly OPEN = TestEventSource.OPEN;
     readonly CLOSED = TestEventSource.CLOSED;
-    static OPEN = 1 as const;
-    static CLOSED = 2 as const;
     readyState: number = TestEventSource.CONNECTING;
     withCredentials = false;
     onopen: EventSource["onopen"] = null;
