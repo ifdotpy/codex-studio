@@ -4,7 +4,7 @@ export type DiscoveredServer = {
   label: string;
   origin: string;
   status: "discovered" | "paired" | "revoked" | "unreachable";
-  reachability?: "reachable" | "unreachable" | "unknown" | null;
+  reachability?: "reachable" | "unreachable" | "unknown" | null | undefined;
   lastSeen: number | null;
   paired: boolean;
   publicKey: string;
@@ -13,7 +13,7 @@ export type DiscoveredServer = {
 };
 export type DiscoverySnapshot = {
   localServerId: string;
-  aliases?: Record<string, string>;
+  aliases?: Record<string, string> | undefined;
   localLabel?: string;
   localOrigin?: string | null;
   autoPair: boolean;

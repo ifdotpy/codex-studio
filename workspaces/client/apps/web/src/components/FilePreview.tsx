@@ -16,10 +16,10 @@ import "./file-preview.css";
 // StreamingText opens FilePreview for links. Load it only for Markdown files.
 const Markdown = lazy(() => import("./conversation/transcript/StreamingText"));
 export interface PreviewTarget {
-  agent?: string;
-  path?: string;
+  agent?: string | undefined;
+  path?: string | undefined;
   asset?: string;
-  line?: number;
+  line?: number | undefined;
 }
 type LoadedFile = {
   key: string;
