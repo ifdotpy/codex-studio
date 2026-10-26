@@ -114,6 +114,7 @@ studio-runtime-server native-layr upgrade-store --state /path/to/studio-state
 ```
 
 For a shared root, Studio also inspects `~/.local/bin/layr`.
+The capability probe uses a private temporary root, so an old binary cannot change the selected store during the probe.
 That binary must support `store-version` and use the same package version and store format as the bundled binary.
 Studio reports a different build identity as `layrVersionWarning` on the prepared chat.
 Upgrade an old developer binary before you use the shared root.
@@ -126,6 +127,8 @@ studio-runtime-server native-layr configure --state /path/to/studio-state --defa
 ```
 
 An earlier import in the default store retains its project ID, receipts, lines, and data.
+Legacy default-store projects reuse their ready import receipt, which records the original source path.
+New external or named project mappings always verify the origin and shared Git history.
 Chats created before a switch retain their recorded root, including records created before this setting existed.
 Each store must pass the version check when Studio prepares its next native line.
 On Linux, the configured daemon must serve the selected root and compatible format.

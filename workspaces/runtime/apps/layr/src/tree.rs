@@ -454,6 +454,11 @@ fn remove_at(dir: &OwnedFd, name: &str) -> Result<()> {
             Err(e) => return Err(e),
         }
     }
+    // A copied cache can contain read-only directories. Deletion needs owner write access.
+    let mode = rustix::fs::fstat(&sub)?.st_mode;
+    if mode & 0o200 == 0 {
+        rustix::fs::fchmod(&sub, Mode::from_raw_mode((mode & 0o7777) | 0o200))?;
+    }
     for child in list_fd(&sub)? {
         remove_at(&sub, &child)?;
     }

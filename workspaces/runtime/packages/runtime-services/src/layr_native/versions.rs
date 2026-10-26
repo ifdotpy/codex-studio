@@ -91,12 +91,14 @@ pub(super) fn verify(state: &Path, root: &Path) -> Result<Option<String>> {
     }
     let developer =
         PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/bin/layr");
-    compare(
-        &bundled.binary,
-        &inspect(&developer, root)?.binary,
-        root,
-        &developer,
-    )
+    verify_developer(&bundled.binary, root, &developer)
+}
+
+fn verify_developer(bundled: &Identity, root: &Path, developer: &Path) -> Result<Option<String>> {
+    // Unguarded releases open the root before rejecting store-version. Probe only scratch.
+    let scratch = tempfile::tempdir()?;
+    let inspected = inspect(developer, scratch.path()).map_err(|error| NativeLayrError::Refused(format!("Store {} requires a guarded developer binary. Studio: {} (format {}, build {}). Developer {}: {error}. Upgrade the developer binary; see docs/native-layr.md.", root.display(), bundled.version, bundled.format, bundled.build, developer.display())))?;
+    compare(bundled, &inspected.binary, root, developer)
 }
 
 fn compare(
@@ -133,6 +135,28 @@ fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unguarded_developer_probe_never_receives_the_selected_root() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("developer-store");
+        fs::create_dir(&root).expect("store");
+        let binary = fixture.path().join("legacy-layr");
+        fs::write(&binary, "#!/bin/sh\nprintf changed > \"$2/touched\"\nprintf 'unknown command\\n' >&2\nexit 128\n").expect("legacy binary");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).expect("executable");
+        let bundled = Identity {
+            format: 1,
+            version: LAYR_VERSION.into(),
+            build: "bundled-build".into(),
+        };
+        let error = verify_developer(&bundled, &root, &binary)
+            .expect_err("unsupported probe")
+            .to_string();
+        assert!(error.contains("bundled-build") && error.contains(root.to_str().expect("root")));
+        assert!(fs::read_dir(root).expect("store").next().is_none());
+    }
 
     #[cfg(unix)]
     #[test]

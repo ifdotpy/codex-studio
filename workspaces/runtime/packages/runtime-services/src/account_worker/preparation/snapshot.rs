@@ -2395,6 +2395,7 @@ mod workspace_fence_tests {
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,
                     "layrReady":mode == "layr-native" && ready,
                     "layrScratch":"/private/reviewer-scratch",
+                    "layrStoreRoot":"/state/layr-native/store",
                     "yoloMode":true,"claudeOptions":{"permissionMode":"bypassPermissions"}});
                     for resumed in [false, true] {
                         let mut record = record.clone();

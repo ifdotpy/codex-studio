@@ -128,11 +128,20 @@ impl Guard {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Upgrade {
+    pub metadata_only: bool,
+    pub from_format: u32,
+    pub to_format: u32,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Report {
     pub binary: Version,
     pub store: Option<Version>,
     pub compatible: bool,
     pub state: &'static str,
+    pub upgrade: Option<Upgrade>,
 }
 
 /// Inspect without Store::open, locks, directory creation, or database migrations.
@@ -149,13 +158,21 @@ pub fn inspect(root: &Path) -> Result<Report> {
             Ok(_) => ("legacy", false),
         },
     };
-    Ok(Report { binary, store, compatible, state })
+    let upgrade = if state == "legacy" || store.as_ref().is_some_and(|stored| stored.format == 0) {
+        Some(Upgrade { metadata_only: true, from_format: 0, to_format: FORMAT })
+    } else {
+        None
+    };
+    Ok(Report { binary, store, compatible, state, upgrade })
 }
 
 fn upgrade(root: &Path) -> Result<()> {
     let report = inspect(root)?;
     if report.state == "absent" {
         bail!("the store does not exist; run a layr command to create it");
+    }
+    if report.state == "empty" {
+        bail!("the store is empty; run a normal layr command to initialize it");
     }
     if let Some(stored) = &report.store {
         if stored.format != 0 && stored.format != FORMAT {

@@ -70,7 +70,7 @@ pub(super) fn owns_store(state: &Path, root: &Path) -> bool {
         .unwrap_or_else(|_| state.to_owned())
         .join(NATIVE_LAYR_DIRECTORY)
         .join(STORE_DIRECTORY);
-    root.canonicalize().unwrap_or_else(|_| root.to_owned()) == expected
+    CanonicalPath::missing_tail(root).is_some_and(|root| root.as_path() == expected)
         && !fs::symlink_metadata(store_path(state))
             .is_ok_and(|metadata| metadata.file_type().is_symlink())
 }
@@ -128,6 +128,14 @@ pub fn record_store(state: &Path, record: &Value) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_store_detection_resolves_aliases_before_first_import() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = store_path(fixture.path());
+        assert!(!root.exists());
+        assert!(owns_store(fixture.path(), &root));
+    }
 
     #[cfg(unix)]
     #[test]
