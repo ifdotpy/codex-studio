@@ -554,7 +554,7 @@ mod tests {
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
         ).expect("execution table creates");
         let agent = AgentRecord::from_value(json!({
-            "id":"worker","rootId":"lead","epoch":4,"status":"paused"
+            "id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused"
         }))
         .expect("agent record parses");
         for record in [

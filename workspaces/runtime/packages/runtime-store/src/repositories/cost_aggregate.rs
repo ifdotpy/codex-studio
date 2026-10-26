@@ -1537,7 +1537,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_, StoreError>(|tx, _| {
-            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","accountKey":"acct","threadId":"thread"}).to_string()])?;
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","provider":"claude","accountKey":"acct","threadId":"thread"}).to_string()])?;
 
             for (id, evidence) in [("legacy", "legacy"), ("final", "recovered")] {
                 let row = json!({"id":id,"agentId":"agent","rootId":"root","threadId":"thread","at":1,
@@ -1595,7 +1595,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_, StoreError>(|tx, _| {
-            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","accountKey":"acct","threadId":"thread"}).to_string()])?;
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","provider":"claude","accountKey":"acct","threadId":"thread"}).to_string()])?;
 
             for (id, evidence) in [("legacy", "legacy"), ("final", "live")] {
                 let row = json!({

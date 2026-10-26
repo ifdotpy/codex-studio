@@ -755,7 +755,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
                 [],
             )?;
             tx.execute(
-                "INSERT INTO runtime_agents(id,record) VALUES('revision-agent','{}')",
+                "INSERT INTO runtime_agents(id,record) VALUES('revision-agent','{\"provider\":\"codex\"}')",
                 [],
             )?;
             Ok(())

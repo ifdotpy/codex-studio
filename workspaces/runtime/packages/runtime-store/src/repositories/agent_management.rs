@@ -444,8 +444,8 @@ mod tests {
                  CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,epoch INTEGER);
                  CREATE INDEX runtime_event_agent ON runtime_events(agent);
                  INSERT INTO runtime_agents VALUES
-                    ('root','{\"id\":\"root\"}'),('child','{\"id\":\"child\"}'),
-                    ('unrelated','{\"id\":\"unrelated\"}');
+                    ('root','{\"id\":\"root\",\"provider\":\"codex\"}'),('child','{\"id\":\"child\",\"provider\":\"codex\"}'),
+                    ('unrelated','{\"id\":\"unrelated\",\"provider\":\"codex\"}');
                  INSERT INTO runtime_tasks VALUES
                     ('child-first','{\"id\":\"child-first\",\"agent\":\"child\"}'),
                     ('other','{\"id\":\"other\",\"agent\":\"unrelated\"}'),

@@ -4651,7 +4651,7 @@ mod projection_generation_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                     [
                         "generation-agent",
-                        r#"{"id":"generation-agent","rootId":"generation-agent","epoch":0,"status":"idle"}"#,
+                        r#"{"id":"generation-agent","provider":"codex","rootId":"generation-agent","epoch":0,"status":"idle"}"#,
                     ],
                 )?;
                 Ok(())

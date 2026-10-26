@@ -134,7 +134,7 @@ mod invalid_agent_repair_tests {
     fn valid_agent_repair_clears_the_invalid_record_hold() {
         let mut connection = crate::fresh_state::test_canvas();
         let agent = AgentRecord::from_value(json!({
-            "id":"agent", "rootId":"agent", "epoch":1, "status":"idle"
+            "id":"agent", "provider":"codex", "rootId":"agent", "epoch":1, "status":"idle"
         }))
         .expect("valid repair record");
         AgentRepository::put(&connection, &agent).expect("seed agent");
