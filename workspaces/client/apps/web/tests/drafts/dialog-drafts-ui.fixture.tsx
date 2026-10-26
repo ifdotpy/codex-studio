@@ -1,9 +1,8 @@
-import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import type { Agent, Complaint, Request, Snapshot } from "../../src/types.ts";
 declare global {
   interface Window {
-    dialogDraft_notices: string[];
-    dialogDraft_restoreStorage: () => void;
+    notices: string[];
+    restoreStorage: () => void;
   }
 }
 
@@ -44,9 +43,13 @@ const request: Request = {
     ],
   },
 } satisfies Request;
-const base: Snapshot = fixtureSnapshot([lead]);
-base.stateDir = "workspace-a";
-base.runtime.complaints = [complaint];
+// This partial snapshot omits unused collections and runtime fields.
+const base = {
+  stateDir: "workspace-a",
+  token: "fixture",
+  threads: [lead],
+  runtime: { complaints: [complaint] },
+} as Snapshot;
 function Fixture() {
   const [show, setShow] = useState(false),
     [workspace, setWorkspace] = useState("workspace-a");
@@ -71,7 +74,7 @@ function Fixture() {
         scope={workspace}
         agents={[lead]}
         refresh={async () => {}}
-        notify={(message) => window.dialogDraft_notices.push(message)}
+        notify={(message) => window.notices.push(message)}
       />
       <Picker initialPath="/project" onSelect={async () => {}} />
       {show && (
@@ -84,10 +87,5 @@ function Fixture() {
     </MantineProvider>
   );
 }
-window.dialogDraft_notices = [];
-createRoot(
-  document.getElementById("root") ??
-    (() => {
-      throw new Error("Missing mount");
-    })(),
-).render(<Fixture />);
+window.notices = [];
+createRoot(document.getElementById("root")!).render(<Fixture />);

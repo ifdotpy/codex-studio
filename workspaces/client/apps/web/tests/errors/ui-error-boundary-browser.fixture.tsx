@@ -1,13 +1,12 @@
 declare global {
   interface Window {
-    uiErrorBoundaryBrowserFixture: {
+    uiErrorBoundaryFixture: {
       setBad: React.Dispatch<React.SetStateAction<boolean>>;
       setScope: React.Dispatch<React.SetStateAction<string>>;
       setFatal: React.Dispatch<React.SetStateAction<boolean>>;
     };
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -25,7 +24,7 @@ function App() {
   const [bad, setBad] = useState(false),
     [scope, setScope] = useState("one"),
     [fatal, setFatal] = useState(false);
-  window.uiErrorBoundaryBrowserFixture = { setBad, setScope, setFatal };
+  window.uiErrorBoundaryFixture = { setBad, setScope, setFatal };
   if (fatal) throw new Error("Fixture root failure");
   return (
     <>
@@ -46,7 +45,7 @@ function App() {
     </>
   );
 }
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   <Boundary label="Studio" fullPage>
     <App />
   </Boundary>,

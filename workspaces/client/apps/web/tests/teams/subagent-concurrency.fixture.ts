@@ -1,6 +1,6 @@
 declare global {
   interface Window {
-    concurrencyStorageFixture: (leadId: string) => string;
+    concurrencyStorageFixture: (leadId: string) => string | undefined;
   }
 }
 
@@ -14,7 +14,6 @@ export function installConcurrencyStorageFixture() {
       const scope: string[] = JSON.parse(entry.slice(prefix.length));
       return scope[2] === leadId;
     });
-    if (!key) throw Error("Missing stored setting");
     return key;
   };
 }

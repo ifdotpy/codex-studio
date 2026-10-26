@@ -1,6 +1,6 @@
 import type {} from "./queue-mutation-deadline-browser.fixture.tsx";
 import { createFixtureViteServer } from "../playwright.ts";
-import { required, requestBody } from "../messages/helpers.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
 // Real queue callers, local HTTP receipts, and no native model requests.
 import assert from "node:assert/strict";
@@ -32,9 +32,20 @@ test("queue-mutation-deadline-browser @performance", async ({
     const nativeRequests: string[] = [];
     const receipts = new Map<
       string | null | undefined,
-      { body: PostBody<"/api/queue">; reply: PostResult<"/api/queue"> }
+      {
+        body: PostBody<"/api/queue">;
+        reply: Pick<PostResult<"/api/queue">, never> & { ok: boolean };
+      }
     >();
-    let view: Omit<GetResult<"/api/queue">, "capabilities"> = {
+    type QueueFixtureItem = Pick<
+      GetResult<"/api/queue">["items"][number],
+      "id" | "kind" | "text"
+    >;
+    type QueueFixtureView = Omit<
+      GetResult<"/api/queue">,
+      "items" | "capabilities"
+    > & { items: QueueFixtureItem[] };
+    let view: QueueFixtureView = {
       items: [],
       revision: "initial",
     };
@@ -66,7 +77,8 @@ test("queue-mutation-deadline-browser @performance", async ({
           json: {
             ...view,
             capabilities: { receipts: true, reorder: true },
-          } satisfies GetResult<"/api/queue">,
+          } satisfies QueueFixtureView &
+            Pick<GetResult<"/api/queue">, "capabilities">,
         });
       const body = requestBody<PostBody<"/api/queue">>(route);
       posts.push(body);
@@ -84,7 +96,7 @@ test("queue-mutation-deadline-browser @performance", async ({
         route.request().headers()["x-canvas-workspace"],
         workspaceId,
       );
-      const reply = {} satisfies PostResult<"/api/queue">;
+      const reply = { ok: true };
       receipts.set(body.request_id, { body, reply });
       applied++;
       if (body.action === "cancel")
@@ -95,27 +107,24 @@ test("queue-mutation-deadline-browser @performance", async ({
         );
       else if (body.action === "reorder")
         view.items = body.ordered_ids.map((id) =>
-          required(view.items.find((item) => item.id === id)),
+          view.items.find((item) => item.id === id)!,
         );
       else assert.fail(`Unexpected queue action: ${body.action}`);
       view.revision += ":committed";
       // The operation commits, but its response stays pending until the deadline.
     });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.evaluate(async (workspaceId) => {
-      window.queueDeadlineObserved = [];
-      window.queueDeadlineEdited = [];
-      window.queueDeadlineAdvance = 0;
+      window.observed = [];
+      window.edited = [];
+      window.advance = 0;
       const now = Date.now;
-      Date.now = () => now() + window.queueDeadlineAdvance;
+      Date.now = () => now() + window.advance;
       const fixturePath =
         "/tests/queue/queue-mutation-deadline-browser.fixture.tsx";
-      await import(fixturePath);
-      window.queueDeadlineReactRoot = window.queueDeadlineMount(workspaceId);
+      window.reactRoot = (await import(fixturePath)).mount(workspaceId);
     }, workspaceId);
-    await page.waitForFunction(
-      () => window.queueDeadlineQueue && !window.queueDeadlineQueue.loading,
-    );
+    await page.waitForFunction(() => window.queue && !window.queue.loading);
     const untilPosts = async (count: number) => {
       const deadline = Date.now() + 5000;
       while (posts.length < count) {
@@ -125,7 +134,7 @@ test("queue-mutation-deadline-browser @performance", async ({
     };
     const expire = () =>
       page.evaluate(() => {
-        window.queueDeadlineAdvance += 16000;
+        window.advance += 16000;
         window.dispatchEvent(new Event("pageshow"));
       });
     for (const action of ["cancel", "edit", "reorder"]) {
@@ -133,86 +142,71 @@ test("queue-mutation-deadline-browser @performance", async ({
         items: [1, 2].map((number) => ({
           id: `${action}-${number}`,
           kind: "user",
-          created: 0,
-          status: "pending",
           text: `Exact ${action} ${number}`,
         })),
         revision: `revision-${action}`,
       };
-      await page.evaluate(() => window.queueDeadlineQueue.reload());
+      await page.evaluate(() => window.queue.reload());
       await page.waitForFunction(
-        (action) => window.queueDeadlineQueue.items[0]?.id === `${action}-1`,
+        (action) => window.queue.items[0]?.id === `${action}-1`,
         action,
       );
       const before = posts.length;
       await page.evaluate((action) => {
-        window.queueDeadlineOutcome = "pending";
-        const queue = window.queueDeadlineQueue;
-        const first = queue.items[0];
-        if (!first) throw new Error("Missing queue item");
+        window.outcome = "pending";
+        const queue = window.queue;
         const operation =
           action === "edit"
-            ? queue.edit(first, "Exact replacement")
+            ? queue.edit(queue.items[0], "Exact replacement")
             : action === "reorder"
               ? queue.reorder(queue.items.map((item) => item.id).reverse())
-              : queue.cancel(first);
-        window.queueDeadlineOperation = operation.then(
-          () => (window.queueDeadlineOutcome = "success"),
-          (error: Error) => (window.queueDeadlineOutcome = error.name),
+              : queue.cancel(queue.items[0]);
+        window.operation = operation.then(
+          () => (window.outcome = "success"),
+          (error: Error) => (window.outcome = error.name),
         );
       }, action);
       await untilPosts(before + 1);
       const request = posts[before];
       const observed = await page.evaluate(() => ({
-        observed: window.queueDeadlineObserved.length,
-        edited: window.queueDeadlineEdited.length,
+        observed: window.observed.length,
+        edited: window.edited.length,
       }));
       await expire();
       await page.waitForFunction(
-        () =>
-          window.queueDeadlineOutcome !== "pending" &&
-          !window.queueDeadlineQueue.busy,
+        () => window.outcome !== "pending" && !window.queue.busy,
       );
       assert.equal(
-        await page.evaluate(() => window.queueDeadlineOutcome),
+        await page.evaluate(() => window.outcome),
         "NetworkTimeoutError",
       );
       assert.deepEqual(
-        await page.evaluate(() => window.queueDeadlineQueue.pending),
+        await page.evaluate(() => window.queue.pending),
         request,
       );
       assert.deepEqual(
         await page.evaluate(() => ({
-          observed: window.queueDeadlineObserved.length,
-          edited: window.queueDeadlineEdited.length,
+          observed: window.observed.length,
+          edited: window.edited.length,
         })),
         observed,
         "An unknown result cannot report confirmed cancellation or editing",
       );
       assert.match(
-        await page.evaluate(() => {
-          const first = window.queueDeadlineQueue.items[0];
-          if (!first) throw new Error("Missing queue item");
-          return window.queueDeadlineQueue.cancel(first).then(
-            () => "",
-            (error: Error) => error.message,
-          );
-        }),
+        (await page.evaluate<string | void>(() =>
+          window.queue
+            .cancel(window.queue.items[0])
+            .catch((error: Error) => error.message),
+        ))!,
         /Retry the previous queue change/,
       );
       assert.equal(posts.length, before + 1);
-      await page.evaluate(() => window.queueDeadlineQueue.retry());
+      await page.evaluate(() => window.queue.retry());
       assert.deepEqual(posts[before + 1], request);
-      assert.equal(
-        await page.evaluate(() => window.queueDeadlineQueue.pending),
-        null,
-      );
-      assert.equal(
-        await page.evaluate(() => window.queueDeadlineQueue.busy),
-        false,
-      );
+      assert.equal(await page.evaluate(() => window.queue.pending), null);
+      assert.equal(await page.evaluate(() => window.queue.busy), false);
     }
-    await page.evaluate(() => window.queueDeadlineReactRoot.unmount());
+    await page.evaluate(() => window.reactRoot.unmount());
     assert.equal(applied, 3);
 
     // Removal has its own saved request. Its retry must work after the row is gone.
@@ -221,8 +215,6 @@ test("queue-mutation-deadline-browser @performance", async ({
         {
           id: "remove-1",
           kind: "user",
-          created: 0,
-          status: "pending",
           text: "Exact removal",
         },
       ],
@@ -230,12 +222,10 @@ test("queue-mutation-deadline-browser @performance", async ({
     };
     const before = posts.length;
     await page.evaluate(async (workspaceId) => {
-      window.queueDeadlineRemoval =
-        await import("/src/components/removeSendingMessages.ts");
-      window.queueDeadlineRemoved =
-        await import("/src/components/removedMessages.ts");
-      window.queueDeadlineScope = { stateDir: "deadline-fixture", workspaceId };
-      window.queueDeadlineTarget = {
+      window.removal = await import("/src/components/removeSendingMessages.ts");
+      window.removed = await import("/src/components/removedMessages.ts");
+      window.scope = { stateDir: "deadline-fixture", workspaceId };
+      window.target = {
         chat: "chat",
         message: {
           id: "chat:remove-1",
@@ -245,52 +235,46 @@ test("queue-mutation-deadline-browser @performance", async ({
           deliveryStatus: "sending",
         },
       };
-      window.queueDeadlineOutcome = "pending";
-      window.queueDeadlineOperation = window.queueDeadlineRemoval
-        .removeSendingMessage(
-          window.queueDeadlineScope,
-          window.queueDeadlineTarget,
-        )
+      window.outcome = "pending";
+      window.operation = window.removal
+        .removeSendingMessage(window.scope, window.target)
         .then(
-          () => (window.queueDeadlineOutcome = "success"),
-          (error: Error) => (window.queueDeadlineOutcome = error.name),
+          () => (window.outcome = "success"),
+          (error: Error) => (window.outcome = error.name),
         );
     }, workspaceId);
     await untilPosts(before + 1);
     const request = posts[before];
     await expire();
-    await page.waitForFunction(() => window.queueDeadlineOutcome !== "pending");
+    await page.waitForFunction(() => window.outcome !== "pending");
     assert.equal(
-      await page.evaluate(() => window.queueDeadlineOutcome),
+      await page.evaluate(() => window.outcome),
       "NetworkTimeoutError",
     );
     assert.equal(
       await page.evaluate(() =>
-        window.queueDeadlineRemoved.isRemovedMessage(
-          window.queueDeadlineScope.stateDir,
+        window.removed.isRemovedMessage(
+          window.scope.stateDir,
           "agent",
           "chat",
-          window.queueDeadlineTarget.message,
+          window.target.message,
         ),
       ),
       false,
       "An unknown queue result must remain available for exact retry",
     );
     await page.evaluate(() =>
-      window.queueDeadlineRemoval.removeSendingMessage(
-        window.queueDeadlineScope,
-        window.queueDeadlineTarget,
-      ),
+      window.removal.removeSendingMessage(window.scope, window.target),
     );
     assert.deepEqual(posts[before + 1], request);
     assert.equal(applied, 4);
     assert.equal(
       await page.evaluate(() =>
-        window.queueDeadlineRemoved.isRemovedMessage(
-          window.queueDeadlineScope.stateDir,
+        window.removed.isRemovedMessage(
+          window.scope.stateDir,
           "agent",
           "chat",
-          window.queueDeadlineTarget.message,
+          window.target.message,
         ),
       ),
       true,

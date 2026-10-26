@@ -77,8 +77,7 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
       .evaluate(
         (node) =>
           node.getBoundingClientRect().top -
-          (document.querySelector("#messages")?.getBoundingClientRect().top ??
-            NaN),
+          document.querySelector("#messages")!.getBoundingClientRect().top,
       );
   try {
     await server.listen();
@@ -88,18 +87,18 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
     expect(await page.locator("[data-message]").count()).toBeLessThan(150);
     await expect(page.locator("[data-history-window]")).toBeVisible();
     expect(await mounted()).toBeLessThanOrEqual(24);
-    expect(
-      await page.evaluate(() => window.historyWindowRenderedMessages),
-    ).toBeLessThan(150);
+    expect(await page.evaluate(() => window.renderedMessages)).toBeLessThan(
+      150,
+    );
     await page.locator("#message").fill("Preserve this draft");
-    await page.evaluate(() => window.historyWindowJump("a500"));
+    await page.evaluate(() => window.jump("a500"));
     await expect(page.locator('[data-message="a500"]')).toBeVisible();
     await expect(page.getByAltText("Saved attachment")).toBeVisible();
     await expect
       .poll(async () => Math.abs((await offset("a500")) - 16))
       .toBeLessThan(2);
     const original = await offset("a500");
-    await page.evaluate(() => window.historyWindowPrepend());
+    await page.evaluate(() => window.prepend());
     await expect
       .poll(async () => Math.abs((await offset("a500")) - original))
       .toBeLessThan(2);
@@ -112,7 +111,7 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
     await page
       .locator("#messages")
       .evaluate((node) => (node.style.width = "720px"));
-    await page.evaluate(() => window.historyWindowJump("original-tool500-1"));
+    await page.evaluate(() => window.jump("original-tool500-1"));
     const tool = page.locator(
       '[data-message="tool500-1"]:not([data-lazy-message])',
     );
@@ -129,11 +128,11 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
     await tool.locator("summary").first().click();
     await expect(tool).toHaveAttribute("open", "");
     await expect(tool).toHaveAttribute("data-toggle-observed", "true");
-    await page.evaluate(() => window.historyWindowJump("a900"));
+    await page.evaluate(() => window.jump("a900"));
     await expect
       .poll(() => page.locator('[data-message="tool500-1"]').count())
       .toBe(0);
-    await page.evaluate(() => window.historyWindowJump("tool500-1"));
+    await page.evaluate(() => window.jump("tool500-1"));
     await expect(
       page.locator('[data-message="tool500-1"]:not([data-lazy-message])'),
     ).toHaveAttribute("open", "");
@@ -141,13 +140,13 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
       .getByRole("button", { name: "Preview attachment", exact: true })
       .click();
     await expect(page.getByRole("dialog")).toBeVisible();
-    await page.evaluate(() => window.historyWindowJump("a900"));
+    await page.evaluate(() => window.jump("a900"));
     await expect(page.getByRole("dialog")).toBeVisible();
     await expect(page.locator('[data-message="a500"]')).toBeAttached();
     await page
       .getByRole("button", { name: "Close preview", exact: true })
       .click();
-    await page.evaluate(() => window.historyWindowJump("a500"));
+    await page.evaluate(() => window.jump("a500"));
     // A native selection survives eviction of its old viewport.
     await page
       .locator('[data-message="a500"] p')
@@ -156,19 +155,19 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
         const range = document.createRange();
         range.selectNodeContents(node);
         const selection = document.getSelection();
-        selection?.removeAllRanges();
-        selection?.addRange(range);
+        selection!.removeAllRanges();
+        selection!.addRange(range);
       });
     const selection = await page.evaluate(() =>
-      document.getSelection()?.toString(),
+      document.getSelection()!.toString(),
     );
-    await page.evaluate(() => window.historyWindowJump("a900"));
+    await page.evaluate(() => window.jump("a900"));
     await expect
-      .poll(() => page.evaluate(() => document.getSelection()?.toString()))
+      .poll(() => page.evaluate(() => document.getSelection()!.toString()))
       .toBe(selection);
     expect(await mounted()).toBeLessThanOrEqual(50);
-    await page.evaluate(() => document.getSelection()?.removeAllRanges());
-    await page.evaluate(() => window.historyWindowJump("a500"));
+    await page.evaluate(() => document.getSelection()!.removeAllRanges());
+    await page.evaluate(() => window.jump("a500"));
     await expect(page.locator("#message")).toHaveValue("Preserve this draft");
     const savedOffset = await offset("a500");
     // HistoryWindow publishes its visible range, then persists the anchor.
@@ -189,19 +188,19 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
       "Send after history navigation",
     );
     await page.evaluate(() => {
-      window.historyWindowLatest();
-      window.historyWindowAppendStream();
+      window.latest();
+      window.appendStream();
     });
     await expect(page.locator('[data-message="stream"]')).toBeVisible();
     expect(await mounted()).toBeLessThanOrEqual(24);
     const latestRows = await mounted();
     const latestNodes = await page.locator("[data-message]").count();
-    await page.evaluate(() => window.historyWindowLargeTurn());
+    await page.evaluate(() => window.largeTurn());
     await expect(page.locator('[data-message="large-2999"]')).toBeAttached();
     expect(await page.locator("[data-message]").count()).toBeLessThanOrEqual(
       512,
     );
-    await page.evaluate(() => window.historyWindowJump("large-20"));
+    await page.evaluate(() => window.jump("large-20"));
     await expect(
       page.locator('[data-message="large-20"]:not([data-lazy-message])'),
     ).toBeVisible();
@@ -217,31 +216,30 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
       .evaluate((node) => {
         const range = document.createRange();
         range.selectNodeContents(node);
-        document.getSelection()?.removeAllRanges();
-        document.getSelection()?.addRange(range);
-        window.historyWindowSameTurnNode = node;
+        document.getSelection()!.removeAllRanges();
+        document.getSelection()!.addRange(range);
+        window.sameTurnNode = node;
       });
     const sameTurnSelection = await page.evaluate(() =>
-      document.getSelection()?.toString(),
+      document.getSelection()!.toString(),
     );
     const sameTurnOffset = await sameTurnTarget.evaluate(
       (node) =>
         node.getBoundingClientRect().top -
-        (document.querySelector("#messages")?.getBoundingClientRect().top ??
-          NaN),
+        document.querySelector("#messages")!.getBoundingClientRect().top,
     );
-    await page.evaluate(() => window.historyWindowPrependSameTurn());
+    await page.evaluate(() => window.prependSameTurn());
     await expect
       .poll(() =>
         page.evaluate(
           () =>
-            window.historyWindowSameTurnNode.isConnected &&
-            document.activeElement === window.historyWindowSameTurnNode,
+            window.sameTurnNode.isConnected &&
+            document.activeElement === window.sameTurnNode,
         ),
       )
       .toBe(true);
     await expect
-      .poll(() => page.evaluate(() => document.getSelection()?.toString()))
+      .poll(() => page.evaluate(() => document.getSelection()!.toString()))
       .toBe(sameTurnSelection);
     await expect
       .poll(async () =>
@@ -249,36 +247,31 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
           (await sameTurnTarget.evaluate(
             (node) =>
               node.getBoundingClientRect().top -
-              (document.querySelector("#messages")?.getBoundingClientRect()
-                .top ?? NaN),
+              document.querySelector("#messages")!.getBoundingClientRect().top,
           )) - sameTurnOffset,
         ),
       )
       .toBeLessThan(2);
-    await page.evaluate(() => document.getSelection()?.removeAllRanges());
-    await page.evaluate(() => window.historyWindowJump("large-20"));
+    await page.evaluate(() => document.getSelection()!.removeAllRanges());
+    await page.evaluate(() => window.jump("large-20"));
     const sameTurnReloadOffset = await sameTurnTarget.evaluate(
       (node) =>
         node.getBoundingClientRect().top -
-        (document.querySelector("#messages")?.getBoundingClientRect().top ??
-          NaN),
+        document.querySelector("#messages")!.getBoundingClientRect().top,
     );
     await expect
       .poll(() =>
         page.evaluate(() => {
-          const anchor: unknown = JSON.parse(
+          // The scroll fixture writes this anchor using the history-window owner.
+          const anchor:
+            | (Pick<import("../../src/types.ts").Message, "id"> & {
+                kind?: string;
+              })
+            | null = JSON.parse(
             localStorage.getItem("history-window-browser:window-anchor") ||
               "null",
           );
-          return (
-            anchor !== null &&
-            typeof anchor === "object" &&
-            "kind" in anchor &&
-            anchor.kind === "message" &&
-            "id" in anchor &&
-            typeof anchor.id === "string" &&
-            anchor.id.startsWith("large-")
-          );
+          return anchor?.kind === "message" && anchor.id.startsWith("large-");
         }),
       )
       .toBe(true);
@@ -290,13 +283,12 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
           (await sameTurnTarget.evaluate(
             (node) =>
               node.getBoundingClientRect().top -
-              (document.querySelector("#messages")?.getBoundingClientRect()
-                .top ?? NaN),
+              document.querySelector("#messages")!.getBoundingClientRect().top,
           )) - sameTurnReloadOffset,
         ),
       )
       .toBeLessThan(2);
-    await page.evaluate(() => window.historyWindowSmall());
+    await page.evaluate(() => window.small());
     await expect(page.locator('[data-message="a0"]')).toBeAttached();
     await expect(page.locator("[data-history-window]")).toHaveCount(0);
     const smallTool = page.locator(
@@ -308,43 +300,41 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
     await expect(page.locator(".tool-card")).toHaveCount(0);
     await page.locator(".turn-work > summary").click();
     await expect(smallTool).toHaveAttribute("open", "");
-    await page.evaluate(() => window.historyWindowJump("original-tool0-1"));
+    await page.evaluate(() => window.jump("original-tool0-1"));
     await expect(
       page.locator('[data-message="tool0-1"]:not([data-lazy-message])'),
     ).toBeVisible();
     for (const many of [false, true]) {
       await page.evaluate((many) => {
-        window.historyWindowLegacy(many);
-        window.historyWindowLatest();
+        window.legacy(many);
+        window.latest();
       }, many);
       await expect(
         page.locator(`[data-message="a${many ? 999 : 0}"]`),
       ).toBeVisible();
-      await page.evaluate(() => window.historyWindowJump("original-tool0-1"));
+      await page.evaluate(() => window.jump("original-tool0-1"));
       await expect(
         page.locator('[data-message="tool0-1"]:not([data-lazy-message])'),
       ).toBeVisible();
     }
     for (const many of [false, true]) {
       await page.evaluate((many) => {
-        window.historyWindowOptimistic(many);
-        window.historyWindowLatest();
+        window.optimistic(many);
+        window.latest();
       }, many);
       const optimistic = page.locator('[data-message="optimistic:user"]');
       await expect(optimistic).toBeVisible();
-      await optimistic.evaluate(
-        (node) => (window.historyWindowOptimisticNode = node),
-      );
+      await optimistic.evaluate((node) => (window.optimisticNode = node));
       await optimistic
         .getByRole("button", { name: "Preview attachment", exact: true })
         .click();
       await expect(page.getByRole("dialog")).toBeVisible();
-      await page.evaluate(() => window.historyWindowAck());
+      await page.evaluate(() => window.ack());
       await expect(page.getByRole("dialog")).toBeVisible();
       expect(
         await page.evaluate(
           () =>
-            window.historyWindowOptimisticNode ===
+            window.optimisticNode ===
             document.querySelector('[data-message="durable-user"]'),
         ),
       ).toBe(true);
@@ -358,9 +348,7 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
         loadedMessages: 5000,
         mountedRows: latestRows,
         mountedMessageNodes: latestNodes,
-        renderedMessages: await page.evaluate(
-          () => window.historyWindowRenderedMessages,
-        ),
+        renderedMessages: await page.evaluate(() => window.renderedMessages),
       }),
     );
   } finally {

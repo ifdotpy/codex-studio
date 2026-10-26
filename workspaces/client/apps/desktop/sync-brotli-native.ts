@@ -24,7 +24,7 @@ function produce(stream: Stream) {
   stream.encoder.flush(constants.BROTLI_OPERATION_FLUSH);
 }
 const server = createServer((request, response) => {
-  const url = new URL(request.url ?? "/", "http://localhost");
+  const url = new URL(request.url!, "http://localhost");
   if (url.pathname === "/api/sync/stream") {
     assert.match(request.headers["accept-encoding"] || "", /\bbr\b/);
     const client = url.searchParams.get("client");
@@ -61,11 +61,9 @@ const server = createServer((request, response) => {
   }
 });
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-const address = server.address();
-assert.ok(address && typeof address !== "string");
-const destination = `http://127.0.0.1:${address.port}`;
+const destination = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
 let browser;
-let desktop: ElectronApplication | null = null;
+let desktop: ElectronApplication | undefined;
 try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
@@ -80,12 +78,7 @@ try {
             source.close();
             reject(new Error("event buffered until next production"));
           }, 5000);
-          function receive(event: Event) {
-            if (
-              !(event instanceof MessageEvent) ||
-              typeof event.data !== "string"
-            )
-              throw new Error("Invalid fixture event.");
+          function receive(event: MessageEvent<string>) {
             // This server writes the event immediately before this read.
             const parsed: { revision: number; text: string } = JSON.parse(
               event.data,
@@ -118,7 +111,7 @@ try {
   });
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().at(0)?.isVisible(),
+      BrowserWindow.getAllWindows()[0].isVisible(),
     ),
     false,
   );
@@ -145,9 +138,9 @@ try {
         fetchRequest: async (request) => {
           const url = new URL(request.url);
           if (url.pathname.endsWith("/pair")) {
-            const body: unknown = await request.json();
-            if (!body || typeof body !== "object" || !("clientId" in body))
-              throw new Error("Fixture client identity is unavailable.");
+            // The adapter under test writes this pairing request.
+            const body: import("./api.ts").PairRequest & { clientId: string } =
+              await request.json();
             return new Response(
               JSON.stringify({
                 ...invitation,
@@ -178,17 +171,11 @@ try {
           serverId: receipt.id,
           credentialId: receipt.credentialId,
           url: origin + "/api/sync/stream?client=signed",
-          method: "GET",
-          headers: [
-            ["Accept", "text/event-stream"],
-            ["Accept-Encoding", "br"],
-          ],
+          headers: { Accept: "text/event-stream", "Accept-Encoding": "br" },
         },
         controller.signal,
       );
-      if (!response.body)
-        throw new Error("Fixture stream body is unavailable.");
-      const reader = response.body.getReader();
+      const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       const frames = [];
       let pending = "";
@@ -231,6 +218,6 @@ try {
   await desktop?.close();
   await browser?.close();
   server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await new Promise<Error | undefined>((resolve) => server.close(resolve));
   await rm(folder, { recursive: true, force: true });
 }

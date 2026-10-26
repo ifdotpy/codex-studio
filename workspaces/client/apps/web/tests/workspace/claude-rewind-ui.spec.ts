@@ -1,5 +1,5 @@
 import type { PostBody } from "../../src/apiTypes.ts";
-import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -105,7 +105,7 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       );
     });
     await page.setViewportSize({ width: 320, height: 800 });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     const select = page.getByLabel("Message to restore before");
     const button = page.getByRole("button", {
       name: "Restore files and conversation",
@@ -156,9 +156,12 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       turn_id: "ready",
       restore_files: true,
     });
-    const firstWrite = required(writes[0]);
-    if (firstWrite.action !== "rollback") throw new Error("Expected rollback");
-    expect(firstWrite.request_id).toBeTruthy();
+    const firstWrite = writes[0]!;
+
+    expect(
+      (firstWrite as Extract<typeof firstWrite, { action: "rollback" }>)
+        .request_id,
+    ).toBeTruthy();
     await page.setViewportSize({ width: 1200, height: 800 });
     await select.selectOption("ready");
     await expect(button).toBeEnabled();

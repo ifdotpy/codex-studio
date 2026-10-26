@@ -5,7 +5,7 @@ import { MantineProvider } from "@mantine/core";
 import TerminalDock from "../../src/components/TerminalDock.tsx";
 import { setToken } from "../../src/api.ts";
 export function mount(shell: string) {
-  window.terminalInputRecoveryRoot?.unmount();
+  window.reactRoot?.unmount();
   localStorage.setItem("codex.terminal.open", "true");
   localStorage.setItem(
     "codex.terminal.selected",
@@ -28,11 +28,11 @@ export function mount(shell: string) {
       React.createElement(TerminalDock, {
         data,
         agent,
-        notify: (value) => window.terminalInputRecoveryNotices.push(value),
+        notify: (value) => window.notices.push(value),
       }),
     ),
   );
-  window.terminalInputRecoveryRoot = root;
+  window.reactRoot = root;
 }
 
 window.terminalInputRecoveryMount = mount;

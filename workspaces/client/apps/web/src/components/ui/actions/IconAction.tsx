@@ -17,15 +17,7 @@ export interface IconActionProps extends Omit<
 export function IconAction({
   label,
   title = label,
-  color,
   ...props
 }: IconActionProps) {
-  return (
-    <MantineActionIcon
-      {...props}
-      {...(color === undefined ? {} : { color })}
-      aria-label={label}
-      title={title}
-    />
-  );
+  return <MantineActionIcon {...props} aria-label={label} title={title} />;
 }

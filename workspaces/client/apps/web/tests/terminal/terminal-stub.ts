@@ -3,12 +3,12 @@ import type { Root } from "react-dom/client";
 import type { mount } from "./terminal-input-fixture.ts";
 declare global {
   interface Window {
-    terminalInputRecoveryTerminals: Terminal[];
-    terminalInputRecoveryCurrentTerminal: Terminal;
-    terminalInputRecoveryRetiredTerminal: Terminal;
-    terminalInputRecoveryRoot: Root | null;
-    terminalInputRecoveryNotices: string[];
-    terminalInputRecoveryAdvance: number;
+    terminals: Terminal[];
+    currentTerminal: Terminal;
+    retiredTerminal: Terminal;
+    reactRoot: Root | null;
+    notices: string[];
+    advance: number;
     terminalInputRecoveryMount: typeof mount;
   }
 }
@@ -22,8 +22,8 @@ export class Terminal {
     this.options = options;
     this.cols = 100;
     this.rows = 24;
-    window.terminalInputRecoveryTerminals.push(this);
-    window.terminalInputRecoveryCurrentTerminal = this;
+    window.terminals.push(this);
+    window.currentTerminal = this;
   }
   loadAddon() {}
   open() {}
