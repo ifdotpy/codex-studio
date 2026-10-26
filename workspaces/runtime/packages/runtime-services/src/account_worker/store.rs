@@ -1897,8 +1897,7 @@ fn journal_one(
                 .get("processId")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-        {
-            if let Err(error) = crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
+            && let Err(error) = crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
                 tx,
                 process_id,
                 crate::monitor_event_queue::JournalEventScope {
@@ -1909,16 +1908,16 @@ fn journal_one(
                     expected_agent: expected_vm_actor.map(|(actor, _)| actor),
                 },
                 params,
+            )
+        {
+            // A refused delta of a running monitor belongs to its agent.
+            if matches!(
+                error,
+                crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. }
             ) {
-                // A refused delta of a running monitor belongs to its agent.
-                if matches!(
-                    error,
-                    crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. }
-                ) {
-                    *policy.subject = crate::monitor_event_queue::output_agent(tx, process_id)?;
-                }
-                return Err(error.into());
+                *policy.subject = crate::monitor_event_queue::output_agent(tx, process_id)?;
             }
+            return Err(error.into());
         }
         if let Some(("account/rateLimits/updated", params)) = notice {
             if let Some(source) = publication.native_source.as_ref()
