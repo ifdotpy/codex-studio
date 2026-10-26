@@ -25,7 +25,7 @@ let originalExitCode: typeof process.exitCode;
 beforeEach(() => {
   originalArgv = process.argv;
   originalExitCode = process.exitCode;
-  process.argv = [process.execPath, "run-browser-tests.mjs", "--", "--list"];
+  process.argv = [process.execPath, "run-browser-tests.ts", "--", "--list"];
   vi.stubEnv("HOME", callerHome);
   vi.stubEnv("XDG_CACHE_HOME", callerCache);
   vi.stubEnv("CODEX_HOME", join(callerHome, ".codex"));
@@ -87,7 +87,7 @@ test("runs Playwright in an isolated home with no interpreter probe", async () =
     return { status: 0 };
   });
 
-  await import("../scripts/run-browser-tests.mjs");
+  await import("../scripts/run-browser-tests.ts");
   assert.deepEqual(
     calls.map((call) => call.command),
     ["pnpm"],
@@ -102,6 +102,6 @@ test("a failing Playwright run sets the exit code", async () => {
     return { status: 3 };
   });
 
-  await import("../scripts/run-browser-tests.mjs");
+  await import("../scripts/run-browser-tests.ts");
   assert.equal(process.exitCode, 3);
 });

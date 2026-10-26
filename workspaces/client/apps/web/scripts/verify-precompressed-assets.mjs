@@ -14,8 +14,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { browserExecutablePath } from "../tests/browser-executable.mjs";
-import { startRustBackend } from "../tests/fixtures/rust-ui-fixture.mjs";
+import { browserExecutablePath } from "../tests/browser-executable.ts";
+import { startRustBackend } from "../tests/fixtures/rust-ui-fixture.ts";
 
 assert.ok(
   process.env.CODEX_STUDIO_RUNTIME_SERVER,

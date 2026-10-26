@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 test("dialog-drafts-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);

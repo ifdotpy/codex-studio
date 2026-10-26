@@ -1,3 +1,7 @@
+import { build } from "esbuild";
+import { fileURLToPath } from "node:url";
+import type { Page, Route } from "@playwright/test";
+import type {} from "./playwright-schema-headers.fixture.ts";
 import assert from "node:assert/strict";
 
 import {
@@ -5,9 +9,25 @@ import {
   expect,
   readApiSchemaHash,
   test,
-} from "./playwright.mjs";
+} from "./playwright.ts";
 
-async function assertOneApiFulfillment(page, explicitHash) {
+async function openFixture(page: Page) {
+  await page.goto("http://schema-header-fixture.test/");
+  const bundle = await build({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./playwright-schema-headers.fixture.ts", import.meta.url),
+      ),
+    ],
+    bundle: true,
+    write: false,
+  });
+  const output = bundle.outputFiles[0];
+  if (!output) throw new Error("Missing schema header fixture bundle");
+  await page.addScriptTag({ content: output.text });
+}
+
+async function assertOneApiFulfillment(page: Page, explicitHash?: string) {
   let apiHandlerCalls = 0;
   let apiFulfillCalls = 0;
   let apiResponses = 0;
@@ -25,11 +45,10 @@ async function assertOneApiFulfillment(page, explicitHash) {
     apiFulfillCalls++;
     await route.fulfill({ status: 200, headers, body: "ok" });
   });
-  await page.goto("http://schema-header-fixture.test/");
-  const receivedHash = await page.evaluate(async () => {
-    const response = await fetch("/api/probe");
-    return response.headers.get("x-studio-api-schema");
-  });
+  await openFixture(page);
+  const receivedHash = await page.evaluate(
+    async () => (await window.schemaHeaderFixture.probe("/api/probe")).hash,
+  );
   assert.equal(apiHandlerCalls, 1, "the spec API route handler runs once");
   assert.equal(apiFulfillCalls, 1, "the spec calls fulfill exactly once");
   assert.equal(apiResponses, 1, "the browser receives one API response");
@@ -67,14 +86,10 @@ test("duplicate spec fulfill calls delegate to one Route fulfillment", async ({
       route.fulfill({ status: 200, body: "duplicate" }),
     ]);
   });
-  await page.goto("http://schema-header-fixture.test/");
-  const response = await page.evaluate(async () => {
-    const result = await fetch("/api/probe");
-    return {
-      body: await result.text(),
-      hash: result.headers.get("x-studio-api-schema"),
-    };
-  });
+  await openFixture(page);
+  const response = await page.evaluate(() =>
+    window.schemaHeaderFixture.probe("/api/probe"),
+  );
   assert.equal(apiHandlerCalls, 1, "the spec route handles the request once");
   assert.equal(apiResponses, 1, "the browser receives one response");
   assert.equal(response.body, "ok", "the first spec fulfillment wins");
@@ -84,25 +99,24 @@ test("duplicate spec fulfill calls delegate to one Route fulfillment", async ({
 test("deferred route fulfillment keeps the schema decorator until handled", async ({
   page,
 }) => {
-  let heldRoute;
-  let fulfillRoute;
-  const routeCaptured = new Promise((resolve) => {
-    fulfillRoute = resolve;
+  let captureRoute: (route: Route) => void = () => {
+    throw new Error("Route capture not initialized");
+  };
+  const routeCaptured = new Promise<Route>((resolve) => {
+    captureRoute = resolve;
   });
   let apiFulfillments = 0;
   await page.route("http://schema-header-fixture.test/**", async (route) => {
     if (!new URL(route.request().url()).pathname.startsWith("/api/"))
       return route.fulfill({ contentType: "text/html", body: "fixture" });
     apiFulfillments++;
-    heldRoute = route;
-    fulfillRoute();
+    captureRoute(route);
   });
-  await page.goto("http://schema-header-fixture.test/");
-  const responseHash = page.evaluate(async () => {
-    const response = await fetch("/api/deferred");
-    return response.headers.get("x-studio-api-schema");
-  });
-  await routeCaptured;
+  await openFixture(page);
+  const responseHash = page.evaluate(
+    async () => (await window.schemaHeaderFixture.probe("/api/deferred")).hash,
+  );
+  const heldRoute = await routeCaptured;
   await heldRoute.fulfill({ status: 200, body: "ok" });
   expect(await responseHash).toBe(readApiSchemaHash());
   assert.equal(apiFulfillments, 1, "the deferred spec route fulfills once");

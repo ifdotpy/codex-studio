@@ -4,8 +4,8 @@ import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   apiSchemaHandshakeSse,
-} from "../playwright.mjs";
-import { fixture } from "./multi-server-fixture.mjs";
+} from "../playwright.ts";
+import { fixture } from "./multi-server-fixture.ts";
 import { execFileSync } from "node:child_process";
 test("one UI routes overlapping chats to two and three signed servers without reload", async ({
   page,

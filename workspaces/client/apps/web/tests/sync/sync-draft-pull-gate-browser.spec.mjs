@@ -7,14 +7,14 @@ import {
   syncIdentityFixture,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("draft pull waits for a real trigger without blocking push recovery", async ({
   page: fixturePage,
 }) => {
   test.setTimeout(45_000);
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const workspaceId = "c".repeat(32);
   const streams = new Set();
   let pulls = 0;

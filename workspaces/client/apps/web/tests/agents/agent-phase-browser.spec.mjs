@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, createFixtureViteServer } from "../playwright.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.ts";
 
 test("chat reconnect follows transport across hidden conversations", async ({
   page,

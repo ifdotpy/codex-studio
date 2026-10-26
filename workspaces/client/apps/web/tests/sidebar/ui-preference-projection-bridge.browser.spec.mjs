@@ -1,8 +1,8 @@
-import { expect, test } from "../playwright.mjs";
+import { expect, test } from "../playwright.ts";
 import {
   fixture,
   fixtureWorkspaceId,
-} from "../servers/multi-server-fixture.mjs";
+} from "../servers/multi-server-fixture.ts";
 
 for (const entry of ["/?studio-server=local", "/"]) {
   test(`server projection at ${entry} reads preferences without a second sync client`, async ({

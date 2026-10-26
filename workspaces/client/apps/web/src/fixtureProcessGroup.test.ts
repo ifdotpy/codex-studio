@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { stopFixtureProcessGroup } from "../tests/fixture-process-group.mjs";
+import { stopFixtureProcessGroup } from "../tests/fixture-process-group.ts";
 
 afterEach(() => vi.restoreAllMocks());
 

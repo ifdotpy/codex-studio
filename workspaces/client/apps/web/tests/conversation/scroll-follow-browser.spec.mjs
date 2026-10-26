@@ -11,7 +11,7 @@ import {
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production renderer, isolated fixture server, and a controlled transcript
 // stream. The reader scrolls with wheel steps while the agent streams.
 import assert from "node:assert/strict";
@@ -20,7 +20,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { streamTranscriptFixture } from "../fixtures/streaming-transcript.mjs";
+import { streamTranscriptFixture } from "../fixtures/streaming-transcript.ts";
 
 // More rows than HISTORY_WINDOW_THRESHOLD, so the transcript is windowed.
 const TURNS = 100;

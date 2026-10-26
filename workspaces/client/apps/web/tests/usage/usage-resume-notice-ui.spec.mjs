@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 
 test("Usage resume notice", async ({ context: testContext }) => {
   test.setTimeout(180_000);

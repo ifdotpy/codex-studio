@@ -4,7 +4,7 @@ import {
   spawnFixture as spawn,
   rustUiFixture,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Two browser profiles, real SQLite/RxDB replication, no live model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

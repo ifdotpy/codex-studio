@@ -2,14 +2,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../../tests/playwright.mjs";
+import { test, expect } from "../../tests/playwright.ts";
 
 test("hidden visual rows stop timers and rate renders and resume current values", async ({
   browser,
 }) => {
   test.setTimeout(60_000);
   const { createFixtureViteServer: createServer } =
-    await import("../../tests/playwright.mjs");
+    await import("../../tests/playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-visual-activity-"));
   const entry = `
     import React from 'react';

@@ -2,7 +2,7 @@ import {
   apiSchemaHandshakeSse,
   createFixtureViteServer,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real RxDB projection persistence and two browser tabs, with an isolated API.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";

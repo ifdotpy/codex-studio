@@ -1,4 +1,4 @@
-import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import {
   readApiSchemaHash,
   syncProtocolFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const workspaceId = "a".repeat(32);
 
@@ -17,7 +17,7 @@ async function createFixture(page, options = {}) {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,

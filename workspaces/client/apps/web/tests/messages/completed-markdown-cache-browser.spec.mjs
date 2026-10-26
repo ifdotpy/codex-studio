@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test, expect, createFixtureViteServer } from "../playwright.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.ts";
 
 test("Completed Markdown Cache Browser", async ({ page }) => {
   const root = join(import.meta.dirname, "../../");

@@ -1,21 +1,27 @@
-/** @typedef {{ stdout: NodeJS.ReadableStream | null, once: Function, off: Function }} FixtureChild */
+import type { EventEmitter } from "node:events";
+export type FixtureChild = Pick<EventEmitter, "once" | "off"> & {
+  stdout: NodeJS.ReadableStream | null;
+};
 
 /**
  * Resolve the port printed by a fixture server, with shared timeout and exit handling.
- * @param {FixtureChild} child
- * @param {{ timeoutMs?: number; label?: string; diagnostics?: () => string; portPattern?: RegExp }} [options]
  */
 export function waitForFixturePort(
-  child,
+  child: FixtureChild,
   {
     timeoutMs = 30_000,
     label = "Fixture",
     diagnostics = () => "",
     portPattern = /^(\d+)$/,
+  }: {
+    timeoutMs?: number;
+    label?: string;
+    diagnostics?: () => string;
+    portPattern?: RegExp;
   } = {},
 ) {
   if (!child.stdout) throw new Error(`${label} fixture has no stdout stream`);
-  return new Promise((resolve, reject) => {
+  return new Promise<number>((resolve, reject) => {
     let output = "";
     const cleanup = () => {
       clearTimeout(timer);
@@ -23,11 +29,11 @@ export function waitForFixturePort(
       child.off("error", onError);
       child.off("close", onClose);
     };
-    const fail = (error) => {
+    const fail = (error: unknown) => {
       cleanup();
       reject(error);
     };
-    const onData = (chunk) => {
+    const onData = (chunk: unknown) => {
       output += String(chunk);
       const newline = output.indexOf("\n");
       if (newline < 0) return;
@@ -40,8 +46,8 @@ export function waitForFixturePort(
       cleanup();
       resolve(port);
     };
-    const onError = (error) => fail(error);
-    const onClose = (code, signal) =>
+    const onError = (error: Error) => fail(error);
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) =>
       fail(
         new Error(
           `${label} fixture exited before printing its port (code ${code ?? "null"}, signal ${signal ?? "none"}): ${output.trim()} ${diagnostics()}`.trim(),
@@ -56,7 +62,7 @@ export function waitForFixturePort(
         ),
       timeoutMs,
     );
-    child.stdout.on("data", onData);
+    child.stdout?.on("data", onData);
     child.once("error", onError);
     child.once("close", onClose);
   });

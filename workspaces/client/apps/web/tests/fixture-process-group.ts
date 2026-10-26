@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import {
   mkdirSync,
   readFileSync,
@@ -10,11 +11,11 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const processGroupsSupported = process.platform !== "win32";
 
-function fixturePid(childOrPid) {
+function fixturePid(childOrPid: ChildProcess | number) {
   return typeof childOrPid === "number" ? childOrPid : childOrPid.pid;
 }
 
-function readProcessStartTime(pid) {
+function readProcessStartTime(pid: number) {
   if (process.platform !== "linux") return undefined;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -25,23 +26,34 @@ function readProcessStartTime(pid) {
     // The remaining fields start at stat field 3 (state); starttime is field 22.
     return fields[19];
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT")
+    if (
+      (error instanceof Error && "code" in error ? error.code : undefined) ===
+      "ENOENT"
+    )
       return undefined;
     throw error;
   }
 }
 
-/** @param {NodeJS.Signals | number} [signal] */
-export function signalFixtureProcessGroup(childOrPid, signal = "SIGTERM") {
+export function signalFixtureProcessGroup(
+  childOrPid: ChildProcess | number,
+  signal: NodeJS.Signals | number = "SIGTERM",
+) {
   const pid = fixturePid(childOrPid);
-  if (pid === undefined) return childOrPid.kill(signal);
+  if (pid === undefined && typeof childOrPid !== "number")
+    return childOrPid.kill(signal);
+  if (pid === undefined) return false;
   if (!processGroupsSupported) {
     if (typeof childOrPid === "number") {
       try {
         process.kill(pid, signal);
         return true;
       } catch (error) {
-        if (/** @type {NodeJS.ErrnoException} */ (error).code === "ESRCH")
+        if (
+          (error instanceof Error && "code" in error
+            ? error.code
+            : undefined) === "ESRCH"
+        )
           return false;
         throw error;
       }
@@ -52,45 +64,57 @@ export function signalFixtureProcessGroup(childOrPid, signal = "SIGTERM") {
     process.kill(-pid, signal);
     return true;
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ESRCH")
+    if (
+      (error instanceof Error && "code" in error ? error.code : undefined) ===
+      "ESRCH"
+    )
       return false;
     throw error;
   }
 }
 
-export function fixtureProcessGroupExists(pid) {
+export function fixtureProcessGroupExists(pid: number) {
   try {
     process.kill(processGroupsSupported ? -pid : pid, 0);
     return true;
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ESRCH")
+    if (
+      (error instanceof Error && "code" in error ? error.code : undefined) ===
+      "ESRCH"
+    )
       return false;
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "EPERM")
+    if (
+      (error instanceof Error && "code" in error ? error.code : undefined) ===
+      "EPERM"
+    )
       return true;
     throw error;
   }
 }
 
-async function waitForGroupExit(pid, timeoutMs) {
+async function waitForGroupExit(pid: number, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
   while (fixtureProcessGroupExists(pid) && Date.now() < deadline)
     await delay(25);
   return !fixtureProcessGroupExists(pid);
 }
 
-export async function stopFixtureProcessGroup(childOrPid, timeoutMs = 1_000) {
+export async function stopFixtureProcessGroup(
+  childOrPid: ChildProcess | number,
+  timeoutMs = 1_000,
+) {
   const pid = fixturePid(childOrPid);
   if (pid === undefined) return;
 
-  for (const signal of /** @type {NodeJS.Signals[]} */ ([
-    "SIGTERM",
-    "SIGKILL",
-  ])) {
+  for (const signal of ["SIGTERM", "SIGKILL"] as NodeJS.Signals[]) {
     let denied;
     try {
       signalFixtureProcessGroup(childOrPid, signal);
     } catch (error) {
-      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EPERM")
+      if (
+        (error instanceof Error && "code" in error ? error.code : undefined) !==
+        "EPERM"
+      )
         throw error;
       // Darwin can return EPERM for a group containing only zombies until
       // their parent reaps them. Require ESRCH from the group probe before
@@ -103,7 +127,10 @@ export async function stopFixtureProcessGroup(childOrPid, timeoutMs = 1_000) {
   throw new Error(`Fixture process group ${pid} did not exit after SIGKILL`);
 }
 
-export function registerFixtureProcessGroup(registryDirectory, pid) {
+export function registerFixtureProcessGroup(
+  registryDirectory: string,
+  pid: number,
+) {
   mkdirSync(registryDirectory, { recursive: true });
   writeFileSync(
     join(registryDirectory, `${pid}.json`),
@@ -111,18 +138,25 @@ export function registerFixtureProcessGroup(registryDirectory, pid) {
   );
 }
 
-export function unregisterFixtureProcessGroup(registryDirectory, pid) {
+export function unregisterFixtureProcessGroup(
+  registryDirectory: string,
+  pid: number,
+) {
   rmSync(join(registryDirectory, `${pid}.json`), { force: true });
 }
 
-export async function reapFixtureProcessGroups(registryDirectory) {
+export async function reapFixtureProcessGroups(registryDirectory: string) {
   let files = [];
   try {
     files = readdirSync(registryDirectory).filter((name) =>
       /^\d+\.json$/.test(name),
     );
   } catch (error) {
-    if (/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT") return;
+    if (
+      (error instanceof Error && "code" in error ? error.code : undefined) ===
+      "ENOENT"
+    )
+      return;
     throw error;
   }
   const errors = [];

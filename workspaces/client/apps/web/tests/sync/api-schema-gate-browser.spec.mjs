@@ -14,7 +14,7 @@ import {
   spawnFixture,
   test,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test.use({ apiSchemaFixtureHeaders: false });
 
@@ -940,7 +940,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
     fixtureLog += chunk;
   });
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     root: join(root, "workspaces/client/apps/web"),

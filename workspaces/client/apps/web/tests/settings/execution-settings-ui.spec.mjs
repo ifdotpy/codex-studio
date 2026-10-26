@@ -4,12 +4,12 @@ import {
   rustUiFixture,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import {
   setupControl,
   setupToggle,
   chooseSetupValue,
-} from "../fixtures/setup-controls.mjs";
+} from "../fixtures/setup-controls.ts";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
@@ -19,7 +19,7 @@ import {
   modelValue,
   openModelList,
   selectModel,
-} from "../fixtures/model-picker.mjs";
+} from "../fixtures/model-picker.ts";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {

@@ -7,7 +7,7 @@ import {
   apiSchemaHandshakeSse,
   readApiSchemaHash,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const fulfill = (route, response) =>
   route.fulfill({
@@ -32,7 +32,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 test("sync reset browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     optimizeDeps: { noDiscovery: true },

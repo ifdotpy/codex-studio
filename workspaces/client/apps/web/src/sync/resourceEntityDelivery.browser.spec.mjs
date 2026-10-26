@@ -10,14 +10,14 @@ import {
   protocol3SseEvent,
   readApiSchemaHash,
   test,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 test("state stream persists records across tabs without pulls and repairs missing ranges", async ({
   browser,
 }) => {
   test.setTimeout(60_000);
   const { createFixtureViteServer: createServer } =
-    await import("../../tests/playwright.mjs");
+    await import("../../tests/playwright.ts");
   const workspaceId = "b".repeat(32);
   const streams = new Set();
   const pulls = [];

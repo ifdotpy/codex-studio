@@ -6,6 +6,35 @@ import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+type WorkerProcessMemory = ReturnType<
+  typeof sampleProcessTreeMemory
+>["processes"][number];
+type WorkerMemorySample = {
+  workerPid: number;
+  processTree: boolean;
+  processTreePssBytes: number;
+  processTreeBreakdown: WorkerProcessMemory[];
+};
+type WorkerMemoryProfile = {
+  runId: string;
+  completedAt: number;
+  processTreeP90PssBytes: number;
+  workerCount: number;
+};
+
+// These documents are written by this module and inherited by its own workers.
+function parseWorkerSelection(
+  text: string,
+): Partial<ReturnType<typeof workerSelection>> {
+  return JSON.parse(text);
+}
+function parseWorkerMemoryProfile(text: string): Partial<WorkerMemoryProfile> {
+  return JSON.parse(text);
+}
+function parseWorkerMemorySample(text: string): WorkerMemorySample {
+  return JSON.parse(text);
+}
+
 const defaultWorkerTreePssBytes = Math.ceil(2.1 * 1024 ** 3);
 export const measuredFixtureScratchBytes = 18 * 1024 * 1024;
 const minimumWorkerMemoryProfileSamples = 5;
@@ -31,16 +60,17 @@ function memoryStateDirectory(environment = process.env) {
 }
 
 export function sampleProcessTreeMemory(
-  rootPid,
-  readProcFile = (path) => readFileSync(path, "utf8"),
+  rootPid: number,
+  readProcFile = (path: string) => readFileSync(path, "utf8"),
 ) {
   const pending = [String(rootPid)];
-  const seen = new Set();
+  const seen = new Set<string>();
   let rssBytes = 0;
   let pssBytes = 0;
   const processes = [];
   while (pending.length) {
     const pid = pending.pop();
+    if (pid === undefined) continue;
     if (seen.has(pid)) continue;
     seen.add(pid);
     try {
@@ -93,6 +123,12 @@ export function persistWorkerMemorySample({
   workerPid,
   processTreePssBytes,
   processTreeBreakdown,
+}: {
+  environment?: NodeJS.ProcessEnv;
+  runId: string | undefined;
+  workerPid: number;
+  processTreePssBytes: number;
+  processTreeBreakdown: ReturnType<typeof sampleProcessTreeMemory>["processes"];
 }) {
   if (
     !runId ||
@@ -113,16 +149,25 @@ export function persistWorkerMemorySample({
   );
 }
 
-export function estimateWorkerMemoryBytes({ profile, fallbackPssBytes }) {
+export function estimateWorkerMemoryBytes({
+  profile,
+  fallbackPssBytes,
+}: {
+  profile:
+    | { processTreeP90PssBytes?: number; workerCount?: number }
+    | undefined;
+  fallbackPssBytes: number;
+}) {
   return Number.isSafeInteger(profile?.processTreeP90PssBytes) &&
+    profile?.processTreeP90PssBytes !== undefined &&
     profile.processTreeP90PssBytes > 0 &&
     Number.isSafeInteger(profile.workerCount) &&
-    profile.workerCount >= minimumWorkerMemoryProfileSamples
+    (profile.workerCount ?? 0) >= minimumWorkerMemoryProfileSamples
     ? profile.processTreeP90PssBytes
     : fallbackPssBytes;
 }
 
-export function calculateMemoryBudgetBytes(memoryAvailableBytes) {
+export function calculateMemoryBudgetBytes(memoryAvailableBytes: number) {
   return Math.min(
     Math.floor(memoryAvailableBytes * maximumMemoryFraction),
     Math.max(0, memoryAvailableBytes - minimumAvailableMemoryReserveBytes),
@@ -130,9 +175,9 @@ export function calculateMemoryBudgetBytes(memoryAvailableBytes) {
 }
 
 export function completeWorkerMemoryRun(environment = process.env) {
-  let selection;
+  let selection: ReturnType<typeof parseWorkerSelection>;
   try {
-    selection = JSON.parse(
+    selection = parseWorkerSelection(
       environment.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",
     );
   } catch {
@@ -142,11 +187,13 @@ export function completeWorkerMemoryRun(environment = process.env) {
   if (typeof runId !== "string") return;
   const stateDirectory = memoryStateDirectory(environment);
   const runDirectory = join(stateDirectory, "runs", runId);
-  let samples = [];
+  let samples: WorkerMemorySample[] = [];
   try {
     samples = readdirSync(runDirectory)
       .filter((name) => /^worker-\d+\.json$/.test(name))
-      .map((name) => JSON.parse(readFileSync(join(runDirectory, name), "utf8")))
+      .map((name) =>
+        parseWorkerMemorySample(readFileSync(join(runDirectory, name), "utf8")),
+      )
       .filter(
         (entry) =>
           entry.processTree === true &&
@@ -170,7 +217,13 @@ export function completeWorkerMemoryRun(environment = process.env) {
     processTreeP90PssBytes: p90PssBytes,
     processTreePssSamples: orderedPssBytes,
     workerCount: samples.length,
-    processTreeBreakdown: samples.reduce(
+    processTreeBreakdown: samples.reduce<
+      | {
+          processTreePssBytes: WorkerMemorySample["processTreePssBytes"];
+          processes: WorkerMemorySample["processTreeBreakdown"];
+        }
+      | undefined
+    >(
       (largest, entry) =>
         entry.processTreePssBytes > (largest?.processTreePssBytes ?? 0)
           ? {
@@ -184,8 +237,8 @@ export function completeWorkerMemoryRun(environment = process.env) {
   mkdirSync(stateDirectory, { recursive: true });
   const latestPath = join(stateDirectory, "latest.json");
   try {
-    const current = JSON.parse(readFileSync(latestPath, "utf8"));
-    if (current.completedAt > profile.completedAt) return;
+    const current = parseWorkerMemoryProfile(readFileSync(latestPath, "utf8"));
+    if ((current.completedAt ?? 0) > profile.completedAt) return;
   } catch {
     // No previous completed profile is available.
   }
@@ -194,7 +247,7 @@ export function completeWorkerMemoryRun(environment = process.env) {
   renameSync(temporaryPath, latestPath);
 }
 
-function readText(path) {
+function readText(path: string) {
   try {
     return readFileSync(path, "utf8").trim();
   } catch {
@@ -243,7 +296,10 @@ function cgroupMemoryAvailableBytes() {
  * memory_pressure). os.freemem() counts only free pages, and a Mac that has run for a while
  * keeps those near zero while gigabytes of inactive pages wait for reuse.
  */
-export function darwinAvailableBytes(level, totalBytes = os.totalmem()) {
+export function darwinAvailableBytes(
+  level: unknown,
+  totalBytes = os.totalmem(),
+) {
   const text = String(level).trim();
   const percent = Number(text);
   return /^\d+$/.test(text) && percent <= 100
@@ -316,6 +372,11 @@ export function choosePlaywrightWorkerCount({
   competingRunnable,
   memoryWorkers,
   override,
+}: {
+  cpuLimit: number;
+  competingRunnable: number;
+  memoryWorkers: number;
+  override?: string | undefined;
 }) {
   const availableCpus = Math.max(1, Math.floor(cpuLimit - competingRunnable));
   const cpuBudgetCores = Math.max(
@@ -372,9 +433,9 @@ function workerSelection(environment = process.env) {
     cgroupMemoryAvailableBytes() ?? Number.POSITIVE_INFINITY,
   );
   const memoryBudget = calculateMemoryBudgetBytes(memoryAvailable);
-  let memoryProfile;
+  let memoryProfile: ReturnType<typeof parseWorkerMemoryProfile> | undefined;
   try {
-    memoryProfile = JSON.parse(
+    memoryProfile = parseWorkerMemoryProfile(
       readFileSync(
         join(memoryStateDirectory(environment), "latest.json"),
         "utf8",
@@ -386,8 +447,8 @@ function workerSelection(environment = process.env) {
   const measuredWorkerPssBytes =
     Number.isSafeInteger(memoryProfile?.processTreeP90PssBytes) &&
     Number.isSafeInteger(memoryProfile?.workerCount) &&
-    memoryProfile.workerCount >= minimumWorkerMemoryProfileSamples
-      ? memoryProfile.processTreeP90PssBytes
+    (memoryProfile?.workerCount ?? 0) >= minimumWorkerMemoryProfileSamples
+      ? memoryProfile?.processTreeP90PssBytes
       : defaultWorkerTreePssBytes;
   const measuredWorkerMemoryBytes = estimateWorkerMemoryBytes({
     profile: memoryProfile,
@@ -428,16 +489,23 @@ export function getPlaywrightWorkerSelection(environment = process.env) {
   const cachedSelection = environment.CODEX_PLAYWRIGHT_WORKER_SELECTION;
   if (cachedSelection !== undefined) {
     try {
-      const parsed = JSON.parse(cachedSelection);
+      const parsed = parseWorkerSelection(cachedSelection);
       if (
         parsed &&
         typeof parsed === "object" &&
         Number.isSafeInteger(parsed.workers) &&
+        parsed.workers !== undefined &&
         parsed.workers >= 1 &&
         Number.isSafeInteger(parsed.memoryWorkers) &&
+        parsed.memoryWorkers !== undefined &&
         parsed.memoryWorkers >= parsed.workers
       )
-        return { ...parsed, cached: true };
+        return {
+          ...parsed,
+          workers: parsed.workers,
+          memoryWorkers: parsed.memoryWorkers,
+          cached: true,
+        };
     } catch {
       // Recompute below if an inherited decision was malformed.
     }

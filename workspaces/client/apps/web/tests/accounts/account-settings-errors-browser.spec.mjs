@@ -9,7 +9,7 @@ import {
   test,
   browserExecutablePath,
   handleEntitySyncFixtureRequest,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Account settings errors", async () => {
   test.setTimeout(45_000);

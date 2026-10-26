@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Browser fixture: the real `studio-runtime-server` on a disposable state
 // directory with the scripted Node provider. Seeding goes through the public
-// HTTP API. Usage: node rust-ui-fixture.mjs <root> [--workers N]
+// HTTP API. Usage: node rust-ui-fixture.ts <root> [--workers N]
 // <root> is a scratch directory for the test's files; the server
 // state lives in `fixtureStateDirectory(<root>)`, a sibling that must start empty.
 //
@@ -11,7 +11,7 @@
 // {"id", "ok": true, ...result} on stdout:
 //   {"method":"fixture/create-worker","parent":ID,"params":{...}}  POST /api/agents
 //   {"id","method":"fixture/provider","agent":ID,"steps":[...]}    run provider
-//       steps (see fake-codex-app-server.mjs) on the agent's turn in flight
+//       steps (see fake-codex-app-server.ts) on the agent's turn in flight
 //   {"method":"item/started","params":{"threadId",...}}   any other method is
 //       a provider notification, delivered to the turn in flight on that thread
 // Environment:
@@ -25,6 +25,17 @@
 //   FIXTURE_AGENT_STEPS           JSON object: seeded agent name -> provider
 //                                 steps its first turn runs
 //   FIXTURE_SCRIPT                JSON array of provider scripts (prompt, steps)
+import type {
+  components,
+  AgentSummaryEntityDto,
+} from "../../src/generated/api.ts";
+import type { FixtureStep } from "./fixture-scripts.ts";
+import {
+  parseFixtureScripts,
+  parseFixtureAgentSteps,
+  parseFixtureModels,
+  readProviderObject,
+} from "./fixture-scripts.ts";
 import { spawn } from "node:child_process";
 import {
   existsSync,
@@ -38,7 +49,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { connect } from "node:net";
-import { waitForFixturePort } from "../fixture-readiness.mjs";
+import { waitForFixturePort } from "../fixture-readiness.ts";
 import { createInterface } from "node:readline";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,10 +58,27 @@ import {
   ACCOUNT_START_BURST_MAX,
 } from "../../src/generated/sharedValues.ts";
 
+type SyncEntity = components["schemas"]["SyncEntity"];
+type SyncPullResponse = components["schemas"]["SyncPullResponse"];
+type SyncPullResetResponse = components["schemas"]["SyncPullResetResponse"];
+type FixtureHookMessage = {
+  id?: string;
+  method: string;
+  params: Record<string, unknown> & { threadId: string };
+  parent?: string;
+  agent?: string;
+  steps: FixtureStep[];
+};
+
+// Hook messages are sent by this fixture’s test caller; narrow their envelope once.
+function parseHookMessage(text: string): FixtureHookMessage {
+  return readProviderObject(text) as FixtureHookMessage;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(here, "../../../../../..");
 const dist = join(repository, "workspaces/client/apps/web/dist");
-const fakeCodex = join(here, "fake-codex-app-server.mjs");
+const fakeCodex = join(here, "fake-codex-app-server.ts");
 /** Longest wait for the server to answer its first request, milliseconds. */
 const SERVER_START_TIMEOUT_MS = 60_000;
 /** Longest wait for the provider model catalog during seeding, milliseconds. */
@@ -76,7 +104,10 @@ const QUESTION_ITEM = "async-question";
  * through the same tool calls an agent makes. `lastWorker` is the name of the
  * last seeded worker.
  */
-const SEEDS = {
+const SEEDS: Record<
+  string,
+  (lastWorker: string) => Record<string, FixtureStep[]>
+> = {
   // A long lead report with a table, wide enough to fill the text column.
   report: () => ({
     "Release lead": [
@@ -112,7 +143,7 @@ const SEEDS = {
   }),
   // A complaint from the lead to the user, one from a worker to the lead, and
   // a private and a broadcast chat message from that worker.
-  messages: (lastWorker) => ({
+  messages: (lastWorker: string) => ({
     "Release lead": [
       {
         tool: "orchestration_complaint",
@@ -153,7 +184,7 @@ const SEEDS = {
   }),
 };
 /** FIXTURE_HOLD names and the prompts whose turns they hold. */
-const HOLD_PROMPTS = {
+const HOLD_PROMPTS: Record<string, string> = {
   lead: LEAD_PROMPT,
   workers: WORKER_PROMPT,
   other: OTHER_PROMPT,
@@ -162,7 +193,7 @@ const HOLD_PROMPTS = {
 const DEFAULT_WORKER_COUNT = 6;
 
 /** Server state directory of a fixture rooted at `root`. */
-export function fixtureStateDirectory(root) {
+export function fixtureStateDirectory(root: string) {
   // Beside the root, not inside it: the server's writes must not change the
   // project directory that agents work in.
   return `${root.replace(/\/+$/, "")}-fixture-state`;
@@ -179,18 +210,24 @@ export function serverBinary() {
     throw new Error(
       `studio-runtime-server is not built under ${target}; run cargo build -p studio-runtime-server`,
     );
-  return candidates.sort(
+  const candidate = candidates.sort(
     (a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs,
   )[0];
+  if (!candidate) throw new Error("No server binary candidate");
+  return candidate;
 }
 
-/**
- * @param {string} stateDir
- * @param {{ modelsFile?: string, scriptFile?: string, controlDirectory?: string }} [options]
- */
 export async function startRustBackend(
-  stateDir,
-  { modelsFile, scriptFile, controlDirectory } = {},
+  stateDir: string,
+  {
+    modelsFile,
+    scriptFile,
+    controlDirectory,
+  }: {
+    modelsFile?: string | undefined;
+    scriptFile?: string | undefined;
+    controlDirectory?: string;
+  } = {},
 ) {
   // The server approves any `codex` on PATH ahead of CODEX_BIN; hide the host's.
   // That folder can also hold `node` (Homebrew puts both in /opt/homebrew/bin),
@@ -233,7 +270,10 @@ export async function startRustBackend(
   }
   const origin = `http://127.0.0.1:${port}`;
   const { token } = await (await fetch(`${origin}/api/session`)).json();
-  const post = async (path, body) => {
+  const post = async (
+    path: string,
+    body: unknown,
+  ): Promise<components["schemas"]["AgentResponse"]> => {
     // The provider catalog loads in the background; admission reports a transient error until it lands.
     const retryUntil = Date.now() + CATALOG_WAIT_MS;
     for (;;) {
@@ -249,10 +289,13 @@ export async function startRustBackend(
       );
     }
   };
-  const fail = (path, result) => {
+  const fail = (
+    path: string,
+    result: Awaited<ReturnType<typeof postOnce>>,
+  ): never => {
     throw new Error(`POST ${path}: ${result.status} ${result.text}`);
   };
-  const postOnce = async (path, body) => {
+  const postOnce = async (path: string, body: unknown) => {
     const response = await fetch(origin + path, {
       method: "POST",
       headers: {
@@ -275,7 +318,8 @@ export async function startRustBackend(
 const IDLE_POLL_MS = 100;
 /** Longest wait for the seeded turns to finish, milliseconds. */
 const IDLE_WAIT_MS = 60_000;
-const workerName = (index) => `Worker ${String(index).padStart(2, "0")}`;
+const workerName = (index: number) =>
+  `Worker ${String(index).padStart(2, "0")}`;
 /** Longest wait for a provider control reply, milliseconds. */
 const CONTROL_REPLY_MS = 10_000;
 
@@ -292,9 +336,16 @@ const WAKING_EVENT_KINDS_WITH_CHATTER = ["user"];
 const ENTITY_PAGE_SIZE = 500;
 
 /** Entities of one collection in the snapshot the renderer also reads. */
-export async function readEntities(origin, collection) {
+export function readEntities<C extends SyncEntity["collection"]>(
+  origin: string,
+  collection: C,
+): Promise<Extract<SyncEntity, { collection: C; op: "upsert" }>["value"][]>;
+export async function readEntities(
+  origin: string,
+  collection: SyncEntity["collection"],
+): Promise<Extract<SyncEntity, { op: "upsert" }>["value"][]> {
   const deadline = Date.now() + IDLE_WAIT_MS;
-  const values = [];
+  const values: Extract<SyncEntity, { op: "upsert" }>["value"][] = [];
   let after = 0;
   for (;;) {
     const response = await fetch(
@@ -311,30 +362,38 @@ export async function readEntities(origin, collection) {
       );
     if (Date.now() >= deadline)
       throw new Error("Fixture entity pagination did not settle");
-    const page = await response.json();
+    const page: SyncPullResponse | SyncPullResetResponse =
+      await response.json();
     if (page.reset === true) {
       values.length = 0;
       after = 0;
       continue;
     }
-    for (const document of page.documents) {
-      if (document.collection === collection && document.op === "upsert")
-        values.push(document.value);
-    }
+    for (const document of page.documents.filter(
+      (document): document is Extract<SyncEntity, { op: "upsert" }> =>
+        "collection" in document &&
+        document.collection === collection &&
+        document.op === "upsert",
+    ))
+      values.push(document.value);
     const next = page.checkpoint.seq;
     if (next <= after || next >= (page.maxSeq ?? next)) return values;
     after = next;
   }
 }
 
-const readAgents = (origin) => readEntities(origin, "agentSummary");
+const readAgents = (origin: string) => readEntities(origin, "agentSummary");
 
 /**
  * Wait until the seeded agents are quiet: no agent that is not held has a turn
  * in flight, is queued, or has a waking event still pending. Workers report
  * their results to the lead, whose follow-up turns must finish first.
  */
-async function waitUntilIdle(origin, isHeld, kinds) {
+async function waitUntilIdle(
+  origin: string,
+  isHeld: (agent: AgentSummaryEntityDto) => boolean,
+  kinds: string[],
+) {
   const deadline = Date.now() + IDLE_WAIT_MS;
   for (;;) {
     const agents = await readAgents(origin);
@@ -348,8 +407,8 @@ async function waitUntilIdle(origin, isHeld, kinds) {
     const pending = (await readEntities(origin, "event")).filter(
       (event) =>
         event.status === "pending" &&
-        kinds.includes(event.kind) &&
-        !held.has(event.agent),
+        kinds.includes(event.kind ?? "") &&
+        !held.has(event.agent ?? ""),
     );
     if (agents.length && !busy.length && !pending.length) return;
     if (Date.now() > deadline)
@@ -361,9 +420,12 @@ async function waitUntilIdle(origin, isHeld, kinds) {
 }
 
 /** Held seeded agents: FIXTURE_HOLD names to a predicate over agent records. */
-const HOLD_MATCHERS = {
+const HOLD_MATCHERS: Record<
+  string,
+  (agent: Pick<AgentSummaryEntityDto, "name">) => boolean
+> = {
   lead: (agent) => agent.name === "Release lead",
-  workers: (agent) => agent.name?.startsWith("Worker"),
+  workers: (agent) => agent.name?.startsWith("Worker") ?? false,
   other: (agent) => agent.name === "Other project",
 };
 
@@ -372,12 +434,16 @@ const HOLD_MATCHERS = {
  * process listens on its own socket in `directory`; resolves true when one of
  * them ran the steps on a turn in flight.
  */
-async function sendControl(directory, thread, steps) {
+async function sendControl(
+  directory: string,
+  thread: string,
+  steps: FixtureStep[],
+) {
   const attempts = readdirSync(directory)
     .filter((name) => name.endsWith(".sock"))
     .map(
       (name) =>
-        new Promise((resolveReply) => {
+        new Promise<boolean>((resolveReply) => {
           const socket = connect(join(directory, name));
           const timer = setTimeout(() => socket.destroy(), CONTROL_REPLY_MS);
           socket.once("error", () => resolveReply(false));
@@ -388,7 +454,13 @@ async function sendControl(directory, thread, steps) {
           const lines = createInterface({ input: socket });
           lines.on("error", () => resolveReply(false));
           lines.once("line", (line) => {
-            resolveReply(JSON.parse(line).ok);
+            const reply: unknown = JSON.parse(line);
+            resolveReply(
+              reply !== null &&
+                typeof reply === "object" &&
+                "ok" in reply &&
+                reply.ok === true,
+            );
             socket.destroy();
           });
           socket.write(JSON.stringify({ id: "control", thread, steps }) + "\n");
@@ -399,6 +471,7 @@ async function sendControl(directory, thread, steps) {
 
 async function main() {
   const [root, ...flags] = process.argv.slice(2);
+  if (!root) throw new Error("Fixture root is required");
   const stateDir = fixtureStateDirectory(root);
   mkdirSync(stateDir, { recursive: true });
   const workersAt = flags.indexOf("--workers");
@@ -406,22 +479,22 @@ async function main() {
     workersAt >= 0
       ? Number(flags[workersAt + 1])
       : Number(process.env.FIXTURE_WORKER_COUNT ?? DEFAULT_WORKER_COUNT);
-  const agentSteps = {};
+  const agentSteps: Record<string, FixtureStep[]> = {};
   for (const seed of (process.env.FIXTURE_SEED ?? "")
     .split(",")
     .filter(Boolean)) {
     if (!(seed in SEEDS)) throw new Error(`Unknown FIXTURE_SEED entry ${seed}`);
     for (const [name, steps] of Object.entries(
-      SEEDS[seed](workerName(workers - 1)),
+      SEEDS[seed]?.(workerName(workers - 1)) ?? {},
     ))
       agentSteps[name] = [...(agentSteps[name] ?? []), ...steps];
   }
   Object.assign(
     agentSteps,
-    JSON.parse(process.env.FIXTURE_AGENT_STEPS ?? "{}"),
+    parseFixtureAgentSteps(process.env.FIXTURE_AGENT_STEPS ?? "{}"),
   );
   // A scripted agent gets a prompt of its own, which selects its script.
-  const promptOf = (name, prompt) =>
+  const promptOf = (name: string, prompt: string) =>
     name in agentSteps ? `${prompt} (${name})` : prompt;
   const held = (process.env.FIXTURE_HOLD ?? "").split(",").filter(Boolean);
   for (const name of held)
@@ -436,7 +509,9 @@ async function main() {
     writeFileSync(modelsFile, process.env.EXECUTION_SETTINGS_CATALOG);
   }
   // A custom catalog may lack the worker role's preferred model.
-  const catalog = JSON.parse(process.env.EXECUTION_SETTINGS_CATALOG ?? "[]");
+  const catalog = parseFixtureModels(
+    process.env.EXECUTION_SETTINGS_CATALOG ?? "[]",
+  );
   const workerModel = catalog.find(
     (row) => row.model === WORKER_CATALOG_MODEL,
   )?.model;
@@ -454,11 +529,11 @@ async function main() {
               : WORKER_PROMPT,
         ),
         // A held agent keeps its turn open after its own steps.
-        steps: held.some((group) => HOLD_MATCHERS[group]({ name }))
+        steps: held.some((group) => HOLD_MATCHERS[group]?.({ name }))
           ? [...steps, { hold: true }]
           : steps,
       })),
-      ...JSON.parse(process.env.FIXTURE_SCRIPT ?? "[]"),
+      ...parseFixtureScripts(process.env.FIXTURE_SCRIPT ?? "[]"),
       ...held.map((name) => ({
         prompt: HOLD_PROMPTS[name],
         steps: [{ hold: true }],
@@ -497,7 +572,7 @@ async function main() {
     prompt: promptOf("Release lead", LEAD_PROMPT),
     cwd,
   });
-  const leadId = lead.id ?? lead.agent?.id;
+  const leadId = lead.id;
   if (!leadId)
     throw new Error(`Lead creation returned ${JSON.stringify(lead)}`);
   if (workers > LEAD_DEFAULT_CONCURRENCY)
@@ -531,28 +606,32 @@ async function main() {
   ]);
   const chatter = Object.keys(agentSteps).length > 0;
   const kinds = chatter ? WAKING_EVENT_KINDS_WITH_CHATTER : WAKING_EVENT_KINDS;
-  const isHeld = (agent) => held.some((name) => HOLD_MATCHERS[name](agent));
+  const isHeld = (agent: AgentSummaryEntityDto) =>
+    held.some((name) => HOLD_MATCHERS[name]?.(agent));
   await waitUntilIdle(backend.origin, isHeld, kinds);
-  const hooks = {
-    "fixture/create-worker": async (message) => {
-      await backend.post("/api/agents", {
-        cwd,
-        ...message.params,
-        parent: message.parent,
-      });
-    },
-    "fixture/provider": async (message) => {
-      const agent = (await readAgents(backend.origin)).find(
-        (candidate) => candidate.id === message.agent,
-      );
-      if (!agent?.threadId)
-        throw new Error(`Agent ${message.agent} has no provider thread`);
-      if (!(await sendControl(controlDirectory, agent.threadId, message.steps)))
-        throw new Error(`Agent ${agent.name} has no turn in flight`);
-    },
-  };
+  const hooks: Record<string, (message: FixtureHookMessage) => Promise<void>> =
+    {
+      "fixture/create-worker": async (message) => {
+        await backend.post("/api/agents", {
+          cwd,
+          ...message.params,
+          parent: message.parent,
+        });
+      },
+      "fixture/provider": async (message) => {
+        const agent = (await readAgents(backend.origin)).find(
+          (candidate) => candidate.id === message.agent,
+        );
+        if (!agent?.threadId)
+          throw new Error(`Agent ${message.agent} has no provider thread`);
+        if (
+          !(await sendControl(controlDirectory, agent.threadId, message.steps))
+        )
+          throw new Error(`Agent ${agent.name} has no turn in flight`);
+      },
+    };
   createInterface({ input: process.stdin }).on("line", async (line) => {
-    const message = JSON.parse(line);
+    const message = parseHookMessage(line);
     const hook = message.method.startsWith("fixture/")
       ? hooks[message.method]
       : async () => {
@@ -565,10 +644,10 @@ async function main() {
         };
     if (!hook) throw new Error(`Unknown fixture hook ${message.method}`);
     try {
-      const result = await hook(message);
+      await hook(message);
       if (message.id !== undefined)
         process.stdout.write(
-          JSON.stringify({ id: message.id, ok: true, ...result }) + "\n",
+          JSON.stringify({ id: message.id, ok: true }) + "\n",
         );
     } catch (error) {
       if (message.id === undefined) throw error;
