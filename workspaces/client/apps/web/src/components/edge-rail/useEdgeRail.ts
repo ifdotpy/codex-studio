@@ -4,6 +4,7 @@ import {
 } from "../../hooks/touchCapability";
 import { useEffect, useState } from "react";
 import { layoutValues } from "../../layout/layout-contract.generated";
+import { viewportTopStripAttribute } from "../../hooks/mobileViewport";
 import {
   edgeRailGeometry,
   type EdgeRailGeometry,
@@ -16,21 +17,34 @@ export const layoutEdgeRailMetrics: EdgeRailMetrics = {
   statusReserve: layoutValues.edgeRail.statusReserve,
   targetSize: layoutValues.edgeRail.buttonSize,
   statusColumnCenter: layoutValues.edgeRail.statusColumnCenter,
+  topStatusReserve: layoutValues.edgeRail.topStatusReserve,
 };
 
 type RootStyle = Pick<
   CSSStyleDeclaration,
   "height" | "paddingTop" | "paddingRight" | "paddingBottom" | "paddingLeft"
->;
+> &
+  Partial<Pick<CSSStyleDeclaration, "width" | "getPropertyValue">>;
 
 /** Read resolved CSS lengths. The viewport owner supplies all compensation. */
 export function readEdgeRailViewport(
   style: RootStyle,
   coarsePointer: boolean,
+  topStrip = false,
 ): EdgeRailViewport {
   return {
     coarsePointer,
     viewportHeight: Number.parseFloat(style.height),
+    ...(style.width ? { viewportWidth: Number.parseFloat(style.width) } : {}),
+    // The viewport owner moved a native top strip out of the page inset
+    // (data-viewport-top-strip); its height is the shell's top inset.
+    ...(topStrip && style.getPropertyValue
+      ? {
+          topStrip: Number.parseFloat(
+            style.getPropertyValue("--native-safe-top"),
+          ),
+        }
+      : {}),
     insets: {
       top: Number.parseFloat(style.paddingTop),
       right: Number.parseFloat(style.paddingRight),
@@ -46,8 +60,13 @@ export function useEdgeRail(
   enabled = true,
 ) {
   const [geometry, setGeometry] = useState<EdgeRailGeometry | null>(null);
-  const { minimumInset, statusReserve, targetSize, statusColumnCenter } =
-    metrics;
+  const {
+    minimumInset,
+    statusReserve,
+    targetSize,
+    statusColumnCenter,
+    topStatusReserve,
+  } = metrics;
   useEffect(() => {
     if (!enabled) {
       setGeometry(null);
@@ -63,8 +82,15 @@ export function useEdgeRail(
         readEdgeRailViewport(
           getComputedStyle(root),
           hasTouchCapability(coarse.matches, navigator.maxTouchPoints),
+          document.documentElement.hasAttribute(viewportTopStripAttribute),
         ),
-        { minimumInset, statusReserve, targetSize, statusColumnCenter },
+        {
+          minimumInset,
+          statusReserve,
+          targetSize,
+          statusColumnCenter,
+          topStatusReserve,
+        },
       );
       setGeometry((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,
@@ -94,6 +120,13 @@ export function useEdgeRail(
       window.visualViewport?.removeEventListener("resize", schedule);
       window.visualViewport?.removeEventListener("scroll", schedule);
     };
-  }, [enabled, minimumInset, statusReserve, targetSize, statusColumnCenter]);
+  }, [
+    enabled,
+    minimumInset,
+    statusReserve,
+    targetSize,
+    statusColumnCenter,
+    topStatusReserve,
+  ]);
   return enabled ? geometry : null;
 }

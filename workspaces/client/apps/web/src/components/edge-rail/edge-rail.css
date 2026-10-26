@@ -125,3 +125,9 @@ html:has(.workspace[data-edge-rail="true"])
     background-color: transparent;
   }
 }
+
+/* Duo portrait: a row of buttons in the top status strip. */
+.edge-rail[data-side="top"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
