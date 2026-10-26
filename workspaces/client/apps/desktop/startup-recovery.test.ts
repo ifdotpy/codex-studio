@@ -1,4 +1,3 @@
-import { parsedRecord } from "./test-support.ts";
 import { present } from "./test-support.ts";
 import type { BackendIdentity } from "./backend.ts";
 import type { RecoveryOptions } from "./recovery.ts";
@@ -65,6 +64,7 @@ test("startup uses the verified backend environment before configuring recovery"
       },
     };
     vm.runInNewContext(main, {
+      Error,
       require: (name: string) =>
         name === "electron"
           ? { app, dialog: { showErrorBox() {} } }
@@ -96,9 +96,7 @@ test("startup uses the verified backend environment before configuring recovery"
       state: "/canonical-state",
     });
     assert.deepEqual(
-      parsedRecord(
-        JSON.stringify(present(configured).restartEnvironment ?? null),
-      ),
+      structuredClone(present(configured).restartEnvironment ?? null),
       expectedEnvironment,
     );
   }
