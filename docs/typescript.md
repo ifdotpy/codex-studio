@@ -32,6 +32,9 @@ product code, tests, fixtures, scripts, and tool configuration.
 
 Node and Electron run `.ts` files directly by removing the types, so there is
 no build step. Vite, Vitest, and Playwright compile TypeScript themselves.
+Every Node that runs Studio code, including the Node on a server host, in a VM
+guest, or used by the native app's recovery helper, must therefore be Node.js
+22.18 or later.
 Code therefore uses only syntax that can be removed without a transform: no
 `enum`, `namespace`, or constructor parameter properties. Type-only imports use
 `import type`, and relative imports name the `.ts` file.
