@@ -1014,75 +1014,77 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       transferId: frame.transferId,
     });
     transferPending++;
+    let interval: Awaited<ReturnType<EntityTransferAssembler["receive"]>>;
+    const current = () =>
+      !activeSubscription.cancelled &&
+      generation === subscriptionGeneration &&
+      assembler === transferAssembler &&
+      frame.workspaceId === workspaceId;
     const work = transferTail
       .then(async () => {
-        if (
-          activeSubscription.cancelled ||
-          generation !== subscriptionGeneration ||
-          assembler !== transferAssembler
-        )
-          return;
-        const interval = await assembler.receive(frame);
-        if (
-          activeSubscription.cancelled ||
-          generation !== subscriptionGeneration ||
-          assembler !== transferAssembler
-        ) {
+        if (!current()) throw new Error("Entity transfer cancelled");
+        interval = await assembler.receive(frame);
+        if (!current()) {
           await interval?.dispose();
-          return;
+          interval = undefined;
+          throw new Error("Entity transfer cancelled");
         }
         refreshHeartbeatTimeout();
         confirmConnectionActivity(receivedAt);
-        if (!interval) return;
-        const current = () =>
-          !activeSubscription.cancelled &&
-          generation === subscriptionGeneration &&
-          assembler === transferAssembler &&
-          interval.workspaceId === workspaceId;
-        try {
-          if (!options.sync.persistStagedEntityTransfer)
-            throw new Error("Entity staging persistence unavailable");
-          await options.sync.persistStagedEntityTransfer(interval, current);
-          if (!current()) return;
-          const event: ResourceChangeEvent = {
-            protocol: frame.protocol,
-            workspaceId: frame.workspaceId,
-            epoch: frame.epoch,
-            revision: frame.revision,
-            reason: frame.reason,
-            resources: [frame.resource],
-            resourceVersions: [
-              {
-                resource: frame.resource,
-                revision: frame.cursor.seq,
-                cursor: frame.cursor,
-                replyKind: "delta",
-              },
-            ],
-          };
-          serverFrames.set(event, { generation, receivedAt });
-          dispatchEvent(event);
-        } finally {
-          if (
-            assembler === transferAssembler &&
-            generation === subscriptionGeneration &&
-            transferResources.get(key)?.transferId === frame.transferId
-          )
-            transferResources.delete(key);
-          await interval.dispose();
-        }
       })
       .finally(() => {
         if (generation === subscriptionGeneration) transferPending--;
       });
     transferTail = work.catch((error) => {
-      if (
-        !activeSubscription.cancelled &&
-        generation === subscriptionGeneration &&
-        source === transferSource
-      )
-        frameFailed(error);
+      if (current() && source === transferSource) frameFailed(error);
     });
+    if (frame.complete) {
+      const event: ResourceChangeEvent = {
+        protocol: frame.protocol,
+        workspaceId: frame.workspaceId,
+        epoch: frame.epoch,
+        revision: frame.revision,
+        reason: frame.reason,
+        resources: [frame.resource],
+        resourceVersions: [
+          {
+            resource: frame.resource,
+            revision: frame.cursor.seq,
+            cursor: frame.cursor,
+            replyKind: "delta",
+          },
+        ],
+      };
+      serverFrames.set(event, { generation, receivedAt });
+      // Reserve the completion frame's position immediately. Staging can finish
+      // asynchronously, but its application shares the ordinary frame FIFO.
+      let application: Promise<void> | undefined;
+      entityDelivery.receive(event, work, {
+        async persist(isCurrent) {
+          if (!current() || !interval) return;
+          if (!options.sync.persistStagedEntityTransfer)
+            throw new Error("Entity staging persistence unavailable");
+          application = options.sync.persistStagedEntityTransfer(
+            interval,
+            () => isCurrent() && current(),
+          );
+          await application;
+        },
+        dispose() {
+          void work
+            .then(async () => {
+              // A deadline cancels publication, but cleanup waits for the writer.
+              await application?.catch(() => {});
+              if (transferResources.get(key)?.transferId === frame.transferId)
+                transferResources.delete(key);
+              await interval?.dispose();
+            })
+            .catch((error) =>
+              console.error("Entity staging cleanup failed", error),
+            );
+        },
+      });
+    }
     source?.holdUntil?.(transferTail);
   }
 

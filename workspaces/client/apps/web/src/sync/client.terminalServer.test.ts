@@ -286,7 +286,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
         expect.objectContaining({ text: "a🙂" }),
         expect.objectContaining({
           replyKind: "snapshot",
-          cursor: { workspaceId, seq: 2 },
+          cursor: { workspaceId, seq: 2, terminalGeneration: 0 },
         }),
       ),
     );
@@ -305,6 +305,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
       seq: 3,
+      terminalGeneration: 0,
     });
     const late = await waitRaw(2);
     await client.persistResourceEntityChanges(
@@ -317,6 +318,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
       seq: 3,
+      terminalGeneration: 0,
     });
     await client.persistResourceEntityChanges(
       structuredClone(delta),
@@ -325,6 +327,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
       seq: 3,
+      terminalGeneration: 0,
     });
     await write("tail", 20);
     expect((await waitRaw(24)).resourceVersions[0].replyKind).toBe("snapshot");
@@ -347,7 +350,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
         expect.objectContaining({ text: "new", status: "exited" }),
         expect.objectContaining({
           replyKind: "delta",
-          cursor: { workspaceId, seq: 3 },
+          cursor: { workspaceId, seq: 3, terminalGeneration: 1 },
         }),
       ),
     );

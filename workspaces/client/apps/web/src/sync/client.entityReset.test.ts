@@ -1438,7 +1438,11 @@ describe("entity pull reset wiring", () => {
       resourceVersions: [
         {
           revision,
-          cursor: { workspaceId, seq },
+          cursor: {
+            workspaceId,
+            seq,
+            terminalGeneration: revision >= 11 ? 1 : 0,
+          },
           replyKind,
           ...(replyKind === "delta"
             ? { terminalBaseOffset: seq - Array.from(text).length }
@@ -1479,6 +1483,7 @@ describe("entity pull reset wiring", () => {
     );
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
+      terminalGeneration: 0,
       seq: 3,
     });
     const late = event("a🙂", 2, "delta");
@@ -1489,6 +1494,7 @@ describe("entity pull reset wiring", () => {
     expect(late.resourceVersions[0].cursor?.seq).toBe(3);
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
+      terminalGeneration: 0,
       seq: 3,
     });
     const record = [...rows.values()].find(
@@ -1496,6 +1502,7 @@ describe("entity pull reset wiring", () => {
     );
     expect(JSON.parse(record!.payload)).toMatchObject({
       workspaceId,
+      terminalGeneration: 0,
       seq: 3,
       viewSnapshot: { terminalOutput: { text: "a🙂中", offset: 3 } },
     });
@@ -1505,6 +1512,7 @@ describe("entity pull reset wiring", () => {
     ).rejects.toThrow("disk unavailable");
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
+      terminalGeneration: 0,
       seq: 3,
     });
     fail = false;
@@ -1523,6 +1531,7 @@ describe("entity pull reset wiring", () => {
     expect(stored().viewSnapshot.terminalOutput.text).toBe("x");
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
+      terminalGeneration: 0,
       seq: 1,
     });
     await client.persistResourceEntityChanges(
@@ -1532,6 +1541,7 @@ describe("entity pull reset wiring", () => {
     expect(stored().viewSnapshot.terminalOutput.text).toBe("x");
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
+      terminalGeneration: 0,
       seq: 1,
     });
     await client.persistResourceEntityChanges(
@@ -1564,7 +1574,7 @@ describe("entity pull reset wiring", () => {
       dispatch,
       failed,
     );
-    reloaded.receive(event("!".repeat(41), 44, "delta", 13));
+    reloaded.receive(event("!!!!", 44, "delta", 13));
     await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
     expect(dispatch).not.toHaveBeenCalled();
     expect(stored().viewRevision).toBe(10);
@@ -1579,6 +1589,7 @@ describe("entity pull reset wiring", () => {
     expect(stored().viewSnapshot.terminalOutput.text).toBe("new!");
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
+      terminalGeneration: 1,
       seq: 4,
     });
     // A late snapshot after reset must not restore old terminal content.

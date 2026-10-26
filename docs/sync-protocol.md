@@ -214,11 +214,18 @@ then only output since its last sent cursor, including status updates with no ne
 text. Buffer loss, an output reset, or an oversized interval sends a bounded
 replacement snapshot. Removing a terminal selector releases its live cursor.
 The renderer applies every resource frame through one FIFO per stream source,
-including hints and overflow frames. Each frame is persisted before dispatch;
+including hints, overflow frames, and completed staged entity intervals.
+Transfer completion reserves its queue position on arrival; staging prerequisites
+settle before the persistence deadline starts. Each frame is persisted before dispatch;
 its reason does not select a persistence path. Terminal deltas declare
 `terminalBaseOffset` in the OpenAPI-owned resource entry, in Unicode scalars.
-Under the projection write lock, persistence compares that base with the saved
-output offset, then stores the merged output and cursor together. Entity and
+The terminal cursor also carries the OpenAPI-owned `terminalGeneration` reset
+counter. `TerminalsRepository` increments it whenever replacement output reduces
+the output end offset. An additive migration initializes existing rows to zero.
+A missing or mismatched generation on resume always produces a snapshot, even
+when output has grown past the old offset after a reset. Under the projection
+write lock, persistence compares both generation and base offset with the saved
+cursor, then stores the merged output and cursor together. Entity and
 transcript deltas use their existing `after` bases. Reconnect and ownership
 changes read persisted cursors; they need no in-memory terminal baseline proof.
 Persisted terminal revisions prevent late snapshots from restoring pre-reset output.

@@ -170,20 +170,19 @@ async fn view_value(
             Ok(json!({"room":room}))
         }
         ResourceRef::TerminalOutputResource(r) => {
-            let offset = since
-                .filter(|c| c.workspace_id == state.workspace_id)
-                .map_or(0, |c| c.seq);
+            let since = since.filter(|c| c.workspace_id == state.workspace_id);
+            let offset = since.as_ref().map_or(0, |c| c.seq);
+            let generation = since.and_then(|c| c.terminal_generation);
             let store = state.store.ok_or_else(ApiError::internal)?;
-            let mut output =
-                studio_runtime_services::terminal_driver::output(&store, &r.terminal_id, offset)
-                    .await
-                    .map_err(super::terminals::terminal_error)?;
-            if offset > output["offset"].as_i64().unwrap_or_default() {
-                output =
-                    studio_runtime_services::terminal_driver::output(&store, &r.terminal_id, 0)
-                        .await
-                        .map_err(super::terminals::terminal_error)?;
-            }
+            let (mut output, generation) =
+                studio_runtime_services::terminal_driver::subscription_output(
+                    &store,
+                    &r.terminal_id,
+                    offset,
+                    generation,
+                )
+                .await
+                .map_err(super::terminals::terminal_error)?;
             // Worst-case JSON escaping is six bytes per scalar. This bound leaves
             // room for resource metadata and the event envelope.
             let max_chars = studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS;
@@ -193,7 +192,7 @@ async fn view_value(
                 output["text"] = json!(text.chars().skip(count - max_chars).collect::<String>());
                 output["truncated"] = json!(true);
             }
-            Ok(json!({"terminalOutput":output}))
+            Ok(json!({"terminalOutput":output,"terminalGeneration":generation}))
         }
         _ => Err(ApiError::internal()),
     }
@@ -204,15 +203,21 @@ async fn view_initial(
     resource: ResourceRef,
     since: Option<SubscriptionCursor>,
 ) -> Result<ResourceRevisionEntry, ApiError> {
-    let snapshot = view_value(state.clone(), resource.clone(), since.clone()).await?;
+    let mut snapshot = view_value(state.clone(), resource.clone(), since.clone()).await?;
+    let generation = snapshot
+        .as_object_mut()
+        .and_then(|s| s.remove("terminalGeneration"))
+        .and_then(|generation| generation.as_i64());
     let mut value = serde_json::json!({"revision":0,"resource":resource,"viewSnapshot":snapshot});
     if let Some(output) = snapshot.get("terminalOutput") {
         let offset = output["offset"].as_i64().ok_or_else(ApiError::internal)?;
         value["revision"] = serde_json::json!(offset);
-        value["cursor"] = serde_json::json!({"workspaceId":state.workspace_id,"seq":offset});
-        value["replyKind"] = serde_json::json!(if since
-            .as_ref()
-            .is_some_and(|c| c.workspace_id == state.workspace_id && c.seq <= offset)
+        value["cursor"] = serde_json::json!({"workspaceId":state.workspace_id,"seq":offset,"terminalGeneration":generation});
+        value["replyKind"] = serde_json::json!(if since.as_ref().is_some_and(|c| c.workspace_id
+            == state.workspace_id
+            && c.seq <= offset
+            && c.terminal_generation.is_some()
+            && c.terminal_generation == generation)
             && output["truncated"] == false
         {
             "delta"
@@ -676,6 +681,7 @@ mod tests {
             serde_json::from_value(json!({"kind":"terminal-output","terminalId":"shell"}))
                 .expect("terminal ref");
         let cursor = SubscriptionCursor {
+            terminal_generation: Some(0),
             workspace_id: state.workspace_id.clone(),
             seq: 2,
         };
@@ -708,6 +714,7 @@ mod tests {
             state.clone(),
             resource.clone(),
             Some(SubscriptionCursor {
+                terminal_generation: Some(0),
                 workspace_id: state.workspace_id.clone(),
                 seq: 99,
             }),
@@ -717,6 +724,67 @@ mod tests {
         let future = serde_json::to_value(future).expect("future frame");
         assert_eq!(future["replyKind"], "snapshot");
         assert_eq!(future["viewSnapshot"]["terminalOutput"]["text"], "a🙂中");
+        // A failed client reset write leaves the old generation at offset 40.
+        // Even after replacement output grows past 40, reconnect must snapshot.
+        store
+            .transaction_with(|tx| {
+                let row =
+                    studio_runtime_store::TerminalsRepository::get(tx, "shell")?.expect("terminal");
+                studio_runtime_store::TerminalsRepository::put(
+                    tx,
+                    "shell",
+                    &row.record,
+                    &"o".repeat(40),
+                    0,
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("old output");
+        let old = initial_snapshot(state.clone(), resource.clone(), None)
+            .await
+            .expect("old snapshot");
+        store
+            .transaction_with(|tx| {
+                let row =
+                    studio_runtime_store::TerminalsRepository::get(tx, "shell")?.expect("terminal");
+                studio_runtime_store::TerminalsRepository::put(tx, "shell", &row.record, "new", 0)?;
+                studio_runtime_store::TerminalsRepository::put(
+                    tx,
+                    "shell",
+                    &row.record,
+                    &("new".to_owned() + &"!".repeat(41)),
+                    0,
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("reset and grow");
+        let recovered = initial_snapshot(state.clone(), resource.clone(), old.cursor)
+            .await
+            .expect("reset resume");
+        let recovered = serde_json::to_value(recovered).expect("recovered frame");
+        assert_eq!(recovered["replyKind"], "snapshot");
+        assert_eq!(recovered["cursor"]["terminalGeneration"], 1);
+        assert_eq!(
+            recovered["viewSnapshot"]["terminalOutput"]["text"],
+            "new".to_owned() + &"!".repeat(41)
+        );
+        let legacy = initial_snapshot(
+            state.clone(),
+            resource.clone(),
+            Some(SubscriptionCursor {
+                workspace_id: state.workspace_id.clone(),
+                seq: 40,
+                terminal_generation: None,
+            }),
+        )
+        .await
+        .expect("legacy resume");
+        assert_eq!(
+            serde_json::to_value(legacy).expect("legacy frame")["replyKind"],
+            "snapshot"
+        );
         let oversized =
             "x".repeat(studio_runtime_schema::shared_values::SYNC_TERMINAL_STREAM_MAX_CHARS + 1);
         store

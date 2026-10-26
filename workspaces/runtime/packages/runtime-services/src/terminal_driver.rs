@@ -140,6 +140,26 @@ pub async fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
 }
 
 pub async fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value, TerminalError> {
+    Ok(read_output(store, id, offset, None, false).await?.0)
+}
+
+/// Read generation and output atomically; an unknown generation receives the full base.
+pub async fn subscription_output(
+    store: &RuntimeStore,
+    id: &str,
+    offset: i64,
+    generation: Option<i64>,
+) -> Result<(Value, i64), TerminalError> {
+    read_output(store, id, offset, generation, true).await
+}
+
+async fn read_output(
+    store: &RuntimeStore,
+    id: &str,
+    offset: i64,
+    generation: Option<i64>,
+    check_generation: bool,
+) -> Result<(Value, i64), TerminalError> {
     if offset < 0 {
         return Err(TerminalError::InvalidCursor);
     }
@@ -153,6 +173,12 @@ pub async fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value
     let record = row.record;
     let start = row.offset;
     let end = start + row.output.chars().count() as i64;
+    let offset =
+        if !check_generation || (generation == Some(row.output_generation) && offset <= end) {
+            offset
+        } else {
+            0
+        };
     let cursor = offset.clamp(start, end);
     let text = slice_chars(&row.output, (cursor - start) as usize, usize::MAX);
     let mut result = json!({
@@ -161,7 +187,7 @@ pub async fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value
         "truncated": offset < start,
     });
     add_status(&mut result, &record);
-    Ok(result)
+    Ok((result, row.output_generation))
 }
 
 pub async fn history_output(

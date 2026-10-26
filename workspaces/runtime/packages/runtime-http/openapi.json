@@ -49423,6 +49423,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "terminalGeneration": {
+            "description": "Terminal output reset counter, owned by TerminalsRepository. Set and checked only for terminal-output. Missing or mismatched counters require a snapshot; offsets are resumable only within the same generation.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
           "workspaceId": {
             "minLength": 1,
             "type": "string"

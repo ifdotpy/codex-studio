@@ -21890,6 +21890,8 @@ export interface components {
      */
     SubscriptionCursor: {
       seq: number;
+      /** @description Terminal output reset counter, owned by TerminalsRepository. Set and checked only for terminal-output. Missing or mismatched counters require a snapshot; offsets are resumable only within the same generation. */
+      terminalGeneration?: number;
       workspaceId: string;
     };
     /** @description Authoritative resource kind to domain data mapping for the screen subscription API. Keys must equal ResourceRef kinds. Transport metadata never belongs in this map. */

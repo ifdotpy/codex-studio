@@ -9,6 +9,10 @@ const PERSIST_DEADLINE_MS = 1000;
 type QueuedFrame = {
   event: ResourceChangeEvent;
   prerequisite?: Promise<boolean>;
+  operation?: {
+    persist(isCurrent: () => boolean): Promise<void>;
+    dispose(): void;
+  };
 };
 type Application = QueuedFrame & { cancelled: boolean; release?: () => void };
 
@@ -38,6 +42,7 @@ export class ResourceEntityDelivery {
       this.current.release?.();
     }
     this.current = undefined;
+    for (const queued of this.pending) queued.operation?.dispose();
     this.pending = [];
     this.stopped = false;
   }
@@ -57,7 +62,11 @@ export class ResourceEntityDelivery {
       return true;
     };
     for (const { event } of this.pending) strip(event);
-    this.pending = this.pending.filter(({ event }) => event.resources.length);
+    this.pending = this.pending.filter((queued) => {
+      if (queued.event.resources.length) return true;
+      queued.operation?.dispose();
+      return false;
+    });
     if (this.current && strip(this.current.event)) {
       const { event, prerequisite } = this.current;
       this.current.cancelled = true;
@@ -69,10 +78,18 @@ export class ResourceEntityDelivery {
     }
   }
 
-  receive(event: ResourceChangeEvent, prerequisite?: Promise<unknown>) {
-    if (this.stopped) return;
+  receive(
+    event: ResourceChangeEvent,
+    prerequisite?: Promise<unknown>,
+    operation?: QueuedFrame["operation"],
+  ) {
+    if (this.stopped) {
+      operation?.dispose();
+      return;
+    }
     this.pending.push({
       event,
+      operation,
       prerequisite: prerequisite?.then(
         () => true,
         () => false,
@@ -104,6 +121,7 @@ export class ResourceEntityDelivery {
       this.current.release?.();
     }
     this.current = undefined;
+    for (const queued of this.pending) queued.operation?.dispose();
     this.pending = [];
     this.stopped = true;
     const handled = frames.length
@@ -123,40 +141,47 @@ export class ResourceEntityDelivery {
         this.current = application;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const isCurrent = () => !application.cancelled;
-        if (prerequisite) {
-          const ready = await Promise.race([
-            prerequisite,
-            new Promise<false>((resolve) => {
-              application.release = () => resolve(false);
-            }),
-          ]);
-          if (!isCurrent()) continue;
-          application.release = undefined;
-          // Transfer errors already have a recovery owner; never fail twice.
-          if (!ready) {
-            this.current = undefined;
-            continue;
-          }
-        }
         try {
-          await Promise.race([
-            this.persist(event, isCurrent),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(
-                () => reject(new Error("Stream entity persistence timed out")),
-                PERSIST_DEADLINE_MS,
-              );
-            }),
-          ]);
-        } catch (error) {
-          if (isCurrent()) this.fail(error);
-          continue;
+          if (prerequisite) {
+            const ready = await Promise.race([
+              prerequisite,
+              new Promise<false>((resolve) => {
+                application.release = () => resolve(false);
+              }),
+            ]);
+            if (!isCurrent()) continue;
+            application.release = undefined;
+            // Transfer errors already have a recovery owner; never fail twice.
+            if (!ready) {
+              this.current = undefined;
+              continue;
+            }
+          }
+          try {
+            await Promise.race([
+              queued.operation
+                ? queued.operation.persist(isCurrent)
+                : this.persist(event, isCurrent),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () =>
+                    reject(new Error("Stream entity persistence timed out")),
+                  PERSIST_DEADLINE_MS,
+                );
+              }),
+            ]);
+          } catch (error) {
+            if (isCurrent()) this.fail(error);
+            continue;
+          } finally {
+            clearTimeout(timer);
+          }
+          if (isCurrent()) {
+            this.current = undefined;
+            this.dispatch(event);
+          }
         } finally {
-          clearTimeout(timer);
-        }
-        if (isCurrent()) {
-          this.current = undefined;
-          this.dispatch(event);
+          queued.operation?.dispose();
         }
       }
     } finally {

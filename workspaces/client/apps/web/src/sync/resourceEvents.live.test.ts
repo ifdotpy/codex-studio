@@ -2482,3 +2482,49 @@ it("connection: foreign, stale and invalid progress cannot heal a replacement st
   expect(status.mock.lastCall?.[0]).toBe("degraded");
   quiet.mockRestore();
 });
+
+it("staged application must not overtake an earlier resource frame", async () => {
+  const f = await fixture();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  let finish!: () => void;
+  f.persist.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const common = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    reason: "change",
+  };
+  f.source.emit("resources", {
+    ...common,
+    revision: 2,
+    resources: [{ kind: "state" }],
+    resourceVersions: [{ revision: 2 }],
+  });
+  f.source.emit("entity-transfer", {
+    ...common,
+    revision: 3,
+    resource: { kind: "state" },
+    cursor: { workspaceId: "workspace", seq: 3 },
+    replyKind: "snapshot",
+    transferId: "later",
+    pageIndex: 0,
+    partIndex: 0,
+    partCount: 1,
+    complete: true,
+    data: JSON.stringify({ after: 0, through: 3, documents: [] }),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const early = listener.mock.calls.map(([v]) => v?.revision);
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(early).toEqual([]);
+  expect(listener.mock.calls.map(([value]) => value?.revision)).toEqual([2, 3]);
+  expect(f.source.closed).toBe(false);
+});

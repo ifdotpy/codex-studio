@@ -959,7 +959,11 @@ export function createSyncClient(options: SyncClientOptions) {
               previous.viewRevision >= entry.revision
             ) {
               // Late snapshots must not restore output from before a reset.
-              entry.cursor = { workspaceId, seq: previous.seq };
+              entry.cursor = {
+                workspaceId,
+                seq: previous.seq,
+                terminalGeneration: previous.terminalGeneration,
+              };
               entry.viewSnapshot = previous.viewSnapshot;
               return;
             }
@@ -968,6 +972,9 @@ export function createSyncClient(options: SyncClientOptions) {
               snapshot.terminalOutput &&
               entry.replyKind === "delta" &&
               (previous?.workspaceId !== workspaceId ||
+                entry.cursor.terminalGeneration === undefined ||
+                entry.cursor.terminalGeneration !==
+                  previous.terminalGeneration ||
                 entry.terminalBaseOffset === undefined ||
                 entry.terminalBaseOffset !==
                   previous.viewSnapshot?.terminalOutput?.offset)
