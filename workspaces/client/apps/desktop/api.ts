@@ -12,7 +12,7 @@ export type PairRequest = {
 };
 export type ServerRequest = {
   serverId: string;
-  credentialId: string;
+  credentialId?: string | undefined;
   url: string;
   method: string;
   headers?: [string, string][] | undefined;
