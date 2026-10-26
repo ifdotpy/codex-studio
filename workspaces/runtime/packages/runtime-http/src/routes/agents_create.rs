@@ -416,7 +416,20 @@ fn account_read_error(
         E::UnknownAccount => M::Unknown,
         E::DeletedAccount => M::Deleted,
         E::SignInRequired => M::SignInRequired,
-        _ => M::Unavailable,
+        E::ReadRegistry
+        | E::InvalidRegistry
+        | E::WriteRegistry
+        | E::DurabilityUnconfirmed
+        | E::Poisoned
+        | E::InvalidAccountOrder(_)
+        | E::NameRequestConflict
+        | E::DeleteRequestConflict
+        | E::NoDisconnectReplacement
+        | E::NoDeleteReplacement
+        | E::InvalidCodexProfile
+        | E::LoginResponseUnknown
+        | E::UnknownLogin
+        | E::LoginCancellationUnavailable => M::Unavailable,
     }
 }
 
@@ -621,7 +634,8 @@ impl RouteCreationCatalog {
                     expires_at,
                     ..
                 } => (value, account_key, home, provider, expires_at),
-                _ => {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     return Err(CreateError::CapabilityUnavailable(
                         "provider-session/model-list",
                     ));
@@ -2126,7 +2140,16 @@ async fn rename(
                 error @ studio_runtime_services::title_generation::TitleError::Conflict => {
                     ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
                 }
-                _ => ApiError::internal(),
+                studio_runtime_services::title_generation::TitleError::NoModel
+                | studio_runtime_services::title_generation::TitleError::ChatModelUnavailable
+                | studio_runtime_services::title_generation::TitleError::UnknownHeld
+                | studio_runtime_services::title_generation::TitleError::InvalidStoredObject {
+                    ..
+                }
+                | studio_runtime_services::title_generation::TitleError::InvalidTitle
+                | studio_runtime_services::title_generation::TitleError::Store(_) => {
+                    ApiError::internal()
+                }
             })?;
         if should_finish {
             let store = store.clone();
@@ -2227,7 +2250,7 @@ fn operation_error(error: OperationError) -> ApiError {
         OperationError::Internal
         | OperationError::Store(_)
         | OperationError::Create(MutationError::Store(_)) => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::BAD_REQUEST,
+        OperationError::Invalid(_) | OperationError::Create(_) => StatusCode::BAD_REQUEST,
     };
     if matches!(
         error,
@@ -2249,7 +2272,12 @@ fn operation_error(error: OperationError) -> ApiError {
         OperationError::Create(MutationError::CapabilityUnavailable(
             "worker-driver/settings-catalog",
         )) => "Worker model catalog is unavailable",
-        _ => return ApiError::new(status, error.to_string()),
+        OperationError::Invalid(_)
+        | OperationError::Forbidden(_)
+        | OperationError::Unavailable(_)
+        | OperationError::Create(_)
+        | OperationError::Store(_)
+        | OperationError::Internal => return ApiError::new(status, error.to_string()),
     };
     ApiError::new(status, message)
 }

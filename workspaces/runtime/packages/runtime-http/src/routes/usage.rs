@@ -89,7 +89,26 @@ async fn cost_interest(
             studio_runtime_store::StoreError::RecordContract("unknown cost account") => {
                 ApiError::new(StatusCode::BAD_REQUEST, "Unknown cost account")
             }
-            error => ApiError::stored(error),
+            error @ studio_runtime_store::StoreError::StateDirectory(_)
+            | error @ studio_runtime_store::StoreError::AlreadyOwned
+            | error @ studio_runtime_store::StoreError::MissingDatabase(_)
+            | error @ studio_runtime_store::StoreError::UnsafeStateDirectory
+            | error @ studio_runtime_store::StoreError::SchemaMismatch(_)
+            | error @ studio_runtime_store::StoreError::InvalidSyncObject { .. }
+            | error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
+            | error @ studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+            | error @ studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+            | error @ studio_runtime_store::StoreError::Sqlite(_)
+            | error @ studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+            | error @ studio_runtime_store::StoreError::Json(_)
+            | error @ studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            | error @ studio_runtime_store::StoreError::SchemaValidation(_)
+            | error @ studio_runtime_store::StoreError::RecordContract(_)
+            | error @ studio_runtime_store::StoreError::WriterPoisoned
+            | error @ studio_runtime_store::StoreError::WriterActorInitialization(_)
+            | error @ studio_runtime_store::StoreError::WriterActorControl(_)
+            | error @ studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
+            | error @ studio_runtime_store::StoreError::ReadTaskFailed => ApiError::stored(error),
         })?;
     Ok(Json(serde_json::json!({})))
 }

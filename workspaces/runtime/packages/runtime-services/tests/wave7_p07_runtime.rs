@@ -698,7 +698,9 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
                         json!({"thread":{"id":"thread","status":{"type":"idle"}}})
                     }
                     HistoryMethod::Turns => json!({"data":[self.turn]}),
-                    _ => return Err(HistoryError::Unsupported),
+                    HistoryMethod::Items | HistoryMethod::BackgroundTerminals => {
+                        return Err(HistoryError::Unsupported);
+                    }
                 };
                 Ok(HistoryReceipt { scope, body })
             })

@@ -46,7 +46,17 @@ async fn reconcile(
         studio_runtime_services::costs::CostsError::Analytics(
             studio_runtime_store::analytics::AnalyticsError::InvalidRequest(_),
         ) => ApiError::new(StatusCode::NOT_FOUND, "Unknown agent"),
-        _ => ApiError::internal(),
+        studio_runtime_services::costs::CostsError::Dependency(_)
+        | studio_runtime_services::costs::CostsError::Analytics(_)
+        | studio_runtime_services::costs::CostsError::Repository(_)
+        | studio_runtime_services::costs::CostsError::Sqlite(_)
+        | studio_runtime_services::costs::CostsError::Store(_)
+        | studio_runtime_services::costs::CostsError::InvalidSessionState
+        | studio_runtime_services::costs::CostsError::InvalidPricing
+        | studio_runtime_services::costs::CostsError::Computation
+        | studio_runtime_services::costs::CostsError::AccountProfilesRequired => {
+            ApiError::internal()
+        }
     })?;
     Ok(Json(super::generated_json(result)?))
 }

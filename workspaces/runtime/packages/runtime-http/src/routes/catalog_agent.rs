@@ -575,7 +575,7 @@ pub(super) async fn provider_call(
             studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                 message,
             ) => ApiError::new(StatusCode::BAD_REQUEST, message),
-            _ => ApiError::new(
+            studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(_) | studio_runtime_services::account_session_runtime::AccountSessionError::Persistence | studio_runtime_services::account_session_runtime::AccountSessionError::Unknown => ApiError::new(
                 StatusCode::CONFLICT,
                 "Native request outcome is unknown; inspect its receipt before retrying",
             ),

@@ -682,7 +682,7 @@ async fn publish_session_roots(
                     PricingReadiness::Loading => "loading",
                     PricingReadiness::Settled => "ready",
                 },
-                _ => "loading",
+                studio_runtime_services::costs::CostsError::Analytics(_) | studio_runtime_services::costs::CostsError::Repository(_) | studio_runtime_services::costs::CostsError::Sqlite(_) | studio_runtime_services::costs::CostsError::Store(_) | studio_runtime_services::costs::CostsError::InvalidSessionState | studio_runtime_services::costs::CostsError::Computation | studio_runtime_services::costs::CostsError::AccountProfilesRequired => "loading",
             };
             json!({"rootId":id,"totalUSD":null,"pricedSamples":0,"breakdown":{"models":{},"providers":{}},"unknownModels":[],"estimated":true,"pricingState":pricing_state,"cacheAgeSeconds":0,"refreshing":false,"method":error.to_string()})});
         (id,value)

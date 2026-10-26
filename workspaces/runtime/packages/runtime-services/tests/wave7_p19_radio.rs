@@ -141,7 +141,7 @@ fn replace_text(value: &mut Value, from: &str, to: &str) {
         Value::Object(map) => map
             .values_mut()
             .for_each(|value| replace_text(value, from, to)),
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 fn copy_template(corpus: &RadioCorpus, root: &Path) {
@@ -194,7 +194,9 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                                 SqlValue::Integer(n.as_i64().expect("integer"))
                             }
                             Value::Number(n) => SqlValue::Real(n.as_f64().expect("number")),
-                            _ => panic!("SQL value"),
+                            Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+                                panic!("SQL value")
+                            }
                         })
                         .collect::<Vec<_>>();
                     db.execute(
@@ -249,7 +251,7 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
                             SqlValue::Text(s) => json!(s),
                             SqlValue::Integer(n) => json!(n),
                             SqlValue::Real(n) => json!(n),
-                            _ => panic!("blob"),
+                            SqlValue::Blob(_) => panic!("blob"),
                         },
                     );
                 }
@@ -323,7 +325,7 @@ fn normalize(value: &mut Value) {
                 normalize(value)
             }
         }
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value, ProjectsError> {

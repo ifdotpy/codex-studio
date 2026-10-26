@@ -502,7 +502,9 @@ impl studio_runtime_services::recovery_history::RecoveryReader for StartReader {
                 body: match method {
                     HistoryMethod::Turns => self.replies.pop_front().expect("page"),
                     HistoryMethod::Thread => json!({"thread":{"id":"thread","status":self.state}}),
-                    _ => panic!("unexpected read"),
+                    HistoryMethod::Items | HistoryMethod::BackgroundTerminals => {
+                        panic!("unexpected read")
+                    }
                 },
             })
         })
@@ -887,7 +889,7 @@ impl studio_runtime_services::recovery_history::RecoveryReader for TaskReader {
                     self.page += 1;
                     body
                 }
-                _ => panic!("unexpected method"),
+                HistoryMethod::Turns => panic!("unexpected method"),
             };
             Ok(HistoryReceipt { scope, body })
         })

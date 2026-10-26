@@ -199,7 +199,10 @@ fn validate_agent(
     }
     WorkspaceContext::from_agent(&record, agent_id).map_err(|error| match error {
         WorkspaceFilesError::InvalidAgent(id) => invalid_stored("agents", &id),
-        other => file_error(other),
+        other @ WorkspaceFilesError::MissingFile
+        | other @ WorkspaceFilesError::PreviewLimit { .. }
+        | other @ WorkspaceFilesError::MissingPath
+        | other @ WorkspaceFilesError::InvalidPath => file_error(other),
     })
 }
 
@@ -214,7 +217,25 @@ fn invalid_stored(object: &str, id: &str) -> ApiError {
 fn map_store_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
-        _ => ApiError::internal(),
+        StoreError::StateDirectory(_)
+        | StoreError::AlreadyOwned
+        | StoreError::MissingDatabase(_)
+        | StoreError::UnsafeStateDirectory
+        | StoreError::SchemaMismatch(_)
+        | StoreError::InvalidSyncObject { .. }
+        | StoreError::InvalidSyncObjectField { .. }
+        | StoreError::InvalidStoredRecord { .. }
+        | StoreError::SchemaObjectMismatch { .. }
+        | StoreError::Sqlite(_)
+        | StoreError::CommitOutcomeUnknown(_)
+        | StoreError::Json(_)
+        | StoreError::SchemaValidation(_)
+        | StoreError::RecordContract(_)
+        | StoreError::WriterPoisoned
+        | StoreError::WriterActorInitialization(_)
+        | StoreError::WriterActorControl(_)
+        | StoreError::CommitActorOutcomeUnknown(_)
+        | StoreError::ReadTaskFailed => ApiError::internal(),
     }
 }
 
@@ -276,7 +297,9 @@ fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
 fn take_string(body: &mut Value, key: &str) -> Option<String> {
     match body.as_object_mut()?.remove(key)? {
         Value::String(value) => Some(value),
-        _ => None,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
+            None
+        }
     }
 }
 

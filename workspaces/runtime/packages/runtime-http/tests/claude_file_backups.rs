@@ -127,7 +127,7 @@ impl ProviderTaskFactory for Factory {
                                             cursor: EventCursor(cursor),
                                             generation,
                                             payload: JournalPayload::Frame(
-                                                match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{response}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other => panic!("fixture must decode: {other:?}"), },
+                                                match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{response}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other @ studio_runtime_providers::DecodedJournalPayload::RawStdout { .. } => panic!("fixture must decode: {other:?}"), },
                                             ),
                                         })
                                         .await

@@ -169,7 +169,17 @@ fn error(error: MonitorError) -> ApiError {
                 "Not implemented: requires cross-server/remote-events",
             )
         }
-        _ => ApiError::internal(),
+        MonitorError::InvalidResultReceipt(_)
+        | MonitorError::InvalidDeliveryIdentity(_)
+        | MonitorError::InvalidOutputReceipt(_)
+        | MonitorError::TaskFailed
+        | MonitorError::ProviderRequest { .. }
+        | MonitorError::ConfigurationRejected { .. }
+        | MonitorError::ConfigurationReceipt { .. }
+        | MonitorError::Store(_)
+        | MonitorError::Event(_)
+        | MonitorError::Rules(_)
+        | MonitorError::Io(_) => ApiError::internal(),
     }
 }
 

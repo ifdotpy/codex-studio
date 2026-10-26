@@ -710,7 +710,9 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                             Value::Number(value) => {
                                 rusqlite::types::Value::Real(value.as_f64().unwrap())
                             }
-                            _ => panic!("unsupported radio fixture SQL value"),
+                            Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+                                panic!("unsupported radio fixture SQL value")
+                            }
                         })
                         .collect::<Vec<_>>();
                     db.execute(
@@ -4777,7 +4779,16 @@ async fn wait_for_wal_flush(
                     assert_eq!(busy, 0);
                     assert_eq!(checkpointed_frames, log_frames);
                 }
-                _ => unreachable!("observer sends only checkpoint events"),
+                StoreDiagnosticsEvent::WriterAdmission { .. }
+                | StoreDiagnosticsEvent::WriterWaiters { .. }
+                | StoreDiagnosticsEvent::ReadAdmission { .. }
+                | StoreDiagnosticsEvent::ReadWaiters { .. }
+                | StoreDiagnosticsEvent::WriterTransaction { .. }
+                | StoreDiagnosticsEvent::SqlProfile { .. }
+                | StoreDiagnosticsEvent::CommitDuration { .. }
+                | StoreDiagnosticsEvent::SqliteLockError { .. } => {
+                    unreachable!("observer sends only checkpoint events")
+                }
             }
         }
     })

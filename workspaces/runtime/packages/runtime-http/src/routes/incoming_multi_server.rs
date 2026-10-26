@@ -581,7 +581,9 @@ pub(super) fn failure(error: AccessError) -> Response {
             Json(serde_json::json!({"error":message,"code":code})),
         )
             .into_response(),
-        _ => error_response(status, "The server access operation failed"),
+        AccessError::Stored { .. } | AccessError::Store(_) | AccessError::Sqlite(_) => {
+            error_response(status, "The server access operation failed")
+        }
     }
 }
 
@@ -598,7 +600,11 @@ fn credential_error(
         CredentialError::RemoteRequired => {
             multi_server_auth::refused(403, "server_required", "A paired server is required")
         }
-        _ => multi_server_auth::refused(
+        CredentialError::UnsupportedPlatform
+        | CredentialError::Storage
+        | CredentialError::Identity(_)
+        | CredentialError::InvalidJournal
+        | CredentialError::Store(_) => multi_server_auth::refused(
             503,
             "identity_unavailable",
             "The server identity is unavailable",

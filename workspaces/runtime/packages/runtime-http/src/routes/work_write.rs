@@ -1094,7 +1094,9 @@ mod managed_work_port_tests {
     fn written(outcome: WorkActionOutcome) -> Value {
         match outcome {
             WorkActionOutcome::Written(record) => record,
-            other => panic!("expected a written task, got {other:?}"),
+            other @ WorkActionOutcome::Refused(_) | other @ WorkActionOutcome::Unknown(_) => {
+                panic!("expected a written task, got {other:?}")
+            }
         }
     }
 
@@ -1105,7 +1107,9 @@ mod managed_work_port_tests {
     fn refused(outcome: WorkActionOutcome) -> String {
         match outcome {
             WorkActionOutcome::Refused(message) => message,
-            other => panic!("expected refusal, got {other:?}"),
+            other @ WorkActionOutcome::Written(_) | other @ WorkActionOutcome::Unknown(_) => {
+                panic!("expected refusal, got {other:?}")
+            }
         }
     }
 

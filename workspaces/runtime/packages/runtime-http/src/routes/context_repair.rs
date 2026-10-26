@@ -67,7 +67,16 @@ async fn repair(
                 RepairError::AccountSession => {
                     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
                 }
-                _ => ApiError::internal(),
+                RepairError::Invalid(_)
+                | RepairError::ReceiptHold
+                | RepairError::RewriteUnavailable
+                | RepairError::ManifestWriterUnavailable
+                | RepairError::MissingSchema
+                | RepairError::ProviderUnknown
+                | RepairError::ProviderRejected
+                | RepairError::HistoryFile(_)
+                | RepairError::Worker
+                | RepairError::Store(_) => ApiError::internal(),
             })?;
             let broker = broker.ok_or_else(|| {
                 ApiError::new(
@@ -102,7 +111,11 @@ async fn repair(
         RepairError::AccountSession => {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
         }
-        _ => ApiError::internal(),
+        RepairError::Invalid(_)
+        | RepairError::ManifestWriterUnavailable
+        | RepairError::HistoryFile(_)
+        | RepairError::Worker
+        | RepairError::Store(_) => ApiError::internal(),
     })?;
     Ok(Json(super::generated_json::<
         crate::generated::ContextRepairResponse,

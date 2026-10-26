@@ -50,7 +50,25 @@ pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result
             studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
                 invalid_stored(table, &id)
             }
-            _ => ApiError::internal(),
+            studio_runtime_store::StoreError::StateDirectory(_)
+            | studio_runtime_store::StoreError::AlreadyOwned
+            | studio_runtime_store::StoreError::MissingDatabase(_)
+            | studio_runtime_store::StoreError::UnsafeStateDirectory
+            | studio_runtime_store::StoreError::SchemaMismatch(_)
+            | studio_runtime_store::StoreError::InvalidSyncObject { .. }
+            | studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
+            | studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+            | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+            | studio_runtime_store::StoreError::Sqlite(_)
+            | studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+            | studio_runtime_store::StoreError::Json(_)
+            | studio_runtime_store::StoreError::SchemaValidation(_)
+            | studio_runtime_store::StoreError::RecordContract(_)
+            | studio_runtime_store::StoreError::WriterPoisoned
+            | studio_runtime_store::StoreError::WriterActorInitialization(_)
+            | studio_runtime_store::StoreError::WriterActorControl(_)
+            | studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
+            | studio_runtime_store::StoreError::ReadTaskFailed => ApiError::internal(),
         })?;
         let records = stored_values("runtime_work", records, validators, false)?;
         let mut list = work_policy::work_list(&agent.root_id.0, &records);
@@ -105,7 +123,25 @@ pub(crate) async fn plan(
                 studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
                     invalid_stored(table, &id)
                 }
-                _ => ApiError::internal(),
+                studio_runtime_store::StoreError::StateDirectory(_)
+                | studio_runtime_store::StoreError::AlreadyOwned
+                | studio_runtime_store::StoreError::MissingDatabase(_)
+                | studio_runtime_store::StoreError::UnsafeStateDirectory
+                | studio_runtime_store::StoreError::SchemaMismatch(_)
+                | studio_runtime_store::StoreError::InvalidSyncObject { .. }
+                | studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
+                | studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+                | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+                | studio_runtime_store::StoreError::Sqlite(_)
+                | studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+                | studio_runtime_store::StoreError::Json(_)
+                | studio_runtime_store::StoreError::SchemaValidation(_)
+                | studio_runtime_store::StoreError::RecordContract(_)
+                | studio_runtime_store::StoreError::WriterPoisoned
+                | studio_runtime_store::StoreError::WriterActorInitialization(_)
+                | studio_runtime_store::StoreError::WriterActorControl(_)
+                | studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
+                | studio_runtime_store::StoreError::ReadTaskFailed => ApiError::internal(),
             })?;
         let record = match stored {
             None => None,

@@ -775,7 +775,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                         | studio_runtime_services::linux_vm_provider::GuestProviderError::Persistence(_) => {
                             return Err(WorkerError::TaskFailed);
                         }
-                        _ => profile_copy_failed = true,
+                        studio_runtime_services::linux_vm_provider::GuestProviderError::Invalid | studio_runtime_services::linux_vm_provider::GuestProviderError::Unknown | studio_runtime_services::linux_vm_provider::GuestProviderError::Refused | studio_runtime_services::linux_vm_provider::GuestProviderError::InvalidResponse | studio_runtime_services::linux_vm_provider::GuestProviderError::Guest(_) | studio_runtime_services::linux_vm_provider::GuestProviderError::Json(_) => profile_copy_failed = true,
                     }
                 }
             }

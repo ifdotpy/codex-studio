@@ -401,7 +401,9 @@ done"#
                             outcome,
                             ..
                         } if *seen == ticket => Some(*outcome),
-                        _ => None,
+                        SessionOutcome::Write { .. }
+                        | SessionOutcome::Resolved { .. }
+                        | SessionOutcome::GenerationClosed { .. } => None,
                     })
                     .collect();
                 assert_eq!(
@@ -1720,7 +1722,7 @@ done
         first.control.settled(initial.cursor).await.unwrap();
         loop { if first.status.borrow().attachment.info.as_ref().unwrap().acknowledged == initial.cursor { break; } first.status.changed().await.unwrap(); }
         let ticket = first.control.submit(first.control.prepare(spec(77,HANG_GUARD.as_millis() as u64)).await.unwrap()).await.unwrap();
-        let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, _ => None }) { break r; } };
+        let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, SessionOutcome::Write { .. } | SessionOutcome::Resolved { .. } | SessionOutcome::GenerationClosed { .. } => None }) { break r; } };
         assert!(recovery.remote_id.is_some());
         first.checked_shutdown().await;
         let mut opts=options(); opts.launch=launch; opts.expected_generation=Some(Generation(1));
@@ -1982,7 +1984,7 @@ async fn written_correlation_survives_reply_resolving_before_receipt() {
         .into_iter()
         .find_map(|o| match o {
             SessionOutcome::Write { recovery, .. } => recovery,
-            _ => None,
+            SessionOutcome::Resolved { .. } | SessionOutcome::GenerationClosed { .. } => None,
         })
         .unwrap();
     assert_eq!(recovery.ticket, ticket);
@@ -2025,7 +2027,7 @@ done
         let submitted = prepared.recovery_record();
         assert_eq!(submitted.deadline_ms, prepared.deadline_ms());
         let ticket = first.control.submit(prepared).await.unwrap();
-        let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, _ => None }) { break r; } };
+        let recovery = loop { let e=first.events.recv().await.unwrap(); if let Some(r) = e.outcomes.into_iter().find_map(|o| match o { SessionOutcome::Write { outcome: WriteOutcome::Written, recovery, .. } => recovery, SessionOutcome::Write { .. } | SessionOutcome::Resolved { .. } | SessionOutcome::GenerationClosed { .. } => None }) { break r; } };
         assert!(recovery.remote_id.is_some());
         first.checked_shutdown().await;
         let mut opts=options(); opts.launch=launch; opts.expected_generation=Some(Generation(1));
@@ -2074,12 +2076,14 @@ async fn recovery_restores_every_request_without_holding_back_preparation() {
                 ticket,
                 outcome: RequestOutcome::Unknown,
             } => Some(ticket.id.clone()),
-            _ => None,
+            SessionOutcome::Write { .. }
+            | SessionOutcome::Resolved { .. }
+            | SessionOutcome::GenerationClosed { .. } => None,
         })
         .collect::<Vec<_>>();
     restored.sort_by_key(|id| match id {
         RequestId::Number(id) => *id,
-        _ => panic!("numeric recovered identity"),
+        RequestId::String(_) => panic!("numeric recovered identity"),
     });
     assert_eq!(
         restored,
@@ -2204,7 +2208,9 @@ async fn prepared_deadline_is_durable_before_submit_and_never_restarted() {
                 outcome: WriteOutcome::NotSent,
                 ..
             } => elapsed >= 10,
-            _ => false,
+            SessionOutcome::Write { .. }
+            | SessionOutcome::Resolved { .. }
+            | SessionOutcome::GenerationClosed { .. } => false,
         }));
         pending(peer.commands.recv()).await;
         session.checked_shutdown().await;

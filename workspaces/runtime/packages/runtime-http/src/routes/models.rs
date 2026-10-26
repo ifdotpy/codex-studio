@@ -112,7 +112,7 @@ async fn account_catalog(
                 studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
                     message,
                 ) => (StatusCode::BAD_REQUEST, json!({"error": message})),
-                _ => catalog_unavailable(),
+                studio_runtime_services::account_session_runtime::AccountSessionError::Requires(_) | studio_runtime_services::account_session_runtime::AccountSessionError::InvalidResponse(_) | studio_runtime_services::account_session_runtime::AccountSessionError::Persistence | studio_runtime_services::account_session_runtime::AccountSessionError::Unknown => catalog_unavailable(),
             }
         })?;
     match catalog

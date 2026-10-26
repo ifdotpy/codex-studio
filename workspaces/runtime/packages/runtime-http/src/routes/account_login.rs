@@ -397,7 +397,7 @@ async fn claude_profile(
                 studio_runtime_services::account_driver::claude::ClaudeAccountError::Account(
                     error,
                 ) => account_error(error),
-                error => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+                error @ studio_runtime_services::account_driver::claude::ClaudeAccountError::NotClaude | error @ studio_runtime_services::account_driver::claude::ClaudeAccountError::IdentityChanged | error @ studio_runtime_services::account_driver::claude::ClaudeAccountError::SettingsChanged | error @ studio_runtime_services::account_driver::claude::ClaudeAccountError::InvalidProfile => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
             })?;
         let home = current
             .get("home")

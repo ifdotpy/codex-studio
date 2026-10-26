@@ -234,7 +234,13 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
                 object,
                 id,
             } => ApiError::invalid_stored(object, &id),
-            other => ApiError::new(StatusCode::BAD_REQUEST, other.to_string()),
+            other @ studio_runtime_services::coordination::CoordinationError::InvalidRequest(_)
+            | other @ studio_runtime_services::coordination::CoordinationError::Conflict(_)
+            | other
+            @ studio_runtime_services::coordination::CoordinationError::AdmissionDenied(_)
+            | other @ studio_runtime_services::coordination::CoordinationError::BudgetRuntime(_) => {
+                ApiError::new(StatusCode::BAD_REQUEST, other.to_string())
+            }
         },
         E::Projects(error) => match error {
             studio_runtime_services::projects::ProjectsError::Requires(name) => {
@@ -243,7 +249,14 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
             studio_runtime_services::projects::ProjectsError::Store(error) => {
                 ApiError::stored(error)
             }
-            other => ApiError::new(StatusCode::BAD_REQUEST, other.to_string()),
+            other @ studio_runtime_services::projects::ProjectsError::Invalid(_)
+            | other @ studio_runtime_services::projects::ProjectsError::Conflict(_)
+            | other @ studio_runtime_services::projects::ProjectsError::BadRequest(_)
+            | other @ studio_runtime_services::projects::ProjectsError::InvalidStored { .. }
+            | other @ studio_runtime_services::projects::ProjectsError::Sqlite(_)
+            | other @ studio_runtime_services::projects::ProjectsError::PreparationWorker => {
+                ApiError::new(StatusCode::BAD_REQUEST, other.to_string())
+            }
         },
         E::QuestionAnswerUnavailable | E::Event(_) => ApiError::internal(),
     }
@@ -260,7 +273,18 @@ fn answer_callback_error(
         studio_runtime_services::provider_callbacks::CallbackError::Dependency(name) => {
             ApiError::dependency(name)
         }
-        other => callback_error(other),
+        other @ studio_runtime_services::provider_callbacks::CallbackError::Invalid(_)
+        | other
+        @ studio_runtime_services::provider_callbacks::CallbackError::InvalidResultSchema(
+            _,
+        )
+        | other @ studio_runtime_services::provider_callbacks::CallbackError::Stale
+        | other @ studio_runtime_services::provider_callbacks::CallbackError::Conflict
+        | other @ studio_runtime_services::provider_callbacks::CallbackError::Unknown
+        | other @ studio_runtime_services::provider_callbacks::CallbackError::Stored(_)
+        | other @ studio_runtime_services::provider_callbacks::CallbackError::Store(_) => {
+            callback_error(other)
+        }
     }
 }
 
@@ -275,7 +299,17 @@ fn monitor_approval_error(
         ) => ApiError::dependency("cross-server/remote-events"),
         E::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         E::InvalidStored { id, .. } => ApiError::invalid_stored("monitors", &id),
-        _ => ApiError::internal(),
+        E::InvalidResultReceipt(_)
+        | E::InvalidDeliveryIdentity(_)
+        | E::InvalidOutputReceipt(_)
+        | E::TaskFailed
+        | E::ProviderRequest { .. }
+        | E::ConfigurationRejected { .. }
+        | E::ConfigurationReceipt { .. }
+        | E::Store(_)
+        | E::Event(_)
+        | E::Rules(_)
+        | E::Io(_) => ApiError::internal(),
     }
 }
 

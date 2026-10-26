@@ -2154,7 +2154,9 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             ExchangeOutcome::Unknown => {
                 json!({"requestId":case["envelope"]["requestId"],"outcome":"unknown"})
             }
-            other => panic!("unexpected {other:?}"),
+            other @ ExchangeOutcome::NotApplied(_) | other @ ExchangeOutcome::PreEffectWaiting => {
+                panic!("unexpected {other:?}")
+            }
         };
         assert_eq!(actual, case["result"], "{}", case["state"]);
         assert_eq!(
@@ -2552,7 +2554,11 @@ fn refusal(error: studio_runtime_services::multi_server_auth::AccessError) -> Va
             code,
             message,
         } => serde_json::json!({"status":status,"code":code,"error":message}),
-        other => panic!("expected stable refusal, got {other}"),
+        other @ studio_runtime_services::multi_server_auth::AccessError::Stored { .. }
+        | other @ studio_runtime_services::multi_server_auth::AccessError::Store(_)
+        | other @ studio_runtime_services::multi_server_auth::AccessError::Sqlite(_) => {
+            panic!("expected stable refusal, got {other}")
+        }
     }
 }
 

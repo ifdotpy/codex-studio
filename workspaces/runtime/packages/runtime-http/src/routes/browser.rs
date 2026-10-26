@@ -211,7 +211,13 @@ pub(crate) fn map_browser_error(error: BrowserError) -> ApiError {
     let status = match &error {
         BrowserError::InvalidForward | BrowserError::Expired => StatusCode::BAD_REQUEST,
         BrowserError::PortInUse(_) | BrowserError::Conflict => StatusCode::CONFLICT,
-        _ => StatusCode::SERVICE_UNAVAILABLE,
+        BrowserError::Listener(_)
+        | BrowserError::Refused
+        | BrowserError::Unknown
+        | BrowserError::Exchange
+        | BrowserError::EncodedBodyLimit
+        | BrowserError::UnsupportedInformationalStatus
+        | BrowserError::WorkerPanicked => StatusCode::SERVICE_UNAVAILABLE,
     };
     ApiError::new(status, error.to_string())
 }

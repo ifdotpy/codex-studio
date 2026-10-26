@@ -180,7 +180,22 @@ impl ApiError {
             StoreError::InvalidSyncObjectField { scope, id, .. } => {
                 Self::invalid_stored(&scope, &id)
             }
-            _ => Self::internal_with_cause(cause),
+            StoreError::StateDirectory(_)
+            | StoreError::AlreadyOwned
+            | StoreError::MissingDatabase(_)
+            | StoreError::UnsafeStateDirectory
+            | StoreError::SchemaMismatch(_)
+            | StoreError::SchemaObjectMismatch { .. }
+            | StoreError::Sqlite(_)
+            | StoreError::CommitOutcomeUnknown(_)
+            | StoreError::Json(_)
+            | StoreError::SchemaValidation(_)
+            | StoreError::RecordContract(_)
+            | StoreError::WriterPoisoned
+            | StoreError::WriterActorInitialization(_)
+            | StoreError::WriterActorControl(_)
+            | StoreError::CommitActorOutcomeUnknown(_)
+            | StoreError::ReadTaskFailed => Self::internal_with_cause(cause),
         }
     }
 }
