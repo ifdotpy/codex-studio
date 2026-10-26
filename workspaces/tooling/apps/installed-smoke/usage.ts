@@ -276,16 +276,19 @@ export function totalTokens(tokens: Optional<Tokens>) {
 /** Final journal entry wins per Claude message id; partial content blocks repeat that id. */
 export function nativeResponses(
   records: unknown[],
-  provider: Provider,
+  provider: Schema["AnalyticsAgentRecord"]["provider"],
 ): Response[] {
   const responses = new Map<string, Response>();
-  let model: string | undefined;
+  let model: string | null | undefined;
   for (const row of records) {
     if (!isRecord(row)) continue;
     const payload = isRecord(row.payload) ? row.payload : {};
     const message = isRecord(row.message) ? row.message : {};
-    if (row.type === "turn_context" && typeof payload.model === "string")
-      model = payload.model;
+    if (row.type === "turn_context")
+      model =
+        typeof payload.model === "string" || payload.model === null
+          ? payload.model
+          : undefined;
     if (
       provider === "claude" &&
       row.type === "assistant" &&
@@ -296,7 +299,10 @@ export function nativeResponses(
     ) {
       responses.set(message.id, {
         responseId: message.id,
-        model: typeof message.model === "string" ? message.model : undefined,
+        model:
+          typeof message.model === "string" || message.model === null
+            ? message.model
+            : undefined,
         tokens: nativeTokens(message.usage, provider),
         rawUsage: message.usage,
       });
@@ -310,7 +316,9 @@ export function nativeResponses(
       responses.set(payload.response_id, {
         responseId: payload.response_id,
         turnId:
-          typeof payload.turn_id === "string" ? payload.turn_id : undefined,
+          typeof payload.turn_id === "string" || payload.turn_id === null
+            ? payload.turn_id
+            : undefined,
         model: typeof payload.model === "string" ? payload.model : model,
         tokens: nativeTokens(payload.usage, provider),
         rawUsage: payload.usage,
@@ -401,7 +409,7 @@ export function nativeEvidence(
     );
   const responses = nativeResponses(
     [...files].flatMap(jsonLines),
-    agent.provider === "claude" ? "claude" : "codex",
+    agent.provider,
   );
   if (!responses.length)
     throw new Error(

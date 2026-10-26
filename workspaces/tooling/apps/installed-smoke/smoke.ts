@@ -185,7 +185,7 @@ export class CheckFailed extends Error {}
 
 /** Results of the named checks, in order. */
 export class Report {
-  rows: ReportRow[];
+  declare rows: ReportRow[];
   constructor() {
     this.rows = [];
   }
@@ -205,7 +205,7 @@ export class Report {
       const detail =
         error instanceof CheckFailed
           ? error.message
-          : String(error instanceof Error ? error.stack : error);
+          : String(error instanceof Error ? (error.stack ?? error) : error);
       this.rows.push({
         name,
         status: "FAIL",
@@ -463,10 +463,10 @@ function lockHolders(file: string) {
 
 /** The live backend over HTTP, as the renderer reaches it from the loopback origin. */
 class Backend {
-  url: string;
-  token: string;
-  signal: AbortSignal | undefined;
-  analyticsTimings: Timing[];
+  declare url: string;
+  declare token: string;
+  declare signal: AbortSignal | undefined;
+  declare analyticsTimings: Timing[];
   constructor(url: string) {
     this.url = url.replace(/\/$/, "");
     this.token = "";
@@ -557,16 +557,16 @@ class Backend {
 
 /** SSE invalidations drive all usage-scenario reads; no interval fetches. */
 export class LiveChanges {
-  controller: AbortController;
-  signal: AbortSignal | undefined;
-  connectMs: number;
-  version: number;
-  consumed: number;
-  waiters: Set<() => void>;
-  entities: Map<string, LiveEntity>;
-  ready: Promise<void>;
-  reader: Promise<void> | undefined;
-  error: unknown;
+  declare controller: AbortController;
+  declare signal: AbortSignal | undefined;
+  declare connectMs: number;
+  declare version: number;
+  declare consumed: number;
+  declare waiters: Set<() => void>;
+  declare entities: Map<string, LiveEntity>;
+  declare ready: Promise<void>;
+  declare reader: Promise<void> | undefined;
+  declare error: unknown;
   constructor(
     backend: Pick<Backend, "url">,
     agent: string,
@@ -687,33 +687,36 @@ export function analyticsRoute(id: string) {
 }
 
 export class Smoke {
-  cancel: AbortController;
-  app: string;
-  usage: boolean | undefined;
-  sqliteRoAgent: string | undefined;
-  usageEvidence: Evidence;
-  backend: Backend;
-  model: Record<string, string>;
-  providers: string[] | undefined;
-  report: Report;
-  runId: string;
-  temporaryRoot: string;
-  root: string | null;
-  rootIdentity: DirectoryIdentity | undefined;
-  projectRegistered: boolean;
-  chats: string[];
-  openCards: Map<string, string>;
-  ownerChats: Map<
+  declare cancel: AbortController;
+  declare app: string;
+  declare usage: boolean | undefined;
+  declare sqliteRoAgent: string | undefined;
+  declare usageEvidence: Evidence;
+  declare backend: Backend;
+  declare model: Record<string, string>;
+  declare providers: string[] | undefined;
+  declare report: Report;
+  declare runId: string;
+  declare temporaryRoot: string;
+  declare root: string | null;
+  declare rootIdentity: DirectoryIdentity | undefined;
+  declare projectRegistered: boolean;
+  declare chats: string[];
+  declare openCards: Map<string, string>;
+  declare ownerChats: Map<
     string,
     Optional<Pick<Schema["AgentSummaryEntityDto"], "name" | "archived">>
   >;
-  desktop: Schema["DesktopResponse"] | null;
-  state: string | null;
-  live: Pick<LiveChanges, "entities" | "changed" | "close"> | null = null;
-  accountRecords = new Map<string, Schema["Account"]>();
-  accountsByProvider = new Map<Provider, string>();
-  evidencePath: string | undefined;
-  interrupted = false;
+  declare desktop: Schema["DesktopResponse"] | null;
+  declare state: string | null;
+  declare live:
+    | Pick<LiveChanges, "entities" | "changed" | "close">
+    | null
+    | undefined;
+  declare accountRecords: Map<string, Schema["Account"]> | undefined;
+  declare accountsByProvider: Map<Provider, string> | undefined;
+  declare evidencePath: string | undefined;
+  declare interrupted: boolean | undefined;
   constructor(options: Options) {
     this.cancel = new AbortController();
     this.app = options.app;
@@ -1142,7 +1145,6 @@ export class Smoke {
   }
 
   async analyticsSnapshot(id: string, ms?: number) {
-    assert.ok(this.state || this.sqliteRoAgent !== id);
     if (this.sqliteRoAgent === id) {
       assert.ok(this.state);
       return sqliteEvidence(this.state, id, this.runId, true).analytics;
@@ -1168,6 +1170,7 @@ export class Smoke {
   async turn(provider: Provider) {
     assert.ok(this.root);
     assert.ok(this.rootIdentity);
+    assert.ok(this.accountsByProvider);
     const root = this.root;
     const account = this.accountsByProvider.get(provider);
     assert.ok(account);
@@ -1350,6 +1353,7 @@ export class Smoke {
     assert.ok(this.state);
     assert.ok(this.root);
     assert.ok(chat.account);
+    assert.ok(this.accountRecords);
     const account = this.accountRecords.get(chat.account);
     assert.ok(account);
     const { id } = chat;
@@ -2115,6 +2119,7 @@ export class Smoke {
       this.makeRoot();
       if (this.usage) this.saveUsage();
       let first = null;
+      assert.ok(this.accountsByProvider);
       for (const provider of this.accountsByProvider.keys()) {
         const current: { chat?: Chat } = {};
         const passed = await report.run(`${provider} turn`, async () => {

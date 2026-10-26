@@ -264,6 +264,19 @@ test("native truth keeps final Claude usage per message and excludes double-coun
   assert.equal(totalTokens(sumTokens(codex)), 130);
 });
 
+test("native journal context without a model clears the preceding model", async () => {
+  const { nativeResponses } = await import("../usage.ts");
+  const journal = [
+    { type: "turn_context", payload: { model: "previous-model" } },
+    { type: "turn_context", payload: {} },
+    {
+      type: "token_usage_record",
+      payload: { response_id: "next-response", usage: {} },
+    },
+  ];
+  assert.equal(nativeResponses(journal, "codex")[0]?.model, undefined);
+});
+
 test("truth cost uses every billed category and typed recorded usage wins", async () => {
   const { priceResponses, recordedResponses } = await import("../usage.ts");
   const tokens = {
