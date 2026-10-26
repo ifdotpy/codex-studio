@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut child = std::process::Command::new("node")
         .arg(root.join(generator))
-        .args(["--check", "--rust-only"])
+        .args(["--check", "--rust-only", "--cargo-inputs"])
         .spawn()?;
     // Cargo runs this check on its dedicated build-script process, outside the
     // runtime. Bound the checker without introducing a runtime dependency.
@@ -28,13 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if started.elapsed() >= CHECK_DEADLINE {
             child.kill()?;
             child.wait()?;
-            return Err("Codex wire contract freshness check timed out".into());
+            return Err("Provider wire contract freshness check timed out".into());
         }
         std::thread::park_timeout(CHECK_INTERVAL);
     };
     if !status.success() {
         return Err(
-            "Codex wire contracts are stale; run pnpm run contracts:vendor:generate".into(),
+            "Provider wire contracts are stale; run pnpm run contracts:vendor:generate".into(),
         );
     }
     Ok(())

@@ -7,7 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
+  existsSync,
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -28,10 +28,14 @@ test(
         "Cargo.lock",
         "rust-toolchain.toml",
         "package.json",
+        "pnpm-lock.yaml",
         ".oxfmtrc.json",
         "workspaces/runtime/packages/runtime-schema",
         "workspaces/client/packages/client-domain",
         "workspaces/providers/apps/claude-bridge/codex-generated",
+        "workspaces/providers/apps/claude-bridge/package.json",
+        "workspaces/providers/apps/claude-bridge/rate-limit-input.ts",
+        "workspaces/providers/apps/claude-bridge/usage-policy.ts",
         "workspaces/runtime/packages/runtime-http/openapi.json",
         "workspaces/tooling/apps/repository-checks/generate-provider-contracts.ts",
         "workspaces/tooling/apps/repository-checks/provider-contract-sources.ts",
@@ -40,11 +44,7 @@ test(
         mkdirSync(path.dirname(target), { recursive: true });
         cpSync(path.join(root, file), target, { recursive: true });
       }
-      symlinkSync(
-        path.join(root, "node_modules"),
-        path.join(copy, "node_modules"),
-        "dir",
-      );
+      assert.equal(existsSync(path.join(copy, "node_modules")), false);
       const manifest = readFileSync(
         path.join(copy, "Cargo.toml"),
         "utf8",
@@ -83,6 +83,47 @@ test(
         ]);
         assert.equal(result.status, 0, result.stdout + result.stderr);
       };
+      const baseline = check();
+      assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
+      for (const [name, relative, mutate] of [
+        [
+          "parser source",
+          "workspaces/providers/apps/claude-bridge/rate-limit-input.ts",
+          (text: string) => text + "\n// changed consumed source\n",
+        ],
+        [
+          "generated validator",
+          "workspaces/runtime/packages/runtime-schema/src/schemas/claude-rate-limit.schema.json",
+          (text: string) => {
+            const schema = JSON.parse(text);
+            schema.properties.status.enum.push("future_status");
+            return JSON.stringify(schema);
+          },
+        ],
+      ] as const) {
+        await context.test(
+          `offline Cargo refuses stale Claude ${name} without node_modules`,
+          () => {
+            const file = path.join(copy, relative);
+            const original = readFileSync(file, "utf8");
+            try {
+              writeFileSync(file, mutate(original));
+              const result = check();
+              assert.notEqual(
+                result.status,
+                0,
+                "Offline Cargo must reject stale Claude evidence contracts",
+              );
+              assert.match(
+                result.stdout + result.stderr,
+                /Stale Claude rate provenance/,
+              );
+            } finally {
+              writeFileSync(file, original);
+            }
+          },
+        );
+      }
       const lifecycle = path.join(
         copy,
         "workspaces/runtime/packages/runtime-schema/src/schemas/codex/lifecycle.schema.json",
