@@ -1,3 +1,4 @@
+import type { components } from "../generated/api";
 import { expect, it, vi } from "vitest";
 import {
   TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
@@ -128,15 +129,16 @@ it("applies token-rate deltas atomically, preserves quiet records, and replaces 
     snapshot: boolean,
     records: TokenRate[],
     removed: string[] = [],
-  ) => ({
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision: 1,
-    snapshot,
-    records,
-    removed,
-  });
+  ) =>
+    ({
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 1,
+      snapshot,
+      records,
+      removed,
+    }) satisfies components["schemas"]["ResourceTokenRatesEvent"];
   expect(
     cache.receiveResourceTokenRates(frame(true, [record, quiet, gone, other])),
   ).toBe(true);

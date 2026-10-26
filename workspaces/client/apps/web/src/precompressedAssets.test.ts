@@ -1,3 +1,4 @@
+import type { ShellManifest } from "../scripts/build-manifests.ts";
 import assert from "node:assert/strict";
 import {
   mkdtemp,
@@ -19,6 +20,11 @@ import {
   gunzipSync,
   gzipSync,
 } from "node:zlib";
+
+// The production build writes this document; the test reads its own build output.
+function readShellManifest(raw: string): ShellManifest {
+  return JSON.parse(raw);
+}
 
 const web = new URL("../", import.meta.url);
 
@@ -115,8 +121,7 @@ test("the production Vite build compresses final outputs without changing shell 
     const worker = await readFile(join(dist, "studio-sw.js"), "utf8");
     const manifest = worker.match(/^self\.STUDIO_SHELL = (.*);/)?.[1];
     assert.ok(manifest);
-    const shell: { initial: string[]; allowed: string[]; build: string } =
-      JSON.parse(manifest);
+    const shell = readShellManifest(manifest);
     assert.ok(shell.initial.length > 0);
     assert.ok(
       [...shell.initial, ...shell.allowed].every(
