@@ -31,7 +31,7 @@ import {
   tool,
   forkSession,
 } from "@anthropic-ai/claude-agent-sdk";
-import { readHistoryIndex, verifiedHistoryMessages } from "../history-index.ts";
+import { readHistoryIndex, verifiedHistoryIndex } from "../history-index.ts";
 import { forkAtTurn, rollbackSession } from "../controls.ts";
 
 const base = path.join(os.homedir(), ".cache/codex-studio/pivot1-v5-history");
@@ -283,8 +283,8 @@ try {
     const deps = {
       persist: async () => {},
       forkSession,
-      getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({
+      getHistoryIndex: (id, options) =>
+        verifiedHistoryIndex({
           id,
           cwd: options!.dir!,
         }),

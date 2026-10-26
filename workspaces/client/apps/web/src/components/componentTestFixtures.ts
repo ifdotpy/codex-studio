@@ -1,5 +1,11 @@
+import assert from "node:assert/strict";
 import type { Agent, Message, Snapshot } from "../types";
 import type { Attachment } from "./ComposerAttachments";
+
+export function required<T>(value: T | undefined | null): T {
+  assert.ok(value != null, "Expected fixture result to exist");
+  return value;
+}
 
 // Legacy fixture records may omit ids and carry fields from an older runtime.
 type RuntimeFixture = Omit<

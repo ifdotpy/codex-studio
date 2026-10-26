@@ -8,7 +8,10 @@ export default {
     name: "fast",
     include: [
       "launcher.test.ts",
+      "request-regressions.test.ts",
       "live-permissions.test.ts",
+      // Native tool plan fields retain their raw wire values.
+      "protocol-output.test.ts",
       // Test-side fixture waits must preserve the worker's IPC lifetime.
       "file-signals.test.ts",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
@@ -19,6 +22,7 @@ export default {
       "stall-watch.test.ts",
       // SDK UUID coverage, composite history controls and authoritative session transitions.
       "history-index.test.ts",
+      "controls.test.ts",
       "history-recovery.test.ts",
       "session-identity.test.ts",
       // Proven unread/cancelled transition inputs must release their guards.

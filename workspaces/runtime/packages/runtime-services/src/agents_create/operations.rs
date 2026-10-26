@@ -2896,11 +2896,23 @@ async fn resolve_review_defaults(
         .ok_or(OperationError::Invalid("review_defaults must be an object"))?;
     if object
         .keys()
-        .any(|key| !["model", "effort"].contains(&key.as_str()))
+        .any(|key| !["model", "effort", "fast_mode"].contains(&key.as_str()))
     {
         return Err(OperationError::Invalid(
             "review_defaults has unknown fields",
         ));
+    }
+    let fast_mode = object
+        .get("fast_mode")
+        .map(|value| {
+            value.as_bool().ok_or(OperationError::Invalid(
+                "review_defaults fast_mode must be a boolean",
+            ))
+        })
+        .transpose()?;
+    let mut defaults = json!({"model":null,"effort":null});
+    if let Some(fast_mode) = fast_mode {
+        defaults["fastMode"] = json!(fast_mode);
     }
     let Some(model) = object.get("model").and_then(Value::as_str) else {
         if object.get("effort").is_some_and(|effort| !effort.is_null()) {
@@ -2908,7 +2920,7 @@ async fn resolve_review_defaults(
                 "Select a review model before setting its effort",
             ));
         }
-        return Ok(json!({"model":null,"effort":null}));
+        return Ok(defaults);
     };
     if !model.starts_with("gpt-") {
         return Err(OperationError::Invalid("Native review needs a Codex model"));
@@ -2960,10 +2972,12 @@ async fn resolve_review_defaults(
         &catalog_account,
         model,
         effort,
-        false,
+        fast_mode.unwrap_or(false),
         false,
     )?;
-    Ok(json!({"model":settings.model,"effort":settings.effort}))
+    defaults["model"] = json!(settings.model);
+    defaults["effort"] = json!(settings.effort);
+    Ok(defaults)
 }
 
 fn resolve_project_binding_from(
@@ -3515,6 +3529,55 @@ mod tests {
             "null clears an old account pin"
         );
         assert_eq!(cleared["cyberAccessProgram"], "standard");
+    }
+
+    #[tokio::test]
+    async fn review_fast_mode_defaults_preserve_explicit_false_and_inheritance() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("state opens");
+        let environment = managed_fixture();
+        let validate = |_: &str, _: &Value| true;
+        let context = worker_defaults_context(
+            std::sync::Arc::new(store),
+            &environment,
+            std::sync::Arc::new(validate),
+        );
+        let account = AccountIdentity {
+            provider: studio_runtime_providers::ProviderKind::Codex,
+            home: None,
+            account_id: None,
+            email: None,
+        };
+        for model in [Value::Null, json!("gpt-6-astra")] {
+            for fast in [true, false] {
+                let payload = json!({"model":model,"effort":null,"fast_mode":fast});
+                let resolved = resolve_review_defaults(
+                    &context,
+                    Some(&payload),
+                    "default",
+                    &account,
+                    None,
+                    &[],
+                )
+                .await
+                .expect("Fast review defaults validate");
+                assert_eq!(resolved["fastMode"], fast);
+            }
+        }
+        let legacy = json!({"model":null,"effort":null});
+        let resolved =
+            resolve_review_defaults(&context, Some(&legacy), "default", &account, None, &[])
+                .await
+                .expect("legacy defaults validate");
+        assert!(resolved.get("fastMode").is_none());
+        let malformed = json!({"model":null,"effort":null,"fast_mode":"false"});
+        assert!(
+            resolve_review_defaults(&context, Some(&malformed), "default", &account, None, &[])
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

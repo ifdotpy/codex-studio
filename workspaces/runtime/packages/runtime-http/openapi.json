@@ -43526,6 +43526,10 @@
             ],
             "title": "Effort"
           },
+          "fast_mode": {
+            "description": "Override Fast mode for native reviews and reviewer tasks. Omission preserves caller inheritance for native reviews and worker-default inheritance for reviewer tasks.",
+            "type": "boolean"
+          },
           "model": {
             "anyOf": [
               {
@@ -43561,6 +43565,9 @@
             ],
             "title": "Effort"
           },
+          "fastMode": {
+            "type": "boolean"
+          },
           "model": {
             "anyOf": [
               {
@@ -43595,6 +43602,9 @@
               }
             ],
             "title": "Effort"
+          },
+          "fastMode": {
+            "type": "boolean"
           },
           "model": {
             "anyOf": [

@@ -10,6 +10,7 @@ interface ChainEntry extends sdk.SessionStoreEntry {
   type: "user" | "assistant";
 }
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
+import type { HistoryRecordKind } from "./history-records.ts";
 import { historyRecordKind } from "./history-records.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -18,23 +19,38 @@ import {
   nativeUuid,
 } from "./native-history.ts";
 
+export interface HistoryIndex {
+  readonly messages: readonly sdk.SessionMessage[];
+  readonly positions: (ids: readonly string[]) => number[] | null;
+  readonly outcome: (
+    ids: readonly string[] | null,
+    anchors: readonly string[] | null,
+  ) => "unknown" | "delivered" | "not_applied";
+}
+export interface VerifiedHistoryRecord {
+  readonly row: sdk.SessionStoreEntry;
+  readonly kind: HistoryRecordKind;
+  // Nearest user/assistant ancestor, through validated non-conversation rows.
+  readonly parentMessageId: string | null;
+}
+
 /** One UUID lookup for a complete history snapshot, shared by controls and recovery.
  */
 export function messageIndex(
-  messages: sdk.SessionMessage[],
-  inputIds: Set<string> = new Set(
+  messages: readonly sdk.SessionMessage[],
+  inputIds: ReadonlySet<string> = new Set(
     messages
       .filter((message) => message.type === "user")
       .map((message) => message.uuid),
   ),
-  uncertainIds: Set<string> = new Set(),
-) {
+  uncertainIds: ReadonlySet<string> = new Set(),
+): HistoryIndex {
   const positions: Map<string, number> = new Map();
   for (const [position, message] of messages.entries())
     positions.set(message.uuid, positions.has(message.uuid) ? -1 : position);
   return {
     messages,
-    positions(ids: string[]) {
+    positions(ids: readonly string[]) {
       const found = ids.map((id) => positions.get(id) ?? -1);
       return found.every(
         (position, i) =>
@@ -43,7 +59,7 @@ export function messageIndex(
         ? found
         : null;
     },
-    outcome(ids: string[] | null, anchors: string[] | null) {
+    outcome(ids: readonly string[] | null, anchors: readonly string[] | null) {
       if (
         !ids?.length ||
         !anchors?.length ||
@@ -78,7 +94,11 @@ function verifiedChain(
 ) {
   const chain: ChainEntry[] = [];
   const seen = new Set();
-  const nearestInput: Map<string, string | null> = new Map();
+  const ancestry = new Map<
+    string,
+    { inputId: string | null; messageId: string | null }
+  >();
+  const records: VerifiedHistoryRecord[] = [];
   let previousInput: string | null = null;
   const inputIds = new Set<string>();
   const uncertainIds = new Set<string>();
@@ -96,6 +116,8 @@ function verifiedChain(
       if (!nativeUuid(row.uuid) || seen.has(row.uuid)) return null;
       seen.add(row.uuid);
     }
+    if (kind === "queue" || kind === "metadata")
+      records.push({ row, kind, parentMessageId: null });
     if (kind === "queue") {
       if (row.sessionId !== sessionId) return null;
       if (nativeUuid(row.commandUuid)) uncertainIds.add(row.commandUuid);
@@ -111,22 +133,28 @@ function verifiedChain(
       return null;
     if (
       row.parentUuid !== null &&
-      (typeof row.parentUuid !== "string" || !nearestInput.has(row.parentUuid))
+      (typeof row.parentUuid !== "string" || !ancestry.has(row.parentUuid))
     )
       return null;
     const ancestor =
-      row.parentUuid === null
-        ? null
-        : (nearestInput.get(row.parentUuid) ?? null);
+      row.parentUuid === null ? null : (ancestry.get(row.parentUuid) ?? null);
     // Inputs must belong to one proven conversation; output/progress may be
     // siblings and carry evolving payloads without changing input coverage.
     if (
       kind === "input" &&
       previousInput !== null &&
-      ancestor !== previousInput
+      ancestor?.inputId !== previousInput
     )
       return null;
-    nearestInput.set(row.uuid, kind === "input" ? row.uuid : ancestor);
+    const parentMessageId = ancestor?.messageId ?? null;
+    records.push({ row, kind, parentMessageId });
+    ancestry.set(row.uuid, {
+      inputId: kind === "input" ? row.uuid : (ancestor?.inputId ?? null),
+      messageId:
+        row.type === "user" || row.type === "assistant"
+          ? row.uuid
+          : parentMessageId,
+    });
     if (kind === "input") previousInput = row.uuid;
     if (row.type === "user" || row.type === "assistant") {
       chain.push(row as ChainEntry);
@@ -144,13 +172,17 @@ function verifiedChain(
       });
     }
   }
-  return chain.length ? Object.assign(chain, { inputIds, uncertainIds }) : null;
+  return chain.length
+    ? Object.assign(chain, { inputIds, uncertainIds, records })
+    : null;
 }
 
 export async function readHistoryIndex(
   session: HistorySession,
   options: HistoryReadOptions = {},
-) {
+): Promise<
+  (HistoryIndex & { readonly records: readonly VerifiedHistoryRecord[] }) | null
+> {
   const api = options.sessionApi || sdk;
   const sessionId = session.nativeId || session.id;
   const dir = session.nativeHistoryCwd || session.cwd;
@@ -252,7 +284,7 @@ export async function readHistoryIndex(
             chain.inputIds,
             chain.uncertainIds,
           ),
-          { entries },
+          { records: chain.records },
         ),
       ];
     });
@@ -264,13 +296,13 @@ export async function readHistoryIndex(
 
 /** Controls cannot perform a native effect from uncertain coverage.
  */
-export async function verifiedHistoryMessages(session: HistorySession) {
+export async function verifiedHistoryIndex(session: HistorySession) {
   const index = await readHistoryIndex(session);
   if (!index)
     throw new Error(
       "The Claude history is incomplete or uncertain; no native history operation was submitted",
     );
-  return index.messages;
+  return index;
 }
 
 /** Pure integrity witness for SDK store entries. Production readers also require

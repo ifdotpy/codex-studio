@@ -268,7 +268,13 @@ impl PreparedCapture {
         epoch: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<(), CaptureError> {
         self.ledger_since = epoch;
-        self.usage_unknown = unknown_usage_receipt(canvas, &self.agent, &self.params)?;
+        self.usage_unknown = unknown_usage_receipt(
+            canvas,
+            &self.agent,
+            &self.params,
+            self.usage.as_ref(),
+            self.legacy_usage.as_ref(),
+        )?;
         Ok(())
     }
     fn legacy_counter_era(&self) -> bool {
@@ -605,21 +611,21 @@ pub(crate) fn unknown_usage_receipt(
     canvas: &Connection,
     agent: &Value,
     params: &Value,
+    usage: Option<&UsageObservation>,
+    legacy: Option<&LegacyUsageTotals>,
 ) -> Result<bool, StoreError> {
-    let provider = usage_provider(agent);
-    let key = match parse_token_usage(provider, params) {
-        Ok(observation @ UsageObservation::Cumulative { .. }) => Some(
+    let key = match usage {
+        Some(observation @ UsageObservation::Cumulative { .. }) => Some(
             UsageLedgerRow::capture(
                 text(&agent["id"]),
                 params["threadId"]
                     .as_str()
                     .or_else(|| agent["threadId"].as_str()),
-                observation,
+                observation.clone(),
             )
             .observation_key(),
         ),
-        _ => parse_legacy_totals(provider, params)
-            .ok()
+        _ => legacy
             .filter(|legacy| legacy.response_id.is_none())
             .map(|legacy| {
                 studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
@@ -627,7 +633,7 @@ pub(crate) fn unknown_usage_receipt(
                     params["threadId"]
                         .as_str()
                         .or_else(|| agent["threadId"].as_str()),
-                    &legacy,
+                    legacy,
                 )
             }),
     };
@@ -1422,7 +1428,7 @@ fn hash(v: &Value) -> String {
     sha256_hex(python_json_compact(v).as_bytes())
 }
 
-fn usage_provider(agent: &Value) -> UsageProvider {
+pub(crate) fn usage_provider(agent: &Value) -> UsageProvider {
     if agent["provider"] == "claude" {
         UsageProvider::Claude
     } else {

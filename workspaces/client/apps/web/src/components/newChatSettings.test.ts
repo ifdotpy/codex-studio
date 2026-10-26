@@ -7,6 +7,29 @@ import {
 } from "./newChatSettings";
 import { isServerCommand } from "../servers/navigation";
 
+test("new chat accepts explicit reviewer Fast mode and rejects malformed review fields", () => {
+  for (const fast_mode of [true, false]) {
+    expect(
+      isNewChatSettings({
+        workspaceMode: "worktree",
+        review_defaults: { model: null, effort: null, fast_mode },
+      }),
+    ).toBe(true);
+  }
+  for (const patch of [
+    { fast_mode: "false" },
+    { fast_mode: null },
+    { unknown: false },
+  ]) {
+    expect(
+      isNewChatSettings({
+        workspaceMode: "worktree",
+        review_defaults: { model: null, effort: null, ...patch },
+      }),
+    ).toBe(false);
+  }
+});
+
 test.each([
   ["Darwin", "layr"],
   ["Linux", "worktree"],

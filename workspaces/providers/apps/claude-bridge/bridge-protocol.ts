@@ -20,6 +20,9 @@ import type {
   Session,
   Thread,
   Turn,
+  FreshItem,
+  FreshTurn,
+  CompletedTurn,
   ControlReceipt,
   JournalRepairReport,
 } from "./session-state.ts";
@@ -29,6 +32,8 @@ import type {
   ToolDefinition,
   RateLimitBucketDto,
   RateLimitWindowDto,
+  ClaudeBridgeSessionWire,
+  ClaudeBridgeTurnWire,
 } from "./runtime-contract.generated.ts";
 import type {
   HUMAN_INPUT,
@@ -85,12 +90,17 @@ export type BridgeSessionParams = Partial<
     | "ephemeral"
     | "capabilityProfile"
   >
-> & { cwd?: string | undefined; dynamicTools?: ToolDefinition[] | undefined };
-export interface BridgeTurnParams extends BridgeThreadParams {
+> &
+  ClaudeBridgeSessionWire & {
+    cwd?: string | undefined;
+    dynamicTools?: ToolDefinition[] | undefined;
+  };
+export interface BridgeTurnParams
+  extends BridgeThreadParams, ClaudeBridgeTurnWire {
+  approvalPolicy?: Session["approvalPolicy"];
   dynamicTools?: ToolDefinition[] | undefined;
   input: BridgeInput[];
   clientUserMessageId?: string | undefined;
-  model?: Options["model"] | undefined;
   effort?: Options["effort"] | undefined;
   serviceTier?: string | undefined;
   claudeCommand?: string | undefined;
@@ -459,19 +469,20 @@ export type BridgeMethodResult<M extends BridgeMethod = BridgeMethod> = {
 
 export interface BridgeItemEvent extends BridgeThreadParams {
   turnId?: string | undefined;
-  item: Item;
+  item: FreshItem;
   startedAtMs?: number | undefined;
   completedAtMs?: number | undefined;
 }
 export interface BridgeNotifications {
   "item/started": BridgeItemEvent;
   "item/completed": BridgeItemEvent;
-  "turn/started": BridgeThreadParams & { turn: Pick<Turn, "id" | "status"> };
+  "turn/started": BridgeThreadParams & {
+    turn: Pick<FreshTurn, "id"> & { status: "inProgress" };
+  };
   "turn/completed": BridgeThreadParams & {
-    turn: Pick<
-      Turn,
-      "id" | "status" | "error" | "startOutcome" | "clientUserMessageId"
-    > & { unappliedSteers?: BridgeInputReceiptIdentity[] | undefined };
+    turn: CompletedTurn & {
+      unappliedSteers?: BridgeInputReceiptIdentity[] | undefined;
+    };
   };
   "thread/tokenUsage/updated": BridgeThreadParams & {
     turnId?: string | null | undefined;

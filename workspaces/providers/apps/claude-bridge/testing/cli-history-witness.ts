@@ -17,7 +17,7 @@ import http from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { query, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { inputGroups, sdkInputMessages } from "../input-messages.ts";
-import { readHistoryIndex, verifiedHistoryMessages } from "../history-index.ts";
+import { readHistoryIndex, verifiedHistoryIndex } from "../history-index.ts";
 import { forkAtTurn, rollbackSession } from "../controls.ts";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { InputQueue } from "../features.ts";
@@ -212,8 +212,8 @@ try {
     const deps = {
       persist: async () => {},
       forkSession,
-      getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({
+      getHistoryIndex: (id, options) =>
+        verifiedHistoryIndex({
           id,
           cwd: options!.dir!,
         }),

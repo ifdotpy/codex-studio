@@ -36,6 +36,22 @@ pub struct ToolDefinition {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Managed Claude session extension; omit the whole object for user sessions.
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeBridgeSessionWire {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub user_mcp: Option<bool>,
+}
+
+/// Per-turn model override; an unset model is explicitly JSON null.
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ClaudeBridgeTurnWire {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<Option<String>>,
+}
+
 /// Numeric Codex IDs and string Claude bridge IDs are distinct on the wire.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]

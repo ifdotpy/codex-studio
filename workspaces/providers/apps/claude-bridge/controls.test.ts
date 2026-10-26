@@ -1,6 +1,7 @@
-import type { Session } from "./session-state.ts";
+import type { Session, ControlReceipt } from "./session-state.ts";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ControlDependencies } from "./controls.ts";
+import { messageIndex } from "./history-index.ts";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
@@ -17,7 +18,7 @@ const commands = [
 ];
 test("native commands preserve builtin precedence and exact names before aliases", () => {
   assert.equal(
-    commandCatalog(commands).find((row) => row.name === "usage")!.builtin,
+    commandCatalog(commands).find((row) => row.name === "usage")?.builtin,
     true,
   );
   assert.equal(
@@ -76,12 +77,14 @@ function fixture() {
     }),
     verifyFileRestore: async () => {},
     persist: async (value) => saves.push(structuredClone(value)),
-    getSessionMessages: async (id) =>
-      id === "native"
-        ? source
-        : source
-            .slice(0, 4)
-            .map((message, index) => ({ ...message, uuid: `fork${index}` })),
+    getHistoryIndex: async (id) =>
+      messageIndex(
+        id === "native"
+          ? source
+          : source
+              .slice(0, 4)
+              .map((message, index) => ({ ...message, uuid: `fork${index}` })),
+      ),
     forkSession: async (id, options) => {
       calls++;
       assert.equal(id, "native");
@@ -97,11 +100,11 @@ test("rollback preserves steers, remaps UUIDs, archives source, and retries exac
     request = { requestId: "r", turnId: "u2" };
   const result = await rollbackSession(f.session, request, f.deps);
   assert.equal(f.calls(), 1);
-  assert.equal(f.saves[0].controlRequests!.r.status, "submitted");
+  assert.equal(f.saves[0]?.controlRequests?.r?.status, "submitted");
   assert.equal(f.session.id, "logical");
   assert.equal(f.session.nativeId, "fork");
-  assert.equal(f.session.turns[0].nativeMessageId, "fork0");
-  assert.equal(f.session.historyBranches![0].turns.length, 2);
+  assert.equal(f.session.turns[0]?.nativeMessageId, "fork0");
+  assert.equal(f.session.historyBranches?.[0]?.turns.length, 2);
   assert.deepEqual(await rollbackSession(f.session, request, f.deps), result);
   assert.equal(f.calls(), 1);
   await assert.rejects(
@@ -129,16 +132,16 @@ test("lost native response cannot repeat a fork, including under a new request i
 });
 test("fork receipt permits verification recovery without another fork", async () => {
   const f = fixture(),
-    original = f.deps.getSessionMessages;
-  f.deps.getSessionMessages = async (id, options) =>
-    id === "fork" ? [] : original(id, options);
+    original = f.deps.getHistoryIndex;
+  f.deps.getHistoryIndex = async (id, options) =>
+    id === "fork" ? messageIndex([]) : original(id, options);
   await assert.rejects(
     rollbackSession(f.session, { requestId: "r", turnId: "u2" }, f.deps),
     /did not preserve/,
   );
   assert.equal(f.session.nativeId, "native");
   assert.equal(f.session.turns.length, 2);
-  f.deps.getSessionMessages = original;
+  f.deps.getHistoryIndex = original;
   await rollbackSession(f.session, { requestId: "r", turnId: "u2" }, f.deps);
   assert.equal(f.calls(), 1);
 });
@@ -152,11 +155,13 @@ test("rollback first turn creates empty native session without destroying origin
 });
 test("missing native boundary and active turn fail before a fork", async () => {
   const f = fixture();
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].id = "missing";
   await assert.rejects(
     rollbackSession(f.session, { requestId: "r", turnId: "missing" }, f.deps),
     /boundary is unavailable/,
   );
+  assert.ok(f.session.turns[0]);
   f.session.turns[0].status = "inProgress";
   await assert.rejects(
     rollbackSession(f.session, { requestId: "r", turnId: "u1" }, f.deps),
@@ -180,7 +185,7 @@ test("lost final save retries save without duplicate archive or fork", async () 
   const f = fixture(),
     save = f.deps.persist;
   f.deps.persist = async (value) => {
-    if (value.controlRequests!.r.status === "completed")
+    if (value.controlRequests?.r?.status === "completed")
       throw new Error("save failed");
     return save(value);
   };
@@ -191,7 +196,7 @@ test("lost final save retries save without duplicate archive or fork", async () 
   f.deps.persist = save;
   await rollbackSession(f.session, { requestId: "r", turnId: "u2" }, f.deps);
   assert.equal(f.calls(), 1);
-  assert.equal(f.session.historyBranches!.length, 1);
+  assert.equal(f.session.historyBranches?.length, 1);
 });
 test("request identity cannot alter the receipt map prototype", async () => {
   const f = fixture();
@@ -204,17 +209,26 @@ test("request identity cannot alter the receipt map prototype", async () => {
     Object.getPrototypeOf(f.session.controlRequests),
     Object.prototype,
   );
-  assert.equal(Object.hasOwn(f.session.controlRequests!, "__proto__"), true);
+  assert.equal(
+    Object.hasOwn(f.session.controlRequests ?? {}, "__proto__"),
+    true,
+  );
 });
 
 test("branch selected turn includes its steer but excludes later turns and receipts", async () => {
   const f = fixture();
-  // The legacy completed receipt deliberately omits fields read only while pending.
-  const completedReceipt: Partial<
-    NonNullable<Session["controlRequests"]>[string]
-  > = { status: "completed" };
   f.session.controlRequests = {
-    old: completedReceipt as NonNullable<Session["controlRequests"]>[string],
+    old: {
+      kind: "rollback",
+      turnId: "u1",
+      sourceNativeId: "native",
+      createdAt: "now",
+      retainedCount: 0,
+      upToMessageId: null,
+      status: "completed",
+      targetNativeId: "old-target",
+      result: { threadId: "logical", nativeId: "old-target", removedTurns: 1 },
+    },
   };
   const before = structuredClone(f.session);
   const target = await forkAtTurn(
@@ -229,8 +243,8 @@ test("branch selected turn includes its steer but excludes later turns and recei
   assert.equal(target.nativeHistoryCwd, "/project");
   assert.equal(target.cwd, "/branch");
   assert.equal(target.turns.length, 1);
-  assert.equal(target.turns[0].nativeMessageId, "fork0");
-  assert.equal((target as Partial<Session>).controlRequests, undefined);
+  assert.equal(target.turns[0]?.nativeMessageId, "fork0");
+  assert.equal("controlRequests" in target, false);
 });
 test("empty branch creates separate identity without native mutation", async () => {
   const f = fixture();
@@ -243,6 +257,7 @@ test("empty branch creates separate identity without native mutation", async () 
 });
 test("branch rejects missing selected native boundary before native mutation", async () => {
   const f = fixture();
+  assert.ok(f.session.turns[0]);
   f.session.turns[0].nativeMessageId = "lost";
   await assert.rejects(
     forkAtTurn(f.session, { lastTurnId: "u1" }, f.deps),
@@ -253,7 +268,9 @@ test("branch rejects missing selected native boundary before native mutation", a
 
 test("combined rewind restores the selected native user message before replacing context", async () => {
   const f = fixture();
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointMessageId = "u2";
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointSource = {
     nativeId: "native",
     cwd: "/project",
@@ -288,7 +305,9 @@ test("combined rewind restores the selected native user message before replacing
 
 test("unknown file rewind retains source context and cannot repeat the file write", async () => {
   const f = fixture();
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointMessageId = "u2";
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointSource = {
     nativeId: "native",
     cwd: "/project",
@@ -332,7 +351,9 @@ test("unavailable file checkpoint refuses combined rewind before the fork", asyn
 
 test("a file checkpoint from another workspace cannot restore files", async () => {
   const f = fixture();
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointMessageId = "u2";
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointSource = {
     nativeId: "native",
     cwd: "/old-project",
@@ -350,7 +371,9 @@ test("a file checkpoint from another workspace cannot restore files", async () =
 
 test("partial SDK file restore keeps both the source context and an uncertain receipt", async () => {
   const f = fixture();
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointMessageId = "u2";
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].fileCheckpointSource = {
     nativeId: "native",
     cwd: "/project",
@@ -366,7 +389,7 @@ test("partial SDK file restore keeps both the source context and an uncertain re
   );
   assert.equal(f.session.nativeId, "native");
   assert.equal(f.session.turns.length, 2);
-  assert.equal(f.session.controlRequests!.partial.status, "rewind_submitted");
+  assert.equal(f.session.controlRequests?.partial?.status, "rewind_submitted");
   await assert.rejects(
     rollbackSession(f.session, request, f.deps),
     /outcome is unknown/,
@@ -375,12 +398,13 @@ test("partial SDK file restore keeps both the source context and an uncertain re
 
 test("branch from completed turn preserves a running source and refuses its active point", async () => {
   const f = fixture();
+  assert.ok(f.session.turns[1]);
   f.session.turns[1].status = "inProgress";
   const before = structuredClone(f.session);
   const target = await forkAtTurn(f.session, { lastTurnId: "u1" }, f.deps);
   assert.deepEqual(f.session, before);
   assert.equal(target.turns.length, 1);
-  assert.equal(target.turns[0].status, "completed");
+  assert.equal(target.turns[0]?.status, "completed");
   for (const params of [{}, { lastTurnId: "u2" }])
     await assert.rejects(
       forkAtTurn(f.session, params, f.deps),
@@ -396,4 +420,100 @@ test("fork retains the source folder when optional cwd is explicitly undefined",
   const target = await forkAtTurn(f.session, { cwd: undefined }, f.deps);
   assert.equal(target.cwd, f.session.cwd);
   assert.equal(target.nativeHistoryCwd, f.session.cwd);
+});
+
+test("saved completed rollback replays its result with zero further native operations", async () => {
+  const f = fixture();
+  const request = { requestId: "saved", turnId: "u2" };
+  const expected = await rollbackSession(f.session, request, f.deps);
+  const restored: Session = JSON.parse(JSON.stringify(f.session));
+  f.deps.getHistoryIndex = async () => assert.fail("unexpected history read");
+  f.deps.forkSession = async () => assert.fail("unexpected fork");
+  f.deps.rewindFiles = async () => assert.fail("unexpected rewind");
+  f.deps.prepareFileRestore = async () =>
+    assert.fail("unexpected restore plan");
+  f.deps.verifyFileRestore = async () =>
+    assert.fail("unexpected restore verification");
+  assert.deepEqual(await rollbackSession(restored, request, f.deps), expected);
+});
+for (const status of ["submitted", "rewind_submitted"])
+  test(`legacy ${status} receipt remains uncertain without phase payload`, async () => {
+    const f = fixture();
+    const legacy: Session = JSON.parse(
+      JSON.stringify({
+        ...f.session,
+        controlRequests: { legacy: { kind: "rollback", status, turnId: "u2" } },
+      }),
+    );
+    f.deps.getHistoryIndex = async () => assert.fail("unexpected history read");
+    await assert.rejects(
+      rollbackSession(legacy, { requestId: "legacy", turnId: "u2" }, f.deps),
+      /outcome is unknown/,
+    );
+    assert.equal(f.calls(), 0);
+  });
+for (const status of ["forked", "completed"])
+  test(`malformed legacy ${status} receipt refuses recovery`, async () => {
+    const f = fixture();
+    const legacy: Session = JSON.parse(
+      JSON.stringify({
+        ...f.session,
+        controlRequests: { legacy: { kind: "rollback", status, turnId: "u2" } },
+      }),
+    );
+    await assert.rejects(
+      rollbackSession(legacy, { requestId: "legacy", turnId: "u2" }, f.deps),
+    );
+    assert.equal(f.calls(), 0);
+    assert.equal(f.saves.length, 0);
+  });
+
+test("rollback receipt phases require their existing recovery fields", () => {
+  const base = {
+    kind: "rollback",
+    turnId: "turn",
+    sourceNativeId: "source",
+    createdAt: "now",
+    retainedCount: 0,
+    upToMessageId: null,
+  } satisfies Partial<ControlReceipt>;
+  // @ts-expect-error Submitted recovery requires the saved source and mirror turns.
+  const submitted: ControlReceipt = { ...base, status: "submitted" };
+  // @ts-expect-error A fork receipt requires the target identity.
+  const forked: ControlReceipt = {
+    ...base,
+    status: "forked",
+    sourceMessages: [],
+    previousTurns: [],
+  };
+  // @ts-expect-error Rewind submission requires its checkpoint and before-file plan.
+  const rewind: ControlReceipt = {
+    ...base,
+    status: "rewind_submitted",
+    targetNativeId: "target",
+    sourceMessages: [],
+    previousTurns: [],
+  };
+  // @ts-expect-error Rewound recovery requires the native rewind result.
+  const rewound: ControlReceipt = {
+    ...base,
+    status: "rewound",
+    targetNativeId: "target",
+    sourceMessages: [],
+    previousTurns: [],
+    restoreFiles: true,
+    fileMessageId: "message",
+    filePlan: { cwd: "/project", directory: "/backup", files: [] },
+  };
+  // @ts-expect-error Completion requires the saved result.
+  const completed: ControlReceipt = {
+    ...base,
+    status: "completed",
+    targetNativeId: "target",
+  };
+  assert.equal(submitted.status, "submitted");
+  assert.equal(forked.status, "forked");
+  assert.equal(rewind.status, "rewind_submitted");
+  assert.equal(rewound.status, "rewound");
+  assert.equal(completed.status, "completed");
 });

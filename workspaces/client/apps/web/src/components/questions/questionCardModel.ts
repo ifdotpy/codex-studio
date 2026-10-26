@@ -289,6 +289,40 @@ export interface QuestionLookup {
   pendingIds: Set<string>;
 }
 
+/** Pending cards replace their source row; null suppresses a duplicate source for that request.
+ * Requests outside the loaded page stay in the list.
+ */
+export function transcriptRequests(
+  items: Message[],
+  requests: RequestDto[],
+  cards: (item: Message) => QuestionCardModel | undefined,
+): Map<string, RequestDto | null> {
+  const pending = requests.filter(
+    (request) =>
+      !request.deferred && (!request.status || request.status === "pending"),
+  );
+  const byId = new Map(pending.map((request) => [request.id, request]));
+  const byItem = new Map<string, RequestDto>(
+    pending.flatMap((request) => {
+      const itemId = request.params?.itemId;
+      return request.agent && typeof itemId === "string"
+        ? [[`${request.agent}:${itemId}`, request] as const]
+        : [];
+    }),
+  );
+  const result = new Map<string, RequestDto | null>();
+  const assigned = new Set<string>();
+  for (const item of items) {
+    const id = cards(item)?.requestId;
+    const request = (id ? byId.get(id) : undefined) || byItem.get(item.id);
+    if (request && !result.has(item.id)) {
+      result.set(item.id, assigned.has(request.id) ? null : request);
+      assigned.add(request.id);
+    }
+  }
+  return result;
+}
+
 /** The question card for a transcript item, or undefined for an ordinary row. */
 export function questionCard(
   item: Message,

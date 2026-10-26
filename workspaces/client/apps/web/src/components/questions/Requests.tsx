@@ -294,8 +294,9 @@ function AnswerForm({
   );
 }
 
-function RequestCard({
+export function RequestCard({
   request: r,
+  messageId,
   onAnswerOpen,
   onAnswerPosition,
   showDates = true,
@@ -303,7 +304,10 @@ function RequestCard({
   refresh,
   notify,
   scope,
-}: Omit<Props, "requests" | "allRequests"> & { request: RequestDto }) {
+}: Omit<Props, "requests" | "allRequests"> & {
+  request: RequestDto;
+  messageId?: string;
+}) {
   const { post: apiPost } = useServerApi();
   const services = useServerServices();
   const { writeLocalDraft } = useServerLocalDrafts();
@@ -471,6 +475,7 @@ function RequestCard({
         className="request request-card request-sign-in"
         ref={card}
         data-request={r.id}
+        data-message={messageId}
       >
         {showDates && <MessageDate at={r.createdAt ?? r.created ?? r.at} />}
         {blocked ? (
@@ -498,6 +503,14 @@ function RequestCard({
       className={`request request-card${asynchronous ? " request-async" : ""}`}
       ref={card}
       data-request={r.id}
+      data-message={messageId}
+      onFocusCapture={(event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement) {
+          const option = target.closest<HTMLElement>(".request-answer-option");
+          option?.scrollIntoView({ block: "nearest" });
+        }
+      }}
     >
       <div className="request-summary">
         <Icon size={18} className="request-icon" />
@@ -727,16 +740,7 @@ export default function Requests({
     ? requests.filter((r) => r.agent === mainAgentId)
     : [];
   return (
-    <div
-      id="requests"
-      onFocusCapture={(event) => {
-        const target = event.target;
-        if (target instanceof HTMLElement) {
-          const option = target.closest<HTMLElement>(".request-answer-option");
-          option?.scrollIntoView({ block: "nearest" });
-        }
-      }}
-    >
+    <div id="requests">
       {mainRequests.length > 0 && (
         <section aria-label="Main-agent requests">
           <h3 className="main-agent-requests-heading">Main-agent requests</h3>

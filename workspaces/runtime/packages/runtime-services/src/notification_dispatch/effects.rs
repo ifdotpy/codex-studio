@@ -268,6 +268,7 @@ pub trait NotificationEffects {
         _tx: &Transaction<'_>,
         _agent: &mut Value,
         _params: &Value,
+        _usage: Option<&studio_runtime_schema::usage::UsageObservation>,
         _at: f64,
     ) -> Result<crate::budget::UsageAcceptance, NotificationDispatchError> {
         Err(NotificationDispatchError::Dependency(
@@ -279,6 +280,7 @@ pub trait NotificationEffects {
         _tx: &Transaction<'_>,
         _agent: &Value,
         _params: &Value,
+        _usage: &studio_runtime_schema::usage::UsageObservation,
         _at: f64,
     ) -> Result<(), NotificationDispatchError> {
         Err(NotificationDispatchError::Dependency(

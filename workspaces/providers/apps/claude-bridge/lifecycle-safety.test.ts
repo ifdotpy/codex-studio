@@ -1,3 +1,5 @@
+import { messageIndex } from "./history-index.ts";
+import { unusedFileControls } from "./testing/control-fixture.ts";
 import type { ControlDependencies } from "./controls.ts";
 import assert from "node:assert/strict";
 import type { Session, Turn, Item } from "./session-state.ts";
@@ -19,16 +21,6 @@ import { startBridge } from "./testing/bridge-harness.ts";
 import { fixtureSessionApi } from "./testing/history-fixture.ts";
 import { createSessionStore } from "./session-store.ts";
 
-// These control fixtures exercise history operations without file restoration.
-function historyControls(
-  deps: Pick<
-    ControlDependencies,
-    "persist" | "forkSession" | "getSessionMessages"
-  >,
-): ControlDependencies {
-  return deps as ControlDependencies;
-}
-
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const inputId = "22222222-2222-4222-8222-222222222222";
 const replyId = "33333333-3333-4333-8333-333333333333";
@@ -40,30 +32,32 @@ afterEach(async () => {
   root = undefined;
 });
 
-const message = (type: SessionMessage["type"], uuid: string): SessionMessage =>
-  ({
-    type,
-    uuid,
-    message: { content: uuid },
-    parent_tool_use_id: null,
-  }) as SessionMessage;
-// Partial mirror rows intentionally omit unused items on the first turn.
-const turns = (): Turn[] =>
-  [
-    { id: "u1", status: "completed" },
-    {
-      id: "final2",
-      status: "completed",
-      nativeMessageId: "final2",
-      items: [
-        {
-          type: "userMessage",
-          nativeId: "final2",
-          nativeIds: ["prefix2", "final2"],
-        },
-      ],
-    },
-  ] as Turn[];
+const message = (
+  type: SessionMessage["type"],
+  uuid: string,
+): SessionMessage => ({
+  type,
+  uuid,
+  message: { content: uuid },
+  parent_tool_use_id: null,
+  parent_agent_id: null,
+  session_id: sessionId,
+});
+const turns = (): Turn[] => [
+  { id: "u1", status: "completed", items: [] },
+  {
+    id: "final2",
+    status: "completed",
+    nativeMessageId: "final2",
+    items: [
+      {
+        type: "userMessage",
+        nativeId: "final2",
+        nativeIds: ["prefix2", "final2"],
+      },
+    ],
+  },
+];
 const messages = () => [
   message("user", "u1"),
   message("assistant", "a1"),
@@ -73,11 +67,13 @@ const messages = () => [
 ];
 
 test("rollback removes the whole composite input", () => {
-  expect(rollbackBoundary(turns(), messages(), "final2")).toEqual({
-    index: 1,
-    end: 2,
-    upToMessageId: "a1",
-  });
+  expect(rollbackBoundary(turns(), messageIndex(messages()), "final2")).toEqual(
+    {
+      index: 1,
+      end: 2,
+      upToMessageId: "a1",
+    },
+  );
 });
 
 test.each([
@@ -105,7 +101,9 @@ test.each([
     ),
   ],
 ])("rollback refuses %s", (_name, rows) => {
-  expect(() => rollbackBoundary(turns(), rows, "final2")).toThrow(/boundary/);
+  expect(() => rollbackBoundary(turns(), messageIndex(rows), "final2")).toThrow(
+    /boundary/,
+  );
 });
 
 test("fork stops before the next composite prefix and remaps retained parts", async () => {
@@ -117,14 +115,17 @@ test("fork stops before the next composite prefix and remaps retained parts", as
   };
   const fork = vi.fn(async () => ({ sessionId: "target" }));
   const deps = {
-    persist: vi.fn<ControlDependencies["persist"]>(),
+    ...unusedFileControls,
+    persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
     forkSession: fork,
-    getSessionMessages: vi.fn(async (id: string) =>
-      id === "source"
-        ? messages()
-        : messages()
-            .slice(0, 2)
-            .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+    getHistoryIndex: vi.fn(async (id: string) =>
+      messageIndex(
+        id === "source"
+          ? messages()
+          : messages()
+              .slice(0, 2)
+              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+      ),
     ),
   };
   const target = await forkAtTurn(source, { lastTurnId: "u1" }, deps);
@@ -300,11 +301,11 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
     );
     if (kind === "partial initial")
       (
-        session.turns[0].items[0] ?? assert.fail("Missing initial item")
+        session.turns[0]?.items[0] ?? assert.fail("Missing initial item")
       ).nativeIds = ["66666666-6666-4666-8666-666666666666", inputId];
     if (["partial steer", "reversed steer"].includes(kind))
       (
-        session.turns[0].items[1] ?? assert.fail("Missing steer item")
+        session.turns[0]?.items[1] ?? assert.fail("Missing steer item")
       ).nativeIds = ["66666666-6666-4666-8666-666666666666", steerId];
     if (kind === "reversed steer") {
       const prefix = row(
@@ -314,7 +315,8 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
         [{ type: "text", text: "prefix" }],
       );
       rows.splice(2, 0, prefix);
-      rows.at(-1)!.parentUuid = prefix.uuid;
+      (rows.at(-1) ?? assert.fail("Missing terminal row")).parentUuid =
+        prefix.uuid;
       await fs.writeFile(
         file,
         rows.map((row) => JSON.stringify(row) + "\n").join(""),
@@ -329,13 +331,13 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
       },
     });
     const restored = await store.get(sessionId);
-    expect(restored.turns[0].startOutcome).toBe(
+    expect(restored.turns[0]?.startOutcome).toBe(
       kind === "partial initial" ? "preparing" : "accepted",
     );
-    expect(restored.turns[0].items[1].deliveryStatus).toBe(
+    expect(restored.turns[0]?.items[1]?.deliveryStatus).toBe(
       kind === "complete" ? "delivered" : "submitted",
     );
-    expect(restored.turns[0].items[2].deliveryStatus).toBe("submitted");
+    expect(restored.turns[0]?.items[2]?.deliveryStatus).toBe("submitted");
     await store.persist(restored);
     expect(await createSessionStore(stateRoot).get(sessionId)).toEqual(
       restored,
@@ -366,26 +368,29 @@ test("rollback remaps every retained composite part and preserves checkpoint ide
   await rollbackSession(
     session,
     { requestId: "rollback", turnId: "final2" },
-    historyControls({
-      persist: vi.fn<ControlDependencies["persist"]>(),
+    {
+      ...unusedFileControls,
+      persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession: fork,
-      getSessionMessages: async (id: string) =>
-        id === "native"
-          ? sourceMessages
-          : sourceMessages
-              .slice(0, 3)
-              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-    }),
+      getHistoryIndex: async (id: string) =>
+        messageIndex(
+          id === "native"
+            ? sourceMessages
+            : sourceMessages
+                .slice(0, 3)
+                .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+        ),
+    },
   );
   expect(fork).toHaveBeenCalledWith("native", {
     dir: "/project",
     upToMessageId: "a1",
   });
-  expect(session.turns[0].nativeMessageId).toBe("fork0");
-  expect(session.turns[0].items[0].nativeIds).toEqual(["fork0", "fork1"]);
-  expect(session.turns[0].items[0].nativeId).toBe("fork1");
-  expect(session.turns[0].fileCheckpointMessageId).toBeUndefined();
-  expect(session.historyBranches![0].turns[0].fileCheckpointMessageId).toBe(
+  expect(session.turns[0]?.nativeMessageId).toBe("fork0");
+  expect(session.turns[0]?.items[0]?.nativeIds).toEqual(["fork0", "fork1"]);
+  expect(session.turns[0]?.items[0]?.nativeId).toBe("fork1");
+  expect(session.turns[0]?.fileCheckpointMessageId).toBeUndefined();
+  expect(session.historyBranches?.[0]?.turns[0]?.fileCheckpointMessageId).toBe(
     "u1",
   );
 });
@@ -429,7 +434,7 @@ test.each(["direct", "timer", "success"])(
         mode === "success" ? "completed" : "failed",
       );
       if (mode !== "success") {
-        expect(done.params.turn.error!.message).toContain("final save denied");
+        expect(done.params.turn.error?.message).toContain("final save denied");
         expect(
           await fs.readFile(path.join(bridge.root, "save-attempts"), "utf8"),
         ).toBe("x");
@@ -449,7 +454,7 @@ test.each(["direct", "timer", "success"])(
           note.method === "thread/tokenUsage/updated",
       );
       expect(usage).toHaveLength(1);
-
+      assert.ok(usage[0]);
       expect(usage[0].params.studioUsage).toMatchObject({
         kind: "cumulative",
         scope: "claudeQuery",
@@ -461,17 +466,21 @@ test.each(["direct", "timer", "success"])(
         },
       });
       expect(
-        (
-          usage[0].params as (typeof usage)[0]["params"] & {
-            tokenUsage?: never;
-          }
-        ).tokenUsage,
+        "tokenUsage" in usage[0].params
+          ? usage[0].params.tokenUsage
+          : undefined,
       ).toBeUndefined();
       expect(
-        bridge.notes.filter((note) => note.method === "turn/started"),
+        bridge.notes.filter(
+          (note): note is BridgeNoteFor<"turn/started"> =>
+            note.method === "turn/started",
+        ),
       ).toHaveLength(1);
       expect(
-        bridge.notes.filter((note) => note.method === "turn/completed"),
+        bridge.notes.filter(
+          (note): note is BridgeNoteFor<"turn/completed"> =>
+            note.method === "turn/completed",
+        ),
       ).toHaveLength(1);
     } finally {
       await bridge.close();
@@ -488,7 +497,7 @@ test.each(["not_applied", "cancelled"])(
       started: true,
       turns: turns(),
     };
-
+    assert.ok(session.turns[0]);
     session.turns[0].items = [
       { type: "userMessage", nativeId: "u1" },
       {
@@ -502,20 +511,23 @@ test.each(["not_applied", "cancelled"])(
     await rollbackSession(
       session,
       { requestId: "rollback", turnId: "final2" },
-      historyControls({
-        persist: vi.fn<ControlDependencies["persist"]>(),
+      {
+        ...unusedFileControls,
+        persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
         forkSession,
-        getSessionMessages: async (id: string) =>
-          id === "source"
-            ? messages()
-            : messages()
-                .slice(0, 2)
-                .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-      }),
+        getHistoryIndex: async (id: string) =>
+          messageIndex(
+            id === "source"
+              ? messages()
+              : messages()
+                  .slice(0, 2)
+                  .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+          ),
+      },
     );
     expect(forkSession).toHaveBeenCalledTimes(1);
-    expect(session.controlRequests!.rollback.status).toBe("completed");
-    expect(session.turns[0].items[1].deliveryStatus).toBe(status);
+    expect(session.controlRequests?.rollback?.status).toBe("completed");
+    expect(session.turns[0]?.items[1]?.deliveryStatus).toBe(status);
   },
 );
 
@@ -537,18 +549,21 @@ test("fork accepts the authoritative boundary of a legacy remapped turn", async 
     source,
     {},
     {
-      persist: vi.fn<ControlDependencies["persist"]>(),
+      ...unusedFileControls,
+      persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession: async () => ({ sessionId: "target" }),
-      getSessionMessages: async (id: string) =>
-        id === "source"
-          ? messages().slice(0, 2)
-          : messages()
-              .slice(0, 2)
-              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+      getHistoryIndex: async (id: string) =>
+        messageIndex(
+          id === "source"
+            ? messages().slice(0, 2)
+            : messages()
+                .slice(0, 2)
+                .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+        ),
     },
   );
-  expect(target.turns[0].nativeMessageId).toBe("fork0");
-  expect(target.turns[0].items[0].nativeId).toBe("fork0");
+  expect(target.turns[0]?.nativeMessageId).toBe("fork0");
+  expect(target.turns[0]?.items[0]?.nativeId).toBe("fork0");
 });
 
 test("an unresolved middle parent keeps absent steer history unknown", () => {
@@ -607,12 +622,15 @@ test("a legacy delivered steer without provenance fails before native fork submi
       source,
       {},
       {
-        persist: vi.fn(),
+        ...unusedFileControls,
+        persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
         forkSession,
-        getSessionMessages: async (id) =>
-          id === "legacy-fork"
-            ? rows
-            : rows.map((row, i) => ({ ...row, uuid: `fork${i}` })),
+        getHistoryIndex: async (id: string) =>
+          messageIndex(
+            id === "legacy-fork"
+              ? rows
+              : rows.map((row, i) => ({ ...row, uuid: `fork${i}` })),
+          ),
       },
     ),
   ).rejects.toThrow(/mapping.*unavailable|boundary/i);
@@ -653,12 +671,15 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
         note.method === "turn/completed",
     );
     expect(["failed", "interrupted"]).toContain(done.params.turn.status);
-    expect(done.params.turn.error!.message).toMatch(
+    expect(done.params.turn.error?.message).toMatch(
       /close failed|did not end|did not stop/,
     );
     expect(done.params.turn.unappliedSteers).toBeUndefined();
     expect(
-      bridge.notes.filter((note) => note.method === "turn/completed"),
+      bridge.notes.filter(
+        (note): note is BridgeNoteFor<"turn/completed"> =>
+          note.method === "turn/completed",
+      ),
     ).toHaveLength(1);
     expect((await bridge.call("thread/loaded/list", {})).data).toEqual([]);
     const saved = (
@@ -667,9 +688,9 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
         includeTurns: true,
       })
     ).thread.turns[0];
-    expect(saved.items.find((item) => item.id === "held")!.deliveryStatus).toBe(
-      "submitted",
-    );
+    expect(
+      saved?.items.find((item) => item.id === "held")?.deliveryStatus,
+    ).toBe("submitted");
   } finally {
     await bridge.close();
   }
@@ -735,7 +756,7 @@ test.each(
       started: true,
       turns: turns(),
     };
-
+    assert.ok(source.turns[0]);
     source.turns[0].items = [
       { type: "userMessage", nativeId: "u1" },
       {
@@ -747,14 +768,17 @@ test.each(
     ];
     const forkSession = vi.fn(async () => ({ sessionId: "target" }));
     const deps = {
-      persist: vi.fn<ControlDependencies["persist"]>(),
+      ...unusedFileControls,
+      persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession,
-      getSessionMessages: async (id: string) =>
-        id === "source"
-          ? messages()
-          : messages()
-              .slice(0, 2)
-              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+      getHistoryIndex: async (id: string) =>
+        messageIndex(
+          id === "source"
+            ? messages()
+            : messages()
+                .slice(0, 2)
+                .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+        ),
     };
     await expect(
       operation === "fork"
@@ -762,7 +786,7 @@ test.each(
         : rollbackSession(
             source,
             { requestId: "rollback", turnId: "final2" },
-            historyControls(deps),
+            deps,
           ),
     ).rejects.toThrow(/mapping.*unavailable/);
     expect(forkSession).not.toHaveBeenCalled();

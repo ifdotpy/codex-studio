@@ -4,8 +4,7 @@ import type {
   BridgeThreadParams,
   BridgeResult,
   BridgeRequest,
-  BridgeErrorResponse,
-  BridgeSuccessResponse,
+  BridgeResponse,
   BridgeRpcId,
   BridgeServerMethod,
   BridgeServerParams,
@@ -15,7 +14,6 @@ import type {
   BridgeStoredMoveProof,
   BridgePage,
   BridgeTurnParams,
-  BridgeSessionParams,
   BridgeTask,
   BridgeNotificationMethod,
   BridgeNotificationParams,
@@ -33,6 +31,8 @@ import type {
   Session,
   Turn,
   Item,
+  FreshTurn,
+  CompletedTurn,
   Thread,
   SessionMetadata,
 } from "./session-state.ts";
@@ -129,7 +129,7 @@ import {
   rewindSessionFiles,
 } from "./file-checkpoints.ts";
 import { createAccountCheck } from "./account-identity.ts";
-import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
+import { readHistoryIndex, verifiedHistoryIndex } from "./history-index.ts";
 import {
   persistNativeSession,
   guardNativeSessionInput,
@@ -316,14 +316,16 @@ let lastLimits: Limits | undefined;
 const root = process.argv[2];
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
-type PendingRequest<M extends BridgeServerMethod = BridgeServerMethod> = {
-  method: M;
-  params: BridgeServerParams<M>;
-  resolve(value: BridgeServerResult<M>): void;
-  reject: (error: unknown) => void;
-};
 const queries = new Map<string, ActiveQuery>(),
-  pending = new Map<BridgeRpcId, PendingRequest>();
+  pending = new Map<
+    BridgeRpcId,
+    {
+      method: BridgeServerMethod;
+      params: BridgeServerParams<BridgeServerMethod>;
+      resolve: (reply: BridgeResponse) => void;
+      reject: (error: unknown) => void;
+    }
+  >();
 const pendingTurnReceipts = new Set<string>();
 const PREPARATION_TIMEOUT_MS = 20_000;
 const PASSIVE_ACCOUNT_TIMEOUT_MS = 8_000;
@@ -497,12 +499,13 @@ const request = <M extends BridgeServerMethod>(
       settled();
       signal?.removeEventListener("abort", abort);
     };
-    (pending as Map<BridgeRpcId, PendingRequest<M>>).set(id, {
+    pending.set(id, {
       method,
       params,
-      resolve: (value) => {
+      resolve: (reply) => {
         cleanup();
-        resolve(value);
+        // The decoded envelope's id selects this method's payload contract.
+        if ("result" in reply) resolve(reply.result as BridgeServerResult<M>);
       },
       reject: (error) => {
         cleanup();
@@ -1151,10 +1154,13 @@ function turnEvent(
   item: Item,
   receiptTimes?: Record<string, number>,
 ) {
+  // Legacy disk items may have no identity. Keep them readable without
+  // inventing an identity or emitting an incomplete fresh notification.
+  if (typeof item.id !== "string" || typeof item.type !== "string") return;
   emit(method, {
     threadId: s.id,
     turnId: turn?.id,
-    item,
+    item: { ...item, id: item.id, type: item.type },
     ...receiptTimes,
   });
 }
@@ -1218,7 +1224,7 @@ function limitReached(
 }
 const permissionMode = (
   s: Pick<Session, "claude" | "approvalPolicy" | "sandbox">,
-  p: Partial<BridgeSessionParams> = {},
+  p: Pick<Session, "approvalPolicy"> = {},
 ) =>
   s.claude?.permissionMode ||
   ((p.approvalPolicy || s.approvalPolicy) === "never"
@@ -1322,8 +1328,9 @@ function finishTurn(
   } = { closed: false, stall: null, unappliedSteers: [] };
   // Install the shared outcome before finalization can await or throw.
   const operation = Promise.resolve().then(async () => {
+    let status: CompletedTurn["status"] = "failed";
     try {
-      await finalizeTurn(s, active, turn, result, error, state);
+      status = await finalizeTurn(s, active, turn, result, error, state);
     } catch (failure) {
       active.persistFailure = failure;
       turn.status = "failed";
@@ -1349,7 +1356,7 @@ function finishTurn(
         threadId: s.id,
         turn: {
           id: turn.id,
-          status: turn.status,
+          status,
           error: turn.error,
           ...(state.unappliedSteers.length
             ? { unappliedSteers: state.unappliedSteers }
@@ -1433,11 +1440,12 @@ async function finalizeTurn(
   }
   if (turn.startOutcome === "not_applied")
     cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
-  turn.status = turn.interrupted
+  const status: CompletedTurn["status"] = turn.interrupted
     ? "interrupted"
     : error || result?.is_error || result?.subtype !== "success"
       ? "failed"
       : "completed";
+  turn.status = status;
   armStallWatch();
   const errorMessage =
     (error as Error)?.message ||
@@ -1536,6 +1544,7 @@ async function finalizeTurn(
   await persistLive(s, turn);
   // This save also covers any earlier background save of this turn.
   active.persistFailure = null;
+  return status;
 }
 // Steer input handed to a CLI that the watchdog closed. The dead process can no
 // longer apply it, and Claude Code records a queued message without its text,
@@ -1907,7 +1916,7 @@ async function startSession(
       assertNativeSessionReady(s);
       if (queries.get(s.id) !== active) break;
       active.lastEventAt = Date.now();
-      armStallWatch();
+      if (active.toolClocks.size) armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
         await persistNativeSession(
           s,
@@ -1978,7 +1987,7 @@ async function startSession(
           status: "inProgress",
           items: [],
           synthetic: true,
-        };
+        } satisfies FreshTurn;
         active.idleRequestStartedAt = Date.now();
         s.turns.push(active.turn);
         emit("turn/started", {
@@ -2513,7 +2522,7 @@ function discardQuery(threadId: string, active: ActiveQuery | undefined) {
   }
   catalogCache.activityChanged();
 }
-function newActive(turn: Turn): ActiveQuery {
+function newActive(turn: FreshTurn): ActiveQuery {
   const active = {
     turn,
     input: new InputQueue<StudioInputMessage>(),
@@ -2915,7 +2924,7 @@ async function handle(
             ].includes(waiting.method)
           ) {
             pending.delete(id);
-            waiting.resolve({ decision: "accept" });
+            waiting.resolve({ id, result: { decision: "accept" } });
             emit("serverRequest/resolved", { threadId: s.id, requestId: id });
           }
         }
@@ -2943,8 +2952,8 @@ async function handle(
     return rollbackSession(s, p, {
       persist,
       forkSession,
-      getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options!.dir! }),
+      getHistoryIndex: (id, options) =>
+        verifiedHistoryIndex({ id, cwd: options!.dir! }),
       prepareFileRestore: (session, messages, messageId) =>
         prepareFileRestore(session, messages, messageId, root),
       verifyFileRestore,
@@ -3100,8 +3109,8 @@ async function handle(
       );
     const s = await forkAtTurn(old, p, {
       forkSession,
-      getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options!.dir! }),
+      getHistoryIndex: (id, options) =>
+        verifiedHistoryIndex({ id, cwd: options!.dir! }),
       persist,
     });
     sessions.set(s.id, s);
@@ -3218,7 +3227,7 @@ async function handle(
       content,
     );
     const turnId = randomUUID();
-    const turn: Turn = {
+    const turn: FreshTurn = {
       id: turnId,
       clientUserMessageId: p.clientUserMessageId,
       ...(p.idleCompaction ? { idleCompaction: true } : {}),
@@ -3332,11 +3341,10 @@ async function handle(
     }
     s.model = p.model || s.model;
     if (!s.moveProof)
-      s.moveTurnOptions = Object.fromEntries(
-        (["effort", "serviceTier"] as const)
-          .filter((key) => p[key] !== undefined)
-          .map((key) => [key, p[key]]),
-      );
+      s.moveTurnOptions = {
+        ...(p.effort !== undefined ? { effort: p.effort } : {}),
+        ...(p.serviceTier !== undefined ? { serviceTier: p.serviceTier } : {}),
+      };
     pendingTurnReceipts.add(turn.id);
     s.turns.push(turn);
     s.preview =
@@ -3640,15 +3648,27 @@ async function handle(
   throw new Error("Claude does not support " + method);
 }
 
-function readBridgeInput<M extends BridgeServerMethod = BridgeServerMethod>(
-  line: string,
-): Partial<
-  BridgeRequest &
-    BridgeErrorResponse &
-    BridgeSuccessResponse<BridgeServerResult<M>>
-> {
-  // Studio owns this wire document; payloads use the shared protocol owner.
-  return JSON.parse(line);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function readBridgeInput(line: string): BridgeRequest | BridgeResponse {
+  const value: unknown = JSON.parse(line);
+  if (!isRecord(value)) throw new Error("Invalid Claude bridge message");
+  if ("method" in value && !isRecord(value.params)) value.params = {};
+  if (!("method" in value)) {
+    if (
+      (typeof value.id !== "string" && typeof value.id !== "number") ||
+      "result" in value === "error" in value ||
+      ("error" in value &&
+        (!isRecord(value.error) ||
+          typeof value.error.code !== "number" ||
+          typeof value.error.message !== "string"))
+    )
+      throw new Error("Invalid Claude bridge response");
+  }
+  // Studio and this bridge own the protocol; the envelope is checked here once.
+  // Payload types come from the shared wire owner, as in the scripted child boundary.
+  return value as BridgeRequest | BridgeResponse;
 }
 
 const operations = new Map<string, Promise<unknown>>();
@@ -3660,12 +3680,12 @@ lines.on("line", (line) => {
   } catch {
     return;
   }
-  if (!message.method) {
-    const waiting = pending.get(message.id!);
+  if (!("method" in message)) {
+    const waiting = pending.get(message.id);
     if (waiting) {
-      pending.delete(message.id!);
-      if (message.error) waiting.reject(new Error(message.error.message));
-      else waiting.resolve(message.result!);
+      pending.delete(message.id);
+      if ("error" in message) waiting.reject(new Error(message.error.message));
+      else waiting.resolve(message);
     }
     return;
   }

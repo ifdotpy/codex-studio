@@ -11,9 +11,11 @@ import {
   questionCard,
   questionHistoryIndex,
   splitJoinedAnswer,
+  transcriptRequests,
   type QuestionHistoryEntry,
   type QuestionLookup,
 } from "./questionCardModel";
+import type { components } from "../../generated/api";
 
 const AGENT = "lead";
 const options = [
@@ -94,6 +96,105 @@ const chosen = (markup: string) =>
   ].map((match) => match[1]);
 
 describe("question card", () => {
+  it("keeps one editor when a tool and message refer to the same request", () => {
+    const request = {
+      id: "question",
+      status: "pending",
+      agent: AGENT,
+    } satisfies components["schemas"]["RequestEntityDto"];
+    const tool = askItem({ status: "inProgress" }, "running");
+    const message: Message = {
+      id: "lead:message",
+      role: "assistant",
+      text: "Which file?",
+    };
+    const card: ReturnType<typeof questionCard> = {
+      source: "message",
+      state: "waiting",
+      asynchronous: true,
+      questions: [],
+      requestId: request.id,
+    };
+    const linked = transcriptRequests([tool, message], [request], () => card);
+    expect(linked.get(tool.id)).toBe(request);
+    expect(linked.get(message.id)).toBeNull();
+    expect([...linked.values()].filter(Boolean)).toHaveLength(1);
+  });
+  it("links only loaded, active request rows by exact question or approval identity", () => {
+    const question = askItem({ status: "inProgress" }, "running");
+    const approval: Message = {
+      id: "lead:command",
+      role: "output",
+      text: "Command",
+    };
+    const requests: components["schemas"]["RequestEntityDto"][] = [
+      {
+        id: "question",
+        agent: AGENT,
+        method: "item/tool/requestUserInput",
+        status: "pending",
+        params: { itemId: "toolu_1" },
+      },
+      {
+        id: "approval",
+        agent: AGENT,
+        method: "item/commandExecution/requestApproval",
+        status: "pending",
+        params: { itemId: "command" },
+      },
+      {
+        id: "other-agent",
+        agent: "worker",
+        status: "pending",
+        params: { itemId: "command" },
+      },
+      {
+        id: "outside-page",
+        agent: AGENT,
+        status: "pending",
+        params: { itemId: "older" },
+      },
+    ];
+    const linked = transcriptRequests(
+      [question, approval],
+      requests,
+      () => undefined,
+    );
+    expect(
+      [...linked].map(([message, request]) => [message, request?.id]),
+    ).toEqual([
+      [question.id, "question"],
+      [approval.id, "approval"],
+    ]);
+    expect(
+      transcriptRequests(
+        [approval],
+        requests.map((request) => ({ ...request, deferred: true })),
+        () => undefined,
+      ).size,
+    ).toBe(0);
+    expect(
+      transcriptRequests(
+        [approval],
+        requests.map((request) => ({ ...request, status: "answered" })),
+        () => undefined,
+      ).size,
+    ).toBe(0);
+    const asynchronous: Message = {
+      id: "lead:async",
+      role: "assistant",
+      text: "Continue?",
+    };
+    expect(
+      transcriptRequests([asynchronous], requests, () => ({
+        source: "message",
+        state: "waiting",
+        asynchronous: true,
+        questions: [],
+        requestId: "question",
+      })).get(asynchronous.id)?.id,
+    ).toBe("question");
+  });
   it("shows a pending question as waiting with the existing answer action", () => {
     const item = askItem({ status: "inProgress" }, "running");
     const markup = render(item, lookup([], [["toolu_1", "request-1"]]));

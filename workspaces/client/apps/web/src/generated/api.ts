@@ -20436,6 +20436,8 @@ export interface components {
     ReviewDefaults: {
       /** Effort */
       effort: string | null;
+      /** @description Override Fast mode for native reviews and reviewer tasks. Omission preserves caller inheritance for native reviews and worker-default inheritance for reviewer tasks. */
+      fast_mode?: boolean | undefined;
       /** Model */
       model: string | null;
     };
@@ -20443,6 +20445,7 @@ export interface components {
     ReviewDefaultsDto: {
       /** Effort */
       effort: null | string;
+      fastMode?: boolean | undefined;
       /** Model */
       model: null | string;
     };
@@ -20450,6 +20453,7 @@ export interface components {
     ReviewDefaultsRecordResponse: {
       /** Effort */
       effort: null | string;
+      fastMode?: boolean | undefined;
       /** Model */
       model: null | string;
     } & {

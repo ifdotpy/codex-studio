@@ -23,6 +23,7 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import Sidebar from "../components/Sidebar.tsx";
 import ProjectGroupsSidebar from "../servers/ProjectGroupsSidebar.tsx";
+import { navigationSnapshot } from "../servers/navigation.ts";
 import { ProjectDeleteDialog } from "../components/ProjectDeleteDialog.tsx";
 import { useProjectDelete } from "../useProjectDelete.ts";
 import "@mantine/core/styles.css";
@@ -161,7 +162,11 @@ function Fixture() {
       ? React.createElement(ProjectGroupsSidebar, {
           navigation: {
             owner: {
-              projects: data.runtime.projects as React.ComponentProps<
+              ...navigationSnapshot(data, "lead", ""),
+              projects: data.runtime.projects.map((project) => ({
+                ...project,
+                ...(location.search.includes("legacy") ? { id: "" } : {}),
+              })) as React.ComponentProps<
                 typeof ProjectGroupsSidebar
               >["navigation"][string]["projects"],
               // The source fixture intentionally omits the unrelated unread field.
