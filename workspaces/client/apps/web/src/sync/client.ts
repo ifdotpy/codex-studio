@@ -2502,7 +2502,7 @@ export function createSyncClient(options: SyncClientOptions) {
         throw new Error("The entity projection is not ready yet.");
       const snapshot = applyEntityRows(
         emptyEntityProjection(),
-        documents.map((document) => document.toMutableJSON()),
+        documents.map((document) => document.toJSON()),
         true,
       );
       if (!snapshot) throw new Error("The entity projection is unavailable.");
