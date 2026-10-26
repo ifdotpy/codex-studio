@@ -49,6 +49,7 @@ for (const width of [1440, 390, 320]) {
             json({ items, dismissedIds: payload.ids, unknownIds: [] });
             return true;
           }
+          return undefined;
         },
       });
       server.snapshot.runtime.studioErrors = items;

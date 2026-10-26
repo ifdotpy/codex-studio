@@ -168,6 +168,7 @@ test("switching chats changes subscriptions on one EventSource", async ({
     await expect(page.locator("output")).toHaveText("one");
     assert.equal(opened, 1);
     assert.equal(updates.length, 2);
+    assert.ok(updates[0]);
     assert.deepEqual(updates[0].add, [{ kind: "transcript", agentId: "two" }]);
     assert.deepEqual(updates[0].remove, [
       { kind: "transcript", agentId: "one" },

@@ -104,6 +104,7 @@ function find(
       ? element
       : find(element.props.children, predicate);
   }
+  return undefined;
 }
 afterEach(() => {
   for (const cell of h.cells) cell?.cleanup?.();

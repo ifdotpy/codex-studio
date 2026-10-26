@@ -57,6 +57,7 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
               ],
               { cwd: root, encoding: "utf8" },
             );
+          return undefined;
         },
       },
     ],

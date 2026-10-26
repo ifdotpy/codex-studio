@@ -80,7 +80,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
         window.visualActivityFixture.visualMetrics.observers++;
         this.active = true;
       }
-      disconnect() {
+      override disconnect() {
         if (this.active) window.visualActivityFixture.visualMetrics.observers--;
         this.active = false;
         super.disconnect();

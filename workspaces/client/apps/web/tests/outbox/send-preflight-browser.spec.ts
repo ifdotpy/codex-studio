@@ -54,6 +54,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
             "workspaceId"
           >,
         });
+      return undefined;
     });
     await page.route("**/api/session", (route) => {
       if (preflight) preflight.sessions.push(route);
@@ -63,6 +64,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
             token: "fixture",
           } satisfies components["schemas"]["SessionResponse"],
         });
+      return undefined;
     });
     await page.route("**/api/messages", async (route) => {
       const body = requestBody<PostBody<"/api/messages">>(route);

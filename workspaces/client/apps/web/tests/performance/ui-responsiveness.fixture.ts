@@ -154,6 +154,7 @@ export function installResponsivenessFixture({
             expected,
           }),
         );
+        return undefined;
       };
       requestAnimationFrame(inspect);
     },
@@ -178,6 +179,7 @@ export function installResponsivenessFixture({
           });
           resolve();
         });
+        return undefined;
       };
       requestAnimationFrame(inspect);
     });

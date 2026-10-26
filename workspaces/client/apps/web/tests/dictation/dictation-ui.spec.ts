@@ -28,6 +28,7 @@ test("Dictation ui", async ({
               import.meta.dirname,
               "./dictation-capture.fixture.ts",
             );
+          return undefined;
         },
         configureServer(server) {
           server.middlewares.use("/dictation-test", (_request, response) => {

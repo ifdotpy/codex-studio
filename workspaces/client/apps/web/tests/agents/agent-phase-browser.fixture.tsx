@@ -230,6 +230,7 @@ function scope(ownerId: string, hold = false) {
         hold = false;
         latest().baseline();
       }
+      return undefined;
     },
   };
 }

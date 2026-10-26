@@ -180,6 +180,7 @@ for (const writerTab of [0, 1]) {
       if (writerTab) await openPage();
       await expect.poll(() => streams.size).toBe(1);
       const writer = pages[writerTab];
+      assert.ok(writer);
       await writer.evaluate(() => {
         const storage = window.db.projections.storageInstance;
         const original = storage.bulkWrite.bind(storage);

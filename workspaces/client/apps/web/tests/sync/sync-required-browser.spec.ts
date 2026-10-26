@@ -104,6 +104,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
       }
+      return undefined;
     });
     assert.ok(sendError);
     assert.match(sendError, /Identity unavailable/);

@@ -125,7 +125,7 @@ export function installSchemaGateFixture(
       });
     }
 
-    dispatchEvent(event: Event) {
+    override dispatchEvent(event: Event) {
       const dispatched = super.dispatchEvent(event);
       if (event.type === "open") this.onopen?.call(this, event);
       if (event.type === "error") this.onerror?.call(this, event);

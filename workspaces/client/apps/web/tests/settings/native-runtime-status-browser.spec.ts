@@ -40,6 +40,7 @@ test("Native runtime status", async ({ context }) => {
               import.meta.dirname,
               "native-runtime-resource-events.fixture.ts",
             );
+          return undefined;
         },
       },
     ],

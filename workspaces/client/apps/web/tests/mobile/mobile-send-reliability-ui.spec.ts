@@ -85,6 +85,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
             status: replyStatus,
           } satisfies PostResult<"/api/messages">,
         });
+      return undefined;
     });
     await page.goto(fixtureServerOrigin(server));
     const waitUntil = (check: () => boolean | Promise<boolean>) =>

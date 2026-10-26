@@ -31,6 +31,7 @@ test("Claude checkpoints show the reason and send one combined restore identity"
         resolveId(id) {
           if (id.endsWith("/servers/ServerServicesContext"))
             return fileURLToPath(new URL("./rewind-api.ts", import.meta.url));
+          return undefined;
         },
       },
     ],

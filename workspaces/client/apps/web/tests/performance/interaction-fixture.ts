@@ -123,6 +123,7 @@ instance = await fixture("Performance", false, {
       );
       return true;
     }
+    return undefined;
   },
 });
 const base = required(instance.snapshot.threads[0]);

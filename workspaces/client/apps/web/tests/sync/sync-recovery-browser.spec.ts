@@ -313,6 +313,7 @@ test("Sync recovery browser", async ({
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
       }
+      return undefined;
     });
     assert.ok(rejected);
     assert.match(rejected, /workspace changed/);

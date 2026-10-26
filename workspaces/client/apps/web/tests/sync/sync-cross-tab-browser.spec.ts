@@ -283,7 +283,7 @@ const runSyncCrossTabScenario = async (
               }),
           );
         }
-        postMessage(data: OutgoingTabMessage) {
+        override postMessage(data: OutgoingTabMessage) {
           window.crossTabDiagnostics.sent.push(data);
           return super.postMessage(data);
         }

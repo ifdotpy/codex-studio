@@ -200,7 +200,7 @@ function render(
         retry: vi.fn(),
       },
       refresh: h.refresh,
-      onDraftChange,
+      ...(onDraftChange && { onDraftChange }),
       renderTrigger: (trigger) =>
         createElement(ExecutionSummaryTrigger, {
           agent: trigger.agent,
@@ -647,14 +647,14 @@ test("a superseding Ask intent prevents reuse of a lost Full request identity", 
   h.post.mockRejectedValueOnce(new Error("response lost"));
   control(ask).props.onChange({ currentTarget: { checked: true } });
   await vi.waitFor(() => expect(control(full).props.disabled).toBe(false));
-  const lostFullId = h.post.mock.calls[0][1].request_id;
+  const lostFullId = required(h.post.mock.calls[0])[1].request_id;
   h.post.mockResolvedValueOnce(ask);
   control(full).props.onChange({ currentTarget: { checked: false } });
   await vi.waitFor(() => expect(control(ask).props.disabled).toBe(false));
   h.post.mockResolvedValueOnce(full);
   control(ask).props.onChange({ currentTarget: { checked: true } });
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
-  expect(h.post.mock.calls[2][1].request_id).not.toBe(lostFullId);
+  expect(required(h.post.mock.calls[2])[1].request_id).not.toBe(lostFullId);
 });
 
 for (const [first, opposite] of [
@@ -708,14 +708,22 @@ for (const [first, opposite] of [
     await reopen();
     await choose(first);
     await choose(first); // The same unresolved click retains its request identity.
-    expect(mutations[1].request_id).toBe(mutations[0].request_id);
+    expect(required(mutations[1]).request_id).toBe(
+      required(mutations[0]).request_id,
+    );
     await reopen();
     loseResponse = false;
     await choose(opposite);
     await choose(first);
-    expect(mutations[2].request_id).not.toBe(mutations[0].request_id);
-    expect(mutations[3].request_id).not.toBe(mutations[0].request_id);
-    expect(mutations[3].request_id).not.toBe(mutations[2].request_id);
+    expect(required(mutations[2]).request_id).not.toBe(
+      required(mutations[0]).request_id,
+    );
+    expect(required(mutations[3]).request_id).not.toBe(
+      required(mutations[0]).request_id,
+    );
+    expect(required(mutations[3]).request_id).not.toBe(
+      required(mutations[2]).request_id,
+    );
   });
 }
 
@@ -767,11 +775,11 @@ test("a late Claude success preserves the newer unresolved permission request", 
   await reopen();
   control().props.onChange({ currentTarget: { value: "default" } });
   await vi.waitFor(() => expect(control().props.disabled).toBe(false));
-  const unresolvedId = mutations[1].request_id;
-  expect(unresolvedId).not.toBe(mutations[0].request_id);
+  const unresolvedId = required(mutations[1]).request_id;
+  expect(unresolvedId).not.toBe(required(mutations[0]).request_id);
   finish({});
   await Promise.resolve();
   control().props.onChange({ currentTarget: { value: "default" } });
   await vi.waitFor(() => expect(mutations).toHaveLength(3));
-  expect(mutations[2].request_id).toBe(unresolvedId);
+  expect(required(mutations[2]).request_id).toBe(unresolvedId);
 });

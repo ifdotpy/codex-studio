@@ -576,6 +576,7 @@ describe("entity pull reset wiring", () => {
             : scenario === "snapshot-change"
               ? "change"
               : "initial";
+        assert.ok(event.resourceVersions[0]);
         delete event.resourceVersions[0].transcriptChanges;
         event.resourceVersions[0].transcriptSnapshot = {
           items: [{ id: "answer", role: "assistant", text: "streamed" }],
@@ -1386,13 +1387,15 @@ describe("entity pull reset wiring", () => {
       });
       const emptyDelta = event(11, "delta");
       const overlapping = event(13, "delta");
-      overlapping.resourceVersions[0].entityChanges!.after = 10;
+      assert.ok(overlapping.resourceVersions[0]?.entityChanges);
+      overlapping.resourceVersions[0].entityChanges.after = 10;
       await client.persistResourceEntityChanges(overlapping, () => true);
       expect(await client.readSubscriptionCursor(resource)).toEqual({
         workspaceId,
         seq: 13,
       });
-      delete emptyDelta.resourceVersions![0].entityChanges;
+      assert.ok(emptyDelta.resourceVersions[0]);
+      delete emptyDelta.resourceVersions[0].entityChanges;
       let current = true;
       storageInstance.findDocumentsById.mockImplementationOnce(async () => {
         current = false;
@@ -1481,6 +1484,7 @@ describe("entity pull reset wiring", () => {
       () => true,
     );
     const resumed = event("中", 3, "delta");
+    assert.ok(resumed.resourceVersions[0]);
     const wrongBase = {
       ...resumed,
       resourceVersions: [

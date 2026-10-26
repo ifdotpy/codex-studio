@@ -1,6 +1,6 @@
 import type { TaskReviewFrames } from "./task-review-stream.ts";
 import type { components } from "../../src/generated/api.ts";
-import type { PostBody } from "../../src/apiTypes.ts";
+import type { JsonInputOf, PostBody } from "../../src/apiTypes.ts";
 import { required, fixturePostBody } from "../teams/helpers.ts";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
@@ -41,6 +41,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
             return fileURLToPath(
               new URL("./task-review-stream.ts", import.meta.url),
             );
+          return undefined;
         },
       },
     ],
@@ -206,14 +207,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
         taskDefaultGate = body.gate;
       } else if (body.action === "create") {
         const resultSchema = fixtureResultSchema(body.result_schema);
-        const gate = body.gate;
-        const serializedGate: components["schemas"]["WorkItem"]["gate"] =
-          gate && typeof gate === "object"
-            ? gate.timeout_ms === undefined
-              ? { command: gate.command }
-              : { command: gate.command, timeout_ms: gate.timeout_ms }
-            : gate;
-        tasks.push({
+        const created = {
           ...common,
           ...body,
           id: "created-task",
@@ -222,10 +216,11 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
           dependencies: body.dependencies ?? undefined,
           version: body.version ?? common.version,
           status: required(body.status),
-          gate: serializedGate,
+          gate: body.gate,
           result_schema: resultSchema,
           resultSchema,
-        } satisfies components["schemas"]["WorkItem"]);
+        } satisfies JsonInputOf<components["schemas"]["WorkItem"]>;
+        tasks.push(JSON.parse(JSON.stringify(created)));
       } else if (body.action === "reject") {
         required(tasks[0]).status = "ready";
         required(tasks[0]).version++;

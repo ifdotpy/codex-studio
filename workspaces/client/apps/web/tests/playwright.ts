@@ -625,18 +625,18 @@ const sharedFixtures: import("@playwright/test").Fixtures<
       } finally {
         clearInterval(memorySampler);
         sampleMemory();
-        let workerMemorySelection: Partial<
-          ReturnType<typeof parseWorkerSelection>
-        > = {};
+        let workerMemoryRunId:
+          | ReturnType<typeof parseWorkerSelection>["workerMemoryRunId"]
+          | undefined = undefined;
         try {
-          workerMemorySelection = parseWorkerSelection(
+          workerMemoryRunId = parseWorkerSelection(
             process.env.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",
-          );
+          ).workerMemoryRunId;
         } catch {
           // A malformed inherited selector should not fail fixture cleanup.
         }
         persistWorkerMemorySample({
-          runId: workerMemorySelection.workerMemoryRunId,
+          runId: workerMemoryRunId,
           workerPid: process.pid,
           processTreePssBytes: memoryPeak.processTreePssBytes,
           processTreeBreakdown: memoryPeak.processTreeBreakdown,

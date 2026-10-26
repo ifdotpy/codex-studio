@@ -44,14 +44,14 @@ const noop = () => {};
 const refresh = async () => {};
 let renderId = 0;
 class Boundary extends React.Component<React.PropsWithChildren> {
-  state = { error: "" };
+  override state = { error: "" };
   static getDerivedStateFromError(error: Error) {
     return { error: error.message };
   }
-  componentDidCatch(error: Error) {
+  override componentDidCatch(error: Error) {
     window.structuredOperationalErrorsUiCrashes.push(error.message);
   }
-  render() {
+  override render() {
     return this.state.error
       ? React.createElement("p", { "data-crash": true }, this.state.error)
       : this.props.children;

@@ -67,6 +67,7 @@ test("Send session token browser", async ({
             token: "new-token",
           } satisfies import("../playwright.ts").SessionResponse,
         });
+      return undefined;
     });
     await page.route("**/api/messages", (route) => {
       const body = requestBody<import("./helpers.ts").MessageRequest>(route);

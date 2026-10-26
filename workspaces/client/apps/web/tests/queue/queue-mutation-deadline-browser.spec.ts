@@ -100,6 +100,7 @@ test("queue-mutation-deadline-browser @performance", async ({
       else assert.fail(`Unexpected queue action: ${body.action}`);
       view.revision += ":committed";
       // The operation commits, but its response stays pending until the deadline.
+      return undefined;
     });
     await page.goto(required(server.resolvedUrls?.local[0]) + "check");
     await page.evaluate(async (workspaceId) => {

@@ -41,6 +41,7 @@ test("Scroll restart", async () => {
             return fileURLToPath(
               new URL("./scroll-restart.fixture.tsx", import.meta.url),
             );
+          return undefined;
         },
       },
     ],

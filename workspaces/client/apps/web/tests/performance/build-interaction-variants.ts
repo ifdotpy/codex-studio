@@ -95,6 +95,7 @@ for (const [stage, label] of labels.entries()) {
           transform(_code, id) {
             const code = sources.get(id.split("?")[0] ?? id);
             if (code !== undefined) return { code, map: null };
+            return undefined;
           },
         },
       ],

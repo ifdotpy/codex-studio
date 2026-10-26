@@ -437,8 +437,9 @@ it.each([false, true])(
     const f = await setup();
     await f.client.persistResourceEntityChanges(f.frame(9), () => true);
     const event = f.frame(11);
+    assert.ok(event.resourceVersions[0]?.entityChanges);
     event.resourceVersions[0].replyKind = "delta";
-    event.resourceVersions[0].entityChanges!.after = 8;
+    event.resourceVersions[0].entityChanges.after = 8;
     if (staged) {
       const { EntityTransferAssembler } = await import("./entityTransfer");
       const assembler = new EntityTransferAssembler();
@@ -1048,9 +1049,13 @@ it.each(["burst", "inline removal", "staged removal"])(
               },
             ],
           });
-      } else stopOthers[0]();
+      } else {
+        assert.ok(stopOthers[0]);
+        stopOthers[0]();
+      }
       expect(source.closed).toBe(false);
       finish();
+      assert.ok(held.mock.results[0]);
       await held.mock.results[0].value;
       await vi.advanceTimersByTimeAsync(0);
       expect(mocks.sources).toHaveLength(1);

@@ -35,6 +35,7 @@ test("Draft Render Performance Browser @performance", async ({
                 import.meta.url,
               ),
             );
+          return undefined;
         },
       },
     ],

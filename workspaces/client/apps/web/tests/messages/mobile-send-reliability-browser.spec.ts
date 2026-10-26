@@ -72,6 +72,7 @@ test("Mobile Send Reliability Browser", async ({
             token: "fixture",
           } satisfies import("../playwright.ts").SessionResponse,
         });
+      return undefined;
     });
     await context.route("**/api/messages", (route) => {
       const body = requestBody<import("./helpers.ts").MessageRequest>(route);
@@ -96,6 +97,7 @@ test("Mobile Send Reliability Browser", async ({
             status: "delivered",
           } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
         });
+      return undefined;
     });
     const mount = async (page: Page) => {
       page.on("pageerror", (error) => errors.push(error.message));
@@ -406,6 +408,7 @@ test("Mobile Send Reliability Browser", async ({
         if (!(error instanceof Error)) throw error;
         return error.message;
       }
+      return undefined;
     }, body("missing-session-send"));
     assert.match(failure, /Not found/);
     assert.equal(
