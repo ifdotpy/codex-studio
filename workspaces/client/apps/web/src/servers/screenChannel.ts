@@ -1,6 +1,23 @@
 import type { ServerCommand } from "./navigation";
+import type { GetResult } from "../api";
 
 export type ScreenMessage = { kind: string; [key: string]: unknown };
+export type ScreenSearchResults = Pick<GetResult<"/api/search">, "results"> & {
+  error?: string | undefined;
+};
+export type ScreenSearchResultsMessage = ScreenMessage &
+  Partial<ScreenSearchResults> & {
+    kind: "studio-server-search-results";
+    requestId: string;
+  };
+
+/** Search replies come from the same renderer's generated API client. */
+export function screenSearchResults(
+  message: ScreenMessage,
+): ScreenSearchResults {
+  const value = message as ScreenSearchResultsMessage;
+  return { results: value.results || [], error: value.error };
+}
 type CommandHandler = (command: ServerCommand) => void | Promise<void>;
 
 /** One connection lifetime owns its commands, even after another screen opens. */
