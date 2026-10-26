@@ -67,13 +67,6 @@ export type BridgeNoteFor<M extends BridgeNote["method"]> = Extract<
   { method: M }
 >;
 
-// The copied bridge and scripted SDK own their wire payloads; this is the JSON boundary.
-function parseBridgeMessage<M extends BridgeMethod>(
-  value: unknown,
-): BridgeNote | BridgeResponse<BridgeResult<M>> {
-  return value as BridgeNote | BridgeResponse<BridgeResult<M>>;
-}
-
 // Maximum simulated wait and per-step advancement, both in milliseconds.
 const VIRTUAL_NOTIFICATION_BUDGET_MS = 10_000;
 const VIRTUAL_STEP_MS = 10;
@@ -189,7 +182,7 @@ export async function startBridge(
       const value: unknown = JSON.parse(line);
       const message = parseBridgeMessage(value);
       if ("method" in message) notes.push(message);
-      else waiting.get(message.id)?.resolve(value);
+      else waiting.get(message.id)?.resolve(message);
       for (const notify of notifications) notify();
     });
   };

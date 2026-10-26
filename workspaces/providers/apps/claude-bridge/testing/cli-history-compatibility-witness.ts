@@ -1,3 +1,14 @@
+import type { components } from "../runtime-contract.generated.ts";
+type JsonValue = components["schemas"]["JsonValue"];
+// The installed-CLI witness reads only these indexed views of its captured journal document.
+type CompatibilityRow = SessionStoreEntry & {
+  message: {
+    content: (Record<string, JsonValue> & {
+      content?: Record<string, JsonValue>[];
+    })[];
+  };
+  attachment: Record<string, string>;
+};
 import type {
   Options,
   SDKMessage,
@@ -6,7 +17,6 @@ import type {
 import type { Session } from "../session-state.ts";
 import type { ControlDependencies } from "../controls.ts";
 import type { SessionFixtureStreamEvent } from "../fixtures/session-sdk-types.ts";
-import { object } from "../history-records.ts";
 // Real installed CLI/SDK; all provider requests end at this disposable HTTP
 // fixture. Retry and deferred-tool formats are provider output, not new input.
 import assert from "node:assert/strict";
@@ -238,7 +248,7 @@ try {
     const rows = (await fs.readFile(file, "utf8"))
       .trim()
       .split("\n")
-      .map((line): SessionStoreEntry => JSON.parse(line));
+      .map((line): CompatibilityRow => JSON.parse(line));
     if (mode === "retry")
       assert(
         rows.some(
@@ -253,17 +263,12 @@ try {
         rows.some(
           (row) =>
             row.type === "user" &&
-            object(row.message) &&
             Array.isArray(row.message.content) &&
             row.message.content.some(
-              (block: unknown) =>
-                object(block) &&
+              (block) =>
                 block.type === "tool_result" &&
                 Array.isArray(block.content) &&
-                block.content.some(
-                  (inner: unknown) =>
-                    object(inner) && inner.type === "tool_reference",
-                ),
+                block.content.some((inner) => inner.type === "tool_reference"),
             ),
         ),
       );
@@ -271,8 +276,6 @@ try {
         rows.some(
           (row) =>
             row.type === "attachment" &&
-            object(row.attachment) &&
-            typeof row.attachment.type === "string" &&
             row.attachment.type.startsWith("deferred_tools"),
         ),
       );
