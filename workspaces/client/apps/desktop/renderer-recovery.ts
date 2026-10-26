@@ -1,6 +1,6 @@
 import type {
   BrowserWindow,
-  WebFrameMain,
+  WebContents,
   Event,
   RenderProcessGoneDetails,
 } from "electron";
@@ -8,12 +8,20 @@ export type RendererCrash = {
   reason: string | number;
   exitCode: number | null;
 };
+export type RecoveryContents = Pick<
+  WebContents,
+  "isDestroyed" | "loadURL" | "getURL" | "getOSProcessId" | "isCrashed" | "on"
+> & { mainFrame: unknown };
+export type RecoveryWindow = Pick<
+  BrowserWindow,
+  "isDestroyed" | "setTitle" | "on"
+> & { webContents: RecoveryContents };
 export type RecoveryNavigation = {
   preventDefault(): void;
   url: string;
   isMainFrame?: boolean | undefined;
-  frame?: WebFrameMain | null | undefined;
-  initiator?: WebFrameMain | null | undefined;
+  frame?: unknown;
+  initiator?: unknown;
 };
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -38,7 +46,7 @@ function createRendererRecovery({
   healthyMs = 60000,
   retryDelayMs = 1000,
 }: {
-  win: Pick<BrowserWindow, "webContents" | "isDestroyed" | "setTitle" | "on">;
+  win: RecoveryWindow;
   workspaceURL: string;
   profile: string;
   maxRetries?: number;
