@@ -17,10 +17,10 @@ import "../../src/appearance.css";
 import { theme } from "../../src/theme.ts";
 declare global {
   interface Window {
-    limitsOrgFixture: { refresh: () => void; signedInAccount?: string };
+    refreshFixture: () => void;
+    signedInAccount: string | undefined;
   }
 }
-window.limitsOrgFixture = { refresh: () => {} };
 const expected = {
   name: "Research organization for the selected Claude profile",
   idSuffix: "12345678",
@@ -61,7 +61,7 @@ function Fixture() {
   const [screen, setScreen] = useState("limits");
   const [at, setAt] = useState(now);
   const [limitsOpen, setLimitsOpen] = useState(false);
-  window.limitsOrgFixture.refresh = () => setAt(Date.now() / 1000);
+  window.refreshFixture = () => setAt(Date.now() / 1000);
   const limits = {
     accountKey: "claude",
     at,
@@ -110,7 +110,7 @@ function Fixture() {
               <NativeError
                 agent={agent}
                 limits={limits}
-                refreshLimits={() => window.limitsOrgFixture.refresh()}
+                refreshLimits={() => window.refreshFixture()}
               />
             </div>
             <div
@@ -128,13 +128,13 @@ function Fixture() {
                     label: "Research",
                     limits,
                     loading: false,
-                    reload: async () => window.limitsOrgFixture.refresh(),
+                    reload: async () => window.refreshFixture(),
                   },
                 ]}
                 accountLabel="Research"
                 opened={limitsOpen}
                 onChange={setLimitsOpen}
-                reload={async () => window.limitsOrgFixture.refresh()}
+                reload={async () => window.refreshFixture()}
               />
             </div>
           </>
@@ -143,9 +143,7 @@ function Fixture() {
             <AccountSignInNotice
               account={account}
               errors={[]}
-              onSignIn={(key) =>
-                (window.limitsOrgFixture.signedInAccount = key)
-              }
+              onSignIn={(key) => (window.signedInAccount = key)}
             />
             <Accounts
               managerOnly

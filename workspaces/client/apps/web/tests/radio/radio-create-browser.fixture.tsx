@@ -1,16 +1,13 @@
 declare global {
   interface Window {
-    radioCreateFixture: {
-      fixture: Snapshot;
-      opened: string | null;
-      reopen: () => void;
-      failRefresh: boolean;
-      ordinary: boolean;
-    };
+    radioCreateSnapshot: Snapshot;
+    radioOpened: string | null;
+    reopen: () => void;
+    failRefresh: boolean;
+    ordinary: boolean;
   }
 }
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing radio fixture root");
+const rootElement = document.getElementById("root")!;
 import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import type { Snapshot } from "../../src/types.ts";
 import { radioSnapshot } from "./radio-fixture.ts";
@@ -83,25 +80,22 @@ const initial: Snapshot = {
     peerTeams: [],
   },
 };
-window.radioCreateFixture = {
-  fixture: initial,
-  opened: null,
-  reopen: () => {},
-  failRefresh: false,
-  ordinary: false,
-};
+window.radioCreateSnapshot = initial;
+window.radioOpened = null;
+window.reopen = () => {};
+window.failRefresh = false;
+window.ordinary = false;
 function Fixture() {
   const [data, setData] = useState(initial);
   const [show, setShow] = useState<{ path?: string | undefined } | null>({
     path: "/p",
   });
   const [opened, open] = useState<string | null>(null);
-  window.radioCreateFixture.fixture = data;
-  window.radioCreateFixture.opened = opened;
-  window.radioCreateFixture.reopen = () => setShow({ path: "/p" });
+  window.radioCreateSnapshot = data;
+  window.radioOpened = opened;
+  window.reopen = () => setShow({ path: "/p" });
   const refresh = async () => {
-    if (window.radioCreateFixture.failRefresh)
-      throw Error("Snapshot unavailable");
+    if (window.failRefresh) throw Error("Snapshot unavailable");
     const result = await fetch("/snapshot");
     setData(radioSnapshot(await result.json()));
   };
@@ -111,7 +105,7 @@ function Fixture() {
         data={data}
         opened={opened}
         open={open}
-        newChat={() => (window.radioCreateFixture.ordinary = true)}
+        newChat={() => (window.ordinary = true)}
         newSharedChat={(path) => setShow({ path })}
         addProject={() => {}}
         changeProject={() => {}}

@@ -8,33 +8,34 @@ import "../../src/components/realtime-voice.css";
 
 declare global {
   interface Window {
-    browserDictationFixture: { calls: string[]; speech?: Recognition };
+    dictationCalls: string[];
+    speech: Recognition | undefined;
     SpeechRecognition?: (new () => Recognition) | undefined;
     webkitSpeechRecognition?: (new () => Recognition) | undefined;
   }
 }
-window.browserDictationFixture = { calls: [] };
+window.dictationCalls = [];
 window.SpeechRecognition = class implements Recognition {
-  lang = "";
-  continuous = false;
-  interimResults = false;
-  onresult: Recognition["onresult"] = null;
-  onerror: Recognition["onerror"] = null;
-  onstart: Recognition["onstart"] = null;
-  onend: Recognition["onend"] = null;
+  declare lang: string;
+  declare continuous: boolean;
+  declare interimResults: boolean;
+  declare onresult: Recognition["onresult"];
+  declare onerror: Recognition["onerror"];
+  declare onstart: Recognition["onstart"];
+  declare onend: Recognition["onend"];
   constructor() {
-    window.browserDictationFixture.speech = this;
+    window.speech = this;
   }
   start() {
-    window.browserDictationFixture.calls.push("start");
+    window.dictationCalls.push("start");
     this.onstart?.();
   }
   stop() {
-    window.browserDictationFixture.calls.push("stop");
+    window.dictationCalls.push("stop");
     this.onend?.();
   }
   abort() {
-    window.browserDictationFixture.calls.push("abort");
+    window.dictationCalls.push("abort");
     this.onend?.();
   }
 };
@@ -55,6 +56,5 @@ function App() {
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing browser dictation root");
+const root = document.getElementById("root")!;
 createRoot(root).render(<App />);

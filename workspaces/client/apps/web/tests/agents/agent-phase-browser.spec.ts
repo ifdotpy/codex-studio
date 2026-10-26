@@ -1,5 +1,5 @@
 import type {} from "./agent-phase-browser.fixture2.tsx";
-import type { Snapshot } from "../../src/types.ts";
+import type { PhaseSnapshot } from "./agent-phase-browser.fixture2.tsx";
 import { fixtureOrigin } from "../misc-fixture.ts";
 import type {} from "./agent-phase-browser.fixture.tsx";
 // Component check with an isolated Vite server. No backend or model calls.
@@ -48,77 +48,48 @@ test("chat reconnect follows transport across hidden conversations", async ({
     await expect(first).toHaveAttribute("data-connection", "live");
     await expect(first).toContainText("Writing");
     await expect(second).toHaveAttribute("data-connection", "");
-    await page.evaluate(() =>
-      window.chatConnectionFixture.setConnection("offline"),
-    );
+    await page.evaluate(() => window.setConnection("offline"));
     await expect(first).toContainText("Connection lost. Reconnecting…");
-    await page.evaluate(() =>
-      window.chatConnectionFixture.setConnection("connecting"),
-    );
+    await page.evaluate(() => window.setConnection("connecting"));
     await expect(first).toContainText("Connection lost. Reconnecting…");
-    await page.evaluate(() =>
-      window.chatConnectionFixture.selectChat("second"),
-    );
+    await page.evaluate(() => window.selectChat("second"));
     await expect(second).toContainText("Connection lost. Reconnecting…");
     await expect(first).toHaveAttribute("data-connection", "");
-    await page.evaluate(() => window.chatConnectionFixture.selectChat("first"));
+    await page.evaluate(() => window.selectChat("first"));
     await expect(first).toContainText("Connection lost. Reconnecting…");
-    await page.evaluate(() =>
-      window.chatConnectionFixture.selectChat("second"),
-    );
-    await page.evaluate(() =>
-      window.chatConnectionFixture.setConnection("connecting"),
-    );
+    await page.evaluate(() => window.selectChat("second"));
+    await page.evaluate(() => window.setConnection("connecting"));
     await expect(second).toContainText("Connection lost. Reconnecting…");
-    await page.evaluate(() => window.chatConnectionFixture.selectServer(true));
+    await page.evaluate(() => window.selectServer(true));
     await expect(second).toHaveAttribute("data-connection", "");
     await expect(second).not.toContainText("Connection lost.");
-    await page.evaluate(() => window.chatConnectionFixture.selectServer(false));
+    await page.evaluate(() => window.selectServer(false));
     await expect(second).toContainText("Connection lost. Reconnecting…");
-    await page.evaluate(() =>
-      window.chatConnectionFixture.setConnection("live"),
-    );
+    await page.evaluate(() => window.setConnection("live"));
     await expect(second).toHaveAttribute("data-connection", "live");
     await expect(second).toContainText("Writing");
-    await page.evaluate(() => window.chatConnectionFixture.selectChat("first"));
+    await page.evaluate(() => window.selectChat("first"));
     await expect(first).toHaveAttribute("data-connection", "live");
     await expect(first).toContainText("Writing");
-    await page.evaluate(() =>
-      window.chatConnectionFixture.phase("first", "retrying"),
-    );
+    await page.evaluate(() => window.phase("first", "retrying"));
     await expect(first).toContainText("Provider is reconnecting");
     await expect(first).not.toContainText("Connection lost.");
-    await page.evaluate(() =>
-      window.chatConnectionFixture.phase("first", "writing"),
-    );
+    await page.evaluate(() => window.phase("first", "writing"));
     await expect(first).toContainText("Writing");
     await expect(first).not.toContainText("Provider is reconnecting");
-    expect(
-      await page.evaluate(() =>
-        window.chatConnectionFixture.connectionListeners(),
-      ),
-    ).toBe(2);
-    const beforeRepeatedStatus = await page.evaluate(
-      () => window.chatConnectionFixture.renders,
-    );
+    expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
+    const beforeRepeatedStatus = await page.evaluate(() => window.chatRenders);
     await page.evaluate(async () => {
-      for (let repeated = 0; repeated < 20; repeated++)
-        window.chatConnectionFixture.repeatLive();
+      for (let repeated = 0; repeated < 20; repeated++) window.repeatLive();
       await new Promise((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       );
     });
-    expect(
-      await page.evaluate(() => window.chatConnectionFixture.renders),
-    ).toEqual(beforeRepeatedStatus);
-    expect(
-      await page.evaluate(() =>
-        window.chatConnectionFixture.connectionListeners(),
-      ),
-    ).toBe(2);
-    expect(
-      await page.evaluate(() => window.chatConnectionFixture.reads),
-    ).toEqual([]);
+    expect(await page.evaluate(() => window.chatRenders)).toEqual(
+      beforeRepeatedStatus,
+    );
+    expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
+    expect(await page.evaluate(() => window.reads)).toEqual([]);
     expect(requests).toEqual([]);
     expect(errors).toEqual([]);
   } finally {
@@ -191,35 +162,24 @@ test("agent phase browser", async ({ page: runnerPage }) => {
     const change = async (kind: string, count = 1) => {
       await page.evaluate(
         ({ kind, count }) => {
-          const runtime: Snapshot["runtime"] = {
-            studioErrors: [],
-            agents: [],
-            rooms: [],
-            complaints: [],
-            rules: [],
-            projects: [],
-            peerTeams: [],
-            events: [],
-            work: [],
+          const runtime: PhaseSnapshot["runtime"] = {
             tasks: [],
             monitors: [],
             requests: [],
           };
-          const lead = { ...window.agentPhaseFixture.base };
+          const lead = { ...window.base };
           let threads = [lead];
           if (kind === "agent")
             threads.push(
-              ...Array.from({ length: count }, (_, i) =>
-                window.agentPhaseFixture.worker(i),
-              ),
+              ...Array.from({ length: count }, (_, i) => window.worker(i)),
             );
           if (kind === "command")
             runtime.tasks = Array.from({ length: count }, (_, i) =>
-              window.agentPhaseFixture.command(i),
+              window.command(i),
             );
           if (kind === "monitor")
             runtime.monitors = Array.from({ length: count }, (_, i) =>
-              window.agentPhaseFixture.monitor(i),
+              window.monitor(i),
             );
           if (kind === "event")
             Object.assign(lead, {
@@ -235,12 +195,9 @@ test("agent phase browser", async ({ page: runnerPage }) => {
               epoch: 2,
             }));
           if (kind === "mixed") {
-            threads.push(
-              window.agentPhaseFixture.worker(1),
-              window.agentPhaseFixture.worker(2),
-            );
-            runtime.tasks = [window.agentPhaseFixture.command(1)];
-            runtime.monitors = [window.agentPhaseFixture.monitor(1)];
+            threads.push(window.worker(1), window.worker(2));
+            runtime.tasks = [window.command(1)];
+            runtime.monitors = [window.monitor(1)];
             lead.parkedEvent = "very-long-event-name-".repeat(10);
             runtime.requests = [
               { id: "input", agent: "lead", status: "pending", epoch: 2 },
@@ -249,9 +206,9 @@ test("agent phase browser", async ({ page: runnerPage }) => {
           if (kind === "completed") lead.status = "completed";
           if (kind === "completed-monitor") {
             lead.status = "completed";
-            runtime.monitors = [window.agentPhaseFixture.monitor(1)];
+            runtime.monitors = [window.monitor(1)];
           }
-          window.agentPhaseFixture.setData({ threads, runtime });
+          window.setData({ threads, runtime });
         },
         { kind, count },
       );
@@ -278,8 +235,8 @@ test("agent phase browser", async ({ page: runnerPage }) => {
       const box = await phase.boundingBox();
       const anchor = await page.locator("#anchor").boundingBox();
       await change("mixed");
-      assert.equal((await phase.boundingBox())?.height, box?.height);
-      assert.equal((await page.locator("#anchor").boundingBox())?.y, anchor?.y);
+      assert.equal((await phase.boundingBox())!.height, box!.height);
+      assert.equal((await page.locator("#anchor").boundingBox())!.y, anchor!.y);
       assert(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
@@ -298,15 +255,15 @@ test("agent phase browser", async ({ page: runnerPage }) => {
           .evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
       );
       assert.equal(
-        (await page.locator("#anchor").boundingBox())?.y,
-        anchor?.y,
+        (await page.locator("#anchor").boundingBox())!.y,
+        anchor!.y,
         "Open details cannot move the transcript",
       );
       await page.screenshot({ path: join(evidence, `waiting-${width}.png`) });
       await summary.click();
       await change("agent", 99);
-      assert.equal((await phase.boundingBox())?.height, box?.height);
-      assert.equal((await page.locator("#anchor").boundingBox())?.y, anchor?.y);
+      assert.equal((await phase.boundingBox())!.height, box!.height);
+      assert.equal((await page.locator("#anchor").boundingBox())!.y, anchor!.y);
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.deepEqual(await animation(), ["none", "none", "none"]);
@@ -330,11 +287,7 @@ test("agent phase browser", async ({ page: runnerPage }) => {
       await phase.evaluate((node) =>
         node
           .getAnimations({ subtree: true })
-          .map((animation) =>
-            animation instanceof CSSAnimation
-              ? animation.animationName
-              : undefined,
-          ),
+          .map((animation) => (animation as CSSAnimation).animationName),
       ),
       [],
     );

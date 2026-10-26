@@ -7,7 +7,6 @@ import {
   chatWaitState,
   chatIndicators,
 } from "../../src/components/chat-status/chatStatusModel.ts";
-import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import type {
   Agent,
   BackgroundTask,
@@ -19,13 +18,11 @@ import "../../src/workspace-layout.css";
 
 declare global {
   interface Window {
-    agentPhaseFixture: {
-      base: Agent;
-      worker: (index: number) => Agent;
-      command: (index: number) => BackgroundTask;
-      monitor: (index: number) => Monitor;
-      setData: (value: Pick<Snapshot, "threads" | "runtime">) => void;
-    };
+    base: Agent;
+    worker: (index: number) => Agent;
+    command: (index: number) => BackgroundTask;
+    monitor: (index: number) => Monitor;
+    setData: (value: PhaseSnapshot) => void;
   }
 }
 const lead = {
@@ -37,45 +34,46 @@ const lead = {
   inFlight: false,
   epoch: 2,
 } satisfies Agent;
-window.agentPhaseFixture = {
-  base: lead,
-  worker: (i) => ({
-    ...lead,
-    id: "child-" + i,
-    name: "Worker " + i,
-    parentId: "lead",
-    status: "running",
-    inFlight: true,
-  }),
-  command: (i) => ({
-    id: "cmd-" + i,
-    agent: "lead",
-    kind: "command",
-    command: "npm run check " + i,
-    status: "running",
-    epoch: 2,
-  }),
-  monitor: (i) => ({
-    id: "monitor-" + i,
-    agent: "lead",
-    command: "watch build " + i,
-    status: "running",
-    epoch: 2,
-  }),
-  setData: () => {},
+window.base = lead;
+window.worker = (i) => ({
+  ...lead,
+  id: "child-" + i,
+  name: "Worker " + i,
+  parentId: "lead",
+  status: "running",
+  inFlight: true,
+});
+window.command = (i) => ({
+  id: "cmd-" + i,
+  agent: "lead",
+  kind: "command",
+  command: "npm run check " + i,
+  status: "running",
+  epoch: 2,
+});
+window.monitor = (i) => ({
+  id: "monitor-" + i,
+  agent: "lead",
+  command: "watch build " + i,
+  status: "running",
+  epoch: 2,
+});
+export type PhaseSnapshot = Pick<Snapshot, "threads"> & {
+  runtime: Pick<Snapshot["runtime"], "requests" | "tasks" | "monitors">;
 };
-const initial = snapshotFixture([
-  lead,
-  window.agentPhaseFixture.worker(1),
-  window.agentPhaseFixture.worker(2),
-]);
+const initial: PhaseSnapshot = {
+  threads: [lead, window.worker(1), window.worker(2)],
+  runtime: { requests: [], tasks: [], monitors: [] },
+};
+// The one-off waiting-state fixture omits unrelated snapshot fields and runtime collections.
+function phaseSnapshot(value: unknown): Snapshot {
+  return value as Snapshot;
+}
 function Fixture() {
-  const [data, setData] =
-    useState<Pick<Snapshot, "threads" | "runtime">>(initial);
-  window.agentPhaseFixture.setData = (value) => flushSync(() => setData(value));
-  const agent = data.threads[0];
-  if (!agent) throw new Error("Missing agent phase lead");
-  const full = { ...initial, ...data };
+  const [data, setData] = useState<PhaseSnapshot>(initial);
+  window.setData = (value) => flushSync(() => setData(value));
+  const agent = data.threads[0]!;
+  const full = phaseSnapshot(data);
   const wait = chatWaitState(full, agent);
   const indicator = chatIndicators(full).get(agent.id);
   return (
@@ -88,6 +86,5 @@ function Fixture() {
     </main>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing agent phase root");
+const root = document.getElementById("root")!;
 createRoot(root).render(<Fixture />);

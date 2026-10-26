@@ -27,7 +27,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     },
   });
   let errors = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     errors += chunk;
   });
   try {
@@ -42,8 +42,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     const other = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     );
-    if (!lead?.name || !other?.name)
-      throw new Error("Missing named fixture leads");
+
     for (const scheme of ["light", "dark"] as const) {
       for (const width of [390, 320]) {
         const context = await browser.newContext({
@@ -58,7 +57,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
             localStorage.setItem("mantine-color-scheme-value", scheme);
             localStorage.setItem("codex-mobile-opened", JSON.stringify(lead));
           },
-          { scheme, lead: lead.id },
+          { scheme, lead: lead!.id },
         );
         await page.goto(origin);
         const board = page.locator("#sidebar");
@@ -71,19 +70,19 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
           board.locator('.chat-row[aria-current="true"]'),
         ).toHaveCount(0);
         await expect(page.locator("#conversation-title")).not.toContainText(
-          lead.name,
+          lead!.name!,
         );
         await page.screenshot({
           path: join(evidence, `phone-home-${scheme}-${width}.png`),
         });
         const strip = board
           .locator(".sidebar-project .chat-row")
-          .filter({ hasText: lead.name })
+          .filter({ hasText: lead!.name! })
           .first();
         await strip.click();
         await expect(board).toBeHidden();
         await expect(page.locator("#conversation-title")).toContainText(
-          lead.name,
+          lead!.name!,
         );
         const back = page.getByRole("button", {
           name: "Back to chats",
@@ -107,14 +106,14 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
           page.getByRole("button", { name: "Chat actions", exact: true }),
         ).toHaveCount(0);
         await expect(
-          board.locator(".chat-row").filter({ hasText: lead.name }).first(),
+          board.locator(".chat-row").filter({ hasText: lead!.name! }).first(),
         ).toBeFocused();
         const activeMenu = strip.locator("..").locator(".row-actions");
         await expect(activeMenu).toHaveCSS("opacity", "1");
         const target = await activeMenu.boundingBox();
-        if (!target) throw new Error("Missing active menu bounds");
-        expect(target.width).toBeGreaterThanOrEqual(44);
-        expect(target.height).toBeGreaterThanOrEqual(44);
+
+        expect(target!.width).toBeGreaterThanOrEqual(44);
+        expect(target!.height).toBeGreaterThanOrEqual(44);
         await strip.click();
         await expect(page.locator(".workspace-frame")).not.toHaveAttribute(
           "inert",
@@ -137,27 +136,29 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
             window.dispatchEvent(
               new PageTransitionEvent("pageshow", { persisted: true }),
             );
-            Reflect.deleteProperty(document, "visibilityState");
+            delete (
+              document as { visibilityState?: Document["visibilityState"] }
+            ).visibilityState;
           })(),
         );
         await expect(board).toBeHidden();
         await expect(page.locator("#conversation-title")).toContainText(
-          lead.name,
+          lead!.name!,
         );
         await expect(page.locator("#message")).toHaveValue("Saved phone draft");
         await back.click();
         await board
           .locator(".sidebar-project .chat-row")
-          .filter({ hasText: other.name })
+          .filter({ hasText: other!.name! })
           .first()
           .click();
         await expect(board).toBeHidden();
         await expect(page.locator("#conversation-title")).toContainText(
-          other.name,
+          other!.name!,
         );
         await back.click();
         await expect(
-          board.locator(".chat-row").filter({ hasText: other.name }).first(),
+          board.locator(".chat-row").filter({ hasText: other!.name! }).first(),
         ).toBeFocused();
         await page.reload();
         await expect(board).toBeInViewport({ ratio: 1 });
@@ -181,11 +182,11 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
             detail: { agentId, section: "messages" },
           }),
         ),
-      other.id,
+      other!.id,
     );
     await expect(classic.locator("#sidebar")).toBeHidden();
     await expect(classic.locator("#conversation-title")).toContainText(
-      other.name,
+      other!.name!,
     );
     await classic
       .getByRole("button", { name: "Back to chats", exact: true })
@@ -193,7 +194,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     await expect(
       classic
         .locator("#sidebar .chat-row")
-        .filter({ hasText: other.name })
+        .filter({ hasText: other!.name! })
         .first(),
     ).toBeFocused();
     await classic.close();
@@ -223,12 +224,12 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     await expect(combinedBoard).toBeInViewport({ ratio: 1 });
     const combinedStrip = combinedBoard
       .locator(".sidebar-project .chat-row")
-      .filter({ hasText: lead.name })
+      .filter({ hasText: lead!.name! })
       .first();
     await combinedStrip.click();
     await expect(combinedBoard).toBeHidden();
     await expect(combined.locator("#conversation-title")).toContainText(
-      lead.name,
+      lead!.name!,
     );
     await combined
       .getByRole("button", { name: "Back to chats", exact: true })
@@ -242,7 +243,10 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
       combined.getByRole("button", { name: "Chat actions", exact: true }),
     ).toHaveCount(0);
     await expect(
-      combinedBoard.locator(".chat-row").filter({ hasText: lead.name }).first(),
+      combinedBoard
+        .locator(".chat-row")
+        .filter({ hasText: lead!.name! })
+        .first(),
     ).toBeFocused();
     await combinedStrip.click();
     await expect(combinedBoard).toBeHidden();
@@ -260,11 +264,11 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
           `codex-desktop-opened:${stateDir}`,
           JSON.stringify(id),
         ),
-      { stateDir: snapshot.stateDir, id: lead.id },
+      { stateDir: snapshot.stateDir, id: lead!.id },
     );
     await desktop.goto(origin);
     await expect(desktop.locator("#conversation-title")).toContainText(
-      lead.name,
+      lead!.name!,
     );
     await expect(
       desktop.getByRole("button", {
@@ -274,7 +278,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     ).toBeVisible();
     await desktop.reload();
     await expect(desktop.locator("#conversation-title")).toContainText(
-      lead.name,
+      lead!.name!,
     );
     await desktop.close();
     console.log(

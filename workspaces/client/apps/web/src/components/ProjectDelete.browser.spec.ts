@@ -58,7 +58,7 @@ for (const width of [320, 1200]) {
         const item = page.getByRole("menuitem", { name: "Delete project…" });
         await expect(item).toBeVisible();
         if (width === 320)
-          expect((await item.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+          expect((await item.boundingBox())!.height).toBeGreaterThanOrEqual(44);
         await item.focus();
         await page.keyboard.press("Enter");
         const dialog = page.getByRole("dialog", {
@@ -71,57 +71,43 @@ for (const width of [320, 1200]) {
         await dialog
           .getByRole("button", { name: "Cancel", exact: true })
           .click();
-        expect(
-          await page.evaluate(() => window.projectDeleteFixture.posts),
-        ).toEqual([]);
+        expect(await page.evaluate(() => window.posts)).toEqual([]);
         await options.focus();
         await page.keyboard.press("Enter");
         await page.getByRole("menuitem", { name: "Delete project…" }).click();
         await page.evaluate(() => {
-          window.projectDeleteFixture.fail = true;
+          window.fail = true;
         });
         // Two clicks in one task exercise the synchronous intention lock before React commits.
         await dialog
           .getByRole("button", { name: "Delete project", exact: true })
           .evaluate((button) => {
-            if (!(button instanceof HTMLButtonElement))
-              throw new Error("Missing deletion button");
-            button.click();
-            button.click();
+            (button as HTMLButtonElement).click();
+            (button as HTMLButtonElement).click();
           });
         const unknown = page.getByRole("dialog", {
           name: "Delete result unconfirmed",
         });
         await expect(unknown).toBeVisible();
-        expect(
-          await page.evaluate(() => window.projectDeleteFixture.posts.length),
-        ).toBe(1);
+        expect(await page.evaluate(() => window.posts.length)).toBe(1);
         if (variant !== "?empty")
-          expect(
-            await page.evaluate(() => window.projectDeleteFixture.suspended),
-          ).toContain("lead");
-        expect(
-          await page.evaluate(() => window.projectDeleteFixture.finished),
-        ).toEqual([]);
-        await page.evaluate(() => window.projectDeleteFixture.retire());
+          expect(await page.evaluate(() => window.suspended)).toContain("lead");
+        expect(await page.evaluate(() => window.finished)).toEqual([]);
+        await page.evaluate(() => window.retire());
         await expect(options).toHaveCount(0);
         await expect(unknown).toBeVisible();
         await page.evaluate(() => {
-          window.projectDeleteFixture.fail = false;
+          window.fail = false;
         });
         await unknown
           .getByRole("button", { name: "Recover saved request" })
           .click();
         await expect(unknown).toHaveCount(0);
-        const posts = await page.evaluate(
-          () => window.projectDeleteFixture.posts,
-        );
+        const posts = await page.evaluate(() => window.posts);
         expect(posts).toHaveLength(2);
         expect(posts[1]).toEqual(posts[0]);
         if (variant === "?logical")
-          expect(
-            await page.evaluate(() => window.projectDeleteFixture.owner),
-          ).toBe("owner");
+          expect(await page.evaluate(() => window.owner)).toBe("owner");
         expect(
           await page.evaluate(
             () => document.documentElement.scrollWidth <= innerWidth,

@@ -47,9 +47,7 @@ test("native model group has one Tab stop and ArrowUp wraps from the selected mo
       page.getByText("Available Opus model", { exact: true }),
     ).toBeVisible();
     await resolved.selectOption("default");
-    expect(
-      await page.evaluate(() => window.nativeModelFixture.compactAlias),
-    ).toBe("default");
+    expect(await page.evaluate(() => window.compactAlias)).toBe("default");
 
     await expect(page.locator("#model")).toBeVisible();
     if (process.env.NATIVE_MODEL_SCREENSHOTS) {

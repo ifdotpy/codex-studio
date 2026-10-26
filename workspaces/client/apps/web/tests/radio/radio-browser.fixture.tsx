@@ -1,21 +1,18 @@
 declare global {
   interface Window {
-    radioFixture: {
-      radio: () => NonNullable<Room["radio"]>;
-      setRoom: React.Dispatch<React.SetStateAction<Room>>;
-      currentRoom: Room;
-      opened: string | null;
-      refreshCalls: number;
-      holdRefresh: boolean;
-      releaseRefresh?: () => void;
-      rejectRefresh?: (reason: Error) => void;
-      failRefresh: boolean;
-      notifications: string[];
-    };
+    radio: () => NonNullable<Room["radio"]>;
+    setRoom: React.Dispatch<React.SetStateAction<Room>>;
+    currentRoom: Room;
+    radioOpened: string | null;
+    refreshCalls: number;
+    holdRefresh: boolean;
+    releaseRefresh: () => void | undefined;
+    rejectRefresh: (reason: Error) => void | undefined;
+    failRefresh: boolean;
+    notifications: string[];
   }
 }
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing radio fixture root");
+const rootElement = document.getElementById("root")!;
 import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import type { Room, Snapshot, PeerTeam } from "../../src/types.ts";
 import { radioRoom } from "./radio-fixture.ts";
@@ -61,20 +58,13 @@ const initial: Snapshot = {
   ],
   runtime: { ...snapshotFixture().runtime, requests: [], peerTeams: [team] },
 };
-window.radioFixture = {
-  radio: () => {
-    const state = window.radioFixture.currentRoom.radio;
-    if (!state) throw new Error("Missing radio state");
-    return state;
-  },
-  setRoom: () => {},
-  currentRoom: room,
-  opened: null,
-  refreshCalls: 0,
-  holdRefresh: false,
-  failRefresh: false,
-  notifications: [],
+window.radio = () => {
+  const state = window.currentRoom.radio;
+  if (!state) throw new Error("Missing radio state");
+  return state;
 };
+window.setRoom = () => {};
+window.radioOpened = null;
 function Fixture() {
   const [data] = useState<Snapshot>(initial);
   const [value, setRoom] = useState(room);
@@ -107,18 +97,17 @@ function Fixture() {
       listeners.current.get(session)?.forEach((listener) => listener());
   };
   const [roomId, setRoomId] = useState<string | undefined>(undefined);
-  window.radioFixture.setRoom = setRoom;
-  window.radioFixture.currentRoom = value;
-  window.radioFixture.opened = null;
+  window.setRoom = setRoom;
+  window.currentRoom = value;
+  window.radioOpened = null;
   const refresh = async () => {
-    window.radioFixture.refreshCalls =
-      (window.radioFixture.refreshCalls || 0) + 1;
-    if (window.radioFixture.holdRefresh)
+    window.refreshCalls = (window.refreshCalls || 0) + 1;
+    if (window.holdRefresh)
       await new Promise<void>((resolve, reject) => {
-        window.radioFixture.releaseRefresh = resolve;
-        window.radioFixture.rejectRefresh = reject;
+        window.releaseRefresh = resolve;
+        window.rejectRefresh = reject;
       });
-    if (window.radioFixture.failRefresh) throw Error("Refresh failed");
+    if (window.failRefresh) throw Error("Refresh failed");
     const response = await fetch("/snapshot");
     setRoom(radioRoom(await response.json()));
     setRoomId("radio:t");
@@ -141,7 +130,7 @@ function Fixture() {
           edit={() => {}}
           dissolve={() => {}}
           roomId={roomId}
-          openRoom={(id) => (window.radioFixture.opened = id)}
+          openRoom={(id) => (window.radioOpened = id)}
           refresh={refresh}
         >
           <></>
@@ -153,9 +142,7 @@ function Fixture() {
           subscribeDraft={subscribeDraft}
           setDraft={setDraft}
           refresh={refresh}
-          notify={(error) =>
-            (window.radioFixture.notifications ??= []).push(error)
-          }
+          notify={(error) => (window.notifications ??= []).push(error)}
         />
       </div>
     </MantineProvider>

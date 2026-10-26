@@ -1,6 +1,5 @@
 import type { Agent } from "../../src/types.ts";
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing model fixture root");
+const rootElement = document.getElementById("root")!;
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, ActionIcon, Textarea } from "@mantine/core";
@@ -76,7 +75,7 @@ function Fixture() {
   return (
     <MantineProvider
       theme={theme}
-      forceColorScheme={query.get("theme") === "light" ? "light" : "dark"}
+      forceColorScheme={(query.get("theme") || "dark") as "light" | "dark"}
     >
       <ModelCatalogReader.Provider value={reader}>
         <main

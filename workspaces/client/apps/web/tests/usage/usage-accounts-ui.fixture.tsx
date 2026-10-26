@@ -10,19 +10,13 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import type { UsageAccount } from "../../src/components/Usage.tsx";
-import { createServerServices } from "../../src/servers/serverServices.ts";
+import type { ServerServices } from "../../src/servers/serverServices.ts";
 import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import Usage from "../../src/components/Usage.tsx";
 import { ServerServicesProvider } from "../../src/servers/ServerServicesContext.tsx";
 import * as sync from "../../src/sync/client.ts";
-const baseServices = createServerServices({
-  id: "local",
-  label: "Fixture",
-  origin: location.origin,
-});
-const services = {
-  ...baseServices,
-  owner: { id: "fixture", label: "Fixture", origin: location.origin },
+const services = partialUsageServices({
+  owner: { id: "fixture", origin: location.origin, credentialId: null },
   sync: {
     ...sync,
     subscribeStateProjection(
@@ -41,7 +35,11 @@ const services = {
       return () => {};
     },
   },
-};
+});
+// Base usage services omit unrelated capabilities and the owner label.
+function partialUsageServices(value: unknown): ServerServices {
+  return value as ServerServices;
+}
 import { accountLimitFixtures } from "../../src/components/AccountLimits.fixtures.ts";
 import { theme } from "../../src/theme.ts";
 const now = Number(new URLSearchParams(location.search).get("now"));
@@ -96,27 +94,22 @@ const teamLimits = {
 };
 declare global {
   interface Window {
-    usageAccountsFixture: {
-      heartbeats: number;
-      reloadCalls: [string, boolean][];
-    };
+    heartbeats: number;
+    reloadCalls: [string, boolean][];
   }
 }
-window.usageAccountsFixture = { heartbeats: 0, reloadCalls: [] };
+window.heartbeats = 0;
+window.reloadCalls = [];
 const NativeEventSource = window.EventSource;
 window.EventSource = class extends NativeEventSource {
   constructor(...args: ConstructorParameters<typeof NativeEventSource>) {
     super(...args);
-    this.addEventListener(
-      "heartbeat",
-      () => window.usageAccountsFixture.heartbeats++,
-    );
+    this.addEventListener("heartbeat", () => window.heartbeats++);
   }
 };
-window.usageAccountsFixture.reloadCalls = [];
+window.reloadCalls = [];
 const scheme = new URLSearchParams(location.search).get("scheme");
-if (scheme !== null && scheme !== "light" && scheme !== "dark")
-  throw new Error("Invalid fixture color scheme");
+
 function Fixture() {
   const [multi] = useState(location.search.includes("multi"));
   const [teamReady, setTeamReady] = useState(false);
@@ -131,7 +124,7 @@ function Fixture() {
           limits: ownLimits,
           loading: false,
           reload: (force = false) => {
-            window.usageAccountsFixture.reloadCalls.push(["own", force]);
+            window.reloadCalls.push(["own", force]);
           },
         },
         ...(multi
@@ -145,7 +138,7 @@ function Fixture() {
                 limits: teamReady ? teamLimits : null,
                 loading: false,
                 reload: (force = false) => {
-                  window.usageAccountsFixture.reloadCalls.push(["team", force]);
+                  window.reloadCalls.push(["team", force]);
                   if (!teamReady) setTeamReady(true);
                 },
               },
@@ -166,10 +159,7 @@ function Fixture() {
                 },
                 loading: false,
                 reload: (force = false) => {
-                  window.usageAccountsFixture.reloadCalls.push([
-                    "claude",
-                    force,
-                  ]);
+                  window.reloadCalls.push(["claude", force]);
                 },
               },
               {
@@ -188,10 +178,7 @@ function Fixture() {
                 },
                 loading: false,
                 reload: (force = false) => {
-                  window.usageAccountsFixture.reloadCalls.push([
-                    "unnamed",
-                    force,
-                  ]);
+                  window.reloadCalls.push(["unnamed", force]);
                 },
               },
             ] satisfies UsageAccount[])
@@ -225,7 +212,7 @@ function Fixture() {
           limits={ownLimits}
           accountLabel="own@example.test"
           reload={() => {
-            window.usageAccountsFixture.reloadCalls.push(["fallback", true]);
+            window.reloadCalls.push(["fallback", true]);
           }}
           opened={true}
           onChange={() => {}}
