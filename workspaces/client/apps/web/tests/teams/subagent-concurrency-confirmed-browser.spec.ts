@@ -1,6 +1,6 @@
 import type { components } from "../../src/generated/api.ts";
 import type {} from "./subagent-concurrency-confirmed-browser.fixture.tsx";
-import { required } from "./helpers.ts";
+import { required, fixturePostBody } from "./helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -84,7 +84,7 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
     }),
   );
   await page.route("**/api/conversation", async (route) => {
-    writes.push(route.request().postDataJSON());
+    writes.push(fixturePostBody(route, "/api/conversation"));
     await new Promise<void>((resolve) => (releaseReply = resolve));
     await route.fulfill({
       headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },

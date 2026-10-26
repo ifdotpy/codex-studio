@@ -1,5 +1,5 @@
 import type { TestAgent } from "../playwright.ts";
-import { required } from "./helpers.ts";
+import { required, fixturePostBody } from "./helpers.ts";
 import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
@@ -42,10 +42,12 @@ test("Team panel ui", async ({
       actions = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/action", (route) => {
-      actions.push(route.request().postDataJSON());
+      actions.push(fixturePostBody(route, "/api/action"));
       return route.fulfill({
         json: {
-          receipt: { requestId: route.request().postDataJSON().request_id },
+          receipt: {
+            requestId: fixturePostBody(route, "/api/action").request_id,
+          },
           outcome: { status: "acknowledged" },
         },
       });

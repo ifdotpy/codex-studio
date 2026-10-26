@@ -5,7 +5,7 @@ declare global {
 }
 import type { Page, BrowserContext, TestInfo } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
-import { required } from "./helpers.ts";
+import { required, fixturePostBody, fixturePostResult } from "./helpers.ts";
 import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
@@ -116,9 +116,8 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     let loseNextReply = false,
       raceNextRequest = false;
     await page.route("**/api/conversation", async (route) => {
-      const body: components["schemas"]["ConversationRequest"] = route
-        .request()
-        .postDataJSON();
+      const body: components["schemas"]["ConversationRequest"] =
+        fixturePostBody(route, "/api/conversation");
       if (body.subagent_concurrency === undefined && !body.agent_mode)
         return route.continue();
       writes.push(body);
@@ -141,9 +140,12 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           }),
         });
         assert.equal(response.status, 200);
-        const competingUpdate = await response.json();
+        const competingUpdate = await fixturePostResult(
+          response,
+          "/api/conversation",
+        );
         assert.equal(competingUpdate.concurrency, 8);
-        assert.ok(competingUpdate._syncEntities?.length);
+        assert.ok(legacySyncEntities(competingUpdate)?.length);
       }
       if (loseNextReply) {
         loseNextReply = false;
@@ -301,6 +303,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         );
         if (!key) throw Error("No scoped setting record");
         if (!key) throw Error("Missing stored setting");
+        if (!key) throw Error("Missing stored setting");
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -432,7 +435,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         }),
       });
       assert.equal(response.status, 200);
-      return response.json();
+      return fixturePostResult(response, "/api/conversation");
     };
     const assertRollingUpgrade = async ({
       mode,
@@ -510,7 +513,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         await route.fulfill({ response, json: projection });
       });
       await rollingPage.route("**/api/conversation", async (route) => {
-        const body = route.request().postDataJSON();
+        const body = fixturePostBody(route, "/api/conversation");
         if (body.subagent_concurrency !== undefined || body.agent_mode)
           rollingWrites.push(body);
         await route.continue();
@@ -601,7 +604,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         resolveUpgradeResponse = resolve;
       });
       await upgradedPage.route("**/api/conversation", async (route) => {
-        const body = route.request().postDataJSON();
+        const body = fixturePostBody(route, "/api/conversation");
         if (body.subagent_concurrency !== undefined || body.agent_mode) {
           upgradedWrites.push(body);
           const response = await route.fetch();
@@ -658,6 +661,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           key.startsWith("studio-agent-mode:") &&
           JSON.parse(key.slice("studio-agent-mode:".length))[2] === id,
       );
+      if (!key) throw Error("Missing stored setting");
       localStorage.setItem(key, "{bad json");
     }, lead.id);
     await page.reload();

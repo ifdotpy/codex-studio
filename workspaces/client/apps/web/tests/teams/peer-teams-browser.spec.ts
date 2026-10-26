@@ -5,7 +5,7 @@ type PeerRequest =
   | components["schemas"]["PeerTeamDeleteRequest"]
   | components["schemas"]["PeerTeamSaveRequest"];
 import type {} from "./peer-teams-browser.fixture.tsx";
-import { required } from "./helpers.ts";
+import { required, fixturePostBody } from "./helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { apiSchemaHeaders, test } from "../playwright.ts";
 import assert from "node:assert/strict";
@@ -51,7 +51,13 @@ test("Peer teams browser", async ({
     await page.route("**/snapshot", (r) => r.fulfill({ json: state }));
     const applied = new Map<string, PeerRequest>();
     await page.route("**/api/peer-teams", async (route) => {
-      const body: PeerRequest = route.request().postDataJSON();
+      const body = fixturePostBody(route, "/api/peer-teams");
+      if (
+        body.action !== "move" &&
+        body.action !== "delete" &&
+        body.action !== "save"
+      )
+        throw Error("Unexpected peer team request");
       requests.push(body);
       if (mode === "stale")
         return route.fulfill({
@@ -82,7 +88,7 @@ test("Peer teams browser", async ({
             ? []
             : [
                 {
-                  id: body.team_id,
+                  id: required(body.team_id),
                   name: body.name,
                   projectPath: body.path,
                   members: body.members,
