@@ -1183,7 +1183,7 @@ function Profiles(c: Context) {
               try {
                 await c.run("/api/profiles", {
                   action: "save",
-                  ...(typeof draft.id === "string" ? { id: draft.id } : {}),
+                  id: typeof draft.id === "string" ? draft.id : undefined,
                   isNew: draft.isNew === true,
                   name: typeof draft.name === "string" ? draft.name : "",
                   role: draft.role === "reviewer" ? "reviewer" : "implementer",
@@ -1284,7 +1284,7 @@ function Profiles(c: Context) {
             setBusy(true);
             try {
               await c.run("/api/profiles", {
-                ...(remove?.id === undefined ? {} : { id: remove.id }),
+                id: remove?.id,
                 action: "delete",
                 role: remove?.role ?? "reviewer",
                 instructions: remove?.instructions ?? "",
@@ -1776,25 +1776,18 @@ export function ruleBodyFromDraft(
     action: "save",
     name: draft.name,
     kind: draft.kind,
-    ...(draft.kind === "interval"
-      ? { intervalSeconds: Number(draft.intervalSeconds) }
-      : {}),
-    ...(draft.kind === "low_workers"
-      ? { minimumWorkers: Number(draft.minimumWorkers) }
-      : {}),
-    ...(draft.kind === "low_workers"
-      ? { durationMinutes: Number(draft.durationMinutes) }
-      : {}),
+    intervalSeconds:
+      draft.kind === "interval" ? Number(draft.intervalSeconds) : undefined,
+    minimumWorkers:
+      draft.kind === "low_workers" ? Number(draft.minimumWorkers) : undefined,
+    durationMinutes:
+      draft.kind === "low_workers" ? Number(draft.durationMinutes) : undefined,
     stallTimeoutSeconds: Number(draft.stallTimeoutSeconds),
-    ...(draft.kind === "once"
-      ? { at: new Date(draft.at).getTime() / 1000 }
-      : {}),
-    ...(draft.kind === "file" ? { path: draft.path } : {}),
-    ...(draft.kind === "event" ? { event: draft.event } : {}),
+    at: draft.kind === "once" ? new Date(draft.at).getTime() / 1000 : undefined,
+    path: draft.kind === "file" ? draft.path : undefined,
+    event: draft.kind === "event" ? draft.event : undefined,
     command: draft.kind === "low_workers" ? "" : draft.command,
-    ...(draft.kind === "file"
-      ? { livenessCommand: draft.livenessCommand }
-      : {}),
+    livenessCommand: draft.kind === "file" ? draft.livenessCommand : undefined,
     text: draft.text,
   };
 }
