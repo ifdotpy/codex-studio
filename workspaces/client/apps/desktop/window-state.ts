@@ -8,18 +8,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { atomicJSON } from "./recovery.ts";
 
-function rectangle(value: unknown): value is Rectangle {
-  if (!value || typeof value !== "object") return false;
-  const fields = value as Record<string, unknown>;
+function rectangle(value: Rectangle | undefined): value is Rectangle {
   return (
-    value &&
+    !!value &&
     ["x", "y", "width", "height"].every((key) =>
-      Number.isSafeInteger(fields[key]),
+      Number.isSafeInteger(value[key as keyof Rectangle]),
     ) &&
-    typeof fields.width === "number" &&
-    fields.width > 0 &&
-    typeof fields.height === "number" &&
-    fields.height > 0
+    value.width > 0 &&
+    value.height > 0
   );
 }
 function windowState(
@@ -27,13 +23,11 @@ function windowState(
   displays: Pick<Display, "workArea">[],
 ) {
   const areas = displays.map((display) => display.workArea).filter(rectangle);
-  const first = areas[0];
-  if (!first) throw new Error("No display work area is available.");
+  if (!areas.length) throw new Error("No display work area is available.");
   const valid = saved?.version === 1 && rectangle(saved.bounds);
-  const bounds =
-    valid && saved?.bounds
-      ? saved.bounds
-      : { x: first.x, y: first.y, width: 1440, height: 960 };
+  const bounds = valid
+    ? saved!.bounds!
+    : { x: areas[0].x, y: areas[0].y, width: 1440, height: 960 };
   const overlap = (area: Rectangle) =>
     Math.max(
       0,
@@ -54,10 +48,10 @@ function windowState(
     );
   };
   const area = valid
-    ? ([...areas].sort(
+    ? [...areas].sort(
         (a, b) => overlap(b) - overlap(a) || distance(a) - distance(b),
-      )[0] ?? first)
-    : first;
+      )[0]
+    : areas[0];
   const minWidth = Math.min(420, area.width),
     minHeight = Math.min(600, area.height);
   const width = Math.max(minWidth, Math.min(bounds.width, area.width));
@@ -88,11 +82,12 @@ function loadWindowState(
     saved = JSON.parse(
       fs.readFileSync(path.join(profile, "window-state.json"), "utf8"),
     );
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
-    if (error.code !== "ENOENT")
-      console.error("Cannot read saved window bounds:", error.message);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      console.error(
+        "Cannot read saved window bounds:",
+        (error as NodeJS.ErrnoException).message,
+      );
   }
   return windowState(saved, displays);
 }
@@ -123,20 +118,24 @@ function trackWindowState(
     if (!rectangle(bounds)) return;
     try {
       atomicJSON(filename, { version: 1, bounds, maximized });
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
-      console.error("Cannot save window bounds:", error.message);
+    } catch (error) {
+      console.error(
+        "Cannot save window bounds:",
+        (error as NodeJS.ErrnoException).message,
+      );
     }
   };
   const schedule = () => {
     if (!timer) timer = setTimeout(save, 100);
   };
-  win.on("move", schedule);
-  win.on("resize", schedule);
-  win.on("maximize", schedule);
-  win.on("unmaximize", schedule);
-  win.on("leave-full-screen", schedule);
+  for (const event of [
+    "move",
+    "resize",
+    "maximize",
+    "unmaximize",
+    "leave-full-screen",
+  ])
+    win.on(event, schedule);
   win.on("close", save);
   app.on("before-quit", save);
   win.on("closed", () => {
