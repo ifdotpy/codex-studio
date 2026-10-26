@@ -219,6 +219,12 @@ async fn a_worker_question_gets_the_orchestrator_refusal() {
 async fn an_approval_card_carries_the_user_decision_and_resolution_closes_another() {
     let state = State::new().await;
     let (mut peer, mut worker) = running(&state).await;
+    // This witness exercises Ask; Full now accepts native tool approvals live.
+    let actor = state.agent.clone();
+    state.bridge.store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.yoloMode',json('false')) WHERE id=?1", [&actor])?;
+        Ok(())
+    }).await.unwrap();
     peer.frame(approval("claude:approval-1")).await;
     let card = card_of(&state, &mut peer, "claude:approval-1").await;
     callbacks_retired(&state).await;
@@ -356,6 +362,66 @@ async fn a_new_provider_generation_expires_the_old_question() {
     assert_eq!(
         status_of(&state, card["id"].as_str().unwrap()).await,
         "expired"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_permissions_codex_next_turn_reads_the_saved_ask_policy() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let full = state.start(&mut peer, &worker).await;
+    assert_eq!(full["params"]["approvalPolicy"], "never");
+    assert_eq!(full["params"]["sandboxPolicy"]["type"], "dangerFullAccess");
+    let actor = state.agent.clone();
+    state.bridge.store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.yoloMode',json('false')) WHERE id=?1", [&actor])?;
+        Ok(())
+    }).await.unwrap();
+    finish_turn(&state, &mut peer, &full).await;
+    let mut ask = first_request_after_wake(&state, &mut peer, &worker).await;
+    if ask["method"] == "thread/resume" {
+        peer.reply(&ask, json!({"thread":{"id":"fake-thread-0"}}))
+            .await;
+        ask = peer.write("turn/start").await;
+    }
+    assert_eq!(ask["method"], "turn/start");
+    assert_eq!(ask["params"]["approvalPolicy"], "on-request");
+    assert_eq!(ask["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+    finish_turn(&state, &mut peer, &ask).await;
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn live_permissions_claude_rejection_keeps_confirmed_rollback_evidence() {
+    use crate::claude_controls::{
+        ControlError,
+        service::{ControlScope, ControlSession},
+    };
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let session = worker.claude_session().unwrap();
+    let scope = ControlScope {
+        agent: state.agent.clone(),
+        epoch: state.epoch.try_into().unwrap(),
+        request_id: Some("live-failure".into()),
+    };
+    let task = tokio::spawn(async move {
+        session
+            .call_scoped(
+                scope,
+                "claude/settings",
+                json!({"threadId":"fake-thread-0","settings":{"permissionMode":"plan"}}),
+            )
+            .await
+    });
+    let request = peer.write("claude/settings").await;
+    let cursor = peer.frame(json!({"id":request["id"],"error":{"code":-32000,"message":"fixture live apply failed","data":{"settingsOutcome":"not_applied"}}})).await;
+    peer.acknowledged(cursor).await;
+    assert!(
+        matches!(task.await.unwrap(), Err(ControlError::SettingsNotApplied(reason)) if reason == "fixture live apply failed")
     );
     worker.shutdown().await.unwrap();
 }

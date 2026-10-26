@@ -249,6 +249,64 @@ async function fixture(
   };
 }
 
+it.each(["overflow", "state hint"])(
+  "persists an ordered %s without reconnecting the source",
+  async (kind) => {
+    const f = await fixture();
+    f.persist.mockClear();
+    let finish!: () => void;
+    f.persist.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 2,
+      reason: "change",
+      resources: [{ kind: "state" }],
+      resourceVersions: [
+        {
+          revision: 2,
+          cursor: { workspaceId: "workspace", seq: 2 },
+          replyKind: "snapshot",
+          entityChanges: { after: 0, through: 2, documents: [] },
+        },
+      ],
+    };
+    const next = {
+      ...first,
+      revision: 3,
+      reason: kind === "overflow" ? "overflow" : "change",
+      resourceVersions:
+        kind === "overflow"
+          ? [
+              {
+                ...first.resourceVersions[0],
+                revision: 3,
+                cursor: { workspaceId: "workspace", seq: 3 },
+                entityChanges: { after: 0, through: 3, documents: [] },
+              },
+            ]
+          : [{ revision: 3 }],
+    };
+    f.source.emit("resources", first);
+    f.source.emit("resources", next);
+    expect(f.source.closed).toBe(false);
+    expect(f.persist).toHaveBeenCalledOnce();
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.persist.mock.calls.map(([event]) => event.revision)).toEqual([
+      2, 3,
+    ]);
+    expect(f.source.closed).toBe(false);
+    expect(f.sources).toHaveLength(1);
+  },
+);
+
 it("publishes each resource event without a listener flush timer", async () => {
   const f = await fixture();
   const listener = vi.fn();
@@ -464,6 +522,7 @@ it("applies split reconnect data beside passive hints without repeating its dura
     resources: [state],
     resourceVersions: [{ revision: 2 }],
   });
+  await vi.advanceTimersByTimeAsync(0);
   expect(f.source.closed).toBe(true);
   await vi.advanceTimersByTimeAsync(1000);
   listener.mockClear();
@@ -726,6 +785,7 @@ it("cancels queued data on removal even if persistence finishes after re-add ack
   const stop = f.transport.watchResourceChanges(resource, vi.fn());
   await vi.advanceTimersByTimeAsync(50);
   f.source.emit("subscriptions", { gen: 1 });
+  f.persist.mockClear();
   let finish!: () => void;
   f.persist.mockImplementationOnce(
     () =>
@@ -836,6 +896,7 @@ it("invalidates pending follower persistence when its last transcript subscriber
   const f = await fixture(true);
   const resource = { kind: "transcript", agentId: "slow-follower" } as const;
   const stop = f.transport.watchResourceChanges(resource, vi.fn());
+  f.persist.mockClear();
   let finish!: () => void;
   f.persist.mockImplementationOnce(
     () =>
@@ -1155,6 +1216,78 @@ it("new-epoch entity fragments publish only after complete persisted staging and
   expect(f.get).not.toHaveBeenCalled();
   expect(f.sources).toHaveLength(1);
 });
+it.each(["interval", "transfer"])(
+  "removing another resource preserves an in-flight %s without recovery",
+  async (kind) => {
+    const f = await fixture();
+    const removed = { kind: "work", agentId: "removed" } as const;
+    const stop = f.transport.watchResourceChanges(removed, vi.fn());
+    await vi.advanceTimersByTimeAsync(50);
+    f.source.emit("subscriptions", { gen: 1 });
+    let finish!: () => void;
+    let current!: () => boolean;
+    const persist = kind === "transfer" ? f.staged : f.persist;
+    persist.mockImplementationOnce((_event, isCurrent) => {
+      current = isCurrent;
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    const fields = {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision: 2,
+      reason: "change",
+    };
+    if (kind === "transfer")
+      f.source.emit("entity-transfer", {
+        ...fields,
+        resource: { kind: "state" },
+        cursor: { workspaceId: "workspace", seq: 2 },
+        replyKind: "snapshot",
+        transferId: "kept",
+        pageIndex: 0,
+        partIndex: 0,
+        partCount: 1,
+        complete: true,
+        data: JSON.stringify({ after: 0, through: 2, documents: [] }),
+      });
+    else
+      f.source.emit("resources", {
+        ...fields,
+        resources: [{ kind: "state" }],
+        resourceVersions: [{ revision: 2 }],
+      });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(current()).toBe(true);
+    if (kind === "transfer")
+      f.source.emit("resources", {
+        ...fields,
+        resources: [removed],
+        resourceVersions: [{ revision: 2 }],
+      });
+    stop();
+    expect(current()).toBe(true);
+    const readded = vi.fn();
+    if (kind === "transfer") {
+      await vi.advanceTimersByTimeAsync(50);
+      f.source.emit("subscriptions", { gen: 2 });
+      f.transport.watchResourceChanges(removed, readded);
+      await vi.advanceTimersByTimeAsync(50);
+      f.source.emit("subscriptions", { gen: 3 });
+    }
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.source.closed).toBe(false);
+    expect(f.sources).toHaveLength(1);
+    expect(readded).not.toHaveBeenCalled();
+    expect(
+      f.posted.filter((message) => message.kind === "resource-recovery"),
+    ).toEqual([]);
+  },
+);
+
 it("a cancelled staging failure cannot close its replacement stream", async () => {
   const f = await fixture();
   let fail!: (error: Error) => void;
@@ -1192,7 +1325,7 @@ it("a cancelled staging failure cannot close its replacement stream", async () =
   expect(f.sources).toHaveLength(2);
 });
 
-it("reopens a terminal with a fresh snapshot after its reset base could not persist", async () => {
+it("reopens a terminal from its durable cursor after its reset write fails", async () => {
   const f = await fixture();
   const resource = { kind: "terminal-output", terminalId: "shell" } as const;
   const cursor = { workspaceId: "workspace", seq: 40 };
@@ -1229,26 +1362,13 @@ it("reopens a terminal with a fresh snapshot after its reset base could not pers
   f.persist.mockRejectedValueOnce(new Error("disk full"));
   f.source.emit("resources", frame(11, "new", 3));
   await vi.advanceTimersByTimeAsync(0);
-  stop();
-  await vi.advanceTimersByTimeAsync(50);
-  f.source.emit("subscriptions", { gen: 2 });
-  stop = f.transport.watchResourceChanges(resource, vi.fn());
-  await vi.advanceTimersByTimeAsync(50);
-  expect(f.post).toHaveBeenLastCalledWith(
-    "/api/sync/subscriptions",
-    expect.objectContaining({ add: [{ resource }] }),
-    expect.anything(),
-  );
-  f.source.emit("subscriptions", { gen: 3 });
-  f.source.onerror?.();
-  await vi.advanceTimersByTimeAsync(10000);
+  expect(f.source.closed).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
   const url = new URL(f.urls.at(-1)!, "http://studio.test");
-  expect(
-    JSON.parse(url.searchParams.get("since") ?? "[]").some(
-      (entry: { resource: unknown }) =>
-        JSON.stringify(entry.resource) === JSON.stringify(resource),
-    ),
-  ).toBe(false);
+  expect(JSON.parse(url.searchParams.get("since") ?? "[]")).toContainEqual({
+    resource,
+    since: cursor,
+  });
   const resumed = f.sources.at(-1)!;
   resumed.emit("session", { sessionId: "session-two" });
   resumed.emit("api-schema", { hash: API_SCHEMA_HASH });
@@ -1270,7 +1390,7 @@ it("reopens a terminal with a fresh snapshot after its reset base could not pers
   quiet.mockRestore();
 });
 
-it("takes terminal ownership with a snapshot and resumes only its proven baseline", async () => {
+it("takes terminal ownership using its durable cursor", async () => {
   const f = await fixture(true);
   const resource = {
     kind: "terminal-output",
@@ -1318,12 +1438,10 @@ it("takes terminal ownership with a snapshot and resumes only its proven baselin
   f.takeOwnership();
   await vi.advanceTimersByTimeAsync(50);
   const coldUrl = new URL(f.urls.at(-1)!, "http://studio.test");
-  expect(
-    JSON.parse(coldUrl.searchParams.get("since") ?? "[]").some(
-      (entry: { resource: unknown }) =>
-        JSON.stringify(entry.resource) === JSON.stringify(resource),
-    ),
-  ).toBe(false);
+  expect(JSON.parse(coldUrl.searchParams.get("since") ?? "[]")).toContainEqual({
+    resource,
+    since: { workspaceId: "workspace", seq: 40 },
+  });
   const owned = f.sources.at(-1)!;
   owned.emit("session", { sessionId: "owned" });
   owned.emit("api-schema", { hash: API_SCHEMA_HASH });
@@ -1564,7 +1682,7 @@ it("the owner coalesces a subscribed peer recovery request into its bounded curs
   expect(f.get).not.toHaveBeenCalled();
 });
 
-it("a failed Work write fences its queued terminal reset before reconnect cursors are read", async () => {
+it("a failed Work write drops its queued terminal reset and resumes durable cursors", async () => {
   const f = await fixture();
   const terminal = {
     kind: "terminal-output",
@@ -1640,7 +1758,7 @@ it("a failed Work write fences its queued terminal reset before reconnect cursor
       (entry: { resource: unknown }) =>
         JSON.stringify(entry.resource) === JSON.stringify(terminal),
     ),
-  ).toBe(false);
+  ).toBe(true);
   quiet.mockRestore();
 });
 
@@ -2386,4 +2504,103 @@ it("connection: foreign, stale and invalid progress cannot heal a replacement st
   expect(replacement.closed).toBe(true);
   expect(status.mock.lastCall?.[0]).toBe("degraded");
   quiet.mockRestore();
+});
+
+it("staged application must not overtake an earlier resource frame", async () => {
+  const f = await fixture();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  let finish!: () => void;
+  f.persist.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const common = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    reason: "change",
+  };
+  f.source.emit("resources", {
+    ...common,
+    revision: 2,
+    resources: [{ kind: "state" }],
+    resourceVersions: [{ revision: 2 }],
+  });
+  f.source.emit("entity-transfer", {
+    ...common,
+    revision: 3,
+    resource: { kind: "state" },
+    cursor: { workspaceId: "workspace", seq: 3 },
+    replyKind: "snapshot",
+    transferId: "later",
+    pageIndex: 0,
+    partIndex: 0,
+    partCount: 1,
+    complete: true,
+    data: JSON.stringify({ after: 0, through: 3, documents: [] }),
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  const early = listener.mock.calls.map(([v]) => v?.revision);
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(early).toEqual([]);
+  expect(listener.mock.calls.map(([value]) => value?.revision)).toEqual([2, 3]);
+  expect(f.source.closed).toBe(false);
+});
+
+it("completed staged intervals retain their pages while queued behind an ordinary frame", async () => {
+  const f = await fixture(false, true, false, false);
+  const published: number[] = [];
+  f.transport.watchResourceChanges({ kind: "state" }, (value) => {
+    if (value) published.push(value.revision);
+  });
+  let release!: () => void;
+  f.persist.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const applied: number[] = [];
+  f.staged.mockImplementation(async (interval) => {
+    for await (const page of interval.pages()) applied.push(page.through);
+  });
+  const common = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    reason: "change",
+  };
+  f.source.emit("resources", {
+    ...common,
+    revision: 1,
+    resources: [{ kind: "state" }],
+    resourceVersions: [{ revision: 1 }],
+  });
+  for (const revision of [2, 3]) {
+    f.source.emit("entity-transfer", {
+      ...common,
+      revision,
+      resource: { kind: "state" },
+      cursor: { workspaceId: "workspace", seq: revision },
+      replyKind: "snapshot",
+      transferId: `interval-${revision}`,
+      pageIndex: 0,
+      partIndex: 0,
+      partCount: 1,
+      complete: true,
+      data: JSON.stringify({ after: 0, through: revision, documents: [] }),
+    });
+  }
+  await vi.advanceTimersByTimeAsync(0);
+  expect(published).toEqual([]);
+  release();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(published).toEqual([1, 2, 3]);
+  expect(applied).toEqual([2, 3]);
+  expect(f.source.closed).toBe(false);
 });

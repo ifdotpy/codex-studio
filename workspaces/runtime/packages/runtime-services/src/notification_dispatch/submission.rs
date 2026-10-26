@@ -23,7 +23,7 @@ pub(super) fn validate_submission(
         || submission.created_at < 0.0
         || !submission.assets.is_array()
     {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     let agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
         .ok_or_else(|| stored("runtime_agents", agent_id))?;
@@ -63,7 +63,7 @@ pub(super) fn validate_submission(
             return Err(stored("runtime_event_meta", &input.id));
         };
         let Some(input_ids) = asset_ids(&input.assets) else {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         };
         if meta_ids != input_ids {
             return Err(stored("runtime_event_meta", &input.id));
@@ -87,12 +87,12 @@ pub(super) fn validate_submission(
     let mut expected_asset_ids = Vec::new();
     for input in &submission.inputs {
         let Some(ids) = asset_ids(&input.assets) else {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         };
         expected_asset_ids.extend(ids);
     }
     if asset_ids(&submission.assets).as_deref() != Some(expected_asset_ids.as_slice()) {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     Ok(())
 }

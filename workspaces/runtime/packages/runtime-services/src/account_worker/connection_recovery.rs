@@ -171,18 +171,16 @@ pub(super) async fn lifecycle_completion(
                 .recover_agent_message_in_transaction(
                     tx, agent, account, generation, turn, item, timestamp,
                 )
-                .map_err(|_| {
-                    crate::notification_dispatch::NotificationDispatchError::InvalidNotification
-                })?
+                .map_err(|_| crate::notification_dispatch::NotificationDispatchError::invalid())?
             else {
                 return Ok(None);
             };
-            let item_id = item["id"].as_str().ok_or(
-                crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
-            )?;
-            let turn_id = turn["id"].as_str().ok_or(
-                crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
-            )?;
+            let item_id = item["id"]
+                .as_str()
+                .ok_or(crate::notification_dispatch::NotificationDispatchError::invalid())?;
+            let turn_id = turn["id"]
+                .as_str()
+                .ok_or(crate::notification_dispatch::NotificationDispatchError::invalid())?;
             next.stage_recovered_notification(
                 format!("connection-recovery:{message_recovery_id}:{turn_id}:item:{item_id}"),
                 crate::notification_dispatch::RecoveredNotificationObservation {
@@ -213,7 +211,7 @@ fn stream_store_error(
 ) -> crate::notification_dispatch::NotificationDispatchError {
     match error {
         super::WorkerError::Store(error) => error.into(),
-        _ => crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
+        _ => crate::notification_dispatch::NotificationDispatchError::invalid(),
     }
 }
 

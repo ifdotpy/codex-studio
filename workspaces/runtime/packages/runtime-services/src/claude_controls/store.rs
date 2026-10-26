@@ -69,11 +69,15 @@ impl ControlStorage for StoredControls {
             let saved = store
                 .transaction(move |tx| Repository::load(tx, &request_id, &operation_id))
                 .await?;
+            let live_permissions = saved.as_ref().is_some_and(|(agent, operation)| {
+                ControlSnapshot::from_records(agent.clone(), operation.clone())
+                    .is_ok_and(|snapshot| snapshot.live_permissions(&request))
+            });
             let is_new = saved
                 .as_ref()
                 .is_some_and(|(_, op)| op.as_ref().is_none_or(|op| op["phase"] == "failed"));
             let workspace = Arc::new(workspace);
-            if is_new {
+            if is_new && !live_permissions {
                 let workspace_copy = Arc::clone(&workspace);
                 blocking(move || {
                     checkpoints::ensure_workspace_idle(&workspace_copy, None)
@@ -192,6 +196,7 @@ impl ControlStorage for StoredControls {
         let unload = self.unload.clone();
         Box::pin(async move {
             let id = expected.agent.id.clone();
+            let live_permissions = expected.live_permissions(&request);
             let result = store
                 .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
@@ -200,7 +205,9 @@ impl ControlStorage for StoredControls {
                     Ok::<_, ControlError>(writes.result)
                 })
                 .await?;
-            unload(&id);
+            if !live_permissions {
+                unload(&id);
+            }
             Ok(result)
         })
     }
