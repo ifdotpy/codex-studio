@@ -4,7 +4,7 @@ import type { MessageRequest } from "./helpers.ts";
 import { required } from "./helpers.ts";
 import type {} from "./mobile-send-reliability-browser.fixture.tsx";
 import { createFixtureViteServer } from "../playwright.ts";
-import { assert } from "../messages/assert.ts";
+import { assert } from "../chat/assertions.ts";
 import {
   legacySnapshotRoute,
   test,

@@ -1,10 +1,29 @@
+import { requiredFixtureValue } from "./browser-fixture.ts";
+import { fixtureBarrier } from "./browser-fixture.ts";
+import assert from "node:assert/strict";
+import type { FixtureAccount } from "./browser-fixture.ts";
+import { fixturePostBody } from "./browser-fixture.ts";
+import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
+import type { ScreenMessage } from "../../src/servers/screenChannel.ts";
+declare global {
+  interface Window {
+    accountSettingsMessages: ScreenMessage[];
+    accountSettingsAccountMessages: ScreenMessage[];
+  }
+}
+import type { ServerFixture } from "./browser-fixture.ts";
+import type { Page } from "playwright";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
 
-function waitForPost(page, pathname, matches = () => true) {
+function waitForPost<Path extends ApiPostPath>(
+  page: Page,
+  pathname: Path,
+  matches: (body: PostBody<Path>) => boolean = () => true,
+) {
   return page.waitForResponse((response) => {
     const request = response.request();
     if (
@@ -12,7 +31,7 @@ function waitForPost(page, pathname, matches = () => true) {
       request.method() !== "POST"
     )
       return false;
-    return matches(request.postDataJSON());
+    return matches(fixturePostBody<Path>(request.postDataJSON()));
   });
 }
 
@@ -20,7 +39,7 @@ test("accounts settings show per-server state and provider choices", async ({
   page,
   context,
 }, testInfo) => {
-  const localAccounts = [
+  const localAccounts: FixtureAccount[] = [
     {
       id: "local-codex",
       label: "Work",
@@ -39,7 +58,7 @@ test("accounts settings show per-server state and provider choices", async ({
       status: "ready",
     },
   ];
-  const remoteAccounts = [
+  const remoteAccounts: FixtureAccount[] = [
     {
       id: "remote-codex",
       label: "Work",
@@ -68,7 +87,10 @@ test("accounts settings show per-server state and provider choices", async ({
     },
   ];
   // Both servers read the same provider account; Remote has the newer reading.
-  const sharedReadings = {
+  const sharedReadings: Record<
+    string,
+    { ageSeconds: number; usedPercent: number }
+  > = {
     "local-shared": { ageSeconds: 600, usedPercent: 10 },
     "remote-shared": { ageSeconds: 180, usedPercent: 67 },
   };
@@ -77,13 +99,17 @@ test("accounts settings show per-server state and provider choices", async ({
   const empty = await fixture("Empty", true, []);
   await context.addInitScript(
     ({ destinations }) => {
-      window.__studioAccountMessages = [];
-      window.__studioMessages = [];
-      window.addEventListener("message", (event) => {
-        if (window === window.top) window.__studioMessages.push(event.data);
-        if (event.data?.kind === "studio-server-accounts")
-          window.__studioAccountMessages.push(event.data);
-      });
+      window.accountSettingsAccountMessages = [];
+      window.accountSettingsMessages = [];
+      window.addEventListener(
+        "message",
+        (event: MessageEvent<ScreenMessage>) => {
+          if (window === window.top)
+            window.accountSettingsMessages.push(event.data);
+          if (event.data?.kind === "studio-server-accounts")
+            window.accountSettingsAccountMessages.push(event.data);
+        },
+      );
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (input, init) => {
         const request = new Request(input, init);
@@ -113,7 +139,7 @@ test("accounts settings show per-server state and provider choices", async ({
   for (const [server, accounts] of [
     [local, localAccounts],
     [remote, remoteAccounts],
-  ]) {
+  ] as const) {
     server.snapshot.runtime.rateLimitsByAccount = {};
     for (const account of accounts) {
       const accountKey = account.id;
@@ -146,7 +172,7 @@ test("accounts settings show per-server state and provider choices", async ({
   await page.goto(local.origin + "/?studio-navigation=combined");
   await page.locator("#message").waitFor();
   let pairedOneServer = false;
-  const pair = async (server) => {
+  const pair = async (server: ServerFixture) => {
     const settingsButton = pairedOneServer
       ? page
           .getByRole("complementary", { name: "Conversations" })
@@ -235,13 +261,19 @@ test("accounts settings show per-server state and provider choices", async ({
       .getByText(/^Default.*Remote$/),
   ).toBeVisible();
 
-  const profilePosts = [];
+  const profilePosts: {
+    port: string;
+    body: PostBody<"/api/claude/profiles">;
+  }[] = [];
   await page.route("**/api/claude/profiles", async (route) => {
-    const body = route.request().postDataJSON();
+    const body = fixturePostBody<"/api/claude/profiles">(
+      route.request().postDataJSON(),
+    );
     profilePosts.push({
       port: new URL(route.request().url()).port,
       body,
     });
+    assert.ok(remoteAccounts[1]);
     remoteAccounts[1].claudeOptions = body.options;
     await route.fulfill({
       status: 200,
@@ -285,12 +317,20 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect.poll(() => profilePosts.length).toBe(1);
   await expect(profile).toBeVisible();
   expect(profilePosts).toHaveLength(1);
-  expect(profilePosts[0].port).toBe(new URL(remote.origin).port);
-  expect(profilePosts[0].body.account_key).toBe("remote-claude");
-  expect(profilePosts[0].body.options.autoCompactWindow).toBe(225000);
-  expect(profilePosts[0].body.options.customModels).toEqual([
-    { id: "remote-model", label: "Remote Model" },
-  ]);
+  expect(requiredFixtureValue(profilePosts[0]).port).toBe(
+    new URL(remote.origin).port,
+  );
+  expect(requiredFixtureValue(profilePosts[0]).body.account_key).toBe(
+    "remote-claude",
+  );
+  expect(
+    requiredFixtureValue(requiredFixtureValue(profilePosts[0]).body.options)
+      .autoCompactWindow,
+  ).toBe(225000);
+  expect(
+    requiredFixtureValue(requiredFixtureValue(profilePosts[0]).body.options)
+      .customModels,
+  ).toEqual([{ id: "remote-model", label: "Remote Model" }]);
   await profile.getByRole("button", { name: "Close", exact: true }).click();
   await expect(profile).toBeHidden();
   await expect(settings).toBeVisible();
@@ -393,17 +433,25 @@ test("accounts settings show per-server state and provider choices", async ({
   const claudeSignIn = remoteFrame.getByRole("dialog", {
     name: /Sign in to Claude · New Claude/,
   });
-  const addStarts = [];
-  const addStartCounts = new Map();
-  let secondClaudeLoginId;
-  let resolveSecondClaudeStartAbort;
-  const secondClaudeStartAborted = new Promise((resolve) => {
-    resolveSecondClaudeStartAbort = resolve;
-  });
+  const addStarts: {
+    loginId: PostBody<"/api/accounts/claude/add">["login_id"];
+    requestId: string | undefined;
+  }[] = [];
+  const addStartCounts = new Map<
+    PostBody<"/api/accounts/claude/add">["login_id"],
+    number
+  >();
+  let secondClaudeLoginId: PostBody<"/api/accounts/claude/add">["login_id"];
+  const {
+    promise: secondClaudeStartAborted,
+    resolve: resolveSecondClaudeStartAbort,
+  } = fixtureBarrier();
   await page.route("**/api/accounts/claude/add", async (route) => {
     const request = route.request();
     if (request.method() !== "POST") return route.continue();
-    const body = request.postDataJSON();
+    const body = fixturePostBody<"/api/accounts/claude/add">(
+      request.postDataJSON(),
+    );
     const requestId = request.headers()["x-studio-request-id"];
     addStarts.push({ loginId: body.login_id, requestId });
     const prior = addStartCounts.get(body.login_id) || 0;
@@ -450,8 +498,9 @@ test("accounts settings show per-server state and provider choices", async ({
   let codeWasSubmitted = false;
   let statusConfirmsCodeSubmission = false;
   let verificationReady = false;
-  let finalStatusBarrier;
+  let finalStatusBarrier: Promise<void> | undefined;
   const loginRequestId = addStarts[0]?.loginId;
+  assert.ok(loginRequestId);
   // The provider has not acknowledged code delivery yet. Keep the stream's
   // current receipt pending while the explicit recovery reads below are gated.
   remote.setClaudeProgress(loginRequestId, {
@@ -460,11 +509,16 @@ test("accounts settings show per-server state and provider choices", async ({
     status: "pending",
     codeSubmitted: false,
   });
-  const codeAttempts = [];
+  const codeAttempts: {
+    body: PostBody<"/api/accounts/claude/login/code">;
+    requestId: string | undefined;
+  }[] = [];
   await page.route("**/api/accounts/claude/login/code", async (route) => {
     const request = route.request();
     codeAttempts.push({
-      body: request.postDataJSON(),
+      body: fixturePostBody<"/api/accounts/claude/login/code">(
+        request.postDataJSON(),
+      ),
       requestId: request.headers()["x-studio-request-id"],
     });
     if (codeAttempts.length === 1) {
@@ -526,7 +580,8 @@ test("accounts settings show per-server state and provider choices", async ({
     return (
       url.pathname === "/api/accounts/claude/login/code" &&
       request.method() === "POST" &&
-      request.postDataJSON().code === submittedCode
+      fixturePostBody<"/api/accounts/claude/login/code">(request.postDataJSON())
+        .code === submittedCode
     );
   });
   await claudeSignIn
@@ -534,8 +589,12 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await lostCodeResponse;
   expect(codeAttempts).toHaveLength(2);
-  expect(codeAttempts[0].body.login_id).toBe(codeAttempts[1].body.login_id);
-  expect(codeAttempts[0].requestId).toBe(codeAttempts[1].requestId);
+  expect(requiredFixtureValue(codeAttempts[0]).body.login_id).toBe(
+    requiredFixtureValue(codeAttempts[1]).body.login_id,
+  );
+  expect(requiredFixtureValue(codeAttempts[0]).requestId).toBe(
+    requiredFixtureValue(codeAttempts[1]).requestId,
+  );
   await expect(claudeSignIn).toContainText(
     "Studio could not confirm whether Claude received the authorization response.",
   );
@@ -560,10 +619,9 @@ test("accounts settings show per-server state and provider choices", async ({
     "The full authorization response was submitted. Waiting for Claude to verify it; do not submit it again.",
   );
   // Keep the explicit recovery read pending until the manual refresh is dispatched.
-  let releaseFinalStatus;
-  finalStatusBarrier = new Promise((resolve) => {
-    releaseFinalStatus = resolve;
-  });
+  const { promise: finalStatus, resolve: releaseFinalStatus } =
+    fixtureBarrier();
+  finalStatusBarrier = finalStatus;
   try {
     await checkStatus.click();
     verificationReady = true;
@@ -584,13 +642,15 @@ test("accounts settings show per-server state and provider choices", async ({
       }),
     ]),
   );
-  const claudeWrites = remote.accountWrites.filter((write) =>
-    write.path.startsWith("/api/accounts/claude/"),
+  const claudeWrites = remote.accountWrites.filter(
+    (write) =>
+      typeof write.path === "string" &&
+      write.path.startsWith("/api/accounts/claude/"),
   );
   expect(claudeWrites).toHaveLength(2);
   expect(new Set(claudeWrites.map((write) => write.requestId)).size).toBe(2);
   expect(
-    JSON.stringify(await page.evaluate(() => window.__studioMessages)),
+    JSON.stringify(await page.evaluate(() => window.accountSettingsMessages)),
   ).not.toContain(submittedCode);
   await claudeSignIn
     .getByRole("button", { name: "Close", exact: true })
@@ -626,14 +686,12 @@ test("accounts settings show per-server state and provider choices", async ({
       response.status() === 404
     );
   });
-  let releaseUnknownStatus;
-  let resolveUnknownStatusArrived;
-  const unknownStatusRelease = new Promise((resolve) => {
-    releaseUnknownStatus = resolve;
-  });
-  const unknownStatusArrived = new Promise((resolve) => {
-    resolveUnknownStatusArrived = resolve;
-  });
+  const { promise: unknownStatusRelease, resolve: releaseUnknownStatus } =
+    fixtureBarrier();
+  const {
+    promise: unknownStatusArrived,
+    resolve: resolveUnknownStatusArrived,
+  } = fixtureBarrier();
   await page.route("**/api/accounts/claude/login*", async (route) => {
     const requestUrl = new URL(route.request().url());
     if (
@@ -719,7 +777,9 @@ test("accounts settings show per-server state and provider choices", async ({
   expect((await codexCancelResponse).ok()).toBe(true);
   await expect(codexSignIn).toContainText("Sign-in cancelled.");
   const codexWrites = remote.accountWrites.filter((write) =>
-    ["/api/accounts/login", "/api/accounts/login/cancel"].includes(write.path),
+    ["/api/accounts/login", "/api/accounts/login/cancel"].some(
+      (path) => path === write.path,
+    ),
   );
   expect(codexWrites).toHaveLength(2);
   expect(new Set(codexWrites.map((write) => write.requestId)).size).toBe(2);

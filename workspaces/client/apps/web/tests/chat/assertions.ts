@@ -5,7 +5,7 @@ type Assertions = {
   notEqual(actual: unknown, expected: unknown, message?: string): void;
   deepEqual(actual: unknown, expected: unknown, message?: string): void;
   ok(actual: unknown, message?: string): asserts actual;
-  match(actual: string, expected: RegExp, message?: string): void;
+  match(actual: unknown, expected: RegExp, message?: string): void;
   doesNotMatch(actual: string, expected: RegExp, message?: string): void;
   fail(message: string): never;
 };

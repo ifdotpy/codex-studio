@@ -12,6 +12,8 @@ import type {
   BridgeTurnParams,
   BridgeSessionParams,
   BridgeTask,
+  BridgeNotificationMethod,
+  BridgeNotificationParams,
 } from "./bridge-protocol.ts";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -206,7 +208,10 @@ import {
   canonicalJson,
 } from "./move-external.ts";
 
-const externalConfigs = new Map();
+const externalConfigs = new Map<
+  string,
+  Awaited<ReturnType<typeof externalCatalog>>["configs"]
+>();
 
 type BridgeProviderOptions = Pick<
   import("./runtime-contract.generated.ts").ClaudeSessionSettings,
@@ -435,7 +440,10 @@ const send = (value: unknown) => {
     setImmediate(flushStdout);
   }
 };
-const emit = (method: string, params: unknown) => send({ method, params });
+const emit = <M extends BridgeNotificationMethod>(
+  method: M,
+  params: BridgeNotificationParams<M>,
+) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
 const limits = stallLimits();
 // Outstanding Studio requests per thread. While Studio owns a wait (an
@@ -1016,7 +1024,7 @@ function studioTools(
 
 async function currentExternalProof(
   s: Pick<Session, "cwd" | "moveProof"> & Partial<Pick<Session, "id">>,
-  proof: import("./move.ts").MoveProof &
+  proof: Omit<import("./move.ts").MoveProof, "session"> &
     Partial<Pick<BridgeMoveProof, "externalCatalog" | "externalTransports">>,
 ) {
   const expected = proof.externalCatalog || s.moveProof?.externalCatalog;
@@ -1061,10 +1069,12 @@ async function movedExternalConfigs(s: Session) {
   if (!externalConfigs.has(key)) await proofOptions(s, s.moveProof);
   return externalConfigs.get(key);
 }
-async function proofOptions(
+async function proofOptions<
+  P extends Omit<import("./move.ts").MoveProof, "session">,
+>(
   s: SessionContext,
-  proof: import("./move.ts").MoveProof,
-): Promise<BridgeMoveProof> {
+  proof: P,
+): Promise<P & Omit<BridgeMoveProof, keyof import("./move.ts").MoveProof>> {
   const compiled = await studioToolCatalog(
     studioTools(s, () => null),
     (s.dynamicTools || []).length,
@@ -1162,7 +1172,7 @@ async function content(
 function turnEvent(
   s: Session,
   turn: Turn | null | undefined,
-  method: string,
+  method: "item/started" | "item/completed",
   item: Item,
   receiptTimes?: Record<string, number>,
 ) {
@@ -2159,6 +2169,8 @@ async function startSession(
               active.usage.turnFor(parentToolUseId, turn.id),
             );
       if (parentToolUseId) {
+        const subagentMessageId =
+          m.type === "assistant" ? m.message.id : undefined;
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
             const text =
@@ -2170,7 +2182,7 @@ async function startSession(
             if (text)
               finishItem(s, turn, {
                 id:
-                  (m.uuid || errorField(m, "message")) +
+                  (m.uuid || subagentMessageId) +
                   ":" +
                   block.type +
                   ":" +
@@ -2280,7 +2292,7 @@ async function startSession(
             .filter((b) => b.type === "text")
             .map((b) => b.text)
             .join("\n");
-          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText) ?? undefined;
+          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText) ?? null;
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
           const params =
@@ -2579,10 +2591,17 @@ function userMessage(
   return message;
 }
 
+type HandlerResult<M extends BridgeMethod> =
+  | BridgeResult<M>
+  | Promise<BridgeResult<M>>;
+
 function handle<M extends BridgeMethod>(
   request: BridgeRequest<M>,
 ): Promise<BridgeResult<M>>;
-async function handle(request: BridgeRequest): Promise<unknown> {
+// Each return checks its narrowed method with satisfies HandlerResult<typeof method>.
+async function handle(
+  request: BridgeRequest,
+): Promise<BridgeResult<BridgeMethod>> {
   const { method, params: p } = request;
   if (
     isRecord(p) &&
@@ -2602,7 +2621,10 @@ async function handle(request: BridgeRequest): Promise<unknown> {
   )
     assertNativeSessionReady(await session(p.threadId));
   if (commandMethods.has(method))
-    return commands.handle(method, isRecord(p) ? p : {});
+    return commands.handle(
+      method,
+      isRecord(p) ? p : {},
+    ) satisfies HandlerResult<typeof method>;
   if (
     isRecord(p) &&
     typeof p.threadId === "string" &&
@@ -2635,8 +2657,9 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         passiveAccountRead: true,
         activityRead: true,
       },
-    };
-  if (method === "initialized") return {};
+    } satisfies HandlerResult<typeof method>;
+  if (method === "initialized")
+    return {} satisfies HandlerResult<typeof method>;
   if (method === "model/list") {
     const native = await catalog();
     const models: ModelInfo[] = [
@@ -2673,7 +2696,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
           : [],
       })),
       nextCursor: null,
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   // Whether this process runs a Claude turn or a background task now. The server retires an
   // idle bridge after an update; saved turn records cannot say this, as a turn that a stopped
@@ -2683,7 +2706,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       busy: [...queries.values()].some(
         (active) => !!active.turn || active.tasks?.size > 0,
       ),
-    };
+    } satisfies HandlerResult<typeof method>;
   if (method === "account/read") {
     const { account } =
       p.passive === true ? await catalogCache.readPassive() : await catalog();
@@ -2697,7 +2720,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         planType: account.subscriptionType,
       },
       requiresOpenaiAuth: false,
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "account/rateLimits/read") {
     const data = await probe(p.cwd, async (q) =>
@@ -2709,20 +2732,27 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     );
     data.accountId = "claude:" + process.env.STUDIO_CLAUDE_ACCOUNT;
     lastLimits = data;
-    return data;
+    return data satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/commands")
     return probe(p.cwd, async (q) =>
       commandCatalog((await q.initializationResult()).commands),
-    );
+    ) satisfies HandlerResult<typeof method>;
   if (method === "claude/moveVersions")
-    return moveVersions(process.env.STUDIO_CLAUDE_BIN || "claude");
+    return moveVersions(
+      process.env.STUDIO_CLAUDE_BIN || "claude",
+    ) satisfies HandlerResult<typeof method>;
   if (method === "claude/moveIdentity")
-    return moveIdentity(process.env.STUDIO_CLAUDE_BIN || "claude");
+    return moveIdentity(
+      process.env.STUDIO_CLAUDE_BIN || "claude",
+    ) satisfies HandlerResult<typeof method>;
   if (method === "claude/moveProof") {
     const s = await session(p.threadId);
     const file = await nativeFile(s.nativeId || s.id, undefined, s.cwd);
-    return proofOptions(s, await savedPromptProof(file, s));
+    return proofOptions(
+      s,
+      await savedPromptProof(file, s),
+    ) satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/movePreflight") {
     const source = p.proof;
@@ -2740,7 +2770,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       snapshotHash: proof.snapshotHash,
       optionsHash: proof.optionsHash,
       proofMethod: proof.proofMethod,
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/moveExport") {
     const s = await session(p.threadId);
@@ -2764,7 +2794,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         moveProof,
         dynamicToolsJson: JSON.stringify(s.dynamicTools),
       },
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/moveImport") {
     const existing = await sessionStore
@@ -2808,13 +2838,22 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       s = cached;
     } else sessions.set(s.id, s);
     await persist(s);
-    return { thread: wireThread(s, await sessionStore.metadata(s.id), false) };
+    return {
+      thread: wireThread(s, await sessionStore.metadata(s.id), false),
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/repairReport")
-    return sessionStore.repairReport(p.threadId);
+    return sessionStore.repairReport(p.threadId) satisfies HandlerResult<
+      typeof method
+    >;
   if (method === "claude/fileBackups") {
     const s = await session(p.threadId);
-    return fileBackups(s, p.settledRequestIds ?? null, root, persist);
+    return fileBackups(
+      s,
+      p.settledRequestIds ?? null,
+      root,
+      persist,
+    ) satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/state") {
     const s = await session(p.threadId),
@@ -2843,7 +2882,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         : {}),
       contextWindow: s.contextWindow,
       totalTokens: s.totalTokens,
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/diagnostics") {
     const values = [...queries.values()];
@@ -2854,7 +2893,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       idleQueries: values.filter((active) => !active.turn && !active.tasks.size)
         .length,
       sessionCache: sessionStore.stats(),
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "claude/settings") {
     const s = await session(p.threadId),
@@ -2918,7 +2957,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         throw error;
       }
     }
-    return { settings: s.claude };
+    return { settings: s.claude } satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/rollback") {
     const s = await session(p.threadId),
@@ -2936,7 +2975,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       verifyFileRestore,
       rewindFiles: (nativeId, messageId, options) =>
         rewindSessionFiles(query, settings(s), nativeId, messageId, options),
-    });
+    }) satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/start") {
     const s = {
@@ -2954,29 +2993,31 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       thread: wireThread(s, await sessionStore.metadata(s.id)),
       model: s.model,
       sandbox: null,
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/turns/list" || method === "thread/turns/items/list") {
     const s = await session(p.threadId);
-    let values;
-    if (method === "thread/turns/list")
-      values = s.turns.filter((turn) => !pendingTurnReceipts.has(turn.id));
-    else {
-      const t = s.turns.find((t) => t.id === p.turnId);
-      if (!t) throw new Error("Unknown Claude turn");
-      values = t.items;
-    }
-    if (method === "thread/turns/list" && p.sortDirection !== "asc")
-      values.reverse();
-    const offset = p.cursor ? Number(p.cursor) : 0,
-      limit = Math.max(1, Math.min(100, p.limit || 20));
-    if (!Number.isSafeInteger(offset) || offset < 0)
-      throw new Error("Invalid Claude history cursor");
-    return {
-      data: values.slice(offset, offset + limit),
-      nextCursor:
-        offset + limit < values.length ? String(offset + limit) : null,
+    const page = <T>(values: T[]) => {
+      const offset = p.cursor ? Number(p.cursor) : 0,
+        limit = Math.max(1, Math.min(100, p.limit || 20));
+      if (!Number.isSafeInteger(offset) || offset < 0)
+        throw new Error("Invalid Claude history cursor");
+      return {
+        data: values.slice(offset, offset + limit),
+        nextCursor:
+          offset + limit < values.length ? String(offset + limit) : null,
+      };
     };
+    if (method === "thread/turns/list") {
+      const values = s.turns.filter(
+        (turn) => !pendingTurnReceipts.has(turn.id),
+      );
+      if (p.sortDirection !== "asc") values.reverse();
+      return page(values) satisfies HandlerResult<typeof method>;
+    }
+    const turn = s.turns.find((turn) => turn.id === p.turnId);
+    if (!turn) throw new Error("Unknown Claude turn");
+    return page(turn.items) satisfies HandlerResult<typeof method>;
   }
   if (request.method === "thread/list") {
     const p = request.params;
@@ -2997,7 +3038,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         modelProvider: "claude",
       })),
       nextCursor: page.nextCursor,
-    };
+    } satisfies HandlerResult<typeof request.method>;
   }
   if (method === "skills/extraRoots/set")
     throw new Error("Claude uses its native skills and MCP configuration");
@@ -3010,7 +3051,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         sandbox: null,
         approvalPolicy: metadata.approvalPolicy,
         activePermissionProfile: metadata.activePermissionProfile,
-      };
+      } satisfies HandlerResult<typeof method>;
     }
     const s = await session(p.threadId);
     let reattached = false;
@@ -3056,7 +3097,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       approvalPolicy: s.approvalPolicy ?? null,
       activePermissionProfile: s.activePermissionProfile ?? null,
       ...(reattached ? { reattached: true } : {}),
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/unsubscribe") {
     const active = queries.get(p.threadId);
@@ -3065,10 +3106,15 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     discardQuery(p.threadId, active);
     if (active) studioUnloaded.add(p.threadId);
     await sessionStore.evict(p.threadId);
-    return { status: active ? "unsubscribed" : "notLoaded" };
+    return {
+      status: active ? "unsubscribed" : "notLoaded",
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/loaded/list")
-    return { data: [...queries.keys()], nextCursor: null };
+    return {
+      data: [...queries.keys()],
+      nextCursor: null,
+    } satisfies HandlerResult<typeof method>;
   if (method === "thread/fork") {
     const old = await session(p.threadId);
     const active = queries.get(old.id);
@@ -3096,7 +3142,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       sandbox: null,
       approvalPolicy: s.approvalPolicy ?? null,
       activePermissionProfile: s.activePermissionProfile ?? null,
-    };
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/compact/start") {
     const s = await session(p.threadId);
@@ -3127,7 +3173,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         clientUserMessageId: p.requestId || randomUUID(),
         input: [{ type: "text", text: "/compact" }],
       },
-    });
+    }) satisfies HandlerResult<typeof method>;
   }
   if (method === "turn/start") {
     const s = await session(p.threadId);
@@ -3167,7 +3213,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       return {
         turn: { id: prior.turn.id, status: prior.turn.status },
         ...(steered ? { steered: true } : {}),
-      };
+      } satisfies HandlerResult<typeof method>;
     }
     const running = queries.get(s.id)?.turn;
     if (running) {
@@ -3184,7 +3230,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         return {
           turn: { id: running.id, status: running.status },
           steered: true,
-        };
+        } satisfies HandlerResult<typeof method>;
       } catch (error) {
         // The running turn ended before this input reached Claude. Nothing
         // was submitted, so the input starts the next turn instead.
@@ -3394,7 +3440,9 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     } finally {
       pendingTurnReceipts.delete(turn.id);
     }
-    return { turn: { id: turn.id, status: acceptedStatus } };
+    return {
+      turn: { id: turn.id, status: acceptedStatus },
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "turn/steer") {
     const s = await session(p.threadId),
@@ -3418,7 +3466,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         throw new Error(previous.error);
       if (JSON.stringify(previous.content) !== JSON.stringify(p.input))
         throw new Error("This message identity has different content");
-      return { turnId: turn.id };
+      return { turnId: turn.id } satisfies HandlerResult<typeof method>;
     }
     // Errors with steerNotSubmitted: the input was never handed to Claude.
     const notSubmitted = (message: string) =>
@@ -3468,7 +3516,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         );
       active.input.push(message);
       item.deliveryStatus = "submitted";
-      return { turnId: turn.id };
+      return { turnId: turn.id } satisfies HandlerResult<typeof method>;
     } catch (error) {
       active.pendingSteers.delete(id);
       if (item) {
@@ -3554,7 +3602,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
           data: { interruptReceipt: receipt },
         },
       );
-    return receipt;
+    return receipt satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/name/set") {
     const s = await session(p.threadId);
@@ -3562,26 +3610,33 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       throw new Error("Thread name must not be empty");
     s.name = p.name;
     await persist(s);
-    return {};
+    return {} satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/backgroundTerminals/list") {
     const data = [...(queries.get(p.threadId)?.tasks.values() || [])];
-    return { data, terminals: data, nextCursor: null };
+    return { data, terminals: data, nextCursor: null } satisfies HandlerResult<
+      typeof method
+    >;
   }
   if (method === "thread/queue/list") {
     const data = [...(queries.get(p.threadId)?.pendingSteers || [])].map(
-      (id) => ({ id, status: "queued" }),
+      (id) => ({ id, status: "queued" as const }),
     );
-    return { data, items: data, nextCursor: null };
+    return { data, items: data, nextCursor: null } satisfies HandlerResult<
+      typeof method
+    >;
   }
   if (method === "thread/commandExecution/background")
-    return moveCommandToBackground(queries.get(p.threadId), p);
+    return moveCommandToBackground(
+      queries.get(p.threadId),
+      p,
+    ) satisfies HandlerResult<typeof method>;
   if (method === "claude/stopTask") {
     const active = queries.get(p.threadId);
     if (!active?.q || !active.tasks.has(p.taskId))
       throw new Error("This Claude background task is no longer active");
     await active.q.stopTask(p.taskId);
-    return {};
+    return {} satisfies HandlerResult<typeof method>;
   }
   if (method === "mcpServerStatus/list" || method === "mcpServer/reconnect") {
     await session(p.threadId);
@@ -3596,7 +3651,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       if (typeof active.q.reconnectMcpServer !== "function")
         throw new Error("This Claude SDK does not support MCP reconnect");
       await active.q.reconnectMcpServer(p.name);
-      return {};
+      return {} satisfies HandlerResult<typeof method>;
     }
     const offset = p.cursor == null ? 0 : Number(p.cursor);
     if (!Number.isSafeInteger(offset) || offset < 0)
@@ -3613,9 +3668,10 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     return {
       data,
       nextCursor: end < statuses.length ? String(end) : null,
-    };
+    } satisfies HandlerResult<typeof method>;
   }
-  if (method === "skills/list") return listSkills(p?.cwds);
+  if (method === "skills/list")
+    return listSkills(p?.cwds) satisfies HandlerResult<typeof method>;
   throw new Error("Claude does not support " + method);
 }
 

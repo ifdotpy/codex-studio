@@ -1,5 +1,6 @@
 import type {
   BridgeError,
+  BridgeNotificationParams,
   BridgeRpcId,
   BridgeSuccessResponse,
   BridgeErrorResponse,
@@ -86,7 +87,10 @@ export function createCommandTransport({
   stderr = (data) => process.stderr.write(data),
 }: {
   root: string;
-  emit: (method: string, params: unknown) => void;
+  emit: (
+    method: "command/exec/outputDelta",
+    params: BridgeNotificationParams<"command/exec/outputDelta">,
+  ) => void;
   env?: NodeJS.ProcessEnv;
   stderr?: (data: string | Buffer) => unknown;
 }) {

@@ -1,3 +1,9 @@
+import { requiredFixtureValue } from "./browser-fixture.ts";
+import assert from "node:assert/strict";
+import type { TestAgent, TestRuntimeView } from "../playwright.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "./browser-fixture.ts";
+import { fixtureOrigin } from "./browser-fixture.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +15,7 @@ test("team, task assignments and projects render typed stream changes without ex
   page,
 }) => {
   const scratch = await mkdtemp(join(tmpdir(), "studio-team-work-stream-"));
-  const task = {
+  const task: NonNullable<TestRuntimeView["workDetails"]>[number] = {
     id: "assignment",
     rootId: "overlap",
     title: "Inspect stream delivery",
@@ -24,10 +30,10 @@ test("team, task assignments and projects render typed stream changes without ex
     decisions: [],
     gate: null,
   };
-  const reads = [];
-  const projectWrites = [];
+  const reads: string[] = [];
+  const projectWrites: PostBody<"/api/projects">[] = [];
   let projectReadBaseline = 0;
-  const errors = [];
+  const errors: string[] = [];
   const backend = await fixture("Team", false, {
     entityFrames: true,
     handle({ url, request, body, json, snapshot }) {
@@ -40,10 +46,12 @@ test("team, task assignments and projects render typed stream changes without ex
         return true;
       }
       if (url.pathname === "/api/projects" && request.method === "POST") {
-        projectWrites.push(body);
+        const projectBody = fixturePostBody<"/api/projects">(body);
+        assert.ok("path" in projectBody && projectBody.path);
+        projectWrites.push(projectBody);
         const project = {
-          id: body.path,
-          path: body.path,
+          id: projectBody.path,
+          path: projectBody.path,
           name: "Created live project",
           folders: [],
           peerTeams: [],
@@ -65,8 +73,9 @@ test("team, task assignments and projects render typed stream changes without ex
     },
   });
   const lead = backend.snapshot.runtime.agents[0];
+  assert.ok(lead);
   backend.snapshot.runtime.viewScopedAgents = true;
-  const worker = {
+  const worker: TestAgent = {
     ...lead,
     id: "worker-first",
     name: "First stream worker",
@@ -110,7 +119,7 @@ test("team, task assignments and projects render typed stream changes without ex
   try {
     await vite.listen();
     await page.setViewportSize({ width: 1440, height: 960 });
-    await page.goto(`http://127.0.0.1:${vite.httpServer.address().port}`);
+    await page.goto(fixtureOrigin(vite));
     await expect(page.locator("#message")).toBeVisible({ timeout: 20_000 });
     await page.locator("#team-toggle").click();
     const team = page.locator("#team");
@@ -136,7 +145,7 @@ test("team, task assignments and projects render typed stream changes without ex
       tasks.getByRole("button", { name: /Inspect stream delivery/ }),
     ).toContainText("running");
     const baselineReads = reads.length;
-    const newWorker = {
+    const newWorker: TestAgent = {
       ...worker,
       id: "worker-second",
       name: "Second stream worker",
@@ -148,7 +157,8 @@ test("team, task assignments and projects render typed stream changes without ex
     worker.error = "Stream regression failure";
     worker.commandProgress = [];
     Object.assign(task, { status: "review", version: 2, updated: 2 });
-    task.gate = { command: "verify", timeout_ms: 1234 };
+    const gate = { command: "verify", timeout_ms: 1234 };
+    task.gate = gate;
     task.results = [
       {
         id: "stream-result",
@@ -160,7 +170,9 @@ test("team, task assignments and projects render typed stream changes without ex
         created: 2,
         gate: {
           status: "failed",
-          config: task.gate,
+          cwd: null,
+          log: null,
+          config: gate,
           exitCode: 1,
           output: "Full streamed gate output",
           revision: "abc123",
@@ -176,7 +188,7 @@ test("team, task assignments and projects render typed stream changes without ex
         created: 2,
       },
     ];
-    backend.snapshot.runtime.work[0].status = task.status;
+    requiredFixtureValue(backend.snapshot.runtime.work[0]).status = task.status;
     backend.publishState([
       { kind: "state" },
       { kind: "work", agentId: lead.id },

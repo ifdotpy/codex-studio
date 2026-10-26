@@ -1,8 +1,9 @@
+import type { TestAgent } from "../playwright.ts";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
-import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
+import { sidebarParityFixture } from "./sidebar-parity-fixture.ts";
 
 test("paired sidebar shows the chat provider and server alias", async ({
   page,
@@ -11,7 +12,7 @@ test("paired sidebar shows the chat provider and server alias", async ({
   test.setTimeout(180000);
   const local = await fixture("Local");
   const remote = await fixture("Remote", true);
-  const row = (id, name, updated) => ({
+  const row = (id: string, name: string, updated: number): TestAgent => ({
     id,
     name,
     updated,
@@ -252,7 +253,7 @@ test("server labels fit without the former three-character clipping", async ({
   servers.local.aliases.remote = label;
   try {
     const sidebar = await servers.open(page);
-    for (const width of [1440, 390]) {
+    for (const width of [1440, 390] as const) {
       await page.setViewportSize({ width, height: 900 });
       if (width === 390)
         await page.getByRole("button", { name: "Servers and chats" }).click();

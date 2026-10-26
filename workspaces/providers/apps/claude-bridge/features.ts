@@ -163,8 +163,7 @@ export function limitEvent(
   // Replace permission on each event; a later rejection revokes it.
   bucket.claudeRateLimit = structuredClone(info);
   result.claudeRateLimit = structuredClone(info);
-  result.rateLimits = main;
-  return result;
+  return Object.assign(result, { rateLimits: main, rateLimitsByLimitId: all });
 }
 export function nativeItem(
   block: { id: string; name: string; input: Record<string, unknown> },

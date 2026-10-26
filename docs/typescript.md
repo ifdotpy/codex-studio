@@ -27,8 +27,9 @@ product code, tests, fixtures, scripts, and tool configuration.
   violates its declared type, with the reason.
 - A cast (`as`) or non-null assertion (`!`) that hides a mismatch. A `!` is
   allowed where the invariant is visible in the same function, for example
-  after `has()` or inside a bounds-checked loop; cast only after a runtime check
-  of untrusted input.
+  after `has()` or inside a bounds-checked loop. Cast only after a runtime check
+  of untrusted input, or `error as Error` in a `catch` whose JavaScript read the
+  error's fields.
 - A copied type, constant, or helper instead of an import of its owner.
 
 ## How TypeScript runs
