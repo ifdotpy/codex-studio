@@ -53,6 +53,12 @@ html body #root {
   padding-left: var(--viewport-safe-left);
 }
 
+/* Native shell, portrait top status strip (mobileViewport.ts): the page runs
+   under the strip; the edge rail floats in it beside the clock. */
+html[data-viewport-top-strip] {
+  --viewport-device-safe-top: 0px;
+}
+
 html[data-viewport-surface],
 html[data-viewport-surface] body {
   width: 100%;

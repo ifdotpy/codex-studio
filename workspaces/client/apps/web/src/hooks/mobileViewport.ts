@@ -10,6 +10,9 @@ import {
   type NativeViewportState,
 } from "../native/nativeViewport";
 
+/** Root attribute: the native top status strip holds the edge rail, not a page inset. */
+export const viewportTopStripAttribute = "data-viewport-top-strip";
+
 /** Count of touch gestures intercepted by the active viewport owner, in gestures. */
 export const viewportGestureCountAttribute = "data-keyboard-gesture-count";
 
@@ -111,6 +114,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       composerMotion?.cancel();
       composerMotion = null;
       root.removeAttribute("data-viewport-native-keyboard");
+      root.removeAttribute(viewportTopStripAttribute);
       root.removeAttribute(viewportGestureCountAttribute);
       root.removeAttribute("data-viewport-surface");
       root.removeAttribute("data-viewport-keyboard");
@@ -155,6 +159,18 @@ export function useMobileViewport(active: boolean, compact = false) {
       root.setAttribute("data-viewport-surface", "");
       if (native) root.setAttribute("data-viewport-native-keyboard", "");
       else root.removeAttribute("data-viewport-native-keyboard");
+      // The iPhone Duo in portrait has its status strip on top. Like the
+      // system apps, the page runs under it and the edge rail floats there.
+      const nativeInsets = nativeViewport()?.insets;
+      const stripMin = layoutValues.edgeRail.minInset;
+      if (
+        nativeInsets &&
+        window.innerHeight > window.innerWidth &&
+        nativeInsets.top >= stripMin &&
+        Math.max(nativeInsets.left, nativeInsets.right) < stripMin
+      )
+        root.setAttribute(viewportTopStripAttribute, "");
+      else root.removeAttribute(viewportTopStripAttribute);
       const width = viewport?.width || window.innerWidth;
       const sameWidth = !fullWidth || width === fullWidth;
       const keyboard = native

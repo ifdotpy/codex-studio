@@ -534,3 +534,24 @@ it("leaves composer touches native in the native shell, which removes the keyboa
   expect(textarea.blur).not.toHaveBeenCalled();
   expect(textarea.focus).not.toHaveBeenCalled();
 });
+it("marks the native portrait top strip and leaves landscape side strips alone", () => {
+  const state = {
+    insets: { top: 82, right: 0, bottom: 34, left: 0 },
+    keyboard: null,
+  };
+  vi.stubGlobal("__studioNativeViewport", { version: 1, state });
+  Object.assign(windowMock, { innerWidth: 669, innerHeight: 951 });
+  root.clientHeight = 951;
+  Object.assign(viewport, { width: 669, height: 951 });
+  mount();
+  expect(root.hasAttribute("data-viewport-top-strip")).toBe(true);
+  // Landscape: the strip is on the side (edge rail), not on top.
+  state.insets = { top: 0, right: 82, bottom: 34, left: 0 };
+  Object.assign(windowMock, { innerWidth: 951, innerHeight: 669 });
+  root.clientHeight = 669;
+  resize({ width: 951, height: 669 });
+  expect(root.hasAttribute("data-viewport-top-strip")).toBe(false);
+  cleanup?.();
+  cleanup = undefined;
+  expect(root.hasAttribute("data-viewport-top-strip")).toBe(false);
+});
