@@ -33,6 +33,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  decodeLegacyAgentDocument,
   SCALE_WORKSPACE_MODE,
   TOOL_BARRIER_KILL_GRACE_SECONDS,
   TOOL_BARRIER_MAX_SECONDS,
@@ -107,6 +108,10 @@ type TeamChild = {
 type Schema = components["schemas"];
 type FilesystemSnapshot = Awaited<ReturnType<typeof readFilesystemSnapshot>>;
 type Client = Awaited<ReturnType<typeof createClient>>;
+type CleanupClient = Pick<
+  Client,
+  "get" | "request" | "agentSnapshot" | "setDeadline"
+>;
 type SyncStream = Awaited<ReturnType<typeof startSyncResourceStream>>;
 type ReadinessWatch = Awaited<ReturnType<typeof watchReadinessMarkers>>;
 type BackendIdentity = {
@@ -391,7 +396,7 @@ type StreamEvent = {
   name: string;
   value?: StateFrame;
   receivedAt?: number;
-  stateDocuments?: Schema["SyncDocument"][];
+  stateDocuments?: Schema["SyncPullResponse"]["documents"];
 };
 type TimingEvidenceInput = {
   events?: EvidenceEvent[];
@@ -802,16 +807,8 @@ async function verifyOwnedWorktreeDisk({
 function parseStateEntity(
   document: Schema["SyncPullResponse"]["documents"][number] | undefined,
 ) {
-  if (
-    !document ||
-    !("payload" in document) ||
-    document._deleted ||
-    typeof document.payload !== "string"
-  )
-    return null;
   try {
-    const entity: Schema["SyncEntityPayload"] = JSON.parse(document.payload);
-    return entity.collection === "agent" ? entity.value : null;
+    return decodeLegacyAgentDocument(document)?.value ?? null;
   } catch {
     return null;
   }
@@ -3756,7 +3753,7 @@ async function removeSharedBarriers(owners: OwnedAgent[]) {
 }
 
 async function verifyOwnedWorktreesRemoved(
-  client: Client,
+  client: CleanupClient,
   project: string,
   owners: OwnedAgent[],
   rows: TeamChild[],
@@ -4184,7 +4181,10 @@ function rootParts(path: string, indexFromEnd: number) {
     .at(-1 - indexFromEnd);
 }
 
-async function verifyBackendIdentity(client: Client, journal: Journal) {
+async function verifyBackendIdentity(
+  client: Pick<Client, "get">,
+  journal: Journal,
+) {
   const desktop = await client.get<Schema["DesktopResponse"]>("/api/desktop");
   const sync =
     await client.get<Schema["SyncIdentityResponse"]>("/api/sync/identity");
@@ -4213,36 +4213,36 @@ async function verifyBackendIdentity(client: Client, journal: Journal) {
 }
 
 // `onlyStage` limits the audit and deletion to one finished stage.
-async function cleanupOwned(
-  client: Client,
+export async function cleanupOwned(
+  client: CleanupClient,
   journal: Journal,
   journalPath: string,
   budgetMs: number,
   stream: SyncStream | null | undefined,
   onlyStage: Stage | null = null,
 ) {
-  assert.ok(journal.backendIdentity && journal.ownerBaseline);
-
   const deadlineAt = performance.now() + budgetMs;
   client.setDeadline(deadlineAt);
   const owners = journal.ownedAgents || [];
-  if (owners.length)
+  if (owners.length) {
+    assert.ok(journal.backendIdentity && journal.ownerBaseline);
     journal.cleanup.backendIdentity = await verifyBackendIdentity(
       client,
       journal,
     );
+  }
   const byId = new Map(owners.map((owner) => [owner.id, owner]));
   const stages = onlyStage ? [onlyStage] : journal.stages || [];
   for (const stage of stages) {
-    assert.ok(stage.leadId);
     if (performance.now() >= deadlineAt)
       throw new Error(
         "Cleanup deadline elapsed before every stage was audited.",
       );
     const stageOwners = [stage.leadId, ...(stage.agentIds || [])]
-      .map((id) => byId.get(id))
+      .map((id) => (id === undefined ? undefined : byId.get(id)))
       .filter((owner) => owner !== undefined);
     if (!stageOwners.length) continue;
+    assert.ok(stage.leadId && journal.backendIdentity && journal.ownerBaseline);
     const cleanup = (stage.cleanup ||= { state: "pending" });
     const lead = byId.get(stage.leadId);
     const initialRows = await readCurrentTeamChildren(
