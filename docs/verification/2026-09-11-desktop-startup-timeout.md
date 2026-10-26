@@ -23,7 +23,7 @@ Verification:
 - Backend PID 8077 remained the same before launch, after attachment, and after
   desktop exit. The verification did not stop agents or commands.
 
-Only `backend.cjs` changed inside the installed `app.asar`. Every other archived
+Only `backend.ts` changed inside the installed `app.asar`. Every other archived
 file matched the previous archive. The same fix is in the prepared application
 under `desktop/dist`. The server workspace was not replaced.
 
