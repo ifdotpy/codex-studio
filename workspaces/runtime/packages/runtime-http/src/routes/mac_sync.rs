@@ -375,9 +375,9 @@ mod tests {
                 .await
                 .expect("store opens"),
         );
-        let project = state_dir.path().join("layr-projects/p1");
         let folder = state_dir.path().join("host-folder");
         let socket_dir = state_dir.path().join("vm");
+        let project = socket_dir.join("layr-projects/p1");
         std::fs::create_dir_all(project.join("sync")).expect("project fixture");
         std::fs::create_dir_all(&folder).expect("host fixture");
         std::fs::create_dir_all(&socket_dir).expect("socket fixture");
@@ -397,7 +397,7 @@ mod tests {
         )
         .expect("sync status");
         std::fs::write(folder.join("file.txt"), b"host").expect("host file");
-        let first = mac_sync::resolve(state_dir.path(), "p1", "file.txt", "agent", &Guest)
+        let first = mac_sync::resolve(&socket_dir, "p1", "file.txt", "agent", &Guest)
             .expect("initial guest handoff");
         assert!(
             first

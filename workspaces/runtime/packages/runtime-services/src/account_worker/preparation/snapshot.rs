@@ -1786,20 +1786,27 @@ mod resource_tests {
             .expect("a review object is read as a review child");
     }
 
-    /// Python `Runtime.tool_definitions` gives a VM agent the current catalog,
-    /// also on a thread that Python started before `nativeToolSource` existed
-    /// and on a new thread of an agent that Python saved as `legacy`. The
-    /// legacy catalog lacks `orchestration_sign_in`; Rust gave it to these VM
-    /// agents. The saved source and a Codex resume stay as they were.
+    /// VM agents use current definitions even when their saved source is legacy.
+    /// Host Codex agents keep that saved source. Both catalogs include sign-in.
+    /// A fixture description distinguishes their selection without removing tools.
     #[tokio::test]
     async fn a_vm_agent_on_an_old_thread_gets_the_current_catalog() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
             .await
             .expect("runtime store opens");
-        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
-            .expect("runtime resources")
-            .capture_filesystem(None);
+        let mut resources =
+            PreparationResources::bundled(String::new(), ModelCatalogService::new())
+                .expect("runtime resources")
+                .capture_filesystem(None);
+        resources
+            .legacy_tools
+            .iter_mut()
+            .find(|tool| tool.name == "orchestration_context")
+            .expect("legacy context tool")
+            .description
+            .push_str(" Legacy catalog fixture.");
+        assert_ne!(resources.tools, resources.legacy_tools);
         store
             .transaction_with(move |tx| {
                 let failed = |error: WorkerError| StoreError::SchemaMismatch(error.to_string());
@@ -1816,7 +1823,8 @@ mod resource_tests {
                     {
                         let mut record = json!({"id":mode, "rootId":mode, "epoch":1,
                             "status":"running", "isLead":true, "name":"Lead", "provider":"codex",
-                            "accountKey":"default", "executionMode":mode, "cwd":"/line"});
+                            "accountKey":"default", "executionMode":mode, "cwd":"/line",
+                            "workspaceMode":if vm { "layr" } else { "layr-native" }});
                         if let Some(thread_id) = thread_id {
                             record["threadId"] = json!(thread_id);
                         }
@@ -1843,12 +1851,19 @@ mod resource_tests {
                             "{case}"
                         );
                         assert_eq!(&snapshot.catalog.definitions, expected_tools, "{case}");
-                        let tools = names(thread::tool_definitions(&snapshot).expect("tools"));
+                        let definitions = thread::tool_definitions(&snapshot).expect("tools");
                         assert_eq!(
-                            tools.iter().any(|name| name == "orchestration_sign_in"),
-                            vm,
-                            "{case}"
+                            actor_tool_definitions(tx, &resources, &record).map_err(failed)?,
+                            json!(definitions),
+                            "{case}: the context tool reports the same catalog"
                         );
+                        let tools = names(definitions);
+                        assert!(
+                            tools.iter().any(|name| name == crate::sign_in::TOOL),
+                            "{case}: both maintained catalogs include sign-in"
+                        );
+                        assert_eq!(tools.iter().any(|name| name == "host_exec"), vm, "{case}");
+                        assert!(!tools.iter().any(|name| name == "layr_read"), "{case}");
                         let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                             thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
                                 attempt

@@ -16,7 +16,7 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
     mode === "layr-native"
       ? { label: "Layr", title: "Native Layr workspace" }
       : mode === "layr"
-        ? { label: "Layr VM", title: "Linux VM with Layr" }
+        ? { label: "Layr VM", title: "Virtual machine with Layr" }
         : mode === "worktree"
           ? { label: "WT", title: "Git worktree" }
           : { label: "SHARED", title: "Shared folder" };

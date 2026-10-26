@@ -100,7 +100,9 @@ fn supervisor_health_payload(
     status: studio_runtime_process::HealthResult,
     expected_state: &std::path::Path,
 ) -> Value {
-    if status.protocol != 1 || expected_state.to_str() != Some(status.state_dir.as_str()) {
+    if status.protocol != studio_runtime_process::SUPERVISOR_PROTOCOL_V2
+        || expected_state.to_str() != Some(status.state_dir.as_str())
+    {
         return json!({"error":"The supervisor identity is incompatible."});
     }
     if status.recovery.blocked.is_some() || status.recovery.degraded {
@@ -999,31 +1001,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn supervisor_health_rejects_incompatible_or_degraded_status() {
-        let state = PathBuf::from("/tmp/studio-supervisor-test");
-        let status = studio_runtime_process::HealthResult {
-            protocol: 1,
+    fn supervisor_health_status(state: &std::path::Path) -> studio_runtime_process::HealthResult {
+        studio_runtime_process::HealthResult {
+            protocol: studio_runtime_process::SUPERVISOR_PROTOCOL_V2,
             state_dir: state.display().to_string(),
-            handles: Vec::new(),
+            handles: vec![
+                serde_json::from_value(json!({
+                    "id":"account-fixture", "pid":4123, "signature":"exact-provider-signature",
+                    "startTime":"fixture-process-start", "jobIdentity":"fixture-job",
+                    "sequence":19, "acknowledged":17, "bufferedBytes":128,
+                    "backpressure":false, "stdoutReaderAlive":true, "stdoutReaderError":null,
+                    "persistenceErrors":{}
+                }))
+                .expect("complete supervisor handle"),
+            ],
             journal_limit_bytes: 0,
             output_limit_bytes_per_handle: 0,
             durability: studio_runtime_process::Durability::SqliteFullSyncPerRequest,
             recovery: studio_runtime_process::RecoveryStatus {
                 degraded: false,
-                fallback_ready: true,
+                fallback_ready: false,
                 blocked: None,
                 extra: Default::default(),
             },
             extra: Default::default(),
-        };
-        assert!(super::supervisor_health_payload(status.clone(), &state)["error"].is_null());
-        let mut degraded = status;
-        degraded.recovery.degraded = true;
+        }
+    }
+
+    #[test]
+    fn supervisor_health_accepts_current_protocol_and_preserves_exact_handles() {
+        let state = PathBuf::from("/tmp/studio-supervisor-test");
+        let status = supervisor_health_status(&state);
+        let expected = serde_json::to_value(status.clone()).expect("health document");
+        assert_eq!(super::supervisor_health_payload(status, &state), expected);
+    }
+
+    #[test]
+    fn supervisor_health_rejects_incompatible_or_degraded_status() {
+        let state = PathBuf::from("/tmp/studio-supervisor-test");
+        let status = supervisor_health_status(&state);
+        for protocol in [
+            studio_runtime_process::SUPERVISOR_PROTOCOL_V2 - 1,
+            studio_runtime_process::SUPERVISOR_PROTOCOL_V2 + 1,
+        ] {
+            let mut incompatible = status.clone();
+            incompatible.protocol = protocol;
+            assert_eq!(
+                super::supervisor_health_payload(incompatible, &state)["error"],
+                "The supervisor identity is incompatible."
+            );
+        }
         assert_eq!(
-            super::supervisor_health_payload(degraded, &state)["error"],
-            "Supervisor crash recovery needs operator attention."
+            super::supervisor_health_payload(status.clone(), &state.join("foreign"))["error"],
+            "The supervisor identity is incompatible."
         );
+        for blocked in [false, true] {
+            let mut degraded = status.clone();
+            degraded.recovery.degraded = !blocked;
+            degraded.recovery.blocked = blocked.then(|| "fixture recovery block".into());
+            assert_eq!(
+                super::supervisor_health_payload(degraded, &state)["error"],
+                "Supervisor crash recovery needs operator attention."
+            );
+        }
     }
 
     #[tokio::test]

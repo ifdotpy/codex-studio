@@ -17,6 +17,11 @@ vi.mock("@mantine/core", async (importOriginal) => {
 });
 vi.mock("../servers/ServerServicesContext", () => ({
   useServerApi: () => ({ get: vi.fn(), post: vi.fn(), saved: () => "" }),
+  useServerSync: () => ({ subscribeStateProjection: vi.fn(() => () => {}) }),
+  useServerResources: () => ({
+    subscribe: vi.fn(() => () => {}),
+    getSnapshot: () => ({ data: undefined, status: "stale", error: null }),
+  }),
   useServerResourceReads: () => vi.fn(),
   useServerSessionCosts: () => ({
     peekSessionCost: () => null,

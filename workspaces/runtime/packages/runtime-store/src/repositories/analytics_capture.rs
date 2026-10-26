@@ -703,7 +703,10 @@ mod cost_hint_tests {
         });
         store.analytics_transaction(|tx, _| {
             AnalyticsCaptureRepository::set_projection_cursor(tx, 1)?;
-            tx.execute("INSERT INTO analytics_items VALUES ('item','agent','root',NULL,NULL,1,'text',NULL,0,'{}')", [])?;
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Items, &serde_json::json!({
+                "id":"item","agentId":"agent","rootId":"root","at":1,
+                "type":"text","name":"metadata","isTool":false
+            }))?;
             Ok::<_, StoreError>(())
         }).await.expect("metadata commit");
         store

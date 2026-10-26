@@ -13,12 +13,8 @@ const h = vi.hoisted(() => ({
   scoped: "",
   cursor: 0,
   effects: [] as Array<() => unknown>,
+  read: vi.fn(),
   post: vi.fn(),
-  read: vi.fn(async () => ({
-    data: [
-      { model: "gpt-6-astra", serviceTiers: [], supportedReasoningEfforts: [] },
-    ],
-  })),
   refresh: vi.fn(async () => {}),
 }));
 vi.mock("react", async (load) => ({
@@ -83,11 +79,7 @@ vi.mock("../models/modelWhitelist", () => ({
 }));
 vi.mock("./WorkerModelPicker", async (load) => ({
   ...(await load<typeof import("./WorkerModelPicker")>()),
-  useModelCatalogReader: () => ({
-    scope: "receipt-worker-selection",
-    read: h.read,
-    subscribeState: vi.fn(),
-  }),
+  useModelCatalogReader: () => ({ scope: "settings-receipt", read: h.read }),
   useWorkerModels: () => ({
     models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
       model,
@@ -181,8 +173,8 @@ afterEach(() => {
   h.cells.clear();
   h.scoped = "";
   h.effects = [];
+  h.read.mockReset();
   h.post.mockReset();
-  h.read.mockClear();
   h.refresh.mockClear();
 });
 
@@ -231,6 +223,16 @@ test("queued settings and account changes keep their canonical scope", async () 
 });
 
 test("switching picker roles keeps acknowledged worker defaults in the summary", async () => {
+  h.read.mockResolvedValue({
+    data: [
+      {
+        model: "gpt-6-astra",
+        provider: "codex",
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+        serviceTiers: [],
+      },
+    ],
+  });
   h.post.mockResolvedValue({
     ...initial,
     workerDefaults: { model: "gpt-6-astra", effort: "high" },
