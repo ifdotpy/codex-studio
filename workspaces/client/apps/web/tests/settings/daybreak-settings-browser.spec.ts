@@ -1,3 +1,7 @@
+import type { components } from "../../src/generated/api.ts";
+import { required } from "./fixture-helpers.ts";
+import type { DaybreakReset } from "./daybreak-settings-browser.fixture.tsx";
+import type {} from "./daybreak-settings-browser.fixture.tsx";
 import { fixtureUrl } from "./fixture-helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -27,11 +31,6 @@ test("Daybreak settings", async ({ context }) => {
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-daybreak-settings-"));
-  const entry = join(root, "daybreak-settings-fixture.tsx");
-  const schemaHeaders = JSON.stringify({
-    "Content-Type": "application/json",
-    [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
-  });
   const server = await createServer({
     configFile: false,
     root,
@@ -61,47 +60,9 @@ test("Daybreak settings", async ({ context }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/daybreak-settings-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/settings/daybreak-settings-browser.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/daybreak-settings-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `
-  import React,{useState} from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {flushSync} from 'react-dom';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';
-  const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-5.6-sol',effort:'high',fastMode:true,daybreakEnabled:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
-  const row=(model,cyber,extra={})=>({model,displayName:model,supportedReasoningEfforts:['low','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}],...(cyber===undefined?{}:{availableAccessPrograms:{cyber}}),...extra});
-  const initialModels=[row('gpt-6-astra',['standard']),row('gpt-5.6-sol',['standard','daybreakBlue'],{isDefault:true}),row('gpt-5.6-terra',['standard','daybreakRed']),row('gpt-5.6-luna',undefined),row('daybreak-only',['daybreakBlue'],{serviceTiers:[],supportedReasoningEfforts:[{reasoningEffort:'low'}]}),row('gpt-daybreak-blue-latest',['daybreakBlue']),row('gpt-daybreak-red-latest',['daybreakRed'])];
-  window.calls=[];window.fail=null;window.reply=null;window.refreshCount=0;window.retries=0;
-  const nativeFetch=window.fetch;
-  window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;
-    if(url.startsWith('/api/models'))return new Response(JSON.stringify({data:window.models}),{headers:${schemaHeaders}});
-    if(url!='/api/conversation')return nativeFetch(url,options);
-    const request=JSON.parse(options.body);window.calls.push(request);
-    if(window.hold)await new Promise(resolve=>window.release=resolve);
-    if(window.fail==='network')throw new TypeError('Connection lost');
-    if(window.fail==='rejected')return new Response(JSON.stringify({error:'Mode not supported'}),{status:422,headers:${schemaHeaders}});
-    const values=request.worker_defaults||request;
-    const settings={model:values.model,effort:values.effort,fastMode:values.fast_mode,daybreakEnabled:values.daybreak_enabled};
-    const canonical=window.reply||{...window.agent,...(request.worker_defaults?{workerDefaults:settings}:request.next_turn?{pendingSettings:settings,pendingSettingsAccountKey:window.agent.accountKey}:settings)};
-    return new Response(JSON.stringify(canonical),{status:200,headers:${schemaHeaders}});
-  };
-  function Fixture(){
-    const[agent,setAgent]=useState(initial),[models,setModels]=useState(initialModels),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);
-    window.models=models;window.agent=agent;window.setAgent=value=>flushSync(()=>setAgent(value));
-    window.setModels=value=>flushSync(()=>setModels(value));
-    window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setModels(options?.models||initialModels);setDefaults(!!options?.defaults);setMount(value=>value+1);window.calls=[];window.fail=null;window.reply=null;window.hold=false;window.refreshCount=0;window.retries=0;});
-    return <MantineProvider><ExecutionSettings key={mount} agent={agent} initialRole={defaults?"worker":"orchestrator"} catalog={{models,loading:false,error:'',retry:()=>window.retries++}} refresh={async()=>{window.refreshCount++}}/></MantineProvider>;
-  }
-  createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -131,17 +92,17 @@ test("Daybreak settings", async ({ context }) => {
         json: {
           workspaceId: "1234567890abcdef1234567890abcdef",
           syncProtocol: 2,
-        },
+        } satisfies components["schemas"]["SyncIdentityResponse"],
       }),
     );
     await page.goto(fixtureUrl(server, "check"));
-    await page.waitForFunction(() => !!window.reset, undefined, {
+    await page.waitForFunction(() => window.daybreakFixture?.ready, undefined, {
       timeout: 5_000,
     });
-    const reset = async (options) => {
+    const reset = async (options?: DaybreakReset) => {
       await page.evaluate((options) => {
         localStorage.clear();
-        window.reset(options);
+        window.daybreakFixture.reset(options);
       }, options);
       await page
         .getByRole("button", {
@@ -162,13 +123,14 @@ test("Daybreak settings", async ({ context }) => {
     const settled = async () =>
       page.waitForFunction(
         () =>
-          window.refreshCount === window.calls.length &&
-          window.calls.length > 0,
+          window.daybreakFixture.refreshCount ===
+            window.daybreakFixture.calls.length &&
+          window.daybreakFixture.calls.length > 0,
       );
     const clearActivity = () =>
       page.evaluate(() => {
-        window.calls = [];
-        window.refreshCount = 0;
+        window.daybreakFixture.calls = [];
+        window.daybreakFixture.refreshCount = 0;
       });
 
     const enable = async (defaults = false) => {
@@ -196,14 +158,17 @@ test("Daybreak settings", async ({ context }) => {
     assert.equal(await modelOptionDisabled(model(), "daybreak-only"), true);
     await enable();
     await settled();
-    assert.deepEqual(await page.evaluate(() => window.calls[0]), {
-      id: "first",
-      expected_account_key: "default",
-      model: "gpt-5.6-sol",
-      effort: "high",
-      fast_mode: true,
-      daybreak_enabled: true,
-    });
+    assert.deepEqual(
+      await page.evaluate(() => window.daybreakFixture.calls[0]),
+      {
+        id: "first",
+        expected_account_key: "default",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        fast_mode: true,
+        daybreak_enabled: true,
+      },
+    );
     assert.equal(await modelValue(model()), "gpt-5.6-sol");
     assert.equal(await mode().isChecked(), true);
     assert.equal(await modelOptionDisabled(model(), "gpt-6-astra"), true);
@@ -219,12 +184,15 @@ test("Daybreak settings", async ({ context }) => {
       await page.screenshot({ path: process.env.SCREENSHOT });
     // A stale replication snapshot must not erase the acknowledged mode.
     await page.evaluate(() =>
-      window.setAgent({ ...window.agent, tail: "Unrelated update" }),
+      window.daybreakFixture.setAgent({
+        ...window.daybreakFixture.agent,
+        tail: "Unrelated update",
+      }),
     );
     assert.equal(await mode().isChecked(), true);
     await page.evaluate(() =>
-      window.setAgent({
-        ...window.agent,
+      window.daybreakFixture.setAgent({
+        ...window.daybreakFixture.agent,
         model: "gpt-5.6-sol",
         daybreakEnabled: true,
       }),
@@ -233,7 +201,10 @@ test("Daybreak settings", async ({ context }) => {
       () => new Promise((resolve) => requestAnimationFrame(resolve)),
     );
     await page.evaluate(() =>
-      window.setAgent({ ...window.agent, daybreakEnabled: false }),
+      window.daybreakFixture.setAgent({
+        ...window.daybreakFixture.agent,
+        daybreakEnabled: false,
+      }),
     );
     assert.equal(await mode().isChecked(), false);
     console.log(
@@ -253,7 +224,11 @@ test("Daybreak settings", async ({ context }) => {
     await settled();
     assert.equal(await modelValue(model()), "gpt-5.6-sol");
     assert.equal(
-      await page.evaluate(() => window.calls[0].daybreak_enabled),
+      await page.evaluate(
+        () =>
+          window.daybreakFixture.required(window.daybreakFixture.calls[0])
+            .daybreak_enabled,
+      ),
       false,
     );
     await reset({ agent: { model: "gpt-5.6-terra" } });
@@ -290,13 +265,17 @@ test("Daybreak settings", async ({ context }) => {
       models: [
         {
           model: "gpt-6-astra",
+          serviceTiers: [],
           supportedReasoningEfforts: [{ reasoningEffort: "high" }],
         },
       ],
     });
     assert.equal(await mode().count(), 0);
     assert.equal(await modelOptionDisabled(model(), "gpt-6-astra"), false);
-    assert.deepEqual(await page.evaluate(() => window.calls), []);
+    assert.deepEqual(
+      await page.evaluate(() => window.daybreakFixture.calls),
+      [],
+    );
     await reset({ agent: { model: "gpt-daybreak-blue-latest" } });
     assert.equal(
       await modelOptionDisabled(model(), "gpt-daybreak-blue-latest"),
@@ -317,21 +296,21 @@ test("Daybreak settings", async ({ context }) => {
 
     await reset({ agent: { status: "running" } });
     await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
-    await page.evaluate(() => (window.fail = "network"));
+    await page.evaluate(() => (window.daybreakFixture.fail = "network"));
     await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
-    const request = await page.evaluate(() => window.calls[0]);
-    assert.equal(request.next_turn, true);
-    assert.equal(request.daybreak_enabled, true);
+    const request = await page.evaluate(() => window.daybreakFixture.calls[0]);
+    assert.equal(required(request).next_turn, true);
+    assert.equal(required(request).daybreak_enabled, true);
     assert.equal(
-      await page.evaluate(() => window.agent.daybreakEnabled),
+      await page.evaluate(() => window.daybreakFixture.agent.daybreakEnabled),
       false,
     );
     assert.match(await page.locator("body").innerText(), /next turn/i);
     await page.reload();
-    await page.waitForFunction(() => !!window.reset, undefined, {
+    await page.waitForFunction(() => window.daybreakFixture?.ready, undefined, {
       timeout: 5_000,
     });
     await page
@@ -342,7 +321,7 @@ test("Daybreak settings", async ({ context }) => {
       .click();
     await settled();
     assert.deepEqual(
-      await page.evaluate(() => window.calls[0]),
+      await page.evaluate(() => window.daybreakFixture.calls[0]),
       request,
       "Retry retains the exact mode and request identity",
     );
@@ -353,14 +332,14 @@ test("Daybreak settings", async ({ context }) => {
 
     await reset({ agent: { status: "running" } });
     await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
-    await page.evaluate(() => (window.fail = "network"));
+    await page.evaluate(() => (window.daybreakFixture.fail = "network"));
     await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
     await page.evaluate(() =>
-      window.setAgent({
-        ...window.agent,
+      window.daybreakFixture.setAgent({
+        ...window.daybreakFixture.agent,
         accountKey: "second",
         model: "gpt-5.6-terra",
         daybreakEnabled: false,
@@ -386,7 +365,7 @@ test("Daybreak settings", async ({ context }) => {
       },
     });
     assert.equal(await mode().isChecked(), false);
-    await page.evaluate(() => (window.fail = "rejected"));
+    await page.evaluate(() => (window.daybreakFixture.fail = "rejected"));
     await enable();
     await page
       .getByRole("alert")
@@ -412,18 +391,21 @@ test("Daybreak settings", async ({ context }) => {
     });
     await enable(true);
     await settled();
-    assert.deepEqual(await page.evaluate(() => window.calls[0]), {
-      id: "first",
-      expected_account_key: "default",
-      worker_defaults: {
-        account_key: null,
-        model: "gpt-5.6-sol",
-        effort: "high",
-        fast_mode: false,
-        daybreak_enabled: true,
-        delegation_depth: 1,
+    assert.deepEqual(
+      await page.evaluate(() => window.daybreakFixture.calls[0]),
+      {
+        id: "first",
+        expected_account_key: "default",
+        worker_defaults: {
+          account_key: null,
+          model: "gpt-5.6-sol",
+          effort: "high",
+          fast_mode: false,
+          daybreak_enabled: true,
+          delegation_depth: 1,
+        },
       },
-    });
+    );
     assert.equal(
       await modelOptionDisabled(model(true), "__model_default__"),
       true,

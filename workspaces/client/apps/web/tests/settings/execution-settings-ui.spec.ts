@@ -123,11 +123,11 @@ test("execution settings ui", async ({ browser: _browser }) => {
       });
       page = await browser.firstWindow();
       assert.equal(
-        await browser.evaluate(({ BrowserWindow }) =>
-          required(
-            required(required(BrowserWindow)).getAllWindows()[0],
-          ).isVisible(),
-        ),
+        await browser.evaluate(({ BrowserWindow }) => {
+          const first = BrowserWindow.getAllWindows()[0];
+          if (!first) throw new Error("Missing hidden fixture window");
+          return first.isVisible();
+        }),
         false,
       );
     } else {
@@ -291,7 +291,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
           expect(geometry.right).toBeLessThanOrEqual(width);
           expect(geometry.content).toBeLessThanOrEqual(geometry.width);
           layoutMeasurements.push({
-            width,
+            viewportWidth: width,
             height,
             scheme,
             surface,
@@ -476,8 +476,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await nestedDelegationSaved).ok());
     await waitFor(
       async () =>
-        required((await state()).find((a) => a.id === lead.id).workerDefaults)
-          .delegationDepth === 2,
+        required(
+          required((await state()).find((a) => a.id === lead.id))
+            .workerDefaults,
+        ).delegationDepth === 2,
     );
     await openSettings("Subagent defaults");
     const defaultModel = dialog.getByLabel("Default subagent model", {
@@ -614,8 +616,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(
       async () =>
-        required((await state()).find((a) => a.id === lead.id).workerDefaults)
-          .model === "test-slow",
+        required(
+          required((await state()).find((a) => a.id === lead.id))
+            .workerDefaults,
+        ).model === "test-slow",
     );
     await waitFor(() => defaultModel.isEnabled());
     const solModelSaved = settingsResponse(
@@ -626,8 +630,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await solModelSaved).ok());
     await waitFor(
       async () =>
-        required((await state()).find((a) => a.id === lead.id).workerDefaults)
-          .model === "gpt-5.6-sol",
+        required(
+          required((await state()).find((a) => a.id === lead.id))
+            .workerDefaults,
+        ).model === "gpt-5.6-sol",
     );
     await waitFor(() => defaultModel.isEnabled());
     const higherWorkerReasoningSaved = settingsResponse(
@@ -712,7 +718,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       body: JSON.stringify({ cwd: root }),
     });
     assert.equal(freshResponse.status, 200);
-    const fresh = await freshResponse.json();
+    const fresh: import("../../src/types.ts").Agent =
+      await freshResponse.json();
     await page.reload();
     await page.locator(`[data-chat="${fresh.id}"]`).click();
     await openSettings("Main agent settings");
@@ -789,7 +796,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     ).toBeVisible();
     const pendingBodies: PostBody<"/api/conversation">[] = [];
     await page.route("**/api/conversation", async (route) => {
-      const body = route.request().postDataJSON();
+      const body: PostBody<"/api/conversation"> = route
+        .request()
+        .postDataJSON();
       if (!body.next_turn) {
         await route.continue();
         return;
@@ -817,8 +826,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     assert.equal(
       required(
-        (await state()).find((agent) => agent.id === required(running).id)
-          .pendingSettings,
+        required(
+          (await state()).find((agent) => agent.id === required(running).id),
+        ).pendingSettings,
       ).effort,
       "medium",
     );
@@ -839,7 +849,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
       pendingBodies[0],
       "Recovery uses the same settings and request identity",
     );
-    assert.match(required(pendingBodies[0]).request_id, /^[0-9a-f-]{36}$/);
+    assert.match(
+      required(required(pendingBodies[0]).request_id),
+      /^[0-9a-f-]{36}$/,
+    );
     assert.equal(
       required(
         (await state()).find((agent) => agent.id === required(running).id),

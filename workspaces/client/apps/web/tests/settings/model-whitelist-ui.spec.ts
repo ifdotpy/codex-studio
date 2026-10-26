@@ -1,3 +1,4 @@
+import type { PostBody } from "../../src/apiTypes.ts";
 import type { Route } from "@playwright/test";
 import { test, expect, spawnFixture, rustUiFixture } from "../playwright.ts";
 import { waitForFixturePort } from "../fixture-readiness.ts";
@@ -66,8 +67,10 @@ test("Models whitelist filters every execution role and preserves the current mo
     for (const checkbox of await whitelist.getByRole("checkbox").all())
       await expect(checkbox).toBeChecked();
     const failPreferenceWrite = async (route: Route) => {
-      if (route.request().postDataJSON()?.scope === "server")
-        await route.abort("failed");
+      const body: PostBody<"/api/sync/preferences"> = route
+        .request()
+        .postDataJSON();
+      if (body.scope === "server") await route.abort("failed");
       else await route.continue();
     };
     await page.route("**/api/sync/preferences", failPreferenceWrite);
@@ -221,9 +224,10 @@ test("Models whitelist filters every execution role and preserves the current mo
     await profile
       .getByRole("button", { name: "Save profile", exact: true })
       .click();
-    expect((await savedProfile).request().postDataJSON().model).toBe(
-      "gpt-6-astra",
-    );
+    const savedBody: PostBody<"/api/conversation"> = (await savedProfile)
+      .request()
+      .postDataJSON();
+    expect(savedBody.model).toBe("gpt-6-astra");
     await page.locator(".workspace-drawer .mantine-Drawer-close").click();
     await page
       .getByRole("button", { name: "Studio settings", exact: true })

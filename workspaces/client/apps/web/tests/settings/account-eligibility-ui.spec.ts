@@ -1,3 +1,4 @@
+import type { EntityEnvelope } from "../playwright.ts";
 import assert from "node:assert/strict";
 import type { components } from "../../src/generated/api.ts";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
@@ -47,7 +48,6 @@ for (const provider of ["codex", "claude"])
             : ["claude", "codex", "codex", "codex", "claude"];
         data.accounts = providers.map((accountProvider, index) =>
           Object.assign(structuredClone(base), {
-            ...structuredClone(base),
             id: index ? `eligibility-${index}` : base.id,
             accountId: index ? `eligibility-${index}` : base.accountId,
             provider: accountProvider,
@@ -71,9 +71,9 @@ for (const provider of ["codex", "claude"])
       await page.route("**/api/limits?**", (route) =>
         route.fulfill({
           json: {
-            accountKey: new URL(route.request().url()).searchParams.get(
-              "account_key",
-            ),
+            accountKey:
+              new URL(route.request().url()).searchParams.get("account_key") ||
+              "",
             at: Date.now() / 1000,
             data: {
               rateLimits: {
@@ -84,7 +84,7 @@ for (const provider of ["codex", "claude"])
                 },
               },
             },
-          },
+          } satisfies components["schemas"]["AccountRateLimitsDto"],
         }),
       );
       await page.route("**/api/claude/session", (route) =>
@@ -92,16 +92,24 @@ for (const provider of ["codex", "claude"])
           json: {
             settings: { permissionMode: "acceptEdits", thinking: true },
             turns: [],
-          },
+          } satisfies components["schemas"]["ClaudeSessionStateResponse"],
         }),
       );
       await page.route("**/api/sync/pull*", async (route) => {
         const response = await route.fetch();
-        const data = await response.json();
+        const data: components["schemas"]["SyncPullResponse"] =
+          await response.json();
         for (const document of data.documents || []) {
+          if (!("payload" in document)) continue;
           if (document._deleted) continue;
-          const entity = JSON.parse(document.payload);
-          if (entity.collection === "agent" && entity.id === lead.id) {
+          const entity: EntityEnvelope = JSON.parse(document.payload);
+          if (
+            entity.collection === "agent" &&
+            entity.id === lead.id &&
+            entity.value &&
+            typeof entity.value === "object" &&
+            !Array.isArray(entity.value)
+          ) {
             Object.assign(entity.value, { provider, yoloMode: false });
             document.payload = JSON.stringify(entity);
           }

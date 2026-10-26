@@ -32,7 +32,9 @@ test("Claude idle compaction settings and notice at 320 and 1200 pixels", async 
     await route.fulfill({
       status: 200,
       headers: apiSchemaHeaders(),
-      json: { settings },
+      json: {
+        settings,
+      } satisfies components["schemas"]["OrchestrationSettingsResponse"],
     });
   });
   const server = await createFixtureViteServer({

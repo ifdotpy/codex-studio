@@ -125,14 +125,18 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
           json: {
             settings: { permissionMode: "acceptEdits", thinking: true },
             turns: [],
-          },
+          } satisfies components["schemas"]["ClaudeSessionStateResponse"],
         });
       }
       if (url.pathname === "/api/models") {
         modelReads++;
         assert.equal(authenticated, true);
         assert.equal(url.searchParams.get("account_key"), "claude-work");
-        return route.fulfill({ json: { data: [{ model: "sonnet" }] } });
+        return route.fulfill({
+          json: {
+            data: [{ model: "sonnet" }],
+          } satisfies components["schemas"]["ModelCatalogResponse"],
+        });
       }
       if (url.pathname === "/api/accounts/claude/login") {
         if (req.method() === "POST") {
@@ -251,7 +255,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
           json: {
             settings: { permissionMode: "acceptEdits", thinking: true },
             turns: [],
-          },
+          } satisfies components["schemas"]["ClaudeSessionStateResponse"],
         });
       }
       assert.notEqual(url.pathname, "/api/models");

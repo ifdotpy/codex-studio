@@ -16,17 +16,49 @@ export function fixtureAccount(
   > &
     Partial<import("../../src/components/Accounts.tsx").Account>,
 ): import("../../src/components/Accounts.tsx").Account {
-  return {
-    home: "",
-    source: "Codex",
-    provider: "codex",
-    status: "ready",
-    ...value,
-  };
+  return Object.assign(
+    {
+      home: "",
+      source: "Codex",
+      provider: "codex" as const,
+      status: "ready" as const,
+    },
+    value,
+  );
 }
 
 export function required<T>(value: T | null | undefined): T {
   if (value === null || value === undefined)
     throw new Error("Missing expected fixture value");
   return value;
+}
+
+export function fixtureNotReady(): never {
+  throw new Error("Fixture harness has not rendered");
+}
+
+export async function fixtureFetchInput(
+  input: RequestInfo | URL,
+  options?: RequestInit,
+) {
+  if (!(input instanceof Request)) return { url: String(input), options };
+  const url = new URL(input.url);
+  return {
+    url: url.pathname + url.search,
+    options: {
+      method: input.method,
+      ...(input.method === "GET" ? {} : { body: await input.clone().text() }),
+    },
+  };
+}
+
+export function fixturePostBody<
+  Path extends import("../../src/apiTypes.ts").ApiPostPath,
+>(
+  body: BodyInit | null | undefined,
+): import("../../src/apiTypes.ts").PostBody<Path> {
+  // The renderer under test wrote this request using the generated route contract.
+  return JSON.parse(
+    String(body),
+  ) as import("../../src/apiTypes.ts").PostBody<Path>;
 }
