@@ -1,3 +1,4 @@
+import type { Session } from "./session-state.ts";
 import { test, expect } from "vitest";
 import {
   cacheReport,
@@ -7,7 +8,11 @@ import {
 } from "./idle-compaction.ts";
 
 test("reports the last request TTL and context, not cumulative result usage", () => {
-  const s = { cwd: "/repo", model: "opus", developerInstructions: "rules" };
+  const s: Partial<Session> = {
+    cwd: "/repo",
+    model: "opus",
+    developerInstructions: "rules",
+  };
   const report = cacheReport(
     s,
     {
@@ -79,7 +84,7 @@ test("reports the last request TTL and context, not cumulative result usage", ()
 });
 
 test("refuses a changed prefix, newer request, active query, and disabled auto compaction", () => {
-  const s = { model: "opus" };
+  const s: Partial<Session> = { model: "opus" };
   s.idleCache = cacheReport(
     s,
     {
@@ -103,32 +108,11 @@ test("refuses a changed prefix, newer request, active query, and disabled auto c
 
 test("the real bridge emits request-local cache telemetry and keeps it across a bridge restart", async () => {
   const { startBridge } = await import("./testing/bridge-harness.ts");
-  const sdk = String.raw`
-export const resolveSettings=async()=>({effective:{}});
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-export function query({prompt,options}) {
- const abort=new AbortController();
- return { supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
- accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
- initializationResult:async()=>({commands:[]}),mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
- setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},setMcpServers:async()=>({added:[],removed:[],errors:{}}),
- close(){abort.abort();},interrupt:async()=>abort.abort(),
- async *[Symbol.asyncIterator]() {
-  for await (const input of prompt) {
-   if(abort.signal.aborted)return;
-   yield {type:'user',isReplay:true,uuid:input.uuid};
-   yield {type:'system',subtype:'init'};
-   if(input.message.content[0].text==='/compact')yield {type:'system',subtype:'compact_boundary',uuid:'boundary',compact_metadata:{trigger:'manual',pre_tokens:210000,post_tokens:1000}};
-   yield {type:'assistant',uuid:'message',message:{id:'response',role:'assistant',model:'claude-opus-5-5',content:[{type:'text',text:'done'}],usage:{input_tokens:10,cache_read_input_tokens:200000,cache_creation_input_tokens:10000,output_tokens:20,cache_creation:{ephemeral_1h_input_tokens:10000,ephemeral_5m_input_tokens:0}}}};
-   yield {type:'result',subtype:'success',usage:{input_tokens:9999999,output_tokens:9999999},result:'done'};
-  }
- }};
-}
-`;
-  const bridge = await startBridge(sdk, "claude-idle-compaction-");
+
+  const bridge = await startBridge(
+    new URL("./fixtures/idle-compaction-sdk.ts", import.meta.url),
+    "claude-idle-compaction-",
+  );
   try {
     const turn = await bridge.call("turn/start", {
       threadId: bridge.thread,

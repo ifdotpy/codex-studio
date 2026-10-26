@@ -39,6 +39,7 @@ export interface FileRestorePlan {
   }[];
 }
 export interface TurnError {
+  resetsAt?: number | undefined;
   message: string;
   codexErrorInfo?: string;
   data?: Record<string, unknown>;
