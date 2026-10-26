@@ -1,5 +1,8 @@
 import type { DraftView as GeneratedDraftView } from "../generated/rustOwned.ts";
 
+// The native host sends subscription payloads in this envelope.
+export type NativeEvent<Value = unknown> = { event: string; value: Value };
+
 export type HttpResponse = {
   status: number;
   headers: Record<string, string>;
