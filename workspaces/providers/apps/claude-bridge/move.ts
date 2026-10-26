@@ -2,9 +2,9 @@ import type { Session } from "./session-state.ts";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 export type ProofTool = {
   name: string;
-  description?: string;
-  input_schema?: Record<string, unknown> | undefined;
-  schema?: Record<string, unknown>;
+  description?: unknown;
+  input_schema?: unknown;
+  schema?: unknown;
   [key: string]: unknown;
 };
 export type ToolProof = {
