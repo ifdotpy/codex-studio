@@ -1,3 +1,6 @@
+import { responseJson, required } from "../messages/helpers.ts";
+import type { GetResult } from "../../src/apiTypes.ts";
+import type { Page } from "@playwright/test";
 import {
   readTestState,
   test,
@@ -22,13 +25,13 @@ test("Question history", async ({ context }) => {
     },
   });
   let log = "",
-    page;
-  proc.stderr.on("data", (data) => {
+    page: Page | undefined;
+  proc.stderr?.on("data", (data) => {
     log += data;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+    const port = await new Promise<number>((resolve, reject) => {
+      proc.stdout?.once("data", (data) => resolve(Number(String(data).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
@@ -36,22 +39,26 @@ test("Question history", async ({ context }) => {
     const lead = state.runtime.agents.find(
       (agent) => agent.name === "Release lead",
     );
+    assert(lead, "Fixture lead exists");
     page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(origin);
     await page.locator("#message").waitFor({ timeout: 60000 });
     const selectLead = () =>
-      page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+      required(page)
+        .locator("[data-chat]")
+        .filter({ hasText: "Release lead" })
+        .click();
     await selectLead();
     const assistant = page.locator(".message.assistant").first();
     await assistant.waitFor();
     const transcriptLayout = await assistant.evaluate((element) => {
-      const column = element
-        .closest(".message-content")
-        .getBoundingClientRect();
+      const content = element.closest(".message-content");
+      if (!content) throw new Error("Missing message content");
+      const column = content.getBoundingClientRect();
       const answer = element.getBoundingClientRect();
       return {
         width: column.width,
@@ -76,27 +83,24 @@ test("Question history", async ({ context }) => {
       exact: true,
     });
     await page.mouse.move(0, 0);
-    await page.waitForFunction(
-      () =>
-        getComputedStyle(
-          document.querySelector(".message.assistant .copy-message"),
-        ).opacity === "0",
-    );
+    await page.waitForFunction(() => {
+      const button = document.querySelector(".message.assistant .copy-message");
+      if (!button) throw new Error("Missing copy button");
+      return getComputedStyle(button).opacity === "0";
+    });
     await assistant.hover();
-    await page.waitForFunction(
-      () =>
-        getComputedStyle(
-          document.querySelector(".message.assistant .copy-message"),
-        ).opacity === "1",
-    );
+    await page.waitForFunction(() => {
+      const button = document.querySelector(".message.assistant .copy-message");
+      if (!button) throw new Error("Missing copy button");
+      return getComputedStyle(button).opacity === "1";
+    });
     await page.mouse.move(0, 0);
     await copy.focus();
-    await page.waitForFunction(
-      () =>
-        getComputedStyle(
-          document.querySelector(".message.assistant .copy-message"),
-        ).opacity === "1",
-    );
+    await page.waitForFunction(() => {
+      const button = document.querySelector(".message.assistant .copy-message");
+      if (!button) throw new Error("Missing copy button");
+      return getComputedStyle(button).opacity === "1";
+    });
     const card = page.locator('[data-request$=":question:async-question"]');
     assert.equal(
       await card
@@ -113,11 +117,11 @@ test("Question history", async ({ context }) => {
       false,
       "deferral removes the reminder card",
     );
-    let history = await (
-      await fetch(origin + "/api/questions?agent=" + lead.id)
-    ).json();
-    assert.equal(history.items[0].status, "pending");
-    assert.equal(history.items[0].deferred, true);
+    let history = await responseJson<GetResult<"/api/questions">>(
+      await fetch(origin + "/api/questions?agent=" + lead.id),
+    );
+    assert.equal(required(history.items[0]).status, "pending");
+    assert.equal(required(history.items[0]).deferred, true);
     await page.reload();
     await selectLead();
     await deferred.locator("summary").click();
@@ -142,24 +146,29 @@ test("Question history", async ({ context }) => {
     await card.waitFor({ state: "hidden" });
     const absent = async () => {
       assert.equal(
-        await page.getByText("Question history", { exact: true }).count(),
+        await required(page)
+          .getByText("Question history", { exact: true })
+          .count(),
         0,
       );
       assert.equal(
-        await page.locator('.agent-phase[data-phase="completed"]').count(),
+        await required(page)
+          .locator('.agent-phase[data-phase="completed"]')
+          .count(),
         0,
       );
     };
     await absent();
-    history = await (
-      await fetch(origin + "/api/questions?agent=" + lead.id)
-    ).json();
-    assert.equal(
-      history.items[0].answerHistory[0].answer[0],
-      "Only the runtime folder",
+    history = await responseJson<GetResult<"/api/questions">>(
+      await fetch(origin + "/api/questions?agent=" + lead.id),
     );
-    assert.equal(history.items[0].answeredBy, "user");
-    assert.equal(history.items[0].deferred, false);
+    const answer = required(
+      required(history.items[0]).answerHistory?.[0],
+    ).answer;
+    assert(Array.isArray(answer), "Question answer is a list");
+    assert.equal(answer[0], "Only the runtime folder");
+    assert.equal(required(history.items[0]).answeredBy, "user");
+    assert.equal(required(history.items[0]).deferred, false);
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
