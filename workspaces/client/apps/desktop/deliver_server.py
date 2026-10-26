@@ -198,6 +198,10 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
         request['startupBackend'] = startup
     if recovered is not None:
         request['installedDelivery'] = recovered
+    predecessor = None
+    if recovered is not None and 'installedDelivery' in prior['request']:
+        predecessor = {'version':desktop_delivery.STARTUP_INTENT_VERSION, 'id':prior['id'],
+                       'requestHash':desktop_delivery.request_hash(prior['request'])}
     operation = str(uuid.uuid5(uuid.NAMESPACE_URL, 'studio-delivery:' + str(state) + ':' + commit))
     owner_receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
     if owner_receipt.get('id') == operation and owner_receipt.get('outcome') in ('failed', 'obsolete'):
@@ -223,7 +227,9 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
             return previous
         if receipt.get('id') == operation and receipt.get('outcome') in ('failed', 'obsolete'):
             raise DeliveryError('The recovery owner reports delivery ' + str(receipt['outcome']))
-        if previous.get('phase') in (PHASES['publishing'], PHASES['submitted']):
+        resume_publication = (recovered is not None and previous.get('phase') == PHASES['publishing']
+                              and previous.get('installerDispatch') is None)
+        if previous.get('phase') in (PHASES['publishing'], PHASES['submitted']) and not resume_publication:
             raise DeliveryError('The delivery outcome is unknown; keep this request and inspect the recovery receipt')
     if pending_path.exists() or pending_path.is_symlink():
         raise DeliveryError('Another update is pending; inspect its receipt before delivery')
@@ -238,8 +244,8 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
         pointer = state / desktop_delivery.STARTUP_INTENT_FILE
         if pointer.exists() or pointer.is_symlink():
             intent = desktop_delivery.read_private_json(pointer)
-            if intent != {'version': desktop_delivery.STARTUP_INTENT_VERSION, 'id': operation,
-                          'requestHash': desktop_delivery.request_hash(request)}:
+            if intent not in ({'version': desktop_delivery.STARTUP_INTENT_VERSION, 'id': operation,
+                              'requestHash': desktop_delivery.request_hash(request)}, predecessor):
                 raise DeliveryError('Another startup delivery intent is unresolved')
     record = previous or {'id': operation, 'request': request,
                           'beforePid': starting_pid if startup is not None else prior['beforePid'] if recovered is not None else identity['pid'],
@@ -293,7 +299,7 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
             desktop_delivery.publish_startup_intent(state, record)
         if recovered is not None:
             recovery.verify_installed_admission(config, state, installed, recovered, handles)
-            desktop_delivery.publish_startup_intent(state, record)
+            desktop_delivery.publish_startup_intent(state, record, predecessor=predecessor if pointer.exists() and desktop_delivery.read_private_json(pointer) == predecessor else None)
         pending = {'id': operation, 'app': str(staged), 'build': build, 'from': 'local-delivery'}
         try:
             publish_pending(state, pending)
@@ -334,6 +340,56 @@ def verify_completion(record, installed, observe):
             recovery.installed_delivery_origin(config, state, installed, proof, record['handles'], swapped=True)
             recovery.verify_startup_state_files(state, proof, request['backendHash'])
     return {**record, 'phase': PHASES['installed'], 'afterPid': identity['pid']}
+
+
+def dispatch_recovery_installer(record, installed, *, run=None):
+    """Dispatch the existing installed installer once. Never create another install or backend owner."""
+    import subprocess
+    run = run or subprocess.run
+    request = record['request']
+    proof = request.get('installedDelivery')
+    if proof is None or proof['version'] != CONTRACT['installedRecoveryVersion']:
+        return record
+    state = Path(request['stateDir'])
+    with desktop_delivery.delivery_lease(state):
+        durable = read_delivery_record(journal_path(state, record['id']))
+        if not durable or durable['request'] != request:
+            raise DeliveryError('The installer dispatch differs from its durable delivery')
+        receipt = desktop_delivery.read_private_json(state / updates.RECEIPT_FILE)
+        if receipt.get('id') == record['id'] and receipt.get('outcome') == 'installed':
+            return durable
+        dispatch = durable.get('installerDispatch')
+        if dispatch is not None and (not isinstance(dispatch,dict) or dispatch.get('phase') != 'waiting'):
+            raise DeliveryPending('The existing installer dispatch outcome is unknown; do not repeat it')
+        config = recovery.startup_delivery_config(state, installed)
+        recovery.verify_installed_admission(config, state, installed, proof, durable['handles'])
+        expected = {'version':desktop_delivery.STARTUP_INTENT_VERSION, 'id':record['id'],
+                    'requestHash':desktop_delivery.request_hash(request)}
+        pending = updates.read_pending(state)
+        if (desktop_delivery.read_private_json(state / desktop_delivery.STARTUP_INTENT_FILE) != expected
+                or not pending or pending['id'] != record['id'] or pending['build'] != request['build']
+                or pending['from'] != 'local-delivery' or bundle_hash(Path(pending['app'])) != request['bundleHash']):
+            raise DeliveryError('The installer dispatch has no exact published request')
+        installer = installed / 'Contents/Resources/install_update.py'
+        # The verified installed bundle owns these exact bytes. The child takes its existing
+        # install and maintenance leases after publication released them and the runtime lease.
+        installer_identity = {**recovery.startup_file_identity(installer),'sha256':file_hash(installer)}
+        durable['installerDispatch'] = {'phase':'requested','installer':installer_identity}
+        desktop_delivery.save_journal(state, durable)
+        if {**recovery.startup_file_identity(installer),'sha256':file_hash(installer)} != installer_identity:
+            raise DeliveryError('The installed installer changed before dispatch')
+        result = run([config['python'], '-B', str(installer), '--config', str(state / 'background-recovery.json')],
+                     cwd=Path.home(), env=recovery.launch_environment(config, state), stdin=subprocess.DEVNULL,
+                     timeout=recovery.UPDATE_INSTALL_SECONDS, check=False)
+        durable = read_delivery_record(journal_path(state, record['id']))
+        if not durable or durable['request'] != request:
+            raise DeliveryError('The delivery changed while its existing installer ran')
+        durable['installerDispatch'] = {'phase':{0:'installed',75:'waiting'}.get(result.returncode,'failed'),
+                                       'installer':installer_identity}
+        desktop_delivery.save_journal(state, durable)
+        if result.returncode != 0:
+            raise DeliveryPending('The existing installer is waiting or failed; the exact delivery is retained')
+        return durable
 
 
 def wait_for_completion(record, installed, receipts, observe):
@@ -378,6 +434,12 @@ def resume_saved(source, commit, installed, receipts, observe, *, starting_pid=N
             or request.get('build') != updates.read_build(source)
             or request.get('bundleHash') != bundle_hash(source)):
         raise DeliveryError('The saved delivery request names a different package or target')
+    if recover_installed is not None and saved.get('phase') == PHASES['publishing'] and updates.read_pending(Path(request['stateDir'])) is None and saved.get('installerDispatch') is None:
+        receipt = desktop_delivery.read_private_json(Path(request['stateDir']) / updates.RECEIPT_FILE)
+        if desktop_delivery.request_hash(receipt) == request['installedDelivery']['priorReceiptHash']:
+            return None  # Continue only this durable publication, never create another operation.
+    if recover_installed is not None:
+        saved = dispatch_recovery_installer(saved, installed.resolve())
     return wait_for_completion(saved, installed.resolve(), receipts.resolve(), observe)
 
 
@@ -410,6 +472,8 @@ def main():
                        starting_pid=args.starting_backend_pid, recover_installed=args.recover_installed_delivery,
                        state=args.state, port=port)
     if not args.dry_run and record['phase'] not in (PHASES['installed'], 'already_installed'):
+        if args.recover_installed_delivery is not None:
+            record = dispatch_recovery_installer(record, args.installed.resolve())
         record = wait_for_completion(record, args.installed.resolve(), args.receipts.resolve(), observe)
     print(json.dumps({'id': record['id'], 'commit': args.commit, 'phase': record['phase'],
                       'providers': len(record['handles']), 'receipts': str(args.receipts)}), flush=True)

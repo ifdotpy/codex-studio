@@ -107,6 +107,23 @@ Only the normal recovery loop starts a replacement after the state becomes free.
 Final delivery success requires real HTTP and unchanged retained handles.
 Retry the same new package, commit, prior UUID, state, and receipt directory after an uncertain response.
 
+A successor can replace only the exact installed predecessor intent under the delivery lease.
+Its versioned proof keeps the canonical original state-owner journal and fixed file identities.
+The state-owner build can differ from the current installed build when that build never started.
+This does not permit another historical marker or a marker change.
+Publication preserves the predecessor journal and uses an atomic pointer replacement.
+
+An older recovery helper can reject the new proof before it reaches its installer.
+The official command then dispatches the exact existing installed installer after publication releases its runtime and installer leases.
+The existing installer still owns the swap. The registered recovery helper refreshes from the new app bytes.
+The command records the dispatch before it starts the installer.
+An unknown dispatch outcome blocks another invocation, including the recovery loop.
+Only an exact receipt and real HTTP can confirm completion.
+
+The complete exact-image inspection has a 10-second limit.
+This bound accommodates measured scans that exceeded the former 2-second limit.
+An expired inspection still blocks recovery. It never proves that a process ended.
+
 ## Install commands
 
 From the repository root, with the pinned Rust toolchain and Node.js available:

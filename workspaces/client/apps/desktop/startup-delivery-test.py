@@ -46,6 +46,8 @@ class StartupDeliveryTests(unittest.TestCase):
             binary.write_bytes(content)
             binary.chmod(0o700)
             updates.write_json(app / updates.BUILD_STAMP, build)
+            installer_file = app / 'Contents/Resources/install_update.py'
+            installer_file.write_bytes(Path(installer.__file__).read_bytes())
             if build == self.new:
                 resources = app / 'Contents/Resources'
                 for name in desktop_delivery.CONTRACT['startupResources']:
@@ -511,11 +513,12 @@ class StartupDeliveryTests(unittest.TestCase):
         return source
 
     def installed_stage(self, source, **options):
+        receipts = options.pop('receipts', self.root / 'recovery-receipts')
         with patch.object(recovery, 'supervisor_request', return_value=self.health), \
                 patch.object(recovery, 'listener_pids', return_value=[]), \
                 patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None, create=True):
             return delivery.stage(source, self.following['commit'], self.installed,
-                                  self.root / 'recovery-receipts',
+                                  receipts,
                                   observe=lambda: self.fail('an installed-delivery recovery must not fabricate HTTP identity'),
                                   run=self.fake_tool, recover_installed=self.operation,
                                   state=self.state, port=4620, **options)
@@ -535,6 +538,161 @@ class StartupDeliveryTests(unittest.TestCase):
         self.assertEqual(self.installed_stage(source), result)
         self.assertEqual(updates.read_pending(self.state)['id'], result['id'])
         self.assertEqual(self.journal.read_bytes(), original)
+
+    def test_measured_image_inspection_completes_without_treating_timeout_as_absence(self):
+        import subprocess
+        def measured_read(command, **options):
+            # The real exact-image scan completed in 3.148 seconds, beyond the former 2-second budget.
+            if options['timeout'] < 3.148:
+                raise subprocess.TimeoutExpired(command, options['timeout'])
+            return subprocess.CompletedProcess(command,1,'','')
+        with patch.object(recovery.subprocess, 'run', side_effect=measured_read):
+            self.assertEqual(recovery.mapped_backend_pids(delivery.server_path(self.installed), self.state), [])
+        with patch.object(recovery.subprocess, 'run', side_effect=subprocess.TimeoutExpired('lsof', 10)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                recovery.mapped_backend_pids(delivery.server_path(self.installed), self.state)
+
+    def prepare_installed_chain(self):
+        source = self.prepare_installed_recovery()
+        record = self.install_recovered_delivery(source)
+        proof = record['request']['installedDelivery']
+        proof['version'] = 1
+        proof.pop('stateOwner', None)
+        updates.write_json(delivery.journal_path(self.state, record['id']), record)
+        updates.write_json(self.intent, {'version':desktop_delivery.STARTUP_INTENT_VERSION,
+                           'id':record['id'],'requestHash':desktop_delivery.request_hash(record['request'])})
+        self.operation = record['id']
+        self.record = record
+        self.journal = delivery.journal_path(self.state, record['id'])
+        self.following = {**self.following, 'builtAt':4000.5,'commit':'e'*40,'commitTime':4000}
+        following = self.root / 'chain' / updates.APP_NAME
+        following.parent.mkdir()
+        shutil.copytree(self.installed, following)
+        delivery.server_path(following).write_bytes(b'chain-fix')
+        updates.write_json(following / updates.BUILD_STAMP, self.following)
+        updates.write_json(following / 'Contents/Resources/delivery-contract.json', desktop_delivery.CONTRACT)
+        return following
+
+    def test_exact_installed_predecessor_can_be_superseded_without_changing_its_state_marker_or_journal(self):
+        source = self.prepare_installed_chain()
+        prior = self.journal.read_bytes()
+        marker = (self.state / 'rust-state-owner.json').read_bytes()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        self.assertEqual(record['phase'], 'submitted')
+        self.assertEqual(desktop_delivery.read_private_json(self.intent)['id'], record['id'])
+        self.assertEqual(self.journal.read_bytes(), prior)
+        self.assertEqual((self.state / 'rust-state-owner.json').read_bytes(), marker)
+        self.assertEqual(record['request']['installedDelivery']['stateOwner']['backendBuild'], json.loads(marker)['backendBuild'])
+
+    def test_old_v1_consumer_holds_but_official_dispatch_uses_the_exact_existing_installer_once(self):
+        import importlib.util
+        import subprocess
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        fixture = Path(__file__).parent/'fixtures/installed_delivery_c004.py'
+        namespace = dict(recovery.__dict__)
+        exec(compile(fixture.read_text(), str(fixture), 'exec'), namespace)
+        namespace['verify_delivery_recovery_owner'] = lambda *_a,**_k:None
+        with patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None), \
+                patch.object(recovery, 'supervisor_request', return_value=self.health):
+            with self.assertRaisesRegex(RuntimeError, 'state owner marker'):
+                namespace['installed_delivery_tick'](self.config, self.state, record)
+        calls = []
+        def existing_installer(command, **options):
+            self.assertEqual(command, [self.config['python'],'-B',str(self.installed/'Contents/Resources/install_update.py'),
+                                       '--config',str(self.state/'background-recovery.json')])
+            self.assertFalse(recovery.startup_lease_held(self.state), 'publication must release the runtime lease before dispatch')
+            calls.append(command)
+            code, _ = installer.install(self.state, self.config, applications=self.installed.parent,
+                                         run=self.fake_tool,
+                                         verify=lambda *_: (_ for _ in ()).throw(TimeoutError('no HTTP')),
+                                         stop=lambda *_: self.fail('no unverified signal'),sleep=lambda _:None)
+            with patch.object(recovery,'mapped_backend_pids',return_value=[]), \
+                    self.assertRaisesRegex(delivery.DeliveryError,'Another local delivery is active'):
+                recovery.installed_delivery_tick(self.config,self.state,record)
+            return subprocess.CompletedProcess(command,code)
+        with patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None), \
+                patch.object(recovery, 'supervisor_request', return_value=self.health), \
+                patch.object(recovery, 'listener_pids', return_value=[]):
+            done = delivery.dispatch_recovery_installer(record, self.installed, run=existing_installer)
+            delivery.dispatch_recovery_installer(record, self.installed, run=lambda *_a,**_k:self.fail('no second installer'))
+        self.assertEqual(len(calls),1)
+        self.assertEqual(done['installerDispatch']['phase'],'installed')
+        self.assertNotIn('startupRecovery',done)
+        self.assertEqual(updates.read_build(self.installed),self.following)
+        self.calls.clear()
+        self.run_once(launch=True)
+        self.assertEqual(self.calls[-1][0],'spawn')
+
+    def test_chained_publication_crash_resumes_same_request_and_late_completion_cannot_clear_it(self):
+        source = self.prepare_installed_chain()
+        predecessor = copy.deepcopy(self.record)
+        original_pointer = desktop_delivery.read_private_json(self.intent)
+        with patch.object(desktop_delivery, 'publish_startup_intent', side_effect=OSError('lost before CAS')):
+            with self.assertRaises(OSError):
+                self.installed_stage(source, receipts=self.root/'chain-receipts')
+        self.assertEqual(desktop_delivery.read_private_json(self.intent),original_pointer)
+        self.assertIsNone(delivery.resume_saved(source,self.following['commit'],self.installed,self.root/'chain-receipts',
+            lambda:self.fail('a durable publication must resume before HTTP'),recover_installed=self.operation,state=self.state))
+        with patch.object(delivery, 'publish_pending', side_effect=OSError('lost after CAS')):
+            with self.assertRaises(OSError):
+                self.installed_stage(source, receipts=self.root/'chain-receipts')
+        pointer = desktop_delivery.read_private_json(self.intent)
+        with self.assertRaises(delivery.DeliveryError):
+            desktop_delivery.clear_startup_intent(self.state, predecessor)
+        self.assertEqual(desktop_delivery.read_private_json(self.intent),pointer)
+        result = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        self.assertEqual(result['id'],pointer['id'])
+        self.assertEqual(updates.read_pending(self.state)['id'],pointer['id'])
+
+    def test_valid_foreign_historical_marker_is_not_an_inherited_state_owner(self):
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        proof = record['request']['installedDelivery']
+        original = delivery.read_delivery_record(delivery.journal_path(self.state,proof['stateOwner']['id']))
+        foreign = copy.deepcopy(original)
+        foreign['request']['commit'] = 'f'*40
+        foreign['request']['build']['commit'] = 'f'*40
+        foreign['id'] = str(uuid.uuid5(uuid.NAMESPACE_URL,'studio-delivery:'+str(self.state)+':'+'f'*40))
+        updates.write_json(delivery.journal_path(self.state,foreign['id']),foreign)
+        proof['stateOwner'] = {'id':foreign['id'],'requestHash':desktop_delivery.request_hash(foreign['request']),
+                               'backendBuild':foreign['request']['backendHash']}
+        with self.assertRaisesRegex(RuntimeError,'exact predecessor chain'):
+            recovery.installed_state_owner(self.state,self.installed,proof,record['handles'])
+
+    def test_predecessor_cas_refuses_a_replaced_pointer(self):
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source,receipts=self.root/'chain-receipts')
+        expected = desktop_delivery.read_private_json(self.intent)
+        successor = {**record,'id':str(uuid.uuid4()),'request':{**record['request'],'extra':'different'}}
+        foreign = {'version':1,'id':str(uuid.uuid4()),'requestHash':'f'*64}
+        actual = desktop_delivery.read_private_json
+        reads = []
+        def competing(path):
+            if path == self.intent:
+                reads.append(True)
+                if len(reads) == 2:
+                    updates.write_json(path,foreign)
+            return actual(path)
+        with desktop_delivery.delivery_lease(self.state), patch.object(desktop_delivery,'read_private_json',side_effect=competing):
+            with self.assertRaisesRegex(delivery.DeliveryError,'predecessor changed'):
+                desktop_delivery.publish_startup_intent(self.state,successor,predecessor=expected)
+        self.assertEqual(actual(self.intent),foreign)
+
+    def test_unknown_installer_dispatch_is_durable_and_cannot_be_repeated(self):
+        import subprocess
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        with patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None), \
+                patch.object(recovery, 'supervisor_request', return_value=self.health), \
+                patch.object(recovery, 'listener_pids', return_value=[]):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                delivery.dispatch_recovery_installer(record,self.installed,
+                    run=lambda *_a,**_k:(_ for _ in ()).throw(subprocess.TimeoutExpired('installed installer',1800)))
+            with self.assertRaises(delivery.DeliveryPending):
+                delivery.dispatch_recovery_installer(record,self.installed,run=lambda *_a,**_k:self.fail('unknown must hold'))
+        self.run_once(install=lambda *_a:self.fail('the recovery owner must not repeat an unknown dispatch'))
+        self.assertEqual(self.calls,[])
 
     def install_recovered_delivery(self, source):
         record = self.installed_stage(source)

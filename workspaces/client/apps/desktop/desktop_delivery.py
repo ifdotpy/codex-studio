@@ -203,8 +203,10 @@ def validate_installed_proof(proof):
     from desktop_process import STARTUP_STATE_FILES
     fields = {'version', 'kind', 'priorId', 'priorRequestHash', 'priorReceiptHash', 'configHash',
               'previousBuild', 'previousBundleHash', 'executable', 'files', 'supervisorHandles'}
+    if isinstance(proof, dict) and proof.get('version') == CONTRACT['installedRecoveryVersion']:
+        fields.add('stateOwner')
     if (not isinstance(proof, dict) or set(proof) != fields
-            or type(proof['version']) is not int or proof['version'] != CONTRACT['installedRecoveryVersion']
+            or type(proof['version']) is not int or proof['version'] not in (1, CONTRACT['installedRecoveryVersion'])
             or proof['kind'] != 'installed-delivery' or not valid_operation(proof['priorId'])
             or any(not valid_hash(proof[key]) for key in (
                 'priorRequestHash', 'priorReceiptHash', 'configHash', 'previousBundleHash'))
@@ -214,6 +216,12 @@ def validate_installed_proof(proof):
             or any(not valid_file_identity(value) for value in proof['files'].values())
             or not isinstance(proof['supervisorHandles'], list)):
         raise DeliveryError('The installed-delivery recovery proof is invalid')
+    if proof['version'] == CONTRACT['installedRecoveryVersion']:
+        owner = proof['stateOwner']
+        if (not isinstance(owner, dict) or set(owner) != {'id','requestHash','backendBuild'}
+                or not valid_operation(owner['id']) or not valid_hash(owner['requestHash'])
+                or not valid_hash(owner['backendBuild'])):
+            raise DeliveryError('The installed-delivery state-owner proof is invalid')
     validate_supervisor_handles(proof['supervisorHandles'])
     return proof
 
@@ -258,15 +266,17 @@ def sync_directory(path):
         os.close(descriptor)
 
 
-def publish_startup_intent(state, record):
+def publish_startup_intent(state, record, *, predecessor=None):
     """Publish only a pointer to the durable request; never replace an unresolved request."""
     path = state / STARTUP_INTENT_FILE
     intent = {'version': STARTUP_INTENT_VERSION, 'id': record['id'],
               'requestHash': request_hash(record['request'])}
     if path.exists() or path.is_symlink():
-        if read_private_json(path) != intent:
+        saved = read_private_json(path)
+        if saved == intent:
+            return
+        if predecessor is None or saved != predecessor:
             raise DeliveryError('Another startup delivery intent is unresolved')
-        return
     descriptor, name = tempfile.mkstemp(dir=state, prefix='.startup-delivery-')
     temporary = Path(name)
     try:
@@ -274,7 +284,13 @@ def publish_startup_intent(state, record):
             json.dump(intent, stream, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(temporary, path)  # Publish complete bytes; never replace a competing request.
+        if predecessor is None:
+            os.link(temporary, path)  # Publish complete bytes; never replace a competing request.
+        else:
+            # The caller holds delivery.lock. Recheck the exact installed predecessor before CAS.
+            if read_private_json(path) != predecessor:
+                raise DeliveryError('The installed predecessor changed before intent publication')
+            os.replace(temporary, path)
         sync_directory(state)
     finally:
         temporary.unlink(missing_ok=True)
