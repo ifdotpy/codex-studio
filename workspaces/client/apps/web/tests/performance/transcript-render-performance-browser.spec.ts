@@ -81,26 +81,20 @@ test("Transcript render performance @performance", async () => {
     await page.waitForTimeout(250);
     const reset = () =>
       page.evaluate(() =>
-        Object.assign(
-          window.transcriptPerformanceCounters,
-          Object.fromEntries(
-            Object.keys(window.transcriptPerformanceCounters).map((k) => [
-              k,
-              0,
-            ]),
-          ),
+        Object.keys(window.counters).forEach(
+          (k) => (window.counters[k as keyof typeof window.counters] = 0),
         ),
       );
     await page
       .locator(".turn-history")
       .first()
-      .evaluate((el) => (window.transcriptPerformanceOriginalTurn = el));
+      .evaluate((el) => (window.originalTurn = el));
     await reset();
     await page.evaluate(() => {
-      for (let i = 0; i < 10; i++) window.transcriptPerformanceTick();
+      for (let i = 0; i < 10; i++) window.tick();
     });
     const unchanged = await page.evaluate(() => ({
-      ...window.transcriptPerformanceCounters,
+      ...window.counters,
     }));
     assert.equal(
       unchanged.lex,
@@ -113,10 +107,10 @@ test("Transcript render performance @performance", async () => {
       "Unchanged tool diagnostics do not reparse",
     );
     assert.equal(unchanged.sanitize, 0);
-    await page.evaluate(() => window.transcriptPerformanceReplaceLast());
+    await page.evaluate(() => window.replaceLast());
     await page.getByRole("button", { name: "Updated report" }).waitFor();
     const changed = await page.evaluate(() => ({
-      ...window.transcriptPerformanceCounters,
+      ...window.counters,
     }));
     assert.equal(
       changed.lex,
@@ -127,12 +121,12 @@ test("Transcript render performance @performance", async () => {
       await page
         .locator(".turn-history")
         .first()
-        .evaluate((el) => el === window.transcriptPerformanceOriginalTurn),
+        .evaluate((el) => el === window.originalTurn),
       true,
       "Earlier turn retains its DOM node",
     );
     await page.evaluate(() =>
-      window.transcriptPerformanceDiagnostic({
+      window.diagnostic({
         message: "First diagnostic",
         code: "first",
       }),
@@ -142,7 +136,7 @@ test("Transcript render performance @performance", async () => {
       .first()
       .waitFor();
     await page.evaluate(() =>
-      window.transcriptPerformanceDiagnostic({
+      window.diagnostic({
         message: "Updated diagnostic",
         code: "second",
       }),
@@ -155,13 +149,13 @@ test("Transcript render performance @performance", async () => {
       await page.getByText("First diagnostic", { exact: false }).count(),
       0,
     );
-    await page.evaluate(() => window.transcriptPerformanceMode("stream"));
+    await page.evaluate(() => window.mode("stream"));
     await reset();
     await page.evaluate(() => {
-      for (let i = 0; i < 20; i++) window.transcriptPerformanceAppend();
+      for (let i = 0; i < 20; i++) window.append();
     });
     const streaming = await page.evaluate(() => ({
-      ...window.transcriptPerformanceCounters,
+      ...window.counters,
     }));
     assert.equal(
       streaming.lex,
@@ -174,15 +168,13 @@ test("Transcript render performance @performance", async () => {
       "Only changed final HTML requires sanitizing",
     );
     await page.evaluate(() =>
-      window.transcriptPerformanceStream(
-        "Read [report][ref].\n\nStable paragraph.",
-      ),
+      window.stream("Read [report][ref].\n\nStable paragraph."),
     );
     await page
       .getByText("Stable paragraph.", { exact: true })
-      .evaluate((el) => (window.transcriptPerformanceOriginalSentence = el));
+      .evaluate((el) => (window.originalSentence = el));
     await page.evaluate(() =>
-      window.transcriptPerformanceStream(
+      window.stream(
         "Read [report][ref].\n\nStable paragraph.\n\n[ref]: ./first.md",
       ),
     );
@@ -193,11 +185,11 @@ test("Transcript render performance @performance", async () => {
     assert.equal(
       await page
         .getByText("Stable paragraph.", { exact: true })
-        .evaluate((el) => el === window.transcriptPerformanceOriginalSentence),
+        .evaluate((el) => el === window.originalSentence),
       true,
     );
     await page.evaluate(() =>
-      window.transcriptPerformanceStream(
+      window.stream(
         "Read [report][ref].\n\nStable paragraph.\n\n[ref]: ./second.md",
       ),
     );
@@ -206,14 +198,10 @@ test("Transcript render performance @performance", async () => {
       "./second.md",
       "Later reference definition updates earlier block",
     );
-    await page.evaluate(() =>
-      window.transcriptPerformanceStream("```ts\nconst x = 1;"),
-    );
+    await page.evaluate(() => window.stream("```ts\nconst x = 1;"));
     await page.locator(".prose pre").waitFor();
     await page.evaluate(() =>
-      window.transcriptPerformanceStream(
-        "```ts\nconst x = 1;\n```\n\nAfter code.",
-      ),
+      window.stream("```ts\nconst x = 1;\n```\n\nAfter code."),
     );
     await page.getByText("After code.", { exact: true }).waitFor();
     assert.equal(await page.locator(".prose pre").count(), 1);
@@ -238,7 +226,7 @@ test("Transcript render performance @performance", async () => {
 
 declare global {
   interface Window {
-    transcriptPerformanceOriginalTurn: Element;
-    transcriptPerformanceOriginalSentence: Element;
+    originalTurn: Element;
+    originalSentence: Element;
   }
 }

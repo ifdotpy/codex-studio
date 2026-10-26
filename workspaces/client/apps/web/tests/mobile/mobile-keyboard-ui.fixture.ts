@@ -29,11 +29,10 @@ export function installMobileKeyboardUi() {
     configurable: true,
     get: () => retainedScroll,
   });
-  window.scrollTo = (options?: ScrollToOptions | number, y?: number) => {
+  window.scrollTo = ((...args: Parameters<typeof window.scrollTo>) => {
     retainedScroll = 0;
-    if (typeof options === "number") originalScroll(options, y ?? 0);
-    else originalScroll(options);
-  };
+    originalScroll(...args);
+  }) as typeof window.scrollTo;
   const retainTestScroll = (value: number) => {
     retainedScroll = value;
     window.dispatchEvent(new Event("scroll"));
@@ -49,36 +48,30 @@ export function installMobileKeyboardUi() {
     focusCalls.selection++;
     return setSelectionRange.apply(this, args);
   };
-  const harness = {
-    setTestViewport,
-    retainTestScroll,
-    composerFocusCalls: focusCalls,
-    composerBlurCount: 0,
-    composerTextarea: null as HTMLTextAreaElement | null,
-    composerScrollBefore: { page: 0, document: 0, transcript: 0 },
-    element(selector: string) {
-      const element = document.querySelector(selector);
-      if (!(element instanceof HTMLElement))
-        throw new Error("Missing fixture element: " + selector);
-      return element;
-    },
-    input() {
-      const element = document.querySelector("#message");
-      if (!(element instanceof HTMLTextAreaElement))
-        throw new Error("Missing fixture textarea");
-      return element;
-    },
-    scrollingElement() {
-      const element = document.scrollingElement;
-      if (!element) throw new Error("Missing scrolling element");
-      return element;
-    },
-  };
-  window.mobileKeyboardUi = harness;
-  return harness;
+  window.setTestViewport = setTestViewport;
+  window.retainTestScroll = retainTestScroll;
+  window.composerFocusCalls = focusCalls;
+  window.composerBlurCount = 0;
 }
 declare global {
   interface Window {
-    mobileKeyboardUi: ReturnType<typeof installMobileKeyboardUi>;
+    setTestViewport: (
+      patch: Partial<
+        Pick<
+          VisualViewport,
+          "width" | "height" | "offsetTop" | "offsetLeft" | "scale"
+        >
+      >,
+      type?: string,
+    ) => void;
+    retainTestScroll: (value: number) => void;
+    composerFocusCalls: { focus: number; selection: number };
+    composerBlurCount: number;
+    composerTextarea: HTMLTextAreaElement;
+    composerScrollBefore: {
+      page: number;
+      document: number;
+      transcript: number;
+    };
   }
 }

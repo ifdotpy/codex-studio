@@ -130,8 +130,7 @@ export async function restoreStorage(
         return false;
       } catch (error) {
         return (
-          error instanceof Error &&
-          error.message.includes("Another view") &&
+          (error as Error).message.includes("Another view") &&
           localStorage.length === 0
         );
       }
@@ -140,8 +139,7 @@ export async function restoreStorage(
   if (!busyRefused) throw new Error("Concurrent import was not rejected");
   const count = snapshot.databases.reduce(
     (total, db) =>
-      total +
-      db.stores.reduce((sum, store) => sum + (store.chunks?.length ?? 0), 0),
+      total + db.stores.reduce((sum, store) => sum + store.chunks!.length, 0),
     0,
   );
   let reads = 0;
@@ -152,9 +150,9 @@ export async function restoreStorage(
       return JSON.stringify(chunks[chunk.sha256]);
     });
   } catch (error) {
-    chunkInterrupted =
-      error instanceof Error &&
-      error.message.includes("interrupted chunk read");
+    chunkInterrupted = (error as Error).message.includes(
+      "interrupted chunk read",
+    );
   }
   if (
     !chunkInterrupted ||
@@ -176,18 +174,17 @@ export async function restoreStorage(
   try {
     await restore(snapshot, "archive-1");
   } catch (error) {
-    interrupted =
-      error instanceof Error && error.message.includes("interrupted");
+    interrupted = (error as Error).message.includes("interrupted");
   }
   Storage.prototype.setItem = original;
   if (!interrupted) throw new Error("Expected incomplete import");
   const held = await new Promise<IDBDatabase>((resolve, reject) => {
-    const opened = indexedDB.open(snapshot.databases[0]?.name ?? "");
+    const opened = indexedDB.open(snapshot.databases[0].name);
     opened.onsuccess = () => resolve(opened.result);
     opened.onerror = () => reject(opened.error);
   });
   const originalDelete = indexedDB.deleteDatabase.bind(indexedDB);
-  let signalBlocked: (event: Event) => void = () => {};
+  let signalBlocked!: (event: Event) => void;
   const blocked = new Promise<Event>((resolve) => {
     signalBlocked = resolve;
   });
@@ -205,7 +202,7 @@ export async function restoreStorage(
   try {
     await restore(snapshot, "archive-1");
   } catch (error) {
-    locked = error instanceof Error && error.message.includes("Another view");
+    locked = (error as Error).message.includes("Another view");
   }
   held.close();
   if (!(await waiting) || !locked)
@@ -257,12 +254,10 @@ function readRestoreFixture(file: string): ProfileRestoreFixture {
 
 async function main() {
   const [mode, file] = process.argv.slice(2);
-  if (!file) throw new Error("Supply the fixture document.");
   const seed = mode === "seed" ? readSeedManifest(file) : undefined;
   const restore = mode === "restore" ? readRestoreFixture(file) : undefined;
   const profile = seed?.profile ?? restore?.profile;
-  if (!profile) throw new Error("Supply the fixture profile.");
-  app.setPath("userData", profile);
+  app.setPath("userData", profile!);
   await app.whenReady();
   const workerSource = `(${profileServiceWorker.toString()})(self);`;
   await session.defaultSession.protocol.handle("http", (request) =>
@@ -290,7 +285,6 @@ async function main() {
       `(${createSourceFrame.toString()})()`,
     );
     const frame = window.webContents.mainFrame.frames[0];
-    assert.ok(frame);
     await frame.executeJavaScript(`(${seedFrameStorage.toString()})()`);
   } else if (restore) {
     await window.loadURL("http://127.0.0.1:4621/");

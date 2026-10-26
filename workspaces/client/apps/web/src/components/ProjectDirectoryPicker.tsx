@@ -153,7 +153,7 @@ export default function ProjectDirectoryPicker({
           data={servers.map((row) => ({
             value: row.id,
             label: row.label + (row.disabled ? " (Offline)" : ""),
-            disabled: !!row.disabled,
+            disabled: row.disabled,
           }))}
           onChange={(next) => {
             if (!next || next === server) return;

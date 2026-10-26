@@ -13,9 +13,7 @@ import { identity } from "../desktop/backend.ts";
 const startupTimeoutMs = 60_000;
 const startupPollMs = 100;
 const hostStopTimeoutMs = 10_000;
-const application = process.argv[2];
-assert.ok(application, "Supply the packaged application path.");
-const bundle = path.resolve(application);
+const bundle = path.resolve(process.argv[2]);
 const executableName = execFileSync(
   "plutil",
   [
@@ -36,9 +34,7 @@ const state = path.join(fixture, "state");
 const listener = createServer();
 listener.listen(0, "127.0.0.1");
 await once(listener, "listening");
-const address = listener.address();
-assert.ok(address && typeof address !== "string");
-const port = address.port;
+const port = (listener.address() as import("node:net").AddressInfo).port;
 await new Promise<void>((resolve, reject) =>
   listener.close((error) => (error ? reject(error) : resolve())),
 );
@@ -114,8 +110,7 @@ try {
   );
 } finally {
   if (host?.pid && host.exitCode === null && host.signalCode === null) {
-    const child = host;
-    const exited = once(child, "exit");
+    const exited = once(host, "exit");
     host.kill("SIGTERM");
     let timer;
     try {
@@ -123,7 +118,7 @@ try {
         exited,
         new Promise((resolve) => {
           timer = setTimeout(() => {
-            child.kill("SIGKILL");
+            host!.kill("SIGKILL");
             resolve(exited);
           }, hostStopTimeoutMs);
         }),
@@ -136,12 +131,10 @@ try {
     try {
       process.kill(ownedPid, "SIGTERM");
     } catch (error) {
-      if (
-        !(error instanceof Error && "code" in error && error.code === "ESRCH")
-      )
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH")
         console.error(
           "Cannot stop the fixture backend:",
-          error instanceof Error ? error.message : String(error),
+          (error as Error).message,
         );
     }
   }
