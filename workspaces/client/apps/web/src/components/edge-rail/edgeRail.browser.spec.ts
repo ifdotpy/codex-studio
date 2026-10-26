@@ -95,12 +95,23 @@ for (const capability of [
           label.startsWith("Messages") ? "Messages" : label,
         );
       }
-      await rail
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
+      // Buttons center on the system status column (edgeRail.statusColumnCenter).
+      const actions = rail.getByRole("button", {
+        name: "Chat actions",
+        exact: true,
+      });
+      const actionsRect = await actions.boundingBox()!;
+      expect(actionsRect.x + actionsRect.width / 2).toBe(951 - 48);
+      await actions.click();
       const item = page.getByRole("menuitem", { name: "Existing action" });
       await expect(item).toBeVisible();
       expect((await item.boundingBox())!.x).toBeLessThan(867);
+      // The menu opens at its button, keeps edgeRail.menuGap from the strip,
+      // and ends above Home.
+      const menuRect = await page.getByRole("menu").boundingBox()!;
+      expect(Math.abs(menuRect.y - actionsRect.y)).toBeLessThanOrEqual(1);
+      expect(menuRect.x + menuRect.width).toBeLessThanOrEqual(867 - 8);
+      expect(menuRect.y + menuRect.height).toBeLessThanOrEqual(635);
       await item.click();
       await expect(page.locator("#last-action")).toHaveText("Existing action");
 
@@ -115,11 +126,14 @@ for (const capability of [
       });
       await expect(rail).toHaveAttribute("data-side", "left");
       expect((await rail.boundingBox())!.x).toBe(0);
-      await rail
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
+      const leftActions = await actions.boundingBox()!;
+      expect(leftActions.x + leftActions.width / 2).toBe(48);
+      await actions.click();
       await expect(item).toBeVisible();
       expect((await item.boundingBox())!.x).toBeGreaterThanOrEqual(44);
+      expect(
+        (await page.getByRole("menu").boundingBox())!.x,
+      ).toBeGreaterThanOrEqual(84 + 8);
       await expect(page.getByRole("menu")).toHaveCSS("opacity", "1");
       await page.screenshot({
         path: test.info().outputPath("edge-rail-left-menu.png"),
