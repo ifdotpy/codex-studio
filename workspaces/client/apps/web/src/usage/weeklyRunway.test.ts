@@ -1,28 +1,38 @@
-import type { JsonValue } from "../types";
+import type { components } from "../generated/api";
 import assert from "node:assert/strict";
 import { it as test } from "vitest";
 import { weeklyRunway } from "./weeklyRunway.ts";
 
 const now = 1800000000;
 const day = 86400;
-const snapshot = (usedPercent: JsonValue, elapsed = 1) => ({
-  at: now,
-  data: {
-    rateLimits: {
-      limitId: "codex",
-      primary: {
-        usedPercent: 100,
-        windowDurationMins: 300,
-        resetsAt: now + 3600,
-      },
-      secondary: {
-        usedPercent,
-        windowDurationMins: 10080,
-        resetsAt: now + (7 - elapsed) * day,
+const snapshot = (
+  usedPercent: Exclude<
+    components["schemas"]["RateLimitWindow"]["usedPercent"],
+    undefined
+  >,
+  elapsed = 1,
+) =>
+  ({
+    at: now,
+    data: {
+      rateLimits: {
+        limitId: "codex",
+        primary: {
+          usedPercent: 100,
+          windowDurationMins: 300,
+          resetsAt: now + 3600,
+        },
+        secondary: {
+          usedPercent,
+          windowDurationMins: 10080,
+          resetsAt: now + (7 - elapsed) * day,
+        },
       },
     },
-  },
-});
+  }) satisfies Pick<
+    components["schemas"]["UsageLimitsResponse"],
+    "at" | "data"
+  >;
 
 test("weekly consumption controls all three bands; the exhausted short window is ignored", () => {
   assert.equal(weeklyRunway(snapshot(10), now).color, "green");

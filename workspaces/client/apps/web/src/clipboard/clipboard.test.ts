@@ -56,7 +56,10 @@ test("copyText awaits the Clipboard API and does not touch the fallback", async 
 test("copyText falls back and restores textarea, selection and focus state", async () => {
   const calls: unknown[] = [];
   const ranges = [{ id: "first" }, { id: "second" }];
-  const attributes = new Map();
+  const attributes = new Map<
+    Parameters<HTMLTextAreaElement["setAttribute"]>[0],
+    Parameters<HTMLTextAreaElement["setAttribute"]>[1]
+  >();
   const styles: Partial<CSSStyleDeclaration> = {};
   const textarea = {
     value: "",
