@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { components, AgentEntityDto } from "../../src/generated/api.ts";
-import type { PostBody, ApiPostPath } from "../../src/api.ts";
+import type { PostBody, ApiPostPath } from "../../src/apiTypes.ts";
 import type { ResourceRef, TestStateView } from "../playwright.ts";
 import type { PreferenceFields } from "../../src/sync/uiPreferenceMerge.ts";
 

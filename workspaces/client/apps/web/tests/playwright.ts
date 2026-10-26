@@ -33,6 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import type { Json, JsonInput, JsonInputOf } from "../src/apiTypes.ts";
 import type { OpenAPI3 } from "openapi-typescript";
 import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.ts";
 import { readResourceBaselines } from "./fixtures/resource-baselines.ts";
@@ -392,7 +393,7 @@ export async function stubSessionCost(page: import("playwright").Page) {
         pricingState: "ready",
         cacheAgeSeconds: 0,
         refreshing: false,
-      },
+      } satisfies import("../src/generated/api.ts").components["schemas"]["SessionCostResponse"],
     });
   });
 }
@@ -1149,7 +1150,9 @@ export type TestRuntimeView = {
   tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"];
   nativeNotices: WorkspaceEntityDto["nativeNotices"];
   sidebarOrder: WorkspaceEntityDto["sidebarOrder"];
-  accountsSummary?: import("../src/generated/api.ts").components["schemas"]["AccountsSummaryDto"];
+  accountsSummary?: JsonInputOf<
+    import("../src/generated/api.ts").components["schemas"]["AccountsSummaryDto"]
+  >;
   desktop?: import("../src/generated/api.ts").components["schemas"]["DesktopEntityDto"];
   accountCostsByAccount?: Record<
     string,
@@ -1179,7 +1182,7 @@ export type TestStateView = {
 };
 export type EntityFixtureState = Omit<TestStateView, "token" | "threads">;
 
-export type JsonObject = Record<string, JsonValue>;
+export type JsonObject = Json;
 export type EntityEnvelope = {
   collection: string;
   id: string;
@@ -1292,18 +1295,12 @@ export async function readTestState(
           !isJsonObject(decoded.value)
         )
           throw new Error(`Invalid entity envelope in ${document.id}`);
-
-        const entity: EntityEnvelope = {
-          collection: decoded.collection,
-          id: decoded.id,
-          value: decoded.value,
-        };
-        let collection = entities.get(entity.collection);
+        let collection = entities.get(document.collection);
         if (!collection) {
           collection = new Map();
-          entities.set(entity.collection, collection);
+          entities.set(document.collection, collection);
         }
-        collection.set(entity.id, document);
+        collection.set(document.id, document);
       }
       const next = page.checkpoint.seq;
       if (next <= after || next >= (page.maxSeq ?? next)) break;
@@ -1501,15 +1498,15 @@ function generatedSyncPullResponse(
  */
 function entityValuesFromSnapshot(
   snapshot: EntityFixtureState,
-): { collection: string; id: string; value: JsonValue }[] {
+): { collection: string; id: string; value: JsonInput }[] {
   const runtime = snapshot.runtime;
 
-  const values: { collection: string; id: string; value: JsonValue }[] = [];
+  const values: { collection: string; id: string; value: JsonInput }[] = [];
 
   const append = (
     collection: string,
     rows: JsonObject[] | null | undefined,
-    project: (row: JsonObject) => JsonValue = (row) => row,
+    project: (row: JsonObject) => JsonInput = (row) => row,
   ) => {
     for (const row of rows ?? []) {
       if (typeof row.id !== "string") continue;
