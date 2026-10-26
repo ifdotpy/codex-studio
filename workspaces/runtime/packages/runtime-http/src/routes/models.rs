@@ -336,10 +336,39 @@ async fn worker_catalog(
     }
     // Candidate reads share the user action's provider budget and keep the
     // existing account preference order. Display reads keep their old path.
-    for (account, result) in futures_util::future::join_all(selection_reads).await {
+    let completed = futures_util::future::join_all(selection_reads).await;
+    let identities = completed
+        .iter()
+        .map(|(account, _)| {
+            (
+                account.key.as_str(),
+                account.home.as_str(),
+                account.provider.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let current = catalog.read_for_admission_batch(&identities);
+    for ((account, result), current) in completed.into_iter().zip(current) {
+        // A candidate can retire or fail while another account's read waits.
+        // Publish only the final coherent cache snapshot, never the captured value.
+        let result = match (result, current) {
+            (
+                Ok(_),
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+                    value, ..
+                },
+            ) => Ok(value),
+            (Ok(_), studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending) => {
+                Err(catalog_pending().1)
+            }
+            (Ok(_), studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable) => {
+                Err(catalog_unavailable().1)
+            }
+            (Err((_, error)), _) => Err(error),
+        };
         match result {
             Ok(value) => append_worker_models(&mut models, &mut seen, &account, &value),
-            Err((_, error)) => {
+            Err(error) => {
                 let account_pending = error.get("catalogPending") == Some(&Value::Bool(true));
                 pending |= account_pending;
                 let mut unavailable_account =
