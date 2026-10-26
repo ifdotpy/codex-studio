@@ -131,15 +131,7 @@ pub struct Root {
     pub federation_enabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    #[serde(rename = "inputSchema")]
-    pub input_schema: Map<String, Value>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
+pub use studio_runtime_schema::provider_input::ToolDefinition;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogSnapshot {
