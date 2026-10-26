@@ -153,7 +153,7 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
   ],
   [
     "workspaces/client/apps/native/src-tauri/src/ios_shell.rs",
-    "UIKit and WebKit bindings of the iOS shell.",
+    "Objective-C, UIKit, and WKWebView FFI through objc2 for the iOS shell.",
   ],
   [
     "workspaces/client/packages/client-core/examples/voice_playback_check/check.rs",

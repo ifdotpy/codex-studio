@@ -1,10 +1,14 @@
+// @ts-check
 // Native iOS shell viewport receiver. Injected at document start into the
 // main frame. The web owner is apps/web/src/native/nativeViewport.ts; keep
 // the names below in step with it and with README.md.
 (() => {
-  if (window.__studioNativeViewport) return;
+  // Untyped view of window: the shell and this script add its properties.
+  const page = /** @type {any} */ (window);
+  if (page.__studioNativeViewport) return;
   const eventName = "studio-native-viewport";
   const sides = ["top", "right", "bottom", "left"];
+  /** @type {Record<string, any>} */
   const state = {
     insets: null,
     keyboard: null,
@@ -13,12 +17,12 @@
     hingeBand: null,
   };
   const rectKeys = ["x", "y", "width", "height"];
-  const isRect = (value) =>
+  const isRect = (/** @type {any} */ value) =>
     value && rectKeys.every((key) => finite(value[key]));
   const hingeStates = ["closed", "partial", "open", "unknown"];
-  const finite = (value) =>
+  const finite = (/** @type {unknown} */ value) =>
     typeof value === "number" && Number.isFinite(value) && value >= 0;
-  const receive = (update) => {
+  const receive = (/** @type {any} */ update) => {
     if (!update || typeof update !== "object") return;
     const { insets, keyboard } = update;
     if (insets && sides.every((side) => finite(insets[side]))) {
@@ -105,6 +109,7 @@
   // The shell page never zooms (pinch, double tap, focus auto-zoom). Only
   // this shell injects the limit; Safari and the PWA keep page zoom.
   const lockZoom = () => {
+    /** @type {HTMLMetaElement | null} */
     let meta = document.querySelector('meta[name="viewport"]');
     if (!meta) {
       if (!document.head) return;
@@ -132,7 +137,7 @@
   else lockZoom();
   // The shell answers each request with the current UIKit geometry.
   const request = () =>
-    window.webkit?.messageHandlers?.studioNativeViewport?.postMessage("sync");
+    page.webkit?.messageHandlers?.studioNativeViewport?.postMessage("sync");
   request();
   window.addEventListener("resize", request);
   window.addEventListener("orientationchange", request);
