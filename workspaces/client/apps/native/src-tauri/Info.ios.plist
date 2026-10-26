@@ -9,6 +9,14 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
+  <!-- The start page lists Studio servers on the local network. The service
+       type is owned by runtime-schema/src/bonjour_protocol.rs. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Find the Studio server on this network so that you do not need to type its address.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_layr-studio._tcp</string>
+  </array>
   <key>UIStatusBarHidden</key>
   <false/>
 </dict>

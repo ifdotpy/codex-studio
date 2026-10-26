@@ -12,6 +12,7 @@
 		13C1C7313964795BF48B077A /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 979423867656F13BA50456E8 /* LaunchScreen.storyboard */; };
 		4E91B3BCDB0EBD3753EA548A /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = FF22B8BCCB82D1A2073783AB /* libapp.a */; };
 		62284134451041E761ECA4BA /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 90CFD71D119AA34BFF0E6FD0 /* Security.framework */; };
+		5B1C0E7A9D2F4A6B8C3E1D20 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5B1C0E7A9D2F4A6B8C3E1D21 /* Network.framework */; };
 		8A09CBF8356C38FC98E77B6C /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B8B6789A3568BD6351D9791 /* UIKit.framework */; };
 		A3A9B90D1D8928930E3F1248 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A80C21A77BF22D2297A2E6CA /* CoreGraphics.framework */; };
 		A493BE1AC17B1B11443675C1 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = F998C1598A3B878A780B0670 /* assets */; };
@@ -32,6 +33,7 @@
 		73E8B2C0BD14BB6A80639076 /* ios_start.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = ios_start.html; sourceTree = "<group>"; };
 		83A66BDB1B0BF7F33B95F86F /* profile.rs */ = {isa = PBXFileReference; path = profile.rs; sourceTree = "<group>"; };
 		90CFD71D119AA34BFF0E6FD0 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		5B1C0E7A9D2F4A6B8C3E1D21 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
 		9258A575845AD3DC4176CB51 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 		979423867656F13BA50456E8 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		9B8B6789A3568BD6351D9791 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
@@ -64,6 +66,7 @@
 				DF493B09EA11DBB94007B806 /* Metal.framework in Frameworks */,
 				10B899818221E289724D2821 /* MetalKit.framework in Frameworks */,
 				BE8967484E0DF0F649761F61 /* QuartzCore.framework in Frameworks */,
+				5B1C0E7A9D2F4A6B8C3E1D20 /* Network.framework in Frameworks */,
 				62284134451041E761ECA4BA /* Security.framework in Frameworks */,
 				8A09CBF8356C38FC98E77B6C /* UIKit.framework in Frameworks */,
 				068DB624249779809894AC55 /* WebKit.framework in Frameworks */,
@@ -121,6 +124,7 @@
 				377C011C889C70E535170568 /* Metal.framework */,
 				C2BA4C72BABDF6D99624B7B3 /* MetalKit.framework */,
 				A84817D91188EE92F10F26CF /* QuartzCore.framework */,
+				5B1C0E7A9D2F4A6B8C3E1D21 /* Network.framework */,
 				90CFD71D119AA34BFF0E6FD0 /* Security.framework */,
 				9B8B6789A3568BD6351D9791 /* UIKit.framework */,
 				A792274F0179B64232B92785 /* WebKit.framework */,

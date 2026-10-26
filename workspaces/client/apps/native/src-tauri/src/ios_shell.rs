@@ -72,11 +72,19 @@ static SERVER_LOADED: AtomicBool = AtomicBool::new(false);
 /// The main window, for the start page gesture.
 static MAIN_WINDOW: OnceLock<WebviewWindow> = OnceLock::new();
 
-/// The page to load; see ios_server::choose for the order.
+/// The page to load at launch: the launch value or the saved address. With
+/// neither, the start page opens and `ios_discovery` applies the rest of the
+/// order (one found server, then the build default); see ios_server::choose.
 pub fn server_url(app: &tauri::App) -> Option<tauri::Url> {
     let launch = std::env::var("STUDIO_SERVER_URL").ok();
     let saved = saved_server(app.handle());
-    choose(launch.as_deref(), saved.as_deref(), BUILD_DEFAULT)
+    choose(
+        launch.as_deref(),
+        saved.as_deref(),
+        &[],
+        false,
+        BUILD_DEFAULT,
+    )
 }
 
 fn saved_server(app: &tauri::AppHandle) -> Option<String> {
@@ -120,6 +128,8 @@ pub fn start_page(
         } else {
             ""
         };
+        // The list of found servers comes from ios_discovery::push after the
+        // page loads.
         return html(
             200,
             include_str!("ios_start.html")
@@ -142,6 +152,7 @@ pub fn start_page(
     if field("token").as_deref() != Some(token) {
         return html(403, "Open this page from the app start screen.".into());
     }
+    crate::ios_discovery::stop_auto_open();
     let Some(url) = field("url").and_then(|v| valid_server(v.trim())) else {
         return html(
             400,
@@ -486,10 +497,15 @@ pub fn configure(window: &WebviewWindow) {
 
 /// Resend the geometry after each page load; the receiver is new per document.
 pub fn page_loaded(window: &tauri::Webview, url: &tauri::Url) {
+    // The start page receiver is new per document.
+    if url.scheme() == START_SCHEME {
+        crate::ios_discovery::push();
+    }
     // Remember the server after each successful load, so the home screen
     // icon opens it next time.
     if let Some(value) = saved_value(url) {
         SERVER_LOADED.store(true, Ordering::SeqCst);
+        crate::ios_discovery::stop_auto_open();
         let app = window.app_handle();
         if saved_server(app).as_deref().map(str::trim) != Some(value.as_str()) {
             if let Ok(dir) = app.path().app_config_dir() {
@@ -546,6 +562,7 @@ define_class!(
             let state: isize = unsafe { msg_send![recognizer, state] };
             // UIGestureRecognizerStateBegan
             if state == 1 {
+                crate::ios_discovery::stop_auto_open();
                 if let Some(window) = MAIN_WINDOW.get() {
                     let _ = window.navigate(start_url(false));
                 }

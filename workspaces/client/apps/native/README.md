@@ -96,8 +96,8 @@ the desktop runs is suitable for diagnostics, not a final migration snapshot.
 
 The iOS build of this host is a shell for the iPhone Duo. It exists because
 iOS 27.2 gives a PWA no side status strip and stops PWA paint while the
-keyboard closes. Code: `src-tauri/src/ios_shell.rs`, `ios_viewport.js`,
-`ios_start.html`. The Xcode project is `src-tauri/gen/apple`.
+keyboard closes. Code: `src-tauri/src/ios_shell.rs`, `ios_discovery.rs`,
+`ios_viewport.js`, `ios_start.html`. The Xcode project is `src-tauri/gen/apple`.
 
 - One WKWebView fills the window. `contentInsetAdjustmentBehavior` is
   `never`, and its own scroll view does not scroll. The page uses
@@ -105,17 +105,35 @@ keyboard closes. Code: `src-tauri/src/ios_shell.rs`, `ios_viewport.js`,
 - The web view loads the Studio web client from the user's server, not the
   bundled renderer. The page receives no Tauri commands. The server keeps its
   Tailscale authentication.
-- Server address, first valid of (`src-tauri/src/ios_server.rs`):
+- Server address, first valid of (`src-tauri/src/ios_server.rs`, `choose`):
   1. the `STUDIO_SERVER_URL` launch environment value (simulator and device
      checks);
   2. the address saved after the last successful server page load
      (`server-url.txt` in the app configuration folder);
-  3. a build default compiled in from `STUDIO_DEFAULT_SERVER_URL` or the
+  3. a Studio server found on the local network (see Bonjour below);
+  4. a build default compiled in from `STUDIO_DEFAULT_SERVER_URL` or the
      untracked `src-tauri/ios-default-server.txt` (Xcode runs the Rust build
      with its own environment, so the file is the reliable way).
-     With none, the first-launch page (`studio-shell://localhost/`) asks for it.
+     Without 1 or 2, the start page (`studio-shell://localhost/`) opens and
+     the network search starts. When the search settles (0.8 s without a new
+     result, or 3 s after the start), one found server opens directly. Two
+     or more stay on the page for a choice. With none, the build default
+     opens; without a build default, the page asks for the address.
      The shell accepts `https://` addresses, and `http://` only on `127.0.0.1`
      or `localhost`.
+- Bonjour: the shell browses `_layr-studio._tcp` with Network.framework
+  (`ios_discovery.rs`). The server advertises its HTTPS remote access origin
+  in the TXT record (`url`, `name`, `schema`, `txtvers=1`); the contract owner
+  is `runtime-schema/src/bonjour_protocol.rs`. The shell accepts only an
+  `https://` origin on a `.ts.net` host, so another device on the network can
+  point it only at a tailnet host. The start page lists the found servers
+  (name and URL); one tap saves and opens a server. The saved address keeps
+  working away from home, because Bonjour does not cross Tailscale.
+- `Info.plist` has `NSLocalNetworkUsageDescription` and `NSBonjourServices`.
+  When Local Network access is off, the start page says so and keeps the
+  address field. The simulator does not ask for this permission; set
+  `STUDIO_SHELL_DISCOVERY=denied` at launch to show that state through the
+  same code path (`off` turns the search off).
 - If no server page finishes loading within 12 s (for example, Tailscale is
   off), the start page opens with the saved address and a Connect button to
   retry. A two-finger long press (1.5 s) opens it at any time to change the

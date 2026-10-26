@@ -23,10 +23,32 @@
         padding: env(safe-area-inset-top) env(safe-area-inset-right)
           env(safe-area-inset-bottom) env(safe-area-inset-left);
       }
+      main,
       form {
         display: grid;
         gap: 12px;
         width: min(420px, 90vw);
+      }
+      ul {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      li a {
+        display: grid;
+        gap: 2px;
+        padding: 10px 12px;
+        border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+        border-radius: 10px;
+        color: inherit;
+        text-decoration: none;
+      }
+      li a span {
+        opacity: 0.7;
+        font-size: 15px;
+        overflow-wrap: anywhere;
       }
       input,
       button {
@@ -42,26 +64,61 @@
     </style>
   </head>
   <body>
-    <form action="studio-shell://localhost/connect" method="get">
+    <main>
       <h1>LAYR Studio</h1>
-      <label for="url">Studio server address</label>
-      <input
-        id="url"
-        name="url"
-        type="url"
-        required
-        autocapitalize="off"
-        autocorrect="off"
-        placeholder="https://your-mac.your-tailnet.ts.net"
-        value="{{saved}}"
-      />
-      <input type="hidden" name="token" value="{{token}}" />
-      <button type="submit">Connect</button>
-      <p role="alert">{{message}}</p>
-      <p>
-        The app opens this address at start. To change it later, hold two
-        fingers on the screen.
-      </p>
-    </form>
+      <section id="found" hidden>
+        <p>Studio servers on this network</p>
+        <ul id="servers"></ul>
+      </section>
+      <p id="discovery" role="status"></p>
+      <form action="studio-shell://localhost/connect" method="get">
+        <label for="url">Studio server address</label>
+        <input
+          id="url"
+          name="url"
+          type="url"
+          required
+          autocapitalize="off"
+          autocorrect="off"
+          placeholder="https://your-mac.your-tailnet.ts.net"
+          value="{{saved}}"
+        />
+        <input type="hidden" name="token" value="{{token}}" />
+        <button type="submit">Connect</button>
+        <p role="alert">{{message}}</p>
+        <p>
+          The app opens this address at start. To change it later, hold two
+          fingers on the screen.
+        </p>
+      </form>
+    </main>
+    <script>
+      // ios_discovery::push sends { servers: [{ name, url }], denied, settled }.
+      window.__studioShellDiscovery = (state) => {
+        const items = state.servers.map((server) => {
+          const link = document.createElement("a");
+          link.href =
+            "/connect?" +
+            new URLSearchParams({ url: server.url, token: "{{token}}" });
+          const name = document.createElement("strong");
+          name.textContent = server.name;
+          const url = document.createElement("span");
+          url.textContent = server.url;
+          link.append(name, url);
+          const item = document.createElement("li");
+          item.append(link);
+          return item;
+        });
+        document.getElementById("servers").replaceChildren(...items);
+        document.getElementById("found").hidden = items.length === 0;
+        document.getElementById("discovery").textContent = state.denied
+          ? "Local Network access is off, so the app cannot find Studio on this network. To turn it on, open Settings > Privacy & Security > Local Network. You can also type the address."
+          : items.length
+            ? ""
+            : state.settled
+              ? "No Studio server found on this network."
+              : "Looking for Studio on this network.";
+      };
+    </script>
   </body>
 </html>
