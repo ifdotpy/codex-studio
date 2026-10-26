@@ -1,3 +1,6 @@
+import type { TestAgent } from "../playwright.ts";
+import assert from "node:assert/strict";
+import type { GetResult } from "../../src/apiTypes.ts";
 import {
   test,
   expect,
@@ -30,22 +33,24 @@ test("phone composer keeps the lead model name and discloses other roles", async
       model: "claude-opus-5-5",
       name: "Opus 5.5",
     },
-  ])
-    for (const scheme of ["light", "dark"]) {
+  ] as const)
+    for (const scheme of ["light", "dark"] as const) {
       const snapshot = structuredClone(base);
       const lead = snapshot.threads.find(
         (agent) => agent.name === "Release lead",
       );
+      assert.ok(lead);
       Object.assign(lead, {
         provider,
         model,
         effort: "medium",
         workerDefaults: {
+          fastMode: false,
           model: "gpt-6-luna",
           effort: "high",
           accountKey: "default",
         },
-      });
+      } satisfies Partial<TestAgent>);
       snapshot.runtime.agents = snapshot.threads.filter(
         (agent) => agent.source === "managed",
       );
@@ -84,7 +89,7 @@ test("phone composer keeps the lead model name and discloses other roles", async
                   ],
                   serviceTiers: [],
                 })),
-              },
+              } satisfies GetResult<"/api/models">,
             }),
         );
         await readOnlyRust.open(page);
@@ -116,18 +121,24 @@ test("phone composer keeps the lead model name and discloses other roles", async
           .evaluateAll((nodes) =>
             nodes
               .filter((node) => node.getClientRects().length)
-              .map((node) => node.getBoundingClientRect().toJSON()),
+              .map((node) => {
+                const { left, right, top } = node.getBoundingClientRect();
+                return { left, right, top };
+              }),
           );
         expect(geometry).toHaveLength(1);
         const triggerBox = await trigger.boundingBox();
+        assert.ok(triggerBox);
+        const first = geometry[0];
+        assert.ok(first);
         for (const [index, box] of geometry.entries()) {
           expect(box.left).toBeGreaterThanOrEqual(triggerBox.x);
           expect(box.right).toBeLessThanOrEqual(
             triggerBox.x + triggerBox.width,
           );
-          if (index)
-            expect(box.left).toBeGreaterThanOrEqual(geometry[index - 1].right);
-          expect(box.top).toBe(geometry[0].top);
+          const previous = geometry[index - 1];
+          if (previous) expect(box.left).toBeGreaterThanOrEqual(previous.right);
+          expect(box.top).toBe(first.top);
         }
         await expect(
           page.getByRole("button", { name: "Attach files", exact: true }),

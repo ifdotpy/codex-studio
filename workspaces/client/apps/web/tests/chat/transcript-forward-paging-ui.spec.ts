@@ -6,6 +6,7 @@ import {
   readTestState,
   test,
 } from "../playwright.ts";
+import type { TranscriptPageResponse } from "../playwright.ts";
 import assert from "node:assert/strict";
 
 test("transcript paging returns from the oldest row to the newest", async ({
@@ -31,9 +32,13 @@ test("transcript paging returns from the oldest row to the newest", async ({
   const schemaHeaders = {
     [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
   };
-  const transcriptSyncPulls = [];
-  const transcriptRestReads = [];
-  const pageRequests = [];
+  const transcriptSyncPulls: { scope: string; after: string }[] = [];
+  const transcriptRestReads: string[] = [];
+  const pageRequests: {
+    id: string | null;
+    before: string | null;
+    after: string | null;
+  }[] = [];
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/transcript")
       transcriptRestReads.push(request.url());
@@ -42,15 +47,27 @@ test("transcript paging returns from the oldest row to the newest", async ({
     key: `codex-desktop-opened:${state.stateDir}`,
     id: JSON.stringify(other.id),
   });
+  const contextUsage = (() => {
+    const value = lead.contextUsage;
+    if (!value) return value;
+    if (typeof value.at !== "number")
+      throw new Error("Fixture context usage has no timestamp");
+    return { ...value, at: value.at };
+  })();
   const initialTranscript = {
-    agent: { ...lead, status: "completed", inFlight: false, turnId: null },
+    agent: {
+      ...lead,
+      contextUsage,
+      status: "completed",
+      inFlight: false,
+    },
     items: items.slice(-240),
     truncated: true,
-    nextCursor: items.at(-240).id,
+    nextCursor: items.at(-240)?.id ?? null,
     nextAfterCursor: null,
     historyVersion: "forward-paging-fixture",
-    tail: items.at(-1).id,
-  };
+    tail: items.at(-1)?.id ?? null,
+  } satisfies TranscriptPageResponse;
   await page.route("**/api/sync/pull**", async (route) => {
     const url = new URL(route.request().url());
     const scope = url.searchParams.get("scope");
@@ -90,9 +107,11 @@ test("transcript paging returns from the oldest row to the newest", async ({
       headers: schemaHeaders,
       json: {
         items: selected,
-        nextCursor: before && first > 0 ? items[first].id : null,
+        nextCursor: before && first > 0 ? (items[first]?.id ?? null) : null,
         nextAfterCursor:
-          last >= 0 && last < items.length - 1 ? items[last].id : null,
+          last >= 0 && last < items.length - 1
+            ? (items[last]?.id ?? null)
+            : null,
         historyVersion: "forward-paging-fixture",
       },
     });
@@ -136,7 +155,7 @@ test("transcript paging returns from the oldest row to the newest", async ({
     const anchor = await page.locator("#messages").evaluate((root) => {
       const bounds = root.getBoundingClientRect();
       const visible = Array.from(
-        root.querySelectorAll("[data-message]"),
+        root.querySelectorAll<HTMLElement>("[data-message]"),
       ).filter((row) => {
         const box = row.getBoundingClientRect();
         return (
@@ -169,7 +188,7 @@ test("transcript paging returns from the oldest row to the newest", async ({
       ({ id, offset }) => {
         const root = document.querySelector("#messages");
         const row = Array.from(
-          root?.querySelectorAll("[data-message]") || [],
+          root?.querySelectorAll<HTMLElement>("[data-message]") || [],
         ).find((candidate) => candidate.dataset.message === id);
         if (!root || !row) return false;
         const bounds = root.getBoundingClientRect();

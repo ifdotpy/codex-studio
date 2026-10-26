@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import type { GetResult } from "../../src/apiTypes.ts";
 // Isolated component browser checks. No server state or live model requests.
+import type {} from "./rendering-ux-ui.fixture.tsx";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { rm, mkdtemp } from "node:fs/promises";
@@ -12,31 +14,9 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const name = `.rendering-check-${process.pid}`;
-  const entry = join(root, "workspaces/client/apps/web", `${name}.tsx`);
   const artifacts = await mkdtemp(join(tmpdir(), "studio-rendering-theme-"));
   let server;
   try {
-    const fixture = `
-  import { useState } from "react";
-  import { createRoot } from "react-dom/client";
-  import { MantineProvider } from "@mantine/core";
-  import "@mantine/core/styles.css";
-  import StreamingText from "./src/components/conversation/transcript/StreamingText";
-  import Activity from "./src/components/conversation/transcript/Activity";
-  import TurnHistory from "./src/components/conversation/transcript/TurnHistory";
-  import ComposerAttachments, { MessageAttachments } from "./src/components/ComposerAttachments";
-  const asset = { id:"fixture-image",name:"pixel.png",mime:"image/png",image:true,size:68,preview:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=" };
-  function Harness() {
-   const [text, setText] = useState("First sentence. Partial");
-   const [count, setCount] = useState(2);
-   const [streaming, setStreaming] = useState(true);
-   const [theme, setTheme] = useState<"light" | "dark">("light");
-   Object.assign(window, { setText, setCount, setStreaming, setTheme });
-   const items = Array.from({length:count}, (_,i) => ({id:"tool"+i,turnId:"turn",role:"tool",text:JSON.stringify({type:"commandExecution",command:"pwd",aggregatedOutput:"result"}),createdAt:"2026-09-10"}));
-   return <MantineProvider forceColorScheme={theme}><main><div id="text"><StreamingText text={text} streaming={streaming} agentId="fixture" /></div><div id="activity"><Activity items={items}/></div><div id="turn"><TurnHistory items={items} currentTurn="turn" enabled storageKey="test-rendering" renderMessage={()=>null} onJump={()=>{}} /></div><ComposerAttachments notify={()=>{}} assets={[asset]} uploading={false} disabled={false} add={()=>{}} remove={()=>{}}/><MessageAttachments assets={[asset]} notify={()=>{}}/></main></MantineProvider>;
-  }
-  createRoot(document.getElementById("root")!).render(<Harness/>);
-  `;
     server = await createServer({
       root: join(root, "workspaces/client/apps/web"),
       configFile: false,
@@ -48,23 +28,17 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
             vite.middlewares.use(`/${name}.html`, (_request, response) => {
               response.setHeader("Content-Type", "text/html");
               response.end(
-                `<div id="root"></div><script type="module" src="/${name}.tsx"></script>`,
+                `<div id="root"></div><script type="module" src="/tests/rendering/rendering-ux-ui.fixture.tsx"></script>`,
               );
             });
-          },
-          resolveId(id) {
-            if (id === `/${name}.tsx`) return entry;
-          },
-          load(id) {
-            if (id === entry) return fixture;
           },
         },
       ],
     });
     await server.listen();
     const page = runnerPage;
-    const errors = [],
-      external = [];
+    const errors: string[] = [],
+      external: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.on("request", (r) => {
       if (r.url().includes("external.invalid")) external.push(r.url());
@@ -73,23 +47,31 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=";
     await page.route("**/api/file?**", (r) =>
       r.fulfill({
-        json: { name: "pixel.png", mime: "image/png", base64: pixel },
+        json: {
+          name: "pixel.png",
+          mime: "image/png",
+          base64: pixel,
+        } satisfies GetResult<"/api/file">,
       }),
     );
     await page.route("https://external.invalid/**", (r) =>
       r.fulfill({ status: 404, body: "missing" }),
     );
-    await page.goto(`${server.resolvedUrls.local[0]}${name}.html`);
+    const baseUrl = server.resolvedUrls?.local[0];
+    if (!baseUrl) throw new Error("Missing rendering fixture URL");
+    await page.goto(`${baseUrl}${name}.html`);
     await page.getByText("Partial", { exact: true }).waitFor();
     await page.locator("#text .sentence-enter").count();
     await page.evaluate(() => {
       const span = [...document.querySelectorAll("#text span")].find(
         (n) => n.textContent === "First sentence. ",
       );
+      if (!span) throw new Error("Missing first sentence span");
       window.retained = span;
       const range = document.createRange();
       range.selectNodeContents(span);
       const selection = window.getSelection();
+      if (!selection) throw new Error("Missing text selection");
       selection.removeAllRanges();
       selection.addRange(range);
       window.setText("First sentence. Partial response continues");
@@ -99,7 +81,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
       .waitFor();
     assert.equal(await page.evaluate(() => window.retained.isConnected), true);
     assert.equal(
-      await page.evaluate(() => window.getSelection().toString()),
+      await page.evaluate(() => window.getSelection()?.toString()),
       "First sentence. ",
     );
     for (const id of ["activity", "turn"]) {
@@ -215,7 +197,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
       ),
     );
     await page.locator(".rich-preview iframe").waitFor();
-    for (const theme of ["light", "dark"]) {
+    for (const theme of ["light", "dark"] as const) {
       await page.evaluate((value) => window.setTheme(value), theme);
       await page.waitForFunction(
         (value) =>
@@ -223,8 +205,11 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
         theme,
       );
       const colors = await page.evaluate(() => {
-        const read = (selector) =>
-          getComputedStyle(document.querySelector(selector));
+        const read = (selector: string) => {
+          const element = document.querySelector(selector);
+          if (!element) throw new Error(`Missing ${selector}`);
+          return getComputedStyle(element);
+        };
         return {
           background: read(".rich-preview").backgroundColor,
           label: read(".rich-preview-label").color,
@@ -232,18 +217,21 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
           codeText: read(".code-block").color,
         };
       });
-      const luminance = (color) => {
-        const rgb = color
-          .match(/[\d.]+/g)
+      const luminance = (color: string) => {
+        const channels = color.match(/[\d.]+/g);
+        if (!channels || channels.length < 3)
+          throw new Error(`Invalid color ${color}`);
+        const rgb = channels
           .slice(0, 3)
           .map(Number)
           .map((n) => n / 255)
           .map((n) =>
             n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4,
           );
-        return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+        const [red = 0, green = 0, blue = 0] = rgb;
+        return red * 0.2126 + green * 0.7152 + blue * 0.0722;
       };
-      const contrast = (a, b) =>
+      const contrast = (a: string, b: string) =>
         (Math.max(luminance(a), luminance(b)) + 0.05) /
         (Math.min(luminance(a), luminance(b)) + 0.05);
       assert.ok(
