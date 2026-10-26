@@ -2,7 +2,7 @@ import type {
   BrowserWindow as ElectronWindow,
   MenuItem,
   WebContents,
-  IpcMainInvokeEvent,
+  WebFrameMain,
   DownloadItem,
   Event,
   WebContentsDidStartNavigationEventParams,
@@ -36,7 +36,19 @@ export type NativeRequest =
       method: "serverNativeAction";
       value: NativeRequest & { serverId: string };
     };
-export type NativeEvent = IpcMainInvokeEvent & { studioServerId?: string };
+export type NativeFrame = Pick<
+  WebFrameMain,
+  "url" | "send" | "isDestroyed" | "processId" | "routingId"
+> & { parent: NativeFrame | null; frames: NativeFrame[] };
+export type NativeContents = Pick<WebContents, "isDestroyed"> &
+  Pick<NodeJS.EventEmitter, "on" | "once" | "removeListener"> & {
+    mainFrame: NativeFrame;
+  };
+export type NativeEvent = {
+  sender: NativeContents;
+  senderFrame: NativeFrame | null;
+  studioServerId?: string;
+};
 type Backend = Partial<BackendIdentity> &
   Pick<Awaited<ReturnType<typeof ensureBackend>>, "origin" | "pid" | "owned">;
 import {
@@ -140,12 +152,12 @@ let microphoneUntil = 0;
 let microphoneOwner: string | undefined;
 const transcriptionPermits = new Map<
   string,
-  { expiry: number; sender: WebContents; serverId: string | undefined }
+  { expiry: number; sender: NativeContents; serverId: string | undefined }
 >();
 const activeNotifications = new Set<InstanceType<typeof Notification>>();
 let transcriptionRunning: {
   id: string;
-  sender: WebContents;
+  sender: NativeContents;
   controller: AbortController;
   serverId: string | undefined;
   abort: () => void;
@@ -191,7 +203,9 @@ function trusted(event: NativeEvent) {
     !owner ||
     !event.senderFrame ||
     event.senderFrame.parent !== win.webContents.mainFrame ||
-    !win.webContents.mainFrame.frames.includes(event.senderFrame) ||
+    !win.webContents.mainFrame.frames.some(
+      (frame) => frame === event.senderFrame,
+    ) ||
     event.senderFrame.isDestroyed?.() ||
     (event.studioServerId && event.studioServerId !== owner)
   )

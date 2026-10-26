@@ -676,7 +676,7 @@ export function trackDesktopRecovery({
   app,
   env = process.env,
 }: {
-  app: Pick<App, "getPath" | "on">;
+  app: Pick<App, "getPath"> & Pick<NodeJS.EventEmitter, "on">;
   env?: NodeJS.ProcessEnv;
 }) {
   const { state } = recoveryPaths(env);
