@@ -252,6 +252,26 @@ pub trait HistoryBudgetSink: Send + Sync {
         captures: Vec<(Arc<Value>, Value, f64)>,
         now: f64,
     ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>>;
+    fn capture_page_with_conflicts<'a>(
+        &'a self,
+        captures: Vec<(Arc<Value>, Value, f64)>,
+        now: f64,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
+                        HistoryError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.capture_page(captures, now).await?;
+            Ok(Vec::new())
+        })
+    }
 }
 
 /// The production page sink. Identity and budget state are re-read through
@@ -273,29 +293,76 @@ impl HistoryBudgetSink for StoreHistoryBudgetSink<'_> {
         now: f64,
     ) -> Pin<Box<dyn Future<Output = Result<(), HistoryError>> + Send + 'a>> {
         Box::pin(async move {
+            self.capture_page_with_conflicts(captures, now).await?;
+            Ok(())
+        })
+    }
+    fn capture_page_with_conflicts<'a>(
+        &'a self,
+        captures: Vec<(Arc<Value>, Value, f64)>,
+        now: f64,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
+                        HistoryError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
             if captures.is_empty() {
-                return Ok(());
+                return Ok(Vec::new());
             }
-            self.store
+            crate::budget_service::prepare_legacy_corrections(
+                self.store,
+                captures
+                    .iter()
+                    .map(|(agent, params, _)| ((**agent).clone(), params.clone()))
+                    .collect(),
+            )
+            .await?;
+            let conflicts = self
+                .store
                 .transaction_with::<_, HistoryError>(move |tx| {
                     let mut page_agent = captures
                         .first()
                         .map(|(agent, _, _)| (**agent).clone())
                         .ok_or(HistoryError::BudgetUnavailable)?;
+                    let mut conflicts = Vec::new();
                     for (_, params, at) in captures {
-                        crate::budget_service::capture(
-                            tx,
-                            &mut page_agent,
-                            &params,
-                            at,
-                            crate::budget::CaptureSource::History,
-                            now,
-                        )?;
+                        let acceptance = if params.get("studioUsage").is_some()
+                            && params.get("agentId").is_some()
+                        {
+                            crate::budget_service::capture_persisted_acceptance(
+                                tx,
+                                &mut page_agent,
+                                &params,
+                                at,
+                                now,
+                            )?
+                        } else {
+                            crate::budget_service::capture_acceptance(
+                                tx,
+                                &mut page_agent,
+                                &params,
+                                at,
+                                crate::budget::CaptureSource::History,
+                                now,
+                            )?
+                        };
+                        if let crate::budget::UsageAcceptance::RejectedReplayConflict(conflict) =
+                            acceptance
+                        {
+                            conflicts.push(conflict);
+                        }
                     }
-                    Ok(())
+                    Ok(conflicts)
                 })
                 .await?;
-            Ok(())
+            Ok(conflicts)
         })
     }
 }
@@ -311,13 +378,18 @@ impl HistoryBudgetSink for BudgetUnavailable {
     }
 }
 pub struct HistorySnapshot {
+    ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     agent: Arc<Value>,
     previous: Option<Value>,
     state: Value,
     context: RolloutContext,
 }
 impl HistorySnapshot {
-    pub fn from_records(agent: Value, previous: Option<Value>) -> Result<Self, HistoryError> {
+    pub fn from_records(
+        agent: Value,
+        previous: Option<Value>,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
+    ) -> Result<Self, HistoryError> {
         CaptureTable::Agents.validate(&agent)?;
         let agent = Arc::new(agent);
         let thread = agent["threadId"]
@@ -341,6 +413,7 @@ impl HistorySnapshot {
         }
         let context = RolloutContext::from_record(state["context"].clone())?;
         Ok(Self {
+            ledger_since,
             agent,
             previous,
             state,
@@ -380,9 +453,12 @@ impl HistoryBatch {
             .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         }
         if !self.budget.is_empty() {
-            budget
-                .capture_page(std::mem::take(&mut self.budget), now)
+            let conflicts = budget
+                .capture_page_with_conflicts(std::mem::take(&mut self.budget), now)
                 .await?;
+            for capture in &mut self.captures {
+                capture.apply_budget_conflicts(&conflicts);
+            }
         }
         store
             .analytics_transaction(move |tx, canvas| {
@@ -391,9 +467,14 @@ impl HistoryBatch {
                 if current != self.previous {
                     return Err(HistoryError::StaleCheckpoint);
                 }
+                let epoch = studio_runtime_store::budget::BudgetRepository::ledger_since(
+                    canvas,
+                    text(&self.agent["id"]),
+                )?;
                 let mut effects = Vec::new();
-                for prepared in self.captures {
-                    let decision = decide(CaptureSnapshot::load(tx, Arc::new(prepared))?)?;
+                for mut prepared in self.captures {
+                    prepared.bind_budget(canvas, epoch)?;
+                    let decision = decide(CaptureSnapshot::load(tx, Arc::new(prepared))?, epoch)?;
                     decision.apply(tx)?;
                     if let Some(effect) = decision.response_rate {
                         effects.push(effect)
@@ -466,10 +547,16 @@ async fn collect_path(
         crate::analytics_history_repair::migrate_budget(store, agent.clone(), budget, now).await?;
     let previous = read_history_checkpoint(store, &key, &agent).await?;
     let prepare_cancel = Arc::clone(&cancel);
+    let epoch_agent = text(&agent["id"]).to_owned();
+    let ledger_since = store
+        .read_async("analytics/history-ledger-epoch", move |db| {
+            studio_runtime_store::budget::BudgetRepository::ledger_since(db, &epoch_agent)
+        })
+        .await?;
     let batch = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/analytics_history_prepare",
         move || {
-            let snapshot = HistorySnapshot::from_records(agent, previous)?;
+            let snapshot = HistorySnapshot::from_records(agent, previous, ledger_since)?;
             prepare(
                 snapshot,
                 &profile,
@@ -1101,11 +1188,18 @@ pub fn prepare(
                         at,
                         now,
                         CaptureSource::Rollout,
+                        snapshot.ledger_since,
                     )?);
                 }
-                RolloutAction::Payload { params, at } => captures.push(
-                    PreparedCapture::model_payload_shared(Arc::clone(&agent), &params, at, now)?,
-                ),
+                RolloutAction::Payload { params, at } => {
+                    captures.push(PreparedCapture::model_payload_shared(
+                        Arc::clone(&agent),
+                        &params,
+                        at,
+                        now,
+                        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                    )?)
+                }
                 RolloutAction::WrongThread => {
                     increment(&mut snapshot.state, "wrongThreadRecord", 1)?
                 }
@@ -1450,10 +1544,17 @@ impl HistoryCollector {
         let prepare_agent = agent.clone();
         let prepare_cancel = Arc::clone(&cancel);
         let previous = read_history_checkpoint(store, &key, &agent).await?;
+        let epoch_agent = text(&agent["id"]).to_owned();
+        let ledger_since = store
+            .read_async("analytics/history-ledger-epoch", move |db| {
+                studio_runtime_store::budget::BudgetRepository::ledger_since(db, &epoch_agent)
+            })
+            .await?;
         let batch = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/analytics_history_prepare",
             move || {
-                let snapshot = HistorySnapshot::from_records(prepare_agent, previous)?;
+                let snapshot =
+                    HistorySnapshot::from_records(prepare_agent, previous, ledger_since)?;
                 prepare(
                     snapshot,
                     &home,
@@ -1625,7 +1726,12 @@ mod native_validation_tests {
         let path = profile.join("sessions/2026/10/25/rollout-test-thread.jsonl");
         let agent = json!({"id":"agent","rootId":"agent","threadId":"thread","accountKey":"default","provider":"codex"});
         let batch = prepare(
-            HistorySnapshot::from_records(agent, None).expect("snapshot"),
+            HistorySnapshot::from_records(
+                agent,
+                None,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )
+            .expect("snapshot"),
             &profile,
             RolloutPath::Found(path),
             BatchLimits::default(),

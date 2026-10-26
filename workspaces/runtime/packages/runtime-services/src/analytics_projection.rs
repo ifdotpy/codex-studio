@@ -39,8 +39,53 @@ const PROJECTION_REFUSED: &str = "invalidInput";
 /// before). Any other effect passes through unchanged.
 pub(crate) fn log_effect(
     canvas: &Connection,
-    effect: NotificationPostCommit,
+    mut effect: NotificationPostCommit,
 ) -> Result<Option<NotificationPostCommit>, StoreError> {
+    if let NotificationPostCommit::Analytics {
+        observation,
+        ledger_since,
+        ..
+    } = &mut effect
+    {
+        *ledger_since = if observation.method == "thread/tokenUsage/updated" {
+            observation
+                .agent
+                .as_ref()
+                .map(|agent| {
+                    studio_runtime_store::budget::BudgetRepository::ledger_since(
+                        canvas,
+                        agent["id"].as_str().unwrap_or_default(),
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default()
+        } else {
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+        };
+    }
+    if let NotificationPostCommit::Analytics {
+        observation,
+        usage_unknown,
+        ..
+    } = &mut effect
+    {
+        *usage_unknown = if observation.method == "thread/tokenUsage/updated" {
+            observation
+                .agent
+                .as_ref()
+                .map(|agent| {
+                    crate::analytics_capture::unknown_usage_receipt(
+                        canvas,
+                        agent,
+                        &observation.params,
+                    )
+                })
+                .transpose()?
+                .unwrap_or(false)
+        } else {
+            false
+        };
+    }
     let observation = match &effect {
         NotificationPostCommit::Analytics { observation, .. }
         | NotificationPostCommit::AnalyticsStream { observation, .. } => observation,
@@ -253,6 +298,9 @@ mod tests {
                 provider_at: 10.0 + cursor as f64,
             },
             budget_capture_value: None,
+            usage_conflict: None,
+            ledger_since: Default::default(),
+            usage_unknown: false,
         }
     }
 
@@ -418,6 +466,7 @@ mod tests {
                 observation.observed_at,
                 observation.observed_at,
                 crate::analytics_capture::CaptureSource::Live,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("prepare direct capture");
             crate::analytics_capture::capture(&direct_store, prepared)

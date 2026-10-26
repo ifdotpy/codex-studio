@@ -496,3 +496,140 @@ async fn journal_fixture_directory_is_removed_on_return_and_unwind() {
         );
     }
 }
+
+#[tokio::test]
+async fn typed_usage_ledger_journal_corrects_a_pre_v5_legacy_receipt() {
+    let (_directory, store) = running_store().await;
+    let response = |cursor, evidence, output| {
+        entry(
+            cursor,
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","studioUsage":{"kind":"response","responseId":"response","model":"gpt-5","evidence":evidence,"tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":output}}}}),
+        )
+    };
+    let streams = journal(
+        &store,
+        NotificationStreamBuffer::default(),
+        vec![response(1, "legacy", 1)],
+    )
+    .await;
+    crate::analytics_projection::project_pending(&store)
+        .await
+        .expect("legacy projection");
+    store
+        .transaction(|tx| {
+            tx.execute("UPDATE runtime_budget_usage SET details=NULL", [])?;
+            Ok(())
+        })
+        .await
+        .expect("old scalar receipt");
+    journal(&store, streams, vec![response(2, "live", 100)]).await;
+    crate::analytics_projection::project_pending(&store)
+        .await
+        .expect("final projection");
+    let agent = studio_runtime_store::budget::BudgetRepository::agent(
+        &store.test_reader().expect("reader"),
+        "agent",
+    )
+    .expect("agent");
+    assert_eq!(
+        agent["tokensUsed"], 110,
+        "the real journal must prepare legacy provenance before its writer"
+    );
+    let db = studio_runtime_store::AnalyticsRepository::new(store.root())
+        .open_read_only()
+        .expect("analytics");
+    let groups =
+        studio_runtime_store::cost_aggregate::cost_groups(&db, "agent", &Default::default())
+            .expect("groups");
+    assert_eq!(
+        groups
+            .iter()
+            .map(|row| (row.tokens.input_tokens.unwrap_or(0.)
+                + row.tokens.output_tokens.unwrap_or(0.))
+                * row.count as f64)
+            .sum::<f64>(),
+        110.
+    );
+}
+
+#[tokio::test]
+async fn typed_usage_ledger_journal_rejects_missing_provenance_without_analytics_row() {
+    let (directory, store) = running_store().await;
+    let response = |cursor, output| {
+        entry(
+            cursor,
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","studioUsage":{"kind":"response","responseId":"response","model":"gpt-5","evidence":"live","tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":output}}}}),
+        )
+    };
+    let streams = journal(
+        &store,
+        NotificationStreamBuffer::default(),
+        vec![response(1, 1)],
+    )
+    .await;
+    crate::analytics_projection::project_pending(&store)
+        .await
+        .expect("first projection");
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_budget_usage SET details=NULL,breakdown=NULL",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("old total-only receipt");
+    store
+        .analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute("DELETE FROM analytics_usage", [])?;
+            Ok(())
+        })
+        .await
+        .expect("missing original categories");
+    let streams = journal(&store, streams, vec![response(2, 100)]).await;
+    crate::analytics_projection::project_pending(&store)
+        .await
+        .expect("rejected projection");
+    drop(store);
+    let store = Arc::new(
+        RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("restart"),
+    );
+    journal(&store, streams, vec![response(2, 100)]).await;
+    crate::analytics_projection::project_pending(&store)
+        .await
+        .expect("replay projection");
+    let agent = studio_runtime_store::budget::BudgetRepository::agent(
+        &store.test_reader().expect("reader"),
+        "agent",
+    )
+    .expect("agent");
+    assert_eq!(agent["tokensUsed"], 11);
+    let db = studio_runtime_store::AnalyticsRepository::new(store.root())
+        .open_read_only()
+        .expect("analytics");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM analytics_usage", [], |row| row
+            .get::<_, i64>(0))
+            .expect("usage count"),
+        0
+    );
+    assert_eq!(db.query_row("SELECT sum(count) FROM analytics_notifications WHERE method='thread/tokenUsage/updated'",[],|row|row.get::<_,i64>(0)).expect("notification metrics"),2,"a rejected usage still retains notification metrics, once");
+    let diagnostic = crate::costs::usage_reconciliation(&store, "agent", &Default::default())
+        .expect("reconciliation");
+    assert_eq!(
+        diagnostic["replayConflicts"]
+            .as_array()
+            .expect("conflicts")
+            .len(),
+        1
+    );
+    assert_eq!(
+        diagnostic["replayConflicts"][0]["identity"]["responseId"],
+        "response"
+    );
+    assert_eq!(diagnostic["replayConflicts"][0]["retainedTotalTokens"], 11);
+    assert_eq!(diagnostic["replayConflicts"][0]["incomingTotalTokens"], 110);
+}

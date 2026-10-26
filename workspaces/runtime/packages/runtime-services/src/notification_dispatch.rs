@@ -389,6 +389,7 @@ pub fn dispatch_notification_with_effects(
     let mut fresh = false;
     let mut post_commit = NotificationPublicationBatch::default();
     let mut command_output_monitor_present = None;
+    let mut usage_conflict = None;
     let result = in_savepoint(transaction, || {
         let outcome = (|| {
             if !observed_at.is_finite()
@@ -772,6 +773,11 @@ pub fn dispatch_notification_with_effects(
                             observed_at,
                         )?;
                     }
+                    if let crate::budget::UsageAcceptance::RejectedReplayConflict(conflict) =
+                        &acceptance
+                    {
+                        usage_conflict = Some(Box::new(conflict.clone()));
+                    }
                     apply_token_usage(&mut agent, &observation, acceptance, observed_at)?
                 }
                 _ => return Err(NotificationDispatchError::InvalidNotification),
@@ -854,6 +860,31 @@ pub fn dispatch_notification_with_effects(
                     .retain(|effect| !matches!(effect, NotificationPostCommit::Analytics { .. }));
             }
             for effect in &mut current {
+                if let NotificationPostCommit::Analytics {
+                    usage_conflict: rejected,
+                    ledger_since,
+                    usage_unknown,
+                    ..
+                } = effect
+                {
+                    *rejected = usage_conflict.clone();
+                    *ledger_since = if kind == "thread/tokenUsage/updated" {
+                        studio_runtime_store::budget::BudgetRepository::ledger_since(
+                            transaction,
+                            agent_id,
+                        )?
+                    } else {
+                        studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+                    };
+                    *usage_unknown = kind == "thread/tokenUsage/updated"
+                        && crate::analytics_capture::unknown_usage_receipt(
+                            transaction,
+                            after
+                                .or(before.as_ref())
+                                .ok_or(NotificationDispatchError::InvalidNotification)?,
+                            params,
+                        )?;
+                }
                 if let NotificationPostCommit::TokenRateAssociation(observation) = effect {
                     enrich_association(transaction, agent_id, observation)?;
                 }
@@ -1978,7 +2009,10 @@ fn apply_token_usage(
     observed_at: f64,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
     use studio_runtime_schema::usage::UsageObservation;
-    if acceptance == crate::budget::UsageAcceptance::RejectedReplayConflict {
+    if matches!(
+        acceptance,
+        crate::budget::UsageAcceptance::RejectedReplayConflict(_)
+    ) {
         return Ok(DispatchOutcome::Written);
     }
     let observation = match observation {
@@ -2442,6 +2476,7 @@ mod tests {
                 at,
                 at,
                 crate::analytics_capture::CaptureSource::Rollout,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("recovered usage");
             crate::analytics_capture::capture(&store, prepared)
@@ -2547,12 +2582,8 @@ mod tests {
                     );
                     assert_eq!(agent["contextUsage"]["window"], 200000);
                     assert_eq!(
-                        agent["tokenUsageAccounting"],
-                        if index == 2 {
-                            "provisional"
-                        } else {
-                            "responseRecords"
-                        }
+                        agent["tokenUsageAccounting"], "responseRecords",
+                        "a later gap cannot undo the response's final evidence"
                     );
                     Ok::<_, super::NotificationDispatchError>(())
                 })

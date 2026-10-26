@@ -5,7 +5,10 @@ use crate::provider_adapter::{self, ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use studio_runtime_schema::usage::UsageTokens;
+use studio_runtime_schema::usage::ledger::{
+    LedgerDiagnosticOverflow, LedgerEpoch, UsageCorrection, UsageLedgerRow, correction,
+};
+use studio_runtime_schema::usage::{UsageEvidence, UsageTokens};
 use studio_runtime_store::{python_json_with_separators, sha256_hex};
 use thiserror::Error;
 
@@ -15,6 +18,8 @@ const MAX_RECORD_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Error)]
 pub enum BudgetError {
+    #[error(transparent)]
+    Analytics(#[from] studio_runtime_store::AnalyticsStoreError),
     #[error("invalid budget input at {0}")]
     Invalid(String),
     #[error("budget-policy/token-overflow")]
@@ -57,6 +62,13 @@ fn add(a: u64, b: u64) -> Result<u64, BudgetError> {
 #[serde(rename_all = "camelCase")]
 pub struct BudgetState {
     cutoff: f64,
+    /// Missing before v5; null for a v5-created ledger, otherwise its migration time in Unix seconds.
+    #[serde(default, skip_serializing_if = "LedgerEpoch::is_legacy")]
+    ledger_since: LedgerEpoch,
+    #[serde(default)]
+    diagnostic_overflow: LedgerDiagnosticOverflow,
+    #[serde(default)]
+    unknown_usage: bool,
     floor: u64,
     spent: u64,
     before: u64,
@@ -76,13 +88,44 @@ pub struct BudgetState {
     last_amount: Option<u64>,
     ambiguous_notices: Vec<String>,
     faults: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unresolved_gaps: Vec<String>,
+    #[serde(default)]
+    gap_coverage: studio_runtime_schema::usage::ledger::GapCoverage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    replay_conflicts: Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
 impl BudgetState {
+    fn bound_diagnostics(&mut self) {
+        use studio_runtime_schema::usage::ledger::{
+            GapCoverage, MISSING_FINAL_USAGE, RESPONSE_REPLAY_CONFLICT, UNKNOWN_USAGE_RECEIPT,
+            bound_diagnostics,
+        };
+        self.unknown_usage |= self
+            .faults
+            .iter()
+            .any(|fault| fault == UNKNOWN_USAGE_RECEIPT);
+        self.diagnostic_overflow.ambiguous_notices |=
+            bound_diagnostics(&mut self.ambiguous_notices);
+        self.diagnostic_overflow.unresolved_gaps |= bound_diagnostics(&mut self.unresolved_gaps);
+        self.diagnostic_overflow.replay_conflicts |= bound_diagnostics(&mut self.replay_conflicts);
+        if self.unknown_usage {
+            self.fault(UNKNOWN_USAGE_RECEIPT);
+        }
+        if self.diagnostic_overflow.unresolved_gaps {
+            self.gap_coverage = GapCoverage::LegacyUnknown;
+            self.fault(MISSING_FINAL_USAGE);
+        }
+        if self.diagnostic_overflow.replay_conflicts {
+            self.fault(RESPONSE_REPLAY_CONFLICT);
+        }
+        self.diagnostic_overflow.faults |= bound_diagnostics(&mut self.faults);
+    }
     fn fault(&mut self, fault: &str) {
         if !self.faults.iter().any(|f| f == fault) {
-            self.faults.push(fault.into());
+            self.faults.insert(0, fault.into());
         }
     }
     fn settle(&mut self) -> Result<(), BudgetError> {
@@ -98,6 +141,9 @@ impl BudgetState {
         if self.notice_spent > self.before.saturating_add(self.after)
             || !self.faults.is_empty()
             || !self.ambiguous_notices.is_empty()
+            || self.diagnostic_overflow.ambiguous_notices
+            || self.diagnostic_overflow.faults
+            || self.unknown_usage
         {
             "provisional"
         } else {
@@ -108,10 +154,41 @@ impl BudgetState {
         json!({"tokensUsed":self.spent,"tokenUsageAccounting":self.accounting()})
     }
     pub fn record(&self) -> Result<Value, BudgetError> {
-        let value = serde_json::to_value(self).map_err(|_| invalid("runtime_budget"))?;
-        validate("PersistedBudgetState", &value, "runtime_budget")?;
+        let mut bounded = self.clone();
+        bounded.bound_diagnostics();
+        let value = serde_json::to_value(bounded).map_err(|_| invalid("runtime_budget"))?;
+        validate("PersistedBudgetStateWrite", &value, "runtime_budget")?;
         Ok(value)
     }
+}
+
+pub(crate) fn needs_legacy_gap_coverage(value: &Value) -> Result<bool, BudgetError> {
+    let state: BudgetState = decode(value, "runtime_budget")?;
+    Ok(
+        state.gap_coverage == studio_runtime_schema::usage::ledger::GapCoverage::LegacyUnknown
+            || value.get("gapCoverage").is_none()
+                && state.faults.iter().any(|fault| {
+                    fault == studio_runtime_schema::usage::ledger::MISSING_FINAL_USAGE
+                }),
+    )
+}
+
+pub(crate) fn record_legacy_gap_identities(
+    value: &Value,
+    unresolved: Vec<String>,
+) -> Result<BudgetState, BudgetError> {
+    let mut state: BudgetState = decode(value, "runtime_budget")?;
+    state.bound_diagnostics();
+    // Available rows cannot prove how many old gaps were erased. Keep this
+    // uncertainty until an authoritative complete old-era source supplies proof.
+    state.gap_coverage = studio_runtime_schema::usage::ledger::GapCoverage::LegacyUnknown;
+    for key in unresolved {
+        if !state.unresolved_gaps.contains(&key) {
+            state.unresolved_gaps.push(key);
+        }
+    }
+    state.bound_diagnostics();
+    Ok(state)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -186,6 +263,11 @@ impl BudgetSnapshot {
         }
         let supplied: Agent = decode(agent, "runtime_agents/budget")?;
         let durable: Agent = decode(durable_agent, "runtime_agents/budget")?;
+        if durable.thread_id.as_ref().is_some_and(|id| {
+            id.chars().count() > studio_runtime_schema::usage::ledger::MAX_NATIVE_THREAD_ID_CHARS
+        }) {
+            return Err(invalid("runtime_agents/threadId"));
+        }
         if supplied.id.is_empty() || durable.id != supplied.id || !now.is_finite() {
             return Err(invalid("runtime_agents/id"));
         }
@@ -205,11 +287,19 @@ impl BudgetSnapshot {
             }
         }
         let floor = durable.tokens_used.unwrap_or(0);
-        let initialized = state.is_none();
-        let state: BudgetState = match state {
+        let initialized =
+            state.is_none() || state.is_some_and(|value| value.get("ledgerSince").is_none());
+        let legacy_unknown = state
+            .map(needs_legacy_gap_coverage)
+            .transpose()?
+            .unwrap_or(false);
+        let mut state: BudgetState = match state {
             Some(value) => decode(value, "runtime_budget")?,
             None => BudgetState {
                 cutoff: now,
+                ledger_since: LedgerEpoch::Current,
+                diagnostic_overflow: Default::default(),
+                unknown_usage: false,
                 floor,
                 spent: floor,
                 before: 0,
@@ -225,9 +315,19 @@ impl BudgetSnapshot {
                 last_amount: None,
                 ambiguous_notices: vec![],
                 faults: vec![],
+                unresolved_gaps: vec![],
+                gap_coverage: studio_runtime_schema::usage::ledger::GapCoverage::Complete,
+                replay_conflicts: vec![],
                 extra: BTreeMap::new(),
             },
         };
+        if state.ledger_since.is_legacy() {
+            state.ledger_since = LedgerEpoch::Since(now);
+        }
+        state.bound_diagnostics();
+        if legacy_unknown {
+            state.gap_coverage = studio_runtime_schema::usage::ledger::GapCoverage::LegacyUnknown;
+        }
         Ok(Self {
             agent: durable,
             state,
@@ -276,7 +376,14 @@ pub enum CaptureSource {
 
 #[derive(Clone, Debug)]
 pub struct UsageObservation {
+    ledger: Option<UsageLedgerRow>,
+    identity: studio_runtime_schema::usage::ledger::UsageIdentity,
     key: String,
+    legacy_keys: Vec<String>,
+    unresolved_receipt: bool,
+    canonical_capture_key: Option<String>,
+    legacy_era: bool,
+    accounting_key: Option<String>,
     exact: bool,
     amount: Option<u64>,
     counter: Option<u64>,
@@ -297,6 +404,31 @@ impl UsageObservation {
         at: f64,
         source: CaptureSource,
     ) -> Result<Self, BudgetError> {
+        Self::from_input(snapshot, params, at, source, None)
+    }
+
+    /// Restore a typed analytics receipt without reconstructing or parsing a notification.
+    pub fn from_persisted(
+        snapshot: &BudgetSnapshot,
+        row: &Value,
+        at: f64,
+        source: CaptureSource,
+    ) -> Result<Self, BudgetError> {
+        if row["agentId"].as_str() != Some(&snapshot.agent.id) {
+            return Err(invalid("analytics_usage/agentId"));
+        }
+        let ledger = UsageLedgerRow::from_analytics(snapshot.provider, row)
+            .map_err(|_| invalid("analytics_usage/ledger"))?;
+        Self::from_input(snapshot, row, at, source, Some(ledger))
+    }
+
+    fn from_input(
+        snapshot: &BudgetSnapshot,
+        params: &Value,
+        at: f64,
+        source: CaptureSource,
+        supplied: Option<UsageLedgerRow>,
+    ) -> Result<Self, BudgetError> {
         use studio_runtime_schema::usage::{
             UsageObservation as ParsedUsage, parse_legacy_totals, parse_token_usage,
         };
@@ -304,7 +436,11 @@ impl UsageObservation {
             return Err(invalid("tokenUsage"));
         }
         validate("BudgetCapture", params, "tokenUsage")?;
-        let parsed = parse_token_usage(snapshot.provider, params);
+        let parsed = supplied
+            .as_ref()
+            .map(|row| Ok(row.studio_usage.clone()))
+            .unwrap_or_else(|| parse_token_usage(snapshot.provider, params));
+        let typed = parsed.as_ref().ok().cloned();
         let informational = matches!(
             &parsed,
             Ok(ParsedUsage::Cumulative {
@@ -321,6 +457,7 @@ impl UsageObservation {
             Ok(ParsedUsage::Cumulative { last, .. }) => last.clone(),
             _ => None,
         };
+        let mut scalar_counter = None;
         let (exact, amount, counter, response, turn, identity_usage, gap) = match parsed {
             Ok(ref observation) => {
                 let identity_usage =
@@ -378,6 +515,9 @@ impl UsageObservation {
             Err(_) => {
                 let legacy = parse_legacy_totals(snapshot.provider, params)
                     .map_err(|_| invalid("tokenUsage"))?;
+                if legacy.response_id.is_none() {
+                    scalar_counter = Some(legacy.clone());
+                }
                 (
                     legacy.response_id.is_some(),
                     Some(legacy.last_total_tokens.unwrap_or(legacy.total_tokens)),
@@ -420,8 +560,104 @@ impl UsageObservation {
             .map(|v| decode::<String>(v, "tokenUsage/threadId"))
             .transpose()?
             .or_else(|| a.thread_id.clone());
+        if thread.as_ref().is_some_and(|id| {
+            id.chars().count() > studio_runtime_schema::usage::ledger::MAX_NATIVE_THREAD_ID_CHARS
+        }) {
+            return Err(invalid("tokenUsage/threadId"));
+        }
+        let restoring = supplied.is_some();
+        let ledger = supplied.or_else(|| {
+            typed.map(|observation| UsageLedgerRow::capture(&a.id, thread.as_deref(), observation))
+        });
+        let unresolved_receipt = ledger.as_ref().is_some_and(|row| row.receipt_key.is_none());
+        let scalar_key = scalar_counter.as_ref().map(|legacy| {
+            studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
+                &a.id,
+                thread.as_deref(),
+                legacy,
+            )
+        });
+        let accounting_key = ledger
+            .as_ref()
+            .map(UsageLedgerRow::observation_key)
+            .or_else(|| scalar_key.clone());
+        let key = match &ledger {
+            Some(row) => row.receipt_key.clone().unwrap_or_default(),
+            None => scalar_key.clone().unwrap_or_else(|| {
+                sha256_hex(python_json_with_separators(&identity, ",", ":").as_bytes())
+            }),
+        };
+        let estimated = params
+            .get("_analyticsTimestampSource")
+            .and_then(Value::as_str)
+            == Some("fileModifiedEstimate")
+            || params.get("timestampSource").and_then(Value::as_str)
+                == Some("fileModifiedEstimate");
+        let legacy_era = studio_runtime_schema::usage::ledger::legacy_era(
+            snapshot.state.ledger_since,
+            at,
+            estimated,
+        );
+        let mut legacy_keys = ledger
+            .as_ref()
+            .map(|row| {
+                if restoring {
+                    studio_runtime_schema::usage::ledger::legacy_analytics_receipt_keys(
+                        params,
+                        &row.studio_usage,
+                    )
+                } else {
+                    studio_runtime_schema::usage::ledger::legacy_receipt_keys(
+                        &a.id,
+                        &a.account_key,
+                        identity_turn.as_deref(),
+                        params,
+                        &row.studio_usage,
+                    )
+                }
+            })
+            .filter(|_| legacy_era)
+            .unwrap_or_default();
+        if legacy_era && scalar_counter.is_some() {
+            legacy_keys.push(sha256_hex(
+                python_json_with_separators(&identity, ",", ":").as_bytes(),
+            ));
+        }
+        let canonical_capture_key = if !restoring
+            && (scalar_key.is_some()
+                || matches!(
+                    ledger.as_ref().map(|row| &row.studio_usage),
+                    Some(studio_runtime_schema::usage::UsageObservation::Cumulative { .. })
+                )) {
+            Some(key.clone())
+        } else {
+            None
+        };
+        let identity = ledger
+            .as_ref()
+            .map(|row| row.usage_identity.clone())
+            .unwrap_or_else(|| match &response {
+                Some(response_id) if exact => {
+                    studio_runtime_schema::usage::ledger::UsageIdentity::Response {
+                        agent: a.id.clone(),
+                        response_id: response_id.clone(),
+                    }
+                }
+                _ => studio_runtime_schema::usage::ledger::UsageIdentity::Cumulative {
+                    agent: a.id.clone(),
+                    thread_id: thread.clone(),
+                    scope: studio_runtime_schema::usage::UsageScope::ClaudeQuery,
+                },
+            });
         Ok(Self {
-            key: sha256_hex(python_json_with_separators(&identity, ",", ":").as_bytes()),
+            key,
+            legacy_keys,
+            unresolved_receipt,
+            canonical_capture_key,
+            legacy_era,
+            accounting_key,
+            ledger,
+            identity,
             exact,
             amount,
             counter,
@@ -431,32 +667,86 @@ impl UsageObservation {
             thread,
             gap,
             informational,
-            estimated: params
-                .get("_analyticsTimestampSource")
-                .and_then(Value::as_str)
-                == Some("fileModifiedEstimate"),
+            estimated,
             at,
             source,
         })
+    }
+    pub(crate) fn unknown_key(&self) -> Option<&str> {
+        self.accounting_key.as_deref()
+    }
+    pub(crate) fn receipt_candidates(&self) -> impl Iterator<Item = &str> {
+        self.accounting_key
+            .as_deref()
+            .into_iter()
+            .chain(std::iter::once(self.key.as_str()))
+            .filter(|key| !key.is_empty())
+            .chain(self.legacy_keys.iter().map(String::as_str))
+    }
+    pub(crate) fn needs_receipt_ownership(&self, row: &UsageRow) -> bool {
+        matches!(
+            self.identity,
+            studio_runtime_schema::usage::ledger::UsageIdentity::Cumulative { .. }
+        ) && row.details.is_none()
+            && self.canonical_capture_key.as_deref() != Some(row.id.as_str())
+    }
+    pub(crate) fn accepts_receipt(&self, row: &UsageRow) -> bool {
+        !self.needs_receipt_ownership(row)
+            && row
+                .details
+                .as_ref()
+                .is_none_or(|details| details.ledger.usage_identity == self.identity)
+    }
+    pub(crate) fn reuse_receipt(&mut self, key: String) {
+        self.key = key.clone();
+        self.unresolved_receipt = false;
+        if let Some(ledger) = &mut self.ledger {
+            ledger.receipt_key = Some(key);
+        }
+    }
+    pub(crate) fn mark_unknown_receipt(&mut self) {
+        self.unresolved_receipt = true;
     }
     pub fn key(&self) -> &str {
         &self.key
     }
 }
 
+pub use studio_runtime_schema::usage::ledger::UsageAcceptance;
 pub use studio_runtime_store::budget::BudgetUsageRow as UsageRow;
-/// Whether downstream projections may use this observation's content.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum UsageAcceptance {
-    Accepted,
-    RejectedReplayConflict,
-}
 #[derive(Clone, Debug, Serialize)]
 pub struct CaptureDecision {
     pub acceptance: UsageAcceptance,
     pub state: BudgetState,
     pub usage: Option<UsageRow>,
     pub changed: bool,
+}
+
+fn rejected_replay(
+    mut state: BudgetState,
+    observation: &UsageObservation,
+    previous: &UsageRow,
+) -> Result<CaptureDecision, BudgetError> {
+    let conflict = studio_runtime_schema::usage::ledger::UsageReplayConflict {
+        identity: observation.identity.clone(),
+        retained_total_tokens: previous.tokens,
+        incoming_total_tokens: observation
+            .amount
+            .ok_or_else(|| invalid("tokenUsage/conflict"))?,
+        retained_tokens: previous.breakdown.clone(),
+        incoming_tokens: observation.tokens.clone(),
+    };
+    state.fault(studio_runtime_schema::usage::ledger::RESPONSE_REPLAY_CONFLICT);
+    if !state.replay_conflicts.contains(&conflict) {
+        state.replay_conflicts.push(conflict.clone());
+    }
+    state.bound_diagnostics();
+    Ok(CaptureDecision {
+        acceptance: UsageAcceptance::RejectedReplayConflict(conflict),
+        state,
+        usage: None,
+        changed: true,
+    })
 }
 
 pub fn capture(
@@ -474,9 +764,134 @@ pub fn capture(
             changed: false,
         });
     }
+    if previous.is_some_and(|row| {
+        studio_runtime_schema::usage::ledger::receipt_replay(&row.kind)
+            == Some(UsageCorrection::Replay)
+    }) {
+        state.unknown_usage = true;
+        state.fault(studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT);
+        let changed = state != snapshot.state;
+        return Ok(CaptureDecision {
+            acceptance: UsageAcceptance::Accepted,
+            state,
+            usage: None,
+            changed,
+        });
+    }
+    if p.unresolved_receipt || p.legacy_era && !p.exact && !p.gap && previous.is_none() {
+        let key = p
+            .accounting_key
+            .as_ref()
+            .ok_or_else(|| invalid("tokenUsage/unknownIdentity"))?;
+        state.unknown_usage = true;
+        state.fault(studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT);
+        state.bound_diagnostics();
+        return Ok(CaptureDecision {
+            acceptance: UsageAcceptance::Accepted,
+            state,
+            usage: Some(UsageRow {
+                id: key.clone(),
+                agent: snapshot.agent.id.clone(),
+                kind: studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_KIND.into(),
+                tokens: 0,
+                at: p.at,
+                breakdown: None,
+                details: None,
+            }),
+            changed: true,
+        });
+    }
+    if let Some(row) = previous {
+        if row.id != p.key || row.agent != snapshot.agent.id {
+            return Err(invalid("runtime_budget_usage/identity"));
+        }
+        if p.gap && row.kind == "response" && row.details.is_none() {
+            return Ok(CaptureDecision {
+                acceptance: UsageAcceptance::Accepted,
+                state,
+                usage: None,
+                changed: false,
+            });
+        }
+    }
     let mut inserted = None;
+    let mut previous = previous;
+    let mut replacement_before = None;
+    if let (Some(incoming), Some(old)) = (&p.ledger, previous.and_then(|row| row.details.as_ref()))
+    {
+        if incoming.usage_identity != old.ledger.usage_identity {
+            return Err(invalid("runtime_budget_usage/identity"));
+        }
+        match correction(&old.ledger.studio_usage, &incoming.studio_usage) {
+            UsageCorrection::UnresolvedGap => {}
+            UsageCorrection::Replay if !p.exact && !p.gap => {}
+            UsageCorrection::Replay => {
+                return Ok(CaptureDecision {
+                    acceptance: UsageAcceptance::Accepted,
+                    state,
+                    usage: None,
+                    changed: false,
+                });
+            }
+            UsageCorrection::ResponseReplayConflict => {
+                return rejected_replay(
+                    state,
+                    p,
+                    previous.ok_or_else(|| invalid("runtime_budget_usage/conflict"))?,
+                );
+            }
+            UsageCorrection::Apply => {
+                if let Some(row) = previous.filter(|row| row.kind == "response") {
+                    let bucket = if old.before_cutoff {
+                        &mut state.before
+                    } else {
+                        &mut state.after
+                    };
+                    *bucket = bucket
+                        .checked_sub(row.tokens)
+                        .ok_or_else(|| invalid("runtime_budget_usage/placement"))?;
+                    state.spent = state.spent.saturating_sub(row.tokens);
+                    replacement_before = Some(old.before_cutoff);
+                }
+                previous = None;
+            }
+        }
+    }
+    let is_final = p.ledger.as_ref().is_some_and(|row| matches!(&row.studio_usage, studio_runtime_schema::usage::UsageObservation::Response { evidence, .. } if *evidence != UsageEvidence::Legacy));
+    if is_final {
+        state.unresolved_gaps.retain(|key| key != &p.key);
+        if state.unresolved_gaps.is_empty()
+            && state.gap_coverage == studio_runtime_schema::usage::ledger::GapCoverage::Complete
+        {
+            state
+                .faults
+                .retain(|fault| fault != studio_runtime_schema::usage::ledger::MISSING_FINAL_USAGE);
+        }
+    }
+    let before_cutoff = replacement_before.unwrap_or(p.estimated || p.at <= state.cutoff);
+    let details = p
+        .ledger
+        .clone()
+        .map(|ledger| studio_runtime_store::budget::BudgetUsageDetails {
+            ledger,
+            before_cutoff,
+        });
     if p.gap {
-        state.fault("missingFinalUsage");
+        if !state.unresolved_gaps.contains(&p.key) {
+            state.unresolved_gaps.push(p.key.clone());
+        }
+        state.fault(studio_runtime_schema::usage::ledger::MISSING_FINAL_USAGE);
+        if previous.is_none() {
+            inserted = Some(UsageRow {
+                id: p.key.clone(),
+                agent: snapshot.agent.id.clone(),
+                kind: "notice".into(),
+                tokens: 0,
+                at: p.at,
+                breakdown: None,
+                details,
+            });
+        }
     } else if p.source == CaptureSource::Live || p.at >= state.created {
         if let Some(previous) = previous {
             if previous.id != p.key || previous.agent != snapshot.agent.id {
@@ -493,13 +908,7 @@ pub fn capture(
                         .as_ref()
                         .is_some_and(|old| p.tokens.as_ref() != Some(old))
                 {
-                    state.fault("responseReplayConflict");
-                    return Ok(CaptureDecision {
-                        acceptance: UsageAcceptance::RejectedReplayConflict,
-                        state,
-                        usage: None,
-                        changed: true,
-                    });
+                    return rejected_replay(state, p, previous);
                 }
                 return Ok(CaptureDecision {
                     acceptance: UsageAcceptance::Accepted,
@@ -516,15 +925,16 @@ pub fn capture(
                 tokens: amount,
                 at: p.at,
                 breakdown: p.exact.then(|| p.tokens.clone()).flatten(),
+                details,
             });
             if p.exact {
                 if p.estimated {
                     state.fault("estimatedResponseTime");
                     state.before = add(state.before, amount)?;
-                } else if p.at > state.cutoff {
-                    state.after = add(state.after, amount)?;
-                } else {
+                } else if before_cutoff {
                     state.before = add(state.before, amount)?;
+                } else {
+                    state.after = add(state.after, amount)?;
                 }
             } else if p.source != CaptureSource::Live {
                 if !p.response {
@@ -573,6 +983,7 @@ pub fn capture(
             state.fault("missingRequestUsage");
         }
     }
+    state.bound_diagnostics();
     state.settle()?;
     Ok(CaptureDecision {
         acceptance: UsageAcceptance::Accepted,
@@ -935,9 +1346,11 @@ mod typed_usage_tests {
     }
 
     #[test]
-    fn native_live_and_imported_notices_keep_pre_upgrade_receipt_keys() {
+    fn native_live_and_imported_notices_recognize_pre_upgrade_receipt_keys() {
         let agent = json!({"id":"a","provider":"codex","accountKey":"default","threadId":"t","turnId":"u","created":0});
-        let snapshot = BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot");
+        let mut snapshot =
+            BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot");
+        snapshot.state.ledger_since = LedgerEpoch::Since(102.);
         let total = json!({"inputTokens":20,"cachedInputTokens":5,"cacheWriteInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1,"totalTokens":24});
         let last = json!({"inputTokens":5,"cachedInputTokens":1,"cacheWriteInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":6});
         let params = json!({"threadId":"t","turnId":"u","tokenUsage":{"total":total,"last":last}});
@@ -946,10 +1359,14 @@ mod typed_usage_tests {
         for source in [CaptureSource::Live, CaptureSource::History] {
             let observation = UsageObservation::from_record(&snapshot, &params, 101., source)
                 .expect("native notice");
-            assert_eq!(
+            assert!(
+                observation.receipt_candidates().any(|key| key == expected),
+                "pre-upgrade receipts remain deduplication aliases"
+            );
+            assert_ne!(
                 observation.key(),
                 expected,
-                "live and imported token_count use the same native identity"
+                "new receipt keys include thread and counter scope"
             );
         }
     }
@@ -963,10 +1380,14 @@ mod typed_usage_tests {
                 .expect("old aggregate");
         let old_identity = json!(["a","default","notice","u",{"totalTokens":20},{"totalTokens":5}]);
         let old_key = sha256_hex(python_json_with_separators(&old_identity, ",", ":").as_bytes());
-        assert_eq!(
+        assert_ne!(
             observation.key(),
             old_key,
-            "pre-upgrade committed history receipts must be found on replay"
+            "v5 scalar compatibility keys use stable accounting identity"
+        );
+        assert!(
+            !observation.receipt_candidates().any(|key| key == old_key),
+            "a v5-created state never applies old aliases"
         );
     }
 
@@ -1011,7 +1432,20 @@ mod typed_usage_tests {
         .expect("gap");
         assert_eq!(gap.state.accounting(), "provisional");
         assert_eq!(gap.state.spent, 12);
-        assert!(gap.usage.is_none());
+        let receipt = gap.usage.as_ref().expect("persisted gap identity");
+        assert_eq!(
+            receipt.tokens, 0,
+            "a gap has no debit; its typed usage remains unknown"
+        );
+        assert!(matches!(
+            receipt
+                .details
+                .as_ref()
+                .expect("typed gap")
+                .ledger
+                .studio_usage,
+            studio_runtime_schema::usage::UsageObservation::Gap { .. }
+        ));
         snapshot.state = gap.state;
         for (at, total, spent) in [(104., 20, 20), (105., 5, 25)] {
             let usage = json!({"kind":"cumulative","scope":"codexThread","total":{"uncachedInput":total,"cacheReadInput":0,"cacheWriteInput":0,"output":0}});
@@ -1123,6 +1557,7 @@ mod typed_usage_tests {
         // Records predating the typed ledger keep their total-only comparison.
         let mut previous = previous;
         previous.breakdown = None;
+        previous.details = None;
         assert!(
             !capture(&snapshot, &conflict, Some(&previous))
                 .expect("legacy comparison")

@@ -239,6 +239,88 @@
         }
       ]
     },
+    "UsageIdentity": {
+      "description": "Logical owner of usage, independent of capture time, account, turn and provenance.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A provider response (including a gap awaiting its final usage).",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "response",
+              "type": "string"
+            },
+            "responseId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "responseId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A running counter, whose individual observations have separate receipts.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "cumulative",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/UsageScope"
+            },
+            "threadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "threadId",
+            "scope"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UsageLedgerRow": {
+      "description": "Durable typed receipt. Analytics stores these fields alongside presentation metadata;\nbudget stores the same value alongside its accounting placement.",
+      "properties": {
+        "receiptKey": {
+          "description": "First-capture deduplication key; retained across restore and re-import.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "studioUsage": {
+          "$ref": "#/$defs/UsageObservation",
+          "description": "Provider-neutral evidence; token fields have units of tokens."
+        },
+        "usageIdentity": {
+          "$ref": "#/$defs/UsageIdentity",
+          "description": "Immutable logical usage identity; dimensionless."
+        }
+      },
+      "required": [
+        "usageIdentity",
+        "receiptKey",
+        "studioUsage"
+      ],
+      "type": "object"
+    },
     "UsageObservation": {
       "description": "Accounting evidence, preserving response identity and cumulative counter scope.",
       "oneOf": [
@@ -399,6 +481,53 @@
           "type": "object"
         }
       ]
+    },
+    "UsageReplayConflict": {
+      "additionalProperties": false,
+      "description": "A rejected replay, preserving both totals without inventing missing legacy categories.",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/UsageIdentity"
+        },
+        "incomingTokens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTokens"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "incomingTotalTokens": {
+          "description": "Rejected billable total; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retainedTokens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTokens"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retainedTotalTokens": {
+          "description": "Retained billable total; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "identity",
+        "retainedTotalTokens",
+        "incomingTotalTokens"
+      ],
+      "type": "object"
     },
     "UsageScope": {
       "description": "Counter ownership: a native Codex thread or one Claude SDK query.",

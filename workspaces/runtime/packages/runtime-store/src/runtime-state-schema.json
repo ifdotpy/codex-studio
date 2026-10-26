@@ -980,7 +980,7 @@
       {
         "create_order": 197,
         "name": "runtime_budget_usage",
-        "sql": "CREATE TABLE runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT)",
+        "sql": "CREATE TABLE runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT, details TEXT)",
         "table": "runtime_budget_usage",
         "type": "table"
       },

@@ -35,11 +35,22 @@ fn started_turn() -> (Connection, Value) {
 }
 
 fn capture(db: &mut Connection, agent: &Value, method: &str, params: Value, at: f64) {
-    let prepared = PreparedCapture::event(agent, method, &params, at, 200., CaptureSource::Live)
-        .expect("request");
+    let prepared = PreparedCapture::event(
+        agent,
+        method,
+        &params,
+        at,
+        200.,
+        CaptureSource::Live,
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    )
+    .expect("request");
     let tx = db.transaction().expect("transaction");
-    let decision = decide(CaptureSnapshot::load(&tx, prepared.into()).expect("snapshot"))
-        .unwrap_or_else(|error| panic!("{method}: {error}"));
+    let decision = decide(
+        CaptureSnapshot::load(&tx, prepared.into()).expect("snapshot"),
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    )
+    .unwrap_or_else(|error| panic!("{method}: {error}"));
     decision.apply(&tx).expect("apply");
     tx.commit().expect("commit");
 }
@@ -82,6 +93,7 @@ fn malformed_stored_rows_refuse_without_writes() {
             20.,
             200.,
             CaptureSource::Live,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("input");
         let tx = db.transaction().expect("tx");
@@ -113,6 +125,7 @@ fn capture_rows_bind_request_identity_without_writes() {
             20.,
             200.,
             CaptureSource::Live,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("request");
         let tx = db.transaction().expect("transaction");
@@ -139,11 +152,15 @@ fn claude_rows_replay_without_usage_writes() {
             at,
             200.,
             CaptureSource::Live,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("request")
     };
-    let plan = decide(CaptureSnapshot::load(&db, prepare(10.).into()).expect("snapshot"))
-        .expect("decision");
+    let plan = decide(
+        CaptureSnapshot::load(&db, prepare(10.).into()).expect("snapshot"),
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    )
+    .expect("decision");
     let tx = db.transaction().expect("tx");
     plan.apply(&tx).expect("apply");
     tx.commit().expect("commit");
@@ -154,8 +171,11 @@ fn claude_rows_replay_without_usage_writes() {
     for table in ["analytics_usage", "analytics_meta", "analytics_usage_roots"] {
         db.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT,'duplicate usage write'); END;")).expect("write guard");
     }
-    let plan =
-        decide(CaptureSnapshot::load(&db, prepare(20.).into()).expect("snapshot")).expect("replay");
+    let plan = decide(
+        CaptureSnapshot::load(&db, prepare(20.).into()).expect("snapshot"),
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    )
+    .expect("replay");
     assert!(
         !plan
             .rows
@@ -187,11 +207,22 @@ fn a_command_item_from_an_earlier_turn_still_captures_later_events() {
         let mut params = params;
         params["threadId"] = json!(thread);
         params["turnId"] = json!(turn);
-        let prepared = PreparedCapture::event(&agent, method, &params, at, at, CaptureSource::Live)
-            .expect("request");
+        let prepared = PreparedCapture::event(
+            &agent,
+            method,
+            &params,
+            at,
+            at,
+            CaptureSource::Live,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("request");
         let tx = db.transaction().expect("transaction");
-        let decision = decide(CaptureSnapshot::load(&tx, prepared.into()).expect("snapshot"))
-            .unwrap_or_else(|error| panic!("{method} in {turn}: {error}"));
+        let decision = decide(
+            CaptureSnapshot::load(&tx, prepared.into()).expect("snapshot"),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .unwrap_or_else(|error| panic!("{method} in {turn}: {error}"));
         decision.apply(&tx).expect("apply");
         tx.commit().expect("commit");
     };

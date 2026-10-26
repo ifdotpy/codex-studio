@@ -5,6 +5,33 @@
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "unknown"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "breakdown": {
+            "type": "null"
+          },
+          "details": {
+            "type": "null"
+          },
+          "tokens": {
+            "const": 0
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "agent": {
       "title": "Agent",
@@ -19,7 +46,11 @@
       "type": "string"
     },
     "kind": {
-      "enum": ["response", "notice"],
+      "enum": [
+        "response",
+        "notice",
+        "unknown"
+      ],
       "title": "Kind",
       "type": "string"
     },
@@ -30,7 +61,13 @@
       "type": "integer"
     }
   },
-  "required": ["id", "agent", "kind", "tokens", "at"],
+  "required": [
+    "id",
+    "agent",
+    "kind",
+    "tokens",
+    "at"
+  ],
   "title": "PersistedBudgetUsage",
   "type": "object"
 }

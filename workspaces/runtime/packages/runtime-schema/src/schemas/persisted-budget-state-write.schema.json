@@ -1,0 +1,344 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "UsageIdentity": {
+      "description": "Logical owner of usage, independent of capture time, account, turn and provenance.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A provider response (including a gap awaiting its final usage).",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "response",
+              "type": "string"
+            },
+            "responseId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "responseId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A running counter, whose individual observations have separate receipts.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "cumulative",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/UsageScope"
+            },
+            "threadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "scope"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UsageScope": {
+      "description": "Counter ownership: a native Codex thread or one Claude SDK query.",
+      "enum": [
+        "codexThread",
+        "claudeQuery"
+      ],
+      "type": "string"
+    },
+    "UsageTokens": {
+      "additionalProperties": false,
+      "description": "Disjoint billable token categories; reasoning is already included in output.",
+      "properties": {
+        "cacheReadInput": {
+          "description": "Input served from the prompt cache; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInput": {
+          "description": "Input written to the prompt cache; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInput1h": {
+          "description": "Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "All generated output, including reasoning; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reasoningOutput": {
+          "description": "Known reasoning subset of output; tokens, absent when unknown.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "uncachedInput": {
+          "description": "Base-rate input, excluding cache reads and writes; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uncachedInput",
+        "cacheReadInput",
+        "cacheWriteInput",
+        "output"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "after": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "After",
+      "type": "integer"
+    },
+    "ambiguousNotices": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "before": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Before",
+      "type": "integer"
+    },
+    "counter": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Counter"
+    },
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "cutoff": {
+      "title": "Cutoff",
+      "type": "number"
+    },
+    "diagnosticOverflow": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Sticky loss of complete diagnostic coverage, independently for each list.",
+      "properties": {
+        "ambiguousNotices": {
+          "default": false,
+          "type": "boolean"
+        },
+        "faults": {
+          "default": false,
+          "type": "boolean"
+        },
+        "replayConflicts": {
+          "default": false,
+          "type": "boolean"
+        },
+        "unresolvedGaps": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "title": "LedgerDiagnosticOverflow",
+      "type": "object"
+    },
+    "faults": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "floor": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Floor",
+      "type": "integer"
+    },
+    "historicalNotices": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Historicalnotices",
+      "type": "integer"
+    },
+    "lastAmount": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Lastamount"
+    },
+    "ledgerSince": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Server Unix seconds of the pre-v5 ledger migration; null for ledgers created under v5."
+    },
+    "noticeAt": {
+      "title": "Noticeat",
+      "type": "number"
+    },
+    "noticeSpent": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Noticespent",
+      "type": "integer"
+    },
+    "replayConflicts": {
+      "items": {
+        "additionalProperties": false,
+        "description": "A rejected replay, preserving both totals without inventing missing legacy categories.",
+        "properties": {
+          "identity": {
+            "$ref": "#/$defs/UsageIdentity"
+          },
+          "incomingTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "incomingTotalTokens": {
+            "description": "Rejected billable total; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retainedTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retainedTotalTokens": {
+            "description": "Retained billable total; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "identity",
+          "retainedTotalTokens",
+          "incomingTotalTokens"
+        ],
+        "title": "UsageReplayConflict",
+        "type": "object"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "spent": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Spent",
+      "type": "integer"
+    },
+    "thread": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Thread"
+    },
+    "unknownUsage": {
+      "type": "boolean"
+    },
+    "unresolvedGaps": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 64,
+      "type": "array"
+    }
+  },
+  "required": [
+    "cutoff",
+    "floor",
+    "spent",
+    "before",
+    "after",
+    "historicalNotices",
+    "noticeSpent",
+    "counter",
+    "thread",
+    "noticeAt",
+    "created",
+    "lastAmount",
+    "ambiguousNotices",
+    "faults"
+  ],
+  "title": "PersistedBudgetState",
+  "type": "object"
+}
