@@ -57,7 +57,7 @@ it("orders actionable indicators before work and keeps completed results collaps
     ["unread", "read"],
   );
   assert.equal(
-    groups[0]?.workers[0]?.id,
+    groups[0].workers[0].id,
     "answer",
     "an in-flight question stays actionable",
   );
@@ -70,25 +70,10 @@ it("derives hierarchy from parent identities and terminates on cycles", async ()
     ["worker", { id: "worker", parentId: "lead" }],
     ["reviewer", { id: "reviewer", parentId: "worker" }],
   ]);
-  assert.equal(
-    workerDepth(agents.get("lead") ?? assert.fail("Missing lead"), agents),
-    0,
-  );
-  assert.equal(
-    workerDepth(
-      agents.get("reviewer") ?? assert.fail("Missing reviewer"),
-      agents,
-    ),
-    2,
-  );
+  assert.equal(workerDepth(agents.get("lead")!, agents), 0);
+  assert.equal(workerDepth(agents.get("reviewer")!, agents), 2);
   agents.set("lead", { id: "lead", parentId: "reviewer" });
-  assert.equal(
-    workerDepth(
-      agents.get("reviewer") ?? assert.fail("Missing reviewer"),
-      agents,
-    ),
-    2,
-  );
+  assert.equal(workerDepth(agents.get("reviewer")!, agents), 2);
 });
 
 it("keeps parents before their children without losing orphaned or cyclic rows", async () => {

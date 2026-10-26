@@ -1,4 +1,3 @@
-import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
 import type { DesktopNotice } from "./desktopNotices";
@@ -45,7 +44,7 @@ afterEach(() => {
 });
 it("renders desktop stream notices and retains the full-disk notice on projection failure", () => {
   SupervisorRecoveryNotice();
-  cleanup = required(mocks.effects[0])() || undefined;
+  cleanup = mocks.effects[0]() || undefined;
   for (const level of ["warning", "critical", "full"] as const) {
     for (const accept of mocks.accept)
       accept({
@@ -62,7 +61,7 @@ it("renders desktop stream notices and retains the full-disk notice on projectio
     ]);
   }
   for (const report of mocks.report) report(new Error("unavailable"));
-  expect(required(mocks.notices[0])).toEqual({
+  expect(mocks.notices[0]).toEqual({
     id: "disk",
     level: "full",
     text: "Disk full.",

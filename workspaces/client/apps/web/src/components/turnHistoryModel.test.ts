@@ -13,9 +13,8 @@ it("does not create a failed turn group for an empty turn ID", () => {
       turnStatus: "failed",
     },
   ]);
-  assert.ok(group);
 
-  assert.equal(group?.outcome, undefined);
+  assert.equal(group.outcome, undefined);
 });
 
 it("keeps an unconfirmed outcome terminal even with a stale active tool", () => {
@@ -39,8 +38,7 @@ it("keeps an unconfirmed outcome terminal even with a stale active tool", () => 
     ],
     "turn",
   );
-  assert.ok(group);
-  assert.equal(group?.outcome, "uncertain");
+  assert.equal(group.outcome, "uncertain");
 });
 
 it("does not convert an unconfirmed outcome to failed or completed", () => {
@@ -61,8 +59,7 @@ it("does not convert an unconfirmed outcome to failed or completed", () => {
         turnStatus: "uncertain",
       },
     ]);
-    assert.ok(group);
-    assert.equal(group?.outcome, "uncertain");
+    assert.equal(group.outcome, "uncertain");
   }
 });
 
@@ -76,8 +73,7 @@ it("shows an unconfirmed turn that has no assistant reply", () => {
       turnStatus: "uncertain",
     },
   ]);
-  assert.ok(group);
-  assert.equal(group?.outcome, "uncertain");
+  assert.equal(group.outcome, "uncertain");
 });
 
 it("keeps uncertainty despite a stale in-progress record", () => {
@@ -97,8 +93,7 @@ it("keeps uncertainty despite a stale in-progress record", () => {
       turnStatus: "uncertain",
     },
   ]);
-  assert.ok(group);
-  assert.equal(group?.outcome, "uncertain");
+  assert.equal(group.outcome, "uncertain");
 });
 
 it("keeps a reply unconfirmed when only its user row has the terminal status", () => {
@@ -121,8 +116,8 @@ it("keeps a reply unconfirmed when only its user row has the terminal status", (
     ],
     "turn",
   );
-  assert.equal(groups[0]?.outcome, undefined);
-  assert.equal(groups[1]?.outcome, "uncertain");
+  assert.equal(groups[0].outcome, undefined);
+  assert.equal(groups[1].outcome, "uncertain");
 });
 
 it("moves a user-only outcome to a later reply without a duplicate notice", () => {

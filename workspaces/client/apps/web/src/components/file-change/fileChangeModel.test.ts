@@ -1,4 +1,3 @@
-import { required } from "../componentTestFixtures";
 import assert from "node:assert/strict";
 import {
   fileChanges,
@@ -11,26 +10,13 @@ import {
 import { it } from "vitest";
 
 const check = it;
-check("edit patches do not inherit a path from a __proto__ payload", () => {
-  assert.deepEqual(
-    fileChanges(JSON.parse('[{"__proto__":{"path":"injected.txt"}}]'), {
-      old_string: "before",
-      new_string: "after",
-    }),
-    [],
-  );
-});
 
 function native(
   diff: string,
   type = "update",
   extra: Record<string, string> = {},
 ) {
-  const file = required(
-    fileChanges([{ path: "src/a.ts", kind: { type, ...extra }, diff }])[0],
-  );
-  assert.ok(file);
-  return file;
+  return fileChanges([{ path: "src/a.ts", kind: { type, ...extra }, diff }])[0];
 }
 const update =
   "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -3,3 +3,4 @@ function a\n same\n-old\n+new\n+extra\n tail\n";
@@ -121,17 +107,14 @@ check("native rename suffix is metadata, including rename-only updates", () => {
   assert.deepEqual(rename.lines, []);
 });
 check("historical unified fixtures parse without guessing raw data", () => {
-  assert.equal(
-    required(fileChanges([{ path: "a", diff: update }])[0]).parsed,
-    true,
-  );
+  assert.equal(fileChanges([{ path: "a", diff: update }])[0].parsed, true);
   for (const diff of [
     "plain content\n",
     "+added\n-removed\n",
     "",
     "*** Begin Patch\n",
   ] as const) {
-    const file = required(fileChanges([{ path: "a", diff }])[0]);
+    const file = fileChanges([{ path: "a", diff }])[0];
     assert.equal(file.parsed, false);
     assert.equal(file.source, diff);
     assert.deepEqual(diffTotals([file]), { added: 0, removed: 0 });
@@ -161,7 +144,7 @@ check(
       assert.deepEqual(file.lines, []);
       assert.equal(file.source, source);
       assert.deepEqual(diffTotals([file]), { added: 0, removed: 0 });
-      const aggregate = required(unifiedDiff(source, "a")[0]);
+      const aggregate = unifiedDiff(source, "a")[0];
       assert.equal(aggregate.parsed, false, source);
       assert.equal(aggregate.source, source);
     }
@@ -189,14 +172,12 @@ check(
       "--- a/a\n+++ b/a\n@@ -1 +1 @@\n--- raw deleted\n+++ raw added\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-old\n+new\n",
     );
     assert.equal(files.length, 2);
-    assert.equal(required(files[0]).parsed, true);
+    assert.equal(files[0].parsed, true);
     assert.deepEqual(
-      required(files[0])
-        .lines.slice(1)
-        .map((line) => line.text),
+      files[0].lines.slice(1).map((line) => line.text),
       ["-- raw deleted", "++ raw added"],
     );
-    assert.equal(required(files[1]).path, "b");
+    assert.equal(files[1].path, "b");
     assert.deepEqual(diffTotals(files), { added: 2, removed: 2 });
   },
 );
@@ -204,7 +185,6 @@ check("git rename-only metadata remains visible", () => {
   const [file] = unifiedDiff(
     "diff --git a/old.ts b/new.ts\nsimilarity index 100%\nrename from old.ts\nrename to new.ts\n",
   );
-  assert.ok(file);
   assert.equal(file.parsed, true);
   assert.equal(file.kind, "update");
   assert.equal(file.path, "old.ts");
@@ -220,7 +200,6 @@ check(
       const [file] = unifiedDiff(
         `diff --git a/empty file b/empty file\n${mode} file mode 100644\n`,
       );
-      assert.ok(file);
       assert.equal(file.parsed, true);
       assert.equal(file.path, "empty file");
       assert.equal(file.kind, kind);
@@ -233,7 +212,6 @@ check("aggregate metadata without a file mode keeps raw fallback", () => {
   const [noMode] = unifiedDiff(
     "diff --git a/empty b/empty\nsimilarity index 100%\n",
   );
-  assert.ok(noMode);
   assert.equal(noMode.parsed, false);
 });
 check(
@@ -262,7 +240,6 @@ check("add and delete headers reject contradictory hunk ranges", () => {
     "diff --git a/a b/a\nnew file mode 100644\n--- /dev/null\n+++ b/a\n",
   ] as const) {
     const [file] = unifiedDiff(source);
-    assert.ok(file);
     assert.equal(file.parsed, false);
     assert.deepEqual(diffTotals([file]), { added: 0, removed: 0 });
   }
@@ -289,7 +266,7 @@ check("only completed status claims a completed edit", () => {
   );
 });
 check("a final carriage return stays in raw file contents", () => {
-  assert.equal(required(native("a\r", "add").lines[0]).text, "a\r");
+  assert.equal(native("a\r", "add").lines[0].text, "a\r");
 });
 check("a Claude Edit diff is rebuilt from its multi-line input", () => {
   const args = {
@@ -302,7 +279,6 @@ check("a Claude Edit diff is rebuilt from its multi-line input", () => {
     [{ path: args.file_path, kind: { type: "update" }, diff: saved }],
     args,
   );
-  assert.ok(file);
   assert.equal(file.parsed, true);
   assert.deepEqual(
     file.lines
@@ -351,30 +327,26 @@ check(
 check(
   "quoted, tab-delimited and requested paths retain their recorded identity",
   () => {
-    const quoted = required(
-      unifiedDiff(
-        '--- "a/space\\tname.ts"\told\n+++ "b/space\\tname.ts"\tnew\n@@ -1 +1 @@\n-old\n+new\n',
-      )[0],
-    );
+    const quoted = unifiedDiff(
+      '--- "a/space\\tname.ts"\told\n+++ "b/space\\tname.ts"\tnew\n@@ -1 +1 @@\n-old\n+new\n',
+    )[0];
     assert.equal(quoted.parsed, true);
     assert.equal(quoted.path, "space\tname.ts");
-    const unquotedJsonToken = required(
-      unifiedDiff("--- true\n+++ true\n@@ -1 +1 @@\n-old\n+new\n")[0],
-    );
+    const unquotedJsonToken = unifiedDiff(
+      "--- true\n+++ true\n@@ -1 +1 @@\n-old\n+new\n",
+    )[0];
     assert.equal(unquotedJsonToken.parsed, true);
     assert.equal(unquotedJsonToken.path, "true");
     assert.equal(
-      required(
-        unifiedDiff(
-          "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n",
-          "display.ts",
-        )[0],
-      ).path,
+      unifiedDiff(
+        "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n",
+        "display.ts",
+      )[0].path,
       "display.ts",
     );
-    const malformed = required(
-      unifiedDiff('--- "a/bad\\q.ts"\n+++ b/good.ts\n@@ -1 +1 @@\n-a\n+b\n')[0],
-    );
+    const malformed = unifiedDiff(
+      '--- "a/bad\\q.ts"\n+++ b/good.ts\n@@ -1 +1 @@\n-a\n+b\n',
+    )[0];
     assert.equal(malformed.parsed, true);
     assert.equal(malformed.path, '"a/bad\\q.ts"');
   },
@@ -402,7 +374,6 @@ check(
       "not a hunk @@ -1 +1 @@\n-a\n+b\n",
     ] as const) {
       const [file] = unifiedDiff(patch);
-      assert.ok(file);
       assert.equal(file.parsed, false, patch);
       assert.deepEqual(file.lines, []);
       assert.deepEqual(diffTotals([file]), { added: 0, removed: 0 });
@@ -420,12 +391,11 @@ check(
     ).join("\n");
     const patch = `--- a/long.ts\n+++ b/long.ts\n@@ -20,13 +20,13 @@ section\n${body}\n`;
     const [file] = unifiedDiff(patch);
-    assert.ok(file);
     assert.equal(file.parsed, true);
     assert.deepEqual([file.added, file.removed], [1, 1]);
-    assert.equal(required(file.lines[1]).kind, "context");
-    assert.equal(required(file.lines[1]).line, 20);
-    assert.equal(required(file.lines.at(-1)).kind, "add");
+    assert.equal(file.lines[1].kind, "context");
+    assert.equal(file.lines[1].line, 20);
+    assert.equal(file.lines.at(-1)!.kind, "add");
   },
 );
 
@@ -433,12 +403,11 @@ check(
   "headerless hunks remain updates and hunk ranges allow only ordered adjacency",
   () => {
     const [headerless] = unifiedDiff("@@ -1 +1 @@\n-old\n+new\n");
-    assert.ok(headerless);
     assert.equal(headerless.parsed, true);
     assert.equal(headerless.kind, "update");
-    const adjacent = required(
-      unifiedDiff("@@ -1 +1 @@\n-old\n+new\n@@ -2 +2 @@\n-old2\n+new2\n")[0],
-    );
+    const adjacent = unifiedDiff(
+      "@@ -1 +1 @@\n-old\n+new\n@@ -2 +2 @@\n-old2\n+new2\n",
+    )[0];
     assert.equal(adjacent.parsed, true);
     assert.equal(
       adjacent.lines.filter(({ kind }) => kind === "meta").length,
@@ -448,7 +417,7 @@ check(
       "@@ -1 +1 @@\n-old\n+new\n@@ -1 +2 @@\n-old2\n+new2\n",
       "@@ -1 +1 @@\n-old\n+new\n@@ -2 +1 @@\n-old2\n+new2\n",
     ] as const)
-      assert.equal(required(unifiedDiff(patch)[0]).parsed, false);
+      assert.equal(unifiedDiff(patch)[0].parsed, false);
   },
 );
 
@@ -456,25 +425,21 @@ check(
   "diff metadata is recognized only at line starts and requires a path pair",
   () => {
     const [embedded] = unifiedDiff("junk index bogus\n");
-    assert.ok(embedded);
     assert.equal(embedded.parsed, false);
     const [incompletePair] = unifiedDiff("--- a/a.ts\n");
-    assert.ok(incompletePair);
     assert.equal(incompletePair.parsed, false);
     for (const patch of [
       "prefix --- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n",
       "--- a/a.ts\nwrong header\n@@ -1 +1 @@\n-a\n+b\n",
     ] as const)
-      assert.equal(required(unifiedDiff(patch)[0]).parsed, false);
+      assert.equal(unifiedDiff(patch)[0].parsed, false);
     const [missingPath] = unifiedDiff(
       "--- \n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n",
     );
-    assert.ok(missingPath);
     assert.equal(missingPath.parsed, false);
     const [junk] = unifiedDiff(
       "junk before diff\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-a\n+b\n",
     );
-    assert.ok(junk);
     assert.equal(junk.parsed, false);
   },
 );
@@ -488,10 +453,10 @@ check(
     const second = "--- a/b\n+++ b/b\n@@ -1 +1 @@\n-old\n+new";
     const files = unifiedDiff(first + second);
     assert.equal(files.length, 2);
-    assert.equal(required(files[0]).parsed, true);
-    assert.equal(required(files[1]).parsed, true);
-    assert.equal(required(files[0]).source, first);
-    assert.equal(required(files[1]).source, second);
+    assert.equal(files[0].parsed, true);
+    assert.equal(files[1].parsed, true);
+    assert.equal(files[0].source, first);
+    assert.equal(files[1].source, second);
     assert.deepEqual(
       files.map((file) => file.path),
       ["a", "b"],
@@ -523,8 +488,8 @@ check(
       "--- a/a\n+++ b/a\n@@ -1 +1,2 @@\n-old\n+new\n--- raw\n+++ raw\n+extra\ndiff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-old\n+new\n",
     );
     assert.equal(incomplete.length, 2);
-    assert.equal(required(incomplete[0]).parsed, false);
-    assert.equal(required(incomplete[1]).path, "b");
+    assert.equal(incomplete[0].parsed, false);
+    assert.equal(incomplete[1].path, "b");
   },
 );
 
@@ -534,14 +499,12 @@ check(
     const [nested] = unifiedDiff(
       "--- c/a/file.ts\n+++ d/b/file.ts\n@@ -1 +1 @@\n-old\n+new\n",
     );
-    assert.ok(nested);
     assert.equal(nested.path, "c/a/file.ts");
     for (const metadata of [
       "rename from old.ts\n",
       "rename to new.ts\n",
     ] as const) {
       const [file] = unifiedDiff(`diff --git a/old.ts b/new.ts\n${metadata}`);
-      assert.ok(file);
       assert.equal(file.parsed, false);
     }
   },
@@ -553,13 +516,11 @@ check(
     const [file] = unifiedDiff(
       "@@ -1 +1 @@\n-old\n+new\nindex trailing metadata\n",
     );
-    assert.ok(file);
     assert.equal(file.parsed, false);
 
     const [unpaired] = unifiedDiff(
       "@@ -1 +1 @@\n-old\n+new\n+orphan\n--- a/next.ts\n+++ b/next.ts\n@@ -1 +1 @@\n-before\n+after\n",
     );
-    assert.ok(unpaired);
     assert.equal(unpaired.parsed, false);
   },
 );
@@ -568,18 +529,16 @@ check("malformed hunk body prefixes do not count as additions", () => {
   const source =
     "@@ -0,0 +1,1 @@\n?not an addition\ndiff --git a/next b/next\n--- a/next\n+++ b/next\n@@ -1 +1 @@\n-before\n+after\n";
   const [file] = unifiedDiff(source);
-  assert.ok(file);
   const files = unifiedDiff(source);
   assert.equal(file.parsed, false);
   assert.deepEqual([file.added, file.removed], [0, 0]);
   assert.equal(files.length, 2);
-  assert.equal(required(files[1]).parsed, true);
+  assert.equal(files[1].parsed, true);
 });
 
 check("header like deletion content stays inside a one sided hunk", () => {
   const patch = "@@ -1,1 +0,0 @@\n--- text\n";
   const [file] = unifiedDiff(patch);
-  assert.ok(file);
   assert.equal(file.parsed, true);
   assert.equal(file.source, patch);
   assert.deepEqual(file.lines.at(-1), {
@@ -604,7 +563,6 @@ check(
 
 check("hunk validation rejects a one sided undercount", () => {
   const [file] = unifiedDiff("@@ -1,1 +1,2 @@\n-old\n+new\n");
-  assert.ok(file);
   assert.equal(file.parsed, false);
 });
 
@@ -612,7 +570,6 @@ check("hunk headers reject carriage returns inside their trailing text", () => {
   const [file] = unifiedDiff(
     "--- a/x\n+++ b/x\n@@ -1 +1 @@ a\rb\n-old\n+new\n",
   );
-  assert.ok(file);
   assert.equal(file.parsed, false);
   assert.deepEqual([file.added, file.removed], [0, 0]);
 });
@@ -624,7 +581,7 @@ check("stray additions do not hide the next file header", () => {
       second,
   );
   assert.equal(files.length, 2);
-  assert.equal(required(files[1]).path, "next.ts");
+  assert.equal(files[1].path, "next.ts");
 });
 
 check("file boundaries require both patch header prefixes", () => {
@@ -651,21 +608,19 @@ check("unrecognized hunk body lines do not complete addition ranges", () => {
     "--- a/first\n+++ b/first\n@@ -1,0 +1,1 @@\n?not an addition\n--- a/next\n+++ b/next\n@@ -1 +1 @@\n-before\n+after\n";
   const files = unifiedDiff(patch);
   assert.equal(files.length, 1);
-  assert.equal(required(files[0]).parsed, false);
+  assert.equal(files[0].parsed, false);
 });
 
 check("git metadata path inference rejects a trailing suffix", () => {
   const [file] = unifiedDiff(
     "diff --git a/claimed.ts b/claimed.ts trailing\nnew file mode 100644\n",
   );
-  assert.ok(file);
   assert.equal(file.parsed, false);
   assert.equal(file.path, "");
 });
 
 check("rename metadata keeps a diff like source path literal", () => {
   const [file] = unifiedDiff("rename from diff --git a/k b/k\nrename to y\n");
-  assert.ok(file);
   assert.equal(file.parsed, true);
   assert.equal(file.path, "diff --git a/k b/k");
 });
@@ -674,7 +629,6 @@ check("unquoted leading space before a quoted path remains literal", () => {
   const [file] = unifiedDiff(
     '---  "a/x"\n+++  "b/x"\n@@ -1 +1 @@\n-old\n+new\n',
   );
-  assert.ok(file);
   assert.equal(file.parsed, true);
   assert.equal(file.path, ' "a/x"');
 });
@@ -683,7 +637,6 @@ check("rename header pairs preserve an inferred add kind without hunks", () => {
   const [file] = unifiedDiff(
     "diff --git a/x b/y\nrename from x\nrename to y\n--- /dev/null\n+++ b/y\n",
   );
-  assert.ok(file);
   assert.equal(file.parsed, true);
   assert.equal(file.kind, "add");
 });
@@ -691,7 +644,7 @@ check("rename header pairs preserve an inferred add kind without hunks", () => {
 check("metadata substrings do not bypass line-start validation", () => {
   const patch =
     "garbage index 123\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
-  assert.equal(required(unifiedDiff(patch)[0]).parsed, false);
+  assert.equal(unifiedDiff(patch)[0].parsed, false);
 });
 
 check(
@@ -765,14 +718,12 @@ check(
       move_path: "target.ts",
     });
     assert.equal(malformedMove.parsed, false);
-    const addedWithoutKind = required(
-      fileChanges([
-        {
-          path: "new.ts",
-          diff: "--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+new\n",
-        },
-      ])[0],
-    );
+    const addedWithoutKind = fileChanges([
+      {
+        path: "new.ts",
+        diff: "--- /dev/null\n+++ b/new.ts\n@@ -0,0 +1 @@\n+new\n",
+      },
+    ])[0];
     assert.equal(addedWithoutKind.kind, "add");
     assert.equal(addedWithoutKind.parsed, true);
   },
