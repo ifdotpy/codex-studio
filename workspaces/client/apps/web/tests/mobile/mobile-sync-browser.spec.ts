@@ -1,3 +1,21 @@
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import { fixtureServerOrigin } from "./browser-fixture.ts";
+import type { ServerResponse } from "node:http";
+import type { Snapshot } from "../../src/types.ts";
+import type { ResourceRef } from "../playwright.ts";
+declare global {
+  interface Window {
+    mobileSync: {
+      values: { state?: Snapshot | null } & Record<string, unknown>;
+      stops: (() => void)[];
+      resumeCalls: number;
+      stopResume: () => void;
+      value: Snapshot | null;
+      stopCompact: () => void;
+      revision: (scope: string) => unknown;
+    };
+  }
+}
 // Real RxDB and EventSource, with an isolated server and simulated PWA lifecycle.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -11,15 +29,12 @@ import {
 } from "../playwright.ts";
 
 test("mobile sync browser", async ({ page }) => {
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
-  const streams = new Set();
-  const streamResources = new Map();
+  const streams = new Set<ServerResponse>();
+  const streamResources = new Map<ServerResponse, ResourceRef[]>();
   let opened = 0;
   let revision = 1;
   const workspaceId = "e".repeat(32);
-  const streamScopes = [];
+  const streamScopes: string[] = [];
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../", import.meta.url)),
@@ -32,9 +47,11 @@ test("mobile sync browser", async ({ page }) => {
             response.setHeader("Content-Type", "text/event-stream");
             response.setHeader("Cache-Control", "no-cache");
             response.write(apiSchemaHandshakeSse());
-            const query = new URL(_request.url, "http://localhost")
+            const query = new URL(_request.url ?? "", "http://localhost")
               .searchParams;
-            const resources = JSON.parse(query.get("resources") || "[]");
+            const resources: ResourceRef[] = JSON.parse(
+              query.get("resources") || "[]",
+            );
             response.write(
               protocol3SseEvent("resources", {
                 protocol: 4,
@@ -52,7 +69,7 @@ test("mobile sync browser", async ({ page }) => {
             opened++;
             streamResources.set(response, resources);
             streamScopes.push(
-              new URL(_request.url, "http://localhost").searchParams.get(
+              new URL(_request.url ?? "", "http://localhost").searchParams.get(
                 "scope",
               ) || "legacy",
             );
@@ -67,8 +84,9 @@ test("mobile sync browser", async ({ page }) => {
     ],
   });
   await server.listen();
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  async function until(test, message) {
+  const delay = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  async function until(test: () => boolean, message: string) {
     for (let count = 0; count < 100; count++) {
       if (test()) return;
       await delay(30);
@@ -76,11 +94,11 @@ test("mobile sync browser", async ({ page }) => {
     assert.ok(test(), message);
   }
   try {
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let identities = 0;
-    const pulls = [];
-    const pullCursors = [];
+    const pulls: (string | null)[] = [];
+    const pullCursors: { scope: string | null; after: number }[] = [];
     await page.route("**/check", (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
     );
@@ -137,36 +155,73 @@ test("mobile sync browser", async ({ page }) => {
     await page.route("**/api/sync/drafts", (route) =>
       route.fulfill({ json: [] }),
     );
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.addInitScript(() => {
+      window.mobileSync = {
+        values: {},
+        stops: [],
+        resumeCalls: 0,
+        stopResume: () => {},
+        value: null,
+        stopCompact: () => {},
+        revision(scope) {
+          const value = window.mobileSync.values[scope];
+          return value && typeof value === "object" && "revision" in value
+            ? value.revision
+            : undefined;
+        },
+      };
+    });
+    await page.goto(fixtureServerOrigin(server) + "/check");
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.values = {};
-      window.stops = ["state", "team", "history:lead", "state"].map((scope) => {
-        const accept = (value) => {
-          window.values[scope] = value;
-        };
-        return scope === "state"
-          ? client.subscribeStateProjection(accept, () => {})
-          : client.subscribeTranscriptProjection(
-              `transcript:${scope}`,
-              accept,
-              () => {},
-            );
-      });
-      window.stops.push(await client.startDraftReplication(() => {}));
-      window.resumeCalls = 0;
-      window.stopResume = (await import("/src/sync/resume.ts")).onResume(
-        () => window.resumeCalls++,
+      window.mobileSync = {
+        values: {},
+        stops: [],
+        resumeCalls: 0,
+        stopResume: () => {},
+        value: null,
+        stopCompact: () => {},
+        revision(scope) {
+          const value = window.mobileSync.values[scope];
+          return value && typeof value === "object" && "revision" in value
+            ? value.revision
+            : undefined;
+        },
+      };
+      window.mobileSync.stops = ["state", "team", "history:lead", "state"].map(
+        (scope) => {
+          const accept = (value: unknown) => {
+            window.mobileSync.values[scope] = value;
+          };
+          return scope === "state"
+            ? client.subscribeStateProjection(
+                (value) => {
+                  window.mobileSync.values.state = value;
+                },
+                () => {},
+              )
+            : client.subscribeTranscriptProjection(
+                `transcript:${scope}`,
+                accept,
+                () => {},
+              );
+        },
       );
+      window.mobileSync.stops.push(
+        await client.startDraftReplication(() => {}),
+      );
+      window.mobileSync.resumeCalls = 0;
+      window.mobileSync.stopResume = (
+        await import("/src/sync/resume.ts")
+      ).onResume(() => window.mobileSync.resumeCalls++);
     });
     await page.waitForFunction(
       () =>
-        Object.values(window.values).length === 3 &&
-        window.values.state?.runtime?.agents?.[0]?.name === "Agent 1" &&
-        window.values.team?.revision === 1 &&
-        window.values["history:lead"]?.revision === 1,
+        Object.values(window.mobileSync.values).length === 3 &&
+        window.mobileSync.values.state?.runtime?.agents?.[0]?.name ===
+          "Agent 1" &&
+        window.mobileSync.revision("team") === 1 &&
+        window.mobileSync.revision("history:lead") === 1,
     );
     await until(
       () => streams.size === 1,
@@ -200,9 +255,10 @@ test("mobile sync browser", async ({ page }) => {
       }
     await page.waitForFunction(
       () =>
-        window.values.state?.runtime?.agents?.[0]?.name === "Agent 2" &&
-        window.values.team?.revision === 2 &&
-        window.values["history:lead"]?.revision === 2,
+        window.mobileSync.values.state?.runtime?.agents?.[0]?.name ===
+          "Agent 2" &&
+        window.mobileSync.revision("team") === 2 &&
+        window.mobileSync.revision("history:lead") === 2,
     );
     await delay(150);
     const burstPulls = pulls.slice(beforeBurst);
@@ -249,21 +305,22 @@ test("mobile sync browser", async ({ page }) => {
     });
     await page.waitForFunction(
       () =>
-        window.values.state?.runtime?.agents?.[0]?.name === "Agent 3" &&
-        window.values.team?.revision === 3 &&
-        window.values["history:lead"]?.revision === 3,
+        window.mobileSync.values.state?.runtime?.agents?.[0]?.name ===
+          "Agent 3" &&
+        window.mobileSync.revision("team") === 3 &&
+        window.mobileSync.revision("history:lead") === 3,
     );
     assert.ok(
       Date.now() - resumedAt < 1500,
       "Visible state recovers without waiting for fallback polling",
     );
-    await page.waitForFunction(() => window.resumeCalls === 1);
+    await page.waitForFunction(() => window.mobileSync.resumeCalls === 1);
     await until(
       () => opened >= 2,
       `Resume opens replacement streams, opened=${opened} scopes=${streamScopes.join(",")}`,
     );
     assert.equal(
-      await page.evaluate(() => window.resumeCalls),
+      await page.evaluate(() => window.mobileSync.resumeCalls),
       1,
       "One PWA return invokes each resume consumer once",
     );
@@ -294,8 +351,8 @@ test("mobile sync browser", async ({ page }) => {
     await until(() => streams.size === 1, "Online recreates the shared stream");
     assert.equal(opened, 3);
     await page.evaluate(() => {
-      for (const stop of window.stops) stop();
-      window.stopResume();
+      for (const stop of window.mobileSync.stops) stop();
+      window.mobileSync.stopResume();
     });
     await until(
       () => streams.size === 0,
@@ -315,19 +372,19 @@ test("mobile sync browser", async ({ page }) => {
     const beforeCompact = pulls.length;
     await page.reload();
     await page.evaluate(async () => {
-      window.value = null;
-      window.stopCompact = (
+      window.mobileSync.value = null;
+      window.mobileSync.stopCompact = (
         await import("/src/sync/client.ts")
       ).subscribeStateProjection(
-        (value) => (window.value = value),
+        (value) => (window.mobileSync.value = value),
         () => {},
       );
     });
     await page.waitForFunction(
-      () => window.value?.runtime?.agents?.[0]?.name === "Agent 4",
+      () => window.mobileSync.value?.runtime?.agents?.[0]?.name === "Agent 4",
     );
     assert.equal(
-      pullCursors.find((pull) => pull.scope === "state:entities:v1").after,
+      pullCursors.find((pull) => pull.scope === "state:entities:v1")?.after,
       0,
       "The new projection starts with its own checkpoint",
     );
@@ -345,7 +402,8 @@ test("mobile sync browser", async ({ page }) => {
         ready: (await db.projections.findOne("state:entities:ready").exec())
           ?.payload,
         entity: JSON.parse(
-          (await db.projections.findOne("entity:agent:lead").exec()).payload,
+          (await db.projections.findOne("entity:agent:lead").exec())?.payload ??
+            "null",
         ),
       };
     });
@@ -359,7 +417,7 @@ test("mobile sync browser", async ({ page }) => {
       "ready",
       "The entity projection publishes its ready marker",
     );
-    await page.evaluate(() => window.stopCompact());
+    await page.evaluate(() => window.mobileSync.stopCompact());
 
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "onLine", {
@@ -377,7 +435,8 @@ test("mobile sync browser", async ({ page }) => {
       return {
         workspaceId,
         value: JSON.parse(
-          (await db.projections.findOne("entity:agent:lead").exec()).payload,
+          (await db.projections.findOne("entity:agent:lead").exec())?.payload ??
+            "null",
         ),
         elapsed: performance.now() - started,
       };

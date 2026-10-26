@@ -1,3 +1,15 @@
+import type {} from "./mobile-send.fixture.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import {
+  fixtureServerOrigin,
+  fixturePostBody,
+  until,
+} from "./browser-fixture.ts";
+import { waitForFixturePort } from "../fixture-readiness.ts";
+import type { ViteDevServer } from "vite";
+import type { BrowserContext, Route } from "@playwright/test";
+import type { PostBody } from "../../src/apiTypes.ts";
+
 import {
   readTestState,
   test,
@@ -8,7 +20,6 @@ import {
 } from "../playwright.ts";
 // Real App, Conversation, and RxDB. Only an isolated fixture receives writes.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,27 +28,18 @@ import { fileURLToPath } from "node:url";
 test("mobile-send-reliability-ui", async ({ browser }) => {
   test.setTimeout(120_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-mobile-send-ui-"));
   const fixture = spawn(process.execPath, [rustUiFixture, temporary], {
     stdio: ["pipe", "pipe", "pipe"],
   });
-  let context,
-    server,
+  let context: BrowserContext | undefined,
+    server: ViteDevServer | undefined,
     log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const target = `http://127.0.0.1:${port}`;
     server = await createServer({
       configFile: false,
@@ -67,39 +69,32 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     });
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
-    const errors = [],
-      posts = [],
-      pending = [];
+    const errors: string[] = [],
+      posts: PostBody<"/api/messages">[] = [],
+      pending: Route[] = [];
     let replyStatus = "hold";
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/messages", (route) => {
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody<"/api/messages">(route.request());
       posts.push(body);
       if (replyStatus === "hold") pending.push(route);
       else return route.fulfill({ json: { id: body.id, status: replyStatus } });
     });
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(fixtureServerOrigin(server));
+    const waitUntil = (check: () => boolean | Promise<boolean>) =>
+      until(check, "Expected mobile send state did not arrive");
+    const origin = fixtureServerOrigin(server);
+    const installSendHarness = async () => {
+      await page.addScriptTag({
+        type: "module",
+        url: origin + "tests/mobile/mobile-send.fixture.ts",
+      });
+      await page.waitForFunction(() => Boolean(window.mobileSend));
+    };
     const input = page.locator("#message"),
       send = page.locator("#send");
     await input.waitFor();
-    await page.evaluate(async () => {
-      window.storage = await (
-        await import("/src/sync/client.ts")
-      ).syncDatabase();
-      window.queued = async () =>
-        (await window.storage.db.outbox.find().exec()).map((doc) => ({
-          id: doc.id,
-          ...JSON.parse(doc.getLatest().payload),
-        }));
-    });
-    const until = async (check) => {
-      const deadline = Date.now() + 15000;
-      while (!(await check())) {
-        if (Date.now() > deadline)
-          throw new Error("Expected mobile send state did not arrive");
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-    };
+    await installSendHarness();
     await page.locator('input[type="file"]').setInputFiles(
       Array.from({ length: 9 }, (_, index) => ({
         name: `too-many-${index}.txt`,
@@ -114,7 +109,9 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     assert.equal(
       await page
         .locator('input[type="file"]')
-        .evaluate((input) => input.files.length),
+        .evaluate((input) =>
+          input instanceof HTMLInputElement ? input.files?.length : undefined,
+        ),
       9,
       "Admission refusal must not clear uncommitted files",
     );
@@ -128,14 +125,14 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       .waitFor();
     // A reload can happen after Send but before IndexedDB commits the outbox.
     await page.evaluate(() => {
-      window.storage.db.outbox.insert = () => {
-        window.insertStarted = true;
+      window.mobileSend.storage.db.outbox.insert = () => {
+        window.mobileSend.insertStarted = true;
         return new Promise(() => {});
       };
     });
     await input.fill("Preserve this uncommitted send");
     await send.click();
-    await page.waitForFunction(() => window.insertStarted);
+    await page.waitForFunction(() => window.mobileSend.insertStarted);
     assert.equal(await input.inputValue(), "Preserve this uncommitted send");
     assert.equal(
       await page
@@ -146,7 +143,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     assert.equal(posts.length, 0, "No HTTP send before local persistence");
     await page.reload();
     await input.waitFor();
-    await until(
+    await waitUntil(
       async () =>
         (await input.inputValue()) === "Preserve this uncommitted send",
     );
@@ -158,25 +155,19 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       0,
       "Reload does not invent a send for an uncommitted draft",
     );
-    await page.evaluate(async () => {
-      window.storage = await (
-        await import("/src/sync/client.ts")
-      ).syncDatabase();
-      window.queued = async () =>
-        (await window.storage.db.outbox.find().exec()).map((doc) => ({
-          id: doc.id,
-          ...JSON.parse(doc.getLatest().payload),
-        }));
-    });
+    await installSendHarness();
     await input.fill("Same intentional message");
     await send.click();
-    await until(() => posts.length === 1);
-    assert.equal(posts[0].assets.length, 1);
+    await waitUntil(() => posts.length === 1);
+    assert.ok(posts[0]);
+    assert.equal(posts[0].assets?.length, 1);
     await input.fill("Same intentional message");
     const nextStart = Date.now();
     await send.click();
-    await until(() =>
-      page.evaluate(async () => (await window.queued()).length === 2),
+    await waitUntil(() =>
+      page.evaluate(
+        async () => (await window.mobileSend.queued()).length === 2,
+      ),
     );
     assert.ok(
       Date.now() - nextStart < 1500,
@@ -184,7 +175,9 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     );
     assert.equal(await input.inputValue(), "");
     assert.equal(posts.length, 1, "Same-chat HTTP requests retain their order");
-    const initial = await page.evaluate(() => window.queued());
+    const initial = await page.evaluate(() => window.mobileSend.queued());
+    assert.ok(initial[0]);
+    assert.ok(initial[1]);
     assert.notEqual(
       initial[0].id,
       initial[1].id,
@@ -192,15 +185,18 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     );
     assert.equal(initial[0].body.text, initial[1].body.text);
     replyStatus = "delivered";
-    await pending
-      .shift()
-      .fulfill({ status: 400, json: { error: "First message rejected" } });
-    await until(() => posts.length === 2);
-    await until(() =>
+    const firstPending = pending.shift();
+    assert.ok(firstPending);
+    await firstPending.fulfill({
+      status: 400,
+      json: { error: "First message rejected" },
+    });
+    await waitUntil(() => posts.length === 2);
+    await waitUntil(() =>
       page.evaluate(async () =>
-        (await window.queued()).some(
+        (await window.mobileSend.queued()).some(
           (entry) =>
-            entry.body.assets.length === 0 && entry.status === "accepted",
+            entry.body.assets?.length === 0 && entry.status === "accepted",
         ),
       ),
     );
@@ -216,23 +212,30 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       0,
       "An older failure cannot restore attachments after a later submission",
     );
-    assert.equal(posts[1].assets.length, 0);
+    assert.ok(posts[1]);
+    assert.equal(posts[1].assets?.length, 0);
 
     // Hold the next IndexedDB insert. An older HTTP failure must not release the
     // newer send's lock before that send has a durable record.
     replyStatus = "hold";
     await input.fill("Older in-flight send");
     await send.click();
-    await until(() => posts.length === 3);
+    await waitUntil(() => posts.length === 3);
     await page.evaluate(() => {
-      const insert = window.storage.db.outbox.insert.bind(
-        window.storage.db.outbox,
+      const insert = window.mobileSend.storage.db.outbox.insert.bind(
+        window.mobileSend.storage.db.outbox,
       );
-      window.storage.db.outbox.insert = async (...args) => {
-        if (JSON.parse(args[0].payload).body.text === "Newer durable write") {
-          window.insertStarted = true;
-          await new Promise((resolve) => {
-            window.releaseInsert = resolve;
+      window.mobileSend.storage.db.outbox.insert = async (...args) => {
+        if (
+          JSON.parse(
+            args[0] instanceof Object && "payload" in args[0]
+              ? String(args[0].payload)
+              : "null",
+          ).body.text === "Newer durable write"
+        ) {
+          window.mobileSend.insertStarted = true;
+          await new Promise<void>((resolve) => {
+            window.mobileSend.releaseInsert = resolve;
           });
         }
         return insert(...args);
@@ -240,13 +243,16 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     });
     await input.fill("Newer durable write");
     await send.click();
-    await page.waitForFunction(() => window.insertStarted);
-    await pending
-      .shift()
-      .fulfill({ status: 400, json: { error: "Older request rejected" } });
-    await until(() =>
+    await page.waitForFunction(() => window.mobileSend.insertStarted);
+    const olderPending = pending.shift();
+    assert.ok(olderPending);
+    await olderPending.fulfill({
+      status: 400,
+      json: { error: "Older request rejected" },
+    });
+    await waitUntil(() =>
       page.evaluate(async () =>
-        (await window.queued()).some(
+        (await window.mobileSend.queued()).some(
           (entry) =>
             entry.body.text === "Older in-flight send" &&
             entry.status === "failed",
@@ -260,11 +266,11 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       "Older finally cannot release a newer unpersisted send",
     );
     replyStatus = "delivered";
-    await page.evaluate(() => window.releaseInsert());
-    await until(() => posts.length === 4);
-    await until(() =>
+    await page.evaluate(() => window.mobileSend.releaseInsert());
+    await waitUntil(() => posts.length === 4);
+    await waitUntil(() =>
       page.evaluate(async () =>
-        (await window.queued()).some(
+        (await window.mobileSend.queued()).some(
           (entry) =>
             entry.body.text === "Newer durable write" &&
             entry.status === "accepted",
@@ -280,15 +286,16 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     await send.click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#message").value ===
+        document.querySelector<HTMLTextAreaElement>("#message")?.value ===
         "Latest unconfirmed message",
     );
-    await until(() => posts.length === 5);
+    await waitUntil(() => posts.length === 5);
     const last = posts.at(-1);
+    assert.ok(last);
     await send.click();
     await page.waitForFunction(
       () =>
-        document.querySelector("#message").value ===
+        document.querySelector<HTMLTextAreaElement>("#message")?.value ===
         "Latest unconfirmed message",
     );
     assert.equal(
@@ -296,21 +303,21 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       5,
       "Unconfirmed retry retains the prior identity and does not replay HTTP",
     );
-    const lastEntries = await page.evaluate(() => window.queued());
+    const lastEntries = await page.evaluate(() => window.mobileSend.queued());
     assert.equal(
       lastEntries.filter((entry) => entry.body.text === last.text).length,
       1,
     );
     assert.equal(
-      lastEntries.find((entry) => entry.body.text === last.text).id,
+      lastEntries.find((entry) => entry.body.text === last.text)?.id,
       last.id,
     );
     await page.context().setOffline(true);
     await input.fill("Mobile offline message");
     await send.click();
-    await until(() =>
+    await waitUntil(() =>
       page.evaluate(async () =>
-        (await window.queued()).some(
+        (await window.mobileSend.queued()).some(
           (entry) =>
             entry.body.text === "Mobile offline message" &&
             entry.status === "queued",
@@ -321,10 +328,10 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     assert.equal(posts.length, 5);
     replyStatus = "delivered";
     await page.context().setOffline(false);
-    await until(() => posts.length === 6);
-    await until(() =>
+    await waitUntil(() => posts.length === 6);
+    await waitUntil(() =>
       page.evaluate(async () =>
-        (await window.queued()).some(
+        (await window.mobileSend.queued()).some(
           (entry) =>
             entry.body.text === "Mobile offline message" &&
             entry.status === "accepted",
@@ -338,7 +345,8 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     // An old browser receipt can still refer to a message already rejected by
     // the outbox. A reload must not trap every explicit retry on that failed ID.
     const stateDir = (await readTestState(target)).stateDir;
-    const failedBody = {
+    assert.ok(posts[0]);
+    const failedBody: PostBody<"/api/messages"> = {
       id: "old-failed-after-reload",
       room: posts[0].room,
       text: "Retry a stored terminal failure",
@@ -353,7 +361,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const pendingKey = `studio-pending-sends:${stateDir}`;
     await page.evaluate(
       async ({ body, pendingKey }) => {
-        await window.storage.db.outbox.insert({
+        await window.mobileSend.storage.db.outbox.insert({
           id: body.id,
           seq: 0,
           payload: JSON.stringify({
@@ -386,9 +394,9 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
         !JSON.parse(localStorage.getItem(pendingKey) || "{}")[room],
       { pendingKey, room: failedBody.room },
     );
-    await until(() => posts.length === beforeExplicitRetry + 1);
-    assert.notEqual(posts.at(-1).id, failedBody.id);
-    assert.equal(posts.at(-1).text, failedBody.text);
+    await waitUntil(() => posts.length === beforeExplicitRetry + 1);
+    assert.notEqual(posts.at(-1)?.id, failedBody.id);
+    assert.equal(posts.at(-1)?.text, failedBody.text);
 
     // A second tab can retry while the first tab has a committed but stalled
     // response. The real HTTP handler and SQLite retain one logical message.
@@ -396,7 +404,8 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const other = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     );
-    const realBody = {
+    assert.ok(other);
+    const realBody: PostBody<"/api/messages"> = {
       id: crypto.randomUUID(),
       room: other.id,
       text: "One real message across two mobile tabs",
@@ -404,23 +413,25 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       delivery: "queue",
     };
     await page.unroute("**/api/messages");
-    let committed = false,
-      heldResponse;
-    const realPosts = [];
+    let committed = false;
+    const held: { response?: Route } = {};
+    const realPosts: PostBody<"/api/messages">[] = [];
     await page.context().route("**/api/messages", async (route) => {
-      const request = route.request().postDataJSON();
+      const request = fixturePostBody<"/api/messages">(route.request());
       realPosts.push(request);
       const response = await route.fetch();
       assert.equal(response.status(), 200);
       if (realPosts.length === 1) {
         committed = true;
-        heldResponse = route;
+        held.response = route;
       } else await route.fulfill({ response });
     });
     await page.evaluate(async (body) => {
-      window.httpSend = (await import("/src/sync/send.ts")).durableSend(body);
+      window.mobileSend.httpSend = (
+        await import("/src/sync/send.ts")
+      ).durableSend(body);
     }, realBody);
-    await until(() => committed);
+    await waitUntil(() => committed);
     const peer = await page.context().newPage();
     await peer.route("**/send-peer", (route) =>
       route.fulfill({
@@ -428,7 +439,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
         body: "<!doctype html><title>Second mobile tab</title>",
       }),
     );
-    await peer.goto(server.resolvedUrls.local[0] + "send-peer");
+    await peer.goto(fixtureServerOrigin(server) + "send-peer");
     const peerResult = await peer.evaluate(
       async (body) => (await import("/src/sync/send.ts")).durableSend(body),
       realBody,
@@ -440,8 +451,12 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
         (request) => JSON.stringify(request) === JSON.stringify(realBody),
       ),
     );
-    await heldResponse.abort("failed");
-    assert.equal((await page.evaluate(() => window.httpSend)).id, realBody.id);
+    assert.ok(held.response);
+    await held.response.abort("failed");
+    assert.equal(
+      (await page.evaluate(() => window.mobileSend.httpSend)).id,
+      realBody.id,
+    );
     await page.reload();
     await input.waitFor();
     const counts = [
@@ -449,12 +464,12 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
         temporary,
         "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
         realBody.id,
-      )[0].n,
+      )[0]?.n,
       queryFixtureDatabase(
         temporary,
         "SELECT COUNT(*) AS n FROM messages WHERE id=?",
         realBody.id,
-      )[0].n,
+      )[0]?.n,
     ];
     assert.deepEqual(counts, [1, 1]);
     expect(errors).toEqual([]);
@@ -464,7 +479,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
   } finally {
     await context?.close();
     await server?.close();
-    fixture.stdin.end();
+    fixture.stdin?.end();
     await context?.close();
     await rm(join(temporary, "vite"), { recursive: true, force: true });
   }

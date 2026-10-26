@@ -1,3 +1,15 @@
+import type {} from "../fixtures/ux-support.tsx";
+import type { WorkspaceTask } from "../../src/types.ts";
+import type { components } from "../../src/generated/api.ts";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
+import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
+type SupportStage = keyof Window["support"];
+declare global {
+  interface Window {
+    setWorkspaceTaskFixture: (stage: SupportStage) => Promise<void>;
+  }
+}
 // Isolated component fixture. All API requests use local test responses.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -20,15 +32,40 @@ test("ux support ui", async ({ page: runnerPage }) => {
     server: { host: "127.0.0.1", port: 0 },
   });
   const syncFixture = {
-    snapshot: { runtime: {}, stateDir: "fixture", chats: [], edges: [] },
+    snapshot: {
+      stateDir: "fixture",
+      chats: [],
+      edges: [],
+      runtime: {
+        agents: [],
+        rooms: [],
+        tasks: [],
+        monitors: [],
+        complaints: [],
+        projects: [],
+        events: [],
+        peerTeams: [],
+        requests: [],
+        rules: [],
+        work: [],
+        nativeNotices: [],
+        sidebarOrder: { groups: null, revision: 0 },
+        rateLimits: null,
+        rateLimitsByAccount: {},
+      },
+    },
     workspaceId: syncIdentityFixture().workspaceId,
   };
   server.middlewares.stack.unshift({
     route: "",
-    handle(request, response, next) {
+    handle(
+      request: IncomingMessage,
+      response: ServerResponse,
+      next: Connect.NextFunction,
+    ) {
       if (handleEntitySyncFixtureRequest(request, response, syncFixture))
         return;
-      if (new URL(request.url, "http://fixture").pathname !== "/")
+      if (new URL(request.url ?? "", "http://fixture").pathname !== "/")
         return next();
       response.setHeader("Content-Type", "text/html");
       response.end(
@@ -36,13 +73,16 @@ test("ux support ui", async ({ page: runnerPage }) => {
       );
     },
   });
-  let page;
+  const page = runnerPage;
   try {
     await server.listen();
-    page = runnerPage;
     await page.setViewportSize({ width: 1100, height: 800 });
-    const writes = [];
-    const taskSummary = (id, created, agent = "lead") => ({
+    const writes: { path: string; body: unknown }[] = [];
+    const taskSummary = (
+      id: string,
+      created: number,
+      agent = "lead",
+    ): WorkspaceTask => ({
       id,
       created,
       agent,
@@ -51,17 +91,20 @@ test("ux support ui", async ({ page: runnerPage }) => {
       command: id,
       status: "running",
     });
-    let workspaceTasks = {};
-    await page.exposeFunction("setWorkspaceTaskFixture", (stage) => {
-      workspaceTasks = {
-        initial: { lead: [taskSummary("first", 10)] },
-        newer: {
-          lead: [taskSummary("new", 20), taskSummary("first", 10)],
-        },
-        scope: { other: [taskSummary("other-task", 30, "other")] },
-      }[stage];
-    });
-    const shell = {
+    let workspaceTasks: Record<string, WorkspaceTask[]> = {};
+    await page.exposeFunction(
+      "setWorkspaceTaskFixture",
+      (stage: SupportStage) => {
+        workspaceTasks = {
+          initial: { lead: [taskSummary("first", 10)] },
+          newer: {
+            lead: [taskSummary("new", 20), taskSummary("first", 10)],
+          },
+          scope: { other: [taskSummary("other-task", 30, "other")] },
+        }[stage];
+      },
+    );
+    const shell: components["schemas"]["TerminalRecord"] = {
       id: "fixture-shell",
       agent: "lead",
       title: "Fixture shell",
@@ -86,8 +129,8 @@ test("ux support ui", async ({ page: runnerPage }) => {
         return route.fulfill({ json: { processes: [], responseTarget: null } });
       if (path === "/api/workspace/tasks") {
         const agent = new URL(request.url()).searchParams.get("agent");
-        const tasks = workspaceTasks[agent] || [];
-        const latest = tasks.reduce(
+        const tasks = workspaceTasks[agent ?? ""] || [];
+        const latest = tasks.reduce<Pick<WorkspaceTask, "id" | "created">>(
           (result, task) => (task.created > result.created ? task : result),
           { id: "", created: 0 },
         );
@@ -107,6 +150,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
         const summary = Object.values(workspaceTasks)
           .flat()
           .find((task) => task.id === id);
+        assert.ok(summary);
         return route.fulfill({
           json: {
             ...summary,
@@ -127,7 +171,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
       await route.fulfill({ json: result });
     });
     await page.clock.install();
-    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`);
+    await page.goto(fixtureServerOrigin(server));
     await page
       .getByRole("button", { name: "End session", exact: true })
       .waitFor();
@@ -184,12 +228,12 @@ test("ux support ui", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Hide panel", exact: true }).click();
     await page.evaluate(() => window.setWorkspaceTaskFixture("initial"));
     await page.getByRole("button", { name: "Tasks", exact: true }).click();
-    const support = async (name) => {
+    const support = async (name: SupportStage) => {
       await page.evaluate((method) => {
         const update = window.support[method];
-        window.support[method] = async (...args) => {
+        window.support[method] = async () => {
           await window.setWorkspaceTaskFixture(method);
-          return update(...args);
+          return update();
         };
       }, name);
       await page.evaluate((method) => window.support[method](), name);

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
   test,
   expect,
@@ -20,10 +21,21 @@ test("phone conversation gives the transcript its viewport budget", async ({
   const origin = readOnlyRust.origin;
   const snapshot = await readTestState(origin);
   const agent = snapshot.threads.find((row) => row.name === "Other project");
+  assert.ok(agent);
   agent.status = "waiting";
   agent.inFlight = false;
   snapshot.runtime.sessionCostsByAgent = {
-    [agent.id]: { rootId: agent.id, totalUSD: 0, pricingState: "ready" },
+    [agent.id]: {
+      rootId: agent.id,
+      totalUSD: 0,
+      pricingState: "ready",
+      breakdown: { models: {}, providers: {} },
+      cacheAgeSeconds: 0,
+      estimated: false,
+      pricedSamples: 0,
+      refreshing: false,
+      unknownModels: [],
+    },
   };
   // One deterministic active monitor exercises the real activity-strip caller.
   // All other entity values and transcript reads come from the isolated server.
@@ -44,7 +56,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
     { width: 1440, height: 900, minimum: 0.7 },
     { width: 390, height: 844, minimum: 0.7, warning: true },
   ]) {
-    for (const scheme of ["light", "dark"]) {
+    for (const scheme of ["light", "dark"] as const) {
       const page = await browser.newPage({
         viewport: { width, height },
         isMobile: width < 760,
@@ -53,6 +65,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
       });
       try {
         const view = structuredClone(snapshot);
+        assert.ok(view.runtime.desktop);
         view.runtime.desktop = {
           ...view.runtime.desktop,
           diskSpace: warning
@@ -73,19 +86,11 @@ test("phone conversation gives the transcript its viewport budget", async ({
         );
         await readOnlyRust.open(page);
         await page
-          .getByLabel(
-            page.viewportSize().width <= 760
-              ? "Back to chats"
-              : "Toggle conversations",
-          )
+          .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
           .waitFor();
         if (!(await page.locator("#sidebar").isVisible()))
           await page
-            .getByLabel(
-              page.viewportSize().width <= 760
-                ? "Back to chats"
-                : "Toggle conversations",
-            )
+            .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
             .click();
         await page
           .locator("[data-chat]")
@@ -138,6 +143,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             page.locator("#composer .execution-summary-trigger"),
           ]) {
             const box = await target.boundingBox();
+            assert.ok(box);
             expect(box.width).toBeGreaterThanOrEqual(44);
             expect(box.height).toBeGreaterThanOrEqual(44);
           }
@@ -148,6 +154,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             ...(await page.locator(".account-limits-dot-target").all()),
           ]) {
             const box = await target.boundingBox();
+            assert.ok(box);
             expect(box.width).toBeGreaterThanOrEqual(24);
             expect(box.height).toBeGreaterThanOrEqual(24);
           }
@@ -167,17 +174,22 @@ test("phone conversation gives the transcript its viewport budget", async ({
                 ".context-use",
                 ".session-cost-summary",
                 ".account-limits-toggle",
-              ].map((s) => e.querySelector(s).getBoundingClientRect().toJSON()),
+              ].map((s) => {
+                const element = e.querySelector(s);
+                if (!element) throw new Error(`Missing footer ${s}`);
+                const { left, right } = element.getBoundingClientRect();
+                return { left, right };
+              }),
             );
           for (let i = 1; i < footerFacts.length; i++)
             expect(
-              footerFacts[i].left - footerFacts[i - 1].right,
+              (footerFacts[i]?.left ?? 0) - (footerFacts[i - 1]?.right ?? 0),
             ).toBeGreaterThanOrEqual(8);
         }
         if (warning) {
           const notice = page.locator(".supervisor-recovery-notice");
           await expect(notice).toHaveAttribute("title", /13 GB free/);
-          expect((await notice.boundingBox()).height).toBeLessThanOrEqual(44);
+          expect((await notice.boundingBox())?.height).toBeLessThanOrEqual(44);
         } else
           await expect(page.locator(".supervisor-recovery-notice")).toHaveCount(
             0,
@@ -191,6 +203,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
           await expect(attach).toHaveCount(1);
           await expect(attach).toBeVisible();
           const attachBox = await attach.boundingBox();
+          assert.ok(attachBox);
           expect(attachBox.width).toBeGreaterThanOrEqual(44);
           expect(attachBox.height).toBeGreaterThanOrEqual(44);
           // Only the lead provider remains beside its name on phones.
@@ -220,6 +233,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
           const toolsBounds = await page
             .locator(".composer-tools-popover")
             .boundingBox();
+          assert.ok(toolsBounds);
           expect(toolsBounds.x).toBeGreaterThanOrEqual(0);
           expect(toolsBounds.x + toolsBounds.width).toBeLessThanOrEqual(width);
 
@@ -230,6 +244,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               exact: true,
             });
             const bounds = await button.boundingBox();
+            assert.ok(bounds);
             expect(bounds.width).toBeGreaterThanOrEqual(44);
             expect(bounds.height).toBeGreaterThanOrEqual(44);
           }
@@ -244,9 +259,11 @@ test("phone conversation gives the transcript its viewport budget", async ({
               '.execution-summary-segment[data-role="lead"] .execution-model',
             )
             .boundingBox();
+          assert.ok(model);
           const execution = await page
             .locator(".execution-summary-trigger")
             .boundingBox();
+          assert.ok(execution);
           expect(model).not.toBeNull();
           expect(model.x + model.width).toBeLessThanOrEqual(
             execution.x + execution.width,
@@ -287,8 +304,14 @@ test("phone conversation gives the transcript its viewport budget", async ({
           ).toBeVisible();
         }
         const geometry = await page.evaluate(() => {
-          const rect = (selector) =>
-            document.querySelector(selector).getBoundingClientRect().toJSON();
+          const rect = (selector: string) => {
+            const element = document.querySelector(selector);
+            if (!element)
+              throw new Error(`Missing geometry element ${selector}`);
+            const { x, y, width, height, top, right, bottom, left } =
+              element.getBoundingClientRect();
+            return { x, y, width, height, top, right, bottom, left };
+          };
           return {
             header: rect(".simple-workspace-header"),
             messages: rect("#messages"),

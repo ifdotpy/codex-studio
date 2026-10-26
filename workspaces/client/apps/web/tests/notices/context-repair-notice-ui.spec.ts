@@ -156,11 +156,12 @@ test("Context repair notice ui", async ({
         ...agent,
         capacityRetry: {
           id: "retry",
-          threadId: agent.threadId,
+          threadId: agent.threadId ?? null,
           epoch: 0,
           accountKey: "default",
           status: "scheduled",
           dueAt: Date.now() / 1000 + 60,
+          updatedAt: Date.now() / 1000,
         },
       },
       true,

@@ -1,10 +1,24 @@
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import { fixtureServerOrigin } from "./browser-fixture.ts";
+import type { BrowserContext, TestInfo, Route } from "@playwright/test";
+import type { Snapshot } from "../../src/types.ts";
+declare global {
+  interface Window {
+    mobileCached: {
+      syncErrors: string[];
+      stopState: () => void;
+      stopDrafts: () => void;
+      state: Snapshot | null;
+    };
+  }
+}
 // Cached UI appears while an online Mac is unreachable; identity gates replication.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
 import { apiSchemaHandshakeSse, test } from "../playwright.ts";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -20,9 +34,6 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("mobile sync cached browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../", import.meta.url)),
@@ -32,16 +43,20 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
   const browser = _browser;
   try {
     const page = await browser.newPage();
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const workspaceId = "f".repeat(32);
     let identityCalls = 0;
     let currentWorkspace = workspaceId;
     let holdIdentity = false,
-      identityRoute,
       pullCount = 0,
       pushCount = 0;
-    const pullLog = [];
+    const identity: { route?: Route } = {};
+    const pullLog: {
+      scope: string | null;
+      after: number;
+      currentWorkspace: string;
+    }[] = [];
     let streamCalls = 0;
     await page.route("**/check", (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
@@ -49,7 +64,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     await page.route("**/api/sync/identity", (route) => {
       identityCalls++;
       if (holdIdentity) {
-        identityRoute = route;
+        identity.route = route;
         return;
       }
       return route.fulfill({
@@ -99,12 +114,11 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       pushCount++;
       return route.fulfill({ json: [] });
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureServerOrigin(server) + "/check");
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.projections.insert({
+        // @ts-expect-error Preserve the legacy cache fixture document with no payload.
         op: "upsert",
         collection: "agent",
         id: "lead",
@@ -139,20 +153,27 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     const startWatchers = () =>
       page.evaluate(async () => {
         const client = await import("/src/sync/client.ts");
-        window.syncErrors = [];
-        window.stopState = client.subscribeStateProjection(
-          (value) => (window.state = value),
+        window.mobileCached = {
+          syncErrors: [],
+          stopState: () => {},
+          stopDrafts: () => {},
+          state: null,
+        };
+        window.mobileCached.stopState = client.subscribeStateProjection(
+          (value) => (window.mobileCached.state = value),
           (error) => {
-            if (error) window.syncErrors.push(String(error));
+            if (error) window.mobileCached.syncErrors.push(String(error));
           },
         );
-        window.stopDrafts = await client.startDraftReplication((error) => {
-          if (error) window.syncErrors.push(String(error));
-        });
+        window.mobileCached.stopDrafts = await client.startDraftReplication(
+          (error) => {
+            if (error) window.mobileCached.syncErrors.push(String(error));
+          },
+        );
       });
     await startWatchers();
     await page.waitForFunction(
-      () => window.state?.runtime?.agents?.[0]?.name === "Cached",
+      () => window.mobileCached.state?.runtime?.agents?.[0]?.name === "Cached",
     );
     const cachedMs = Date.now() - started;
     assert.ok(
@@ -173,14 +194,16 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       0,
       "Unverified cached identity permits no draft writes",
     );
-    assert.ok(identityRoute);
+    assert.ok(identity.route);
     holdIdentity = false;
     currentWorkspace = "a".repeat(32);
-    await identityRoute.fulfill({
+    await identity.route.fulfill({
       json: { workspaceId: "a".repeat(32), chatState: true },
     });
     await page.waitForFunction(() =>
-      window.syncErrors.some((error) => error.includes("workspace changed")),
+      window.mobileCached.syncErrors.some((error) =>
+        error.includes("workspace changed"),
+      ),
     );
     assert.equal(
       pullCount,
@@ -193,12 +216,14 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       "A different server cannot receive cached drafts",
     );
     assert.equal(
-      await page.evaluate(() => window.state.runtime.agents[0].name),
+      await page.evaluate(
+        () => window.mobileCached.state?.runtime.agents[0]?.name,
+      ),
       "Cached",
     );
     assert.ok(
-      (await page.evaluate(() => window.syncErrors)).some((error) =>
-        error.includes("workspace changed"),
+      (await page.evaluate(() => window.mobileCached.syncErrors)).some(
+        (error) => error.includes("workspace changed"),
       ),
       "A workspace identity mismatch blocks cached data access",
     );
@@ -209,7 +234,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     await startWatchers();
     await page
       .waitForFunction(
-        () => window.state?.runtime?.agents?.[0]?.name === "Fresh",
+        () => window.mobileCached.state?.runtime?.agents?.[0]?.name === "Fresh",
         null,
         {
           timeout: 10000,
@@ -229,8 +254,8 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
             ).syncDatabase();
             const rows = await db.projections.find().exec();
             return {
-              value: window.state,
-              errors: window.syncErrors,
+              value: window.mobileCached.state,
+              errors: window.mobileCached.syncErrors,
               hidden: document.hidden,
               online: navigator.onLine,
               entities: rows
