@@ -37,6 +37,7 @@ import type {
 } from "./session-state.ts";
 import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
 import type { Limits } from "./features.ts";
+import { sdkSettings } from "./sdk-contract-gaps.ts";
 import {
   handledSdkMessages,
   handledSdkSystemMessages,
@@ -1271,13 +1272,6 @@ const permissionMode = (
     : s.sandbox === "read-only"
       ? "plan"
       : "default");
-function sdkSettings(
-  value: Parameters<Query["applyFlagSettings"]>[0],
-): NonNullable<Options["settings"]> {
-  // Decision 33: sdk.mjs:163 serializes object settings itself; the SDK accepted
-  // this flags object before migration, including values omitted by Settings.
-  return value as NonNullable<Options["settings"]>;
-}
 async function flags(
   s: Pick<Session, "model" | "claude">,
   p: Partial<BridgeTurnParams> = {},

@@ -3,9 +3,7 @@ import type {
   McpServerStatus,
   McpServerStatusConfig,
   McpClaudeAIProxyServerConfig,
-  McpServerConfig,
   McpHttpServerConfig,
-  Options,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolProof, ProofTool } from "./move.ts";
@@ -15,15 +13,8 @@ export type ExternalConfig = Exclude<McpServerStatusConfig, { type: "sdk" }> &
       Pick<McpHttpServerConfig, "headers" | "url">
   >;
 
-// The pinned SDK's sdk.mjs:155 documents claudeai-proxy through mcpServers,
-// and sdk.mjs:163 forwards every non-sdk config unchanged into --mcp-config.
-// Its declared McpServerConfig union omits that supported SDK-owned type.
-// Preserve the same object for both query options and setMcpServers.
-export function sdkMcpServers(
-  configs: Record<string, McpServerConfig | McpClaudeAIProxyServerConfig>,
-): NonNullable<Options["mcpServers"]> {
-  return configs as NonNullable<Options["mcpServers"]>;
-}
+import { sdkMcpServers } from "./sdk-contract-gaps.ts";
+export { sdkMcpServers } from "./sdk-contract-gaps.ts";
 type LocalConfig = Exclude<ExternalConfig, McpClaudeAIProxyServerConfig>;
 export type ExternalServer = {
   name: string;
