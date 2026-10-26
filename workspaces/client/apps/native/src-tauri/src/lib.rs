@@ -5,6 +5,7 @@ mod desktop_menu;
 mod desktop_recovery;
 mod frame_assets;
 mod ios_insets;
+mod ios_server;
 #[cfg(target_os = "ios")]
 mod ios_shell;
 mod local_backend;
@@ -536,7 +537,7 @@ pub fn run() {
         .on_page_load(|window, payload| {
             #[cfg(target_os = "ios")]
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                ios_shell::page_loaded(window);
+                ios_shell::page_loaded(window, payload.url());
             }
             #[cfg(feature = "native-check")]
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
@@ -583,7 +584,9 @@ pub fn run() {
             // iOS loads the web client from the user's server, or the
             // first-launch page that saves that server.
             #[cfg(target_os = "ios")]
-            let url = match ios_shell::server_url(app) {
+            let server = ios_shell::server_url(app);
+            #[cfg(target_os = "ios")]
+            let url = match server.clone() {
                 Some(url) => tauri::WebviewUrl::External(url),
                 None => tauri::WebviewUrl::CustomProtocol(
                     format!("{}://localhost/", ios_shell::START_SCHEME).parse()?,
@@ -662,7 +665,12 @@ pub fn run() {
             let window = window.focused(!hidden);
             let window = window.build()?;
             #[cfg(target_os = "ios")]
-            ios_shell::configure(&window);
+            {
+                ios_shell::configure(&window);
+                if server.is_some() {
+                    ios_shell::watch_first_load(&window);
+                }
+            }
             #[cfg(desktop)]
             window_state::install(&window, &directory, hidden)?;
             Ok(())

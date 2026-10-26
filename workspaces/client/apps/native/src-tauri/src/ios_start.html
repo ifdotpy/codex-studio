@@ -57,7 +57,11 @@
       />
       <input type="hidden" name="token" value="{{token}}" />
       <button type="submit">Connect</button>
-      <p>The app saves this address. Reinstall the app to change it.</p>
+      <p role="alert">{{message}}</p>
+      <p>
+        The app opens this address at start. To change it later, hold two
+        fingers on the screen.
+      </p>
     </form>
   </body>
 </html>
