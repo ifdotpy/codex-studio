@@ -54,7 +54,7 @@ it("retries an uncertain action with its original request and server after anoth
   expect(requestB.action).toBe("review");
   expect(requestA.request_id).not.toBe(requestB.request_id);
   await expect(a.submit(agent, "compact")).rejects.toThrow("Unknown outcome");
-  expect(postA.mock.calls[1][1]).toEqual(requestA);
+  expect(postA.mock.calls[1]?.[1]).toEqual(requestA);
   expect(postB).toHaveBeenCalledTimes(1);
   expect(b.pending(agent.id)).toEqual(requestB);
 });

@@ -4,6 +4,7 @@ import { applyEntityRows, emptyEntityProjection } from "./entityProjection.ts";
 
 it("projects per-account model entities, including hidden rows", () => {
   const value = {
+    catalogPosition: 0,
     model: "gpt-hidden",
     hidden: true,
     accountKey: "default",

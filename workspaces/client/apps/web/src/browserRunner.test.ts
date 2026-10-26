@@ -1,16 +1,26 @@
+import type { SpawnSyncOptions } from "node:child_process";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 
-const childProcess = vi.hoisted(() => ({ spawnSync: vi.fn() }));
+const childProcess = vi.hoisted(() => ({
+  spawnSync:
+    vi.fn<
+      (
+        command: string,
+        args: string[],
+        options: SpawnSyncOptions,
+      ) => { status: number }
+    >(),
+}));
 vi.mock("node:child_process", () => childProcess);
 
 const callerHome = "/fixture/caller-home";
 const callerCache = "/fixture/prepared-cache";
-const runRoots = new Set();
-let originalArgv;
-let originalExitCode;
+const runRoots = new Set<string>();
+let originalArgv: typeof process.argv;
+let originalExitCode: typeof process.exitCode;
 
 beforeEach(() => {
   originalArgv = process.argv;
@@ -36,13 +46,22 @@ afterEach(() => {
   runRoots.clear();
 });
 
-function observeCommand(command, args, options) {
+function observeCommand(
+  command: string,
+  args: string[],
+  options: SpawnSyncOptions,
+) {
+  assert.ok(options.env);
   if (options.env.PLAYWRIGHT_OUTPUT_DIR)
     runRoots.add(dirname(options.env.PLAYWRIGHT_OUTPUT_DIR));
   return { command, args, environment: options.env };
 }
 
-function assertIsolated(environment) {
+function assertIsolated(environment: NodeJS.ProcessEnv | undefined) {
+  assert.ok(environment);
+  assert.ok(environment.HOME);
+  assert.ok(environment.XDG_CACHE_HOME);
+  assert.ok(environment.PLAYWRIGHT_OUTPUT_DIR);
   assert.notEqual(environment.HOME, callerHome);
   assert.notEqual(environment.XDG_CACHE_HOME, callerCache);
   assert.equal(environment.CODEX_HOME, join(environment.HOME, ".codex"));
@@ -61,7 +80,7 @@ function assertIsolated(environment) {
 }
 
 test("runs Playwright in an isolated home with no interpreter probe", async () => {
-  const calls = [];
+  const calls: ReturnType<typeof observeCommand>[] = [];
   childProcess.spawnSync.mockImplementation((command, args, options) => {
     calls.push(observeCommand(command, args, options));
     assertIsolated(options.env);
@@ -73,7 +92,7 @@ test("runs Playwright in an isolated home with no interpreter probe", async () =
     calls.map((call) => call.command),
     ["pnpm"],
   );
-  assert.deepEqual(calls[0].args, ["exec", "playwright", "test", "--list"]);
+  assert.deepEqual(calls[0]?.args, ["exec", "playwright", "test", "--list"]);
   assert.equal(process.exitCode, 0);
 });
 

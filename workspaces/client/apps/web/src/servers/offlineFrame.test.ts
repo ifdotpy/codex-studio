@@ -1,8 +1,17 @@
+/// <reference lib="webworker" />
+import assert from "node:assert/strict";
 import { expect, test } from "vitest";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
 test("offline server navigation has frame CSP and cannot replace the root shell policy", async () => {
-  const handlers = {};
+  const handlers: Record<
+    string,
+    (event: {
+      request: Pick<Request, "method" | "mode" | "url">;
+      respondWith(value: Promise<Response>): void;
+      waitUntil(): void;
+    }) => void
+  > = {};
   const root = new Response('<meta name="studio-build" content="test" />', {
     headers: {
       "Content-Type": "text/html",
@@ -11,7 +20,7 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
     },
   });
   const cache = {
-    match: async (key) =>
+    match: async (key: string) =>
       key === "/"
         ? root.clone()
         : key === "/__studio_shell_manifest__"
@@ -27,7 +36,8 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
       self: {
         STUDIO_SHELL: { build: "test", initial: ["/"], allowed: ["/"] },
         location: { origin: "http://localhost" },
-        addEventListener: (name, handler) => (handlers[name] = handler),
+        addEventListener: (name: string, handler: (typeof handlers)[string]) =>
+          (handlers[name] = handler),
       },
       caches: {
         keys: async () => ["studio-shell-v1-test"],
@@ -44,17 +54,20 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
       clearTimeout,
     },
   );
-  let result;
+  let result: Promise<Response> | undefined;
+  assert.ok(handlers.fetch);
   handlers.fetch({
     request: {
       method: "GET",
       mode: "navigate",
       url: "http://localhost/?studio-server=remote",
     },
-    respondWith: (value) => (result = value),
+    respondWith: (value: Promise<Response>) => (result = value),
     waitUntil() {},
   });
   const response = await result;
+  assert.ok(response);
+  assert.ok(response);
   expect(response.headers.get("Content-Security-Policy")).toContain(
     "frame-ancestors 'self'",
   );
@@ -63,8 +76,15 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
   );
 });
 test("a network server-view response never overwrites the root cached HTML", async () => {
-  const handlers = {},
-    writes = [];
+  const handlers: Record<
+    string,
+    (event: {
+      request: Pick<Request, "method" | "mode" | "url">;
+      respondWith(value: Promise<Response>): void;
+      waitUntil(): void;
+    }) => void
+  > = {};
+  const writes: string[] = [];
   const html = '<meta name="studio-build" content="test" />';
   const response = () =>
     new Response(html, {
@@ -82,11 +102,12 @@ test("a network server-view response never overwrites the root cached HTML", asy
       self: {
         STUDIO_SHELL: { build: "test", initial: ["/"], allowed: ["/"] },
         location: { origin: "http://localhost" },
-        addEventListener: (name, handler) => (handlers[name] = handler),
+        addEventListener: (name: string, handler: (typeof handlers)[string]) =>
+          (handlers[name] = handler),
       },
       caches: {
         keys: async () => [],
-        open: async () => ({ put: async (key) => writes.push(key) }),
+        open: async () => ({ put: async (key: string) => writes.push(key) }),
       },
       fetch: async () => response(),
       Response,
@@ -97,14 +118,15 @@ test("a network server-view response never overwrites the root cached HTML", asy
       clearTimeout,
     },
   );
-  let result;
+  let result: Promise<Response> | undefined;
+  assert.ok(handlers.fetch);
   handlers.fetch({
     request: {
       method: "GET",
       mode: "navigate",
       url: "http://localhost/?studio-server=remote",
     },
-    respondWith: (value) => (result = value),
+    respondWith: (value: Promise<Response>) => (result = value),
     waitUntil() {},
   });
   await result;

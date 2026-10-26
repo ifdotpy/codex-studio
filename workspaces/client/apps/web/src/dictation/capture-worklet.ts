@@ -1,4 +1,15 @@
-class StudioCapture extends AudioWorkletProcessor {
+declare class AudioWorkletProcessor {
+  readonly port: MessagePort;
+}
+declare function registerProcessor(
+  name: string,
+  processor: typeof StudioCapture,
+): void;
+
+export class StudioCapture extends AudioWorkletProcessor {
+  buffer: Int16Array;
+  offset: number;
+  stopped: boolean;
   constructor() {
     super();
     this.buffer = new Int16Array(4096);
@@ -19,7 +30,7 @@ class StudioCapture extends AudioWorkletProcessor {
       this.offset = 0;
     }
   }
-  process(inputs) {
+  process(inputs: Float32Array[][]) {
     if (this.stopped) return false;
     for (const sample of inputs[0]?.[0] || []) {
       this.buffer[this.offset++] = Math.round(

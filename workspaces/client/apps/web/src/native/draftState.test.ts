@@ -34,7 +34,7 @@ it("keeps newer input pending when an older edit is acknowledged", async () => {
   expect(state.getSnapshot().drafts.room).toBe("latest Ж🦀");
   expect(state.getSnapshot().pending).toBe(true);
   expect(invoke).toHaveBeenCalledTimes(2);
-  expect(invoke.mock.calls[1][1].changes).toEqual({ room: "latest Ж🦀" });
+  expect(invoke.mock.calls[1]?.[1].changes).toEqual({ room: "latest Ж🦀" });
   second.resolve(view("latest Ж🦀", 3));
   await second.promise;
   expect(state.getSnapshot().pending).toBe(false);
@@ -61,7 +61,7 @@ it("retains exact uncertain command identity and content until an explicit retry
   });
   await state.retry();
   expect(invoke.mock.calls[1]).toEqual(invoke.mock.calls[0]);
-  expect(invoke.mock.calls[2][2]).not.toBe(invoke.mock.calls[0][2]);
+  expect(invoke.mock.calls[2]?.[2]).not.toBe(invoke.mock.calls[0]?.[2]);
   expect(state.getSnapshot()).toMatchObject({
     pending: false,
     localError: "",

@@ -7,6 +7,7 @@ test("macOS memory comes from the kernel's available percent", () => {
   expect(darwinAvailableBytes(0, total)).toBe(0);
   expect(darwinAvailableBytes("100", total)).toBe(total);
   for (const bad of ["", "-5", "101", "8.5", "high", undefined])
+    // @ts-expect-error undefined is deliberately outside the memory sample input contract.
     expect(darwinAvailableBytes(bad, total)).toBeUndefined();
 });
 

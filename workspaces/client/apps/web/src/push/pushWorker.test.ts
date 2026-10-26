@@ -1,11 +1,24 @@
+/// <reference lib="webworker" />
+import assert from "node:assert/strict";
 import { expect, test } from "vitest";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
 
-async function worker({ windows = [] } = {}) {
-  const handlers = {};
-  const shown = [];
-  const opened = [];
+async function worker({
+  windows = [],
+}: {
+  windows?: (Pick<WindowClient, "url"> & { focus(): Promise<unknown> })[];
+} = {}) {
+  const handlers: Record<
+    string,
+    (event: {
+      waitUntil(value: Promise<unknown>): void;
+      data?: { json(): unknown };
+      notification?: Pick<Notification, "close">;
+    }) => void
+  > = {};
+  const shown: (NotificationOptions & { title: string })[] = [];
+  const opened: string[] = [];
   vm.runInNewContext(
     await readFile(
       new URL("../../public/studio-sw.js", import.meta.url),
@@ -14,21 +27,31 @@ async function worker({ windows = [] } = {}) {
     {
       self: {
         location: { origin: "https://studio.example" },
-        addEventListener: (name, handler) => (handlers[name] = handler),
+        addEventListener: (name: string, handler: (typeof handlers)[string]) =>
+          (handlers[name] = handler),
         registration: {
-          showNotification: async (title, options) =>
-            shown.push({ title, ...options }),
+          showNotification: async (
+            title: string,
+            options: NotificationOptions,
+          ) => shown.push({ title, ...options }),
         },
         clients: {
           matchAll: async () => windows,
-          openWindow: async (url) => opened.push(url),
+          openWindow: async (url: string) => opened.push(url),
         },
       },
       URL,
     },
   );
-  const fire = async (name, event) => {
-    let work;
+  const fire = async (
+    name: string,
+    event: {
+      data?: { json(): unknown };
+      notification?: Pick<Notification, "close">;
+    },
+  ) => {
+    let work: Promise<unknown> | undefined;
+    assert.ok(handlers[name]);
     handlers[name]({ ...event, waitUntil: (value) => (work = value) });
     await work;
   };
@@ -74,6 +97,7 @@ test("a push without readable text still shows a notification", async () => {
 
 test("a click on the notification opens Studio or focuses its window", async () => {
   let focused = 0;
+
   const open = await worker({
     windows: [{ url: "https://studio.example/", focus: async () => focused++ }],
   });

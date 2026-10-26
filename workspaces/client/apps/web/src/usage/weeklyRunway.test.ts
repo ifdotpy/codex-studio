@@ -1,10 +1,11 @@
+import type { JsonValue } from "../types";
 import assert from "node:assert/strict";
 import { it as test } from "vitest";
 import { weeklyRunway } from "./weeklyRunway.ts";
 
 const now = 1800000000;
 const day = 86400;
-const snapshot = (usedPercent, elapsed = 1) => ({
+const snapshot = (usedPercent: JsonValue, elapsed = 1) => ({
   at: now,
   data: {
     rateLimits: {
@@ -27,6 +28,8 @@ test("weekly consumption controls all three bands; the exhausted short window is
   assert.equal(weeklyRunway(snapshot(10), now).color, "green");
   const yellow = weeklyRunway(snapshot(15), now);
   assert.equal(yellow.color, "yellow");
+
+  assert.ok(yellow.days !== null && yellow.days !== undefined);
   assert.ok(Math.abs(yellow.days - 85 / 15) < 1e-9);
   const red = weeklyRunway(snapshot(20), now);
   assert.equal(red.color, "red");
@@ -36,8 +39,12 @@ test("weekly consumption controls all three bands; the exhausted short window is
 
 test("reset before exhaustion is green even with fewer than five projected days", () => {
   const result = weeklyRunway(snapshot(80, 6), now);
-  assert.equal(result.windows[0].days, 1.5);
-  assert.equal(result.windows[0].resetFirst, true);
+  assert.ok(result);
+  assert.ok(result.windows[0] !== null && result.windows[0] !== undefined);
+  assert.equal(result.windows[0]?.days, 1.5);
+
+  assert.ok(result.windows[0] !== null && result.windows[0] !== undefined);
+  assert.equal(result.windows[0]?.resetFirst, true);
   assert.equal(result.color, "green");
   assert.equal(weeklyRunway(snapshot(0), now).color, "green");
 });
@@ -57,35 +64,47 @@ test("unknown observations and signed-out accounts stay gray", () => {
   assert.equal(weeklyRunway(snapshot(null), now).color, "gray");
   const signedOut = weeklyRunway(snapshot(20), now, true);
   assert.equal(signedOut.color, "gray");
-  assert.equal(signedOut.windows[0].days, null);
+  assert.ok(signedOut);
+  assert.ok(
+    signedOut.windows[0] !== null && signedOut.windows[0] !== undefined,
+  );
+  assert.equal(signedOut.windows[0]?.days, null);
   const stale = snapshot(20);
   stale.data.rateLimits.secondary.resetsAt = now - 1;
   assert.equal(weeklyRunway(stale, now).color, "green");
-  assert.equal(weeklyRunway(stale, now).windows[0].remaining, 100);
+  assert.equal(weeklyRunway(stale, now).windows[0]?.remaining, 100);
   stale.data.rateLimits.secondary.usedPercent = null;
   assert.equal(weeklyRunway(stale, now).color, "green");
   const missingTime = snapshot(20);
-  delete missingTime.at;
+  Reflect.deleteProperty(missingTime, "at");
   assert.equal(weeklyRunway(missingTime, now).color, "red");
-  assert.equal(weeklyRunway(missingTime, now).windows[0].days, null);
+  assert.equal(weeklyRunway(missingTime, now).windows[0]?.days, null);
   const zeroWithoutTime = snapshot(0);
-  delete zeroWithoutTime.at;
+  Reflect.deleteProperty(zeroWithoutTime, "at");
   assert.equal(weeklyRunway(zeroWithoutTime, now).color, "green");
   const zeroWithoutReset = snapshot(0);
-  delete zeroWithoutReset.data.rateLimits.secondary.resetsAt;
+  Reflect.deleteProperty(
+    zeroWithoutReset.data.rateLimits.secondary,
+    "resetsAt",
+  );
   assert.equal(
-    weeklyRunway(zeroWithoutReset, now).windows[0].resetFirst,
+    weeklyRunway(zeroWithoutReset, now).windows[0]?.resetFirst,
     false,
   );
   const missingWeekly = snapshot(20);
-  delete missingWeekly.data.rateLimits.secondary;
+  Reflect.deleteProperty(missingWeekly.data.rateLimits, "secondary");
   assert.equal(weeklyRunway(missingWeekly, now).color, "green");
   const exhausted = snapshot(100);
-  delete exhausted.data.rateLimits.secondary.resetsAt;
+  Reflect.deleteProperty(exhausted.data.rateLimits.secondary, "resetsAt");
   const noResetExhaustion = weeklyRunway(exhausted, now);
   assert.equal(noResetExhaustion.color, "red");
   assert.equal(noResetExhaustion.days, 0);
-  assert.equal(noResetExhaustion.windows[0].resetFirst, false);
+  assert.ok(noResetExhaustion);
+  assert.ok(
+    noResetExhaustion.windows[0] !== null &&
+      noResetExhaustion.windows[0] !== undefined,
+  );
+  assert.equal(noResetExhaustion.windows[0]?.resetFirst, false);
 });
 
 test("a cached Claude reset restores the full weekly allowance", () => {
@@ -107,7 +126,9 @@ test("a cached Claude reset restores the full weekly allowance", () => {
   };
   const result = weeklyRunway(limits, now);
   assert.equal(result.color, "green");
-  assert.equal(result.windows[0].remaining, 100);
+  assert.ok(result);
+  assert.ok(result.windows[0] !== null && result.windows[0] !== undefined);
+  assert.equal(result.windows[0]?.remaining, 100);
 });
 
 test("the least sustainable weekly pool controls a Claude account", () => {
@@ -134,18 +155,24 @@ test("the least sustainable weekly pool controls a Claude account", () => {
 
 test("the consumption rate uses the observation time, not time since a stale snapshot", () => {
   const limits = snapshot(20);
-  assert.equal(weeklyRunway(limits, now + day).windows[0].days, 4);
+  assert.equal(weeklyRunway(limits, now + day).windows[0]?.days, 4);
 });
 
 test("legacy and provider-specific limits preserve account and window labels", () => {
   const legacy = structuredClone(snapshot(20));
-  delete legacy.data.rateLimits.limitId;
+  Reflect.deleteProperty(legacy.data.rateLimits, "limitId");
   const legacyResult = weeklyRunway(legacy, now);
-  assert.equal(legacyResult.windows[0].name, "Codex");
+  assert.ok(legacyResult);
+  assert.ok(
+    legacyResult.windows[0] !== null && legacyResult.windows[0] !== undefined,
+  );
+  assert.equal(legacyResult.windows[0]?.name, "Codex");
 
-  const emptyIndex = structuredClone(legacy);
-  emptyIndex.data.rateLimitsByLimitId = {};
-  assert.equal(weeklyRunway(emptyIndex, now).windows[0].name, "Codex");
+  const emptyIndex = {
+    ...structuredClone(legacy),
+    data: { ...legacy.data, rateLimitsByLimitId: {} },
+  };
+  assert.equal(weeklyRunway(emptyIndex, now).windows[0]?.name, "Codex");
 
   const indexed = {
     at: now,
@@ -188,75 +215,131 @@ test("only weekly windows with valid percentage and reset values contribute", ()
   };
   const result = weeklyRunway(limits, now);
   assert.equal(result.windows.length, 1);
-  assert.equal(result.windows[0].name, "Codex");
-  assert.equal(result.windows[0].remaining, 80);
+  assert.ok(result);
+  assert.ok(result.windows[0] !== null && result.windows[0] !== undefined);
+  assert.equal(result.windows[0]?.name, "Codex");
+
+  assert.ok(result.windows[0] !== null && result.windows[0] !== undefined);
+  assert.equal(result.windows[0]?.remaining, 80);
 
   for (const usedPercent of [-1, 101, "20", Infinity]) {
-    const invalidUsage = structuredClone(limits);
-    invalidUsage.data.rateLimits.secondary.usedPercent = usedPercent;
+    const invalidUsage = {
+      ...limits,
+      data: {
+        rateLimits: {
+          ...limits.data.rateLimits,
+          secondary: { ...limits.data.rateLimits.secondary, usedPercent },
+        },
+      },
+    };
     const invalidResult = weeklyRunway(invalidUsage, now);
-    assert.equal(invalidResult.windows[0].remaining, null);
-    assert.equal(invalidResult.windows[0].days, null);
+    assert.ok(invalidResult);
+    assert.ok(
+      invalidResult.windows[0] !== null &&
+        invalidResult.windows[0] !== undefined,
+    );
+    assert.equal(invalidResult.windows[0]?.remaining, null);
+
+    assert.ok(
+      invalidResult.windows[0] !== null &&
+        invalidResult.windows[0] !== undefined,
+    );
+    assert.equal(invalidResult.windows[0]?.days, null);
     assert.equal(invalidResult.color, "gray");
   }
 
   for (const resetsAt of [-1, "later", Infinity]) {
-    const invalidReset = structuredClone(limits);
-    invalidReset.data.rateLimits.secondary.resetsAt = resetsAt;
+    const invalidReset = {
+      ...limits,
+      data: {
+        rateLimits: {
+          ...limits.data.rateLimits,
+          secondary: { ...limits.data.rateLimits.secondary, resetsAt },
+        },
+      },
+    };
     const invalidResult = weeklyRunway(invalidReset, now);
-    assert.equal(invalidResult.windows[0].reset, null);
-    assert.equal(invalidResult.windows[0].days, null);
+    assert.ok(invalidResult);
+    assert.ok(
+      invalidResult.windows[0] !== null &&
+        invalidResult.windows[0] !== undefined,
+    );
+    assert.equal(invalidResult.windows[0]?.reset, null);
+
+    assert.ok(
+      invalidResult.windows[0] !== null &&
+        invalidResult.windows[0] !== undefined,
+    );
+    assert.equal(invalidResult.windows[0]?.days, null);
     assert.equal(invalidResult.color, "red");
     assert.equal(invalidResult.days, null);
-    assert.equal(invalidResult.windows[0].resetFirst, false);
+
+    assert.ok(
+      invalidResult.windows[0] !== null &&
+        invalidResult.windows[0] !== undefined,
+    );
+    assert.equal(invalidResult.windows[0]?.resetFirst, false);
   }
   const zeroReset = structuredClone(limits);
   zeroReset.data.rateLimits.secondary.resetsAt = 0;
-  assert.equal(weeklyRunway(zeroReset, now).windows[0].reset, null);
+  assert.equal(weeklyRunway(zeroReset, now).windows[0]?.reset, null);
 
   const missingResetAtEpoch = structuredClone(limits);
   missingResetAtEpoch.at = 0;
-  missingResetAtEpoch.data.rateLimits.secondary.resetsAt = undefined;
+  Reflect.deleteProperty(
+    missingResetAtEpoch.data.rateLimits.secondary,
+    "resetsAt",
+  );
   const invalidAtEpoch = weeklyRunway(missingResetAtEpoch, 0);
-  assert.equal(invalidAtEpoch.windows[0].days, null);
+  assert.ok(invalidAtEpoch);
+  assert.ok(
+    invalidAtEpoch.windows[0] !== null &&
+      invalidAtEpoch.windows[0] !== undefined,
+  );
+  assert.equal(invalidAtEpoch.windows[0]?.days, null);
 });
 
 test("weekly reset and observation boundaries determine expiry and projection validity", () => {
   const atReset = snapshot(20);
   atReset.data.rateLimits.secondary.resetsAt = now;
   const expired = weeklyRunway(atReset, now);
-  assert.equal(expired.windows[0].remaining, 100);
-  assert.equal(expired.windows[0].days, Infinity);
+  assert.ok(expired);
+  assert.ok(expired.windows[0] !== null && expired.windows[0] !== undefined);
+  assert.equal(expired.windows[0]?.remaining, 100);
+
+  assert.ok(expired.windows[0] !== null && expired.windows[0] !== undefined);
+  assert.equal(expired.windows[0]?.days, Infinity);
   assert.equal(expired.color, "green");
 
   const nearFuture = snapshot(20);
   nearFuture.at = now + 5;
   assert.ok(
-    Math.abs(weeklyRunway(nearFuture, now).windows[0].days - 4) < 0.001,
+    Math.abs((weeklyRunway(nearFuture, now).windows[0]?.days ?? NaN) - 4) <
+      0.001,
   );
   const tooFarFuture = snapshot(20);
   tooFarFuture.at = now + 6;
-  assert.equal(weeklyRunway(tooFarFuture, now).windows[0].days, null);
+  assert.equal(weeklyRunway(tooFarFuture, now).windows[0]?.days, null);
   const beyondWindow = snapshot(20);
   beyondWindow.at = now + 5;
   beyondWindow.data.rateLimits.secondary.resetsAt = now + 1;
-  assert.equal(weeklyRunway(beyondWindow, now).windows[0].days, null);
+  assert.equal(weeklyRunway(beyondWindow, now).windows[0]?.days, null);
 
   const atWindowStart = snapshot(20, 0);
-  assert.equal(weeklyRunway(atWindowStart, now).windows[0].days, null);
+  assert.equal(weeklyRunway(atWindowStart, now).windows[0]?.days, null);
   const atWindowEnd = snapshot(20);
   atWindowEnd.at = now + 1;
   atWindowEnd.data.rateLimits.secondary.resetsAt = now + 1;
-  assert.equal(weeklyRunway(atWindowEnd, now).windows[0].days, 28);
+  assert.equal(weeklyRunway(atWindowEnd, now).windows[0]?.days, 28);
 
   const resetEqualsExhaustion = snapshot(50, 3.5);
   assert.equal(
-    weeklyRunway(resetEqualsExhaustion, now).windows[0].resetFirst,
+    weeklyRunway(resetEqualsExhaustion, now).windows[0]?.resetFirst,
     false,
   );
   const resetMissing = snapshot(20);
-  delete resetMissing.data.rateLimits.secondary.resetsAt;
-  assert.equal(weeklyRunway(resetMissing, now).windows[0].resetFirst, false);
+  Reflect.deleteProperty(resetMissing.data.rateLimits.secondary, "resetsAt");
+  assert.equal(weeklyRunway(resetMissing, now).windows[0]?.resetFirst, false);
 });
 
 test("each weekly allowance reports its own remaining amount, projection and reset ordering", () => {
@@ -295,6 +378,8 @@ test("each weekly allowance reports its own remaining amount, projection and res
   );
   assert.equal(result.color, "red");
   assert.equal(result.days, 0);
+  assert.ok(result);
+  assert.ok(result.windows[2] !== null && result.windows[2] !== undefined);
   assert.equal(result.windows[2].resetFirst, false);
 
   const exhaustedAndUnknown = {
@@ -358,7 +443,7 @@ test("empty and unknown weekly data return the states shown by the account allow
   assert.equal(mixedResult.days, null);
 
   const missingWeekly = snapshot(20);
-  delete missingWeekly.data.rateLimits.secondary;
+  Reflect.deleteProperty(missingWeekly.data.rateLimits, "secondary");
   assert.deepEqual(weeklyRunway(missingWeekly, now), {
     color: "green",
     days: Infinity,

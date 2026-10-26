@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { expect, it } from "vitest";
 import { MarkdownCache } from "./markdownCache";
 it("preserves JSON types and property names that resemble compact tags", () => {
@@ -13,6 +14,7 @@ it("keeps exact source, returns independent trees and bounds LRU storage", () =>
   cache.set("a", [{ text: "A" }]);
   cache.set("b", [{ text: "B" }]);
   const value = cache.get("a") as { text: string }[];
+  assert.ok(value[0]);
   value[0].text = "changed";
   cache.set("c", [{ text: "C" }]);
   expect(cache.get("a")).toEqual([{ text: "A" }]);
@@ -32,6 +34,7 @@ it("retains repeated sentence text within the same byte budget and restores the 
   cache.set("source", tree);
   expect(cache.get("source")).toEqual(tree);
   const restored = cache.get("source") as typeof tree;
+  assert.ok(restored[0]?.nodes[0]?.sentences[0]);
   restored[0].nodes[0].sentences[0].text = "changed";
   expect(cache.get("source")).toEqual(tree);
 });
