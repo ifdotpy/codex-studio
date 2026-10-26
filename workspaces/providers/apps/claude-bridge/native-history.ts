@@ -54,7 +54,7 @@ async function readTail(
   file: string,
   filesystem: NonNullable<NativeHistoryOptions["filesystem"]>,
 ) {
-  // Resolve the account's own native path. Never follow a transcript symlink.
+  // Never follow a symlink below the resolved account root.
   if ((await filesystem.realpath(file)) !== file) return null;
   const handle = await filesystem.open(
     file,
@@ -132,14 +132,16 @@ export async function readNativeHistory<T>(
   // unknown rather than searching other projects or guessing its native path.
   const project = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   if (project.length > 200) return null;
-  const file = path.join(
-    path.resolve(configDir),
-    "projects",
-    project,
-    (session.nativeId || session.id) + ".jsonl",
-  );
   let tail;
   try {
+    // The account root may be reached through a symlink, for example a
+    // symlinked ~/.claude or macOS /var. Nothing below it may be one.
+    const file = path.join(
+      await filesystem.realpath(path.resolve(configDir)),
+      "projects",
+      project,
+      (session.nativeId || session.id) + ".jsonl",
+    );
     tail = await readTail(file, filesystem);
     if (!tail) return null;
     const found = await inspect(tail);

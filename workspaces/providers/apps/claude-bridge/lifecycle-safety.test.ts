@@ -236,6 +236,42 @@ test.each([
   );
 });
 
+test.each([
+  ["account root", 0],
+  ["projects", 1],
+  ["project", 2],
+  ["transcript", 3],
+] as const)(
+  "native history accepts only a symlinked account root: %s",
+  async (link, depth) => {
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "claude-account-link-")),
+    );
+    const cwd = path.join(root, "project");
+    const project = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+    // Link one path component to a real target that holds the rest.
+    const parts = ["projects", project, sessionId + ".jsonl"];
+    const target = path.join(root, "target");
+    const file = path.join(target, ...parts.slice(depth));
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({ type: "user", uuid: inputId, sessionId, cwd }) + "\n",
+    );
+    const alias = path.join(root, "alias");
+    const linked = path.join(alias, ...parts.slice(0, depth));
+    await fs.mkdir(path.dirname(linked), { recursive: true });
+    await fs.symlink(target, linked);
+    const records = await readNativeHistory(
+      { id: sessionId, cwd },
+      { configDir: alias },
+    );
+    expect(records?.map(({ row }) => row.uuid) ?? null).toEqual(
+      link === "account root" ? [inputId] : null,
+    );
+  },
+);
+
 test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
   "restart promotes chain-proven receipts: %s",
   async (kind) => {
