@@ -5,7 +5,7 @@
 Rust crates own runtime, state, provider, and protocol tests. Client packages own
 renderer and desktop behavior. Keep unit tests beside their source and browser
 scenarios in the web test feature folders. The root [Just recipes](../justfile),
-[package scripts](../package.json), and [facade](../workspaces/tooling/apps/repository-checks/facade.mjs)
+[package scripts](../package.json), and [facade](../workspaces/tooling/apps/repository-checks/facade.ts)
 own check selection; this page explains how to use those owners.
 
 Tests use disposable state and must not attach to an existing backend, send paid
@@ -407,7 +407,7 @@ format and lint; it does not replace behavior tests.
 
 Keep temporary-directory owners alive until stores and child processes close.
 Use the platform temporary root and Playwright-managed screenshot output.
-The [temporary-state guard](../workspaces/tooling/apps/repository-checks/test-temp-state.mjs)
+The [temporary-state guard](../workspaces/tooling/apps/repository-checks/test-temp-state.ts)
 rejects cleanup-disabling calls and new hard-coded temporary paths. Browser and
 smoke fixtures clean up after success and failure; use their existing explicit
 artifact-retention controls only for debugging.
