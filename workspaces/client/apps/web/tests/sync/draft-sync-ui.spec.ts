@@ -449,7 +449,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       if (new URL(route.request().url()).searchParams.get("scope") !== "drafts")
         return route.continue();
       const response = await route.fetch();
-      const body: import("../playwright.ts").SyncPullResponse =
+      const body: Omit<
+        import("../playwright.ts").SyncPullResponse,
+        "documents"
+      > & { documents: import("../../src/sync/client.ts").SyncDocument[] } =
         await response.json();
       const containsRemoteWinner = body.documents.some(
         (document) =>
