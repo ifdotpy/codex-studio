@@ -5,37 +5,37 @@ import type { removeSendingMessage } from "../../src/components/removeSendingMes
 
 declare global {
   interface Window {
-    queueDeadlineQueue: ReturnType<typeof useMessageQueue>;
-    queueDeadlineObserved: string[][];
-    queueDeadlineEdited: Array<{ id: string; text: string }>;
-    queueDeadlineAdvance: number;
-    queueDeadlineReactRoot: Root;
-    queueDeadlineOutcome: string;
-    queueDeadlineOperation: Promise<string>;
-    queueDeadlineMount: typeof mount;
-    queueDeadlineRemoval: typeof import("../../src/components/removeSendingMessages.ts");
-    queueDeadlineRemoved: typeof import("../../src/components/removedMessages.ts");
+    queue: ReturnType<typeof useMessageQueue>;
+    observed: string[][];
+    edited: Array<{ id: string; text: string }>;
+    advance: number;
+    // Renamed from reactRoot: terminal/terminal-stub.ts declares it as Root | null.
+    queueDeadlineRoot: Root;
+    outcome: string;
+    operation: Promise<string>;
+    removal: typeof import("../../src/components/removeSendingMessages.ts");
+    removed: typeof import("../../src/components/removedMessages.ts");
+    // Renamed from scope: files/upload-recovery-browser.fixture.tsx declares it as a string.
     queueDeadlineScope: Parameters<typeof removeSendingMessage>[0];
-    queueDeadlineTarget: Parameters<typeof removeSendingMessage>[1];
+    target: Parameters<typeof removeSendingMessage>[1];
   }
 }
 
 function Harness({ workspaceId }: { workspaceId: string }) {
-  window.queueDeadlineQueue = useMessageQueue({
+  window.queue = useMessageQueue({
     id: "chat",
     enabled: true,
     scope: "deadline-fixture",
     workspaceId,
     refresh: async () => {},
-    observed: (ids) => window.queueDeadlineObserved.push(ids),
-    edited: (id, text) => window.queueDeadlineEdited.push({ id, text }),
+    observed: (ids) => window.observed.push(ids),
+    edited: (id, text) => window.edited.push({ id, text }),
   });
   return null;
 }
 
-function mount(workspaceId: string) {
+export function mount(workspaceId: string) {
   const root = createRoot(document.body);
   root.render(<Harness workspaceId={workspaceId} />);
   return root;
 }
-window.queueDeadlineMount = mount;

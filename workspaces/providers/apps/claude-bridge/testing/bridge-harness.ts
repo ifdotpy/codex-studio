@@ -200,10 +200,10 @@ export async function startBridge(
     predicate: (note: BridgeNote) => note is N,
   ): Promise<N>;
   function advanceUntil(
-    predicate: (note: BridgeNote) => boolean,
+    predicate: (note: BridgeNote) => unknown,
   ): Promise<BridgeNote>;
   async function advanceUntil(
-    predicate: (note: BridgeNote) => boolean,
+    predicate: (note: BridgeNote) => unknown,
   ): Promise<BridgeNote> {
     // Drive virtual time while disk and RPC work completes; no wall-clock polls.
     for (
@@ -220,9 +220,9 @@ export async function startBridge(
   function note<N extends BridgeNote>(
     predicate: (note: BridgeNote) => note is N,
   ): Promise<N>;
-  function note(predicate: (note: BridgeNote) => boolean): Promise<BridgeNote>;
+  function note(predicate: (note: BridgeNote) => unknown): Promise<BridgeNote>;
   async function note(
-    predicate: (note: BridgeNote) => boolean,
+    predicate: (note: BridgeNote) => unknown,
   ): Promise<BridgeNote> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let notify: (() => void) | undefined;

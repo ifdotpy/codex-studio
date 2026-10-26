@@ -1,4 +1,4 @@
-import { validate, validateSigningConfiguration } from "./signing-settings.ts";
+import { validate } from "./signing-settings.ts";
 import type { SigningConfiguration } from "./signing-settings.ts";
 export { validate } from "./signing-settings.ts";
 // Keep one certificate identity across local application updates.
@@ -28,14 +28,9 @@ export function configuration(env = process.env): SigningConfiguration {
       keychain: env.CODEX_STUDIO_SIGNING_KEYCHAIN,
     };
   try {
-    const value: unknown = JSON.parse(
-      readFileSync(signingConfigPath(), "utf8"),
-    );
-    validateSigningConfiguration(value, signingConfigPath());
-    return value;
+    return JSON.parse(readFileSync(signingConfigPath(), "utf8"));
   } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
-      throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return {};
   }
 }
@@ -62,11 +57,8 @@ function unlockReason(
   if (result.error)
     return clean(
       String(
-        result.error instanceof Error
-          ? "code" in result.error
-            ? result.error.code
-            : result.error.message
-          : result.error,
+        (result.error as NodeJS.ErrnoException).code ??
+          (result.error as Error).message,
       ),
     );
   const line = String(result.stderr ?? "")
@@ -204,7 +196,7 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
 ) {
-  if (process.argv.length !== 3 || !process.argv[2])
+  if (process.argv.length !== 3)
     throw new Error("Supply the application bundle path.");
   signApplication(path.resolve(process.argv[2]));
 }

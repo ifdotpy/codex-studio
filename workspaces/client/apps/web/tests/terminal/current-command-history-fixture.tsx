@@ -1,5 +1,4 @@
 import type { Message } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 export type HistorySnapshot = {
   label: string;
   items: Message[];
@@ -8,7 +7,7 @@ export type HistorySnapshot = {
 };
 declare global {
   interface Window {
-    currentCommandHistoryApply: (snapshot: HistorySnapshot) => void;
+    applyHistorySnapshot: (snapshot: HistorySnapshot) => void;
   }
 }
 
@@ -19,7 +18,7 @@ import "@mantine/core/styles.css";
 import TurnHistory from "../../src/components/conversation/transcript/TurnHistory.tsx";
 function Fixture() {
   const [snapshot, setSnapshot] = useState<HistorySnapshot | null>(null);
-  window.currentCommandHistoryApply = setSnapshot;
+  window.applyHistorySnapshot = setSnapshot;
   return (
     <MantineProvider>
       <main data-case={snapshot?.label}>
@@ -39,4 +38,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

@@ -32,9 +32,10 @@
 import type { FixtureStep, FixtureScript } from "./fixture-scripts.ts";
 import {
   parseFixtureScripts,
-  parseFixtureAgentSteps,
   parseFixtureModels,
   readProviderObject,
+  type FixtureRpcMessage,
+  type FixtureControlInput,
 } from "./fixture-scripts.ts";
 import { createInterface } from "node:readline";
 import { createServer } from "node:net";
@@ -212,33 +213,25 @@ function result(method: string, params: Record<string, unknown>) {
 }
 
 createInterface({ input: process.stdin }).on("line", (line) => {
-  const message = readProviderObject(line);
+  const message = readProviderObject<FixtureRpcMessage>(line);
   if (message.method === undefined) {
-    if (typeof message.id === "string") {
-      replies.get(message.id)?.(message);
-      replies.delete(message.id);
-    }
+    replies.get(message.id)?.(message);
+    replies.delete(message.id);
     return;
   }
   if (message.id === undefined) return;
-  const { method } = message;
-  if (typeof method !== "string")
-    throw new Error("Invalid fixture provider method");
-  const params = readProviderObject(JSON.stringify(message.params ?? {}));
+  const { method, params = {} } = message;
   if (method === "turn/start") {
     // The id is fixed here: concurrent turns must report the id this reply names.
-    const threadId = params.threadId;
-    if (typeof threadId !== "string")
-      throw new Error("Invalid fixture thread id");
+
     const turnId = `fixture-turn-${++turnCount}`;
-    turns.set(threadId, turnId);
+    turns.set(params.threadId!, turnId);
     send({ id: message.id, result: { turn: { id: turnId } } });
-    setImmediate(() => runTurn(threadId, turnId, params.input));
+    setImmediate(() => runTurn(params.threadId!, turnId, params.input));
     return;
   }
   if (method === "turn/interrupt") {
-    if (typeof params.turnId === "string")
-      holds.get(params.turnId)?.interrupt();
+    holds.get(params.turnId!)?.interrupt();
     send({ id: message.id, result: {} });
     return;
   }
@@ -250,13 +243,8 @@ if (process.env.FAKE_CODEX_CONTROL) {
   process.on("exit", () => rmSync(path, { force: true }));
   createServer((socket) => {
     createInterface({ input: socket }).on("line", async (line) => {
-      const control = readProviderObject(line);
-      const { id, thread } = control;
-      if (typeof thread !== "string")
-        throw new Error("Invalid fixture control thread");
-      const steps =
-        parseFixtureAgentSteps(JSON.stringify({ control: control.steps }))
-          .control ?? [];
+      const { id, thread, steps } =
+        readProviderObject<FixtureControlInput>(line);
       const turnId = turns.get(thread);
       if (turnId) await runSteps(thread, turnId, steps);
       socket.write(JSON.stringify({ id, ok: turnId !== undefined }) + "\n");

@@ -36,6 +36,7 @@ import {
   parseFixtureAgentSteps,
   parseFixtureModels,
   readProviderObject,
+  type FixtureControlReply,
 } from "./fixture-scripts.ts";
 import { spawn } from "node:child_process";
 import {
@@ -82,11 +83,14 @@ export type FixtureHookInput =
   | FixtureNotificationHook
   | FixtureCreateWorkerHook
   | FixtureProviderHook;
-type FixtureHookMessage = FixtureHookInput;
+// The method selects which fields the fixture caller supplies and the handler reads.
+type FixtureHookMessage = FixtureNotificationHook &
+  Omit<FixtureCreateWorkerHook, "method"> &
+  Omit<FixtureProviderHook, "method">;
 
 // Hook messages are sent by this fixture’s test caller; narrow their envelope once.
 function parseHookMessage(text: string): FixtureHookMessage {
-  return readProviderObject(text) as FixtureHookMessage;
+  return readProviderObject<FixtureHookMessage>(text);
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -224,11 +228,9 @@ export function serverBinary() {
     throw new Error(
       `studio-runtime-server is not built under ${target}; run cargo build -p studio-runtime-server`,
     );
-  const candidate = candidates.sort(
+  return candidates.sort(
     (a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs,
   )[0];
-  if (!candidate) throw new Error("No server binary candidate");
-  return candidate;
 }
 
 export async function startRustBackend(
@@ -376,20 +378,18 @@ export async function readEntities(
       );
     if (Date.now() >= deadline)
       throw new Error("Fixture entity pagination did not settle");
-    const page: SyncPullResponse | SyncPullResetResponse =
-      await response.json();
+    const page:
+      | (Omit<SyncPullResponse, "documents"> & { documents: SyncEntity[] })
+      | SyncPullResetResponse = await response.json();
     if (page.reset === true) {
       values.length = 0;
       after = 0;
       continue;
     }
-    for (const document of page.documents.filter(
-      (document): document is Extract<SyncEntity, { op: "upsert" }> =>
-        "collection" in document &&
-        document.collection === collection &&
-        document.op === "upsert",
-    ))
-      values.push(document.value);
+    for (const document of page.documents) {
+      if (document.collection === collection && document.op === "upsert")
+        values.push(document.value);
+    }
     const next = page.checkpoint.seq;
     if (next <= after || next >= (page.maxSeq ?? next)) return values;
     after = next;
@@ -421,8 +421,8 @@ async function waitUntilIdle(
     const pending = (await readEntities(origin, "event")).filter(
       (event) =>
         event.status === "pending" &&
-        kinds.includes(event.kind ?? "") &&
-        !held.has(event.agent ?? ""),
+        kinds.includes(event.kind as (typeof kinds)[number]) &&
+        !held.has(event.agent!),
     );
     if (agents.length && !busy.length && !pending.length) return;
     if (Date.now() > deadline)
@@ -436,10 +436,10 @@ async function waitUntilIdle(
 /** Held seeded agents: FIXTURE_HOLD names to a predicate over agent records. */
 const HOLD_MATCHERS: Record<
   string,
-  (agent: Pick<AgentSummaryEntityDto, "name">) => boolean
+  (agent: Pick<AgentSummaryEntityDto, "name">) => boolean | undefined
 > = {
   lead: (agent) => agent.name === "Release lead",
-  workers: (agent) => agent.name?.startsWith("Worker") ?? false,
+  workers: (agent) => agent.name?.startsWith("Worker"),
   other: (agent) => agent.name === "Other project",
 };
 
@@ -468,13 +468,7 @@ async function sendControl(
           const lines = createInterface({ input: socket });
           lines.on("error", () => resolveReply(false));
           lines.once("line", (line) => {
-            const reply: unknown = JSON.parse(line);
-            resolveReply(
-              reply !== null &&
-                typeof reply === "object" &&
-                "ok" in reply &&
-                reply.ok === true,
-            );
+            resolveReply(readProviderObject<FixtureControlReply>(line).ok);
             socket.destroy();
           });
           socket.write(JSON.stringify({ id: "control", thread, steps }) + "\n");
@@ -485,7 +479,6 @@ async function sendControl(
 
 async function main() {
   const [root, ...flags] = process.argv.slice(2);
-  if (!root) throw new Error("Fixture root is required");
   const stateDir = fixtureStateDirectory(root);
   mkdirSync(stateDir, { recursive: true });
   const workersAt = flags.indexOf("--workers");
@@ -499,7 +492,7 @@ async function main() {
     .filter(Boolean)) {
     if (!(seed in SEEDS)) throw new Error(`Unknown FIXTURE_SEED entry ${seed}`);
     for (const [name, steps] of Object.entries(
-      SEEDS[seed]?.(workerName(workers - 1)) ?? {},
+      SEEDS[seed](workerName(workers - 1)),
     ))
       agentSteps[name] = [...(agentSteps[name] ?? []), ...steps];
   }
@@ -543,7 +536,7 @@ async function main() {
               : WORKER_PROMPT,
         ),
         // A held agent keeps its turn open after its own steps.
-        steps: held.some((group) => HOLD_MATCHERS[group]?.({ name }))
+        steps: held.some((group) => HOLD_MATCHERS[group]({ name }))
           ? [...steps, { hold: true }]
           : steps,
       })),
@@ -581,12 +574,14 @@ async function main() {
     maxRunningTurns: ACCOUNT_RUNNING_TURNS_MAX,
   });
   const cwd = repository;
-  const lead = await backend.post("/api/agents", {
+  const lead: PostResult<"/api/agents"> & {
+    agent?: Pick<PostResult<"/api/agents">, "id">;
+  } = await backend.post("/api/agents", {
     name: "Release lead",
     prompt: promptOf("Release lead", LEAD_PROMPT),
     cwd,
   });
-  const leadId = lead.id;
+  const leadId = lead.id ?? lead.agent?.id;
   if (!leadId)
     throw new Error(`Lead creation returned ${JSON.stringify(lead)}`);
   if (workers > LEAD_DEFAULT_CONCURRENCY)
@@ -621,44 +616,34 @@ async function main() {
   const chatter = Object.keys(agentSteps).length > 0;
   const kinds = chatter ? WAKING_EVENT_KINDS_WITH_CHATTER : WAKING_EVENT_KINDS;
   const isHeld = (agent: AgentSummaryEntityDto) =>
-    held.some((name) => HOLD_MATCHERS[name]?.(agent));
+    held.some((name) => HOLD_MATCHERS[name](agent));
   await waitUntilIdle(backend.origin, isHeld, kinds);
-  const hooks: Record<string, (message: FixtureHookMessage) => Promise<void>> =
-    {
-      "fixture/create-worker": async (message) => {
-        if (!("parent" in message))
-          throw new Error("Worker fixture hook needs its parent");
-        await backend.post("/api/agents", {
-          cwd,
-          ...message.params,
-          parent: message.parent,
-        });
-      },
-      "fixture/provider": async (message) => {
-        if (!("steps" in message))
-          throw new Error("Provider fixture hook needs its steps");
-        const agent = (await readAgents(backend.origin)).find(
-          (candidate) => candidate.id === message.agent,
-        );
-        if (!agent?.threadId)
-          throw new Error(`Agent ${message.agent} has no provider thread`);
-        if (
-          !(await sendControl(controlDirectory, agent.threadId, message.steps))
-        )
-          throw new Error(`Agent ${agent.name} has no turn in flight`);
-      },
-    };
+  const hooks: Record<
+    string,
+    (message: FixtureHookMessage) => Promise<Record<string, unknown> | void>
+  > = {
+    "fixture/create-worker": async (message) => {
+      await backend.post("/api/agents", {
+        cwd,
+        ...message.params,
+        parent: message.parent,
+      });
+    },
+    "fixture/provider": async (message) => {
+      const agent = (await readAgents(backend.origin)).find(
+        (candidate) => candidate.id === message.agent,
+      );
+      if (!agent?.threadId)
+        throw new Error(`Agent ${message.agent} has no provider thread`);
+      if (!(await sendControl(controlDirectory, agent.threadId, message.steps)))
+        throw new Error(`Agent ${agent.name} has no turn in flight`);
+    },
+  };
   createInterface({ input: process.stdin }).on("line", async (line) => {
     const message = parseHookMessage(line);
     const hook = message.method.startsWith("fixture/")
       ? hooks[message.method]
       : async () => {
-          if (
-            !("params" in message) ||
-            !("threadId" in message.params) ||
-            typeof message.params.threadId !== "string"
-          )
-            throw new Error("Provider notification needs its thread");
           const { threadId } = message.params;
           const steps = [
             { notify: { method: message.method, params: message.params } },
@@ -668,10 +653,10 @@ async function main() {
         };
     if (!hook) throw new Error(`Unknown fixture hook ${message.method}`);
     try {
-      await hook(message);
+      const result = await hook(message);
       if (message.id !== undefined)
         process.stdout.write(
-          JSON.stringify({ id: message.id, ok: true }) + "\n",
+          JSON.stringify({ id: message.id, ok: true, ...result }) + "\n",
         );
     } catch (error) {
       if (message.id === undefined) throw error;

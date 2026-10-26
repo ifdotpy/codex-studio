@@ -8,7 +8,7 @@ export function mount() {
       const [ready, setReady] = useState(false);
       const [revision, redraw] = useState(0);
       const position = useConversationScroll(id, ready);
-      window.scrollRestartFixture = { select, setReady, position, redraw };
+      window.fixture = { select, setReady, position, redraw };
       return React.createElement(
         "div",
         {
@@ -40,14 +40,14 @@ export function mount() {
 
 declare global {
   interface Window {
-    scrollRestartFixture: {
+    fixture: {
       select: React.Dispatch<React.SetStateAction<string>>;
       setReady: React.Dispatch<React.SetStateAction<boolean>>;
       position: ReturnType<typeof useConversationScroll>;
       redraw: React.Dispatch<React.SetStateAction<number>>;
     };
-    scrollRestartFollowChanges: number;
-    scrollRestartFollowUnsubscribe: () => void;
-    scrollRestartMessageMeasurements: number;
+    followChanges: number;
+    followUnsubscribe: () => void;
+    messageMeasurements: number;
   }
 }

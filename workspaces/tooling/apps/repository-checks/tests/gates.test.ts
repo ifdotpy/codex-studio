@@ -231,7 +231,7 @@ test("interrupt waits for running children and cancels unstarted dependents", as
     },
   );
   assert.ok(stopped);
-  assert.equal(result.steps[2]?.status, "cancelled");
+  assert.equal(result.steps[2].status, "cancelled");
   assert.equal(result.exitCode, 1);
 });
 
@@ -261,7 +261,7 @@ test(
               captured += text;
               const match = captured.match(/READY (\d+)/);
               if (match) {
-                pid = Number(match[1]);
+                pid = +match[1];
                 if (cancel) controller.abort();
               }
             },
@@ -288,7 +288,7 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
   for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
     const steps = gateSteps(process.cwd(), name);
     // Tools must start while type checks wait for WASM and web tests wait for Rust.
-    const lane = (id: string) => steps.find((step) => step.id === id)?.lane;
+    const lane = (id: string) => steps.find((step) => step.id === id)!.lane;
     assert.notEqual(lane("tooling"), lane("TypeScript projects"));
     assert.notEqual(lane("tooling"), lane("web unit tests"));
     assert.notEqual(lane("TypeScript projects"), lane("web unit tests"));
@@ -296,22 +296,22 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
       steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
     );
     const rust = steps.find((s) => s.id === "rust-tests");
-    assert.deepEqual(rust?.commands?.[0]?.[1].slice(0, 4), [
+    assert.deepEqual(rust!.commands![0][1].slice(0, 4), [
       "nextest",
       "run",
       "--workspace",
       "--profile",
     ]);
     assert.ok(!JSON.stringify(steps).includes("--release"));
-    assert.equal(steps.find((s) => s.id === "guest")?.requires, "workspace");
+    assert.equal(steps.find((s) => s.id === "guest")!.requires, "workspace");
     assert.equal(
-      steps.find((s) => s.id === "web unit tests")?.requires,
+      steps.find((s) => s.id === "web unit tests")!.requires,
       "workspace",
     );
     assert.ok(
       steps
-        .find((s) => s.id === "workspace")
-        ?.commands?.[0]?.[1].includes("--examples"),
+        .find((s) => s.id === "workspace")!
+        .commands![0][1].includes("--examples"),
     );
   }
   assert.ok(
@@ -385,7 +385,7 @@ test("native platform filter keeps every common clause identical", () => {
   const [common, linux] = [
     ...source.matchAll(/default-filter = '''\n([\s\S]*?)\n'''/g),
   ].map((match) => match[1]);
-  assert.ok(linux?.startsWith(common + "\n    | "));
+  assert.ok(linux!.startsWith(common + "\n    | "));
   assert.match(source, /platform = 'cfg\(target_os = "linux"\)'/);
   assert.match(source, /inherits = "ci"/);
 });

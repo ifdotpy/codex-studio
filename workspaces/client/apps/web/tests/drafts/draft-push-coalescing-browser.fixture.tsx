@@ -1,17 +1,11 @@
 import { readDraft, readLocalDraft } from "./draft-fixture-helpers.ts";
-import type { useSyncedDrafts } from "../../src/sync/drafts.ts";
-import type { syncDatabase } from "../../src/sync/client.ts";
 declare global {
   interface Window {
     coalescingDraft_readDraft: typeof readDraft;
     coalescingDraft_readLocalDraft: typeof readLocalDraft;
-    coalescingDraft_draft: ReturnType<typeof useSyncedDrafts>;
-    coalescingDraft_db: Awaited<ReturnType<typeof syncDatabase>>["db"];
-    coalescingDraft_root: import("react-dom/client").Root;
-    coalescingDraft_outbox: ReturnType<
-      typeof import("../../src/sync/send.ts").useOutbox
-    >;
-    coalescingDraft_lastRecoverySnapshot: {
+    root: import("react-dom/client").Root;
+    outbox: ReturnType<typeof import("../../src/sync/send.ts").useOutbox>;
+    lastRecoverySnapshot: {
       journal: string[];
       local: string | undefined;
     };
@@ -27,14 +21,14 @@ export async function mount() {
   const { db } = await (
     await import("../../src/sync/client.ts")
   ).syncDatabase();
-  window.coalescingDraft_db = db;
+  window.db = db;
   const node = document.createElement("div");
   document.body.appendChild(node);
-  window.coalescingDraft_root = createRoot(node);
-  window.coalescingDraft_root.render(
+  window.root = createRoot(node);
+  window.root.render(
     React.createElement(function Harness() {
-      window.coalescingDraft_draft = useSyncedDrafts();
-      window.coalescingDraft_outbox = useOutbox();
+      window.draft = useSyncedDrafts();
+      window.outbox = useOutbox();
       return null;
     }),
   );

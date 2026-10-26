@@ -1,21 +1,18 @@
+import type { ApiError } from "../../src/api.ts";
 import { readOutbox } from "../drafts/draft-fixture-helpers.ts";
 export async function mount() {
-  window.preflightSend_send = await import("../../src/sync/send.ts");
-  window.preflightSend_storage = await (
+  window.send = await import("../../src/sync/send.ts");
+  window.storage = await (
     await import("../../src/sync/client.ts")
   ).syncDatabase();
-  window.preflightSend_read = read;
-  window.preflightSend_start = (body, copies) => {
-    window.preflightSend_result = Promise.all(
+  window.read = read;
+  window.start = (body, copies) => {
+    window.result = Promise.all(
       Array.from({ length: copies }, () =>
-        window.preflightSend_send.durableSend(body).catch((error: unknown) => {
-          if (!(error instanceof Error)) throw error;
+        window.send.durableSend(body).catch((error: ApiError) => {
           return {
             error: error.message,
-            code:
-              "status" in error && typeof error.status === "number"
-                ? error.status
-                : undefined,
+            code: error.status,
           };
         }),
       ),
@@ -25,16 +22,16 @@ export async function mount() {
 
 declare global {
   interface Window {
-    preflightSend_send: typeof import("../../src/sync/send.ts");
-    preflightSend_storage: Awaited<
+    send: typeof import("../../src/sync/send.ts");
+    storage: Awaited<
       ReturnType<typeof import("../../src/sync/client.ts").syncDatabase>
     >;
-    preflightSend_read: typeof read;
-    preflightSend_start: (
+    read: typeof read;
+    start: (
       body: import("../../src/apiTypes.ts").PostBody<"/api/messages">,
       copies: number,
     ) => void;
-    preflightSend_result: Promise<
+    result: Promise<
       Array<
         Partial<
           Awaited<
@@ -45,9 +42,8 @@ declare global {
     >;
   }
 }
-async function read(id: string): Promise<ReturnType<typeof readOutbox>> {
-  const doc = await window.preflightSend_storage.db.outbox.findOne(id).exec();
-  if (!doc) throw new Error("Missing outbox record");
+async function read(id: string): Promise<ReturnType<typeof readOutbox> | null> {
+  const doc = await window.storage.db.outbox.findOne(id).exec();
   // The renderer writes and reads this outbox document.
-  return readOutbox(doc.getLatest().payload);
+  return doc && readOutbox(doc.getLatest().payload);
 }

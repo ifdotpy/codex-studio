@@ -114,7 +114,7 @@ try {
           encoding,
           transferredBodyBytes: sizes.responseBodySize,
           transferredHeaderBytes: sizes.responseHeadersSize,
-          decodedBytes: expected.get(path)?.length,
+          decodedBytes: expected.get(path)!.length,
         });
       }
       assert.deepEqual(errors, [], "renderer loaded without page errors");
@@ -137,9 +137,7 @@ try {
       await context.close();
     }
   }
-  const [identity, compressed] = runs;
-  assert.ok(identity && compressed);
-  assert.ok(compressed.transferredBodyBytes < identity.transferredBodyBytes);
+  assert.ok(runs[1].transferredBodyBytes < runs[0].transferredBodyBytes);
   await writeFile(
     reportPath,
     JSON.stringify(

@@ -139,7 +139,7 @@ export default function ProjectServerCards({
                 <Button
                   variant="subtle"
                   size="xs"
-                  disabled={!!server.disabled}
+                  disabled={server.disabled}
                   onClick={() => onAdd(server.id)}
                 >
                   + Add folder on this server

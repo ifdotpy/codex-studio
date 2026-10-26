@@ -109,14 +109,12 @@ function messageGroups(
   const groups: (Message | [Message, ...Message[]])[] = [];
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
-    if (!item) throw new Error("Missing transcript message");
     if (isEmptyAssistantMessage(item)) continue;
     if (!showItem(item) && isPastCommand(item)) continue;
     if (workRow(item) || (includeReasoning && item.role === "reasoning")) {
       const run: [Message, ...Message[]] = [item];
       while (index + 1 < items.length) {
         const next = items[index + 1];
-        if (!next) throw new Error("Missing next transcript message");
         if (
           isEmptyAssistantMessage(next) ||
           (!showItem(next) && isPastCommand(next))
@@ -171,9 +169,7 @@ const WorkBlock = memo(function WorkBlock({
 }) {
   const key = `${storageKey}:tools-v3`;
   const tools = items.filter((item) => ["tool", "output"].includes(item.role));
-  const [first] = items;
-  if (!first) throw new Error("Work block has no messages");
-  const id = storageIds[0] || first.id;
+  const id = storageIds[0] || items[0].id;
   const [open, setOpen] = useState(
     () =>
       saved<Record<string, boolean>>(key, {})[id] ??

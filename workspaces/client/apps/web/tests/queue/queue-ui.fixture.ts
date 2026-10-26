@@ -9,7 +9,7 @@ import {
   rustUiFixture,
   waitForFixturePort,
 } from "../playwright.ts";
-import { required, responseJson } from "../messages/helpers.ts";
+import { responseJson } from "../messages/helpers.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
 
@@ -43,15 +43,13 @@ export async function queueUiFixture(env: NodeJS.ProcessEnv) {
     },
   });
   let log = "";
-  proc.stderr?.on("data", (data: Buffer) => {
+  proc.stderr!.on("data", (data: Buffer) => {
     log += data;
   });
   const port = await waitForFixturePort(proc, { timeoutMs: 30_000 });
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
-  const lead = required(
-    initial.threads.find((agent) => agent.name === "Release lead"),
-  );
+  const lead = initial.threads.find((agent) => agent.name === "Release lead")!;
   const queue = () =>
     fetch(`${origin}/api/queue?agent=${lead.id}`).then(
       responseJson<GetResult<"/api/queue">>,

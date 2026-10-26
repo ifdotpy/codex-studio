@@ -137,7 +137,7 @@ export async function createFixture(directory: string) {
           "workspaceId"
         > &
           Record<string, unknown>);
-      if (request.url?.startsWith("/api/sync/pull?scope=drafts&"))
+      if (request.url!.startsWith("/api/sync/pull?scope=drafts&"))
         return json({
           workspaceId: "a".repeat(32),
           documents: [],
@@ -192,10 +192,8 @@ export async function createFixture(directory: string) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
   return {
-    port: address.port,
+    port: (server.address() as import("node:net").AddressInfo).port,
     commands,
     acceptIdentity() {
       identityState = directory;
@@ -329,17 +327,16 @@ async function main() {
       for (const database of snapshot.databases)
         for (const store of database.stores) {
           const records = store.records;
-          assert.ok(records);
           delete store.records;
           store.chunks = [];
-          if (records.length) {
+          if (records!.length) {
             const data = Buffer.from(JSON.stringify(records));
             const digest = createHash("sha256").update(data).digest("hex");
             await writeFile(path.join(parts, `${digest}.json`), data);
             store.chunks.push({
               sha256: digest,
               bytes: data.length,
-              records: records.length,
+              records: records!.length,
             });
           }
         }
@@ -380,7 +377,7 @@ async function main() {
         "Expected two distinct commands",
       );
       const [command, shell] = fixture.commands;
-      assert.ok(command && shell);
+
       assert.equal(shell.body.toString(), "null");
       assert.equal(shell.headers["x-studio-request-id"], "shell-http-command");
       assert.equal(command.body.toString(), "null");

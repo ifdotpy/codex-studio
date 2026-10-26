@@ -7,10 +7,10 @@ import {
 } from "../components/useConversationScroll";
 declare global {
   interface Window {
-    syncWindow: { historyRoot: Root };
+    historyRoot: Root;
   }
 }
-const workspaceId = document.documentElement.dataset.workspaceId ?? "";
+const workspaceId = document.documentElement.dataset.workspaceId!;
 function History() {
   const history = useMessages("open", "agent", true, "fixture", workspaceId);
   const scrolling = useConversationScroll("window-check", history.loaded);
@@ -33,7 +33,7 @@ function History() {
           if (
             history.before &&
             !history.pageLoading &&
-            (scrolling.scroll.current?.scrollTop ?? Infinity) <=
+            scrolling.scroll.current!.scrollTop <=
               TRANSCRIPT_HISTORY_START_PX &&
             scrolling.consumeHistoryScrollInput()
           )
@@ -63,7 +63,5 @@ function History() {
     ),
   );
 }
-const main = document.querySelector("main");
-if (!main) throw new Error("Missing history fixture main");
-window.syncWindow = { historyRoot: createRoot(main) };
-window.syncWindow.historyRoot.render(React.createElement(History));
+window.historyRoot = createRoot(document.querySelector("main")!);
+window.historyRoot.render(React.createElement(History));

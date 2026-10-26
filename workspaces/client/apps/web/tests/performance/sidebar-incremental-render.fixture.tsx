@@ -1,5 +1,4 @@
 import type { Agent } from "../../src/types.ts";
-import { required } from "./performance-fixture.ts";
 
 import React, { useMemo } from "react";
 import { createRoot } from "react-dom/client";
@@ -10,10 +9,10 @@ import { useSnapshot } from "../../src/hooks.ts";
 import { syncDatabase, persistProjection } from "../../src/sync/client.ts";
 import { chatIndicators } from "../../src/components/chat-status/chatStatusModel.ts";
 const noop = () => {};
-window.sidebarIncrementalFixtureRows = 0;
-window.sidebarIncrementalFixtureJsonReads = 0;
-window.sidebarIncrementalFixtureRenders = 0;
-window.sidebarIncrementalFixtureActions = [];
+window.fixtureRows = 0;
+window.fixtureJsonReads = 0;
+window.fixtureRenders = 0;
+window.fixtureActions = [];
 const row = (collection: string, id: string, value: unknown, seq: number) => ({
   id: "entity:" + collection + ":" + id,
   seq,
@@ -53,21 +52,20 @@ await db.projections.bulkInsert([
   { id: "state:entities:ready", seq: 1, payload: "ready" },
 ]);
 const oldDocument = await db.projections.findOne("entity:rule:r").exec();
-if (!oldDocument) throw new Error("Missing original rule projection");
-const oldPayload = oldDocument.toJSON().payload;
-window.sidebarIncrementalSameDocumentVersion =
+const oldPayload = oldDocument!.toJSON().payload;
+window.sameDocumentVersion =
   oldDocument === (await db.projections.findOne("entity:rule:r").exec());
-window.sidebarIncrementalDocumentVersionProof = async () => {
+window.documentVersionProof = async () => {
   const current = await db.projections.findOne("entity:rule:r").exec();
   return {
-    sameVersion: window.sidebarIncrementalSameDocumentVersion,
+    sameVersion: window.sameDocumentVersion,
     newVersion: current !== oldDocument,
     stableNewVersion:
       current === (await db.projections.findOne("entity:rule:r").exec()),
-    immutableOldVersion: oldDocument.toJSON().payload === oldPayload,
+    immutableOldVersion: oldDocument!.toJSON().payload === oldPayload,
   };
 };
-window.sidebarIncrementalWrite = async (
+window.write = async (
   collection: string,
   id: string,
   value: unknown,
@@ -79,35 +77,41 @@ window.sidebarIncrementalWrite = async (
     _deleted: deleted,
   });
 };
-window.sidebarIncrementalReadyAgain = () =>
+window.readyAgain = () =>
   persistProjection(db.projections, {
     id: "state:entities:ready",
     seq: 2,
     payload: "ready",
   });
+// This one-off row fixture omits serverAlias and showServer, as on the base.
+const partialSidebarRowProps = {} as Pick<
+  React.ComponentProps<typeof SidebarRow>,
+  "serverAlias" | "showServer"
+>;
 function Harness() {
   const { data } = useSnapshot();
-  window.sidebarIncrementalFixtureRenders++;
+  window.fixtureRenders++;
   const indicators = useMemo(
     () => (data ? chatIndicators(data) : new Map()),
     [data],
   );
-  window.sidebarIncrementalFixtureData = data;
-  const rule = data?.runtime?.rules?.[0];
+  window.fixtureData = data;
   const checks =
-    rule && "checks" in rule && typeof rule.checks === "number"
-      ? rule.checks
-      : 0;
+    (
+      data?.runtime?.rules?.[0] as
+        | (NonNullable<typeof data>["runtime"]["rules"][number] & {
+            checks: number;
+          })
+        | undefined
+    )?.checks || 0;
   return data ? (
     <>
       <Sidebar
         data={data}
         opened={null}
-        open={(id) =>
-          window.sidebarIncrementalFixtureActions.push([id, checks])
-        }
+        open={(id) => window.fixtureActions.push([id, checks])}
         prepareChat={(id) =>
-          window.sidebarIncrementalFixtureActions.push(["prepare", id, checks])
+          window.fixtureActions.push(["prepare", id, checks])
         }
         newChat={noop}
         addProject={noop}
@@ -120,15 +124,12 @@ function Harness() {
         onSearch={noop}
         close={noop}
         indicators={indicators}
-        markUnread={(a) =>
-          window.sidebarIncrementalFixtureActions.push(["unread", a.id, checks])
-        }
+        markUnread={(a) => window.fixtureActions.push(["unread", a.id, checks])}
         markingRead={new Set()}
       />
       <SidebarRow
-        row={required(agents[0])}
-        serverAlias=""
-        showServer={false}
+        row={agents[0]!}
+        {...partialSidebarRowProps}
         selected={false}
         renaming={false}
         name=""
@@ -137,10 +138,8 @@ function Harness() {
         markingRead={false}
         bindings={{
           "data-sidebar-id": "key-row",
-          onKeyDown: () =>
-            window.sidebarIncrementalFixtureActions.push(["key", checks]),
-          onDragOver: () =>
-            window.sidebarIncrementalFixtureActions.push(["drag", checks]),
+          onKeyDown: () => window.fixtureActions.push(["key", checks]),
+          onDragOver: () => window.fixtureActions.push(["drag", checks]),
         }}
         actions={{
           prepare: noop,
@@ -160,37 +159,37 @@ function Harness() {
     </>
   ) : null;
 }
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   <MantineProvider>
     <Harness />
   </MantineProvider>,
 );
-window.sidebarIncrementalFixtureAgent = required(agents[19]);
-window.sidebarIncrementalFixtureReady = true;
+window.fixtureAgent = agents[19]!;
+window.fixtureReady = true;
 
 declare global {
   interface Window {
-    sidebarIncrementalFixtureRows: number;
-    sidebarIncrementalFixtureJsonReads: number;
-    sidebarIncrementalFixtureRenders: number;
-    sidebarIncrementalFixtureActions: (string | number)[][];
-    sidebarIncrementalSameDocumentVersion: boolean;
-    sidebarIncrementalDocumentVersionProof: () => Promise<{
+    fixtureRows: number;
+    fixtureJsonReads: number;
+    fixtureRenders: number;
+    fixtureActions: (string | number)[][];
+    sameDocumentVersion: boolean;
+    documentVersionProof: () => Promise<{
       sameVersion: boolean;
       newVersion: boolean;
       stableNewVersion: boolean;
       immutableOldVersion: boolean;
     }>;
-    sidebarIncrementalWrite: (
+    write: (
       collection: string,
       id: string,
       value: unknown,
       seq: number,
       deleted?: boolean,
     ) => Promise<void>;
-    sidebarIncrementalReadyAgain: () => ReturnType<typeof persistProjection>;
-    sidebarIncrementalFixtureData: ReturnType<typeof useSnapshot>["data"];
-    sidebarIncrementalFixtureAgent: Agent;
-    sidebarIncrementalFixtureReady: boolean;
+    readyAgain: () => ReturnType<typeof persistProjection>;
+    fixtureData: ReturnType<typeof useSnapshot>["data"];
+    fixtureAgent: Agent;
+    fixtureReady: boolean;
   }
 }

@@ -1,5 +1,4 @@
 import type { Agent } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
@@ -34,7 +33,7 @@ function Team() {
     </>
   );
 }
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   <MantineProvider>
     <main
       style={{

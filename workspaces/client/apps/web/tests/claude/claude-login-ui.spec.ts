@@ -62,7 +62,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
           unsafeNext = false;
         } else {
           const status = receipt || {
-            requestId: url.searchParams.get("request_id") ?? "",
+            requestId: url.searchParams.get("request_id")!,
             accountKey: "claude",
             status: "starting",
           };
@@ -75,23 +75,21 @@ test("claude login ui", async ({ page: runnerPage }) => {
         });
       }
       if (url.pathname.endsWith("/code")) {
-        assert.ok(receipt);
         const body = fixturePostBody<"/api/accounts/claude/login/code">(req);
         codes.push(body.code);
         receipt = failNextCode
           ? {
-              ...receipt,
+              ...receipt!,
               status: "error",
               error:
                 "Claude's completed sign-in check did not confirm this account. Start a new sign-in request.",
             }
-          : { ...receipt, status: "ready", email: "me@example.com" };
+          : { ...receipt!, status: "ready", email: "me@example.com" };
         failNextCode = false;
         return route.fulfill({ json: receipt });
       }
       if (url.pathname.endsWith("/cancel")) {
-        assert.ok(receipt);
-        receipt = { ...receipt, status: "cancelled" };
+        receipt = { ...receipt!, status: "cancelled" };
         return route.fulfill({ json: receipt });
       }
       return route.fulfill({
@@ -99,8 +97,6 @@ test("claude login ui", async ({ page: runnerPage }) => {
           accounts: [
             {
               id: "claude",
-              home: "/fixture",
-              source: "fixture",
               label: "Personal",
               email: "me@example.com",
               provider: "claude",
@@ -108,17 +104,15 @@ test("claude login ui", async ({ page: runnerPage }) => {
             },
           ],
           defaultAccountKey: "claude",
-          archivedAccounts: [],
-          defaultAccountGroups: [],
-          logins: [],
-          supportsDelete: false,
-          supportsDisconnect: false,
           // Preserve the legacy signed_out spelling used by this fixture.
-        } satisfies Omit<
+        } satisfies Pick<
           components["schemas"]["AccountsResponse"],
-          "accounts"
+          "defaultAccountKey"
         > & {
-          accounts: (Omit<components["schemas"]["Account"], "status"> & {
+          accounts: (Pick<
+            components["schemas"]["Account"],
+            "id" | "label" | "email" | "provider"
+          > & {
             status: "signed_out";
           })[];
         },

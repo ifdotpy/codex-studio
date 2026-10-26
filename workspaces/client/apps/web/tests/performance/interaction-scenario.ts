@@ -1,5 +1,5 @@
+import type { nativeRequest } from "../../src/native/client.ts";
 import type { Host } from "../../src/native/host.ts";
-import { required } from "./performance-fixture.ts";
 (async () => {
   const report = async (result: InteractionResult) => {
     const output = document.createElement("output");
@@ -31,35 +31,17 @@ import { required } from "./performance-fixture.ts";
   const preferenceValues = new Map();
   let repeatedPreferenceWrites = 0;
   const invoke = window.__TAURI__?.core.invoke;
-  if (invoke && window.__TAURI__)
-    window.__TAURI__.core.invoke = (command, args) => {
+  if (invoke)
+    window.__TAURI__!.core.invoke = (command, args) => {
       if (command === "client_request") {
-        const request = args.request;
-        if (
-          !request ||
-          typeof request !== "object" ||
-          !("method" in request) ||
-          typeof request.method !== "string"
-        )
-          throw new Error("Invalid native request fixture");
+        const request = observeNativeRequest(args);
         calls.push(request.method);
         if (request.method === "preferences.raw_set") {
-          const params = "params" in request ? request.params : null;
-          if (
-            !params ||
-            typeof params !== "object" ||
-            !("key" in params) ||
-            !("raw" in params)
-          )
-            throw new Error("Missing preference parameters");
-          const { key, raw } = params;
+          const { key, raw } = request.params;
           if (preferenceValues.get(key) === raw) repeatedPreferenceWrites++;
           preferenceValues.set(key, raw);
         } else if (request.method === "preferences.raw_remove") {
-          const params = "params" in request ? request.params : null;
-          if (!params || typeof params !== "object" || !("key" in params))
-            throw new Error("Missing preference key");
-          preferenceValues.delete(params.key);
+          preferenceValues.delete(request.params.key);
         }
       }
       return invoke(command, args);
@@ -101,11 +83,7 @@ import { required } from "./performance-fixture.ts";
   const formattedMessage = (matches: (id: string) => boolean) =>
     [...document.querySelectorAll("[data-message] .markdown-block p")].some(
       (node) =>
-        matches(
-          required(
-            node.closest("[data-message]")?.getAttribute("data-message"),
-          ),
-        ),
+        matches(node.closest("[data-message]")!.getAttribute("data-message")!),
     );
   const messages = () =>
     [...document.querySelectorAll("[data-message]")].map((node) =>
@@ -171,7 +149,7 @@ import { required } from "./performance-fixture.ts";
     const chats = [...document.querySelectorAll("#chat-list .chat-row")];
     if (!chats.every((node) => /conversation/.test(node.textContent)))
       throw new Error("Not the isolated performance fixture");
-    if (button("Show old (2)")) required(button("Show old (2)")).click();
+    if (button("Show old (2)")) button("Show old (2)")!.click();
     for (const id of ["short", "long", "short", "long"]) {
       await measure(
         `chat-${id}`,
@@ -207,7 +185,7 @@ import { required } from "./performance-fixture.ts";
         `settings-${tab}`,
         async () => {
           if (!document.querySelector('[role="dialog"]'))
-            required(button("Studio settings")).click();
+            button("Studio settings")!.click();
           (await wait(() => button(tab), `settings tab ${tab}`)).click();
         },
         () => {
@@ -216,9 +194,7 @@ import { required } from "./performance-fixture.ts";
           );
           const panel =
             selected &&
-            document.getElementById(
-              selected.getAttribute("aria-controls") ?? "",
-            );
+            document.getElementById(selected.getAttribute("aria-controls")!);
           return (
             selected?.textContent?.trim() === tab &&
             panel?.getClientRects().length
@@ -226,11 +202,9 @@ import { required } from "./performance-fixture.ts";
         },
       );
     }
-    required(
-      document.querySelector<HTMLElement>(
-        '[role="dialog"] button[aria-label="Close"]',
-      ),
-    ).click();
+    document
+      .querySelector<HTMLElement>('[role="dialog"] button[aria-label="Close"]')!
+      .click();
     await wait(
       () => !document.querySelector('[role="dialog"]'),
       "close settings",
@@ -252,13 +226,13 @@ import { required } from "./performance-fixture.ts";
     };
     await measure(
       "chat-settings",
-      () => required(button("Chat settings")).click(),
+      () => button("Chat settings")!.click(),
       () => document.querySelector('[role="dialog"] .chat-settings-panel'),
     );
     await closeDialog();
     await measure(
       "team-messages",
-      () => required(button("Messages")).click(),
+      () => button("Messages")!.click(),
       () => document.querySelector('[role="dialog"] .workspace-message-body'),
     );
     await closeDialog();
@@ -275,7 +249,7 @@ import { required } from "./performance-fixture.ts";
         `workspace-${section}`,
         async () => {
           if (!document.querySelector('[role="dialog"]')) {
-            required(button("Chat actions")).click();
+            button("Chat actions")!.click();
             (
               await wait(
                 () =>
@@ -307,7 +281,7 @@ import { required } from "./performance-fixture.ts";
       );
     }
     await closeDialog();
-    const scroller = required(document.querySelector("#messages"));
+    const scroller = document.querySelector("#messages")!;
     scroller.dispatchEvent(
       new WheelEvent("wheel", { deltaY: -10000, bubbles: true }),
     );
@@ -317,7 +291,7 @@ import { required } from "./performance-fixture.ts";
     await measure(
       "older-page",
       async () => {
-        required(button("Earlier messages")).click();
+        button("Earlier messages")!.click();
         await delay(50);
         scroller.dispatchEvent(
           new WheelEvent("wheel", { deltaY: -10000, bubbles: true }),
@@ -353,7 +327,7 @@ import { required } from "./performance-fixture.ts";
       mode: "renderer-performance",
       calls: counts(),
       error: String(error),
-      stack: error instanceof Error ? error.stack : undefined,
+      stack: (error as Error | undefined)?.stack,
       storage: storageCounts(),
       ...results,
     });
@@ -394,4 +368,12 @@ declare global {
   interface Window {
     __TAURI__?: Host;
   }
+}
+
+// Observe the envelope constructed by native/client.ts without changing its reads.
+function observeNativeRequest(args: Parameters<Host["core"]["invoke"]>[1]) {
+  return args.request as {
+    method: Parameters<typeof nativeRequest>[0];
+    params: Parameters<typeof nativeRequest>[1] & { key: string; raw: string };
+  };
 }
