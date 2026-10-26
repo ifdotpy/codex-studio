@@ -1,102 +1,19 @@
-#!/usr/bin/env node
+import { fixtureUrl, usageFixtureServer } from "./fixture-server.ts";
 // Current quota recovery and immutable history through real React components.
 
-import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.ts";
+import assert from "node:assert/strict";
+import type { LimitSnapshot } from "./limit-recovery-state-ui.fixture.tsx";
+import type { GetResult } from "../../src/apiTypes.ts";
+import { test } from "../playwright.ts";
 
 test("Limit Recovery State Ui", async ({
   browser: _testBrowser,
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
-  const cache = await mkdtemp(join(tmpdir(), "limit-recovery-state-vite-"));
-  const entry = join(
-    repo,
-    "workspaces/client/apps/web/__limit-recovery-fixture.jsx",
-  );
   const now = Math.floor(Date.now() / 1000);
-  const source = `
-import React, {useState} from 'react';
-import {createRoot} from 'react-dom/client';
-import {MantineProvider} from '@mantine/core';
-import '@mantine/core/styles.css';
-import {NativeError, NativeNotice} from '/src/components/NativeNotice.tsx';
-import Usage from '/src/components/Usage.tsx';
-const error={codexErrorInfo:'usageLimitExceeded',message:'Historical quota failure'};
-const agent={id:'lumina',rootId:'lumina',accountKey:'work',threadId:'native-lumina',model:'gpt-6-astra',provider:'codex',
-  error,nativeLimitErrorAt:${now - 10},status:'failed',isLead:true};
-const item={id:'past-error',role:'system',nativeNotice:'error',nativeError:error,text:error.message};
-window.fixtureActions=[];
-const action=()=>window.fixtureActions.push('action');
-function Fixture(){
-  const [snapshot,setSnapshot]=useState(()=>JSON.parse(sessionStorage.getItem('fixture-initial')||'null')||{label:'initial',limits:null});
-  window.applyLimitSnapshot=setSnapshot;
-  const currentAgent={...agent,id:snapshot.agentId||agent.id,
-    accountKey:snapshot.accountKey||agent.accountKey,threadId:snapshot.threadId||agent.threadId,
-    turnId:snapshot.turnId,lastCompletedTurn:snapshot.lastCompletedTurn,
-    nativeLimitErrorAt:snapshot.episode??agent.nativeLimitErrorAt};
-  return <MantineProvider><main data-case={snapshot.label}>
-    <section id='current'><NativeError key={snapshot.mountKey} agent={currentAgent} limits={snapshot.limits} openLimits={action}/></section>
-    <section id='history'><NativeNotice item={item}/></section>
-    <section style={{position:'fixed',bottom:20,right:20}}>
-      <Usage key={snapshot.mountKey} agent={currentAgent} limits={snapshot.limits} reload={action} opened={true} onChange={action} limitsLoading={false}/>
-    </section>
-    <output id='saved-error'>{JSON.stringify(agent.error)}</output>
-  </main></MantineProvider>;
-}
-createRoot(document.getElementById('root')).render(<Fixture/>);`;
-  const server = await createServer({
-    configFile: false,
-    cacheDir: cache,
-    root: join(repo, "workspaces/client/apps/web"),
-    server: { host: "127.0.0.1", port: 0 },
-    plugins: [
-      {
-        name: "limit-recovery-fixture",
-        resolveId(id) {
-          if (id === "/__limit-recovery-fixture.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
-        configureServer(vite) {
-          vite.middlewares.use((req, res, next) => {
-            if (req.url !== "/") return next();
-            res.setHeader("Content-Type", "text/html");
-            res.end(
-              '<div id="root"></div><script type="module" src="/__limit-recovery-fixture.jsx"></script>',
-            );
-          });
-        },
-      },
-    ],
-  });
+
+  const server = await usageFixtureServer("limit-recovery-state-ui");
   try {
     await server.listen();
     const page = testPage;
@@ -104,8 +21,8 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
     await page.addInitScript((clock) => {
       Date.now = () => clock * 1000;
     }, now);
-    const errors = [],
-      writes = [];
+    const errors: string[] = [],
+      writes: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/**", async (route) => {
       if (route.request().method() !== "GET")
@@ -118,10 +35,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
             : {},
       });
     });
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(fixtureUrl(server) + `?now=${now}`);
     await page.locator(".account-limits-panel").waitFor();
     const originalError = await page.locator("#saved-error").textContent();
-    const assertBanner = async (visible) => {
+    const assertBanner = async (visible: boolean) => {
       await page.locator(".account-limits-panel").waitFor();
       await page.waitForFunction(
         (expected) =>
@@ -136,7 +53,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
         1,
       );
       assert.match(
-        await page.locator("#history").textContent(),
+        (await page.locator("#history").textContent()) ?? "",
         /Historical quota failure/,
       );
       assert.equal(
@@ -144,7 +61,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
         originalError,
       );
     };
-    const apply = async (label, limits, visible, identity = {}) => {
+    const apply = async (
+      label: string,
+      limits:
+        | (GetResult<"/api/limits"> & { stale?: boolean; loading?: boolean })
+        | null,
+      visible: boolean,
+      identity: Partial<Omit<LimitSnapshot, "label" | "limits">> = {},
+    ) => {
       if (limits?.eligibility)
         limits = {
           ...limits,
@@ -153,11 +77,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
             agentId: identity.agentId || "lumina",
           },
         };
-      await page.evaluate((snapshot) => window.applyLimitSnapshot(snapshot), {
-        label,
-        limits,
-        ...identity,
-      });
+      await page.evaluate(
+        (serialized) => window.limitRecoveryFixture.applySerialized(serialized),
+        JSON.stringify({ label, limits, ...identity } satisfies LimitSnapshot),
+      );
       await page.locator(`main[data-case="${label}"]`).waitFor();
       await assertBanner(visible);
     };
@@ -188,8 +111,8 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
           secondary: { usedPercent: 35, resetsAt: now + 86400 },
         },
       },
-    };
-    const cases = [
+    } satisfies GetResult<"/api/limits">;
+    const cases: [string, Parameters<typeof apply>[1]][] = [
       ["another-account", { ...available, accountKey: "another" }],
       ["stale", { ...available, stale: true }],
       ["expired", { ...available, at: now - 301 }],
@@ -263,7 +186,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       threadId: "another-thread",
       mountKey: 3,
     });
-    assert.deepEqual(await page.evaluate(() => window.fixtureActions), []);
+    assert.deepEqual(
+      await page.evaluate(() => window.limitRecoveryFixture.actions),
+      [],
+    );
     await page.evaluate(
       (snapshot) => {
         sessionStorage.setItem("fixture-initial", JSON.stringify(snapshot));
@@ -275,7 +201,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
     await assertBanner(false);
     await apply("new-quota-error", available, true, { episode: now });
     assert.deepEqual(writes, []);
-    assert.deepEqual(await page.evaluate(() => window.fixtureActions), []);
+    assert.deepEqual(
+      await page.evaluate(() => window.limitRecoveryFixture.actions),
+      [],
+    );
     assert.deepEqual(errors, []);
     console.log(
       JSON.stringify({
@@ -293,6 +222,5 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
     );
   } finally {
     await server.close();
-    await rm(cache, { recursive: true, force: true });
   }
 });

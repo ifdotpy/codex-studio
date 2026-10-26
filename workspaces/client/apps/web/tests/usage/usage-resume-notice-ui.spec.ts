@@ -1,89 +1,43 @@
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "./fixture-server.ts";
+import { fixtureUrl, usageFixtureServer } from "./fixture-server.ts";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
-import { mkdtemp, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "../playwright.ts";
 
 test("Usage resume notice", async ({ context: testContext }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(
-    new URL("../../../../../../", import.meta.url),
-  );
   // Render the production limit notice and verify its schedule and opt-out action.
 
-  const repo = testRepo;
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
-  const cache = await mkdtemp(join(tmpdir(), "usage-resume-notice-vite-"));
-  const entry = join(
-    repo,
-    "workspaces/client/apps/web/__usage-resume-fixture.jsx",
-  );
   const dueAt = Math.floor(Date.now() / 1000) + 3600;
-  const source = `
-  import React from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import {NativeError} from '/src/components/NativeNotice.tsx';
-  const resume={id:'resume-1',status:'scheduled',dueAt:${dueAt},plannedAt:${dueAt},updatedAt:1};
-  const authResume={id:'auth-resume-1',status:'scheduled',cause:'auth',dueAt:${dueAt},updatedAt:1};
-  const agent={id:'chat-1',rootId:'chat-1',accountKey:'work',threadId:'thread-1',model:'gpt-6-astra',
-    error:{codexErrorInfo:'usageLimitExceeded',message:'Usage limit reached'},nativeLimitErrorAt:${dueAt - 60},
-    status:'failed',isLead:true,usageResume:resume,usageResumeEnabled:true};
-  const authAgent={...agent,id:'chat-auth',error:{codexErrorInfo:'unauthorized',message:'Sign in again'},usageResume:authResume};
-  createRoot(document.getElementById('root')).render(<MantineProvider><><NativeError agent={agent} limits={{
-    accountKey:'work',at:${dueAt - 30},data:{rateLimits:{primary:{usedPercent:100,resetsAt:${dueAt}}}}
-  }}/><NativeError agent={authAgent}/></></MantineProvider>);`;
-  const server = await createServer({
-    configFile: false,
-    cacheDir: cache,
-    root: join(repo, "workspaces/client/apps/web"),
-    server: { host: "127.0.0.1", port: 0 },
-    plugins: [
-      {
-        name: "usage-resume-fixture",
-        resolveId(id) {
-          if (id === "/__usage-resume-fixture.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
-        configureServer(vite) {
-          vite.middlewares.use((req, res, next) => {
-            if (req.url !== "/") return next();
-            res.setHeader("Content-Type", "text/html");
-            res.end(
-              '<div id="root"></div><script type="module" src="/__usage-resume-fixture.jsx"></script>',
-            );
-          });
-        },
-      },
-    ],
-  });
+
+  const server = await usageFixtureServer("usage-resume-notice-ui");
   try {
     await server.listen();
     const page = await testContext.newPage();
-    const writes = [];
+    const writes: (PostBody<"/api/usage-resume"> | string)[] = [];
     page.on("pageerror", (error) => writes.push(`pageerror:${error.message}`));
     await page.route("**/api/usage-resume", async (route) => {
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody<"/api/usage-resume">(
+        route.request().postDataJSON(),
+      );
       writes.push(body);
       await route.fulfill({
         json: {
-          id: body.resume_id,
+          id: body.resume_id ?? "",
+          accountKey: "work",
+          cause: body.id === "chat-auth" ? "auth" : "usage_limit",
+          epoch: 0,
+          failedAt: 0,
+          threadId: "thread-1",
+          turnId: "",
           status: "cancelled",
           dueAt: null,
           reason: "Automatic resume is off for this chat.",
           updatedAt: 2,
-        },
+        } satisfies PostResult<"/api/usage-resume">,
       });
     });
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(fixtureUrl(server) + `?dueAt=${dueAt}`);
     const notices = page.locator(".account-limit-recovery.inline");
     await notices.first().waitFor();
     const notice = notices.filter({ hasText: "Usage limit reached" }).first();
@@ -94,15 +48,21 @@ test("Usage resume notice", async ({ context: testContext }) => {
         .count(),
       1,
     );
-    assert.match(await notice.textContent(), /Automatic resume planned for/);
-    assert.match(await authNotice.textContent(), /Next account check/);
+    assert.match(
+      (await notice.textContent()) ?? "",
+      /Automatic resume planned for/,
+    );
+    assert.match((await authNotice.textContent()) ?? "", /Next account check/);
     await authNotice
       .getByRole("button", { name: "Turn off automatic resume" })
       .click();
     await authNotice
       .getByRole("button", { name: "Turn on automatic resume" })
       .waitFor();
-    assert.match(await authNotice.textContent(), /Automatic resume is off/);
+    assert.match(
+      (await authNotice.textContent()) ?? "",
+      /Automatic resume is off/,
+    );
     assert.ok(
       (await notice
         .locator(`time[datetime="${new Date(dueAt * 1000).toISOString()}"]`)
@@ -121,6 +81,5 @@ test("Usage resume notice", async ({ context: testContext }) => {
     console.log("Usage resume notice: planned time and opt-out toggle passed.");
   } finally {
     await server.close();
-    await rm(cache, { recursive: true, force: true });
   }
 });

@@ -1,9 +1,10 @@
+import { usageSessionCost, usageAccountCost } from "./usage-fixture.ts";
+import type { BrowserContext, TestInfo } from "@playwright/test";
+import type { ServerResponse } from "node:http";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "./fixture-server.ts";
+import { fixtureUrl, usageFixtureServer } from "./fixture-server.ts";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   test,
@@ -12,7 +13,7 @@ import {
   readApiSchemaHash,
 } from "../playwright.ts";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -28,23 +29,19 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("usage accounts ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
-  const cache = await mkdtemp(join(tmpdir(), "usage-accounts-vite-"));
-  const entry = join(
-    repo,
-    "workspaces/client/apps/web/__usage-accounts-fixture.jsx",
-  );
+
   const now = Math.floor(Date.now() / 1000);
   const workspaceId = "abcdef0123456789abcdef0123456789";
   const epoch = "usage-accounts-fixture";
-  const streams = new Set();
+  type ResourceStream = { response: ServerResponse; resources: unknown[] };
+  const streams = new Set<ResourceStream>();
   const reads = { costs: 0, sessionCost: 0 };
   let revision = 0;
-  const writeResources = (stream, reason, resources = stream.resources) => {
+  const writeResources = (
+    stream: ResourceStream,
+    reason: string,
+    resources = stream.resources,
+  ) => {
     if (reason !== "initial") revision++;
     const event = {
       protocol: 4,
@@ -61,126 +58,77 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
     );
   };
-  let resetPayload;
-  const source = `
-  import React,{useState} from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import Usage from '/src/components/Usage.tsx';
-  import {ServerServicesProvider} from '/src/servers/ServerServicesContext.tsx';
-  import * as sync from '/src/sync/client.ts';
-  const services={owner:{id:'fixture',origin:location.origin,credentialId:null},sync:{...sync,subscribeStateProjection(accept){accept({runtime:{sessionCostsByAgent:{chat:{pricingState:'ready',totalUSD:0,rootId:'chat',claudeHistoryIncomplete:true}},accountCostsByAccount:{own:{accountKey:'own',data:{todayUSD:0,last30DaysUSD:0}}}}});return ()=>{};}}};
-  import {accountLimitFixtures} from '/src/components/AccountLimits.fixtures.ts';
-  import {theme} from '/src/theme.ts';
-  const geometry=location.search.includes('geometry');
-  if(geometry){await import('/src/style.css');await import('/src/design/state.css');}
-  const own={id:'chat',rootId:'chat',accountKey:'own',source:'managed',model:'gpt-6-astra',status:'completed',isLead:true,created:1,contextUsage:{tokens:10,window:100}};
-  const ownLimits={accountKey:'own',at:${now},data:{accountId:'own-account',rateLimits:{limitId:'codex',primary:{usedPercent:20,resetsAt:${now + 3600}}}}};
-  const teamLimits={accountKey:'team',at:${now},data:{accountId:'team-account',rateLimits:{limitId:'codex',primary:{usedPercent:92,resetsAt:${now + 3600}}},rateLimitResetCredits:{availableCount:1,credits:[{id:'team-credit',title:'Team reset',status:'available',resetType:'codexRateLimits'}]}}};
-  window.heartbeats=0;
-  const NativeEventSource=window.EventSource;
-  window.EventSource=class extends NativeEventSource {
-    constructor(...args){super(...args);this.addEventListener('heartbeat',()=>window.heartbeats++);}
-  };
-  window.reloadCalls=[];
-  function Fixture(){
-   const [multi,setMulti]=useState(location.search.includes('multi'));
-   const [teamReady,setTeamReady]=useState(false);
-   const accounts=geometry?accountLimitFixtures:[{key:'own',label:'Own account',email:'own@example.test',accountId:'own-account',limits:ownLimits,loading:false,reload:(force=false)=>{window.reloadCalls.push(['own',force]);}},...(multi?[{key:'team',label:'Team account',email:'team@example.test',provider:'openai',accountId:'team-account',limits:teamReady?teamLimits:null,loading:false,reload:(force=false)=>{window.reloadCalls.push(['team',force]);if(!teamReady)setTeamReady(true);}},{key:'claude',label:'Claude work',email:'claude@example.test',provider:'claude',limits:{accountKey:'claude',at:${now},data:{rateLimits:{limitId:'claude',primary:{usedPercent:50,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['claude',force])},{key:'unnamed',label:'unnamed',provider:'codex',limits:{accountKey:'unnamed',at:${now},data:{rateLimits:{limitId:'codex',primary:{usedPercent:85,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['unnamed',force])}]:[])];
-   return <MantineProvider theme={theme} forceColorScheme={new URLSearchParams(location.search).get('scheme') || undefined}><div style={geometry?{display:'flex',alignItems:'end',width:'100%',height:'100dvh',padding:'var(--mantine-spacing-sm)',containerType:'inline-size',containerName:'conversation-footer'}:undefined}><Usage agent={geometry?{...own,accountKey:'codex-main'}:own} stateDir='/fixture' limits={ownLimits} accountLabel='own@example.test' reload={()=>window.reloadCalls.push(['fallback',true])} opened={true} onChange={()=>{}} limitsLoading={false} accounts={accounts}/></div></MantineProvider>;
-  }
-  createRoot(document.getElementById('root')).render(<ServerServicesProvider services={services}><Fixture/></ServerServicesProvider>);`;
-  const server = await createServer({
-    configFile: false,
-    cacheDir: cache,
-    root: join(repo, "workspaces/client/apps/web"),
-    server: { host: "127.0.0.1", port: 0 },
-    plugins: [
-      {
-        name: "usage-accounts-fixture",
-        resolveId(id) {
-          if (id === "/__usage-accounts-fixture.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
-        configureServer(vite) {
-          vite.middlewares.use((req, res, next) => {
-            if (req.url?.startsWith("/api/"))
-              res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-            if (req.url?.startsWith("/api/sync/identity")) {
-              res.setHeader("Content-Type", "application/json");
-              res.end(JSON.stringify({ workspaceId }));
-              return;
-            }
-            if (req.url?.startsWith("/api/sync/stream")) {
-              const stream = {
-                response: res,
-                resources: JSON.parse(
-                  new URL(req.url, "http://localhost").searchParams.get(
-                    "resources",
-                  ) || "[]",
-                ),
-              };
-              res.writeHead(200, {
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                Connection: "keep-alive",
-              });
-              res.write(apiSchemaHandshakeSse());
-              streams.add(stream);
-              writeResources(stream, "initial");
-              res.on("close", () => streams.delete(stream));
-              return;
-            }
-            if (req.url?.startsWith("/api/")) {
-              res.setHeader("Content-Type", "application/json");
-              if (req.url.startsWith("/api/session-cost")) {
-                reads.sessionCost++;
-                res.end(
-                  JSON.stringify({
-                    pricingState: "ready",
-                    totalUSD: 0,
-                    rootId: "chat",
-                    claudeHistoryIncomplete: true,
-                  }),
-                );
-                return;
-              }
-              if (req.url.startsWith("/api/costs")) {
-                reads.costs++;
-                const key =
-                  new URL(req.url, "http://localhost").searchParams.get(
-                    "account_key",
-                  ) || "default";
-                res.end(
-                  JSON.stringify({
-                    accountKey: key,
-                    data: { todayUSD: 0, last30DaysUSD: 0 },
-                  }),
-                );
-                return;
-              }
-              if (req.url.startsWith("/api/limits/reset")) {
-                let body = "";
-                req.on("data", (part) => (body += part));
-                req.on("end", () => {
-                  resetPayload = JSON.parse(body);
-                  res.end(JSON.stringify({ outcome: "reset" }));
-                });
-                return;
-              }
-            }
-            if (req.url?.split("?")[0] !== "/") return next();
-            res.setHeader("Content-Type", "text/html");
+  const captured: { reset?: PostBody<"/api/limits/reset"> } = {};
+
+  const server = await usageFixtureServer("usage-accounts-ui", {
+    middleware(req, res, next) {
+      if (req.url?.startsWith("/api/"))
+        res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+      if (req.url?.startsWith("/api/sync/identity")) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ workspaceId }));
+        return;
+      }
+      if (req.url?.startsWith("/api/sync/stream")) {
+        const stream = {
+          response: res,
+          resources: JSON.parse(
+            new URL(req.url, "http://localhost").searchParams.get(
+              "resources",
+            ) || "[]",
+          ),
+        };
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        });
+        res.write(apiSchemaHandshakeSse());
+        streams.add(stream);
+        writeResources(stream, "initial");
+        res.on("close", () => streams.delete(stream));
+        return;
+      }
+      if (req.url?.startsWith("/api/")) {
+        res.setHeader("Content-Type", "application/json");
+        if (req.url.startsWith("/api/session-cost")) {
+          reads.sessionCost++;
+          res.end(JSON.stringify(usageSessionCost()));
+          return;
+        }
+        if (req.url.startsWith("/api/costs")) {
+          reads.costs++;
+          const key =
+            new URL(req.url, "http://localhost").searchParams.get(
+              "account_key",
+            ) || "default";
+          res.end(JSON.stringify(usageAccountCost(key)));
+          return;
+        }
+        if (req.url.startsWith("/api/limits/reset")) {
+          let body = "";
+          req.on("data", (part) => (body += part));
+          req.on("end", () => {
+            captured.reset = fixturePostBody<"/api/limits/reset">(
+              JSON.parse(body),
+            );
             res.end(
-              '<meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script type="module" src="/__usage-accounts-fixture.jsx"></script>',
+              JSON.stringify({
+                outcome: "reset",
+                account_id: captured.reset.account_id,
+                account_key: captured.reset.account_key ?? "team",
+                credit_id: captured.reset.credit_id,
+                request_id: captured.reset.request_id,
+                limits: { accountKey: "team" },
+              } satisfies PostResult<"/api/limits/reset">),
             );
           });
-        },
-      },
-    ],
+          return;
+        }
+      }
+
+      next();
+    },
   });
   let browser;
   try {
@@ -190,16 +138,16 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       viewport: { width: 1100, height: 900 },
     });
     await page.clock.install();
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(fixtureUrl(server) + `?now=${now}`);
     // Notes stay in the tooltip; the footer shows only the estimate and a marker.
     await page
       .locator(".session-cost-summary")
       .filter({ hasText: "*" })
       .waitFor({ state: "attached" });
     assert.match(
-      await page.locator(".session-cost-summary").getAttribute("title"),
+      (await page.locator(".session-cost-summary").getAttribute("title")) ?? "",
       /Earlier Claude totals may be incomplete/,
     );
     assert.doesNotMatch(
@@ -228,10 +176,12 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.match(await ownLimitsPanel.innerText(), /80%\s*left/);
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.reloadCalls.some(([key, force]) => key === "own" && force),
+      window.usageAccountsFixture.reloadCalls.some(
+        ([key, force]) => key === "own" && force,
+      ),
     );
 
-    await page.goto(server.resolvedUrls.local[0] + "?multi");
+    await page.goto(fixtureUrl(server) + `?multi&now=${now}`);
     const ownTab = page.getByRole("tab", {
       name: "own@example.test account limits",
     });
@@ -263,7 +213,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       "ArrowRight selects the next account tile",
     );
     await page.waitForFunction(() =>
-      window.reloadCalls.some(([key, force]) => key === "team" && !force),
+      window.usageAccountsFixture.reloadCalls.some(
+        ([key, force]) => key === "team" && !force,
+      ),
     );
     const selectedTeamLimit = accountPanel.getByText("8% left", {
       exact: false,
@@ -286,7 +238,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.reloadCalls.some(([key, force]) => key === "team" && force),
+      window.usageAccountsFixture.reloadCalls.some(
+        ([key, force]) => key === "team" && force,
+      ),
     );
     await page
       .getByRole("button", { name: "Apply reset", exact: true })
@@ -297,7 +251,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     const resetStatus = page.getByText("Reset applied.", { exact: true });
     await resetStatus.waitFor();
     assert.equal(await resetStatus.textContent(), "Reset applied.");
-    const reset = resetPayload;
+    const reset = captured.reset;
     assert.ok(reset, "reset request reached the fixture server");
     assert.equal(reset.account_id, "team-account");
     assert.equal(reset.credit_id, "team-credit");
@@ -319,7 +273,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.equal(
       await teamMeter
         .locator("span")
-        .evaluate((element) => element.style.background),
+        .evaluate((element) =>
+          element instanceof HTMLElement ? element.style.background : "",
+        ),
       "var(--studio-state-error)",
     );
     await page
@@ -344,12 +300,16 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.equal(
       await claudeMeter
         .locator("span")
-        .evaluate((element) => element.style.background),
+        .evaluate((element) =>
+          element instanceof HTMLElement ? element.style.background : "",
+        ),
       "var(--studio-state-answer)",
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.reloadCalls.some(([key, force]) => key === "claude" && force),
+      window.usageAccountsFixture.reloadCalls.some(
+        ([key, force]) => key === "claude" && force,
+      ),
     );
     await page
       .getByRole("radio", { name: "Codex", exact: true })
@@ -363,7 +323,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await ownTile
         .getByRole("meter")
         .locator("span")
-        .evaluate((element) => element.style.background),
+        .evaluate((element) =>
+          element instanceof HTMLElement ? element.style.background : "",
+        ),
       "var(--studio-state-unread)",
     );
     const unnamedTile = page.getByRole("tab", {
@@ -382,7 +344,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await unnamedTile
         .getByRole("meter")
         .locator("span")
-        .evaluate((element) => element.style.background),
+        .evaluate((element) =>
+          element instanceof HTMLElement ? element.style.background : "",
+        ),
       "var(--studio-state-answer)",
     );
     await unnamedTile.click();
@@ -407,7 +371,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         });
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(
-          server.resolvedUrls.local[0] + `?geometry&scheme=${scheme}`,
+          fixtureUrl(server) + `?geometry&scheme=${scheme}&now=${now}`,
         );
         assert.equal(
           await page.locator(".context-use").innerText(),
@@ -425,7 +389,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
               background: getComputedStyle(element).backgroundColor,
             })),
           );
-        const palette =
+        const palette: Record<string, string> =
           scheme === "light"
             ? {
                 green: "rgb(52, 134, 109)",
@@ -444,7 +408,10 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           assert.equal(dot.width, 6);
           assert.equal(dot.height, 6);
           assert.equal(dot.radius, "50%");
-          assert.equal(dot.background, palette[dot.color]);
+          assert.equal(
+            dot.background,
+            dot.color === null ? undefined : palette[dot.color],
+          );
         }
         const targets = await page
           .locator(".account-limits-dot-target")
@@ -459,7 +426,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           assert.ok(target.height >= 24);
           if (index)
             assert.ok(
-              target.left >= targets[index - 1].right,
+              target.left >= (targets[index - 1]?.right ?? 0),
               "allowance targets do not overlap",
             );
         }
@@ -482,11 +449,12 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           );
           if (index)
             assert.ok(
-              control.left >= footerControls[index - 1].right,
+              control.left >= (footerControls[index - 1]?.right ?? 0),
               JSON.stringify({ width, footerControls }),
             );
         }
         const footer = await page.locator(".usage-footer").boundingBox();
+        assert.ok(footer);
         assert.ok(
           footer.height <= (width < 760 ? 24 : 32),
           "usage footer preserves its row height",
@@ -497,8 +465,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             width,
             scheme,
             height: footer.height,
-            targetWidth: targets[0].width,
-            targetHeight: targets[0].height,
+            targetWidth: targets[0]?.width,
+            targetHeight: targets[0]?.height,
           }),
         );
         const popover = page.locator(".account-limits-popover");
@@ -507,13 +475,17 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           .waitFor();
         await page.waitForFunction(
           () =>
-            getComputedStyle(document.querySelector(".account-limits-popover"))
-              .opacity === "1",
+            getComputedStyle(
+              document.querySelector(".account-limits-popover") ??
+                document.body,
+            ).opacity === "1",
         );
         await page.evaluate(
           () =>
             new Promise((resolve) =>
-              requestAnimationFrame(() => requestAnimationFrame(resolve)),
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve(undefined)),
+              ),
             ),
         );
         assert.doesNotMatch(await popover.innerText(), /Session estimate/);
@@ -524,6 +496,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           assert.deepEqual(
             await popover.evaluate((element) => {
               const panel = element.querySelector(".account-limits-panel");
+              if (!panel) throw new Error("Limits panel is missing");
               return {
                 clipped: panel.scrollHeight > panel.clientHeight + 1,
                 scrollbars: [...element.querySelectorAll("*")]
@@ -539,6 +512,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             { clipped: false, scrollbars: [] },
           );
           const rect = await popover.boundingBox();
+          assert.ok(rect);
           assert.ok(
             rect.y >= 0 && rect.y + rect.height <= 845,
             "all limits fit in the viewport",
@@ -553,6 +527,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         await page.getByRole("link", { name: "Open free resets" }).waitFor();
         assert.equal(await page.getByRole("tab").count(), 2);
         const after = await popover.boundingBox();
+        assert.ok(before);
+        assert.ok(after);
         assert.equal(
           after.height,
           before.height,
@@ -572,7 +548,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Apply reset", exact: true })
           .waitFor();
-        assert.equal((await popover.boundingBox()).height, before.height);
+        assert.equal((await popover.boundingBox())?.height, before.height);
         const claudeDot = page.locator(
           '.account-limits-dot-target[data-account-key="claude-main"]',
         );
@@ -595,6 +571,5 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
   } finally {
     await server.close();
-    await rm(cache, { recursive: true, force: true });
   }
 });
