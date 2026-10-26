@@ -17,10 +17,10 @@ type Caller =
 type Subscription = {
   caller: Caller;
   logical: string;
-  capture?: string;
-  voice?: string;
+  capture?: string | undefined;
+  voice?: string | undefined;
 };
-export const audioFrameMethod = (method: string, params: any) =>
+export const audioFrameMethod = (method: string, params: unknown) =>
   [
     "desktop.requestMicrophone",
     "desktop.prepareTranscription",
@@ -38,7 +38,11 @@ export const audioFrameMethod = (method: string, params: any) =>
     "audio.unsubscribe",
   ].includes(method) ||
   (method === "view.subscribe" &&
-    ["microphone", "transcription", "voice"].includes(params?.topic));
+    !!params &&
+    typeof params === "object" &&
+    "topic" in params &&
+    typeof params.topic === "string" &&
+    ["microphone", "transcription", "voice"].includes(params.topic));
 
 export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
   const permits = new Map<string, Caller>();
@@ -98,13 +102,31 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
     });
   async function subscribeEvents() {
     if (!listen) throw new Error("Native audio events are unavailable.");
-    listening ??= listen((value: any) => {
-      const row = subscriptions.get(value?.event);
+    listening ??= listen((value) => {
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("event" in value) ||
+        typeof value.event !== "string" ||
+        !("value" in value)
+      )
+        return;
+      const row = subscriptions.get(value.event);
       if (!row || !row.caller.live() || closed) return;
       if (
         !row.capture &&
         !row.voice &&
-        !same(running.get(value?.value?.id), row.caller)
+        !same(
+          running.get(
+            value.value &&
+              typeof value.value === "object" &&
+              "id" in value.value &&
+              typeof value.value.id === "string"
+              ? value.value.id
+              : "",
+          ),
+          row.caller,
+        )
       )
         return;
       const event = { event: row.logical, value: value.value };
@@ -159,10 +181,19 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
     },
     async request(
       method: string,
-      params: any,
+      input: unknown,
       id: string,
       caller: Caller,
     ): Promise<unknown> {
+      if (!input || typeof input !== "object")
+        throw new Error("Invalid audio parameters.");
+      const params = input as Record<string, unknown>;
+      const text = (key: string): string => {
+        const value = params[key];
+        if (typeof value !== "string")
+          throw new Error("Invalid audio identity.");
+        return value;
+      };
       prune();
       if (closed || !caller.live()) throw new Error("The server view closed.");
       if (method === "desktop.requestMicrophone") {
@@ -211,9 +242,8 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
             typeof (params.topic === "voice"
               ? params.session
               : params.capture) !== "string" ||
-            !(params.topic === "voice" ? params.session : params.capture) ||
-            (params.topic === "voice" ? params.session : params.capture)
-              .length > 128
+            !text(params.topic === "voice" ? "session" : "capture") ||
+            text(params.topic === "voice" ? "session" : "capture").length > 128
           )
             throw new Error("Invalid capture.");
         }
@@ -221,8 +251,8 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         subscriptions.set(nativeId, {
           caller,
           logical: params.subscription,
-          capture: params.topic === "microphone" ? params.capture : undefined,
-          voice: params.topic === "voice" ? params.session : undefined,
+          capture: params.topic === "microphone" ? text("capture") : undefined,
+          voice: params.topic === "voice" ? text("session") : undefined,
         });
         try {
           const result = await invoke(
@@ -272,7 +302,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         if (!entry) throw new Error("Unknown voice session.");
         if (method === "voice.create") {
           owns(microphone?.caller, caller);
-          if (microphone!.expires <= Date.now() || capture)
+          if (!microphone || microphone.expires <= Date.now() || capture)
             throw new Error("Use the Voice button again.");
           capture = { caller, id: entry[0], voice: true };
         } else if (method !== "voice.close") {
@@ -308,7 +338,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         if (!entry) throw new Error("Unknown microphone capture.");
         if (method === "media.captureStart") {
           owns(microphone?.caller, caller);
-          if (microphone!.expires <= Date.now() || capture)
+          if (!microphone || microphone.expires <= Date.now() || capture)
             throw new Error("Use the Record button again.");
           capture = { caller, id: entry[0] };
         } else owns(capture?.caller, caller);
@@ -328,7 +358,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         }
       }
       if (method === "speech.uploadBegin") {
-        owns(permits.get(params.permit), caller);
+        owns(permits.get(text("permit")), caller);
         const result = (await invoke(
           method,
           { permit: params.permit, size: params.size },
@@ -339,20 +369,21 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         return result;
       }
       if (method === "speech.uploadChunk" || method === "speech.uploadCancel") {
-        owns(uploads.get(params.transfer), caller);
+        owns(uploads.get(text("transfer")), caller);
         try {
           return await invoke(method, params, id);
         } finally {
-          if (method === "speech.uploadCancel") uploads.delete(params.transfer);
+          if (method === "speech.uploadCancel")
+            uploads.delete(text("transfer"));
         }
       }
       if (method === "desktop.cancelTranscription") {
-        owns(running.get(params.value), caller);
+        owns(running.get(text("value")), caller);
         return invoke(method, { value: params.value }, id);
       }
       if (method === "speech.transcribe") {
-        owns(uploads.get(params.transfer), caller);
-        owns(permits.get(params.permit), caller);
+        owns(uploads.get(text("transfer")), caller);
+        owns(permits.get(text("permit")), caller);
         if (
           typeof params.id !== "string" ||
           !params.id ||
@@ -360,7 +391,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
           running.has(params.id)
         )
           throw new Error("Invalid transcription attempt.");
-        permits.delete(params.permit);
+        permits.delete(text("permit"));
         running.set(params.id, caller);
         try {
           return await invoke(
@@ -375,7 +406,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
           );
         } finally {
           running.delete(params.id);
-          uploads.delete(params.transfer);
+          uploads.delete(text("transfer"));
           quiet("speech.uploadCancel", { transfer: params.transfer });
         }
       }

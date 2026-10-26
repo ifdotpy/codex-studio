@@ -5,7 +5,7 @@ import {
   spawnFixture as spawn,
   rustUiFixture,
   rustFixtureStateDirectory,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";

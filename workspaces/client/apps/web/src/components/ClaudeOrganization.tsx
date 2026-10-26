@@ -6,7 +6,11 @@ export function organizationLabel(
   return `${organization.name || "Organization"} (${organization.idSuffix})`;
 }
 
-export default function ClaudeOrganization({ account }: { account?: Account }) {
+export default function ClaudeOrganization({
+  account,
+}: {
+  account?: Account | undefined;
+}) {
   if (account?.provider !== "claude" || !account.organization) return null;
   return (
     <small className="claude-organization">

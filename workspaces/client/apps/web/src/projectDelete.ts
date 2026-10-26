@@ -44,8 +44,8 @@ export function projectReaderScope(
   agents: readonly Agent[],
   rooms: readonly {
     id: string;
-    projectPath?: string | null;
-    rootId?: string | null;
+    projectPath?: string | null | undefined;
+    rootId?: string | null | undefined;
   }[],
 ): Set<string> {
   const paths = new Set([
@@ -106,12 +106,21 @@ export class ProjectDeleteIntent {
   error = "";
   result: DeleteReply | null = null;
   private started = false;
+  readonly request: DeleteRequest;
+  readonly name: string;
+  readonly scope: string[];
+  private readonly storage: IntentStorage;
   constructor(
-    readonly request: DeleteRequest,
-    readonly name: string,
-    readonly scope: string[],
-    private readonly storage: IntentStorage,
+    request: DeleteRequest,
+    name: string,
+    scope: string[],
+    storage: IntentStorage,
   ) {
+    this.request = request;
+    this.name = name;
+    this.scope = scope;
+    this.storage = storage;
+
     this.request = Object.freeze({ ...request });
     const existing = storage.getItem(storageKey(request.expected_workspace_id));
     if (existing) {

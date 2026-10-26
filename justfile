@@ -36,7 +36,7 @@ signing-check:
 
 [doc("Native package cycle (checks signing first, then signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
 package-native out *flags:
-    @node workspaces/client/apps/native/package-flow.mjs {{quote(out)}} {{flags}}
+    @node workspaces/client/apps/native/package-flow.ts {{quote(out)}} {{flags}}
 
 [doc("List pnpm and Cargo packages discovered from their manifests.")]
 packages:
@@ -143,13 +143,13 @@ test-browser:
 [doc("Manual heavy check: combined multi-server browser routing and offline recovery.")]
 test-browser-multi-server:
     @pnpm --filter codex-agents-web run build
-    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec.mjs --workers=1
+    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.ts --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec --workers=1
 
 [doc("Manual client interaction benchmark: five cumulative builds, one browser worker, three samples each; no synthetic load. Output must be outside the checkout.")]
 benchmark-client-interactions baseline output:
     @pnpm --filter codex-agents-web run build:wasm
     @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.mjs {{quote(baseline)}} {{quote(output)}}
-    @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec.mjs --workers=1
+    @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.ts --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec --workers=1
 
 [doc("Run the browser smoke subset included in the comprehensive tier and hosted CI.")]
 test-browser-smoke *args:
@@ -175,4 +175,4 @@ test-native-profile-migration:
 test-native-webview:
     @pnpm --filter codex-agents-web run build
     @cargo build -p studio-native-client --features native-check --locked
-    @node workspaces/client/apps/native/check-native.mjs
+    @node workspaces/client/apps/native/check-native.ts

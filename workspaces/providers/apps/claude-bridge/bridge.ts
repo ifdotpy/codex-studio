@@ -1,12 +1,27 @@
 import type {
+  BridgeMethod,
+  BridgeResult,
+  BridgeRequest,
+  BridgeResponse,
+  BridgeRpcId,
+  BridgeServerMethod,
+  BridgeServerParams,
+  BridgeServerResult,
+  BridgeInput,
+  BridgeMoveProof,
+  BridgeTurnParams,
+  BridgeSessionParams,
+  BridgeTask,
+} from "./bridge-protocol.ts";
+import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type {
   AccountInfo,
   Query,
   Options,
   SDKResultMessage,
-  SDKTaskStartedMessage,
-  SDKTaskUpdatedMessage,
-  SDKTaskNotificationMessage,
   SDKUserMessage,
+  SDKMessage,
+  ModelInfo,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Session,
@@ -16,8 +31,12 @@ import type {
   SessionMetadata,
 } from "./session-state.ts";
 import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
-import type { ToolClock } from "./stall-watch.ts";
+import type { Stall, ToolClock } from "./stall-watch.ts";
 
+type TaskMessage = Extract<SDKMessage, { subtype: `task_${string}` }>;
+function isTaskMessage(message: SDKMessage): message is TaskMessage {
+  return message.type === "system" && message.subtype.startsWith("task_");
+}
 type AssistantBlock = { text: string; complete: boolean; position?: number };
 type AssistantBlockState = {
   blocks: AssistantBlock[];
@@ -28,11 +47,7 @@ type AssistantBlockState = {
   itemTurn: Turn | null;
   itemIndex: number;
 };
-export type BackgroundTask = Partial<
-  Omit<SDKTaskStartedMessage, "subtype"> &
-    SDKTaskUpdatedMessage["patch"] &
-    Pick<SDKTaskNotificationMessage, "output_file">
->;
+export type BackgroundTask = BridgeTask;
 type QueryStall = {
   turnId: string;
   ended: () => void;
@@ -41,7 +56,7 @@ type QueryStall = {
 };
 export interface ActiveQuery {
   turn: Turn | null;
-  input: InputQueue;
+  input: InputQueue<StudioInputMessage>;
   q: Query | null;
   tasks: Map<string, BackgroundTask>;
   tools: Map<string, Item>;
@@ -62,13 +77,14 @@ export interface ActiveQuery {
   deferredResult?: SDKResultMessage | null;
   resultTimer?: ReturnType<typeof setTimeout> | null;
   stopTimer?: ReturnType<typeof setTimeout> | null;
-  finalization?: Promise<void>;
+  finalization?: Promise<void> | null;
+  session?: Session;
   externalMcpServers?: Options["mcpServers"];
   permissionMode?: Options["permissionMode"];
   toolsIdentity?: string;
   persistFailure?: unknown;
   reservingInput?: boolean;
-  lastModel?: string;
+  lastModel?: string | undefined;
   messageId?: string;
   idleRequest?: { id: string; at: number };
 }
@@ -190,7 +206,21 @@ import {
 
 const externalConfigs = new Map();
 
-const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
+type BridgeProviderOptions = Pick<
+  import("./runtime-contract.generated.ts").ClaudeSessionSettings,
+  "autoCompactWindow" | "customModels"
+> &
+  Pick<Options, "extraArgs">;
+function readProviderOptions(text: string): BridgeProviderOptions {
+  const value: unknown = JSON.parse(text);
+  if (!isRecord(value)) throw new Error("Invalid Claude bridge options");
+  // Rust bridge_options owns this same-program configuration envelope; field
+  // types come from its generated settings and the SDK extra-argument owner.
+  return value as BridgeProviderOptions;
+}
+const providerOptions = readProviderOptions(
+  process.env.STUDIO_CLAUDE_OPTIONS || "{}",
+);
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
 function nativeUserMessageId(id: string): NonNullable<SDKUserMessage["uuid"]> {
   if (
@@ -266,13 +296,13 @@ function streamText(item: Item, state: AssistantBlockState) {
   });
 }
 let lastLimits: ReturnType<typeof usageLimits> | undefined;
-const root = process.argv[2];
+const root = process.argv[2] || "";
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
 const queries = new Map<string, ActiveQuery>(),
   pending = new Map<
-    string,
-    { resolve: (value: unknown) => void; reject: (error: unknown) => void }
+    BridgeRpcId,
+    { resolve: (line: string) => void; reject: (error: unknown) => void }
   >();
 const pendingTurnReceipts = new Set<string>();
 const PREPARATION_TIMEOUT_MS = 20_000;
@@ -319,11 +349,11 @@ async function boundedPreparation<T>(
       }),
     ]);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer ?? undefined);
   }
 }
 const sessionStore = createSessionStore(root, {
-  isPinned: (id) => queries.has(id),
+  isPinned: (id: string) => queries.has(id),
 });
 const sessions = sessionStore.sessions;
 // The server closes a session with thread/unsubscribe as soon as its turn
@@ -425,7 +455,12 @@ function studioWait(threadId: string | undefined) {
     armStallWatch();
   };
 }
-const request = (method, params, signal, onSent) =>
+const request = <M extends BridgeServerMethod>(
+  method: M,
+  params: BridgeServerParams<M>,
+  signal?: AbortSignal,
+  onSent?: (id: string) => void,
+): Promise<BridgeServerResult<M>> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("Claude request cancelled"));
     const id = "claude:" + randomUUID();
@@ -440,9 +475,10 @@ const request = (method, params, signal, onSent) =>
       signal?.removeEventListener("abort", abort);
     };
     pending.set(id, {
-      resolve: (value) => {
+      resolve: (line) => {
         cleanup();
-        resolve(value);
+        const reply = readBridgeInput<M>(line);
+        if (!("method" in reply) && "result" in reply) resolve(reply.result);
       },
       reject: (error) => {
         cleanup();
@@ -496,7 +532,7 @@ function diskFullInputError(error: unknown) {
 async function session(id: string): Promise<Session> {
   return sessionStore.get(id);
 }
-const settings = (s) =>
+const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
   fileCheckpointOptions({
     cwd: s.cwd,
     pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
@@ -513,7 +549,7 @@ const settings = (s) =>
       ...Object.fromEntries(
         ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
           .filter((key) => typeof s.claude?.env?.[key] === "string")
-          .map((key) => [key, s.claude.env[key]]),
+          .map((key) => [key, s.claude?.env?.[key]]),
       ),
       ...browserEnvironment(root, s.id),
       ...(s.moveProof
@@ -536,7 +572,7 @@ const settings = (s) =>
         ? { TMPDIR: s.studioImageWorkspaceTempDir }
         : {}),
     },
-    stderr: (line) => process.stderr.write(line),
+    stderr: (line: string) => process.stderr.write(line),
   });
 const checkAccount = createAccountCheck({
   expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
@@ -568,7 +604,7 @@ async function verifiedAccount(
         "organization_metadata",
         "provider_metadata",
         "subscription_metadata",
-      ].includes(error?.data?.claudeAccountFailure) ||
+      ].some((reason) => reason === errorData(error).claudeAccountFailure) ||
       typeof q.reinitialize !== "function" ||
       (account?.apiProvider && account.apiProvider !== "firstParty") ||
       (account?.apiKeySource && account.apiKeySource !== "none")
@@ -586,7 +622,8 @@ async function verifiedAccount(
         startedAt,
       );
     } catch (refreshError) {
-      if (refreshError?.preparationTimedOut === true) throw refreshError;
+      if (errorField(refreshError, "preparationTimedOut") === true)
+        throw refreshError;
       throw error;
     }
     checkAccount(fresh?.account);
@@ -669,12 +706,11 @@ async function probe<T>(
   }
 }
 // Refresh account metadata on the live query's own process.
-async function refreshLiveCatalog(
-  live: ActiveQuery & { q: Query; accountProof: AccountInfo },
-  background: boolean,
-) {
+async function refreshLiveCatalog(live: ActiveQuery, background: boolean) {
   const q = live.q;
   const prior = live.accountProof;
+  if (!q || !prior)
+    throw new Error("Fresh Claude account control is unavailable");
   const startedAt = Date.now();
   const deadline =
     startedAt +
@@ -757,7 +793,13 @@ function wireThread(
     modelProvider: "claude",
   };
 }
-async function permissions(s, turn, name, input, options) {
+async function permissions(
+  s: Session,
+  turn: Turn | null,
+  name: string,
+  input: Record<string, unknown>,
+  options: Parameters<CanUseTool>[2],
+): ReturnType<CanUseTool> {
   if (!turn)
     return {
       behavior: "deny",
@@ -776,12 +818,42 @@ async function permissions(s, turn, name, input, options) {
   if (name.startsWith("mcp__studio__"))
     return { behavior: "allow", updatedInput: input };
   if (name === "AskUserQuestion") {
-    const questions = (input.questions || []).map((q, i) => ({
-      ...q,
-      id: String(i),
-      isOther: true,
-      isSecret: false,
-    }));
+    const rawQuestions = input.questions || [];
+    if (!Array.isArray(rawQuestions))
+      throw new Error("Invalid Claude question list");
+    const questions = rawQuestions.map((q: unknown, i) => {
+      if (!isRecord(q)) throw new Error("Invalid Claude question");
+      // The native tool schema owns this payload; fields are narrowed before Studio receives it.
+      const { question, header, options } = q;
+      if (
+        typeof question !== "string" ||
+        typeof header !== "string" ||
+        !Array.isArray(options)
+      )
+        throw new Error("Invalid Claude question");
+      const choices = options.map((option: unknown) => {
+        if (
+          !isRecord(option) ||
+          typeof option.label !== "string" ||
+          typeof option.description !== "string"
+        )
+          throw new Error("Invalid Claude question option");
+        return {
+          ...option,
+          label: option.label,
+          description: option.description,
+        };
+      });
+      return {
+        ...q,
+        question,
+        header,
+        options: choices,
+        id: String(i),
+        isOther: true,
+        isSecret: false,
+      } as const;
+    });
     let result;
     try {
       result = await request(
@@ -796,11 +868,11 @@ async function permissions(s, turn, name, input, options) {
       );
     } catch (error) {
       if (
-        error.message !==
+        errorText(error) !==
         "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."
       )
         throw error;
-      return { behavior: "deny", message: error.message };
+      return { behavior: "deny", message: errorText(error) ?? "" };
     }
     const answers = Object.fromEntries(
       questions.map((q) => [
@@ -842,7 +914,9 @@ async function permissions(s, turn, name, input, options) {
         itemId: options.toolUseID,
         command:
           name === "Bash"
-            ? input.command
+            ? typeof input.command === "string"
+              ? input.command
+              : JSON.stringify(input.command)
             : JSON.stringify({ tool: name, input }),
         cwd: s.cwd,
         reason:
@@ -879,16 +953,18 @@ async function permissions(s, turn, name, input, options) {
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", cancel);
   }
-  return ["accept", "acceptForSession"].includes(result.decision)
+  return result.decision === "accept" || result.decision === "acceptForSession"
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user declined this action." };
 }
-function studioTools(s, getTurn) {
+function studioTools(s: Session, getTurn: () => Turn | null) {
   return createSdkMcpServer({
     name: "studio",
     version: "1.0.0",
     tools: (s.dynamicTools || []).map((definition) => {
       const schema = z.fromJSONSchema(definition.inputSchema);
+      if (!(schema instanceof z.ZodObject))
+        throw new Error("Studio dynamic tool requires an object schema");
       return tool(
         definition.name,
         definition.description,
@@ -903,7 +979,9 @@ function studioTools(s, getTurn) {
               tool: definition.name,
               arguments: args,
             },
-            extra?.signal,
+            isRecord(extra) && extra.signal instanceof AbortSignal
+              ? extra.signal
+              : undefined,
           );
           return {
             isError: result.success === false,
@@ -918,7 +996,11 @@ function studioTools(s, getTurn) {
   });
 }
 
-async function currentExternalProof(s, proof) {
+async function currentExternalProof(
+  s: Session,
+  proof: import("./move.ts").MoveProof &
+    Partial<Pick<BridgeMoveProof, "externalCatalog" | "externalTransports">>,
+) {
   const expected = proof.externalCatalog || s.moveProof?.externalCatalog;
   const aliases = expected
     ? expected.map((server) => server.alias)
@@ -931,11 +1013,11 @@ async function currentExternalProof(s, proof) {
           proof.externalTransports || s.moveProof?.externalTransports || {},
       });
     } catch (error) {
-      if (error.data?.moveRefusal) throw error;
+      if (errorData(error).moveRefusal) throw error;
       throw externalRefusal(aliases, [], aliases);
     }
   }
-  const read = async (q) => {
+  const read = async (q: Query) => {
     let statuses = await q.mcpServerStatus();
     for (const alias of aliases) {
       const server = statuses.find((row) => serverAlias(row.name) === alias);
@@ -951,29 +1033,33 @@ async function currentExternalProof(s, proof) {
       ? await read(active.q)
       : await probe(s.cwd, read, "teleport_catalog", true);
   } catch (error) {
-    if (error.data?.moveRefusal) throw error;
+    if (errorData(error).moveRefusal) throw error;
     throw externalRefusal(aliases, [], aliases);
   }
 }
-async function movedExternalConfigs(s) {
+async function movedExternalConfigs(s: Session) {
   if (!s.moveProof?.externalCatalog?.length) return {};
   const key = s.moveProof.optionsHash + ":" + s.cwd;
   if (!externalConfigs.has(key)) await proofOptions(s, s.moveProof);
   return externalConfigs.get(key);
 }
-async function proofOptions(s, proof) {
+async function proofOptions(
+  s: Session,
+  proof: import("./move.ts").MoveProof,
+): Promise<BridgeMoveProof> {
   const compiled = await studioToolCatalog(
     studioTools(s, () => null),
     (s.dynamicTools || []).length,
   );
   const baseline =
-    exactProof(proof).compiledTools || exactProof(s.moveProof)?.compiledTools;
+    exactProof(proof).compiledTools ||
+    (s.moveProof && exactProof(s.moveProof)?.compiledTools);
   const tools = verifyToolProof(
     { ...proof, ...(baseline ? { compiledTools: baseline } : {}) },
     compiled,
   );
   const external = await currentExternalProof(s, proof);
-  const options = {
+  const options: BridgeMoveProof["options"] = {
     tools,
     ...(proof.inlineTools === false
       ? {
@@ -1021,21 +1107,25 @@ async function proofOptions(s, proof) {
 // Codex continues a thread on turn/start without input; Claude needs text.
 const CONTINUE_TEXT =
   "Continue the previous turn from where it stopped. Check the current state first and do not repeat completed work.";
-async function content(input) {
+async function content(
+  input: BridgeInput[] | null | undefined,
+): Promise<InputGroup["blocks"]> {
   if (Array.isArray(input) && !input.length)
     return [{ type: "text", text: CONTINUE_TEXT }];
-  const result = [];
+  const result: InputGroup["blocks"] = [];
   for (const item of input || []) {
     if (item.type === "text") result.push({ type: "text", text: item.text });
     else if (item.type === "localImage") {
       const ext = path.extname(item.path).toLowerCase();
-      const media_type = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-      }[ext];
+      const media_type = (
+        {
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".gif": "image/gif",
+          ".webp": "image/webp",
+        } satisfies Record<string, string>
+      )[ext as ".png" | ".jpg" | ".jpeg" | ".gif" | ".webp"];
       if (!media_type) throw new Error("Unsupported image format for Claude");
       // Refuse input before it reaches Claude if portable preprocessing fails.
       const image = await claudeImage(item.path);
@@ -1047,7 +1137,8 @@ async function content(input) {
           data: image.bytes.toString("base64"),
         },
       });
-    } else throw new Error("Unsupported Claude input: " + item.type);
+    } else
+      throw new Error("Unsupported Claude input: " + errorField(item, "type"));
   }
   return result;
 }
@@ -1101,7 +1192,11 @@ function notice(
 }
 // Claude refused the turn at a subscription limit. The turn error carries the
 // provider's reset time when Claude gave one, so Studio plans the resume for it.
-function limitReached(s, turn, info) {
+function limitReached(
+  s: Session,
+  turn: Turn,
+  info: import("./features.ts").RateLimitInfo,
+) {
   turn.limitError = {
     codexErrorInfo: "rateLimitExceeded",
     ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
@@ -1119,15 +1214,21 @@ function limitReached(s, turn, info) {
     "limit:" + turn.id + ":" + info.rateLimitType + ":" + info.resetsAt,
   );
 }
-const permissionMode = (s, p = {}) =>
+const permissionMode = (s: Session, p: Partial<BridgeSessionParams> = {}) =>
   s.claude?.permissionMode ||
   ((p.approvalPolicy || s.approvalPolicy) === "never"
     ? "bypassPermissions"
     : s.sandbox === "read-only"
       ? "plan"
       : "default");
-async function flags(s, p = {}, live = false) {
+async function flags(
+  s: Session,
+  p: Partial<BridgeTurnParams> = {},
+  live = false,
+): Promise<Parameters<Query["applyFlagSettings"]>[0]> {
   const native = await catalog();
+  const autoCompactWindow =
+    s.claude?.autoCompactWindow || providerOptions.autoCompactWindow;
   return {
     // Studio owns the durable idle timer. Disable the CLI's private timer.
     idleCompaction: false,
@@ -1139,12 +1240,7 @@ async function flags(s, p = {}, live = false) {
       s.claude?.thinking,
       live,
     ),
-    ...(s.claude?.autoCompactWindow || providerOptions.autoCompactWindow
-      ? {
-          autoCompactWindow:
-            s.claude?.autoCompactWindow || providerOptions.autoCompactWindow,
-        }
-      : {}),
+    ...(autoCompactWindow ? { autoCompactWindow } : {}),
   };
 }
 // A turn whose end is being recorded. active.turn still names it until
@@ -1152,26 +1248,26 @@ async function flags(s, p = {}, live = false) {
 // finishTurn has cleared the turn, or when recording its end failed.
 const finishingTurns = new WeakMap<Turn, Promise<void>>();
 function clearDeferredResult(active: ActiveQuery) {
-  clearTimeout(active.resultTimer);
+  clearTimeout(active.resultTimer ?? undefined);
   active.resultTimer = null;
   active.deferredResult = null;
 }
 function clearTurnTimers(active: ActiveQuery) {
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer);
+  clearTimeout(active.stopTimer ?? undefined);
   active.stopTimer = null;
 }
-function lifecycleFailure(s, active, error) {
+function lifecycleFailure(s: Session, active: ActiveQuery, error: unknown) {
   active.persistFailure ??= error;
   process.stderr.write(
-    "Claude turn finalization failed: " + error.message + "\n",
+    "Claude turn finalization failed: " + errorText(error) + "\n",
   );
   // Watchdog failures must end a visible turn, even if the SDK never yields
   // again. A finalizer already owns its completion and cannot be repeated.
   if (!active.turn || finishingTurns.has(active.turn)) return;
   return finishTurn(s, active, null, error).catch((failure) => {
     process.stderr.write(
-      "Claude turn finalization failed: " + failure.message + "\n",
+      "Claude turn finalization failed: " + errorText(failure) + "\n",
     );
   });
 }
@@ -1185,13 +1281,18 @@ function deferResult(
   const turn = active.turn;
   active.resultTimer = setTimeout(() => {
     if (active.turn !== turn || !active.deferredResult) return;
-    void finishTurn(s, active, active.deferredResult).catch((error) =>
-      lifecycleFailure(s, active, error),
+    void finishTurn(s, active, active.deferredResult).catch(
+      (error) => s && lifecycleFailure(s, active, error),
     );
   }, limits.steerEchoGraceMs);
   active.resultTimer.unref();
 }
-function finishTurn(s, active, result, error) {
+function finishTurn(
+  s: Session,
+  active: ActiveQuery,
+  result: SDKResultMessage | null,
+  error?: unknown,
+): Promise<void> {
   const turn = active.turn;
   if (!turn) return active.finalization || Promise.resolve();
   const finishing = finishingTurns.get(turn);
@@ -1199,7 +1300,11 @@ function finishTurn(s, active, result, error) {
   // Shutdown preserves unfinished turns for restart reconciliation. Every
   // terminal caller shares this admission, including SDK errors and timers.
   if (closing) return Promise.resolve();
-  const state = { closed: false, stall: null, unappliedSteers: [] };
+  const state: {
+    closed: boolean;
+    stall: QueryStall | null;
+    unappliedSteers: (string | undefined)[];
+  } = { closed: false, stall: null, unappliedSteers: [] };
   // Install the shared outcome before finalization can await or throw.
   const operation = Promise.resolve().then(async () => {
     try {
@@ -1208,7 +1313,7 @@ function finishTurn(s, active, result, error) {
       active.persistFailure = failure;
       turn.status = "failed";
       turn.error = {
-        message: "Claude turn finalization failed: " + failure.message,
+        message: "Claude turn finalization failed: " + errorText(failure),
       };
       state.closed = true;
       throw failure;
@@ -1250,13 +1355,24 @@ function finishTurn(s, active, result, error) {
   operation.catch(() => {});
   return operation;
 }
-async function finalizeTurn(s, active, turn, result, error, state) {
+async function finalizeTurn(
+  s: Session,
+  active: ActiveQuery,
+  turn: Turn,
+  result: SDKResultMessage | null,
+  error: unknown,
+  state: {
+    closed: boolean;
+    stall: QueryStall | null;
+    unappliedSteers: (string | undefined)[];
+  },
+) {
   const stall = (state.stall =
     active.stall?.turnId === turn.id ? active.stall : null);
   let closeError = stall?.closeError;
   error ||= closeError;
   let closed = (state.closed = Boolean(stall?.closed));
-  if (closed) await stall.closed;
+  if (closed) await stall?.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
   // this CLI. Stop it before finishing; only its final native history can
   // prove whether the server may redeliver that exact input.
@@ -1276,13 +1392,13 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     await new Promise((resolve) => setTimeout(resolve, limits.exitWaitMs));
   }
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer);
+  clearTimeout(active.stopTimer ?? undefined);
   active.stopTimer = null;
   active.toolClocks.clear();
   if (
-    (error?.preparationTimedOut === true ||
-      error?.claudeAccountValidationFailed === true) &&
-    error?.data?.turnStartOutcome === "not_applied" &&
+    (errorField(error, "preparationTimedOut") === true ||
+      errorField(error, "claudeAccountValidationFailed") === true) &&
+    errorData(error).turnStartOutcome === "not_applied" &&
     turn.items[0]?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
     turn.clientUserMessageId.length > 0 &&
@@ -1308,37 +1424,40 @@ async function finalizeTurn(s, active, turn, result, error, state) {
       : "completed";
   armStallWatch();
   const errorMessage =
-    error?.message ||
-    result?.errors?.join("\n") ||
-    result?.result ||
+    errorText(error) ||
+    (result && "errors" in result ? result.errors.join("\n") : undefined) ||
+    (result && "result" in result ? result.result : undefined) ||
     "Claude turn failed";
   const errorInfo =
-    turn.apiErrorInfo || claudeErrorInfo(error?.error, errorMessage);
+    turn.apiErrorInfo ||
+    claudeErrorInfo(errorField(error, "error"), errorMessage);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
       message: errorMessage,
       ...(errorInfo && !turn.limitError ? { codexErrorInfo: errorInfo } : {}),
       ...(turn.startOutcome === "not_applied" &&
-      (error?.preparationTimedOut === true ||
-        error?.claudeAccountValidationFailed === true) &&
-      error?.data?.turnStartOutcome === "not_applied"
+      (errorField(error, "preparationTimedOut") === true ||
+        errorField(error, "claudeAccountValidationFailed") === true) &&
+      errorData(error).turnStartOutcome === "not_applied"
         ? {
             data: {
               turnStartOutcome: "not_applied",
-              ...(error?.data?.claudePreparationFailure === "account_validation"
+              ...(errorData(error).claudePreparationFailure ===
+              "account_validation"
                 ? {
                     claudePreparationFailure: "account_validation",
-                    claudeAccountFailure: error.data.claudeAccountFailure,
+                    claudeAccountFailure: errorData(error).claudeAccountFailure,
                   }
                 : {}),
-              ...(error?.preparationTimedOut === true &&
-              typeof error.data.claudePreparationPhase === "string" &&
-              Number.isFinite(error.data.claudePreparationElapsedMs)
+              ...(errorField(error, "preparationTimedOut") === true &&
+              typeof errorData(error).claudePreparationPhase === "string" &&
+              Number.isFinite(errorData(error).claudePreparationElapsedMs)
                 ? {
-                    claudePreparationPhase: error.data.claudePreparationPhase,
+                    claudePreparationPhase:
+                      errorData(error).claudePreparationPhase,
                     claudePreparationElapsedMs:
-                      error.data.claudePreparationElapsedMs,
+                      errorData(error).claudePreparationElapsedMs,
                   }
                 : {}),
             },
@@ -1353,7 +1472,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
         !i.nativeSubagent &&
         !i.studioNotice &&
         !i.thinking &&
-        !i.id.endsWith(":thinking"),
+        !i.id?.endsWith(":thinking"),
     )
     .at(-1);
   if (answer) finishItem(s, turn, { ...answer, phase: "final_answer" });
@@ -1399,7 +1518,11 @@ async function finalizeTurn(s, active, turn, result, error, state) {
 // longer apply it, and Claude Code records a queued message without its text,
 // so a resume cannot restore it. Native history decides: recorded input is
 // delivered; the rest returns to Studio once as unapplied.
-async function reconcileClosedSteers(s, turn, unapplied) {
+async function reconcileClosedSteers(
+  s: Session,
+  turn: Turn,
+  unapplied: (string | undefined)[],
+) {
   const open = turn.items.filter(
     (item) =>
       item.type === "userMessage" &&
@@ -1437,15 +1560,19 @@ async function reconcileClosedSteers(s, turn, unapplied) {
 // Interrupt a turn whose tool call stalled; close the CLI if it cannot end the
 // turn. The turn ends as interrupted with the stall as its error, so Studio
 // shows it and starts the next turn from queued input.
-async function recoverStall(s, active, found) {
+async function recoverStall(
+  s: Session | undefined,
+  active: ActiveQuery,
+  found: (Stall & { stop?: false }) | { stop: true; id: string },
+) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  if (closing || !turn || active.stall || finishingTurns.has(turn)) return;
+  if (closing || !s || !turn || active.stall || finishingTurns.has(turn))
+    return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
     : stallMessage({ ...found, tool: item?.tool || found.tool });
-  let ended;
-  const finished = new Promise((resolve) => (ended = resolve));
+  const { promise: finished, resolve: ended } = Promise.withResolvers<void>();
   active.stall = { turnId: turn.id, ended, closed: null };
   turn.interrupted = true;
   turn.stallError = {
@@ -1486,7 +1613,7 @@ async function recoverStall(s, active, found) {
   } catch (error) {
     if (!closing)
       process.stderr.write(
-        "Claude stall: persist failed: " + error.message + "\n",
+        "Claude stall: persist failed: " + errorText(error) + "\n",
       );
   }
   // A save already in flight may settle after shutdown closes the query.
@@ -1504,7 +1631,7 @@ async function recoverStall(s, active, found) {
       })
       .catch((error) =>
         process.stderr.write(
-          "Claude stall: interrupt failed: " + error.message + "\n",
+          "Claude stall: interrupt failed: " + errorText(error) + "\n",
         ),
       );
   await Promise.race([finished, deadline]);
@@ -1526,7 +1653,7 @@ async function recoverStall(s, active, found) {
   if (stall.closeError)
     turn.stallError = {
       ...turn.stallError,
-      message: message + " " + stall.closeError.message,
+      message: message + " " + errorText(stall.closeError),
     };
   await stall.closed;
   // Closing normally ends the SDK stream, and its owner finishes the turn.
@@ -1549,7 +1676,11 @@ const armStallWatch = watchStalls(
       lifecycleFailure(s, active, error),
     ),
 );
-async function startSession(s: Session, active: ActiveQuery, p: Options) {
+async function startSession(
+  s: Session,
+  active: ActiveQuery,
+  p: Partial<BridgeTurnParams>,
+) {
   const initial = active.turn;
   const startedAt = Date.now();
   const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
@@ -1578,7 +1709,8 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
   try {
     const externalMcpServers = await movedExternalConfigs(s);
     const titleOptions = ephemeralSessionOptions(s);
-    const mode = titleOptions.permissionMode || permissionMode(s, p);
+    const mode: Options["permissionMode"] =
+      titleOptions.permissionMode || permissionMode(s, p);
     await guardNativeSessionStart(
       s,
       persist,
@@ -1607,15 +1739,17 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
         ...((s.moveProof ? s.moveProof.options.effort : p.effort)
           ? { effort: s.moveProof ? s.moveProof.options.effort : p.effort }
           : {}),
-        settings: await boundedPreparation(
-          () =>
-            s.moveProof
-              ? Promise.resolve(s.moveProof.options.settings)
-              : flags(s, p),
-          deadline,
-          () => {},
-          "catalog_flags",
-          startedAt,
+        settings: JSON.stringify(
+          await boundedPreparation(
+            () =>
+              s.moveProof
+                ? Promise.resolve(s.moveProof.options.settings)
+                : flags(s, p),
+            deadline,
+            () => {},
+            "catalog_flags",
+            startedAt,
+          ),
         ),
         extraArgs: {
           ...providerOptions.extraArgs,
@@ -1669,7 +1803,11 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
             },
             { ...options, toolUseID: value.toolUseID || options.requestId },
           );
-          const selected = answer.updatedInput?.answers?.[question];
+          const updated =
+            answer?.behavior === "allow" ? answer.updatedInput : undefined;
+          const answers =
+            updated && isRecord(updated.answers) ? updated.answers : undefined;
+          const selected = answers?.[question];
           return selected
             ? {
                 behavior: "completed",
@@ -1688,7 +1826,6 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
             {
               threadId: s.id,
               turnId: active.turn?.id,
-              serverName: value.serverName,
               request: value,
               ...value,
             },
@@ -1732,6 +1869,8 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
     admit();
     active.readyResolve();
     for await (const m of q) {
+      const parentToolUseId =
+        "parent_tool_use_id" in m ? m.parent_tool_use_id : undefined;
       const room = stdoutRoom();
       if (room) await room;
       // A grace timer can finish a turn during the backpressure wait. Process
@@ -1762,23 +1901,24 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
         catalogCache.activityChanged();
         continue;
       }
-      if (m.type === "user" && m.isReplay) {
-        const item = active.turn?.items.find(
+      if (m.type === "user" && "isReplay" in m && m.isReplay) {
+        const activeTurn = active.turn;
+        const item = activeTurn?.items.find(
           (i) =>
             i.type === "userMessage" &&
             (i.nativeId === m.uuid ||
               (i.nativeId == null &&
-                (i.id === m.uuid || active.turn.id === m.uuid))),
+                (i.id === m.uuid || activeTurn.id === m.uuid))),
         );
-        if (item) {
+        if (item && activeTurn) {
           item.nativeId = m.uuid;
           if (
-            item === active.turn.items[0] &&
+            item === activeTurn.items[0] &&
             !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
           ) {
-            active.turn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
-            active.turn.fileCheckpointMessageId = m.uuid;
-            active.turn.fileCheckpointSource = {
+            activeTurn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
+            activeTurn.fileCheckpointMessageId = m.uuid;
+            activeTurn.fileCheckpointSource = {
               nativeId: s.nativeId || s.id,
               cwd: s.cwd,
             };
@@ -1791,7 +1931,7 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
         // follow the end of its turn, so earlier turns are searched as well.
         const steer =
           item?.delivery === "steer"
-            ? { turn: active.turn, item }
+            ? { turn: activeTurn, item }
             : submittedSteer(s, m.uuid);
         if (steer?.item.deliveryStatus === "submitted") {
           steer.item.deliveryStatus = "delivered";
@@ -1806,7 +1946,7 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
       if (
         !active.turn &&
         ["assistant", "stream_event"].includes(m.type) &&
-        !m.parent_tool_use_id
+        !parentToolUseId
       ) {
         active.turn = {
           id: randomUUID(),
@@ -1821,8 +1961,7 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
           turn: { id: active.turn.id, status: "inProgress" },
         });
       }
-      const turn =
-        active.turn || (m.parent_tool_use_id ? s.turns.at(-1) : null);
+      const turn = active.turn || (parentToolUseId ? s.turns.at(-1) : null);
       if (m.type === "rate_limit_event") {
         const next = limitEvent(lastLimits, m.rate_limit_info || {});
         if (next) {
@@ -1844,7 +1983,7 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
         if (
           m.subtype === "status" &&
           m.status === "requesting" &&
-          !m.parent_tool_use_id
+          !parentToolUseId
         ) {
           active.idleRequestStartedAt = Date.now();
         }
@@ -1872,12 +2011,20 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
           notice(
             s,
             turn,
-            m.content || m.output || "Claude command completed.",
+            m.content ||
+              ("output" in m && typeof m.output === "string"
+                ? m.output
+                : undefined) ||
+              "Claude command completed.",
             m.uuid,
           );
-        } else if (m.subtype?.startsWith("task_")) {
+        } else if (isTaskMessage(m)) {
           const id = m.task_id || m.uuid;
-          const task = { ...active.tasks.get(id), ...m, ...m.patch };
+          const task = {
+            ...active.tasks.get(id),
+            ...m,
+            ...("patch" in m ? m.patch : {}),
+          };
           const command = foregroundCommandUpdate(active, task, m);
           if (command && turn) turnEvent(s, turn, "item/started", command);
           // A terminal patch can arrive before the notification's final output.
@@ -1905,10 +2052,10 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
                   {
                     type: "text",
                     text:
-                      m.summary ||
-                      m.last_tool_name ||
-                      m.description ||
-                      m.status ||
+                      ("summary" in m ? m.summary : undefined) ||
+                      ("last_tool_name" in m ? m.last_tool_name : undefined) ||
+                      ("description" in m ? m.description : undefined) ||
+                      ("status" in m ? m.status : undefined) ||
                       "Running",
                   },
                 ],
@@ -1926,7 +2073,7 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
           }
           persistLater(s, active);
         } else if (turn && providerNotice(m)) {
-          notice(s, turn, providerNotice(m), m.uuid);
+          notice(s, turn, providerNotice(m) ?? "", m.uuid);
           persistLater(s, active);
         } else if (
           turn &&
@@ -1939,14 +2086,25 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
             ].includes(m.subtype) ||
             (m.subtype === "informational" && m.level === "warning"))
         )
-          notice(s, turn, m.text || m.content || m.error || m.subtype, m.uuid);
+          notice(
+            s,
+            turn,
+            ("text" in m ? m.text : undefined) ||
+              ("content" in m ? m.content : undefined) ||
+              ("error" in m ? m.error : undefined) ||
+              m.subtype,
+            m.uuid,
+          );
         continue;
       }
       if (m.type === "result") {
         active.usage.recordModels(m.modelUsage);
         const studioUsage = cumulativeUsage(m, turn?.id);
         if (studioUsage) {
-          if (studioUsage.modelContextWindow)
+          if (
+            "modelContextWindow" in studioUsage &&
+            studioUsage.modelContextWindow
+          )
             s.contextWindow = studioUsage.modelContextWindow;
           emit("thread/tokenUsage/updated", {
             threadId: s.id,
@@ -1970,9 +2128,9 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
           if (block.type === "tool_use")
             active.usage.registerTool(
               block.id,
-              active.usage.turnFor(m.parent_tool_use_id, turn.id),
+              active.usage.turnFor(parentToolUseId, turn.id),
             );
-      if (m.parent_tool_use_id) {
+      if (parentToolUseId) {
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
             const text =
@@ -2007,7 +2165,9 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
           active.idleRequest = {
             id: e.message.id,
             at:
-              Number.isFinite(m.ttft_ms) && m.ttft_ms >= 0
+              typeof m.ttft_ms === "number" &&
+              Number.isFinite(m.ttft_ms) &&
+              m.ttft_ms >= 0
                 ? Date.now() - m.ttft_ms
                 : active.idleRequestStartedAt || Date.now(),
           };
@@ -2019,14 +2179,16 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
         }
         if (
           e.type === "content_block_delta" &&
-          ["text_delta", "thinking_delta"].includes(e.delta.type)
+          (e.delta.type === "text_delta" || e.delta.type === "thinking_delta")
         ) {
           const thinking = e.delta.type === "thinking_delta";
           const id = active.messageId + (thinking ? ":thinking" : "");
-          const delta = e.delta.text || e.delta.thinking || "";
+          const delta =
+            (e.delta.type === "text_delta" ? e.delta.text : e.delta.thinking) ||
+            "";
           const state = assistantBlockState(
             active,
-            active.messageId,
+            active.messageId ?? "undefined",
             thinking ? "thinking" : "text",
           );
           const index = Number.isInteger(e.index) ? e.index : 0;
@@ -2040,7 +2202,8 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
             state.streams.set(index, block);
             state.blocks.push(block);
           }
-          const separator = block.text === "" && block.position > 0 ? "\n" : "";
+          const separator =
+            block.text === "" && (block.position ?? 0) > 0 ? "\n" : "";
           if (!block.complete) {
             block.text += delta;
             state.dirty = true;
@@ -2063,6 +2226,7 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
             }
           }
           const item = turn.items[state.itemIndex];
+          if (!item) throw new Error("Streaming assistant item is missing");
           if (!block.complete) {
             if (!streamingItems.has(item)) {
               streamingItems.add(item);
@@ -2077,19 +2241,26 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
           }
         }
       } else if (m.type === "assistant") {
+        const assistantMessage = m.message;
         if (m.error) {
           const errorText = (m.message.content || [])
             .filter((b) => b.type === "text")
             .map((b) => b.text)
             .join("\n");
-          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
+          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText) ?? undefined;
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
-          const info = m.api_error_params?.rate_limit_info;
+          const params =
+            "api_error_params" in m && isRecord(m.api_error_params)
+              ? m.api_error_params
+              : {};
+          const info = isRecord(params.rate_limit_info)
+            ? params.rate_limit_info
+            : undefined;
           if (
             m.error === "rate_limit" &&
             info?.status === "rejected" &&
-            !m.parent_tool_use_id &&
+            !parentToolUseId &&
             !turn.limitError
           )
             limitReached(s, turn, info);
@@ -2098,13 +2269,13 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
         if (
           turn &&
           !turn.idleCompaction &&
-          !m.parent_tool_use_id &&
+          !parentToolUseId &&
           m.message.id &&
           m.message.usage
         ) {
           const { effective } = await resolveSettings({
             cwd: s.cwd,
-            settingSources: settings(s).settingSources,
+            settingSources: settings(s).settingSources ?? [],
           });
           s.idleCache = cacheReport(
             s,
@@ -2122,19 +2293,30 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
           });
           persistLater(s, active);
         }
-        const mergeBlocks = (kind, field) => {
+        const mergeBlocks = (
+          kind: "text" | "thinking",
+          field: "text" | "thinking",
+        ) => {
           const state = assistantBlockState(active, m.message.id, kind);
           for (const [index, block] of m.message.content.entries()) {
-            if (block.type !== kind || !block[field]) continue;
-            const frame = (m.uuid || JSON.stringify(m.message)) + ":" + index;
+            if (block.type !== kind) continue;
+            const text =
+              field === "text" && block.type === "text"
+                ? block.text
+                : field === "thinking" && block.type === "thinking"
+                  ? block.thinking
+                  : undefined;
+            if (!text) continue;
+            const frame =
+              (m.uuid || JSON.stringify(assistantMessage)) + ":" + index;
             if (state.frames.has(frame)) continue;
             state.frames.add(frame);
             const pending = state.blocks.find(
-              (old) => !old.complete && old.text === block[field],
+              (old) => !old.complete && old.text === text,
             );
             if (pending) pending.complete = true;
             else {
-              state.blocks.push({ text: block[field], complete: true });
+              state.blocks.push({ text, complete: true });
               state.dirty = true;
             }
           }
@@ -2161,12 +2343,14 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_use",
         )) {
-          const item = nativeItem(b, s.cwd);
+          if (!isRecord(b.input)) throw new Error("Invalid Claude tool input");
+          const input = b.input;
+          const item = nativeItem({ ...b, input }, s.cwd);
           active.tools.set(b.id, item);
           active.toolClocks.set(b.id, {
             tool: b.name,
             startedAt: Date.now(),
-            timeoutMs: declaredTimeoutMs(b),
+            timeoutMs: declaredTimeoutMs({ ...b, input }),
           });
           armStallWatch();
           turn.items.push(item);
@@ -2175,11 +2359,12 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
             emit("turn/plan/updated", {
               threadId: s.id,
               turnId: turn.id,
-              plan:
-                b.input.todos?.map((t) => ({
-                  step: t.content,
-                  status: t.status,
-                })) || [],
+              plan: Array.isArray(input.todos)
+                ? input.todos.map((t: unknown) => ({
+                    step: isRecord(t) ? t.content : undefined,
+                    status: isRecord(t) ? t.status : undefined,
+                  }))
+                : [],
             });
         }
         persistLater(s, active);
@@ -2268,14 +2453,16 @@ async function startSession(s: Session, active: ActiveQuery, p: Options) {
 // The SDK reports a closed or aborted Claude process with these messages.
 function deadQuery(error: unknown) {
   return /process aborted by user|operation aborted|process exited|process terminated|transport is not ready|query (is )?closed/i.test(
-    String(error?.message || error),
+    String(errorText(error) || error),
   );
 }
 function closeQuery(active: ActiveQuery) {
   try {
     active.q?.close();
   } catch (error) {
-    process.stderr.write("Claude query close failed: " + error.message + "\n");
+    process.stderr.write(
+      "Claude query close failed: " + errorText(error) + "\n",
+    );
     return error;
   }
 }
@@ -2311,7 +2498,7 @@ function newActive(turn: Turn): ActiveQuery {
     readyResolve,
     readyReject,
     turn,
-    input: new InputQueue(),
+    input: new InputQueue<StudioInputMessage>(),
     q: null,
     tasks: new Map(),
     tools: new Map(),
@@ -2337,6 +2524,7 @@ function userMessage(
 ): StudioInputMessage {
   turn.nativeSessionId = s.nativeId || s.id;
   const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  if (!item) throw new Error("Claude input has no owning item");
   guardNativeSessionInput(s, groups, newNativeInputAttempt(turn, item));
   const messages = sdkInputMessages(
     s.nativeId || s.id,
@@ -2345,7 +2533,10 @@ function userMessage(
     nativeUserMessageId,
   );
   const message = messages.at(-1);
-  if (item === turn.items[0]) turn.nativeMessageId = messages[0].uuid;
+  const first = messages[0];
+  if (!message || !first)
+    throw new Error("Claude input has no native messages");
+  if (item === turn.items[0]) turn.nativeMessageId = first.uuid;
   if (messages.length > 1) {
     item.nativeIds = messages.map((part) => part.uuid);
     // The queue removes this whole submission before yielding its first part.
@@ -2355,8 +2546,16 @@ function userMessage(
   return message;
 }
 
-async function handle(method, p) {
+function handle<M extends BridgeMethod>(
+  request: BridgeRequest<M>,
+): Promise<BridgeResult<M>>;
+async function handle(request: BridgeRequest): Promise<unknown> {
+  const { method, params: p } = request;
   if (
+    isRecord(p) &&
+    typeof p.threadId === "string" &&
+    isRecord(p) &&
+    typeof p.threadId === "string" &&
     p.threadId &&
     [
       "turn/start",
@@ -2367,7 +2566,8 @@ async function handle(method, p) {
     ].includes(method)
   )
     assertNativeSessionReady(await session(p.threadId));
-  if (commandMethods.has(method)) return commands.handle(method, p);
+  if (commandMethods.has(method))
+    return commands.handle(method, isRecord(p) ? p : {});
   if (
     p.threadId &&
     [
@@ -2402,7 +2602,7 @@ async function handle(method, p) {
   if (method === "initialized") return {};
   if (method === "model/list") {
     const native = await catalog();
-    const models = [
+    const models: ModelInfo[] = [
       ...native.models,
       ...(providerOptions.customModels || [])
         .filter((m) => !native.models.some((n) => n.value === m.id))
@@ -2518,8 +2718,7 @@ async function handle(method, p) {
         s,
       ),
     );
-    const moveProof = { ...proof };
-    delete moveProof.session;
+    const { session: _sessionProof, ...moveProof } = proof;
     return {
       path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
       session: {
@@ -2545,7 +2744,8 @@ async function handle(method, p) {
       throw new Error(
         "The destination Claude session has a different native identity",
       );
-    let s = exactSession({ ...p.session, cwd: p.cwd });
+    let s: Session = exactSession({ ...p.session, cwd: p.cwd });
+    if (!s.moveProof) throw new Error("Claude move proof is missing");
     s.moveProof = exactProof(s.moveProof);
     const saved = await savedPromptProof(p.path, s);
     if (saved.snapshotHash !== s.moveProof?.snapshotHash)
@@ -2565,7 +2765,8 @@ async function handle(method, p) {
     );
     if (existing) {
       const cached = await session(s.id);
-      for (const key of Object.keys(cached)) delete cached[key];
+      for (const key of Object.keys(cached))
+        Reflect.deleteProperty(cached, key);
       Object.assign(cached, s);
       s = cached;
     } else sessions.set(s.id, s);
@@ -2827,11 +3028,14 @@ async function handle(method, p) {
           : refusal;
       if (reason) throw new Error("Idle compaction skipped: " + reason);
     }
-    return handle("turn/start", {
-      ...p,
-      model: s.model,
-      clientUserMessageId: p.requestId || randomUUID(),
-      input: [{ type: "text", text: "/compact" }],
+    return handle({
+      method: "turn/start",
+      params: {
+        ...p,
+        model: s.model,
+        clientUserMessageId: p.requestId || randomUUID(),
+        input: [{ type: "text", text: "/compact" }],
+      },
     });
   }
   if (method === "turn/start") {
@@ -2877,11 +3081,14 @@ async function handle(method, p) {
     const running = queries.get(s.id)?.turn;
     if (running) {
       try {
-        await handle("turn/steer", {
-          threadId: s.id,
-          expectedTurnId: running.id,
-          clientUserMessageId: p.clientUserMessageId,
-          input: p.input,
+        await handle({
+          method: "turn/steer",
+          params: {
+            threadId: s.id,
+            expectedTurnId: running.id,
+            clientUserMessageId: p.clientUserMessageId,
+            input: p.input,
+          },
         });
         return {
           turn: { id: running.id, status: running.status },
@@ -2890,14 +3097,18 @@ async function handle(method, p) {
       } catch (error) {
         // The running turn ended before this input reached Claude. Nothing
         // was submitted, so the input starts the next turn instead.
-        if (!error.steerNotSubmitted || running.interrupted) throw error;
+        if (!errorField(error, "steerNotSubmitted") || running.interrupted)
+          throw error;
         await finishingTurns.get(running);
         if (queries.get(s.id)?.turn) throw error;
       }
     }
     let nativeCommand;
     if (p.claudeCommand) {
-      const commands = await handle("claude/commands", { cwd: s.cwd });
+      const commands = await handle({
+        method: "claude/commands",
+        params: { cwd: s.cwd },
+      });
       nativeCommand = explicitNativeCommand(p.claudeCommand, commands);
       // Unknown slash text remains ordinary user input; never extract commands from it.
     }
@@ -2906,7 +3117,7 @@ async function handle(method, p) {
       content,
     );
     const turnId = randomUUID();
-    const turn = {
+    const turn: Turn = {
       id: turnId,
       clientUserMessageId: p.clientUserMessageId,
       ...(p.idleCompaction ? { idleCompaction: true } : {}),
@@ -2927,10 +3138,10 @@ async function handle(method, p) {
       groups,
       p.clientUserMessageId || turn.id,
     );
-    let active = queries.get(s.id);
+    let active: ActiveQuery | null | undefined = queries.get(s.id);
     const startedAt = Date.now();
     const deadline = startedAt + PREPARATION_TIMEOUT_MS;
-    const control = (read, phase) =>
+    const control = <T>(read: () => T | Promise<T>, phase: string) =>
       boundedPreparation(
         read,
         deadline,
@@ -2955,7 +3166,7 @@ async function handle(method, p) {
       // A persistent query can die between turns (its Claude process ends).
       // Nothing is running in it, so start this turn in a fresh query.
       try {
-        await control(() => active.ready, "active_ready");
+        await control(() => active?.ready, "active_ready");
       } catch (error) {
         if (!deadQuery(error)) throw error;
         discardQuery(s.id, active);
@@ -2969,7 +3180,7 @@ async function handle(method, p) {
         // The SDK keeps an already registered in-process server even when its
         // tools change. Remove it first so the new schema replaces it.
         await control(
-          () => active.q.setMcpServers(active.externalMcpServers || {}),
+          () => active?.q?.setMcpServers(active.externalMcpServers || {}),
           "mcp_remove",
         );
         await control(
@@ -3059,10 +3270,12 @@ async function handle(method, p) {
       active = newActive(turn);
       queries.set(s.id, active);
       active.consumer = new Promise((resolve, reject) => {
-        setImmediate(() => startSession(s, active, p).then(resolve, reject));
+        const owned = active;
+        if (!owned) return reject(new Error("Claude query is missing"));
+        setImmediate(() => startSession(s, owned, p).then(resolve, reject));
       });
       active.consumer.catch((error) =>
-        process.stderr.write("Claude consumer: " + error.message + "\n"),
+        process.stderr.write("Claude consumer: " + errorText(error) + "\n"),
       );
     }
     catalogCache.activityChanged();
@@ -3166,7 +3379,7 @@ async function handle(method, p) {
       if (item) {
         item.deliveryStatus = "not_applied";
         cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
-        item.error = error.message;
+        item.error = errorText(error);
         await persistLive(s);
       }
       if (
@@ -3188,7 +3401,7 @@ async function handle(method, p) {
     if (!active?.turn) throw new Error("no active turn to interrupt");
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
-    const s = sessions.get(p.threadId);
+    const s = await session(p.threadId);
     const turn = active.turn;
     turn.interrupted = true;
     const reservingInput = active.reservingInput;
@@ -3202,7 +3415,7 @@ async function handle(method, p) {
     const stopTasks = p.stopBackgroundTasks !== false && active.tasks.size;
     if (stopTasks && typeof active.q?.stopTask !== "function")
       throw new Error("Claude does not support stopping background tasks");
-    let results = [];
+    let results: PromiseSettledResult<void>[] = [];
     if (!reservingInput && !finishingTurns.has(turn) && !active.stopTimer) {
       const timer = setTimeout(() => {
         if (active.stopTimer !== timer) return;
@@ -3223,7 +3436,7 @@ async function handle(method, p) {
         ? async () => {
             results = await Promise.allSettled(
               [...active.tasks.keys()].map((taskId) =>
-                active.q.stopTask(taskId),
+                active.q?.stopTask(taskId),
               ),
             );
           }
@@ -3310,34 +3523,56 @@ async function handle(method, p) {
   if (method === "skills/list") return listSkills(p?.cwds);
   throw new Error("Claude does not support " + method);
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function errorData(error: unknown): Record<string, unknown> {
+  return isRecord(error) && isRecord(error.data) ? error.data : {};
+}
+function errorField(error: unknown, field: string): unknown {
+  return isRecord(error) ? error[field] : undefined;
+}
+function errorText(error: unknown): string | undefined {
+  const text = errorField(error, "message");
+  return typeof text === "string" ? text : undefined;
+}
+function readBridgeInput<M extends BridgeServerMethod = BridgeServerMethod>(
+  line: string,
+): BridgeRequest | BridgeResponse<BridgeServerResult<M>> {
+  const value: unknown = JSON.parse(line);
+  if (!isRecord(value)) throw new Error("Invalid Claude bridge message");
+  // Studio and this bridge own the protocol; the envelope is checked here once.
+  // Payload types come from the shared wire owner, as in the scripted child boundary.
+  return value as BridgeRequest | BridgeResponse<BridgeServerResult<M>>;
+}
+
 const operations = new Map<string, Promise<unknown>>();
 const lines = createInterface({ input: process.stdin });
 lines.on("line", (line) => {
   let message;
   try {
-    message = JSON.parse(line);
+    message = readBridgeInput(line);
   } catch {
     return;
   }
-  if (!message.method) {
+  if (!("method" in message)) {
     const waiting = pending.get(message.id);
     if (waiting) {
       pending.delete(message.id);
-      if (message.error) waiting.reject(new Error(message.error.message));
-      else waiting.resolve(message.result);
+      if ("error" in message) waiting.reject(new Error(message.error.message));
+      else waiting.resolve(line);
     }
     return;
   }
-  const params = message.params || {};
+  const params = isRecord(message.params) ? message.params : {};
   // Serialize session mutations, but keep interrupt and permission replies independent.
-  const key = params.threadId;
+  const key = typeof params.threadId === "string" ? params.threadId : undefined;
   const ordered = key && isThreadSerialized(message.method, params);
   const before = ordered
     ? operations.get(key) || Promise.resolve()
     : Promise.resolve();
-  const operation = before
-    .catch(() => {})
-    .then(() => handle(message.method, params));
+  const operation = before.catch(() => {}).then(() => handle(message));
   if (ordered) {
     operations.set(key, operation);
     operation
@@ -3356,8 +3591,10 @@ lines.on("line", (line) => {
         send({
           id: message.id,
           error: {
-            code: Number.isInteger(error.code) ? error.code : -32000,
-            message: error.message,
+            code: Number.isInteger(errorField(error, "code"))
+              ? errorField(error, "code")
+              : -32000,
+            message: errorText(error),
             ...(error.data === undefined ? {} : { data: error.data }),
           },
         });

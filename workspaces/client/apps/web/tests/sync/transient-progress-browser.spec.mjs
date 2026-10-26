@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 
 for (const flow of ["vault", "auth", "vault-job"]) {
   test(`transient ${flow === "vault-job" ? "vault" : flow} progress has zero ${flow === "vault-job" ? "job receipt" : "idle HTTP"} reads`, async ({

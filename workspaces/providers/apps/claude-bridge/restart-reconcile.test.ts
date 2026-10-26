@@ -303,14 +303,17 @@ test("thread/read and resume deliver the recovered final reply without a model q
         .map((entry) => JSON.stringify({ ...entry, cwd: bridge.root }) + "\n")
         .join(""),
     );
-    for (const method of ["thread/read", "thread/resume"]) {
+    for (const method of ["thread/read", "thread/resume"] satisfies (
+      | "thread/read"
+      | "thread/resume"
+    )[]) {
       const result = await bridge.call(method, {
         threadId: sessionId,
         includeTurns: true,
       });
-      assert.equal(result.thread.turns[0].status, "completed");
+      assert.equal(result.thread.turns[0]?.status, "completed");
       assert.equal(
-        result.thread.turns[0].items.at(-1).text,
+        result.thread.turns[0]?.items.at(-1)?.text,
         "The task is complete.",
       );
     }
@@ -365,11 +368,14 @@ test("bridge reads retain the unconfirmed outcome and reason without a model que
       threadId: sessionId,
       includeTurns: true,
     });
-    assert.equal(result.thread.turns[0].status, "uncertain");
-    assert.match(result.thread.turns[0].error.message, /could not confirm/);
+    assert.equal(result.thread.turns[0]?.status, "uncertain");
+    assert.match(
+      result.thread.turns[0]?.error?.message ?? "",
+      /could not confirm/,
+    );
     const state = await bridge.call("claude/state", { threadId: sessionId });
-    assert.equal(state.turns[0].status, "uncertain");
-    assert.deepEqual(state.turns[0].error, result.thread.turns[0].error);
+    assert.equal(state.turns[0]?.status, "uncertain");
+    assert.deepEqual(state.turns[0]?.error, result.thread.turns[0]?.error);
     assert.equal(
       bridge.notes.some((entry) => entry.method === "turn/started"),
       false,

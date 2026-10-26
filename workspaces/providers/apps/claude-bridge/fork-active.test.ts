@@ -1,10 +1,21 @@
+import type { ForkQueryEvent } from "./fixtures/fork-active-sdk.ts";
+import type { BridgeHarness } from "./testing/bridge-harness.ts";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { startBridge } from "./testing/bridge-harness.ts";
 
-async function start(bridge, threadId, text, completed = true) {
+// The scripted child writes these event records for this test only.
+function parseForkQueryEvent(line: string): ForkQueryEvent {
+  return JSON.parse(line);
+}
+async function start(
+  bridge: BridgeHarness,
+  threadId: string,
+  text: string,
+  completed = true,
+) {
   const { turn } = await bridge.call("turn/start", {
     threadId,
     input: [{ type: "text", text }],
@@ -42,7 +53,7 @@ for (const mode of ["running", "background"]) {
       ).thread;
       assert.notEqual(target.id, bridge.thread);
       assert.equal(target.turns.length, 1);
-      assert.equal(target.turns[0].status, "completed");
+      assert.equal(target.turns[0]?.status, "completed");
       assert.deepEqual(
         (
           await bridge.call("thread/read", {
@@ -67,7 +78,7 @@ for (const mode of ["running", "background"]) {
       )
         .trim()
         .split("\n")
-        .map((line) => JSON.parse(line));
+        .map(parseForkQueryEvent);
       assert.equal(
         events.filter((e) => e.id === bridge.thread && e.start).length,
         1,
@@ -82,7 +93,7 @@ for (const mode of ["running", "background"]) {
             await bridge.call("thread/backgroundTerminals/list", {
               threadId: bridge.thread,
             })
-          ).data[0].task_id,
+          ).data[0]?.task_id,
           "bg",
         );
     } finally {

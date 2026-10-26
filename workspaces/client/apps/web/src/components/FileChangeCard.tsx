@@ -23,7 +23,7 @@ export default memo(function FileChangeCard({
   item: Message;
   payload: Json;
   status: string;
-  cwd?: string;
+  cwd?: string | undefined;
 }) {
   const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const [open, setOpen] = useState(true);

@@ -13,7 +13,7 @@ export default function CodexSignIn({
   account: Account;
   state: ReturnType<typeof useAccounts>;
   onClose: () => void;
-  serverLabel?: string;
+  serverLabel?: string | undefined;
 }) {
   const { post } = useServerApi();
 

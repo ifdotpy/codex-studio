@@ -36,10 +36,10 @@ type Entry = {
   consumers: Set<ChangeListener>;
   observers: Set<() => void>;
   state: SubscriptionState<unknown>;
-  version?: ResourceVersion;
+  version?: ResourceVersion | undefined;
   confirmed: boolean;
-  stop?: () => void;
-  timer?: ReturnType<typeof setTimeout>;
+  stop?: (() => void) | undefined;
+  timer?: ReturnType<typeof setTimeout> | undefined;
   graceMs: number;
 };
 

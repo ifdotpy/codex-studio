@@ -19,7 +19,7 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `projects/new-chat-workspace-ui.spec.mjs`
 - `queue/queue-mutation-deadline-browser.spec.mjs`
 - `radio/radio-create-browser.spec.mjs`
-- `servers/multi-server-fixture.mjs`
+- `servers/multi-server-fixture.ts`
 - `servers/project-locations-ui.spec.mjs`
 - `settings/claude-settings-auth-ui.spec.mjs`
 - `settings/execution-settings-canonical-browser.spec.mjs`

@@ -1,5 +1,5 @@
-import { test, expect } from "../../tests/playwright.mjs";
-import { fixture } from "../../tests/servers/multi-server-fixture.mjs";
+import { test, expect } from "../../tests/playwright.ts";
+import { fixture } from "../../tests/servers/multi-server-fixture.ts";
 
 for (const width of [320, 390]) {
   test(`Studio settings at ${width} keeps navigation separate from the form`, async ({

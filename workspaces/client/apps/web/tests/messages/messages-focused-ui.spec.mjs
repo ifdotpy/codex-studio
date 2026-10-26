@@ -6,7 +6,7 @@ import {
   test,
   rustUiFixture,
   queryFixtureDatabase,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real runtime records, lost HTTP response, and responsive message navigation.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

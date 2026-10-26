@@ -58,7 +58,7 @@ for (const source of ["init", "hook", "fork", "both"])
       await bridge.note(
         (note) =>
           note.method === "fixture/query" &&
-          (note.params.resume || note.params.sessionId),
+          !!(note.params.resume || note.params.sessionId),
       );
       const queries = (
         await fs.readFile(path.join(bridge.root, ".queries"), "utf8")
@@ -131,7 +131,7 @@ for (const phase of [
         await bridge.note(
           (note) =>
             note.method === "fixture/query" &&
-            (note.params.resume || note.params.sessionId),
+            !!(note.params.resume || note.params.sessionId),
         );
       const queries = (
         await fs.readFile(path.join(bridge.root, ".queries"), "utf8")

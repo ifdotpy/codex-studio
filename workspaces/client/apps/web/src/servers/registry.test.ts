@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { expect, it } from "vitest";
 import {
   readServers,
@@ -61,6 +62,7 @@ it("keeps unchanged server objects when the saved list is read again", () => {
   const renamed = shareServers(first, [server("a"), server("b", "B")]);
   expect(renamed).not.toBe(first);
   expect(renamed[0]).toBe(first[0]);
+  assert.ok(renamed[1] != null);
   expect(renamed[1].label).toBe("B");
   const reordered = shareServers(first, [server("b"), server("a")]);
   expect(reordered).toEqual([first[1], first[0]]);

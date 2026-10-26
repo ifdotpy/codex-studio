@@ -11,7 +11,7 @@ import type {
   SDKBackgroundTasksChangedMessage,
   SDKRateLimitInfo,
   SDKControlGetUsageResponse,
-  Settings,
+  Query,
   SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -90,6 +90,7 @@ export type BridgeSessionParams = Partial<
   >
 > & { cwd?: string | undefined; dynamicTools?: ToolDefinition[] | undefined };
 export interface BridgeTurnParams extends BridgeThreadParams {
+  dynamicTools?: ToolDefinition[] | undefined;
   input: BridgeInput[];
   clientUserMessageId?: string | undefined;
   model?: Options["model"] | undefined;
@@ -111,13 +112,17 @@ export type BridgeTurnResult = {
   steered?: true | undefined;
 };
 // The bridge merges task events and their patches into one mutable task view.
-export type BridgeTask =
-  | Partial<
-      Omit<SDKTaskStartedMessage, "subtype"> &
-        SDKTaskUpdatedMessage["patch"] &
-        Pick<SDKTaskNotificationMessage, "output_file">
-    >
-  | SDKBackgroundTasksChangedMessage["tasks"][number];
+export type BridgeTask = Partial<
+  Omit<SDKTaskStartedMessage, "subtype"> &
+    Omit<SDKTaskUpdatedMessage["patch"], "status"> &
+    Pick<SDKTaskNotificationMessage, "output_file"> &
+    SDKBackgroundTasksChangedMessage["tasks"][number]
+> & {
+  status?:
+    | SDKTaskNotificationMessage["status"]
+    | SDKTaskUpdatedMessage["patch"]["status"]
+    | undefined;
+};
 export type BridgeCommand = Required<
   Pick<
     SlashCommand,
@@ -183,7 +188,7 @@ export type BridgeMoveProof = MoveProof & {
     strictMcpConfig: true;
     model: Session["model"];
     permissionMode: Options["permissionMode"];
-    settings: Settings;
+    settings: Parameters<Query["applyFlagSettings"]>[0];
     effort: Options["effort"] | null;
     systemPrompt: {
       type: "preset";
@@ -216,7 +221,7 @@ export type BridgeRepairReport = Omit<
   nativeHistoryConfirmed: boolean | null;
 };
 export interface BridgeState {
-  settings: Settings;
+  settings: NonNullable<Session["claude"]>;
   turns: (Pick<Turn, "id" | "status" | "error"> & {
     canRestoreFiles: boolean;
     restoreFilesUnavailableReason: string | null;
@@ -309,8 +314,8 @@ export interface BridgeMethods {
     },
   ];
   "claude/settings": [
-    BridgeThreadParams & { settings: Settings },
-    { settings: Settings },
+    BridgeThreadParams & { settings: NonNullable<Session["claude"]> },
+    { settings: NonNullable<Session["claude"]> },
   ];
   "thread/rollback": [
     BridgeThreadParams & {
@@ -496,16 +501,23 @@ export type BridgeNotification<
   [K in M]: { method: K; params: BridgeNotificationParams<K> };
 }[M];
 
+type NativeQuestion = AskUserQuestionInput["questions"][number];
+// The bridge forwards parsed questions; SDK input tuple cardinalities and
+// required multi-select defaults are not enforced on this wire boundary.
+export type BridgeUserQuestion = Pick<NativeQuestion, "question" | "header"> &
+  Partial<Omit<NativeQuestion, "question" | "header" | "options">> & {
+    options: NativeQuestion["options"][number][];
+    id: string;
+    isOther: true;
+    isSecret: false;
+  };
+
 export interface BridgeServerRequests {
   "item/tool/requestUserInput": [
     BridgeThreadParams & {
       turnId: string;
       itemId: string;
-      questions: (AskUserQuestionInput["questions"][number] & {
-        id: string;
-        isOther: true;
-        isSecret: false;
-      })[];
+      questions: BridgeUserQuestion[];
     },
     { answers?: Record<string, { answers: string[] }> | undefined },
   ];

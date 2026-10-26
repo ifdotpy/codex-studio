@@ -1,3 +1,5 @@
+import assert from "node:assert/strict";
+import type { OutgoingTabMessage } from "./resourceEvents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
@@ -104,14 +106,14 @@ class Source {
 class Channel {
   static instances: Channel[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
-  messages: unknown[] = [];
+  messages: OutgoingTabMessage[] = [];
   readonly name: string;
   constructor(name: string) {
     this.name = name;
 
     Channel.instances.push(this);
   }
-  postMessage(value: unknown) {
+  postMessage(value: OutgoingTabMessage) {
     this.messages.push(value);
   }
   close() {}
@@ -229,6 +231,7 @@ describe("shared resource event transport", () => {
       value,
     });
     expect(accept).toHaveBeenCalledOnce();
+    assert.ok(accept.mock.calls[0] != null);
     expect(accept.mock.calls[0][0].progress).toEqual({ resource, value });
   });
 
@@ -281,7 +284,9 @@ describe("shared resource event transport", () => {
     });
     await vi.advanceTimersByTimeAsync(20);
     expect(voice).toHaveBeenCalledOnce();
+    assert.ok(discovery.mock.calls[0] != null);
     expect(discovery.mock.calls[0][0].discoverySnapshot).toEqual(snapshot);
+    assert.ok(voice.mock.calls[0] != null);
     expect(voice.mock.calls[0][0].voiceRecords).toEqual(batch);
   });
 
@@ -347,6 +352,7 @@ describe("shared resource event transport", () => {
     });
     await vi.advanceTimersByTimeAsync(20);
     expect(listener).toHaveBeenCalledTimes(3);
+    assert.ok(listener.mock.calls[2] != null);
     expect(listener.mock.calls[2][0].reason).toBe("reconnect");
     stop();
   });
@@ -2026,10 +2032,10 @@ describe("shared resource event transport", () => {
       ownerChannel.messages
         .slice(sentBeforeLateSubscription)
         .some(
-          (message: any) =>
+          (message) =>
             message.kind === "resource-event" &&
             message.event.resources.some(
-              (resource: any) => resource.kind === "state",
+              (resource) => resource.kind === "state",
             ) &&
             message.event.resourceVersions[0]?.entitySequences?.[0] === 42,
         ),
@@ -2088,9 +2094,7 @@ describe("shared resource event transport", () => {
     } as MessageEvent);
     const cachedBaseline = ownerChannel.messages
       .slice(beforeCacheInspection)
-      .find((message: any) => message.kind === "resource-event") as
-      | { event: { resources: unknown[] } }
-      | undefined;
+      .find((message) => message.kind === "resource-event");
     const cachedResources = cachedBaseline?.event.resources ?? [];
     expect(cachedResources).toHaveLength(129);
     expect(cachedResources).toContainEqual(local);
@@ -2131,7 +2135,7 @@ describe("shared resource event transport", () => {
     expect(
       ownerChannel.messages
         .slice(sentBeforeLateSubscription)
-        .some((message: any) => message.kind === "resource-event"),
+        .some((message) => message.kind === "resource-event"),
     ).toBe(false);
 
     Source.instances.at(-1)!.emit("resources", {
@@ -2147,10 +2151,10 @@ describe("shared resource event transport", () => {
       ownerChannel.messages
         .slice(sentBeforeLateSubscription)
         .some(
-          (message: any) =>
+          (message) =>
             message.kind === "resource-event" &&
             message.event.resources.some(
-              (resource: any) =>
+              (resource) =>
                 resource.kind === "queue" &&
                 resource.agentId === evictedRef.agentId,
             ),

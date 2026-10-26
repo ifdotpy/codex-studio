@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -107,6 +108,7 @@ it("reconciles a delivered receipt before transcript observation", async () => {
   );
   await acknowledgeOutbox(["visible"]);
 
+  assert.ok(docs[0] != null);
   const reconciled = JSON.parse(docs[0].getLatest().payload);
   expect(reconciled.status).toBe("accepted");
   expect(reconciled.receipt).toMatchObject({
@@ -123,7 +125,9 @@ it("reconciles delivered receipts after transcript observation without showing t
     { id: "other-room", room: "elsewhere" },
   ]);
   await acknowledgeOutbox(["hidden", "other-room"]);
+  assert.ok(docs[0] != null);
   expect(JSON.parse(docs[0].getLatest().payload).displayPending).toBe(false);
+  assert.ok(docs[1] != null);
   expect(JSON.parse(docs[1].getLatest().payload).displayPending).toBe(false);
   const otherRoomBefore = docs[1].getLatest().payload;
   await reconcileOutboxReceipts(
@@ -153,6 +157,7 @@ it("keeps retired copies hidden without confirmed delivery and for failed or unc
     { id: "uncertain", status: "uncertain", displayPending: false },
     { id: "failed", status: "failed", displayPending: false },
   ]);
+  assert.ok(docs[3] != null);
   const failedBefore = docs[3].getLatest().payload;
 
   await reconcileOutboxReceipts(
@@ -271,6 +276,7 @@ it("skips receipt recovery only for an explicitly deleted agent projection", asy
   const { docs, projections } = fixture([
     { id: "deleted-message", room: "deleted-chat", status: "uncertain" },
   ]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   projections.storageInstance.findDocumentsById.mockResolvedValue([
     {
@@ -295,6 +301,7 @@ it("does not mistake a sequence-zero stream reset tombstone for agent deletion",
   const { docs, projections } = fixture([
     { id: "reset-message", room: "reset-chat", status: "uncertain" },
   ]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   projections.storageInstance.findDocumentsById.mockResolvedValue([
     {
@@ -325,6 +332,7 @@ it("recognizes a positive-sequence agent tombstone with an empty value", async (
   const { docs, projections } = fixture([
     { id: "deleted-message", room: "deleted-chat", status: "uncertain" },
   ]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   projections.storageInstance.findDocumentsById.mockResolvedValue([
     {
@@ -392,6 +400,7 @@ it("does not reconcile a receipt if deletion arrives during the outbox write", a
   const { docs, emitProjection } = fixture([
     { id: "message", room: "deleted-chat", status: "uncertain" },
   ]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   let enteredModify!: () => void;
   let resumeModify!: () => void;
@@ -400,9 +409,11 @@ it("does not reconcile a receipt if deletion arrives during the outbox write", a
     (resolve) => (resumeModify = resolve),
   );
   const doc = docs[0];
+  assert.ok(doc != null);
   doc.incrementalModify.mockImplementation(async (change) => {
     enteredModify();
     await continueModify;
+    assert.ok(doc != null);
     const record = doc.getLatest();
     Object.assign(record, change({ ...record }));
     return record;
@@ -433,6 +444,7 @@ it("does not reconcile a receipt if deletion arrives during the outbox write", a
 
 it("preserves copies after a lost read and rejects foreign receipt identities", async () => {
   const { docs } = fixture([{ id: "saved" }]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   mocks.syncGet.mockRejectedValueOnce(new Error("offline"));
   await expect(recoverAcknowledgedOutbox()).rejects.toThrow("offline");
@@ -451,6 +463,7 @@ it("preserves copies after a lost read and rejects foreign receipt identities", 
 
 it("does not change a different workspace after a pending receipt read", async () => {
   const { docs, database } = fixture([{ id: "saved" }]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   mocks.syncGet.mockImplementation(async () => {
     mocks.syncDatabase.mockResolvedValue({ ...database, workspaceId: "other" });
@@ -466,6 +479,7 @@ it("does not change a different workspace after a pending receipt read", async (
 
 it("does not trust an unverified cached workspace", async () => {
   const { docs, database } = fixture([{ id: "saved" }]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   database.verifyWorkspace.mockRejectedValue(new Error("Workspace changed"));
   await expect(recoverAcknowledgedOutbox()).rejects.toThrow(
@@ -477,6 +491,7 @@ it("does not trust an unverified cached workspace", async () => {
 
 it("rejects a foreign server response after the workspace was verified", async () => {
   const { docs } = fixture([{ id: "saved" }]);
+  assert.ok(docs[0] != null);
   const original = docs[0].getLatest().payload;
   mocks.syncGet.mockResolvedValue({
     agent: "chat",

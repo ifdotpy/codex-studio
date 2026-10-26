@@ -1,3 +1,15 @@
+import type { Query } from "@anthropic-ai/claude-agent-sdk";
+import type { Session, Item } from "./session-state.ts";
+import type { StudioInputMessage } from "./input-messages.ts";
+import type { ActiveQuery } from "./bridge.ts";
+export type StopActive = Pick<ActiveQuery, "pendingSteers"> & {
+  input: Pick<ActiveQuery["input"], "values"> &
+    Partial<Pick<ActiveQuery["input"], "withdraw">>;
+  q?: {
+    interrupt(options?: { cancelQueued: true }): ReturnType<Query["interrupt"]>;
+  } | null;
+};
+
 import {
   cancelNativeSessionInput,
   nativeInputAttempt,
@@ -5,8 +17,19 @@ import {
 // SDK 0.3.285 implements interrupt({cancelQueued:true}) in sdk.mjs, although
 // sdk.d.ts still declares interrupt() without arguments. The CLI receipt uses
 // native UUIDs; Studio settles only its original input identities.
-export async function interruptInputQueue(session, active, beforeInterrupt) {
-  const inputs = new Map();
+export async function interruptInputQueue(
+  session: Session,
+  active: StopActive,
+  beforeInterrupt?: () => unknown | Promise<unknown>,
+) {
+  const inputs = new Map<
+    string | undefined,
+    {
+      item: Item;
+      attempt: ReturnType<typeof nativeInputAttempt>;
+      uuids: string[];
+    }
+  >();
   for (const turn of session.turns) {
     for (const item of turn.items) {
       if (item.type !== "userMessage" || !item.nativeId) continue;
@@ -27,7 +50,7 @@ export async function interruptInputQueue(session, active, beforeInterrupt) {
     typeof active.input.withdraw === "function"
       ? active.input.withdraw()
       : active.input.values.splice(0);
-  const locallyCancelled = new Set();
+  const locallyCancelled = new Set<StudioInputMessage["uuid"]>();
   for (const input of withdrawn) {
     for (const part of input.studioInputBatch || [input]) {
       if (inputs.get(part.studioInputIdentity)?.uuids.includes(part.uuid)) {
@@ -35,7 +58,7 @@ export async function interruptInputQueue(session, active, beforeInterrupt) {
       }
     }
   }
-  const markCancelled = (identity, item) => {
+  const markCancelled = (identity: string | undefined, item: Item) => {
     item.deliveryStatus = "cancelled";
     item.error = "Cancelled by Stop before Claude read this input";
     active.pendingSteers.delete(identity);
@@ -52,7 +75,10 @@ export async function interruptInputQueue(session, active, beforeInterrupt) {
     ...(native?.cancelled || []),
   ]);
   const survivors = new Set(native?.still_queued || []);
-  const receipt = { cancelled: [], still_queued: [] };
+  const receipt: {
+    cancelled: (string | undefined)[];
+    still_queued: (string | undefined)[];
+  } = { cancelled: [], still_queued: [] };
   for (const [identity, { item, uuids, attempt }] of inputs) {
     // A partial split-input cancellation does not prove the input was unread.
     if (uuids.every((uuid) => cancelled.has(uuid) && !survivors.has(uuid))) {

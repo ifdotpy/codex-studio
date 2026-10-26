@@ -1,3 +1,5 @@
+import type { RxDocument } from "rxdb";
+import type { SyncDocument } from "./client";
 import { isRemoteServerView } from "../servers/environment";
 import { hasNativeClient } from "../native/client";
 import { useNativeDrafts } from "../native/useNativeDrafts";
@@ -171,7 +173,7 @@ export function createBrowserDrafts(options: {
     const versions = useRef<DraftVersion[]>([]);
     const decoded = useRef(new WeakMap<object, DraftVersion>());
     const decodeDrafts = useCallback(
-      (docs: any[]): DraftVersion[] =>
+      (docs: RxDocument<SyncDocument>[]): DraftVersion[] =>
         docs.map((doc) => {
           const latest = doc.getLatest();
           let version = decoded.current.get(latest);
@@ -530,7 +532,7 @@ export function createBrowserDrafts(options: {
       let stopped = false,
         unsubscribe = () => {},
         cancel = () => {};
-      let pendingDocuments: any[] | undefined;
+      let pendingDocuments: RxDocument<SyncDocument>[] | undefined;
       const publication = createFrameBatch(() => {
         const docs = pendingDocuments;
         pendingDocuments = undefined;
@@ -558,7 +560,13 @@ export function createBrowserDrafts(options: {
             await flushDrafts();
             const testOnly =
               typeof window !== "undefined"
-                ? (window as any).__codexDraftReplicationTestOnly
+                ? (
+                    window as Window & {
+                      __codexDraftReplicationTestOnly?: NonNullable<
+                        Parameters<typeof startDraftReplication>[1]
+                      >["testOnly"];
+                    }
+                  ).__codexDraftReplicationTestOnly
                 : undefined;
             cancel = await startDraftReplication(
               (e, direction) => {
@@ -592,10 +600,12 @@ export function createBrowserDrafts(options: {
                 });
             }
             if (stopped) return;
-            const sub = db.drafts.find().$.subscribe((docs: any[]) => {
-              pendingDocuments = docs;
-              publication.schedule();
-            });
+            const sub = db.drafts
+              .find()
+              .$.subscribe((docs: RxDocument<SyncDocument>[]) => {
+                pendingDocuments = docs;
+                publication.schedule();
+              });
             unsubscribe = () => {
               sub.unsubscribe();
               publication.cancel();

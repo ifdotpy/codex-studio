@@ -1,5 +1,5 @@
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "./multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "./multi-server-fixture.ts";
 
 test("direct screens keep overlapping chat drafts and sends with their owner", async ({
   page,

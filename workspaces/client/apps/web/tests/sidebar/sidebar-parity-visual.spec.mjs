@@ -1,6 +1,6 @@
 import { mkdir, appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
 
 let output;

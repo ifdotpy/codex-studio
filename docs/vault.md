@@ -20,7 +20,7 @@ steps of layr-desk's `docs/design.md` ("Set up a vault for a project") with the 
 the app carries (`Resources/workspace/bin/layr-desk`):
 
 1. Paper key: the desktop app writes a one-time `.command` script and opens it in Terminal
-   (`desktop/vault-keys.cjs`), which runs `layr-desk keys --project <prefix> --clear`. The words
+   (`desktop/vault-keys.ts`), which runs `layr-desk keys --project <prefix> --clear`. The words
    go from layr-desk to Terminal only. Studio's own terminals are not used, because they keep
    their output in SQLite. The dialog then waits for `~/.config/studio-vault/<prefix>/recipient.txt`.
 2. AWS account: `POST /api/vault/setup/facts` lists the AWS profiles (`layr-desk aws-profiles`)

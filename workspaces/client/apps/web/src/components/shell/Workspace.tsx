@@ -47,7 +47,7 @@ import {
   type PostBody,
   type PostResult,
 } from "../../api";
-import type { Agent, Json, JsonValue, Snapshot } from "../../types";
+import type { Agent, Json, JsonInput, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelField } from "../models/ModelField";
 import {
@@ -64,10 +64,10 @@ import { WorkerLaunchDialog, type WorkerLaunch } from "./WorkerLaunchDialog";
 
 type Props = {
   initialSection?: string;
-  initialFocus?: { id: string; requestId: string; roomId?: string };
+  initialFocus?: { id: string; requestId: string; roomId?: string } | undefined;
   opened: boolean;
   onClose: () => void;
-  agent?: Agent;
+  agent?: Agent | undefined;
   data: Snapshot;
   allRequests: NonNullable<Snapshot["runtime"]>["requests"];
   onSelect: (id: string, messageId?: string) => void;
@@ -1183,7 +1183,7 @@ function Profiles(c: Context) {
               try {
                 await c.run("/api/profiles", {
                   action: "save",
-                  id: typeof draft.id === "string" ? draft.id : undefined,
+                  ...(typeof draft.id === "string" ? { id: draft.id } : {}),
                   isNew: draft.isNew === true,
                   name: typeof draft.name === "string" ? draft.name : "",
                   role: draft.role === "reviewer" ? "reviewer" : "implementer",
@@ -1284,7 +1284,7 @@ function Profiles(c: Context) {
             setBusy(true);
             try {
               await c.run("/api/profiles", {
-                id: remove?.id,
+                ...(remove?.id === undefined ? {} : { id: remove.id }),
                 action: "delete",
                 role: remove?.role ?? "reviewer",
                 instructions: remove?.instructions ?? "",
@@ -1668,7 +1668,7 @@ function Rules(c: Context) {
 }
 
 type RuleRecord = GetResult<"/api/rules">["rules"][number];
-type RuleAction = PostBody<"/api/rules">["action"];
+type RuleAction = NonNullable<PostBody<"/api/rules">["action"]>;
 type RuleDraft = {
   id: string;
   isNew?: boolean;
@@ -1711,7 +1711,10 @@ export function parseRuleDraft(value: Json | null): RuleDraft | null {
     !isRuleKind(value.kind)
   )
     return null;
-  const asNumberOrString = (candidate: JsonValue, fallback: number) =>
+  const asNumberOrString = (
+    candidate: JsonInput | undefined,
+    fallback: number,
+  ) =>
     typeof candidate === "number" || typeof candidate === "string"
       ? candidate
       : fallback;
@@ -1773,18 +1776,25 @@ export function ruleBodyFromDraft(
     action: "save",
     name: draft.name,
     kind: draft.kind,
-    intervalSeconds:
-      draft.kind === "interval" ? Number(draft.intervalSeconds) : undefined,
-    minimumWorkers:
-      draft.kind === "low_workers" ? Number(draft.minimumWorkers) : undefined,
-    durationMinutes:
-      draft.kind === "low_workers" ? Number(draft.durationMinutes) : undefined,
+    ...(draft.kind === "interval"
+      ? { intervalSeconds: Number(draft.intervalSeconds) }
+      : {}),
+    ...(draft.kind === "low_workers"
+      ? { minimumWorkers: Number(draft.minimumWorkers) }
+      : {}),
+    ...(draft.kind === "low_workers"
+      ? { durationMinutes: Number(draft.durationMinutes) }
+      : {}),
     stallTimeoutSeconds: Number(draft.stallTimeoutSeconds),
-    at: draft.kind === "once" ? new Date(draft.at).getTime() / 1000 : undefined,
-    path: draft.kind === "file" ? draft.path : undefined,
-    event: draft.kind === "event" ? draft.event : undefined,
+    ...(draft.kind === "once"
+      ? { at: new Date(draft.at).getTime() / 1000 }
+      : {}),
+    ...(draft.kind === "file" ? { path: draft.path } : {}),
+    ...(draft.kind === "event" ? { event: draft.event } : {}),
     command: draft.kind === "low_workers" ? "" : draft.command,
-    livenessCommand: draft.kind === "file" ? draft.livenessCommand : undefined,
+    ...(draft.kind === "file"
+      ? { livenessCommand: draft.livenessCommand }
+      : {}),
     text: draft.text,
   };
 }

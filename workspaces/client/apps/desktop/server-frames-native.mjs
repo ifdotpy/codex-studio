@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { fixture } from "../web/tests/servers/multi-server-fixture.mjs";
+import { fixture } from "../web/tests/servers/multi-server-fixture.ts";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await mkdtemp(path.join(tmpdir(), "studio-native-frames-"));
@@ -15,7 +15,14 @@ try {
   const executablePath = process.env.CODEX_FRAMES_EXECUTABLE;
   desktop = await electron.launch({
     ...(executablePath ? { executablePath } : {}),
-    args: [...(executablePath ? [] : [root]), "--hidden", "--ui-only"],
+    args: [
+      ...(executablePath ? [] : [root]),
+      "--hidden",
+      "--ui-only",
+      ...(process.platform === "linux" && !process.env.DISPLAY
+        ? ["--ozone-platform=headless"]
+        : []),
+    ],
     env: {
       ...process.env,
       CODEX_UI_PORT: "0",
@@ -26,6 +33,7 @@ try {
   await desktop.evaluate(
     ({ safeStorage }, { origin, destination }) => {
       safeStorage.isEncryptionAvailable = () => true;
+      safeStorage.getSelectedStorageBackend = () => "gnome_libsecret";
       safeStorage.encryptString = (value) => Buffer.from(value);
       safeStorage.decryptString = (bytes) => bytes.toString();
       const original = globalThis.fetch;

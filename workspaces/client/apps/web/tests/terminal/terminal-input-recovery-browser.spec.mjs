@@ -14,7 +14,7 @@ import {
   syncProtocolFixture,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);

@@ -1,4 +1,4 @@
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
 
 // In the combined window the terminal panel of the selected server view sits under the shell

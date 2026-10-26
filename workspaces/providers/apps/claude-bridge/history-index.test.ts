@@ -1,3 +1,4 @@
+import type { ControlDependencies } from "./controls.ts";
 import assert from "node:assert/strict";
 import type { Session, Turn } from "./session-state.ts";
 import { afterEach, expect, test } from "vitest";
@@ -13,6 +14,20 @@ function at<T>(values: readonly T[], index: number): T {
   const value = values[index];
   assert.ok(value !== undefined, "Expected fixture entry");
   return value;
+}
+const noRestore = async () => {
+  throw new Error("No file restore expected");
+};
+function controls(cwd: string): ControlDependencies {
+  return {
+    ...sdk,
+    persist: async () => {},
+    getSessionMessages: (id, options) =>
+      verifiedHistoryMessages({ id, cwd: options?.dir ?? cwd }),
+    rewindFiles: noRestore,
+    prepareFileRestore: noRestore,
+    verifyFileRestore: noRestore,
+  };
 }
 const roots: string[] = [];
 const previous = process.env.CLAUDE_CONFIG_DIR;
@@ -122,12 +137,7 @@ for (const serviceFirst of [true, false])
       dir: f.cwd,
     });
     expect(visible).toHaveLength(4);
-    const deps: typeof sdk & { persist: () => Promise<void> } = {
-      ...sdk,
-      getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options?.dir ?? f.cwd }),
-      persist: async () => {},
-    };
+    const deps = controls(f.cwd);
     const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
     expect(fork.turns).toHaveLength(1);
     expect(fork.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
@@ -202,12 +212,7 @@ test("post-clear controls use current native turns while preserving earlier mirr
     items: [{ type: "userMessage", nativeId: randomUUID() }],
   };
   f.session.turns.unshift(earlier, clear);
-  const deps: typeof sdk & { persist: () => Promise<void> } = {
-    ...sdk,
-    getSessionMessages: (id, options) =>
-      verifiedHistoryMessages({ id, cwd: options?.dir ?? f.cwd }),
-    persist: async () => {},
-  };
+  const deps = controls(f.cwd);
   const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
   expect(fork.turns.map((turn: Turn) => turn.id)).toEqual([
     "before-clear",

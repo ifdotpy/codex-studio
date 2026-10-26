@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import {
   fixture,
   fixtureWorkspaceId,
-} from "../servers/multi-server-fixture.mjs";
+} from "../servers/multi-server-fixture.ts";
 import {
   entityPullFixture,
   syncIdentityFixture,
   validateSyncPullRequest,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 export const scope = "/same/state";
 const workspaceIds = {

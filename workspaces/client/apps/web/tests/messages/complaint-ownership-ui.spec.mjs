@@ -4,7 +4,7 @@ import { join } from "node:path";
 import {
   test,
   createFixtureViteServer as createServer,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Complaint ownership", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);

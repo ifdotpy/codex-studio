@@ -1,25 +1,24 @@
-import type {
-  ModelInfo,
-  Settings,
-  PermissionMode,
-} from "@anthropic-ai/claude-agent-sdk";
+import type { ModelInfo, Settings } from "@anthropic-ai/claude-agent-sdk";
 
-export type ClaudeSettings = Settings & {
-  permissionMode?: PermissionMode;
-  thinking?: boolean;
-  autoCompactWindow?: number;
-};
+export type ClaudeSettings = Omit<Settings, "autoCompactWindow"> &
+  Pick<
+    import("./runtime-contract.generated.ts").ClaudeSessionSettings,
+    "permissionMode" | "thinking" | "autoCompactWindow"
+  >;
 
 export type ThinkingModel = Partial<
   Pick<ModelInfo, "value" | "resolvedModel" | "description">
 > & { model?: ModelInfo["value"] };
 
 // Resolve aliases from the current account catalog, not a fixed alias mapping.
-export function requiresThinking(model: string, models: ThinkingModel[] = []) {
+export function requiresThinking(
+  model: string | undefined,
+  models: ThinkingModel[] = [],
+) {
   const row = models.find(
     (row) => (row.value || row.model) === model || row.resolvedModel === model,
   );
-  const identity = row?.resolvedModel || model;
+  const identity = row?.resolvedModel || model || "";
   const explicit = /^claude-(opus|fable)-(\d+)(?:-(\d+))?(?:\[1m\])?$/.exec(
     identity,
   );
@@ -41,7 +40,7 @@ export function requiresThinking(model: string, models: ThinkingModel[] = []) {
 export function thinkingFlag(
   model: string,
   models: ThinkingModel[],
-  saved?: boolean,
+  saved?: boolean | null,
   live = false,
 ) {
   return requiresThinking(model, models)

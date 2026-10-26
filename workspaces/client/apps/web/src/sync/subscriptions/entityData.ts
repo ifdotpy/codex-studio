@@ -1,10 +1,12 @@
 import { syncDatabase, type createSyncClient } from "../client";
-import type { SyncEntityPayload } from "../../generated/api";
+import type { DeepReadonly } from "rxdb";
+import type { SyncEntityPayload as MutableSyncEntityPayload } from "../../generated/api";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../../generated/subscriptionEntities";
 import type { ResourceData, ResourceRef } from "./contracts";
 import type { ObserveSubscriptionData } from "./module";
 import { createWorkDataSelector } from "./workData";
 
+type SyncEntityPayload = DeepReadonly<MutableSyncEntityPayload>;
 type ScopeKind = keyof typeof SUBSCRIPTION_ENTITY_SCOPES;
 
 /** Observe only persisted, typed cache rows. Network interest belongs to the
@@ -19,7 +21,7 @@ export function createEntityDataObserver(
   ) => {
     const scope = SUBSCRIPTION_ENTITY_SCOPES[ref.kind as ScopeKind];
     if (!scope) return () => {};
-    const reference = ref as unknown as Record<string, unknown>;
+    const reference = ref as Record<string, unknown>;
     const selectedAgent = scope.agentField
       ? reference[scope.agentField]
       : undefined;

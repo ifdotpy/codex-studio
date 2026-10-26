@@ -18,7 +18,7 @@ model request or a real reset-credit redemption.
 `just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop
 recovery and retained-helper boundaries, web API/type witnesses, tooling tests,
 generated-contract and dependency guards, and the VM guest Python suite through its
-[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses five
+[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mts). The facade uses five
 bounded concurrent lanes: Rust preparation and tests, type checks, web tests,
 independent tooling/provider/desktop checks, and the guest suite. Independent
 checks start immediately; artifact consumers wait only for their preparation. Cargo compilation stays in the Rust lane with four build jobs. WASM is
@@ -26,7 +26,7 @@ generated once; the renderer is built once before the native crate embeds it.
 Type checks wait for WASM; web tests wait for the workspace build's debug
 `examples/draft-server`, and the guest waits for its debug supervisor. The gate
 passes both binary paths explicitly. These checks overlap the Rust build or test run. The
-[WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs) requires
+[WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.ts) requires
 the exact binding generator version pinned by the client-wasm crate; its error
 gives the installation command. Cold builds are outside the warm short-tier
 target. The nextest configuration also owns the failure deadline; its CI profile
@@ -140,7 +140,7 @@ smoke prepares itself; `just test-browser-smoke --prepared` consumes those input
 Fast Vitest witnesses live in each package's `vitest.fast.config.*`; each package
 runs once with `--project fast`. File isolation and the existing worker bounds
 remain enabled. The selected resource-event file includes the draft ordering
-witness, so it needs no second `-t` invocation. Main, API-contract and client-helper
+witness, so it needs no second `-t` invocation. The main renderer project also checks the API contract witnesses; client-helper
 TypeScript programs remain separate. Their `--incremental` build information is
 stored outside the checkout, with a separate cache file per program and a
 checkout-specific gate cache directory.
@@ -182,9 +182,9 @@ Install dependencies once with `pnpm install --frozen-lockfile`. Root package
 scripts select client unit, browser, desktop, and provider bridge checks. Browser
 checks build the renderer, use isolated state and a Rust HTTP fixture, and reap
 fixture process groups after success, failure, or timeout. Browser scratch and
-parallelism are owned by the [launcher](../workspaces/client/apps/web/scripts/run-browser-tests.mjs).
+parallelism are owned by the [launcher](../workspaces/client/apps/web/scripts/run-browser-tests.ts).
 Read-only layout and navigation specs can opt into `readOnlyRust` in the
-[shared browser fixtures](../workspaces/client/apps/web/tests/playwright.mjs).
+[shared browser fixtures](../workspaces/client/apps/web/tests/playwright.ts).
 It reuses one minimal backend per worker, mocks preference and read acknowledgements
 per browser context, and rejects other persistent writes. Tests that exercise
 mutations keep disposable backends. The scroll-follow smoke covers the phone
@@ -198,6 +198,20 @@ packaging; see the [package cycle](../workspaces/client/apps/native/README.md#pa
 The native WebView harness uses Node and preserves hidden-window checks. Its HTTP
 fixture witness runs in the short tier. A passing unit fixture is not
 installed-build evidence.
+
+## Typed browser fixtures
+
+Follow the [TypeScript policy](typescript.md) for test code and contracts. Put
+page code in a real `.tsx` or `.ts` module next to its spec, so the tests project
+checks it against the live components. Serve that path from Vite (or use it as
+an esbuild entry point), instead of returning fixture source strings from a
+`resolveId`/`load` plugin. Declare the exposed page harness with `declare global`
+in its owning module; import its types in the spec and access the typed harness
+inside `page.evaluate`. Mock API payloads use generated types with `satisfies`.
+The [schema header spec](../workspaces/client/apps/web/tests/playwright-schema-headers.browser.spec.ts)
+and [scrollbar spec](../workspaces/client/apps/web/tests/scrollbars-ui.spec.ts)
+are the root reference examples. Keep runner selectors extension-neutral
+(for example `scrollbars-ui.spec`) while specs migrate.
 
 ## Installed scenario smoke
 
@@ -331,7 +345,7 @@ composite actions. Heavy and load checks remain outside hosted CI.
 
 ## Live UI team acceptance
 
-`workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs` drives a live Studio
+`workspaces/client/apps/web/scripts/verify-ui-team-scale.ts` drives a live Studio
 backend through headless Chromium: it creates a lead chat in the dialog, types one
 prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
 counters and process load while the team runs. It deletes the chat and its agents
@@ -345,20 +359,20 @@ required transfers make the audit inconclusive and fail the run. Cleanup reports
 agents and owned processes separately from the unverified owned-thread boundary.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
-workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
+workspaces/client/apps/web/scripts/verify-ui-team-scale.ts --workers 3`; `--help`
 lists the options. Evidence goes to a directory outside the checkout.
 
 Both scale verifiers keep their signal handlers active until teardown settles.
 An interrupt requests cancellation; another interrupt during cleanup waits for
 the same teardown. The force-exit policy and signal exit codes are owned by
-[`scaleVerifierTeardown.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierTeardown.mjs).
+[`scaleVerifierTeardown.ts`](../workspaces/client/apps/web/scripts/scaleVerifierTeardown.ts).
 A forced exit first reports the evidence path and last known remaining agents;
 that snapshot does not prove the backend has stopped them. A failed audit or
 evidence write still permits the UI verifier's single conversation-delete
 attempt, and in-flight audit reads settle before deletion. Offline signal and
 stub-API coverage runs in the short tooling tier.
 
-Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
+Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.ts`) reads the
 lead and worker transcripts, the lead's tool requests, the backend journal of the
 run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)
 and diagnostics counters. The run fails on a failed or interrupted turn, a worker
@@ -371,10 +385,10 @@ Shared-server input/recovery gauges are evidence only: the summary reports their
 baseline, end and delta, without attributing other chats' work to this team. The scoped input audit reads
 a fenced, read-only snapshot of every retained `runtime_events` row through
 `readRetainedInputRows` in
-[`verify-rust-chat-scale.mjs`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.mjs).
+[`verify-rust-chat-scale.ts`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.ts).
 The bounded event SSE window is not authoritative for pending-input absence.
 The audit uses the status projection owned by
-[`scaleVerifierHelpers.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.mjs).
+[`scaleVerifierHelpers.ts`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.ts).
 Baseline and final global gauges remain in the evidence. A worker's extra turn
 triggered by a unique `agent_message` from the run's lead is attributed to the
 lead and reported as an anomaly with the message text; repeated input identities

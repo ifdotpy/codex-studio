@@ -8,9 +8,9 @@ import {
   spawnFixture,
   readTestState,
   rustUiFixture,
-} from "../playwright.mjs";
-import { waitForFixturePort } from "../fixture-readiness.mjs";
-import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.mjs";
+} from "../playwright.ts";
+import { waitForFixturePort } from "../fixture-readiness.ts";
+import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.ts";
 
 test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", async ({
   page,
