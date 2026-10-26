@@ -114,6 +114,50 @@ function temporary(t) {
   return root;
 }
 
+test("the steer scenario replaces the exact reply instruction with a complete reply", async (t) => {
+  const canary = new Canary({
+    from: os.tmpdir(),
+    to: os.tmpdir(),
+    "live-state": os.tmpdir(),
+  });
+  canary.accounts = [{ key: "default", provider: "codex" }];
+  canary.builds = { from: { commit: "old" } };
+  const prompts = new Map();
+  const messages = [];
+  t.mock.method(canary, "chat", async (name, account, prompt) => {
+    prompts.set(name, prompt);
+    return { id: name };
+  });
+  t.mock.method(canary, "answered", async () => []);
+  t.mock.method(canary, "running", async () => ({ inFlight: true }));
+  t.mock.method(canary, "send", async (chat, text, delivery) => {
+    messages.push({ chat: chat.id, text, delivery });
+    return `message-${chat.id}`;
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const scenario = canary.startScenario();
+  // Let the completed fixture calls reach the steer delay.
+  await new Promise(setImmediate);
+  t.mock.timers.tick(8_000);
+  await scenario;
+
+  assert.match(
+    prompts.get("steer"),
+    /unless a later user message replaces the reply/i,
+    "The initial exact reply must permit replacement by the steer",
+  );
+  const steer = messages.filter((message) => message.chat === "steer");
+  assert.equal(steer.length, 1);
+  assert.equal(steer[0].delivery, "current_turn");
+  assert.match(steer[0].text, /replace the previous final reply instruction/i);
+  assert.ok(
+    steer[0].text.includes(`reply with exactly ${canary.token("STEERED")}`),
+    "The steer must supply the complete final reply, including its token",
+  );
+  assert.match(steer[0].text, /after the existing monitor exits/i);
+  assert.equal(canary.steerScenario.messageId, "message-steer");
+});
+
 test("replacement N+1 receives its build hash without changing N or retained supervisor environment", async (t) => {
   const root = temporary(t);
   const candidate = path.join(root, "candidate", "Codex Studio.app");

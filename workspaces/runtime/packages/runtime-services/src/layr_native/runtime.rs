@@ -130,6 +130,7 @@ pub(super) fn operation_with_preflight(
         "{}.json",
         studio_runtime_store::sha256_hex(id.as_bytes())
     ));
+    let mut retry_import = None;
     if path.exists() {
         let receipt: Value = serde_json::from_slice(&fs::read(&path)?)
             .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
@@ -140,9 +141,16 @@ pub(super) fn operation_with_preflight(
         }
         match receipt["status"].as_str() {
             Some("completed") => return Ok(receipt["result"].clone()),
-            // A save is an idempotent quiet-point snapshot. An explicit failure can retry;
-            // pending or unknown effects still never run again.
+            // Saves can retry directly. Failed imports discard their private partial project
+            // before a fresh import. Pending and unknown effects never run again.
             Some("failed") if intent["kind"] == "save" => {}
+            Some("failed")
+                if intent["project"]
+                    .as_str()
+                    .is_some_and(|project| id == format!("import:{project}")) =>
+            {
+                retry_import = intent["project"].as_str();
+            }
             Some("failed") => {
                 return Err(NativeLayrError::Refused(
                     receipt["error"]
@@ -171,7 +179,12 @@ pub(super) fn operation_with_preflight(
         file.sync_all()?;
         File::open(&folder)?.sync_all()?;
     }
-    let outcome = effect();
+    let outcome = (|| {
+        if let Some(project) = retry_import {
+            super::failed_import::discard(state_dir, project)?;
+        }
+        effect()
+    })();
     let receipt = match &outcome {
         Ok(result) => json!({"id":id,"intent":intent,"status":"completed","result":result}),
         Err(NativeLayrError::Unknown(_)) => return outcome,
@@ -192,7 +205,7 @@ pub(super) fn save_imported_tree(state: &Path, cwd: &Path, message: &str) -> Res
 
 pub fn project_id(record: &Value) -> Result<String> {
     if let Some(id) = record["layrProjectId"].as_str() {
-        if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if id.len() == PROJECT_ID_HEX_BYTES && id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Ok(id.into());
         }
         return Err(NativeLayrError::Refused(
@@ -670,6 +683,97 @@ pub(crate) fn stage_turn_save(
 #[cfg(test)]
 mod review_tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_import_discards_only_its_private_project_before_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = tempfile::tempdir().expect("state");
+        let source = tempfile::tempdir().expect("source");
+        let project = studio_runtime_store::sha256_hex(source.path().to_string_lossy().as_bytes());
+        let id = format!("import:{project}");
+        let intent = json!({"project":project,"source":source.path()});
+        let partial = store_path(state.path()).join("projects").join(&project);
+        let untouched = store_path(state.path()).join("projects/another-project");
+        fs::create_dir_all(&untouched).expect("other project");
+        fs::write(untouched.join("keep"), "keep").expect("other file");
+        fs::write(source.path().join("evidence"), "source").expect("source file");
+        let readonly = partial.join("lines/main/readonly");
+        assert!(
+            operation(state.path(), &id, &intent, || {
+                fs::create_dir_all(&readonly)?;
+                fs::write(readonly.join("stale"), "failed import")?;
+                std::os::unix::fs::symlink(source.path(), partial.join("source-link"))?;
+                fs::set_permissions(&readonly, fs::Permissions::from_mode(0o555))?;
+                Err(NativeLayrError::Refused("save: Permission denied".into()))
+            })
+            .is_err()
+        );
+        assert!(
+            operation(
+                state.path(),
+                &id,
+                &json!({"project":project,"source":"/different-source"}),
+                || panic!("A changed request must not discard the partial project")
+            )
+            .is_err()
+        );
+        assert!(readonly.join("stale").exists());
+        fs::write(source.path().join("evidence"), "current source")
+            .expect("edit source before retry");
+        let result = operation(state.path(), &id, &intent, || {
+            assert!(
+                !partial.exists(),
+                "Discard the partial project before the retry"
+            );
+            assert_eq!(fs::read(source.path().join("evidence"))?, b"current source");
+            assert_eq!(fs::read(untouched.join("keep"))?, b"keep");
+            Ok(json!("rebuilt"))
+        })
+        .expect("retry the explicit failure");
+        assert_eq!(result, json!("rebuilt"));
+        assert_eq!(
+            operation(state.path(), &id, &intent, || panic!(
+                "do not repeat success"
+            ))
+            .expect("replay"),
+            result
+        );
+    }
+
+    #[test]
+    fn import_retry_holds_unknown_outcomes_and_rejects_changed_intent() {
+        let state = tempfile::tempdir().expect("state");
+        let project = "a".repeat(64);
+        let id = format!("import:{project}");
+        let intent = json!({"project":project,"source":"/project"});
+        let partial = store_path(state.path()).join("projects").join(&project);
+        fs::create_dir_all(&partial).expect("partial project");
+        fs::write(partial.join("keep"), "unknown import").expect("partial file");
+        assert!(
+            operation(state.path(), &id, &intent, || Err(
+                NativeLayrError::Unknown("lost".into())
+            ))
+            .is_err()
+        );
+        assert!(matches!(
+            operation(state.path(), &id, &intent, || panic!("hold pending")),
+            Err(NativeLayrError::Unknown(_))
+        ));
+        assert!(
+            operation(
+                state.path(),
+                &id,
+                &json!({"project":project,"source":"/other"}),
+                || panic!("reject changed intent")
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(partial.join("keep")).expect("held partial"),
+            b"unknown import"
+        );
+    }
+
     #[test]
     fn review_preflight_failure_does_not_poison_receipt() {
         let state = tempfile::tempdir().expect("fixture operation succeeds");

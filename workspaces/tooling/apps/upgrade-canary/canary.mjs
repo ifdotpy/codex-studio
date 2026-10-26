@@ -1041,14 +1041,14 @@ export class Canary {
       "steer",
       steerAccount,
       // The Studio monitor tool needs no approval in either CLI; the turn waits for its exit.
-      `This is an automated Studio canary. Use the orchestration_monitor tool once to run the shell command \`sleep ${STEER_SECONDS}\`. Wait until Studio reports that it exited, then reply with exactly ${this.token("STEER_BASE")}.`,
+      `This is an automated Studio canary. Use the orchestration_monitor tool once to run the shell command \`sleep ${STEER_SECONDS}\`. Wait until Studio reports that it exited. Unless a later user message replaces the reply, reply with exactly ${this.token("STEER_BASE")}.`,
     );
     await this.running(steered);
     // Let the monitor start, so the steer lands in a running turn.
     await sleep(8_000);
     this.steerId = await this.send(
       steered,
-      `Also add the word ${this.token("STEERED")} to your final reply.`,
+      `Replace the previous final reply instruction. After the existing monitor exits, reply with exactly ${this.token("STEERED")}. Do not start another command.`,
       "current_turn",
     );
     this.steerScenario = {
