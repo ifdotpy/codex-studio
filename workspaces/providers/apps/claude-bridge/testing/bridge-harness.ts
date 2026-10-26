@@ -7,6 +7,87 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  BridgeEmpty,
+  BridgeMethod,
+  BridgeNotification,
+  BridgeParams,
+  BridgeResponse,
+  BridgeResult,
+  BridgeRpcId,
+  BridgeServerRequest,
+  BridgeServerMethod,
+  BridgeServerResult,
+} from "../bridge-protocol.ts";
+
+// Fixture events share the transport but are not part of the production protocol.
+export interface BridgeFixtureNotifications {
+  "fixture/input": { text: string } | SDKUserMessage["message"];
+  "fixture/signal": { name: string };
+  "fixture/result-ready": { token: string };
+  "fixture/query": {
+    resume?: string | undefined;
+    sessionId?: string | undefined;
+  };
+  "fixture/shutdownTiming": { durationMs: number };
+  "fixture/persistFailureSettled": BridgeEmpty;
+  "fixture/stallSaveBlocked": BridgeEmpty;
+  "fixture/interrupt": BridgeEmpty;
+  "fixture/consumed-clear": BridgeEmpty;
+  "fixture/anchor": BridgeEmpty;
+  "fixture/crash": BridgeEmpty;
+}
+export type BridgeFixtureNotification = {
+  [M in keyof BridgeFixtureNotifications]: {
+    method: M;
+    params: BridgeFixtureNotifications[M];
+  };
+}[keyof BridgeFixtureNotifications];
+export type BridgeNote =
+  | BridgeNotification
+  | BridgeServerRequest
+  | BridgeFixtureNotification;
+export type BridgeNoteFor<M extends BridgeNote["method"]> = Extract<
+  BridgeNote,
+  { method: M }
+>;
+
+function hasMethod<M extends BridgeNote["method"]>(
+  entry: BridgeNote,
+  method: M,
+): entry is BridgeNoteFor<M> {
+  return entry.method === method;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function parseBridgeMessage<M extends BridgeMethod>(
+  value: unknown,
+): BridgeNote | BridgeResponse<BridgeResult<M>> {
+  if (!isRecord(value)) throw new Error("Invalid bridge message envelope");
+  const validId = typeof value.id === "string" || typeof value.id === "number";
+  if (typeof value.method === "string") {
+    if (!("params" in value) || (value.id !== undefined && !validId))
+      throw new Error("Invalid bridge notification envelope");
+  } else if (
+    !validId ||
+    (!("result" in value) &&
+      !(
+        isRecord(value.error) &&
+        typeof value.error.message === "string" &&
+        typeof value.error.code === "number"
+      ))
+  ) {
+    throw new Error("Invalid bridge response envelope");
+  }
+  // The child is the copied program under test and its scripted SDK fixture.
+  // Their payloads use the TypeScript protocol owner; this boundary checks the
+  // envelope and trusts those controlled producers for the payload fields.
+  return value as BridgeNote | BridgeResponse<BridgeResult<M>>;
+}
+
 // Maximum simulated wait and per-step advancement, both in milliseconds.
 const VIRTUAL_NOTIFICATION_BUDGET_MS = 10_000;
 const VIRTUAL_STEP_MS = 10;
@@ -26,7 +107,7 @@ export async function startBridge(
     temporaryBase = os.tmpdir(),
   }: {
     env?: NodeJS.ProcessEnv;
-    thread?: Record<string, unknown>;
+    thread?: Partial<BridgeParams<"thread/start">>;
     clock?: boolean;
     temporaryBase?: string;
   } = {},
@@ -53,17 +134,17 @@ export async function startBridge(
       path.join(root, name),
       source.replaceAll(
         "@anthropic-ai/claude-agent-sdk",
-        name === "history-index.mjs"
+        /^history-index\.(mjs|ts)$/.test(name)
           ? path.join(
               BRIDGE,
               "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
             )
-          : "./fake.ts",
+          : "./fake.mts",
       ),
     );
   }
   await fs.writeFile(
-    path.join(root, "fake.ts"),
+    path.join(root, "fake.mts"),
     `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.ts"))};\n` +
       `const waitForFile=(file,options)=>waitForFileSignal(file,{...options,childIpc:true});\n` +
       (fakeSdk.includes("export const resolveSettings") ||
@@ -87,7 +168,7 @@ export async function startBridge(
         ...(clock
           ? ["--import", path.join(BRIDGE, "testing/virtual-time.ts")]
           : []),
-        path.join(root, "bridge.mjs"),
+        path.join(root, "bridge.ts"),
         path.join(root, "state"),
       ],
       {
@@ -107,8 +188,11 @@ export async function startBridge(
   // never miss an exit that already happened (including a signal exit).
   let exited: Promise<void>;
   let stderr = "";
-  const notes = [];
-  const waiting = new Map();
+  const notes: BridgeNote[] = [];
+  const waiting = new Map<
+    BridgeRpcId,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
   const notifications = new Set<() => void>();
   const attach = () => {
     child = launch();
@@ -125,9 +209,10 @@ export async function startBridge(
     createInterface({ input: child.stdout ?? process.stdin }).on(
       "line",
       (line) => {
-        const message = JSON.parse(line);
-        if (message.method) notes.push(message);
-        else waiting.get(message.id)?.resolve(message);
+        const value: unknown = JSON.parse(line);
+        const message = parseBridgeMessage(value);
+        if ("method" in message) notes.push(message);
+        else waiting.get(message.id)?.resolve(value);
         for (const notify of notifications) notify();
       },
     );
@@ -135,6 +220,82 @@ export async function startBridge(
   attach();
   let sequence = 0;
   let signalSequence = 0;
+  function advanceUntil<N extends BridgeNote>(
+    predicate: (note: BridgeNote) => note is N,
+  ): Promise<N>;
+  function advanceUntil(
+    predicate: (note: BridgeNote) => boolean,
+  ): Promise<BridgeNote>;
+  function advanceUntil<M extends BridgeNote["method"]>(
+    method: M,
+    predicate?: (note: BridgeNoteFor<M>) => boolean,
+  ): Promise<BridgeNoteFor<M>>;
+  async function advanceUntil<M extends BridgeNote["method"]>(
+    methodOrPredicate: M | ((note: BridgeNote) => boolean),
+    filter?: (note: BridgeNoteFor<M>) => boolean,
+  ): Promise<BridgeNote> {
+    const predicate =
+      typeof methodOrPredicate === "function"
+        ? methodOrPredicate
+        : (entry: BridgeNote) =>
+            hasMethod(entry, methodOrPredicate) && (!filter || filter(entry));
+    // Drive virtual time while disk and RPC work completes; no wall-clock polls.
+    for (
+      let elapsed = 0;
+      elapsed < VIRTUAL_NOTIFICATION_BUDGET_MS;
+      elapsed += VIRTUAL_STEP_MS
+    ) {
+      const found = notes.find(predicate);
+      if (found) return found;
+      await bridge.advanceTime(VIRTUAL_STEP_MS);
+    }
+    throw new Error("notification missing after virtual deadline\n" + stderr);
+  }
+  function note<N extends BridgeNote>(
+    predicate: (note: BridgeNote) => note is N,
+  ): Promise<N>;
+  function note(predicate: (note: BridgeNote) => boolean): Promise<BridgeNote>;
+  function note<M extends BridgeNote["method"]>(
+    method: M,
+    predicate?: (note: BridgeNoteFor<M>) => boolean,
+  ): Promise<BridgeNoteFor<M>>;
+  async function note<M extends BridgeNote["method"]>(
+    methodOrPredicate: M | ((note: BridgeNote) => boolean),
+    filter?: (note: BridgeNoteFor<M>) => boolean,
+  ): Promise<BridgeNote> {
+    const predicate =
+      typeof methodOrPredicate === "function"
+        ? methodOrPredicate
+        : (entry: BridgeNote) =>
+            hasMethod(entry, methodOrPredicate) && (!filter || filter(entry));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let notify = () => {};
+    try {
+      return await new Promise<BridgeNote>((resolve, reject) => {
+        notify = () => {
+          const found = notes.find(predicate);
+          if (found) resolve(found);
+        };
+        notifications.add(notify);
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "notification missing\n" +
+                  stderr +
+                  "\nRecent notifications: " +
+                  JSON.stringify(notes.slice(-10)),
+              ),
+            ),
+          HANG_GUARD_MS,
+        );
+        notify();
+      });
+    } finally {
+      clearTimeout(timer);
+      notifications.delete(notify);
+    }
+  }
   const bridge = {
     root,
     notes,
@@ -172,25 +333,31 @@ export async function startBridge(
         controller.abort();
       }
     },
-    async advanceUntil(predicate) {
-      // Drive virtual time while disk and RPC work completes; no wall-clock polls.
-      for (
-        let elapsed = 0;
-        elapsed < VIRTUAL_NOTIFICATION_BUDGET_MS;
-        elapsed += VIRTUAL_STEP_MS
-      ) {
-        const found = notes.find(predicate);
-        if (found) return found;
-        await bridge.advanceTime(VIRTUAL_STEP_MS);
-      }
-      throw new Error("notification missing after virtual deadline\n" + stderr);
-    },
-    async call(method, params) {
+    advanceUntil,
+    async call<M extends BridgeMethod>(
+      method: M,
+      ...[params]: BridgeEmpty extends BridgeParams<M>
+        ? [params?: BridgeParams<M>]
+        : [params: BridgeParams<M>]
+    ): Promise<BridgeResult<M>> {
       const id = ++sequence;
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const message = await new Promise((resolve, reject) => {
-          waiting.set(id, { resolve, reject });
+        const result = await new Promise<BridgeResult<M>>((resolve, reject) => {
+          waiting.set(id, {
+            resolve(value) {
+              const message = parseBridgeMessage<M>(value);
+              if ("method" in message) return;
+              if ("error" in message)
+                reject(
+                  Object.assign(new Error(message.error.message), {
+                    data: message.error.data,
+                  }),
+                );
+              else resolve(message.result);
+            },
+            reject,
+          });
           timer = setTimeout(
             () =>
               reject(
@@ -206,48 +373,19 @@ export async function startBridge(
           );
           child.stdin?.write(JSON.stringify({ id, method, params }) + "\n");
         });
-        if (message.error)
-          throw Object.assign(new Error(message.error.message), {
-            data: message.error.data,
-          });
-        return message.result;
+        return result;
       } finally {
         clearTimeout(timer);
         waiting.delete(id);
       }
     },
-    answer(id, result) {
-      child.stdin.write(JSON.stringify({ id, result }) + "\n");
+    answer<M extends BridgeServerMethod>(
+      id: BridgeRpcId,
+      result: BridgeServerResult<M>,
+    ) {
+      child.stdin?.write(JSON.stringify({ id, result }) + "\n");
     },
-    async note(predicate) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let notify = () => {};
-      try {
-        return await new Promise((resolve, reject) => {
-          notify = () => {
-            const found = notes.find(predicate);
-            if (found) resolve(found);
-          };
-          notifications.add(notify);
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  "notification missing\n" +
-                    stderr +
-                    "\nRecent notifications: " +
-                    JSON.stringify(notes.slice(-10)),
-                ),
-              ),
-            HANG_GUARD_MS,
-          );
-          notify();
-        });
-      } finally {
-        clearTimeout(timer);
-        notifications.delete(notify);
-      }
-    },
+    note,
     async restart() {
       await stop();
       notes.length = 0;
@@ -297,3 +435,5 @@ export async function startBridge(
   ).thread.id;
   return bridge;
 }
+
+export type BridgeHarness = Awaited<ReturnType<typeof startBridge>>;
