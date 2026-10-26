@@ -1073,7 +1073,7 @@ finally:
         self.assertEqual(len(stderr), 64 * 1024)
 
     async def test_failed_helper_terminates_its_descendants(self):
-        marker = self.home / "helper-child"
+        helper = str(Path(__file__).with_name("deadline.py"))
         endpoint = self.home / "child.sock"
         stopped = asyncio.Event()
 
@@ -1085,21 +1085,104 @@ finally:
 
         server = await asyncio.start_unix_server(observe, path=str(endpoint))
         self.servers.append(server)
-        child_source = f"import socket; s=socket.socket(socket.AF_UNIX); s.connect({str(endpoint)!r}); print('r',flush=True); s.recv(1)"
-        source = f"import subprocess,sys,os,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); from common import process_identity; p=subprocess.Popen([sys.executable,'-c',{child_source!r}],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL); p.stdout.read(1); open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); os._exit(3)"
-        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
-            "2", sys.executable, "-c", source, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
-        await asyncio.wait_for(process.communicate(b"{}"), 5)
-        self.assertEqual(process.returncode, 3)
-        child = json.loads(marker.read_text())
-        pid = child["pid"]
-        self.assertIsNotNone(child["start"])
+        owner, control = socket.socketpair()
+        owner.setblocking(False)
+        self.addCleanup(owner.close)
+        self.addCleanup(control.close)
+        child_source = f"import socket; s=socket.socket(socket.AF_UNIX); s.connect({str(endpoint)!r}); print('ready',flush=True); s.recv(1)"
+        source = f"""import json,os,subprocess,sys
+sys.path.insert(0,{str(Path(__file__).parent)!r})
+from common import process_identity
+child=subprocess.Popen([sys.executable,'-c',{child_source!r}],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+assert child.stdout.readline()==b'ready\\n'
+print(json.dumps({{'child':child.pid,'start':process_identity(child.pid)}}),flush=True)
+sys.stdin.buffer.read(1)
+os._exit(3)
+"""
+        wrapper = f"""import json,os,runpy,signal,socket,subprocess,sys
+from unittest.mock import patch
+control=socket.socket(fileno={control.fileno()})
+spawn=subprocess.Popen
+owned=[]
+def stop(signum,frame):
+    raise SystemExit(125)
+signal.signal(signal.SIGTERM,stop)
+def start(*args,**kwargs):
+    previous=signal.pthread_sigmask(signal.SIG_BLOCK,{{signal.SIGTERM}})
+    try:
+        process=spawn(*args,**kwargs)
+        owned.append(process)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK,previous)
+    child=json.loads(process.stdout.readline())
+    control.sendall(json.dumps({{'group':process.pid,**child}}).encode()+b'\\n')
+    assert control.recv(1)==b'x'
+    return process
+sys.argv=[{helper!r},'2',sys.executable,'-c',{source!r}]
+completed=False
+try:
+    # This case proves failure cleanup. The adjacent case owns deadline behavior.
+    with patch('subprocess.Popen',start),patch('time.monotonic',return_value=0):
+        runpy.run_path({helper!r},run_name='__main__')
+except SystemExit as error:
+    completed=error.code==3
+    raise
+finally:
+    # Do not hide a missing group kill after the expected real failure exit.
+    for process in ([] if completed else owned):
         try:
+            os.killpg(process.pid,signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
+"""
+        process = None
+        communication = None
+        child = None
+
+        async def child_stopped():
+            while process_identity(child["child"]) == child["start"]:
+                await asyncio.sleep(0.01)
+
+        try:
+            process = await asyncio.create_subprocess_exec(sys.executable, "-c", wrapper,
+                pass_fds=(control.fileno(),), stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            control.close()
+            communication = asyncio.create_task(process.communicate(b"{}"))
+            loop = asyncio.get_running_loop()
+            readiness = bytearray()
+
+            async def ready():
+                while not readiness.endswith(b"\n"):
+                    block = await loop.sock_recv(owner, 4096)
+                    self.assertTrue(block, "failed helper fixture exited before readiness")
+                    readiness.extend(block)
+                return json.loads(readiness)
+
+            child = await asyncio.wait_for(ready(), 5)
+            self.assertIsNotNone(child["start"])
+            self.assertEqual(process_identity(child["child"]), child["start"])
+            await loop.sock_sendall(owner, b"x")
+            stdout, stderr = await asyncio.wait_for(asyncio.shield(communication), 5)
+            self.assertEqual(process.returncode, 3, stderr.decode())
+            self.assertEqual(stdout, b"")
+            self.assertIsNone(process_identity(child["group"]))
             await asyncio.wait_for(stopped.wait(), 5)
+            await asyncio.wait_for(child_stopped(), 5)
+            self.assertIsNone(process_identity(child["child"]))
         finally:
-            # Clean up the child even when this regression fails on the prior code.
-            if process_identity(pid) == child["start"]:
-                os.kill(pid, signal.SIGKILL)
+            # Own the wrapper and exact child before any readiness or exit assertion.
+            control.close()
+            if process is not None and process.returncode is None:
+                process.terminate()
+            try:
+                if child is not None and process_identity(child["child"]) == child["start"]:
+                    os.kill(child["child"], signal.SIGKILL)
+                    await asyncio.wait_for(child_stopped(), 5)
+            finally:
+                if communication is not None:
+                    await asyncio.wait_for(communication, 5)
 
     async def test_invalid_shapes(self):
         for request in ([], {}, {"id": True}, {"id": "a", "method": "health", "params": []}):
