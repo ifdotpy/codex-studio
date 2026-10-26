@@ -32,19 +32,10 @@ export function fixturePostBody<Path extends ApiPostPath>(
   return value as PostBody<Path>;
 }
 
-export function transcriptFixtureAgent(agent: Agent) {
-  const { contextUsage, ...rest } = agent;
-  // Fresh fixture seeds do not inject context usage. Preserve that absence; any
-  // future usage seed must include the timestamp required by transcript responses.
-  if (contextUsage == null)
-    return {
-      ...rest,
-      contextUsage,
-    } satisfies components["schemas"]["TranscriptAgent"];
-  if (typeof contextUsage.at !== "number")
-    throw new Error("Transcript fixture context usage needs a timestamp");
-  return {
-    ...rest,
-    contextUsage: { ...contextUsage, at: contextUsage.at },
-  } satisfies components["schemas"]["TranscriptAgent"];
+export function transcriptFixtureAgent(
+  agent: Agent,
+): Agent & components["schemas"]["TranscriptAgent"] {
+  // Seeded by this fixture; the seed never sets contextUsage. These agents arrive
+  // through fixture documents whose broad owner type loses that seed invariant.
+  return agent as Agent & components["schemas"]["TranscriptAgent"];
 }
