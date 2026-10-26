@@ -132,6 +132,8 @@ function Harness() {
 const root = document.querySelector("#root");
 if (!root) throw new Error("Missing fixture root");
 createRoot(root).render(<Harness />);
-document.querySelector("#messages")?.addEventListener("wheel", () => {
+const messages = document.querySelector("#messages");
+if (!messages) throw new Error("Missing messages root");
+messages.addEventListener("wheel", () => {
   window.historyAnchorFixture.__lastInput = performance.now();
 });

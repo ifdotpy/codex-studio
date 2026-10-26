@@ -5,7 +5,8 @@ import {
   useChatReadState,
   useVisibleChatResult,
 } from "../../src/components/useChatReadState.ts";
-import type { Agent, Message, Snapshot } from "../../src/types.ts";
+import { snapshotFixture } from "../../src/snapshotFixture.ts";
+import type { Agent, Message } from "../../src/types.ts";
 import type {
   ChatReadState,
   ChatReadProof,
@@ -172,28 +173,7 @@ function Fixture() {
     [nativeRows, setNativeRows] = useState<NativeRow[] | null>(null),
     [rowsOpen, setRowsOpen] = useState(true);
   const scroll = useRef<HTMLDivElement>(null);
-  const data = {
-    stateDir: "/state",
-    threads: [agent],
-    runtime: {
-      agents: [agent],
-      studioErrors: [],
-      rooms: [],
-      tasks: [],
-      monitors: [],
-      complaints: [],
-      requests: [],
-      rules: [],
-      projects: [],
-      peerTeams: [],
-      events: [],
-      work: [],
-    },
-    token: "fixture",
-    nodes: [agent],
-    chats: [],
-    edges: [],
-  } satisfies Snapshot;
+  const data = { ...snapshotFixture([agent]), stateDir: "/state" };
   const controls = useChatReadState(
     data,
     opened,
