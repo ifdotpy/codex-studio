@@ -1215,7 +1215,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             receipt["expectedAccountId"] = row["accountId"].clone();
             receipt["email"] = row.get("email").cloned().unwrap_or(Value::Null);
         } else {
-            value["accounts"][&key] = serde_json::json!({"id":key,"home":home,"label":request.label.as_deref().unwrap_or("New account"),"source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"});
+            value["accounts"][&key] = serde_json::json!({"id":key,"provider":studio_runtime_schema::ProviderKind::Codex.key(),"home":home,"label":request.label.as_deref().unwrap_or("New account"),"source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"});
             order.accounts.push(key);
             receipt["emailHint"] = serde_json::json!(request.email);
             receipt["requestedLabel"] = serde_json::json!(request.label);
@@ -2448,6 +2448,10 @@ fn register_metadata(
         .unwrap_or("Codex profile");
     let mut row = serde_json::Map::new();
     row.insert("id".into(), Value::String(account.clone()));
+    row.insert(
+        "provider".into(),
+        Value::String(studio_runtime_schema::ProviderKind::Codex.key().into()),
+    );
     row.insert("home".into(), Value::String(home));
     row.insert("label".into(), Value::String(label.to_owned()));
     row.insert("source".into(), Value::String("Local profile".into()));
@@ -3159,6 +3163,76 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[test]
+    fn codex_account_producers_reserve_explicit_login_and_replay_exact_receipt() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        fs::write(&path, registry(&fixture.path)).expect("current registry");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::SignedOut, None, None)),
+        )
+        .expect("driver");
+        let request = CodexLoginRequest {
+            login_id: "00000000-0000-4000-8000-000000000001".into(),
+            account_key: None,
+            email: None,
+            label: Some("New Codex account".into()),
+        };
+        let home = fixture.path.join("login-home");
+        fs::create_dir(&home).expect("prepared login directory");
+        let LoginReservation::Dispatch(receipt) = driver
+            .reserve_codex_login(&request, &home, 1.0)
+            .expect("reserve new Codex account")
+        else {
+            panic!("new request dispatches");
+        };
+        let key = receipt["accountKey"].as_str().expect("account key");
+        assert_eq!(
+            driver.internal_record(key).expect("new account")["provider"],
+            studio_runtime_schema::ProviderKind::Codex.key()
+        );
+        let persisted = fs::read(&path).expect("durable intent");
+        decode_registry(&persisted).expect("current registry accepts new row");
+        let LoginReservation::Replay(replayed) = driver
+            .reserve_codex_login(&request, &home, 2.0)
+            .expect("same request receipt")
+        else {
+            panic!("retry never dispatches again");
+        };
+        assert_eq!(replayed, receipt);
+        assert_eq!(fs::read(path).expect("replay bytes"), persisted);
+    }
+
+    #[test]
+    fn codex_account_producers_register_explicit_local_profile() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        fs::write(&path, registry(&fixture.path)).expect("current registry");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::SignedOut, None, None)),
+        )
+        .expect("driver");
+        let profile = fixture.path.join("profile");
+        fs::create_dir(&profile).expect("profile directory");
+        fs::write(
+            profile.join("auth.json"),
+            br#"{"OPENAI_API_KEY":"placeholder-profile-key"}"#,
+        )
+        .expect("local auth fixture");
+        let accounts = driver
+            .register(profile.to_str().expect("profile path"))
+            .expect("register local Codex profile");
+        assert_eq!(accounts.accounts.len(), 2);
+        assert_eq!(
+            accounts.accounts[1]["provider"],
+            studio_runtime_schema::ProviderKind::Codex.key()
+        );
+        decode_registry(&fs::read(path).expect("saved registry"))
+            .expect("strict current profile row");
+    }
 
     #[test]
     fn migration_2026_10_26_registry_precedes_strict_policy_and_driver() {
@@ -3883,7 +3957,7 @@ exit 0
         let mut value: Value =
             serde_json::from_slice(&registry(&fixture.path)).expect("registry fixture");
         value["accounts"]["other"] = serde_json::json!({
-            "id": "other", "home": fixture.path.join("other"), "label": "Other",
+            "id": "other", "provider":studio_runtime_schema::ProviderKind::Codex.key(), "home": fixture.path.join("other"), "label": "Other",
             "source": "Codex CLI", "status": "signedOut"
         });
         fs::write(&path, serde_json::to_vec(&value).expect("encoded")).expect("write registry");
@@ -4004,9 +4078,10 @@ exit 0
         fs::create_dir_all(path.parent().expect("registry parent"))
             .expect("create registry directory");
         let bytes = format!(
-            r#"{{"version":1,"defaultAccountKey":"z","accounts":{{"z":{{"id":"z","home":"{}","label":"Z","source":"Codex CLI","status":"signedOut"}},"a":{{"id":"a","home":"{}","label":"A","source":"Codex CLI","status":"signedOut"}}}},"logins":{{}},"deleteReceipts":{{}}}}"#,
+            r#"{{"version":{version},"defaultAccountKey":"z","accounts":{{"z":{{"id":"z","provider":"codex","home":"{}","label":"Z","source":"Codex CLI","status":"signedOut"}},"a":{{"id":"a","provider":"codex","home":"{}","label":"A","source":"Codex CLI","status":"signedOut"}}}},"logins":{{}},"deleteReceipts":{{}}}}"#,
             fixture.path.display(),
-            fixture.path.display()
+            fixture.path.display(),
+            version = studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
         );
         fs::write(&path, bytes).expect("write ordered registry");
         let driver = AccountDriver::open_with_reader(
@@ -4258,10 +4333,10 @@ exit 0
             Some("chatgpt:stable-account"),
         );
         let mut value = serde_json::json!({
-            "version": 1,
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey": "existing",
             "accounts": {"existing": {
-                "id": "existing", "home": canonical, "label": "Profile",
+                "id": "existing", "provider":studio_runtime_schema::ProviderKind::Codex.key(), "home": canonical, "label": "Profile",
                 "source": "Local profile", "status": "ready",
                 "accountId": "stable-account"
             }},
@@ -4337,17 +4412,19 @@ exit 0
     }
 
     #[test]
-    fn default_registry_matches_python_bytes_and_is_never_replaced() {
+    fn default_registry_uses_current_identity_format_and_is_never_replaced() {
         let fixture = TestDir::new();
         let home = fixture.path.join("codex-\u{e9}");
         let path = fixture.path.join("state/accounts/registry.json");
         assert_eq!(create_default_registry(&path, &home), Ok(true));
         let expected = format!(
-            "{{\"version\": 1, \"defaultAccountKey\": \"default\", \"accounts\": {{\"default\": \
-             {{\"id\": \"default\", \"home\": \"{}\", \"label\": \"Codex\", \"source\": \
+            "{{\"version\": {version}, \"defaultAccountKey\": \"default\", \"accounts\": {{\"default\": \
+             {{\"id\": \"default\", \"provider\": \"{provider}\", \"home\": \"{}\", \"label\": \"Codex\", \"source\": \
              \"Codex CLI\", \"accountId\": null, \"email\": null, \"plan\": null, \"status\": \
              \"signedOut\"}}}}, \"logins\": {{}}, \"deleteReceipts\": {{}}}}",
-            fixture.path.join("codex-\\u00e9").display()
+            fixture.path.join("codex-\\u00e9").display(),
+            version = studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+            provider = studio_runtime_schema::ProviderKind::Codex.key(),
         );
         let written = fs::read(&path).expect("read created registry");
         assert_eq!(String::from_utf8_lossy(&written), expected);
