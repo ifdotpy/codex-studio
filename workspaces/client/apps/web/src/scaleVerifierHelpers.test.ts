@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter, once } from "node:events";
 import {
+  decodeLegacyAgentDocument,
   DURABLE_INPUT_QUEUE_KEY,
   PARENT_NOTICE_INPUT_KIND,
   RETAINED_INPUT_STATUSES,
@@ -73,6 +74,7 @@ import {
   waitForServedModelEvidence,
 } from "../scripts/scaleVerifierHelpers.ts";
 import {
+  cleanupOwned,
   ENTITY_BASELINE_PULL_PATH,
   parseStages,
   readCurrentTeamChildren,
@@ -2003,4 +2005,118 @@ describe("scale verifier shared-workspace concurrency criterion", () => {
       }),
     ).toThrow(/1 of 2 tool processes/);
   });
+});
+
+describe("scale verifier cleanup before ownership", () => {
+  const emptyJournal = (): Parameters<typeof cleanupOwned>[1] => ({
+    version: 1,
+    runId: "test-run",
+    origin: "http://127.0.0.1",
+    project: "/unused-project",
+    leadProfile: SCALE_PROVIDER,
+    workerProfile: SCALE_PROVIDER,
+    workerWorkspace: "shared",
+    stages: [],
+    ownedAgents: [],
+    http: [],
+    eventStream: { state: "failed", reconnects: 0 },
+    cleanup: { state: "running" },
+    metricsGaps: [],
+    runBudget: {
+      stages: [],
+      maxStageWorkers: 0,
+      maxExchanges: 0,
+      requestDeadlineMs: 0,
+      setupAndFinalRequestCountMax: 0,
+      preflightCommandCountMax: 0,
+      cleanupDeadlineMs: 0,
+      maxWallMs: 0,
+      maxToolBarrierSeconds: 0,
+      apiRequestsMax: 0,
+      cleanupApiRequestReserve: 0,
+      hostResourceCeilings: "unused",
+    },
+  });
+
+  it.each(["before backend discovery", "after stage persistence"])(
+    "cleans up a failure %s without requiring an unowned identity",
+    async (failurePoint) => {
+      type CleanupClient = Parameters<typeof cleanupOwned>[0];
+      const client = {
+        setDeadline: vi.fn<CleanupClient["setDeadline"]>(),
+        get: vi.fn<CleanupClient["get"]>(),
+        request: vi.fn<CleanupClient["request"]>(),
+        agentSnapshot: vi.fn<CleanupClient["agentSnapshot"]>(),
+      } satisfies CleanupClient;
+      const journal = emptyJournal();
+      if (failurePoint === "after stage persistence") {
+        journal.backendIdentity = {
+          pid: 1,
+          stateDir: "/unused-state",
+          backendKind: "rust",
+          backendBuild: "test",
+        };
+        journal.ownerBaseline = {
+          at: "test",
+          workspaceId: "workspace",
+          generation: 1,
+          checkpoint: { seq: 0 },
+          documentsObserved: 0,
+          note: "test",
+        };
+        // main persists this stage before fallible backend/identity reads and
+        // before assigning its leadId. No agent belongs to this stage yet.
+        journal.stages.push({
+          workers: 30,
+          state: "creating",
+          agentIds: [],
+          turnIntervals: [],
+          maxConcurrentTurns: 0,
+          createLatenciesMs: [],
+          secondExchangeLatenciesMs: [],
+        });
+      }
+      await expect(
+        cleanupOwned(client, journal, "/unused-journal", 5_000, null),
+      ).resolves.toBeUndefined();
+      expect(client.get).not.toHaveBeenCalled();
+      expect(client.request).not.toHaveBeenCalled();
+      expect(client.agentSnapshot).not.toHaveBeenCalled();
+      expect(journal.cleanup.state).toBe("running");
+    },
+  );
+});
+
+it("keeps current sync entities visible in the cursor without decoding them as legacy envelopes", async () => {
+  const legacy = {
+    id: "entity:agent:legacy",
+    seq: 1,
+    _deleted: false,
+    payload: JSON.stringify({
+      collection: "agent",
+      id: "legacy-envelope",
+      value: { id: "legacy-value" },
+    }),
+  } satisfies NonNullable<Parameters<typeof decodeLegacyAgentDocument>[0]>;
+  const current = {
+    id: "entity:agent:current",
+    seq: 2,
+    collection: "agent",
+    op: "upsert",
+    value: { id: "current" },
+  } satisfies NonNullable<Parameters<typeof decodeLegacyAgentDocument>[0]>;
+  expect(decodeLegacyAgentDocument(legacy)).toMatchObject({
+    id: "legacy-envelope",
+    value: { id: "legacy-value" },
+  });
+  expect(decodeLegacyAgentDocument(current)).toBeNull();
+  expect(() =>
+    decodeLegacyAgentDocument({ ...legacy, payload: "broken JSON" }),
+  ).toThrow();
+  const pull = createEntityCursorPuller(0, "workspace", async () => ({
+    workspaceId: "workspace",
+    checkpoint: { seq: 2 },
+    documents: [legacy, current],
+  }));
+  expect((await pull(2)).documents).toEqual([legacy, current]);
 });
