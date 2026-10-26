@@ -192,8 +192,11 @@ pub async fn run_controlled(
             let mut parser = Parser::new(last_id.clone());
             let mut admitted = false;
             loop {
-                if let Some(flow) = &flow {
-                    if !admitted { flow.wait().await; admitted = true; }
+                if let Some(flow) = &flow
+                    && !admitted
+                {
+                    flow.wait().await;
+                    admitted = true;
                 }
                 let chunk = tokio::time::timeout(Duration::from_secs(60), response.chunk())
                     .await
