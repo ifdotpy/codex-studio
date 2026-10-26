@@ -2,12 +2,13 @@
 // commit and SHA-256 manifest that lets a packager or a rehearsal reuse binaries
 // built once for the exact same commit instead of building them again.
 //
-//   node release-binaries.mjs build [directory]   build for HEAD, write the manifest
-//   node release-binaries.mjs verify [directory]  check the manifest against HEAD
+//   node release-binaries.ts build [directory]   build for HEAD, write the manifest
+//   node release-binaries.ts verify [directory]  check the manifest against HEAD
 //
 // The directory is a Cargo target directory. Its `release/` folder holds the
 // binaries and the manifest. With no argument the directory is
 // CODEX_RELEASE_TARGET_DIR, else `<cache>/codex-studio/release-target`.
+import type { ExecFileSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createReadStream } from "node:fs";
@@ -15,7 +16,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.mjs";
+import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.ts";
 
 // Environment variable that selects the prebuilt release target directory. Unit:
 // absolute or repository-relative directory path.
@@ -56,11 +57,11 @@ export function releaseTargetDirectory(env = process.env) {
   return path.join(cache, "codex-studio", "release-target");
 }
 
-export function manifestPath(directory) {
+export function manifestPath(directory: string) {
   return path.join(directory, "release", releaseManifestName);
 }
 
-export function sha256File(file) {
+export function sha256File(file: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     createReadStream(file)
@@ -72,8 +73,8 @@ export function sha256File(file) {
 
 // The commit the checkout is on, and whether tracked files differ from it. A
 // dirty tree builds different binaries than its commit names.
-export function checkoutState(repository) {
-  const git = (...args) =>
+export function checkoutState(repository: string) {
+  const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repository, encoding: "utf8" }).trim();
   return {
     commit: git("rev-parse", "HEAD"),
@@ -81,13 +82,20 @@ export function checkoutState(repository) {
   };
 }
 
+export type ReleaseManifest = Awaited<ReturnType<typeof writeReleaseManifest>>;
+export type ReleaseIdentity = {
+  directory: string;
+  commit: string;
+  platform?: NodeJS.Platform;
+  arch?: string;
+};
 export async function writeReleaseManifest({
   directory,
   commit,
   platform = process.platform,
   arch = process.arch,
-}) {
-  const files = {};
+}: ReleaseIdentity) {
+  const files: Record<string, string> = {};
   for (const name of releaseArtifacts(platform)) {
     const file = path.join(directory, "release", name);
     files[name] = await sha256File(file);
@@ -113,20 +121,28 @@ export async function verifyReleaseBinaries({
   commit,
   platform = process.platform,
   arch = process.arch,
-}) {
+}: ReleaseIdentity) {
   const where = `Prebuilt release binaries in ${directory}`;
-  let manifest;
+  let manifest: Record<string, unknown>;
   try {
-    manifest = JSON.parse(await readFile(manifestPath(directory), "utf8"));
+    const parsed: unknown = JSON.parse(
+      await readFile(manifestPath(directory), "utf8"),
+    );
+    if (!parsed || typeof parsed !== "object")
+      throw new Error("Invalid release manifest.");
+    manifest = parsed as Record<string, unknown>;
   } catch (error) {
-    if (error.code === "ENOENT")
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
       throw new Error(
         `${where} have no manifest. Run \`just build-release-binaries\`.`,
         { cause: error },
       );
-    throw new Error(`${where} have an unreadable manifest: ${error.message}`, {
-      cause: error,
-    });
+    throw new Error(
+      `${where} have an unreadable manifest: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        cause: error,
+      },
+    );
   }
   if (manifest?.version !== releaseManifestVersion)
     throw new Error(`${where} have an unsupported manifest version.`);
@@ -140,7 +156,11 @@ export async function verifyReleaseBinaries({
     throw new Error(
       `${where} were built for ${manifest.platform}/${manifest.arch}, not ${platform}/${arch}.`,
     );
-  const listed = Object.keys(manifest.files ?? {}).sort();
+  const files =
+    manifest.files && typeof manifest.files === "object"
+      ? (manifest.files as Record<string, unknown>)
+      : {};
+  const listed = Object.keys(files).sort();
   const required = [...releaseArtifacts(platform)].sort();
   if (JSON.stringify(listed) !== JSON.stringify(required))
     throw new Error(
@@ -151,16 +171,16 @@ export async function verifyReleaseBinaries({
     try {
       actual = await sha256File(path.join(directory, "release", name));
     } catch (error) {
-      if (error.code === "ENOENT")
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
         throw new Error(`${where} are missing ${name}.`, { cause: error });
       throw error;
     }
-    if (actual !== manifest.files[name])
+    if (actual !== files[name])
       throw new Error(
         `${where} changed after the build: SHA-256 of ${name} differs from the manifest.`,
       );
   }
-  return manifest;
+  return manifest as ReleaseManifest;
 }
 
 // Build the release artifacts once for the current commit. The previous manifest
@@ -171,6 +191,15 @@ export async function buildReleaseBinaries({
   run = (command, args, options) =>
     execFileSync(command, args, { stdio: "inherit", ...options }),
   state = () => checkoutState(repository),
+}: {
+  repository: string;
+  directory: string;
+  run?: (
+    command: string,
+    args: string[],
+    options: ExecFileSyncOptions,
+  ) => unknown;
+  state?: () => ReturnType<typeof checkoutState>;
 }) {
   const before = state();
   if (before.dirty)
@@ -195,7 +224,7 @@ export async function buildReleaseBinaries({
 // default flow stays a normal Cargo build. Otherwise returns the verified
 // directory, or throws for binaries of another commit or a dirty checkout.
 export async function prebuiltReleaseDirectory(
-  repository,
+  repository: string,
   env = process.env,
   state = () => checkoutState(repository),
 ) {
@@ -210,7 +239,7 @@ export async function prebuiltReleaseDirectory(
   return directory;
 }
 
-async function main(argv) {
+async function main(argv: string[]) {
   const [command, argument] = argv;
   const repository = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -227,7 +256,7 @@ async function main(argv) {
     const manifest = await verifyReleaseBinaries({ directory, commit });
     console.log(`${directory} commit ${manifest.commit} verified`);
   } else {
-    throw new Error("Usage: release-binaries.mjs build|verify [directory]");
+    throw new Error("Usage: release-binaries.ts build|verify [directory]");
   }
 }
 
