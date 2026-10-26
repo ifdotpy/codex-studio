@@ -44,19 +44,27 @@
   outline-offset: -2px;
 }
 
+/* Counts sit inside the round button, centered under the icon, so they stay
+   inside the side strip column. */
 .edge-rail-badge {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  max-width: 100%;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 8px);
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--mantine-color-body);
   color: var(--mantine-color-text);
   font-size: 10px;
-  line-height: 1.2;
-  padding: 1px 3px;
+  font-variant-numeric: tabular-nums;
+  line-height: 12px;
+  padding: 0 3px;
+  white-space: nowrap;
   pointer-events: none;
+}
+.edge-rail .edge-rail-button:has(.edge-rail-badge) svg {
+  transform: translateY(-6px);
 }
 
 /* Paint the pane under the system strip; root padding still bounds its content. */
