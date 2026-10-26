@@ -615,7 +615,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
     await page.waitForFunction(
       () => window.marking.length === 0 && window.state?.read === false,
     );
-    assert.equal(await page.evaluate(() => window.serverState?.read), false);
+    assert.equal(await page.evaluate(() => window.serverState!.read), false);
     assert.deepEqual(
       await page.evaluate(() =>
         window.lostWrites.map((v) => v.read_state.expected_revision),
