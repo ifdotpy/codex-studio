@@ -360,7 +360,9 @@ test("Native runtime status", async ({ context }) => {
     await page.getByText("Version details", { exact: true }).click();
     await panel.waitFor();
     await page.evaluate(() =>
-      window.nativeRuntimeFixture.finishOldRuntimeRead(
+      window.nativeRuntimeFixture.required(
+        window.nativeRuntimeFixture.finishOldRuntimeRead,
+      )(
         new Response(JSON.stringify({ nativeRuntime: null }), {
           headers: { "Content-Type": "application/json" },
         }),

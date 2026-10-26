@@ -18,7 +18,6 @@ export type CanonicalReset = {
       | "fastMode"
       | "daybreakEnabled"
       | "status"
-      | "workerDefaults"
       | "reviewDefaults"
       | "accountTransfer"
       | "pendingSettings"
@@ -27,7 +26,7 @@ export type CanonicalReset = {
       | "provider"
       | "yoloMode"
     >
-  >;
+  > & { workerDefaults?: Partial<NonNullable<Agent["workerDefaults"]>> | null };
   defaults?: boolean;
 };
 type CanonicalHarness = {
@@ -78,7 +77,10 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
-import { ExecutionSettings } from "../../src/components/agents/ExecutionSettings.tsx";
+import {
+  ExecutionSettings,
+  settingsFor,
+} from "../../src/components/agents/ExecutionSettings.tsx";
 import { ModelCatalogReader } from "../../src/components/agents/WorkerModelPicker.tsx";
 import { get } from "../../src/api.ts";
 const fixtureModelRead = (
@@ -98,6 +100,17 @@ const initial: Agent = {
   yoloMode: false,
   nextTurnSettingsSupported: true,
 };
+function completeWorkerDefaults(
+  value: Partial<NonNullable<Agent["workerDefaults"]>>,
+): NonNullable<Agent["workerDefaults"]> {
+  const inherited = settingsFor(initial, true);
+  return {
+    model: inherited.model,
+    effort: inherited.effort,
+    fastMode: inherited.fast_mode,
+    ...value,
+  };
+}
 const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna"].map(
   (model) => ({
     model,
@@ -212,13 +225,10 @@ window.fetch = async (input, options) => {
     };
     window.canonicalSettingsFixture.pendingTransferProjection = {
       ...window.canonicalSettingsFixture.agent,
-      workerDefaults: {
-        model: null,
-        effort: null,
-        fastMode: false,
+      workerDefaults: completeWorkerDefaults({
         ...window.canonicalSettingsFixture.agent.workerDefaults,
         accountKey: body.account_key,
-      },
+      }),
     };
     return fixtureResponse(result);
   }
@@ -283,7 +293,12 @@ function Fixture() {
   window.canonicalSettingsFixture.agent = agent;
   window.canonicalSettingsFixture.reset = (options) =>
     flushSync(() => {
-      setAgent(Object.assign(structuredClone(initial), options?.agent));
+      const { workerDefaults, ...patch } = options?.agent ?? {};
+      const next = Object.assign(structuredClone(initial), patch);
+      if (workerDefaults)
+        next.workerDefaults = completeWorkerDefaults(workerDefaults);
+      else if (workerDefaults === null) next.workerDefaults = null;
+      setAgent(next);
       setDefaults(!!options?.defaults);
       setMount((value) => value + 1);
       window.canonicalSettingsFixture.catalogRequests = [];

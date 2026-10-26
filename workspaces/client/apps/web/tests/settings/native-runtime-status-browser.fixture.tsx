@@ -11,7 +11,7 @@ type NativeRuntimeHarness = {
   setWarningAccount: (key: string) => void;
   emitRuntimeChange: (kind: ResourceRef["kind"]) => void;
   delayedRuntimeSignal: AbortSignal;
-  finishOldRuntimeRead: (response: Response) => void;
+  finishOldRuntimeRead: ((response: Response) => void) | null;
 };
 declare global {
   interface Window {
@@ -25,7 +25,7 @@ window.nativeRuntimeFixture = {
   setWarningAccount: fixtureNotReady,
   emitRuntimeChange,
   delayedRuntimeSignal: new AbortController().signal,
-  finishOldRuntimeRead: fixtureNotReady,
+  finishOldRuntimeRead: null,
 };
 const fixtureRoot = document.getElementById("root");
 if (!fixtureRoot) throw new Error("Missing fixture root");

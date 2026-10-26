@@ -404,9 +404,6 @@ test("execution settings canonical browser", async ({ page }) => {
         defaults: true,
         agent: {
           workerDefaults: {
-            model: null,
-            effort: null,
-            fastMode: false,
             accountKey: "second",
           },
         },
@@ -477,9 +474,6 @@ test("execution settings canonical browser", async ({ page }) => {
         defaults: true,
         agent: {
           workerDefaults: {
-            model: null,
-            effort: null,
-            fastMode: false,
             accountKey: "second",
           },
         },
@@ -533,9 +527,6 @@ test("execution settings canonical browser", async ({ page }) => {
         defaults: true,
         agent: {
           workerDefaults: {
-            model: null,
-            effort: null,
-            fastMode: false,
             accountKey: "second",
           },
         },
@@ -578,9 +569,6 @@ test("execution settings canonical browser", async ({ page }) => {
         defaults: true,
         agent: {
           workerDefaults: {
-            model: null,
-            effort: null,
-            fastMode: false,
             accountKey: "second",
           },
           accountTransfer: {
