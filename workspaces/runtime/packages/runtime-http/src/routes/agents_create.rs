@@ -350,7 +350,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
                     deleted: row.get("deleted").and_then(Value::as_bool) == Some(true),
                     duplicate: row.get("duplicateOf").and_then(Value::as_str).is_some(),
                     max_running_turns:
-                        studio_runtime_services::account_start_gate::StartThrottle::of_record(row)
+                        studio_runtime_services::account_start_gate::StartThrottle::of_record(row)?
                             .max_running,
                     group: row
                         .get(studio_runtime_services::account_preference::ACCOUNT_GROUP_FIELD)

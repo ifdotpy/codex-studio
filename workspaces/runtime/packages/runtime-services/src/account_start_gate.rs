@@ -900,13 +900,14 @@ mod tests {
         use super::{AccountDriver, ContinuationError, StartGate, StartSources};
         use serde_json::json;
         use std::sync::Arc;
+        use studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION;
         use studio_runtime_store::RuntimeStore;
         let root = tempfile::tempdir().expect("state directory");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let registry = root.path().join("accounts/registry.json");
         std::fs::create_dir_all(registry.parent().expect("registry parent"))
             .expect("accounts directory");
-        std::fs::write(&registry, json!({"version":2,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":root.path(),"label":"Fixture","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
+        std::fs::write(&registry, json!({"version":ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":root.path(),"label":"Fixture","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
         let driver = Arc::new(AccountDriver::open(registry).expect("driver"));
         assert!(driver.start_throttle("default").is_ok());
         assert!(matches!(
