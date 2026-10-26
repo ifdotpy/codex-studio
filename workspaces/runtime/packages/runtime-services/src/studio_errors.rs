@@ -6,7 +6,6 @@
 //! and never sends uncertain input again. `check` opens the agent, because
 //! only the owner can decide. Studio never runs a command or sends input from
 //! this list. A dismissed row stays hidden.
-use rusqlite::OptionalExtension;
 mod causes;
 pub use causes::{json_cause, store_causes, store_error_kind};
 use serde_json::{Value, json};
@@ -207,6 +206,35 @@ enum SourceOwner {
     Invalid(Vec<Cause>),
 }
 
+enum EventSource {
+    Record(studio_runtime_store::QueueEvent),
+    Missing,
+    Invalid(Vec<Cause>),
+}
+
+fn malformed_source(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::InvalidStoredObject { .. }
+            | StoreError::InvalidStoredRecord { .. }
+            | StoreError::InvalidSyncObjectField { .. }
+            | StoreError::InvalidSyncObject { .. }
+            | StoreError::Json(_)
+    )
+}
+
+fn event_source(tx: &Transaction<'_>, id: &str) -> Result<EventSource, StoreError> {
+    match studio_runtime_store::QueueEventRepository::get(
+        tx,
+        &studio_runtime_store::QueueEventId::from(id),
+    ) {
+        Ok(Some(event)) => Ok(EventSource::Record(event)),
+        Ok(None) => Ok(EventSource::Missing),
+        Err(error) if malformed_source(&error) => Ok(EventSource::Invalid(store_causes(&error))),
+        Err(error) => Err(error),
+    }
+}
+
 fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError> {
     match studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(id)) {
         Ok(Some(record)) if studio_runtime_store::truthy(record.extra.get("deletedAt")) => {
@@ -214,18 +242,7 @@ fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError>
         }
         Ok(Some(record)) => Ok(SourceOwner::Live(std::sync::Arc::new(record))),
         Ok(None) => Ok(SourceOwner::Missing),
-        Err(error)
-            if matches!(
-                error,
-                StoreError::InvalidStoredObject { .. }
-                    | StoreError::InvalidStoredRecord { .. }
-                    | StoreError::InvalidSyncObjectField { .. }
-                    | StoreError::InvalidSyncObject { .. }
-                    | StoreError::Json(_)
-            ) =>
-        {
-            Ok(SourceOwner::Invalid(store_causes(&error)))
-        }
+        Err(error) if malformed_source(&error) => Ok(SourceOwner::Invalid(store_causes(&error))),
         Err(error) => Err(error),
     }
 }
@@ -433,23 +450,35 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
     }
 
     let mut events = tx.prepare_cached(
-        "SELECT id,agent,status,COALESCE(error,''),created,epoch,turn_id FROM runtime_events WHERE created>=?1 AND status IN ('failed','uncertain','pending')",
+        "SELECT id FROM runtime_events WHERE created>=?1 AND status IN ('failed','uncertain','pending')",
     )?;
-    let found = events
-        .query_map([since], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, f64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, Option<String>>(6)?,
-            ))
-        })?
+    let ids = events
+        .query_map([since], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     drop(events);
-    for (id, agent_id, status, error, created, epoch, turn_id) in found {
+    for id in ids {
+        let event = match event_source(tx, &id)? {
+            EventSource::Record(event) => event,
+            EventSource::Missing => continue,
+            EventSource::Invalid(causes) => {
+                let mut incident =
+                    invalid_source(format!("event:{id}"), "runtime_events", &id, now, causes);
+                incident.event_id = Some(id);
+                push(&mut rows, incident);
+                continue;
+            }
+        };
+        let studio_runtime_store::QueueEvent {
+            agent: agent_id,
+            status,
+            error,
+            created,
+            epoch,
+            turn_id,
+            ..
+        } = event;
+        let agent_id = agent_id.0;
+        let error = error.unwrap_or_default();
         let Some(kind) = event_kind(&status, &error, now - created) else {
             continue;
         };
@@ -515,8 +544,13 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         let turn = record
             .extra
             .get("turnId")
-            .or_else(|| record.extra.get("lastCompletedTurn"))
             .and_then(Value::as_str)
+            .or_else(|| {
+                record
+                    .extra
+                    .get("lastCompletedTurn")
+                    .and_then(Value::as_str)
+            })
             .map(str::to_owned);
         let at = record
             .extra
@@ -810,22 +844,20 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         if is_published(tx, &format!("event:{id}"))? {
             return Ok(true);
         }
-        let event = tx
-            .prepare_cached(
-                "SELECT status,COALESCE(error,''),created FROM runtime_events WHERE id=?1 AND created>=?2",
-            )?
-            .query_row(rusqlite::params![id, since], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, f64>(2)?,
-                ))
-            })
-            .optional()?;
-        if event.is_some_and(|(status, error, created)| {
-            event_kind(&status, &error, now - created).is_some()
-        }) {
-            return Ok(true);
+        match event_source(tx, id)? {
+            EventSource::Invalid(_) => return Ok(true),
+            EventSource::Record(event)
+                if event.created >= since
+                    && event_kind(
+                        &event.status,
+                        event.error.as_deref().unwrap_or_default(),
+                        now - event.created,
+                    )
+                    .is_some() =>
+            {
+                return Ok(true);
+            }
+            EventSource::Record(_) | EventSource::Missing => {}
         }
     }
     for id in &sources.agents {
