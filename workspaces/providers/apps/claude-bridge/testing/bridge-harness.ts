@@ -1,3 +1,8 @@
+import type {
+  CallToolResult,
+  TextContent,
+} from "@modelcontextprotocol/sdk/types.js";
+export type FixtureToolResult = CallToolResult & { content: TextContent[] };
 // Start the real bridge with a scripted Agent SDK. No model calls are made.
 import { once } from "node:events";
 import { spawn } from "node:child_process";

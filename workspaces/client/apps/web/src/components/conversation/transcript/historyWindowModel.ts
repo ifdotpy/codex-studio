@@ -27,37 +27,33 @@ export function windowHistoryRows(
   }
   return groups.flatMap((group) => {
     if (group.items.length <= HISTORY_ROW_ITEMS) {
-      const [first] = group.items;
-      const id = boundaries.get(messageRenderKey(first)) || group.id;
+      const id = boundaries.get(messageRenderKey(group.items[0])) || group.id;
       return [id === group.id ? group : { ...group, id }];
     }
     const rows: HistoryGroup[] = [];
     let start = 0;
     while (start < group.items.length) {
       let end = start + 1;
-      while (end < group.items.length && end - start < HISTORY_ROW_ITEMS) {
-        const item = group.items[end];
-        if (!item) throw new Error("Missing history message");
-        if (boundaries.has(messageRenderKey(item))) break;
+      while (
+        end < group.items.length &&
+        end - start < HISTORY_ROW_ITEMS &&
+        !boundaries.has(messageRenderKey(group.items[end]))
+      )
         end++;
-      }
-      const [first, ...rest] = group.items.slice(start, end);
-      if (!first) throw new Error("History row has no messages");
-      const items: HistoryGroup["items"] = [first, ...rest];
+      const items = group.items.slice(start, end);
       const last = end === group.items.length;
       rows.push({
         ...group,
-        id: boundaries.get(messageRenderKey(first)) || first.id,
+        id: boundaries.get(messageRenderKey(items[0])) || items[0].id,
         items,
         result:
           group.result && items.includes(group.result)
             ? group.result
             : undefined,
         outcome: last ? group.outcome : group.outcome ? "completed" : undefined,
-        turns: group.turns?.filter((turn) => {
-          const [first] = turn.items;
-          return items.some((item) => item.turnId === first.turnId);
-        }),
+        turns: group.turns?.filter((turn) =>
+          items.some((item) => item.turnId === turn.items[0].turnId),
+        ),
       });
       start = end;
     }
@@ -75,9 +71,7 @@ export function historyWindowAnchor(rows: HistoryGroup[], id: string) {
     if (item) return { row, item };
   }
   const row = rows.find((row) => row.id === id);
-  if (!row) return undefined;
-  const [item] = row.items;
-  return { row, item };
+  return row ? { row, item: row.items[0] } : undefined;
 }
 
 export function historyWindowIndices(
@@ -101,11 +95,8 @@ export function historyRowsCanRestoreAnchor(
   previous: HistoryGroup[],
   current: HistoryGroup[],
 ): boolean {
-  const [currentFirst] = current;
-  const [previousFirst] = previous;
-  return (
-    !!currentFirst && !!previousFirst && currentFirst.id === previousFirst.id
-  );
+  if (!previous.length || !current.length) return false;
+  return current[0].id === previous[0].id;
 }
 
 export function historyOffsets(
@@ -113,7 +104,6 @@ export function historyOffsets(
   heights: ReadonlyMap<string, number>,
 ): number[] {
   const offsets = [0];
-  let offset = 0;
   for (const row of rows) {
     const measured = heights.get(row.id);
     const estimate = row.items.reduce(
@@ -124,8 +114,7 @@ export function historyOffsets(
           : Math.max(72, Math.ceil(item.text.length / 90) * 22 + 48)),
       0,
     );
-    offset += measured ?? estimate;
-    offsets.push(offset);
+    offsets.push(offsets[offsets.length - 1] + (measured ?? estimate));
   }
   return offsets;
 }
@@ -142,9 +131,7 @@ export function historyWindowRange(
     let high = count;
     while (low < high) {
       const middle = Math.floor((low + high) / 2);
-      const offset = offsets[middle + 1];
-      if (offset === undefined) throw new Error("Missing history offset");
-      if (offset <= position) low = middle + 1;
+      if (offsets[middle + 1] <= position) low = middle + 1;
       else high = middle;
     }
     return Math.min(count - 1, low);

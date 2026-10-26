@@ -207,12 +207,12 @@ export async function fixture(
       response.end();
       return;
     }
-    if (offline && request.url?.startsWith("/api/")) {
+    if (offline && request.url!.startsWith("/api/")) {
       response.writeHead(503);
       response.end("{}");
       return;
     }
-    const url = new URL(request.url ?? "/", "http://fixture.invalid");
+    const url = new URL(request.url!, "http://fixture.invalid");
     const json = (value: unknown, status = 200) => {
       response.writeHead(status, {
         "Content-Type": "application/json",
@@ -223,23 +223,18 @@ export async function fixture(
     let bytes = Buffer.alloc(0);
     for await (const chunk of request) bytes = Buffer.concat([bytes, chunk]);
     // The renderer sends generated Studio request bodies; keep decoding in one boundary.
-    const body: Record<string, unknown> = bytes.length
+    const body: Record<string, unknown> &
+      Partial<PostBody<"/api/multi-server/v1/pair">> = bytes.length
       ? JSON.parse(bytes.toString())
       : {};
     const bodyFor = <P extends ApiPostPath>(_path: P): PostBody<P> =>
-      JSON.parse(bytes.length ? bytes.toString() : "{}");
+      body as PostBody<P>;
     if (signed && url.pathname.startsWith("/api/")) {
-      const h = Object.fromEntries(
-        Object.entries(request.headers).map(([key, value]) => {
-          if (Array.isArray(value))
-            throw new Error("Repeated fixture signature header: " + key);
-          return [key, value];
-        }),
-      );
+      const h = request.headers as Record<string, string>;
       const ownKey = url.pathname.endsWith("/pair")
         ? body.publicKey
-        : clients.get(h["x-studio-client"] ?? "");
-      assert.ok(ownKey === undefined || typeof ownKey === "string");
+        : clients.get(h["x-studio-client"]);
+
       const canonical = [
         "studio-multi-server-v1",
         request.method,
@@ -322,7 +317,7 @@ export async function fixture(
       const body = bodyFor("/api/sync/preferences");
       assert.ok(body.scope === "user" || body.scope === "server");
       preferences[body.scope] = prunePreferenceFields(
-        mergePreferenceFields(preferences[body.scope], body.fields ?? {}),
+        mergePreferenceFields(preferences[body.scope], body.fields!),
       );
       json({ fields: preferences[body.scope] });
       return;
@@ -337,7 +332,7 @@ export async function fixture(
             ? {
                 resource,
                 value: claudeProgress.has(resource.requestId)
-                  ? (claudeProgress.get(resource.requestId) ?? null)
+                  ? claudeProgress.get(resource.requestId)!
                   : claudeLogins.get(resource.requestId) || null,
               }
             : options.progress?.(resource),
@@ -376,10 +371,9 @@ export async function fixture(
             archived: !!chat.archived,
             status: chat.status || "",
             unread: chat.id === agent.id ? unread : false,
-            serverId: ("serverId" in chat ? chat.serverId : null) || null,
-            projectId: ("projectId" in chat ? chat.projectId : null) || null,
-            projectServerId:
-              ("projectServerId" in chat ? chat.projectServerId : null) || null,
+            serverId: (chat as Partial<AgentEntityDto>).serverId || null,
+            projectId: (chat as Partial<AgentEntityDto>).projectId || null,
+            projectServerId: chat.projectServerId || null,
             provider: chat.provider || null,
             updated: chat.updated || null,
             created: chat.created || null,
@@ -472,11 +466,7 @@ export async function fixture(
           (row) => row.clientId === body.clientId,
         );
         if (peer) peer.status = "revoked";
-        else {
-          const first = accessClients[0];
-          assert.ok(first);
-          first.status = "revoked";
-        }
+        else accessClients[0].status = "revoked";
       }
       if (body.action === "unrevoke") {
         const peer = discoveredPeers.find(
@@ -541,9 +531,7 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/claude/login") {
-      const receipt = claudeLogins.get(
-        url.searchParams.get("request_id") ?? "",
-      );
+      const receipt = claudeLogins.get(url.searchParams.get("request_id")!);
       json(
         receipt || { error: "Unknown Claude sign-in request" },
         receipt ? 200 : 404,
@@ -552,8 +540,8 @@ export async function fixture(
     }
     if (url.pathname === "/api/accounts/claude/login/code") {
       const body = bodyFor("/api/accounts/claude/login/code");
-      const previous = claudeLogins.get(body.login_id);
-      assert.ok(previous);
+      const previous = claudeLogins.get(body.login_id)!;
+
       const receipt: components["schemas"]["ClaudeLoginResponse"] = {
         ...previous,
         status: "ready",
@@ -565,8 +553,8 @@ export async function fixture(
         id: body.login_id,
         label: "New Claude",
         provider: "claude",
-        email: receipt.email ?? null,
-        plan: receipt.plan ?? null,
+        email: receipt.email,
+        plan: receipt.plan,
         status: "ready",
         isDefault: false,
       });
@@ -575,8 +563,8 @@ export async function fixture(
     }
     if (url.pathname === "/api/accounts/claude/login/cancel") {
       const body = bodyFor("/api/accounts/claude/login/cancel");
-      const previous = claudeLogins.get(body.login_id);
-      assert.ok(previous);
+      const previous = claudeLogins.get(body.login_id)!;
+
       const receipt = {
         ...previous,
         status: "cancelled",
@@ -596,7 +584,7 @@ export async function fixture(
             resolvedAccountKey: account.id,
             reauthAccountKey: account.id,
             status: "ready",
-            email: account.email ?? null,
+            email: account.email,
           }
         : {
             requestId: id,
@@ -613,8 +601,8 @@ export async function fixture(
     }
     if (url.pathname === "/api/accounts/login/cancel") {
       const body = bodyFor("/api/accounts/login/cancel");
-      const previous = accountLogins.get(body.login_id);
-      assert.ok(previous);
+      const previous = accountLogins.get(body.login_id)!;
+
       const receipt = {
         ...previous,
         status: "cancelled",
@@ -718,9 +706,7 @@ export async function fixture(
   // a 1 s buffer) can close one just as a reload reuses it (ECONNRESET).
   server.keepAliveTimeout = 0;
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("Missing fixture TCP address");
+  const address = server.address() as import("node:net").AddressInfo;
   return {
     origin: `http://127.0.0.1:${address.port}`,
     invitation,
@@ -806,8 +792,8 @@ export async function fixture(
     },
     async close() {
       for (const stream of streams) stream.destroy();
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
+      await new Promise<Error | undefined>((resolve) => {
+        server.close(resolve);
         server.closeAllConnections();
       });
     },

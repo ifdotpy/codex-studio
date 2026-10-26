@@ -1421,6 +1421,7 @@ mod tests {
     }
 
     async fn put_agent(store: &RuntimeStore, mut record: Value) {
+        record["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
         record["id"] = json!("cleanup-agent");
         record["rootId"] = json!("cleanup-agent");
         record["epoch"] = json!(7);
@@ -1544,7 +1545,7 @@ mod tests {
             "agentArchive":{"cleanupPending":true},
             "workspaceCleanupIntent":super::queued_cleanup_intent("cleanup-agent", 7, CleanupAction::Archive)
         })).await;
-        let other = AgentRecord::from_value(json!({
+        let other = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"z-unrelated", "rootId":"z-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
             "workspaceCleanupIntent":super::queued_cleanup_intent("z-unrelated", 1, CleanupAction::Delete)
         })).expect("unrelated record");

@@ -1,5 +1,5 @@
 //! Terminal transcript effects share the lifecycle transaction and its replay receipt.
-use crate::notification_dispatch::notices::error_message as message;
+use crate::notification_dispatch::notices::{error_message as message, provider_label};
 use serde_json::{Value, json};
 use studio_runtime_store::{AgentRecord, NotificationDispatchRepository, StoreResult, Transaction};
 pub(crate) fn terminal(
@@ -11,9 +11,7 @@ pub(crate) fn terminal(
     at: f64,
 ) -> StoreResult<()> {
     if status == "failed" {
-        let label = studio_runtime_providers::ProviderKind::of_field(agent.extra.get("provider"))
-            .unwrap_or(studio_runtime_providers::ProviderKind::Codex)
-            .label();
+        let label = provider_label(&agent.value());
         let error = error.cloned().unwrap_or_else(
             || json!({"message": format!("{label} ended this turn with an error.")}),
         );
@@ -44,4 +42,60 @@ pub(crate) fn terminal(
     // no longer report the end of their items (Python `turn/completed`).
     crate::task_settlement::settle_agent_tasks(tx, &agent.id.0, at)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use studio_runtime_store::RuntimeStore;
+
+    #[tokio::test]
+    async fn provider_identity_failed_turn_notice_keeps_unknown_identity_generic() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        for (index, provider) in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!(7)),
+            Some(json!("codex")),
+            Some(json!("claude")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut agent =
+                AgentRecord::from_value(json!({"id":"a","rootId":"a","epoch":0,"status":"failed"}))
+                    .expect("agent");
+            if let Some(provider) = provider {
+                agent.extra.insert("provider".into(), provider);
+            }
+            let expected = match agent.extra.get("provider").and_then(Value::as_str) {
+                Some("codex") => "Codex",
+                Some("claude") => "Claude",
+                _ => "Provider",
+            };
+            store
+                .transaction(move |tx| {
+                    terminal(tx, &agent, &format!("turn-{index}"), "failed", None, 1.0)
+                })
+                .await
+                .expect("terminal notice");
+            let raw: String = store
+                .test_reader()
+                .expect("reader")
+                .query_row(
+                    "SELECT record FROM runtime_items WHERE id=?1",
+                    [format!("a:native-notice:error:turn-{index}")],
+                    |row| row.get(0),
+                )
+                .expect("notice");
+            let notice: Value = serde_json::from_str(&raw).expect("notice JSON");
+            assert_eq!(notice["title"], expected);
+            assert_eq!(
+                notice["text"],
+                format!("{expected} ended this turn with an error.")
+            );
+        }
+    }
 }

@@ -737,7 +737,7 @@ mod archive_finished_tests {
         );
         seed_failed_start_team(
             &store,
-            vec![json!({"id":"worker","rootId":"lead",
+            vec![json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead",
             "parentId":"lead","epoch":EPOCH,"status":"completed","autoWake":true})],
             vec![],
             vec![],
@@ -815,12 +815,12 @@ mod archive_finished_tests {
                 .await
                 .expect("store"),
         );
-        let unrelated = json!({"id":"unrelated","rootId":"lead","parentId":"lead",
+        let unrelated = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"unrelated","rootId":"lead","parentId":"lead",
             "epoch":1,"status":"completed","autoWake":true});
         seed_failed_start_team(
             &store,
             vec![
-                json!({"id":"worker","rootId":"lead",
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead",
             "parentId":"lead","epoch":1,"status":"completed","autoWake":true}),
                 unrelated,
             ],
@@ -943,11 +943,11 @@ mod archive_finished_tests {
         let dirty_cwd = dirty.clone();
         store.transaction_with_error(move |tx| {
             for row in [
-                json!({"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
-                json!({"id":"clean", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "role":"implementer", "autoWake":true, "cwd":clean_cwd, "worktreeReady":true}),
-                json!({"id":"dirty", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true, "cwd":dirty_cwd, "worktreeReady":true}),
-                json!({"id":"active", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"running", "autoWake":true}),
-                json!({"id":"assigned", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"clean", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "role":"implementer", "autoWake":true, "cwd":clean_cwd, "worktreeReady":true}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"dirty", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true, "cwd":dirty_cwd, "worktreeReady":true}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"active", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"running", "autoWake":true}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"assigned", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
             for row in [
                 json!({"id":"accepted", "rootId":"lead", "owner":"clean", "status":"accepted", "version":1}),
@@ -1047,7 +1047,7 @@ mod archive_finished_tests {
     ) {
         store
             .transaction_with_error(move |tx| {
-                let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+                let lead = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
                     "isLead":true,"autoWake":true});
                 for row in std::iter::once(lead).chain(workers) {
                     AgentRepository::put(tx, &AgentRecord::from_value(row)?)?;
@@ -1135,7 +1135,7 @@ mod archive_finished_tests {
                 .expect("store"),
         );
         let worker = |id: &str| {
-            json!({"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
                 "autoWake":true,"isLead":false,"role":"implementer","threadId":null,
                 "turnId":null,"inFlight":false,"worktree":true,"worktreeReady":false,
                 "cwd":project,"error":"workspace-readiness/token-stale"})
@@ -1266,7 +1266,7 @@ mod archive_finished_tests {
                 .expect("store"),
         );
         let worker = |id: &str, status: &str| {
-            json!({"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":status,
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":status,
                 "autoWake":true,"isLead":false,"threadId":null,"turnId":null,"inFlight":false})
         };
         let mut retrying = worker("retrying", "failed");
@@ -1364,9 +1364,9 @@ mod archive_finished_tests {
         );
         store.transaction_with_error(|tx| {
             for row in [
-                json!({"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
-                json!({"id":"parent", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed"}),
-                json!({"id":"child", "rootId":"lead", "parentId":"parent", "epoch":1, "status":"completed"}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"parent", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed"}),
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"child", "rootId":"lead", "parentId":"parent", "epoch":1, "status":"completed"}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("team");

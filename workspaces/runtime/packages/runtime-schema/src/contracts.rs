@@ -335,6 +335,61 @@ fn delivery_moment_ts() -> String {
     text
 }
 
+fn provider_kind_schema() -> Value {
+    let mut schema = schemars::schema_for!(crate::provider_kind::ProviderKind).to_value();
+    schema
+        .as_object_mut()
+        .expect("provider schema object")
+        .remove("$schema");
+    schema
+}
+
+fn provider_kind_ts() -> String {
+    let schema = provider_kind_schema();
+    let values = schema["enum"]
+        .as_array()
+        .expect("ProviderKind is a closed enum");
+    let values = values
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut text = format!(
+        "// {HEADER}\nexport const PROVIDER_KINDS = [{values}] as const;\nexport type ProviderKind = (typeof PROVIDER_KINDS)[number];\n\nexport const PROVIDER_LABELS: Record<ProviderKind, string> = {{\n"
+    );
+    for provider in crate::provider_kind::ProviderKind::ALL {
+        writeln!(
+            text,
+            "  {}: {},",
+            provider.key(),
+            json_string(provider.label())
+        )
+        .expect("String write");
+    }
+    text.push_str("};\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
+    text
+}
+
+// Only closed Studio provider identities belong here. Remote strings and native
+// provider-specific const schemas retain their own contracts.
+const PROVIDER_OPENAPI_SITES: &[&str] = &[
+    "/components/schemas/AgentProvider",
+    "/components/schemas/Account/properties/provider",
+    "/components/schemas/AccountTransferLeftOnSourceRecordResponse/properties/provider/anyOf/0",
+    "/components/schemas/AgentRecordResponse/properties/provider",
+    "/components/schemas/LazyAccountTransferSourceRecordResponse/properties/provider",
+    "/components/schemas/SummaryAccount/properties/provider",
+];
+
+const PROVIDER_PERSISTED_RECORDS: &[(&str, &str)] = &[
+    ("account-registry", "/$defs/AccountRecord"),
+    (
+        "persisted-continuation-snapshot",
+        "/$defs/ContinuationAgent",
+    ),
+    ("persisted-transfer-agent-record", ""),
+];
+
 fn api_schema_ts(schema_hash: &str) -> String {
     let mut text = format!(
         "export const API_SCHEMA_HASH =\n  {};\n",
@@ -982,6 +1037,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
+    openapi["components"]["schemas"]["ProviderKind"] = provider_kind_schema();
+    for pointer in PROVIDER_OPENAPI_SITES {
+        *openapi
+            .pointer_mut(pointer)
+            .ok_or_else(|| format!("missing provider schema {pointer}"))? =
+            serde_json::json!({"$ref":"#/components/schemas/ProviderKind"});
+    }
     openapi["components"]["schemas"]["DesktopResponse"]["properties"]["backendKind"] =
         serde_json::json!({"type":"string", "const":crate::desktop::BACKEND_KIND});
     openapi["components"]["schemas"]["AnalyticsUsageRecord"]["properties"]["studioUsage"] =
@@ -1042,6 +1104,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
                 "// {HEADER}\nexport const MCP_AUTO_BACKGROUND_MS = {};\n",
                 values::CLAUDE_MCP_AUTO_BACKGROUND_MS
             ),
+        },
+        Rendered {
+            path: web("providerKind.ts"),
+            text: provider_kind_ts(),
         },
         Rendered {
             path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.ts"
@@ -1132,6 +1198,30 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
+        let mut schema = read_json(root, &path)?;
+        let record = schema
+            .pointer_mut(pointer)
+            .ok_or_else(|| format!("{path}: missing provider record {pointer}"))?;
+        record["properties"]["provider"] = serde_json::json!({"$ref":"#/$defs/ProviderKind"});
+        let required = record["required"]
+            .as_array_mut()
+            .ok_or_else(|| format!("{path}: missing required record fields {pointer}"))?;
+        if !required.iter().any(|field| field == "provider") {
+            required.push(serde_json::json!("provider"));
+        }
+        schema["$defs"]["ProviderKind"] = provider_kind_schema();
+        if *name == "account-registry" {
+            schema["properties"]["version"]["const"] =
+                serde_json::json!(values::ACCOUNT_REGISTRY_FORMAT_VERSION);
+        }
+        rendered.push(Rendered {
+            path,
+            text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",
+        });
+    }
     // Analytics embeds the same accounting owner with local schema references.
     let usage_defs: serde_json::Value = serde_json::from_str(
         &serde_json::to_string(&crate::usage::schemas())
@@ -1315,6 +1405,43 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_provider_identity_requires_a_known_provider() {
+        for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
+            let path = format!(
+                "workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json"
+            );
+            let schema = read_json(&repository_root(), &path).expect("persisted schema");
+            let record = schema.pointer(pointer).expect("persisted record schema");
+            let contract = serde_json::json!({"$defs":schema["$defs"],"allOf":[record]});
+            let validator = jsonschema::validator_for(&contract).expect("record schema compiles");
+            let mut record = if *name == "account-registry" {
+                serde_json::json!({"id":"account","home":"/account","label":"Account","source":"fixture","status":"ready"})
+            } else {
+                serde_json::json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle"})
+            };
+            assert!(
+                !validator.is_valid(&record),
+                "{name} must reject missing provider"
+            );
+            for provider in crate::provider_kind::ProviderKind::ALL {
+                record["provider"] = serde_json::json!(provider);
+                assert!(validator.is_valid(&record), "{name}: {provider}");
+            }
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!("future-provider"),
+            ] {
+                record["provider"] = invalid;
+                assert!(
+                    !validator.is_valid(&record),
+                    "{name} must reject {}",
+                    record["provider"]
+                );
+            }
+        }
+    }
 
     #[test]
     fn bridge_wire_preserves_omission_and_explicit_model_null() {

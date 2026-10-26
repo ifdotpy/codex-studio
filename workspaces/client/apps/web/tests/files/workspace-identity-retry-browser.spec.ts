@@ -1,4 +1,3 @@
-import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./workspace-identity-retry-browser.fixture.tsx";
 // A failed workspace identity read at startup must not refuse attachments until a restart.
@@ -59,7 +58,7 @@ test("workspace identity retry browser", async ({ browser }) => {
         ? route.fallback()
         : route.fulfill({ status: 503, json: { error: "Not in this test" } }),
     );
-    const url = required(server.resolvedUrls?.local[0]);
+    const url = server.resolvedUrls!.local[0]!;
     await page.goto(url + "check");
     await page.addScriptTag({
       type: "module",
@@ -71,9 +70,7 @@ test("workspace identity retry browser", async ({ browser }) => {
     await page.evaluate(() => window.workspaceIdentityRetryBrowserMount());
     await expect.poll(() => identityReads).toBeGreaterThan(1);
     await expect
-      .poll(() =>
-        page.evaluate(() => window.workspaceIdentityRetryBrowserWorkspace),
-      )
+      .poll(() => page.evaluate(() => window.workspace))
       .toBe(workspaceId);
     assert.deepEqual(errors, []);
   } finally {

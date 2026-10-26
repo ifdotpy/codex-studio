@@ -1,3 +1,4 @@
+import type { AddressInfo } from "node:net";
 import { phoneSignInUrl } from "./sign-in.fixture.ts";
 import type {} from "./sign-in-card-phone-ui.fixture.tsx";
 import { createFixtureViteServer } from "../playwright.ts";
@@ -24,10 +25,7 @@ const PORT = await new Promise<number>((resolve, reject) => {
   const probe = createNetServer();
   probe.once("error", reject);
   probe.listen(0, "127.0.0.1", () => {
-    const address = probe.address();
-    if (!address || typeof address === "string")
-      throw new Error("Missing fixture address");
-    const { port } = address;
+    const { port } = probe.address() as AddressInfo;
     probe.close(() => resolve(port));
   });
 });
@@ -37,7 +35,7 @@ test.use({
   viewport: { width: 390, height: 844 },
   hasTouch: true,
   launchOptions: {
-    ...(browserExecutablePath ? { executablePath: browserExecutablePath } : {}),
+    executablePath: browserExecutablePath,
     args: [
       `--host-resolver-rules=MAP ${PHONE_HOST} 127.0.0.1`,
       `--unsafely-treat-insecure-origin-as-secure=${ORIGIN}`,
@@ -90,21 +88,16 @@ test("Sign-in card at phone width uses paste mode and the device code", async ({
       if (message.type() === "error") errors.push(message.text());
     });
     await page.addInitScript((pasted) => {
-      window.signInPhoneFixture = {
-        opened: [],
-        copied: [],
-        notes: [],
-        waiting: () => {},
-      };
+      window.__opened = [];
+      window.__copied = [];
       window.open = (url) => {
-        window.signInPhoneFixture.opened.push(String(url));
-        return window;
+        window.__opened.push(String(url));
+        return {} as Window;
       };
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
-          writeText: async (text: string) =>
-            window.signInPhoneFixture.copied.push(text),
+          writeText: async (text: string) => window.__copied.push(text),
           readText: async () => pasted,
         },
       });
@@ -166,12 +159,8 @@ test("Sign-in card at phone width uses paste mode and the device code", async ({
     await expect(
       device.getByRole("button", { name: "Code copied" }),
     ).toBeVisible();
-    expect(await page.evaluate(() => window.signInPhoneFixture.copied)).toEqual(
-      ["WDJB-MJHT"],
-    );
-    expect(await page.evaluate(() => window.signInPhoneFixture.opened)).toEqual(
-      [],
-    );
+    expect(await page.evaluate(() => window.__copied)).toEqual(["WDJB-MJHT"]);
+    expect(await page.evaluate(() => window.__opened)).toEqual([]);
     await page
       .screenshot({
         path: testInfo.outputPath("sign-in-card-phone-approval.png"),
@@ -182,13 +171,13 @@ test("Sign-in card at phone width uses paste mode and the device code", async ({
     // Paste mode: the approval opens the provider page in the system browser.
     await redirect.getByRole("button", { name: "Open in browser" }).click();
     await expect
-      .poll(() => page.evaluate(() => window.signInPhoneFixture.opened))
+      .poll(() => page.evaluate(() => window.__opened))
       .toEqual([phoneSignInUrl]);
     expect(answers).toEqual([
       { decision: "accept", paste: true, id: "redirect" },
     ]);
 
-    await page.evaluate(() => window.signInPhoneFixture.waiting());
+    await page.evaluate(() => window.__waiting());
     await expect(redirect.getByText("Waiting for the browser")).toBeVisible();
     await expect(
       redirect.getByText("Copy its address and paste it here.", {
@@ -216,16 +205,16 @@ test("Sign-in card at phone width uses paste mode and the device code", async ({
       id: "redirect",
     });
     await expect
-      .poll(() => page.evaluate(() => window.signInPhoneFixture.notes))
+      .poll(() => page.evaluate(() => window.__notes))
       .toContain(
         "Studio sent the sign-in result to the command. The chat shows how it ended.",
       );
     // The field is cleared; a second click cannot send the code again.
     await expect(send).toBeDisabled();
     expect(answers).toHaveLength(2);
-    expect(await page.evaluate(() => window.signInPhoneFixture.opened)).toEqual(
-      [phoneSignInUrl],
-    );
+    expect(await page.evaluate(() => window.__opened)).toEqual([
+      phoneSignInUrl,
+    ]);
     // The pasted address is not kept in browser storage.
     const stored = await page.evaluate(() =>
       JSON.stringify({ ...localStorage, ...sessionStorage }),

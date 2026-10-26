@@ -176,7 +176,7 @@ mod tests {
     }
 
     fn put_agent(connection: &Connection, id: &str, extra: Value) {
-        let mut record = json!({"id":id,"role":"reviewer","status":"completed",
+        let mut record = json!({"id":id,"provider":"codex","role":"reviewer","status":"completed",
             "parentId":"parent","rootId":"parent","epoch":1});
         for (key, value) in extra.as_object().expect("extra object") {
             record[key] = value.clone();
@@ -218,7 +218,7 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                 [
                     "eligible-whitespace-object",
-                    r#"{"id":"eligible-whitespace-object","role":"reviewer","status":"completed","parentId":"parent","agentArchive":{ }}"#,
+                    r#"{"id":"eligible-whitespace-object","provider":"codex","role":"reviewer","status":"completed","parentId":"parent","agentArchive":{ }}"#,
                 ],
             )
             .expect("whitespace empty object inserts");

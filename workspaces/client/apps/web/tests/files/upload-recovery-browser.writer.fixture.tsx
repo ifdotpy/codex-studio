@@ -1,5 +1,5 @@
 import "./attachment-drafts.fixture.ts";
-import type {} from "./upload-recovery-browser.fixture.tsx";
+import type { RecoveryHarness } from "./upload-recovery-browser.fixture.tsx";
 declare global {
   interface Window {
     uploadRecoveryBrowserRaceMount: typeof mount;
@@ -17,7 +17,11 @@ export function mount() {
         "codex-agent-attachments:fixture",
         () => {},
       );
-      window.uploadRecoveryBrowserWriter = { attachments, setAttachments };
+      // Base writer exposes only attachment state, omitting recovery/form members.
+      window.uploadRecoveryBrowserFixture = {
+        attachments,
+        setAttachments,
+      } as RecoveryHarness;
       return null;
     }),
   );

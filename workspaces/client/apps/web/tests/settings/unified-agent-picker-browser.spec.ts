@@ -1,6 +1,5 @@
 import type { components } from "../../src/generated/api.ts";
 import type {} from "./unified-agent-picker-browser.fixture.tsx";
-import { required } from "./fixture-helpers.ts";
 import { fixtureUrl } from "./fixture-helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -64,7 +63,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       },
     ],
   });
-  const results: unknown[] = [];
+  const results: { intentional?: boolean }[] = [];
   const contexts = [];
   try {
     await server.listen();
@@ -109,15 +108,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         }),
       );
       await page.goto(url);
-      await page.waitForFunction(
-        () => window.unifiedPickerFixture?.ready,
-        null,
-        { timeout: 30000 },
-      );
-      await page.evaluate(
-        (scheme) => window.unifiedPickerFixture.scheme(scheme),
-        scheme,
-      );
+      await page.waitForFunction(() => !!window.pickerReset, null, {
+        timeout: 30000,
+      });
+      await page.evaluate((scheme) => window.scheme!(scheme), scheme);
       const trigger = page.getByRole("button", {
         name: "Main agent settings",
         exact: true,
@@ -145,13 +139,12 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
             detectTextClipping: (args: {
               scene: string;
               profile: string;
-            }) => unknown;
+            }) => { intentional?: boolean }[];
           } = await import(process.env.PICKER_CLIP_DETECTOR);
-          const clipping: unknown = await page.evaluate(detectTextClipping, {
+          const clipping = await page.evaluate(detectTextClipping, {
             scene,
             profile,
           });
-          assert.ok(Array.isArray(clipping));
           results.push(...clipping);
         }
       };
@@ -168,17 +161,13 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "high",
       );
       await page.waitForFunction(() =>
-        window.unifiedPickerFixture.calls.some(
-          (call) => call.effort === "high",
-        ),
+        window.pickerCalls.some((call) => call.effort === "high"),
       );
       await page
         .getByRole("switch", { name: "Fast mode", exact: true })
         .click();
       await page.waitForFunction(() =>
-        window.unifiedPickerFixture.calls.some(
-          (call) => call.fast_mode === true,
-        ),
+        window.pickerCalls.some((call) => call.fast_mode === true),
       );
       await page.getByText("Worker", { exact: true }).click();
       await expect(
@@ -191,7 +180,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       // A new subagent account saves the defaults; nothing moves.
       await page.waitForFunction(() =>
-        window.unifiedPickerFixture.calls.some(
+        window.pickerCalls.some(
           (call) =>
             call.endpoint === "/api/conversation" &&
             call.worker_defaults?.account_key === "account-4",
@@ -200,7 +189,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       assert.equal(
         await page.evaluate(
           () =>
-            window.unifiedPickerFixture.calls.filter(
+            window.pickerCalls.filter(
               (call) => call.endpoint === "/api/agents/account-transfer",
             ).length,
         ),
@@ -234,13 +223,11 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .click();
       const luna = page.getByRole("option", { name: "Luna 6", exact: true });
       await expect(luna).toBeVisible();
-      const mark = await page.evaluate(
-        () => window.unifiedPickerFixture.calls.length,
-      );
+      const mark = await page.evaluate(() => window.pickerCalls.length);
       await luna.click();
       await page.waitForFunction(
         (mark) =>
-          window.unifiedPickerFixture.calls
+          window.pickerCalls
             .slice(mark)
             .some(
               (call) =>
@@ -253,7 +240,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       assert.equal(
         await page.evaluate(
           (mark) =>
-            window.unifiedPickerFixture.calls
+            window.pickerCalls
               .slice(mark)
               .filter(
                 (call) => call.endpoint === "/api/agents/account-transfer",
@@ -277,8 +264,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       // Restore automatic workers, so review defaults have the Codex catalog accepted by the backend.
       await page.evaluate(() =>
-        window.unifiedPickerFixture.updateAgent({
-          ...window.unifiedPickerFixture.agent,
+        window.updateAgent!({
+          ...window.agent,
           workerDefaults: {
             model: "gpt-6-luna",
             effort: "high",
@@ -293,7 +280,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .getByRole("option", { name: "Astra 6 recommended", exact: true })
         .click();
       await page.waitForFunction(() =>
-        window.unifiedPickerFixture.calls.some(
+        window.pickerCalls.some(
           (call) => call.review_defaults?.model === "gpt-6-astra",
         ),
       );
@@ -321,8 +308,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       await capture("orchestrator-claude");
       await page.evaluate(() => {
-        window.unifiedPickerFixture.reset();
-        window.unifiedPickerFixture.scene("rows");
+        window.pickerReset!();
+        window.scene!("rows");
       });
       const mainRow = page.getByRole("button", {
         name: "Main agent settings",
@@ -361,7 +348,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         [workersRow, "Worker"],
         [reviewRow, "Review"],
       ] as const) {
-        await required(row).click();
+        await row!.click();
         await expect(
           page.getByRole("radio", { name: role, exact: true }),
         ).toBeChecked();
@@ -388,20 +375,14 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       assert.equal(
         await page.evaluate(
           () =>
-            window.unifiedPickerFixture.required(
-              window.unifiedPickerFixture.calls
-                .filter((call) => call.review_defaults)
-                .at(-1),
-            ).expected_account_key,
+            window.pickerCalls.filter((call) => call.review_defaults).at(-1)!
+              .expected_account_key,
         ),
         "account-0",
       );
       await capture("chat-settings-model-rows");
       for (const scene of ["chat-account", "project", "shared"] as const) {
-        await page.evaluate(
-          (scene) => window.unifiedPickerFixture.scene(scene),
-          scene,
-        );
+        await page.evaluate((scene) => window.scene!(scene), scene);
         if (scene === "shared")
           await page
             .getByRole("button", { name: "Settings for agent 1" })
@@ -427,12 +408,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
             .getByRole("button", { name: "Save accounts", exact: true })
             .click();
           await page.waitForFunction(() =>
-            window.unifiedPickerFixture.calls.some(
+            window.pickerCalls.some(
               (call) =>
                 call.endpoint === "/api/projects" &&
-                !window.unifiedPickerFixture
-                  .required(call.account_keys)
-                  .includes("account-4"),
+                !call.account_keys!.includes("account-4"),
             ),
           );
         } else if (scene === "shared") {
@@ -451,24 +430,20 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
             .getByRole("button", { name: "Create", exact: true })
             .click();
           await page.waitForFunction(() =>
-            window.unifiedPickerFixture.calls.some(
+            window.pickerCalls.some(
               (call) => call.endpoint === "/api/peer-teams",
             ),
           );
           assert.deepEqual(
             await page.evaluate(() => {
-              const request = window.unifiedPickerFixture.required(
-                window.unifiedPickerFixture.calls.find(
-                  (call) => call.endpoint === "/api/peer-teams",
-                ),
-              );
-              const participant = window.unifiedPickerFixture.required(
-                request.participants,
-              )[0];
+              const request = window.pickerCalls.find(
+                (call) => call.endpoint === "/api/peer-teams",
+              )!;
+              const participant = request.participants![0];
               return [
-                window.unifiedPickerFixture.required(participant).account_key,
-                window.unifiedPickerFixture.required(participant).model,
-                window.unifiedPickerFixture.required(participant).effort,
+                participant!.account_key,
+                participant!.model,
+                participant!.effort,
               ];
             }),
             ["account-5", "default", "high"],
@@ -476,11 +451,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         }
       }
       await page.evaluate(() => {
-        window.unifiedPickerFixture.reset();
-        window.unifiedPickerFixture.whitelist([
-          "codex:gpt-6-astra",
-          "claude:claude-sonnet-5-5",
-        ]);
+        window.pickerReset!();
+        window.whitelist(["codex:gpt-6-astra", "claude:claude-sonnet-5-5"]);
       });
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
@@ -491,17 +463,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "account-4",
       );
       await expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              window.unifiedPickerFixture.required(
-                window.unifiedPickerFixture.agent.workerDefaults,
-              ).model,
-          ),
-        )
+        .poll(() => page.evaluate(() => window.agent.workerDefaults!.model))
         .toBe("claude-sonnet-5-5");
       await expect(page.getByRole("option", { name: /Opus/ })).toHaveCount(0);
-      await page.evaluate(() => window.unifiedPickerFixture.whitelist(null));
+      await page.evaluate(() => window.whitelist(null));
       assert.deepEqual(errors, []);
     }
     await writeFile(
@@ -510,15 +475,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
     );
     console.log(`Clipping measurements: ${output}`);
     assert.deepEqual(
-      results.filter(
-        (row) =>
-          !(
-            row &&
-            typeof row === "object" &&
-            "intentional" in row &&
-            row.intentional
-          ),
-      ),
+      results.filter((row) => !row.intentional),
       [],
     );
   } finally {

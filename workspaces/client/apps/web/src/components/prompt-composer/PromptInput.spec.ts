@@ -78,21 +78,21 @@ test("isolated production PromptInput preserves its input behavior", async ({
   await input.fill("hello");
   await expect(input).toHaveValue("hello");
   await expect
-    .poll(() => page.evaluate(() => window.inputEvents?.changes))
+    .poll(() => page.evaluate(() => window.inputEvents!.changes))
     .toBe(1);
 
   await input.press("Enter");
   await expect
-    .poll(() => page.evaluate(() => window.inputEvents?.sends))
+    .poll(() => page.evaluate(() => window.inputEvents!.sends))
     .toBe(1);
   await input.press("Shift+Enter");
   await expect
-    .poll(() => page.evaluate(() => window.inputEvents?.sends))
+    .poll(() => page.evaluate(() => window.inputEvents!.sends))
     .toBe(1);
   await page.evaluate(() => {
-    const input = document.querySelector("#message");
-    if (!input) throw new Error("Missing prompt input");
-    input.dispatchEvent(
+    const input = document.querySelector<HTMLTextAreaElement>("#message");
+
+    input!.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "Enter",
         bubbles: true,
@@ -101,25 +101,25 @@ test("isolated production PromptInput preserves its input behavior", async ({
     );
   });
   await expect
-    .poll(() => page.evaluate(() => window.inputEvents?.sends))
+    .poll(() => page.evaluate(() => window.inputEvents!.sends))
     .toBe(1);
 
   await input.press("Tab");
   await expect
-    .poll(() => page.evaluate(() => window.inputEvents?.queues))
+    .poll(() => page.evaluate(() => window.inputEvents!.queues))
     .toBe(1);
-  await page.evaluate(() => window.setInputState?.({ canSend: false }));
+  await page.evaluate(() => window.setInputState!({ canSend: false }));
   await expect(input).toBeDisabled();
   const changesBeforeDisabledInput = await page.evaluate(
-    () => window.inputEvents?.changes,
+    () => window.inputEvents!.changes,
   );
   await input.press("x").catch(() => {});
   await expect
-    .poll(() => page.evaluate(() => window.inputEvents?.changes))
+    .poll(() => page.evaluate(() => window.inputEvents!.changes))
     .toBe(changesBeforeDisabledInput);
 
   await page.evaluate(() =>
-    window.setInputState?.({
+    window.setInputState!({
       canSend: true,
       text: "x".repeat(12001),
       tooLong: true,
@@ -128,18 +128,17 @@ test("isolated production PromptInput preserves its input behavior", async ({
   await expect(input).toHaveAttribute("aria-invalid", "true");
 
   await page.evaluate(() => {
-    window.setInputState?.({ text: "$eli5", tooLong: false });
-    const element = document.querySelector("#message");
-    if (!(element instanceof HTMLTextAreaElement))
-      throw new Error("Missing prompt textarea");
-    element.setSelectionRange(element.value.length, element.value.length);
-    element.dispatchEvent(new Event("select", { bubbles: true }));
+    window.setInputState!({ text: "$eli5", tooLong: false });
+    const element = document.querySelector<HTMLTextAreaElement>("#message");
+
+    element!.setSelectionRange(element!.value.length, element!.value.length);
+    element!.dispatchEvent(new Event("select", { bubbles: true }));
   });
   await page.getByRole("option", { name: /eli5/ }).waitFor();
   await input.press("Enter");
   await expect(input).toHaveValue("$eli5 ");
   await expect
-    .poll(() => page.evaluate(() => window.inputEvents?.sends))
+    .poll(() => page.evaluate(() => window.inputEvents!.sends))
     .toBe(1);
   expect(errors).toEqual([]);
 });

@@ -1,4 +1,5 @@
 import { RetainedWorktree } from "./RetainedWorktrees";
+import { providerLabel } from "../../generated/providerKind.ts";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import { ActionIcon, Button, Menu, UnstyledButton } from "@mantine/core";
@@ -282,8 +283,8 @@ const WorkerCardView = memo(function WorkerCardView({
               <span
                 className="worker-provider"
                 role="img"
-                aria-label={provider === "claude" ? "Claude" : "Codex"}
-                title={provider === "claude" ? "Claude" : "Codex"}
+                aria-label={providerLabel(provider)}
+                title={providerLabel(provider)}
               >
                 <ProviderMark provider={provider} />
               </span>

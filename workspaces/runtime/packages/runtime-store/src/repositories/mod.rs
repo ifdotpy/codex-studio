@@ -183,7 +183,7 @@ mod tests {
     fn repository_sql_uses_only_declared_tables() {
         let db = database_with(&agents::REQUIREMENTS);
         let agent = AgentRecord::from_value(json!({
-            "id":"a", "rootId":"a", "epoch":0, "status":"idle"
+            "id":"a", "provider":"codex", "rootId":"a", "epoch":0, "status":"idle"
         }))
         .expect("agent JSON has a string id");
         AgentRepository::put(&db, &agent).expect("agent write uses declared objects");

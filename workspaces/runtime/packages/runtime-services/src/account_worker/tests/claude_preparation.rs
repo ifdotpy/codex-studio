@@ -32,7 +32,7 @@ pub(super) fn claude_resources(state: &State) -> preparation::PreparationResourc
     std::fs::write(
         &registry,
         json!({
-            "version": 1,
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey": "default",
             "accounts": {"default": {
                 "id": "default", "home": home, "label": "Fixture Claude",
@@ -110,7 +110,7 @@ fn codex_resources(state: &State, auth: Option<Value>) -> preparation::Preparati
     std::fs::write(
         &registry,
         json!({
-            "version": 1,
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey": "default",
             "accounts": {"default": {
                 "id": "default", "home": home, "label": "Fixture Codex",

@@ -551,8 +551,8 @@ mod room_preparation_tests {
         )
         .expect("resolved real cwd");
         let directory = RoomDirectory::resolve(vec![
-            json!({"id":"first","rootId":"first","isLead":true,"cwd":first}),
-            json!({"id":"second","rootId":"second","isLead":true,"cwd":second}),
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"first","rootId":"first","isLead":true,"cwd":first}),
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"second","rootId":"second","isLead":true,"cwd":second}),
         ], vec![json!({"id":"project","path":first,"peerTeams":[{"id":"peers","members":["first","second"]}]})])
             .expect("room membership resolves canonical paths");
         let members = &directory.peers;
@@ -661,7 +661,7 @@ mod room_preparation_tests {
         let transaction = connection.transaction().expect("seed transaction");
         for index in 0..AGENT_COUNT {
             let id = format!("agent-{index:04}");
-            let agent = json!({"id":id,"status":"idle"}).to_string();
+            let agent = json!({"id":id,"provider":studio_runtime_schema::ProviderKind::Codex,"status":"idle"}).to_string();
             let work_id = format!("work-{index:04}");
             let task = json!({"id":work_id,"owner":id,"results":[]}).to_string();
             transaction

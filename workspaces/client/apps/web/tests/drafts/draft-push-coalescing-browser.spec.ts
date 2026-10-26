@@ -1,8 +1,8 @@
+import type { AddressInfo } from "node:net";
 import type { components } from "../../src/generated/api.ts";
 import { requestBody } from "../messages/helpers.ts";
 import { readDraft } from "../drafts/draft-fixture-helpers.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
-import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test, expect, createFixtureViteServer } from "../playwright.ts";
@@ -76,7 +76,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
         } satisfies PostResult<"/api/messages">,
       });
     });
-    const origin = fixtureOrigin(server);
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
     await page.goto(`${origin}/check`);
     await page.clock.install();
     const timing = await page.evaluate(async () => {
@@ -88,30 +88,29 @@ test("draft pushes coalesce at the production replication boundary", async ({
         await import("/src/../tests/drafts/draft-push-coalescing-browser.fixture.tsx");
       await mount();
     });
-    await page.waitForFunction(() => !!window.coalescingDraft_draft);
+    await page.waitForFunction(() => !!window.draft);
     await page.clock.runFor(300);
 
     const edit = async (text: string) => {
       await page.evaluate((text: string) => {
-        window.coalescingDraft_draft.setDrafts((old) => ({
+        window.draft.setDrafts((old) => ({
           ...old,
           lead: text,
         }));
-        window.coalescingDraft_lastRecoverySnapshot = {
+        window.lastRecoverySnapshot = {
           journal: Object.entries(localStorage)
             .filter(([key]) =>
               key.startsWith(`codex-drafts:${"f".repeat(32)}:pending:`),
             )
             .map(([, value]) => window.coalescingDraft_readDraft(value).text),
           local: window.coalescingDraft_readLocalDraft(
-            localStorage.getItem(`codex-chat-draft:${"f".repeat(32)}:lead`) ??
-              "null",
+            localStorage.getItem(`codex-chat-draft:${"f".repeat(32)}:lead`)!,
           )?.text,
         };
       }, text);
       await page.waitForFunction(
         async (text: string) =>
-          (await window.coalescingDraft_db.drafts.find().exec()).some(
+          (await window.db.drafts.find().exec()).some(
             (doc) =>
               window.coalescingDraft_readDraft(doc.payload).text === text,
           ),
@@ -125,9 +124,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
       await edit(`typing ${index}`);
       if (index + 1 < burstSize) await page.clock.runFor(35);
     }
-    const recovery = await page.evaluate(
-      () => window.coalescingDraft_lastRecoverySnapshot,
-    );
+    const recovery = await page.evaluate(() => window.lastRecoverySnapshot);
     assert.ok(
       recovery.journal.includes(`typing ${burstSize - 1}`) ||
         recovery.local === `typing ${burstSize - 1}`,
@@ -179,12 +176,11 @@ test("draft pushes coalesce at the production replication boundary", async ({
       "The maximum wait must push during continuous typing",
     );
     assert.ok(
-      (pushTimes[maxWaitPushIndex] ?? NaN) - maxWaitStart <=
-        timing.pushMaxWait + 600,
+      pushTimes[maxWaitPushIndex] - maxWaitStart <= timing.pushMaxWait + 600,
       "The first push is bounded from the start of continuous typing",
     );
     assert.ok(
-      (pushTimes[maxWaitPushIndex] ?? NaN) - maxWaitStart >=
+      pushTimes[maxWaitPushIndex] - maxWaitStart >=
         timing.pushMaxWait - timing.pushQuietWait - 200,
       "A quiet-period push must not satisfy the maximum-wait assertion",
     );
@@ -199,7 +195,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
     await edit("Send this before the draft push timer");
     const sendResult = await page.evaluate(async () => {
       const { durableSend } = await import("/src/sync/send.ts");
-      const text = window.coalescingDraft_draft.getDraft("lead");
+      const text = window.draft.getDraft("lead");
       const body = {
         id: "draft-coalescing-message",
         room: "lead",
@@ -207,7 +203,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
         delivery: "current_turn",
       } satisfies PostBody<"/api/messages">;
       const result = await durableSend(body, [], () =>
-        window.coalescingDraft_draft.setDrafts((old) => ({ ...old, lead: "" })),
+        window.draft.setDrafts((old) => ({ ...old, lead: "" })),
       );
       return { body, result };
     });

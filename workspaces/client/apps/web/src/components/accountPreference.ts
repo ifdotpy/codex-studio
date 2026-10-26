@@ -1,4 +1,5 @@
 import type { components } from "../generated/api";
+import type { ProviderKind } from "../generated/providerKind.ts";
 import {
   ACCOUNT_GROUP_PATTERN,
   ACCOUNT_GROUPS_MAX,
@@ -78,7 +79,7 @@ const rank = (group: string | null | undefined, groups: string[]) => {
 const providerOf = (account: PreferenceAccount) => account.provider || "codex";
 
 /** The provider of a model id; `null` for an unknown model. */
-export function modelProvider(model: string): "codex" | "claude" | null {
+export function modelProvider(model: string): ProviderKind | null {
   if (model.startsWith("gpt-")) return "codex";
   if (
     model.startsWith("claude-") ||

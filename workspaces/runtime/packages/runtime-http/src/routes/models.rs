@@ -762,7 +762,9 @@ mod tests {
     #[tokio::test]
     async fn changed_and_error_accounts_are_refused_before_catalog_read() {
         for status in ["changed", "error"] {
-            let snapshot = snapshot(json!({"id":"default", "home":"/missing", "status":status}));
+            let snapshot = snapshot(
+                json!({"id":"default", "home":"/missing", "provider":studio_runtime_schema::ProviderKind::Codex, "status":status}),
+            );
             let error = account_catalog(
                 &ModelCatalogService::new(),
                 &snapshot,

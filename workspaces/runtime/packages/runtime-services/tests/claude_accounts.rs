@@ -24,7 +24,7 @@ fn metadata(email: &str) -> AuthMetadata {
 fn register_refresh_and_conflict_without_credential_access() {
     let dir = tempfile::tempdir().expect("valid fixture");
     let path = dir.path().join("registry.json");
-    std::fs::write(&path,serde_json::to_vec(&json!({"version":1,"logins":{},"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}}})).expect("valid fixture")).expect("valid fixture");
+    std::fs::write(&path,serde_json::to_vec(&json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"logins":{},"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}}})).expect("valid fixture")).expect("valid fixture");
     let driver = AccountDriver::open_with_reader(&path, NoProbe).expect("valid fixture");
     let options = json!({"binaryPath":"/fixture/scripted-claude","configDir":"/fixture/config"})
         .as_object()
@@ -106,8 +106,8 @@ fn fixture() -> (
 ) {
     let dir = tempfile::tempdir().expect("temporary account directory creates");
     let path = dir.path().join("registry.json");
-    std::fs::write(&path, json!({"version":1,"logins":{},"defaultAccountKey":"default",
-        "accounts":{"default":{"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}}}).to_string()).expect("registry fixture writes");
+    std::fs::write(&path, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"logins":{},"defaultAccountKey":"default",
+        "accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}}}).to_string()).expect("registry fixture writes");
     let driver = AccountDriver::open_with_reader(&path, NoProbe).expect("account driver opens");
     let options = json!({"binaryPath":"/fixture/claude","configDir":"/fixture/config"})
         .as_object()

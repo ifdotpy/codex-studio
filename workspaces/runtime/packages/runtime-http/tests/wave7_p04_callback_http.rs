@@ -201,7 +201,7 @@ async fn permission_app(
     port: Arc<Port>,
 ) -> axum::Router {
     let registry = root.join("permission-accounts.json");
-    tokio::fs::write(&registry, json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root,"label":"Fixture","source":"Fixture","provider":"codex","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).await.unwrap();
+    tokio::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root,"label":"Fixture","source":"Fixture","provider":"codex","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).await.unwrap();
     router(
         HttpState::new(
             "token".into(),

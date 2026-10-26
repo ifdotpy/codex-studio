@@ -1,5 +1,6 @@
 import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
+import { providerLabel } from "../generated/providerKind.ts";
 import { Button, Select, Textarea } from "@mantine/core";
 import { useRef, useState } from "react";
 import { ApiError, errorText, type PostBody } from "../api";
@@ -198,8 +199,7 @@ export default function RadioChat({
             <div>
               <strong>{agent.name}</strong>
               <small>
-                {agent.provider === "claude" ? "Claude" : "Codex"} ·{" "}
-                {agent.model}
+                {providerLabel(agent.provider || "codex")} · {agent.model}
               </small>
             </div>
             <span className="radio-speaker">

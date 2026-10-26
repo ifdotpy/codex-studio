@@ -1,9 +1,7 @@
 import { NativeSelect, Switch } from "@mantine/core";
 import type { PostBody } from "../../apiTypes";
-import type { ComponentHookCell } from "../componentTestFixtures";
+import { required, type ComponentHookCell } from "../componentTestFixtures";
 import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
-import assert from "node:assert/strict";
-import { required } from "../componentTestFixtures";
 import {
   createElement,
   isValidElement,
@@ -56,12 +54,10 @@ vi.mock("react", async (load) => ({
       value: typeof initial === "function" ? initial() : initial,
     };
     return [
-      required(cells[index]).value,
+      cells[index].value,
       (value: unknown) => {
-        required(cells[index]).value =
-          typeof value === "function"
-            ? value(required(cells[index]).value)
-            : value;
+        cells[index].value =
+          typeof value === "function" ? value(cells[index].value) : value;
       },
     ];
   },
@@ -73,9 +69,9 @@ vi.mock("react", async (load) => ({
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
-    if (!previous || deps.some((value, i) => value !== previous.deps?.[i]))
+    if (!previous || deps.some((value, i) => value !== previous.deps![i]))
       cells[index] = { deps, value: compute() };
-    return required(cells[index]).value;
+    return cells[index].value;
   },
   useEffect: (effect: EffectCallback, deps: unknown[]) => {
     const cells = h.cells.get(h.scope)!;
@@ -87,10 +83,10 @@ vi.mock("react", async (load) => ({
       deps.some((value, i) => value !== previous.deps?.[i])
     ) {
       previous?.cleanup?.();
-      const cell: ComponentHookCell = { deps };
+      const cell: ComponentHookCell = { deps, cleanup: undefined };
       cells[index] = cell;
       h.effects.push(() => {
-        cell.cleanup = effect() || undefined;
+        cell.cleanup = effect() as ComponentHookCell["cleanup"];
       });
     }
   },
@@ -140,14 +136,13 @@ function children(
   return [node, ...children(node.props.children)];
 }
 function invoke(element: ReactElement<unknown>) {
-  const component: unknown = element.type;
-  assert.ok(typeof component === "function");
+  const component = element.type as (
+    props: typeof element.props,
+  ) => ReactElement<PropsWithChildren<Record<string, unknown>>>;
   h.scope = component.name + (element.key || "");
   h.cursor = 0;
   if (!h.cells.has(h.scope)) h.cells.set(h.scope, []);
-  const result: unknown = component(element.props);
-  assert.ok(isValidElement<PropsWithChildren<Record<string, unknown>>>(result));
-  return result;
+  return component(element.props);
 }
 const initial: Agent = {
   id: "lead",
@@ -235,16 +230,12 @@ function render(
     (node) =>
       typeof node.type === "function" && node.type.name === "AgentSetupPicker",
   )!;
-  assert.ok(
-    isValidElement<ComponentProps<typeof ExecutionSummaryTrigger>>(
-      menu.props.trigger,
-    ),
+
+  const trigger = invoke(
+    menu.props.trigger as ReactElement<
+      ComponentProps<typeof ExecutionSummaryTrigger>
+    >,
   );
-  assert.ok(
-    isValidElement<ComponentProps<typeof AgentSetupPicker>>(picker) &&
-      picker.type === AgentSetupPicker,
-  );
-  const trigger = invoke(menu.props.trigger);
   const model = children(trigger).find(
     (node) => node.props.className === "execution-model",
   )!.props.children;
@@ -253,8 +244,12 @@ function render(
     controls,
     model,
     label: trigger.props["aria-label"],
-    picker: picker.props,
-    triggerAgent: menu.props.trigger.props.agent,
+    picker: picker.props as ComponentProps<typeof AgentSetupPicker>,
+    triggerAgent: (
+      menu.props.trigger as ReactElement<
+        ComponentProps<typeof ExecutionSummaryTrigger>
+      >
+    ).props.agent,
   };
 }
 afterEach(() => {
@@ -306,7 +301,7 @@ test("queued settings and account changes keep their canonical scope", async () 
   h.post.mockResolvedValue(queued);
   render(active).picker.onModel("gpt-6-luna");
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
-  expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+  expect(h.post.mock.calls[0][1]).toMatchObject({
     next_turn: true,
   });
   expect(render(active).model).toBe("Luna 6");
@@ -573,9 +568,9 @@ test("an older same-domain request cannot replace the latest acknowledgment", as
   render().picker.onRole("orchestrator");
   render().picker.onModel("gpt-6-astra");
   expect(finish).toHaveLength(2);
-  required(finish[1])({ ...initial, model: "gpt-6-astra" });
+  finish[1]({ ...initial, model: "gpt-6-astra" });
   await Promise.resolve();
-  required(finish[0])({ ...initial, model: "gpt-6-luna" });
+  finish[0]({ ...initial, model: "gpt-6-luna" });
   await Promise.resolve();
   expect(render().model).toBe("Astra 6");
 });

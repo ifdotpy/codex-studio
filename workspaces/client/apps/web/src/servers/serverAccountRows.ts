@@ -1,9 +1,10 @@
 import type { ServerAccount } from "./navigation";
 import type { StudioServer } from "./registry";
+import type { ProviderKind } from "../generated/providerKind.ts";
 
 export type ServerAccountRow = {
   key: string;
-  provider: "codex" | "claude";
+  provider: ProviderKind;
   email: string | null;
   label: string;
   plan: string | null;

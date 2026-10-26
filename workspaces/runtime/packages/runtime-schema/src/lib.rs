@@ -15,6 +15,7 @@ pub mod multi_server_protocol;
 pub mod pricing;
 pub mod provider_diagnostics;
 pub mod provider_input;
+pub mod provider_kind;
 pub mod provider_method_policy;
 pub mod provider_lifecycle;
 pub mod shared_values;
@@ -24,6 +25,7 @@ pub mod task_results;
 pub mod usage;
 
 pub use delivery::DeliveryMoment;
+pub use provider_kind::ProviderKind;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -1330,6 +1332,7 @@ mod tests {
                 "account-registry/AccountRecord",
                 &json!({
                     "id":"default",
+                    "provider":crate::ProviderKind::Codex,
                     "home":"/tmp/default",
                     "label":"Default",
                     "source":"test",

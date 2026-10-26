@@ -1,4 +1,5 @@
 //! Session cost estimates over the incremental analytics cost aggregate.
+use studio_runtime_schema::provider_kind::ProviderKind;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -57,21 +58,12 @@ pub fn session_cost_with_account_profiles(
     session_cost_inner(store, agent_id, accounts, true)
 }
 
-/// A non-empty string.
-fn nonempty(value: &Option<String>) -> Option<&str> {
-    value.as_deref().filter(|value| !value.is_empty())
-}
-
 fn session_cost_inner(
     store: &RuntimeStore,
     agent_id: &str,
     accounts: &BTreeMap<String, Value>,
     has_account_profiles: bool,
 ) -> Result<Value, CostsError> {
-    let account_providers = accounts
-        .iter()
-        .filter_map(|(key, account)| Some((key.as_str(), account.get("provider")?.as_str()?)))
-        .collect::<BTreeMap<_, _>>();
     let repository = AnalyticsRepository::new(store.root());
     let mut db = repository.open_read_only()?;
     let tx = db.transaction()?;
@@ -81,26 +73,16 @@ fn session_cost_inner(
     let mut providers_by_account = BTreeMap::<&str, &'static str>::new();
     let mut has_claude_history = false;
     for (_, member) in &members {
-        let provider = nonempty(&member.provider);
-        has_claude_history |= provider == Some("claude");
+        let provider = member.provider;
+        has_claude_history |= provider == ProviderKind::Claude;
         let account_key = member.account_key.as_deref().unwrap_or(DEFAULT_ACCOUNT);
-        let current = account_providers
-            .get(account_key)
-            .copied()
-            .filter(|value| !value.is_empty());
-        // The current account's provider stands in for a missing embedded one.
-        has_claude_history |= provider.is_none() && current == Some("claude");
-        if let Some(resolved) = provider.or(current).and_then(pricing_provider) {
-            providers_by_account.insert(account_key, resolved);
-        }
+        providers_by_account.insert(account_key, pricing_provider(provider));
         for entry in member.account_history.iter().flatten() {
-            let (Some(key), Some(provider)) = (&entry.account_key, &entry.provider) else {
+            let Some(key) = &entry.account_key else {
                 continue;
             };
-            has_claude_history |= provider == "claude";
-            if let Some(provider) = pricing_provider(provider) {
-                providers_by_account.insert(key, provider);
-            }
+            has_claude_history |= entry.provider == ProviderKind::Claude;
+            providers_by_account.insert(key, pricing_provider(entry.provider));
         }
     }
     if has_claude_history && !has_account_profiles {
@@ -580,7 +562,7 @@ fn read_codex_evidence(
         }
         let Some(profile) = accounts
             .get(&account)
-            .filter(|account| account["provider"] == "codex")
+            .filter(|account| ProviderKind::of_record(account) == Ok(ProviderKind::Codex))
             .and_then(|account| account["home"].as_str())
         else {
             continue;
@@ -639,7 +621,7 @@ fn parse_codex_evidence(
     limit: usize,
 ) -> (Vec<(String, NativeResponse)>, bool, bool) {
     use crate::analytics_rollout::{RolloutAction, RolloutContext};
-    use studio_runtime_schema::usage::{UsageObservation, UsageProvider, parse_token_usage};
+    use studio_runtime_schema::usage::{UsageObservation, parse_token_usage};
     let Ok(mut context) = RolloutContext::from_record(json!({"threadId":thread})) else {
         return (Vec::new(), true, false);
     };
@@ -667,7 +649,7 @@ fn parse_codex_evidence(
                 RolloutAction::Event { method, params, .. }
                     if method == "thread/tokenUsage/updated" =>
                 {
-                    match parse_token_usage(UsageProvider::Codex, &params) {
+                    match parse_token_usage(ProviderKind::Codex, &params) {
                         Ok(UsageObservation::Response {
                             response_id,
                             model,
@@ -1000,7 +982,7 @@ fn read_local_claude_usage_inner(
             sessions.insert((current_key.to_owned(), thread_id.clone()));
         }
         for entry in member.account_history.iter().flatten() {
-            if entry.provider.as_deref() != Some("claude") {
+            if entry.provider != ProviderKind::Claude {
                 continue;
             }
             let (Some(account_key), Some(thread_id)) = (&entry.account_key, &entry.thread_id)
@@ -1155,7 +1137,7 @@ fn read_local_claude_usage_inner(
 
 fn account_claude_config(account_key: &str, accounts: &BTreeMap<String, Value>) -> Option<PathBuf> {
     let account = accounts.get(account_key)?;
-    if account.get("provider").and_then(Value::as_str) != Some("claude") {
+    if ProviderKind::of_record(account) != Ok(ProviderKind::Claude) {
         return None;
     }
     let config_dir = account
@@ -1488,11 +1470,10 @@ fn provider_for(model: &str) -> Option<&'static str> {
     }
 }
 
-fn pricing_provider(provider: &str) -> Option<&'static str> {
+fn pricing_provider(provider: ProviderKind) -> &'static str {
     match provider {
-        "openai" | "codex" => Some("openai"),
-        "anthropic" | "claude" => Some("anthropic"),
-        _ => None,
+        ProviderKind::Codex => "openai",
+        ProviderKind::Claude => "anthropic",
     }
 }
 
@@ -1645,7 +1626,7 @@ mod tests {
         )
         .expect("rollout");
         (
-            member(json!({"accountKey":"codex","threadId":"thread"})),
+            member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"})),
             BTreeMap::from([("codex".into(), json!({"provider":"codex","home":root}))]),
         )
     }
@@ -1978,7 +1959,7 @@ mod tests {
             format!("{header}\n{usage}\n"),
         )
         .expect("rollout");
-        let member = member(json!({"accountKey":"codex","threadId":"thread"}));
+        let member = member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"}));
         let accounts = BTreeMap::from([(
             "codex".into(),
             json!({"provider":"codex","home":root.path()}),
@@ -2025,7 +2006,7 @@ mod tests {
             .await
             .expect("store");
         store.analytics_transaction::<_,StoreError>(|tx,_| {
-            AnalyticsCaptureRepository::write(tx,CaptureTable::Agents,&json!({"id":"agent","rootId":"agent"}))?;
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Agents,&json!({"id":"agent","rootId":"agent","provider":"codex"}))?;
             let mut final_row = json!({"id":"final","agentId":"agent","rootId":"agent","at":1,"model":"gpt-5","responseId":"response",
                 "last":{"inputTokens":10,"outputTokens":50},"total":{},"studioUsage":{"kind":"response","responseId":"response","model":"gpt-5",
                     "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":50},"evidence":"live"}});
@@ -2261,6 +2242,7 @@ mod tests {
         let members = vec![(
             "agent".to_owned(),
             member(json!({
+                "provider":"claude",
                 "accountKey":"current",
                 "threadId":"thread-current",
                 "accountHistory":[{
@@ -2327,7 +2309,7 @@ mod tests {
         )]);
         let members = vec![(
             "agent".to_owned(),
-            member(json!({"accountKey":"acct","threadId":"thread"})),
+            member(json!({"provider":"claude","accountKey":"acct","threadId":"thread"})),
         )];
         let before = super::claude_log_lines_skipped();
         let rows = read_local_claude_usage(&state, &members, &accounts).expect("usage");
@@ -2392,7 +2374,7 @@ mod tests {
             snapshot.write_all(b"\"}]}}").expect("snapshot suffix");
             let members = vec![(
                 "agent".to_owned(),
-                member(json!({"accountKey":"acct","threadId":thread})),
+                member(json!({"provider":"claude","accountKey":"acct","threadId":thread})),
             )];
             let rows =
                 read_local_claude_usage(&state, &members, &accounts).expect("snapshot usage");
@@ -2417,7 +2399,7 @@ mod tests {
         .expect("write unknown snapshot format");
         let members = vec![(
             "agent".to_owned(),
-            member(json!({"accountKey":"acct","threadId":"thread-small"})),
+            member(json!({"provider":"claude","accountKey":"acct","threadId":"thread-small"})),
         )];
         assert!(matches!(
             read_local_claude_usage(&state, &members, &accounts),
@@ -2441,7 +2423,7 @@ mod tests {
         )]);
         let members = vec![(
             "agent".to_owned(),
-            member(json!({"accountKey":"account", "threadId":"thread"})),
+            member(json!({"provider":"codex","accountKey":"account", "threadId":"thread"})),
         )];
         assert!(
             read_local_claude_usage(temp.path(), &members, &accounts)

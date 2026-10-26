@@ -21,9 +21,9 @@ function keyframeProperties(css: string) {
     }
     const body = css.slice(start.lastIndex, index - 1);
     const properties = new Set(
-      [...body.matchAll(/([a-z-]+)\s*:/g)].map((match) => match[1] ?? ""),
+      [...body.matchAll(/([a-z-]+)\s*:/g)].map(([, name]) => name),
     );
-    blocks.set(match[1] ?? "", properties);
+    blocks.set(match[1], properties);
   }
   return blocks;
 }
@@ -38,7 +38,7 @@ it("runs every infinite animation on compositor properties only", () => {
   const infinite = new Set(
     files.flatMap((css) =>
       [...css.matchAll(/animation\s*:\s*([\w-]+)[^;}]*\binfinite\b/g)].map(
-        (match) => match[1] ?? "",
+        (match) => match[1],
       ),
     ),
   );

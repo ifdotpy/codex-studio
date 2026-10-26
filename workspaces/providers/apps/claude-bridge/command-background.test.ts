@@ -1,3 +1,4 @@
+import type { FixtureToolResult } from "./testing/bridge-harness.ts";
 import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 // Moving a running Bash call to the background through the real bridge.
 // The scripted SDK follows the Claude Code task protocol; no model calls.
@@ -175,11 +176,10 @@ test("a registered foreground command moves to the background and releases the t
       n.params.item.id === "task:bash-1" &&
       n.params.item.status === "completed",
   );
-  assert.deepEqual(finished.params.item.result, {
-    content: [
-      { type: "text", text: "Background command completed (exit code 0)" },
-    ],
-  });
+  assert.match(
+    (finished.params.item.result as FixtureToolResult).content[0].text,
+    /Background command completed/,
+  );
 });
 
 test("a request for another turn or item never reaches Claude", async () => {

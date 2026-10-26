@@ -28,7 +28,8 @@ HTTP request validators use `registry_for_document` to prepare references
 against the same OpenAPI document and the persisted-state schema documents.
 This crate owns the shared runtime contracts: `src/shared_values.rs`,
 `src/agent_limits.rs`, `src/api_schema.rs`, `src/multi_server_protocol.rs`,
-`src/sync_protocol.rs`, `src/delivery.rs`, `src/provider_method_policy.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
+`src/sync_protocol.rs`, `src/delivery.rs`, `src/provider_kind.rs`,
+`src/provider_method_policy.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
 binary (`src/contracts.rs`) renders their TypeScript, Swift, and VM guest copies
 and the web API types of `runtime-http/openapi.json`, and holds the committed
 OpenAPI and persisted-state schemas to these owners. Refresh the copies with

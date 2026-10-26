@@ -19,11 +19,8 @@ test("desktop conversation header keeps title and actions on one row", async ({
   ).toBeVisible();
   const header = page.locator(".simple-workspace-header");
   const geometry = await header.evaluate((element) => {
-    const rect = (selector: string): BrowserRectangle => {
-      const node = element.querySelector(selector);
-      if (!node) throw new Error(`Missing header element ${selector}`);
-      return node.getBoundingClientRect().toJSON();
-    };
+    const rect = (selector: string): BrowserRectangle =>
+      element.querySelector(selector)!.getBoundingClientRect().toJSON();
     return [
       "#sidebar-toggle",
       ".conversation-heading",
@@ -39,11 +36,8 @@ test("desktop conversation header keeps title and actions on one row", async ({
     JSON.stringify(geometry),
   ).toBeLessThanOrEqual(1);
   for (let index = 1; index < geometry.length; index++) {
-    const previous = geometry[index - 1];
-    const current = geometry[index];
-    if (!previous || !current) throw new Error("Missing header geometry");
-    expect(current.x, JSON.stringify(geometry)).toBeGreaterThanOrEqual(
-      previous.right,
+    expect(geometry[index].x, JSON.stringify(geometry)).toBeGreaterThanOrEqual(
+      geometry[index - 1].right,
     );
   }
   await expect(page.locator("#conversation-status")).toHaveCount(0);

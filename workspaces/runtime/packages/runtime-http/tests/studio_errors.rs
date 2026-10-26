@@ -647,7 +647,7 @@ async fn studio_errors_batch_rolls_back_all_receipts_if_one_write_fails() {
 async fn startup_models_http_reports_pending_and_refuses_an_unknown_explicit_account() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
-    let registry = json!({"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}});
+    let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{}});
     let policy = studio_runtime_services::account_policy::AccountPolicyState::from_startup(
         Some(&serde_json::to_vec(&registry).unwrap()),
         [],

@@ -1069,7 +1069,7 @@ mod invalid_record_recovery_tests {
             .transaction(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('bad',?1)",
-                    [json!({
+                    [json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"bad", "rootId":17, "epoch":1, "status":"running",
                         "autoWake":true, "inFlight":true,
                         "startAttempt":{"id":"attempt","epoch":1,"submitted":true,"events":[]}
@@ -1090,13 +1090,15 @@ mod invalid_record_recovery_tests {
             .transaction(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('healthy',?1)",
-                    [json!({
-                        "id":"healthy", "rootId":"healthy", "epoch":1,
-                        "status":"running", "autoWake":true, "inFlight":true,
-                        "startAttempt":{"id":"live-attempt","submitted":true,
-                            "connectionId":"fcd7c814-1048-4599-9b2d-4151fbc40b68"}
-                    })
-                    .to_string()],
+                    [
+                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"healthy", "rootId":"healthy", "epoch":1,
+                            "status":"running", "autoWake":true, "inFlight":true,
+                            "startAttempt":{"id":"live-attempt","submitted":true,
+                                "connectionId":"fcd7c814-1048-4599-9b2d-4151fbc40b68"}
+                        })
+                        .to_string(),
+                    ],
                 )?;
                 Ok(())
             })
@@ -1152,7 +1154,7 @@ mod child_turn_parent_tests {
         store
             .transaction(move |tx| {
                 for record in [
-                    json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed",
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"completed",
                         "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
                         "concurrency":4}),
                     json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,

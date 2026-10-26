@@ -32,13 +32,13 @@
     "const delayedRemoteReveal = () => remote.revealPath(\"/tmp/remote-path\");"
   ],
   "workspaces/client/apps/web/src/sync/entityProjection.test.ts": [
-    "value: { stateDir: \"/tmp/state\" },"
+    "entityRow(\"workspace\", \"current\", { stateDir: \"/tmp/state\" }, 14),"
   ],
   "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.ts": [
     "id: \"/tmp/fixture\",",
     "path: \"/tmp/fixture\",",
     ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
-    "\"/tmp/fixture\",",
+    "assert.equal(agents.find((a) => a.id === \"empty\")!.cwd, \"/tmp/fixture\");",
     "path: \"/tmp/fixture\","
   ],
   "workspaces/client/apps/web/tests/accounts/project-settings-ui.spec.ts": [
@@ -128,9 +128,6 @@
   ],
   "workspaces/runtime/packages/runtime-services/tests/monitor_output_ui.rs": [
     ".unwrap_or_else(|| \"/tmp\".into());"
-  ],
-  "workspaces/runtime/packages/runtime-services/src/account_policy.rs": [
-    "r#\"{{\"version\":1,\"defaultAccountKey\":\"default\",\"accounts\":{{\"default\":{{\"id\":\"default\",\"home\":\"/tmp\",\"label\":\"{marker}\",\"source\":\"Codex CLI\",\"status\":\"error\",\"error\":\"{marker}\"}}}},\"logins\":{{}}}}\"#"
   ],
   "workspaces/runtime/packages/runtime-services/src/account_transfer_driver.rs": [
     "\"accountKey\":\"source\",\"provider\":\"codex\",\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\"}),",

@@ -1,5 +1,4 @@
-import { listeningPort } from "./helpers.ts";
-import { required } from "./helpers.ts";
+import type { AddressInfo } from "node:net";
 import type {} from "./completed-markdown-cache-browser.fixture.tsx";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -31,8 +30,8 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       requests: Array<{ path: string; agent: string | null; method: string }> =
         [];
     page.on("pageerror", (error) => {
-      errors.push(error.message);
-      console.error("Browser error:", error.message);
+      errors.push((error as Error).message);
+      console.error("Browser error:", (error as Error).message);
     });
     await page.route("**/api/**", (route) => {
       const url = new URL(route.request().url());
@@ -50,51 +49,47 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       });
     });
     await page.goto(
-      `http://127.0.0.1:${listeningPort(required(server.httpServer))}/check`,
+      `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}/check`,
       { waitUntil: "commit" },
     );
     await expect(page.locator("article a")).toHaveCount(2);
-    assert.equal(await page.evaluate(() => window.markdownCompilations), 2);
-    await page.evaluate(() => window.markdownChat(true));
+    assert.equal(await page.evaluate(() => window.compilations), 2);
+    await page.evaluate(() => window.chat(true));
     await expect(page.locator("article").first()).toContainText("Other chat");
-    await expect
-      .poll(() => page.evaluate(() => window.markdownCompilations))
-      .toBe(4);
+    await expect.poll(() => page.evaluate(() => window.compilations)).toBe(4);
     await page.evaluate(() => {
-      window.markdownHide();
-      window.markdownChat(false);
-      window.markdownCompilations = 0;
+      window.hide();
+      window.chat(false);
+      window.compilations = 0;
       window.markdownShow();
     });
     await expect(page.locator("article a")).toHaveCount(2);
     assert.equal(
-      await page.evaluate(() => window.markdownCompilations),
+      await page.evaluate(() => window.compilations),
       0,
       "Completed exact text survives component remount without parsing again",
     );
     await page.evaluate(() =>
-      window.markdownText("[Changed report][r].\n\n[r]: ./changed.md"),
+      window.text("[Changed report][r].\n\n[r]: ./changed.md"),
     );
     await expect(
       page.getByRole("link", { name: "Changed report" }),
     ).toBeVisible();
-    assert.equal(await page.evaluate(() => window.markdownCompilations), 1);
+    assert.equal(await page.evaluate(() => window.compilations), 1);
     await page.evaluate(() => {
-      window.markdownHide();
+      window.hide();
       window.markdownAgent("second");
       window.markdownShow();
     });
     await page.getByRole("link", { name: "Changed report" }).click();
     await page.getByText("Current workspace file.", { exact: true }).waitFor();
     assert.equal(
-      required(requests.at(-1)).agent,
+      requests.at(-1)!.agent,
       "second",
       "Cached links use the current agent",
     );
     await page.keyboard.press("Escape");
-    await page.evaluate(() =>
-      window.markdownText("[Remote](file://remote/report.md)"),
-    );
+    await page.evaluate(() => window.text("[Remote](file://remote/report.md)"));
     for (let attempt = 0; attempt < 2; attempt++) {
       const trigger = page.getByRole("link", { name: "Remote" });
       await trigger.focus();
@@ -111,7 +106,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
         { timeout: 3000 },
       );
     }
-    await page.evaluate(() => window.markdownResults());
+    await page.evaluate(() => window.results());
     for (let attempt = 0; attempt < 2; attempt++) {
       const trigger = page.getByRole("button", { name: "file.txt Patch" });
       await trigger.focus();
@@ -128,13 +123,10 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       );
     }
     const streamingText = "Streaming-only **prefix**.";
-    await page.evaluate(
-      (text) => window.markdownText(text, true),
-      streamingText,
-    );
+    await page.evaluate((text) => window.text(text, true), streamingText);
     await expect(page.locator("article strong")).toHaveText("prefix");
     await page.evaluate(() => {
-      window.markdownHide();
+      window.hide();
       window.markdownShow();
     });
     await expect(page.locator("article strong")).toHaveText("prefix");
@@ -147,7 +139,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       "Streaming-only text is never shared in the completed cache",
     );
     await page.evaluate(() =>
-      window.markdownText(
+      window.text(
         'Safe <img src="bad" onerror="window.executed=true"> [unsafe](javascript:alert(1))',
       ),
     );

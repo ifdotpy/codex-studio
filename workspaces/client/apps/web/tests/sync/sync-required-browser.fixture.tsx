@@ -47,6 +47,6 @@ declare global {
       >;
       outbox?: ReturnType<typeof import("../../src/sync/send.ts").useOutbox>;
     };
-    syncRequiredBrowserFixtureRestoreDraftWrites: () => void;
+    restoreDraftWrites: () => void;
   }
 }

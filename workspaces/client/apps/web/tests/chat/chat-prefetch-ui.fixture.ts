@@ -14,13 +14,12 @@ export const initializeInstrumentation = ({
     return JSON.parse(source) as components["schemas"]["ResourceChangeEvent"];
   }
   localStorage.setItem(`codex-desktop-opened:${stateDir}`, JSON.stringify(id));
-  window.prefetchUiResourceFlushAcks = [];
-  window.prefetchUiResourceFlushObserved = [];
-  window.prefetchUiPendingResourceFlushRevisions = [];
-  window.prefetchUiActiveResourceFlushRevisions = [];
-  const browserWindow: Window = window;
-  const nativeSetTimeout = browserWindow.setTimeout.bind(browserWindow);
-  browserWindow.setTimeout = function (
+  window.__resourceFlushAcks = [];
+  window.__resourceFlushObserved = [];
+  window.__pendingResourceFlushRevisions = [];
+  window.__activeResourceFlushRevisions = [];
+  const nativeSetTimeout = (window as Window).setTimeout.bind(window);
+  (window as Window).setTimeout = function (
     callback: TimerHandler,
     delay?: number,
     ...args: unknown[]
@@ -29,22 +28,19 @@ export const initializeInstrumentation = ({
       typeof callback === "function" &&
       callback.name === "flushResourceChanges"
     ) {
-      const revisions =
-        window.prefetchUiPendingResourceFlushRevisions.splice(0);
-      window.prefetchUiResourceFlushObserved.push(revisions);
+      const revisions = window.__pendingResourceFlushRevisions.splice(0);
+      window.__resourceFlushObserved.push(revisions);
       return nativeSetTimeout(() => {
-        window.prefetchUiActiveResourceFlushRevisions = revisions;
+        window.__activeResourceFlushRevisions = revisions;
         try {
           callback(...args);
         } finally {
-          window.prefetchUiActiveResourceFlushRevisions = [];
+          window.__activeResourceFlushRevisions = [];
         }
       }, delay);
     }
-    if (delay === 0 && window.prefetchUiActiveResourceFlushRevisions.length > 0)
-      window.prefetchUiResourceFlushAcks.push(
-        ...window.prefetchUiActiveResourceFlushRevisions,
-      );
+    if (delay === 0 && window.__activeResourceFlushRevisions.length > 0)
+      window.__resourceFlushAcks.push(...window.__activeResourceFlushRevisions);
     return nativeSetTimeout(callback, delay, ...args);
   };
   const addEventListener = EventSource.prototype.addEventListener;
@@ -56,33 +52,40 @@ export const initializeInstrumentation = ({
     options?: boolean | AddEventListenerOptions,
   ) {
     if (type !== "resources" || typeof listener !== "function") {
-      const add = addEventListener.bind(this);
-      if (typeof listener === "function") return add(type, listener, options);
-      return add(type, listener, options);
+      return addEventListener.call(
+        this,
+        type,
+        listener as EventListenerOrEventListenerObject,
+        options,
+      );
     }
     const trackedListener = function (this: EventSource, event: MessageEvent) {
       try {
-        window.prefetchUiPendingResourceFlushRevisions.push(
-          resourceFrame(event instanceof MessageEvent ? event.data : "null")
-            .revision,
+        window.__pendingResourceFlushRevisions.push(
+          resourceFrame(event.data).revision,
         );
       } catch {
         // Ignore malformed resource envelopes in test instrumentation.
       }
       return listener.call(this, event);
     };
-    return addEventListener.bind(this)(type, trackedListener, options);
+    return addEventListener.call(
+      this,
+      type,
+      trackedListener as EventListener,
+      options,
+    );
   };
 };
 
 declare global {
   interface Window {
-    prefetchUiResourceFlushAcks: number[];
-    prefetchUiResourceFlushObserved: number[][];
-    prefetchUiPendingResourceFlushRevisions: number[];
-    prefetchUiActiveResourceFlushRevisions: number[];
-    prefetchUiStopUnrelatedWatch: () => void;
-    prefetchUiSwitchFrames: {
+    __resourceFlushAcks: number[];
+    __resourceFlushObserved: number[][];
+    __pendingResourceFlushRevisions: number[];
+    __activeResourceFlushRevisions: number[];
+    stopUnrelatedWatch: () => void;
+    switchFrames: {
       time: number;
       fresh: boolean;
       wrong: boolean;
@@ -91,7 +94,7 @@ declare global {
       count: number;
       scrollTop: number | undefined;
     }[];
-    prefetchUiCaptureSwitch: number;
-    prefetchUiSwitchStartedAt: number | null;
+    captureSwitch: number;
+    switchStartedAt: number | null;
   }
 }

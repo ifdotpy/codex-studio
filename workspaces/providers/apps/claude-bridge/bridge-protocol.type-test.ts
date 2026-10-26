@@ -72,8 +72,11 @@ export async function checkHarness(bridge: BridgeHarness) {
   const result = await bridge.call("turn/start", start.params);
   result.turn.id satisfies string;
   const completed = await bridge.note(
-    "turn/completed",
-    (note) => note.params.turn.id === result.turn.id,
+    (
+      note,
+    ): note is import("./testing/bridge-harness.ts").BridgeNoteFor<"turn/completed"> =>
+      note.method === "turn/completed" &&
+      note.params.turn.id === result.turn.id,
   );
   completed.params.turn.id satisfies string;
   const usage = await bridge.note(

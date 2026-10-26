@@ -23,6 +23,11 @@ function readBuildStamp(
   return JSON.parse(text);
 }
 
+// packageRecoveryHelpers writes this module marker beside the ESM helpers.
+function readHelperManifest(text: string): { type: string } {
+  return JSON.parse(text);
+}
+
 const application = process.argv[2];
 if (!application) throw new Error("Supply the packaged .app path.");
 const bundle = path.resolve(application);
@@ -75,13 +80,8 @@ for (const file of [
   ...pythonEntryPoints,
 ])
   await access(path.join(resources, file));
-const helperManifest: unknown = JSON.parse(
+const helperManifest = readHelperManifest(
   await readFile(path.join(resources, "helpers/package.json"), "utf8"),
-);
-assert.ok(
-  helperManifest &&
-    typeof helperManifest === "object" &&
-    "type" in helperManifest,
 );
 assert.equal(helperManifest.type, "module");
 assert.deepEqual(

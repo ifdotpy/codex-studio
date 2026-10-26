@@ -71,6 +71,11 @@ import {
 } from "./accountDeleteRequests";
 import type { ServerCommand } from "../servers/navigation";
 import {
+  PROVIDER_KINDS,
+  PROVIDER_LABELS,
+  type ProviderKind,
+} from "../generated/providerKind.ts";
+import {
   closeMenuFromTriggerOnEscape,
   restoreMenuTriggerFocusAfterClose,
   useMenuEscapeSuppression,
@@ -586,7 +591,7 @@ export function AccountTransferStatus({
             <Button
               size="compact-xs"
               variant="subtle"
-              disabled={!!pending}
+              disabled={pending}
               onClick={() => onAction("retry")}
             >
               Retry
@@ -930,8 +935,11 @@ export default function Accounts({
         if (command.accountKey && !account) {
           setError("This account is no longer saved on this server.");
         } else if (account && (!command.forceAdd || command.accountKey)) {
-          if (account.provider === "claude") setClaudeLogin(account);
-          else setCodexLogin(account);
+          const signIn: Record<ProviderKind, (account: Account) => void> = {
+            codex: setCodexLogin,
+            claude: setClaudeLogin,
+          };
+          signIn[account.provider](account);
         } else {
           setAddIntent({
             provider: command.provider,
@@ -1094,19 +1102,19 @@ export default function Accounts({
                 transitionDuration={0}
                 chevronPosition="left"
               >
-                {(["codex", "claude"] as const).map((provider) => {
+                {PROVIDER_KINDS.map((provider) => {
                   const providerAccounts = accounts.filter(
-                    (account) => (account.provider || "codex") === provider,
+                    (account) => account.provider === provider,
                   );
                   return providerAccounts.length ? (
                     <section
                       className="accounts-provider"
                       key={provider}
-                      aria-label={`${provider === "claude" ? "Claude" : "Codex"} accounts`}
+                      aria-label={`${PROVIDER_LABELS[provider]} accounts`}
                     >
                       <h3>
                         <ProviderMark provider={provider} />
-                        {provider === "claude" ? "Claude" : "Codex"}
+                        {PROVIDER_LABELS[provider]}
                       </h3>
                       <div className="accounts-grid">
                         {providerAccounts.map((account) => (
@@ -1124,9 +1132,7 @@ export default function Accounts({
                                 <span className="account-identity">
                                   <span
                                     role="img"
-                                    aria-label={
-                                      provider === "claude" ? "Claude" : "Codex"
-                                    }
+                                    aria-label={PROVIDER_LABELS[provider]}
                                   >
                                     <ProviderMark provider={provider} />
                                   </span>

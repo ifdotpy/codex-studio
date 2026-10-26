@@ -4,6 +4,11 @@
 
 /// Native MCP foreground wait before automatic background transfer, in milliseconds.
 pub const CLAUDE_MCP_AUTO_BACKGROUND_MS: u64 = 120_000;
+/// Account registry storage format requiring explicit provider identity; version number.
+pub const ACCOUNT_REGISTRY_FORMAT_VERSION: u32 = 2;
+
+/// Durable automatic-title effect receipt format; storage signature tag.
+pub const TITLE_EFFECT_SIGNATURE: &str = "title-generation-effect-v1";
 
 // Command monitor output matching and bounded observation. Byte limits count UTF-8.
 /// Patterns one output monitor may watch.

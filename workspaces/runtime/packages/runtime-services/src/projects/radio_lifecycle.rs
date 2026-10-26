@@ -192,7 +192,9 @@ pub fn tick(
                 let messages = query.query_map(params![room.id(),i64::try_from(cursor).map_err(|_|invalid(room.id()))?],|r| Ok(json!({"seq":r.get::<_,i64>(0)?,"sender":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,f64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
                 let participants = room.members().iter().map(|key| {
                     let a=all_agents.get(key).ok_or_else(||invalid(room.id()))?;
-                    Ok(json!({"id":key,"name":a["name"],"model":a["model"],"provider":a.get("provider").unwrap_or(&json!("codex"))}))
+                    let provider = studio_runtime_schema::ProviderKind::of_record(a)
+                        .map_err(|_| invalid(room.id()))?;
+                    Ok(json!({"id":key,"name":a["name"],"model":a["model"],"provider":provider}))
                 }).collect::<Result<Vec<_>,ProjectsError>>()?;
                 let context = json!({"roomId":room.id(),"selfId":id,"participants":participants});
                 let text = format!(

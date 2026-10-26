@@ -398,7 +398,7 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
     store
         .transaction(|connection| {
             for agent in ["agent", "other-agent"] {
-                let record = json!({
+                let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id": agent,
                     "rootId": agent,
                     "epoch": 0,

@@ -84,7 +84,12 @@ function fixture() {
 }
 test("automatic access verifies the local peer and the saved invitation before using its exact pair ID", async () => {
   const f = fixture();
-  expect(await f.run()).toMatchObject({ id: "remote" });
+  expect(await f.run()).toEqual({
+    id: "remote",
+    origin: f.invitation.origin,
+    label: "Remote",
+    credentialId: "fixture",
+  });
   expect(f.credentials.pair).toHaveBeenCalledExactlyOnceWith({
     origin: f.value.origin,
     invitation: f.invitation,

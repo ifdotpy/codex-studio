@@ -24,8 +24,12 @@ async fn seeded_state() -> TempDir {
         owner: studio_runtime_store::AgentRecord,
         rule: RuleRecord,
     }
-    let seed: Seed =
+    let mut seed: Seed =
         serde_json::from_str(include_str!("rules_engine/seed.json")).expect("frozen rule seed");
+    seed.owner.extra.insert(
+        "provider".into(),
+        json!(studio_runtime_schema::ProviderKind::Codex),
+    );
     let root = temporary_state();
     let store = RuntimeStore::open(Some(root.path()))
         .await

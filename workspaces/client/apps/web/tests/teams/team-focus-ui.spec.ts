@@ -1,5 +1,3 @@
-import { required } from "./helpers.ts";
-import { waitForFixturePort } from "../playwright.ts";
 import {
   test,
   expect,
@@ -22,12 +20,15 @@ for (const width of [1024, 390]) {
     const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const port = await waitForFixturePort(fixture);
+    const port = await new Promise<number>((resolve, reject) => {
+      fixture.stdout!.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error("Fixture exited")));
+    });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
-    const lead = required(
-      snapshot.threads.find((a) => a.name === "Release lead"),
-    );
+    const lead = snapshot.threads.find((a) => a.name === "Release lead")!;
     lead.overview = {
       result: "Lead report",
       resultTruncated: true,
@@ -42,14 +43,19 @@ for (const width of [1024, 390]) {
       worker.overview = { result: "Worker report", resultTruncated: true };
       if (index === 0) {
         worker.error = "Fixture error";
-        worker.commandProgress = [
+        // Base progress fixture omits lastOutputLine, unused by this focus check.
+        const commandProgress: Partial<
+          NonNullable<typeof worker.commandProgress>[number]
+        >[] = [
           {
             monitorId: "focus-command",
             stage: "Check focus",
-            lastOutputLine: "",
             startedAt: Date.now() / 1000,
           },
         ];
+        worker.commandProgress = commandProgress as NonNullable<
+          typeof worker.commandProgress
+        >;
       }
     });
     snapshot.runtime.agents = snapshot.threads;

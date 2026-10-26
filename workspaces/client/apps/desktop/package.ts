@@ -46,7 +46,7 @@ if (!uiOnly && !prebuiltRelease) {
       stdio: "inherit",
     });
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(
         "Desktop packaging requires Cargo; install the toolchain pinned in rust-toolchain.toml, then run `cargo build --release -p studio-runtime-server`.",
         { cause: error },
@@ -262,7 +262,7 @@ try {
     ...(uiOnly
       ? []
       : [
-          ...(linuxVM ? [linuxVM] : []),
+          linuxVM!,
           fsEvents,
           ...pythonResources.map((file) => path.join(root, file)),
         ]),

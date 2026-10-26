@@ -1,5 +1,5 @@
 import { assert } from "../chat/assertions.ts";
-import { requestBody, required } from "../messages/helpers.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import type { Page, Route } from "@playwright/test";
 // Isolated HTTP fixture and headless Chrome. No model requests or user state.
@@ -26,7 +26,7 @@ test("Questions Ux Ui", async ({
   let log = "",
     page: Page | undefined,
     releaseResponse: (() => void) | undefined;
-  proc.stderr?.on("data", (data) => {
+  proc.stderr!.on("data", (data) => {
     log += data;
   });
   const poll = async (
@@ -41,7 +41,7 @@ test("Questions Ux Ui", async ({
   };
   try {
     const port = await new Promise<number>((resolve, reject) => {
-      proc.stdout?.once("data", (data) => resolve(Number(String(data).trim())));
+      proc.stdout!.once("data", (data) => resolve(Number(String(data).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
@@ -175,14 +175,15 @@ test("Questions Ux Ui", async ({
     assert.equal(await form.getByText("Other", { exact: true }).count(), 0);
     assert.equal(await page.locator(".jump-slot").isVisible(), false);
     const openLayout = await card.evaluate((element) => {
-      const viewportNode = document.querySelector("#messages");
-      const headingNode = element.querySelector(".request-heading");
-      const actionsNode = element.querySelector(".request-answer-actions");
-      if (!viewportNode || !headingNode || !actionsNode)
-        throw new Error("Missing question layout");
-      const viewport = viewportNode.getBoundingClientRect();
-      const heading = headingNode.getBoundingClientRect();
-      const actions = actionsNode.getBoundingClientRect();
+      const viewport = document
+        .querySelector("#messages")!
+        .getBoundingClientRect();
+      const heading = element
+        .querySelector(".request-heading")!
+        .getBoundingClientRect();
+      const actions = element
+        .querySelector(".request-answer-actions")!
+        .getBoundingClientRect();
       return {
         headingVisible:
           heading.top >= viewport.top && heading.bottom <= viewport.bottom,
@@ -418,7 +419,7 @@ test("Questions Ux Ui", async ({
     await otherForm
       .getByRole("textbox", { name: "Other project question?" })
       .fill("Keep this answer");
-    required(releaseResponse)();
+    releaseResponse!();
     await page.waitForTimeout(250);
     assert.equal(
       await otherForm

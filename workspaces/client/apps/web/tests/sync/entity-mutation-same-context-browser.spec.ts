@@ -15,15 +15,12 @@ test("mutation projections propagate between pages sharing one browser context @
   const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
   });
-  if (!fixture.stdout || !fixture.stderr)
-    throw new Error("Fixture output pipes unavailable");
   let log = "";
-  fixture.stderr.on("data", (chunk) => (log += String(chunk)));
+  fixture.stderr!.on("data", (chunk) => (log += String(chunk)));
   const context = await browser.newContext();
   try {
     const port = await new Promise((resolve, reject) => {
-      if (!fixture.stdout) throw new Error("Missing fixture stdout");
-      fixture.stdout.once("data", (chunk) =>
+      fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));

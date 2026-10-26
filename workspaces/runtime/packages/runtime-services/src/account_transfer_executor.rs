@@ -1250,8 +1250,10 @@ impl TransferExecutor for AccountTransferExecutor {
                     }
                     archive_agent["accountKey"] = json!(source_account);
                     archive_agent["threadId"] = json!(thread_id);
-                    let descriptor_settings =
-                        portable_history::source_settings_snapshot(&archive_agent);
+                    let descriptor_settings = portable_history::source_settings_snapshot(
+                        &archive_agent,
+                    )
+                    .map_err(|_| TransferError::Refused("Source portable history export failed"))?;
                     let descriptor_generation = self
                         .session
                         .current_scope(source_account)

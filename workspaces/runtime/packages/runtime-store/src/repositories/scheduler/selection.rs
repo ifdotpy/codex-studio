@@ -1932,7 +1932,7 @@ mod account_wake_index_tests {
             &connection,
             "legacy-start",
             json!({
-                "epoch":1, "status":"starting",
+                "provider":"codex", "epoch":1, "status":"starting",
                 "capacityRetry":{"id":"retry"},
                 "startAttempt":{"action":"capacity", "submitted":false, "capacityRetryId":"retry"}
             }),
@@ -1941,7 +1941,7 @@ mod account_wake_index_tests {
             &connection,
             "queued-retry",
             json!({
-                "epoch":1, "status":"queued", "autoWake":true,
+                "provider":"codex", "epoch":1, "status":"queued", "autoWake":true,
                 "capacityRetry":{"id":"retry", "status":"due"}
             }),
         );
@@ -1965,7 +1965,7 @@ mod account_wake_index_tests {
             &connection,
             "aaa",
             json!({
-                "accountKey":"account-a", "epoch":1, "status":"queued",
+                "provider":"codex", "accountKey":"account-a", "epoch":1, "status":"queued",
                 "autoWake":true, "inFlight":false, "nativeFailureHold":false
             }),
         );
@@ -1973,7 +1973,7 @@ mod account_wake_index_tests {
             &connection,
             "zzz",
             json!({
-                "accountKey":"account-a", "epoch":2, "status":"queued",
+                "provider":"codex", "accountKey":"account-a", "epoch":2, "status":"queued",
                 "autoWake":true, "inFlight":false, "nativeFailureHold":false
             }),
         );
@@ -1989,7 +1989,7 @@ mod account_wake_index_tests {
             &connection,
             "no-event",
             json!({
-                "accountKey":"account-c", "epoch":4, "status":"queued",
+                "provider":"codex", "accountKey":"account-c", "epoch":4, "status":"queued",
                 "autoWake":true, "inFlight":false, "nativeFailureHold":false
             }),
         );
@@ -1997,7 +1997,7 @@ mod account_wake_index_tests {
             &connection,
             "remote",
             json!({
-                "accountKey":"account-d", "epoch":5, "status":"interrupted",
+                "provider":"codex", "accountKey":"account-d", "epoch":5, "status":"interrupted",
                 "remoteWorker":true, "restartRecovery":{"stage":"pending"}
             }),
         );
@@ -2094,7 +2094,7 @@ mod account_wake_index_tests {
                 &connection,
                 &id,
                 json!({
-                    "accountKey":"account-middle", "epoch":1, "status":"queued",
+                    "provider":"codex", "accountKey":"account-middle", "epoch":1, "status":"queued",
                     "autoWake":true, "inFlight":false, "nativeFailureHold":false
                 }),
             );
@@ -2145,7 +2145,7 @@ mod account_wake_index_tests {
                 &connection,
                 &id,
                 json!({
-                    "accountKey":format!("account-{index:03}"), "epoch":1,
+                    "provider":"codex", "accountKey":format!("account-{index:03}"), "epoch":1,
                     "status":"queued", "autoWake":true,
                     "inFlight":false, "nativeFailureHold":false
                 }),
@@ -2209,7 +2209,7 @@ mod account_wake_index_tests {
             &connection,
             "recoverable",
             json!({
-                "epoch":1, "status":"interrupted", "restartRecovery":{"stage":"held"}
+                "provider":"codex", "epoch":1, "status":"interrupted", "restartRecovery":{"stage":"held"}
             }),
         );
         connection

@@ -6,7 +6,7 @@ export function streamTranscriptFixture<T>({
   rendered,
 }: {
   publish: () => Promise<T>;
-  rendered: (update: T) => Promise<void>;
+  rendered: (update: T) => Promise<unknown>;
 }) {
   return async () => {
     const update = await publish();

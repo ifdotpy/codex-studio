@@ -187,6 +187,7 @@ mod tests {
             .commit()
             .expect("candidate-index transaction commits");
         let mut extra = BTreeMap::new();
+        extra.insert("provider".to_owned(), json!("codex"));
         extra.insert("threadId".into(), json!("thread"));
         extra.insert("autoWake".to_owned(), json!(true));
         extra.insert("inFlight".to_owned(), json!(false));
@@ -509,6 +510,7 @@ mod tests {
             )
             .expect("agent epoch advances");
         let mut other_extra = BTreeMap::new();
+        other_extra.insert("provider".to_owned(), json!("codex"));
         other_extra.insert("autoWake".to_owned(), json!(true));
         other_extra.insert("inFlight".to_owned(), json!(false));
         AgentRepository::put(

@@ -33,11 +33,11 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
   const delivered = { id: "sso", status: "delivered" } satisfies MessageReceipt;
   const accepted = {
     id: "sso",
-    body: { id: "sso", room: "chat", text: "sso done" },
+    body: { room: "chat", text: "sso done" },
     created: 1,
     status: "accepted",
     receipt: { id: "sso", status: "queued" },
-  } satisfies OutgoingMessage;
+  } as OutgoingMessage; // The accepted fixture omits the unused body.id.
   assert.deepEqual(
     checkedMessageReceipts({ agent: "chat", items: [delivered] }, "chat", [
       "sso",
@@ -111,9 +111,9 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
       { id: "second", status: "delivered" },
     ],
   );
-  assert.ok(receiptOutgoing);
+
   assert.equal(
-    receiptOutgoing(accepted, delivered).receipt?.status,
+    receiptOutgoing(accepted, delivered).receipt!.status,
     "delivered",
   );
   assert.deepEqual(receiptOutgoing(accepted, delivered), {
@@ -144,19 +144,13 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
     latestMessageReceipt(delivered, { id: "sso", status: "pending" }),
     delivered,
   );
-  const newerDelivered = {
-    id: "sso",
-    status: "delivered",
-  } satisfies MessageReceipt;
+  const newerDelivered: MessageReceipt = { id: "sso", status: "delivered" };
   assert.equal(
     latestMessageReceipt(delivered, newerDelivered),
     newerDelivered,
     "A later delivery receipt replaces the earlier confirmation",
   );
-  const firstPending = {
-    id: "sso",
-    status: "pending",
-  } satisfies MessageReceipt;
+  const firstPending: MessageReceipt = { id: "sso", status: "pending" };
   assert.equal(
     latestMessageReceipt(undefined, firstPending),
     firstPending,
@@ -175,7 +169,7 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
     "chat",
     new Map([["sso", delivered]]),
   )[0];
-  assert.ok(shown);
+
   assert.equal(shown.pending, false);
 
   assert.equal(
@@ -231,13 +225,13 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
     id: "chatty",
     clientMessageId: undefined,
   };
-  assert.ok(receiptTranscript);
+
   assert.equal(
     receiptTranscript(
       [roomPrefixWithoutDelimiter],
       "chat",
       new Map([["chatty", { id: "chatty", status: "delivered" }]]),
-    )[0]?.deliveryStatus,
+    )[0].deliveryStatus,
     "delivered",
     "Only the exact room prefix followed by a colon is stripped",
   );
@@ -255,7 +249,7 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
         ["sso", { id: "sso", status: "failed" }],
         ["other", { id: "other", status: "cancelled" }],
       ]),
-    )[0]?.deliveryStatus,
+    )[0].deliveryStatus,
     "failed",
     "The stable client message ID takes precedence over the transcript ID",
   );

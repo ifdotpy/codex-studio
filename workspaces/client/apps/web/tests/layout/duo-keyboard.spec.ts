@@ -1,5 +1,4 @@
 import type { KeyboardPatch } from "./keyboardSequences.ts";
-import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import { test, expect, entityPullFixtureForRequest } from "../playwright.ts";
 import { fixtureWorkspaceId } from "../servers/multi-server-fixture.ts";
 import {
@@ -141,7 +140,7 @@ for (const count of [1, 8]) {
       await expect
         .poll(
           async () =>
-            (await visibleBounds(page.locator(".workspace-header"))).height,
+            (await page.locator(".workspace-header").boundingBox())!.height,
         )
         .toBe(44);
       await expect(page.locator(".workspace > .session-activity")).toHaveCount(
@@ -154,7 +153,7 @@ for (const count of [1, 8]) {
         count,
       );
       await page.locator("#message").fill("Keep this draft");
-      const fullSidebarHeight = (await visibleBounds(page.locator("#sidebar")))
+      const fullSidebarHeight = (await page.locator("#sidebar").boundingBox())!
         .height;
       if (count === 1) {
         await page.emulateMedia({ reducedMotion: "no-preference" });
@@ -323,9 +322,10 @@ for (const count of [1, 8]) {
       );
       await expect
         .poll(async () => {
-          const b = await visibleBounds(
-            page.locator("#messages .message").last(),
-          );
+          const b = (await page
+            .locator("#messages .message")
+            .last()
+            .boundingBox())!;
           return b.y + b.height - 346;
         })
         .toBeLessThanOrEqual(bounds.composer.top);
@@ -342,9 +342,10 @@ for (const count of [1, 8]) {
         await list.evaluate((n) => {
           n.scrollLeft = n.scrollWidth;
         });
-        const last = await visibleBounds(
-          list.locator(".attachment-chip").last(),
-        );
+        const last = (await list
+          .locator(".attachment-chip")
+          .last()
+          .boundingBox())!;
         expect(last.x + last.width).toBeLessThanOrEqual(bounds.composer.right);
       }
       await page.evaluate(() =>
@@ -492,7 +493,7 @@ for (const count of [1, 8]) {
       expect(overflow).toBeLessThanOrEqual(1);
       for (const target of await header.getByRole("button").all()) {
         if (!(await target.isVisible())) continue;
-        const b = await visibleBounds(target);
+        const b = (await target.boundingBox())!;
         expect(b.x).toBeGreaterThanOrEqual(0);
         expect(b.x + b.width).toBeLessThanOrEqual(951);
       }

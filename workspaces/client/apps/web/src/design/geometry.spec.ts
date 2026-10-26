@@ -17,7 +17,7 @@ test("Foundation content width and fleet geometry", async ({ page }) => {
     env: { ...process.env, FIXTURE_SEED: "report", FIXTURE_WORKER_COUNT: "2" },
   });
   let errors = "";
-  proc.stderr?.on("data", (chunk) => {
+  proc.stderr!.on("data", (chunk) => {
     errors += chunk;
   });
   const port = await waitForFixturePort(proc, { diagnostics: () => errors });
@@ -40,22 +40,17 @@ test("Foundation content width and fleet geometry", async ({ page }) => {
           );
         }, ratio);
         const geometry = await page.evaluate(() => {
-          const element = (selector: string) => {
-            const node = document.querySelector(selector);
-            if (!node) throw new Error(`Missing geometry element: ${selector}`);
-            return node;
-          };
           const rect = (selector: string) =>
-            element(selector).getBoundingClientRect().toJSON();
+            document.querySelector(selector)!.getBoundingClientRect().toJSON();
           return {
             sidebar: rect("#sidebar"),
             conversation: rect("#conversation"),
             composer: rect("#composer"),
             message: rect(".message-content"),
             gutter: parseFloat(
-              getComputedStyle(element(".workspace")).getPropertyValue(
-                "--chat-gutter",
-              ),
+              getComputedStyle(
+                document.querySelector(".workspace")!,
+              ).getPropertyValue("--chat-gutter"),
             ),
             scrollWidth: document.documentElement.scrollWidth,
             viewport: innerWidth,

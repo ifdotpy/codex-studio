@@ -22,8 +22,6 @@ export type MoveProof = ToolProof & {
   tools: ProofTool[];
   session: Partial<Session>;
 };
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 // Native session files move without credentials or a model request.
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -42,7 +40,7 @@ export const canonicalJson = (value: unknown) =>
       ? Object.fromEntries(
           Object.keys(entry)
             .sort()
-            .map((name) => [name, Reflect.get(entry, name)]),
+            .map((name) => [name, (entry as Record<string, unknown>)[name]]),
         )
       : entry,
   );
@@ -52,17 +50,14 @@ export const movePrompt = {
   excludeDynamicSections: true,
 } as const;
 
-const completeTool = (entry: unknown): entry is ProofTool => {
-  if (!isRecord(entry)) return false;
-  const schema = entry.input_schema ?? entry.schema;
-  return (
-    typeof entry.name === "string" &&
-    entry.name.length > 0 &&
-    schema !== null &&
-    typeof schema === "object" &&
-    !Array.isArray(schema)
-  );
-};
+const toolSchema = (entry: ProofTool | null | undefined) =>
+  entry?.input_schema ?? entry?.schema;
+const completeTool = (entry: ProofTool) =>
+  typeof entry?.name === "string" &&
+  entry.name.length > 0 &&
+  toolSchema(entry) !== null &&
+  typeof toolSchema(entry) === "object" &&
+  !Array.isArray(toolSchema(entry));
 const normalizeTool = ({ schema, ...entry }: ProofTool) => ({
   ...entry,
   input_schema: entry.input_schema ?? schema,
@@ -122,6 +117,25 @@ export function exactProof<
   };
 }
 
+type NativePromptAttachment = {
+  type?: string;
+  systemPrompt?: string[];
+  tools?: ProofTool[];
+  inlineTools?: boolean;
+  entries?: ProofTool[];
+  surfacedDefinitions?: { definition?: ProofTool }[];
+  removedNames?: string[];
+  addedNames?: string[];
+};
+// Claude owns native history; this indexed view keeps its existing checks below.
+function parseNativePromptRecord(line: string): {
+  sessionId?: string;
+  type?: string;
+  subtype?: string;
+  attachment?: NativePromptAttachment;
+} {
+  return JSON.parse(line);
+}
 export async function savedPromptProof(
   file: string,
   session: Pick<
@@ -140,17 +154,15 @@ export async function savedPromptProof(
   const bytes = await fs.readFile(file);
   if (bytes.length > 256 * 1024 * 1024 || bytes.at(-1) !== 10)
     throw new Error("The complete native snapshot history is unavailable");
-  let snapshot: Record<string, unknown> | undefined;
+  let snapshot: NativePromptAttachment | undefined;
   const deferred = new Map<string, ProofTool>();
   const activeNames = new Set<string>();
   // Every name a delta announced since the last compaction. Connectors drop and add their
   // names around each turn, so the active set at one moment differs from the next.
   const announced = new Set<string>();
   for (const line of bytes.toString("utf8").trimEnd().split("\n")) {
-    const row: unknown = JSON.parse(line);
-    if (!isRecord(row))
-      throw new Error("The complete native snapshot history is unavailable");
-    const attachment = isRecord(row.attachment) ? row.attachment : undefined;
+    const row = parseNativePromptRecord(line);
+    const attachment = row.attachment;
     if (row.sessionId && row.sessionId !== (session.nativeId || session.id))
       throw new Error("The native snapshot session identity differs");
     if (row.type === "system" && row.subtype === "compact_boundary") {
@@ -180,11 +192,11 @@ export async function savedPromptProof(
     ) {
       // Newer CLIs put the definitions that a delta surfaces into the delta itself; an
       // entry with sameAs repeats a definition that an earlier delta gave.
-      const surfaced: unknown = attachment.surfacedDefinitions;
+      const surfaced = attachment.surfacedDefinitions;
       if (surfaced !== undefined && !Array.isArray(surfaced))
         throw new Error("The saved deferred tool schemas are incomplete");
-      for (const entry of (surfaced || []) as unknown[]) {
-        if (!isRecord(entry) || entry.definition === undefined) continue;
+      for (const entry of surfaced || []) {
+        if (entry?.definition === undefined) continue;
         if (!completeTool(entry.definition))
           throw new Error("The saved deferred tool schemas are incomplete");
         deferred.set(entry.definition.name, entry.definition);
@@ -196,9 +208,9 @@ export async function savedPromptProof(
             !attachment[key].every((name) => typeof name === "string" && name))
         )
           throw new Error("The saved deferred tool names are incomplete");
-      for (const name of (attachment.removedNames || []) as string[])
+      for (const name of attachment.removedNames || [])
         activeNames.delete(name);
-      for (const name of (attachment.addedNames || []) as string[]) {
+      for (const name of attachment.addedNames || []) {
         activeNames.add(name);
         announced.add(name);
       }
@@ -378,7 +390,10 @@ export async function studioToolCatalog(
     } catch (error) {
       // The SDK advertises tools for an empty server but registers no handler.
       // Only Studio's known empty definition list permits this exact rejection.
-      if (expectedToolCount === 0 && isRecord(error) && error.code === -32601)
+      if (
+        expectedToolCount === 0 &&
+        (error as { code?: number }).code === -32601
+      )
         return [];
       throw error;
     }
@@ -400,9 +415,9 @@ export async function moveIdentity(executable: string) {
     timeout: 10000,
     maxBuffer: 4096,
   });
-  const account: unknown = JSON.parse(stdout);
+  // Claude owns this auth document; retain its original field checks.
+  const account: Record<string, unknown> = JSON.parse(stdout);
   if (
-    !isRecord(account) ||
     !account.loggedIn ||
     account.authMethod !== "claude.ai" ||
     typeof account.email !== "string" ||
@@ -423,7 +438,7 @@ export async function moveVersions(executable: string) {
   });
   const cli = stdout.trim().match(/^([\d.]+)/)?.[1];
   if (!cli) throw new Error("The Claude CLI version is unavailable");
-  const sdkPackage: unknown = JSON.parse(
+  const sdkPackage: { version: string } = JSON.parse(
     await fs.readFile(
       path.join(
         path.dirname(require.resolve("@anthropic-ai/claude-agent-sdk")),
@@ -432,8 +447,6 @@ export async function moveVersions(executable: string) {
       "utf8",
     ),
   );
-  if (!isRecord(sdkPackage) || typeof sdkPackage.version !== "string")
-    throw new Error("The Claude SDK version is unavailable");
   return { cli, sdk: sdkPackage.version };
 }
 export async function nativeFile(
@@ -453,7 +466,7 @@ export async function nativeFile(
       const stat = await fs.lstat(file);
       if (stat.isFile() && !stat.isSymbolicLink()) found.push(file);
     } catch (error) {
-      if (!isRecord(error) || error.code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
   const current = cwd && nativeDestination(sessionId, cwd, configDir);
@@ -462,12 +475,7 @@ export async function nativeFile(
     throw new Error(
       "The complete Claude native history is missing or ambiguous",
     );
-  const [only] = found;
-  if (only === undefined)
-    throw new Error(
-      "The complete Claude native history is missing or ambiguous",
-    );
-  return only;
+  return found[0];
 }
 export function nativeDestination(
   sessionId: string,
@@ -505,7 +513,7 @@ export async function publishNative(
     )
       throw new Error("The destination Claude history has different bytes");
   } catch (error) {
-    if (!isRecord(error) || error.code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const temporary = destination + ".move-" + process.pid;
   const handle = await fs.open(temporary, "wx", 0o600);

@@ -58,10 +58,12 @@ async fn async_question_answer_wakes_idle_lead_once() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &AgentRecord::from_value(json!({
-                    "id":agent_id,"rootId":agent_id,"epoch":0,"status":"idle",
-                    "cwd":cwd,"isLead":true,"autoWake":true,
-                }))?,
+                &AgentRecord::from_value(
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        "id":agent_id,"rootId":agent_id,"epoch":0,"status":"idle",
+                        "cwd":cwd,"isLead":true,"autoWake":true,
+                    }),
+                )?,
             )?;
             QuestionsWriteRepository::put_request(tx, question_id, &question.to_string())
         })

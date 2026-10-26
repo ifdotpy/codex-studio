@@ -53,9 +53,9 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
         .unwrap();
     store.transaction(|tx| {
         for agent in [
-            json!({"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}),
-            json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":false,"name":"worker"}),
-            json!({"id":"other","rootId":"other","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"other"}),
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}),
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":false,"name":"worker"}),
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"other","rootId":"other","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"other"}),
         ] { AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?; }
         Ok(())
     }).await.unwrap();
@@ -199,7 +199,7 @@ async fn legacy_work_is_available_in_the_first_sse_baseline_without_an_entity_pu
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     store.transaction(|tx| {
-        AgentRepository::put(tx,&AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed","isLead":true,"taskDefaultGate":{"command":"upgrade-check","timeout_ms":1234}}))?)?;
+        AgentRepository::put(tx,&AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"completed","isLead":true,"taskDefaultGate":{"command":"upgrade-check","timeout_ms":1234}}))?)?;
         tx.execute("INSERT INTO runtime_work(id,record) VALUES('old-work',?1)",[json!({"id":"old-work","rootId":"lead","title":"Legacy assignment","status":"review","created":1,"updated":1,"version":1,"results":[{"id":"old-result","agent":"lead","text":"Legacy evidence","checks":"Checked","revision":"abc","files":[],"created":1}]}).to_string()])?;
         tx.execute("DELETE FROM sync_entity_meta WHERE key=?1",[studio_runtime_store::WORK_DETAILS_SEED_MARKER])?;
         Ok(())

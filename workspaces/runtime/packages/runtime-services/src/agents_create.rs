@@ -684,7 +684,7 @@ mod tests {
     fn canonical_agent_replay_checks_every_saved_value_after_rename() {
         let connection = database();
         let intent = json!({"prompt":"Task", "name":"Original", "cwd":"/project", "role":"orchestrator", "concurrency":32, "maxAgents":64, "tokenBudget":null, "parent":null, "profile_id":null});
-        let record = json!({"id":"agent", "name":"Renamed", "creationIntent":intent});
+        let record = json!({"id":"agent", "provider":studio_runtime_schema::ProviderKind::Codex, "name":"Renamed", "creationIntent":intent});
         connection
             .execute(
                 "INSERT INTO runtime_agents VALUES(?1,?2)",
@@ -731,7 +731,7 @@ mod tests {
     fn agent_creation_is_atomic_replayable_and_publishes_sync_projection() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction starts");
-        let record = json!({
+        let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"agent-a", "rootId":"agent-a", "epoch":0, "status":"queued",
             "name":"Agent A", "prompt":"Start the task", "cwd":"/project",
             "accountKey":"default", "serverId":"server-a", "isLead":true, "needsTitle":false, "autoWake":true,
@@ -888,7 +888,7 @@ mod tests {
                      BEGIN SELECT RAISE(ABORT,'injected creation failure'); END;"
                 ))
                 .expect("install targeted failpoint");
-            let record = json!({
+            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"agent-failpoint", "rootId":"parent", "parentId":"parent", "epoch":0,
                 "status":"queued", "name":"Agent", "prompt":"Task", "cwd":"/project",
                 "accountKey":"default", "isLead":false, "role":"implementer",

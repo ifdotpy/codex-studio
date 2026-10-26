@@ -453,12 +453,10 @@ pub(crate) fn error_message(error: &Value, label: &str) -> String {
         .map_or_else(|| format!("{label} reported an error."), str::to_owned)
 }
 
-/// Display name of the agent's provider in notices (Codex for an unknown one,
-/// whose turn the runtime refuses before it can produce a notice).
-pub(super) fn provider_label(agent: &Value) -> &'static str {
-    studio_runtime_providers::ProviderKind::of_record(agent)
-        .unwrap_or(studio_runtime_providers::ProviderKind::Codex)
-        .label()
+/// Display a known identity, or a generic label for an invalid stored provider.
+pub(crate) fn provider_label(agent: &Value) -> &'static str {
+    studio_runtime_schema::ProviderKind::of_record(agent)
+        .map_or("Provider", studio_runtime_schema::ProviderKind::label)
 }
 
 pub(super) use studio_runtime_store::python_json_utf8 as json_text;
@@ -638,9 +636,27 @@ mod provider_label_tests {
     use serde_json::json;
 
     #[test]
+    fn provider_identity_unknown_notice_uses_generic_label() {
+        for agent in [
+            json!({}),
+            json!({"provider":null}),
+            json!({"provider":"future"}),
+            json!({"provider":7}),
+        ] {
+            assert_eq!(provider_label(&agent), "Provider", "{agent}");
+            assert_eq!(
+                error_message(&json!({}), provider_label(&agent)),
+                "Provider reported an error."
+            );
+        }
+        assert_eq!(provider_label(&json!({"provider":"codex"})), "Codex");
+        assert_eq!(provider_label(&json!({"provider":"claude"})), "Claude");
+    }
+
+    #[test]
     fn error_notices_name_the_agents_provider() {
         assert_eq!(provider_label(&json!({"provider": "claude"})), "Claude");
-        assert_eq!(provider_label(&json!({})), "Codex");
+        assert_eq!(provider_label(&json!({"provider":"codex"})), "Codex");
         assert_eq!(
             error_message(&json!({}), "Claude"),
             "Claude reported an error."

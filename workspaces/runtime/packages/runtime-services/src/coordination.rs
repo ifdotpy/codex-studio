@@ -1245,7 +1245,7 @@ mod tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
-            let record = json!({"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
+            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1274,7 +1274,7 @@ mod tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead")] {
-            let record = json!({"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
+            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
             connection
                 .execute(
                     "INSERT OR IGNORE INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1945,7 +1945,7 @@ mod tests {
         connection
             .execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
-                [json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
+                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
             )
             .expect("managed thread fixture updates");
         connection
@@ -2043,7 +2043,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents VALUES('user',?1)",
-                [json!({"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
+                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
         let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";

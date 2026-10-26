@@ -4,23 +4,19 @@ import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import {
   fixtureAccount,
-  fixtureNotReady,
   fixtureFetchInput,
   fixturePostBody,
 } from "./fixture-helpers.ts";
-type ChatSettingsHarness = {
-  calls: PostBody<"/api/conversation">[];
-  agent: Agent;
-  updateAgent: (agent: Agent) => void;
-};
+
 declare global {
   interface Window {
-    chatSettingsFixture: ChatSettingsHarness;
+    // Renamed from calls: chat/chat-read-client-browser.fixture.tsx declares read-state writes.
+    settingsCalls: PostBody<"/api/conversation">[];
+    agent: Agent;
+    updateAgent: (agent: Agent) => void;
   }
 }
-import { required } from "./fixture-helpers.ts";
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -74,7 +70,8 @@ const accountsData: GetResult<"/api/accounts"> = {
   supportsDelete: true,
   supportsDisconnect: true,
 };
-const initial: Agent = {
+// Partial fixture view: the base workerDefaults omit fastMode.
+const initial = {
   id: "lead",
   accountKey: "default",
   provider: "codex",
@@ -90,18 +87,13 @@ const initial: Agent = {
   concurrency: 8,
   agentModeRevision: 1,
   workerDefaults: {
-    fastMode: false,
     model: "gpt-6-luna",
     effort: "high",
     delegationDepth: 1,
   },
   reviewDefaults: { model: null, effort: null },
-};
-window.chatSettingsFixture = {
-  calls: [],
-  agent: initial,
-  updateAgent: fixtureNotReady,
-};
+} as Agent;
+window.settingsCalls = [];
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(
@@ -113,7 +105,7 @@ window.fetch = async (input, options) => {
   if (u.pathname === "/api/limits") {
     const key = u.searchParams.get("account_key");
     result = {
-      accountKey: key || "",
+      accountKey: key!,
       at: Date.now() / 1000,
       data: {
         rateLimits: {
@@ -139,26 +131,23 @@ window.fetch = async (input, options) => {
   else if (u.pathname === "/api/accounts") result = accountsData;
   else if (u.pathname === "/api/conversation") {
     const body = fixturePostBody<"/api/conversation">(requestOptions?.body);
-    window.chatSettingsFixture.calls.push(body);
-    const next = structuredClone(window.chatSettingsFixture.agent);
+    window.settingsCalls.push(body);
+    const next = { ...window.agent };
     if (body.worker_defaults)
-      next.workerDefaults = Object.assign(
-        { model: null, effort: null, fastMode: false },
-        {
-          ...next.workerDefaults,
-          model: body.worker_defaults.model,
-          effort: body.worker_defaults.effort,
-          delegationDepth: body.worker_defaults.delegation_depth,
-          accountKey: body.worker_defaults.account_key,
-          fastMode: body.worker_defaults.fast_mode,
-        },
-      );
+      next.workerDefaults = {
+        ...next.workerDefaults,
+        model: body.worker_defaults.model,
+        effort: body.worker_defaults.effort,
+        delegationDepth: body.worker_defaults.delegation_depth,
+        accountKey: body.worker_defaults.account_key,
+        fastMode: body.worker_defaults.fast_mode,
+      };
     else if (body.review_defaults) next.reviewDefaults = body.review_defaults;
     else if (body.excluded_account_keys)
       next.excludedAccountKeys = body.excluded_account_keys;
     else if ("subagent_concurrency" in body) {
       next.concurrency = body.subagent_concurrency;
-      next.agentModeRevision = required(next.agentModeRevision) + 1;
+      next.agentModeRevision!++;
     } else if ("yolo_mode" in body) next.yoloMode = body.yolo_mode;
     else
       Object.assign(next, {
@@ -167,7 +156,7 @@ window.fetch = async (input, options) => {
         fastMode: body.fast_mode,
         daybreakEnabled: body.daybreak_enabled,
       });
-    window.chatSettingsFixture.updateAgent(next);
+    window.updateAgent!(next);
     result = next;
   }
   if (!result) return nativeFetch(input, options);
@@ -178,9 +167,8 @@ window.fetch = async (input, options) => {
 function Fixture() {
   const [agent, setAgent] = useState<Agent>(initial),
     [opened, setOpened] = useState(true);
-  window.chatSettingsFixture.agent = agent;
-  window.chatSettingsFixture.updateAgent = (value) =>
-    flushSync(() => setAgent(value));
+  window.agent = agent;
+  window.updateAgent = (value) => flushSync(() => setAgent(value));
   const state = {
     data: accountsData,
     setData: () => {},
@@ -192,9 +180,10 @@ function Fixture() {
     <MantineProvider
       theme={theme}
       forceColorScheme={
-        new URLSearchParams(location.search).get("theme") === "dark"
-          ? "dark"
-          : "light"
+        (new URLSearchParams(location.search).get("theme") as
+          | "light"
+          | "dark"
+          | null) || "light"
       }
     >
       <ChatSettingsDialog
@@ -218,4 +207,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

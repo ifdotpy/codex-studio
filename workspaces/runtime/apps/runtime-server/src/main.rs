@@ -225,7 +225,12 @@ fn startup_registry(
             let mut bytes = Vec::new();
             file.take((account_state::MAX_PERSISTED_DOCUMENT_BYTES + 1) as u64)
                 .read_to_end(&mut bytes)?;
-            Some(bytes)
+            Some(
+                studio_runtime_services::account_driver::migrate_provider_identity_2026_10_26(
+                    &registry_path,
+                    bytes,
+                )?,
+            )
         }
         None => None,
     };
@@ -2142,7 +2147,7 @@ mod exit_logging_tests {
             store.transaction_with(move |tx| {
                 for id in ["a", "b"] {
                     let resume = serde_json::json!({"id":id,"accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","cause":"rate_limit","status":"scheduled","failedAt":900.0,"dueAt":990.0,"taskClaims":[],"updatedAt":980.0});
-                    let agent = serde_json::json!({"id":id,"rootId":id,"epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"usageResume":resume});
+                    let agent = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"usageResume":resume});
                     tx.execute("INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",[id,&agent.to_string()])?;
                     tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES (?1,?1,?2)",[id,&resume.to_string()])?;
                 }
@@ -2235,7 +2240,7 @@ mod exit_logging_tests {
                     ("a-broken", serde_json::json!({"afterId":""})),
                     ("b-valid", serde_json::json!({"afterId":"","proofAt":1.0})),
                 ] {
-                    let record = serde_json::json!({
+                    let record = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
                         "authResumeProofPending":{"default":pending},
                     });
@@ -2296,7 +2301,7 @@ mod exit_logging_tests {
                     } else {
                         serde_json::json!({"afterId":"", "proofAt":1.0})
                     };
-                    let record = serde_json::json!({
+                    let record = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
                         "authResumeProofPending":{"default":pending},
                     });
@@ -2556,7 +2561,7 @@ mod exit_logging_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                     rusqlite::params![
                         format!("empty-{index:02}"),
-                        serde_json::json!({"authResumeProofPending":{}}).to_string()
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"authResumeProofPending":{}}).to_string()
                     ],
                 )
                 .expect("empty proof row");
@@ -2565,7 +2570,7 @@ mod exit_logging_tests {
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES ('real-proof',?1)",
                 [
-                    serde_json::json!({"authResumeProofPending":{"requestId":"stable-request"}})
+                    serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"authResumeProofPending":{"requestId":"stable-request"}})
                         .to_string(),
                 ],
             )
@@ -2598,7 +2603,7 @@ mod exit_logging_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                     rusqlite::params![
                         agent,
-                        serde_json::json!({"usageResume":{"id":"new-current-id"}}).to_string()
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"usageResume":{"id":"new-current-id"}}).to_string()
                     ],
                 )
                 .expect("owner row");
@@ -2616,7 +2621,7 @@ mod exit_logging_tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES ('real-proof',?1)",
-                [serde_json::json!({"authResumeProofPending":{"account":{"proofAt":1.0,"afterId":""}}}).to_string()],
+                [serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"authResumeProofPending":{"account":{"proofAt":1.0,"afterId":""}}}).to_string()],
             )
             .expect("pending proof owner");
 
@@ -2876,5 +2881,24 @@ mod startup_registry_tests {
         );
         drop(store);
         drop(supervisor);
+    }
+
+    #[tokio::test]
+    async fn startup_registry_migrates_version_one_before_policy_reads() {
+        let state = tempfile::tempdir().expect("state directory");
+        let codex = tempfile::tempdir().expect("profile directory");
+        let store = RuntimeStore::open(Some(state.path())).await.expect("store");
+        let state_root = studio_runtime_store::path_identity::CanonicalPath::existing(store.root())
+            .expect("state root");
+        fs::create_dir_all(state_root.join("accounts")).expect("accounts directory");
+        let path = state_root.join("accounts/registry.json");
+        fs::write(&path, br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture","label":"Default","source":"fixture","status":"signedOut"}},"logins":{}}"#).expect("legacy registry");
+        let registry =
+            startup_registry(&state_root, codex.path()).expect("dated startup migration");
+        let bytes = registry.bytes.expect("migrated bytes");
+        let policy =
+            AccountPolicyState::from_startup(Some(&bytes), []).expect("strict startup policy");
+        assert_eq!(policy.accounts().accounts[0]["provider"], "codex");
+        assert_eq!(fs::read(path).expect("durable registry"), bytes);
     }
 }

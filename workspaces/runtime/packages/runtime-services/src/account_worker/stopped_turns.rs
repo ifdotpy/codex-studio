@@ -244,7 +244,7 @@ fn stopped_turn(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
     }
     let terminals = ProviderKind::of_field(extra.get("provider"))
         .ok()
-        .and_then(ProviderKind::stop_terminals_method);
+        .and_then(studio_runtime_providers::stop_terminals_method);
     let signature = studio_runtime_store::sha256_hex(
         json!([agent.id.0, epoch, generation, thread, turn])
             .to_string()
@@ -296,7 +296,7 @@ fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
     }
     let terminals = ProviderKind::of_field(extra.get("provider"))
         .ok()
-        .and_then(ProviderKind::stop_terminals_method);
+        .and_then(studio_runtime_providers::stop_terminals_method);
     Some(StoppedTurn {
         agent: agent.id.0.clone(),
         epoch,

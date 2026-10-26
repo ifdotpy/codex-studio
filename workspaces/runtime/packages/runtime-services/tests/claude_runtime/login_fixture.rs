@@ -182,7 +182,7 @@ impl Fixture {
             .expect("unique fixture directory");
         let directory = temporary.path().to_owned();
         let registry = directory.join("registry.json");
-        std::fs::write(&registry,serde_json::to_vec(&json!({"version":1,"logins":{},"accounts":{"default":{"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}},"defaultAccountKey":"default"})).expect("valid fixture")).expect("valid fixture");
+        std::fs::write(&registry,serde_json::to_vec(&json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"logins":{},"accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}},"defaultAccountKey":"default"})).expect("valid fixture")).expect("valid fixture");
         Self {
             accounts: Arc::new(
                 AccountDriver::open_with_reader(registry, NoProbe).expect("valid fixture"),

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Message, Snapshot } from "../types";
+import type { Agent, Message, Snapshot } from "../types";
 import type { Attachment } from "./ComposerAttachments";
 
 export function required<T>(value: T | undefined | null): T {
@@ -7,9 +7,20 @@ export function required<T>(value: T | undefined | null): T {
   return value;
 }
 
+// Legacy fixture records may omit ids and carry fields from an older runtime.
+type RuntimeFixture = Omit<
+  Partial<Snapshot["runtime"]>,
+  "tasks" | "monitors" | "requests" | "complaints"
+> & {
+  [K in "tasks" | "monitors" | "requests" | "complaints"]?: readonly (Partial<
+    Snapshot["runtime"][K][number]
+  > &
+    Record<string, unknown>)[];
+} & Record<string, unknown>;
+
 export function componentSnapshot(
   threads: Snapshot["threads"] = [],
-  runtime: Partial<Snapshot["runtime"]> = {},
+  runtime: RuntimeFixture = {},
 ): Snapshot {
   return {
     token: "test-token",
@@ -31,7 +42,7 @@ export function componentSnapshot(
       peerTeams: [],
       events: [],
       work: [],
-      ...runtime,
+      ...(runtime as Partial<Snapshot["runtime"]>),
     },
   };
 }
@@ -60,3 +71,7 @@ export type ComponentHookCell = {
   deps?: unknown[] | undefined;
   cleanup?: (() => void) | undefined;
 };
+
+export function componentAgent(overrides: Partial<Agent>): Agent {
+  return { id: "worker", ...overrides };
+}

@@ -1,11 +1,10 @@
 declare global {
   interface Window {
-    nativeModelFixture: { compactAlias?: string };
+    compactAlias: string | undefined;
   }
 }
-window.nativeModelFixture = {};
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing model fixture root");
+
+const rootElement = document.getElementById("root")!;
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, Stack, Paper, Button } from "@mantine/core";
@@ -18,9 +17,9 @@ function Fixture() {
   return (
     <MantineProvider
       forceColorScheme={
-        new URLSearchParams(location.search).get("theme") === "dark"
-          ? "dark"
-          : "light"
+        (new URLSearchParams(location.search).get("theme") || "light") as
+          | "light"
+          | "dark"
       }
     >
       <Paper p="sm">
@@ -112,9 +111,7 @@ function Fixture() {
             presentation="select"
             label="Resolved Claude model"
             value="claude-opus-5-5"
-            onChange={(value) =>
-              (window.nativeModelFixture.compactAlias = value)
-            }
+            onChange={(value) => (window.compactAlias = value)}
             options={[
               {
                 value: "default",

@@ -223,7 +223,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
   const [compact, setCompact] = useState(
-    () => window.matchMedia(layoutQueries.navigationCompact).matches,
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia(layoutQueries.navigationCompact).matches,
   );
   const reportCompact = useCallback(
     (value: boolean) => {
@@ -1561,7 +1563,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           aria-label={`New chat in ${group.name}`}
                           aria-description={blocked || undefined}
                           aria-disabled={blocked ? true : undefined}
-                          {...(blocked ? { "data-disabled": true } : {})}
+                          data-disabled={blocked ? true : undefined}
                           onClick={() => {
                             if (!blocked) p.newChat(group.path || undefined);
                           }}

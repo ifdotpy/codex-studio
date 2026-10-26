@@ -14,6 +14,47 @@ For desktop Rust selection, table dispositions, and the rollback owner/build fen
 - Source review found no persisted `pickle`, `marshal`, or `repr` payloads. The independent reader below parses representative JSON records without importing server code. Format semantics still live in runtime record/protocol definitions: raw JSON alone does not explain lifecycle states, migration decisions, or the identity rules.
 - The Rust runtime-store crate uses bundled SQLite and has separate disposable fixtures for Python-written records and the schema-only initialized state inventory. This is distinct from the original Python-only reader proof below.
 
+## Provider identity migration — 2026-10-26
+
+[`provider_identity.rs`](../workspaces/runtime/packages/runtime-store/src/provider_identity.rs)
+owns the dated conversion from omitted/null provider fields to explicit
+[`ProviderKind`](../workspaces/runtime/packages/runtime-schema/src/provider_kind.rs).
+The old account and agent representation meant Codex. Historical account entries
+use their recorded account's provider when available, preserving the previous
+cost attribution. Explicit known providers stay unchanged; unknown names are not
+converted into another provider.
+
+The account registry moves from version `1` to version `2`. Only the migration
+accepts version `1`; version `2` requires explicit providers and is never repaired
+by applying the historical default again.
+
+Startup applies the conversion before strict readers and provider work. Database
+changes use their existing transactions; the account registry uses its existing
+atomic replacement. Reopening a converted state must not rewrite its records or
+replay operations. Public request identities, receipt results, and signed move
+descriptors stay unchanged.
+
+In-progress title requests retain their original fingerprint binding through a
+dated marker on the existing title effect. When the request's full input is
+available again, the dated conversion verifies the original fingerprint before
+replacing it with the explicit-provider fingerprint and removing the marker in
+the same transaction. Changed inputs still conflict; saved results are not
+requested from the provider again.
+
+Historical usage rows can outlive their agent metadata. Before the analytics
+format cutover, the migration preserves their former cost interpretation:
+complete orphan facts gain typed usage without new receipt keys; sparse facts
+retain their unknown counts and gain an explicit provider for that historical
+interpretation. Existing typed facts stay unchanged. Ordinary readers require
+explicit identity from the row or its owner; reopening a converted database does
+not repair newly orphaned legacy rows.
+
+This migration supports states written before 2026-10-26. Remove it when the
+supported upgrade and backup-restore paths no longer admit that representation
+and marked title effects have completed conversion or reached a terminal state,
+following the [provider migration removal rule](../workspaces/providers/README.md#provider-extensibility).
+The date identifies the format transition; it is not an automatic expiry date.
+
 ## Owned artifacts
 
 “Compatibility” means the Rust runtime or retained supervisor must preserve the stored meaning, identity, or exclusive ownership behavior. “Disposable” means it may be rebuilt or removed under its documented recovery rules. Evidence labels distinguish code inspection from the disposable runtime observation.

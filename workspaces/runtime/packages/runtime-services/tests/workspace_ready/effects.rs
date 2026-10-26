@@ -61,7 +61,7 @@ impl Fixture {
         );
         let cwd = repo.join("project");
         store.transaction(move |tx| {
-            let actor = json!({"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
+            let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
             AgentRepository::put(tx, &AgentRecord::from_value(actor.clone())?)?;
             tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent','workspace-fixture',1,'fixture',?1,0)", [json!({"collection":"agent","id":"workspace-fixture","value":actor}).to_string()])?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)", [])?;
@@ -2013,7 +2013,7 @@ async fn unrelated_reservation_started_after_path_capture_does_not_refuse_ready_
     let other = tempfile::tempdir().expect("unrelated workspace");
     let other_cwd = other.path().to_string_lossy().into_owned();
     fixture.store.transaction(move |tx| {
-        studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({
+        studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"unrelated","rootId":"unrelated","epoch":1,"status":"idle","autoWake":true,"cwd":other_cwd
         }))?)?;
         Ok(())

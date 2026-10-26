@@ -47,15 +47,14 @@ export type LimitSnapshot = {
 };
 declare global {
   interface Window {
-    limitRecoveryFixture: {
-      actions: string[];
-      applySerialized: (serialized: string) => void;
-    };
+    // fixtureActions is a tuple array in tests/performance/sidebar-incremental-render.fixture.tsx.
+    recoveryActions: string[];
+    applyLimitSnapshot: (snapshot: LimitSnapshot) => void;
   }
 }
-window.limitRecoveryFixture = { actions: [], applySerialized: () => {} };
+window.recoveryActions = [];
 const action = () => {
-  window.limitRecoveryFixture.actions.push("action");
+  window.recoveryActions.push("action");
 };
 function parseSnapshot(serialized: string): LimitSnapshot | null {
   // This fixture owns both the session document writer and reader.
@@ -69,10 +68,7 @@ function Fixture() {
         limits: null,
       },
   );
-  window.limitRecoveryFixture.applySerialized = (serialized) => {
-    const next = parseSnapshot(serialized);
-    if (next) setSnapshot(next);
-  };
+  window.applyLimitSnapshot = setSnapshot;
   const currentAgent = {
     ...agent,
     id: snapshot.agentId || agent.id,
@@ -82,6 +78,15 @@ function Fixture() {
     lastCompletedTurn: snapshot.lastCompletedTurn,
     nativeLimitErrorAt: snapshot.episode ?? agent.nativeLimitErrorAt,
   };
+  // Base one-off Usage fixture omits stateDir; preserve that partial prop surface.
+  const usageProps = partialUsageProps({
+    agent: currentAgent,
+    limits: snapshot.limits,
+    reload: action,
+    opened: true,
+    onChange: action,
+    limitsLoading: false,
+  });
   return (
     <MantineProvider>
       <main data-case={snapshot.label}>
@@ -97,16 +102,7 @@ function Fixture() {
           <NativeNotice item={item} />
         </section>
         <section style={{ position: "fixed", bottom: 20, right: 20 }}>
-          <Usage
-            stateDir=""
-            key={snapshot.mountKey}
-            agent={currentAgent}
-            limits={snapshot.limits}
-            reload={action}
-            opened={true}
-            onChange={action}
-            limitsLoading={false}
-          />
+          <Usage key={snapshot.mountKey} {...usageProps} />
         </section>
         <output id="saved-error">{JSON.stringify(agent.error)}</output>
       </main>
@@ -114,3 +110,8 @@ function Fixture() {
   );
 }
 createRoot(fixtureRoot()).render(<Fixture />);
+
+// The one-off base fixture omits Usage.stateDir.
+function partialUsageProps(value: unknown): React.ComponentProps<typeof Usage> {
+  return value as React.ComponentProps<typeof Usage>;
+}

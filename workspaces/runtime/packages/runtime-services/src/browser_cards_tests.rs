@@ -61,7 +61,7 @@ async fn store() -> (tempfile::TempDir, studio_runtime_store::RuntimeStore) {
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     VM_AGENT,
-                    &json!({"id":VM_AGENT,"rootId":VM_AGENT,"epoch":1,"status":"running","autoWake":true,
+                    &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":VM_AGENT,"rootId":VM_AGENT,"epoch":1,"status":"running","autoWake":true,
                              "executionMode":"vm","layrProjectId":"p1"})
                     .to_string(),
                 ],
@@ -556,7 +556,7 @@ async fn seed_agent(store: &studio_runtime_store::RuntimeStore, id: &str) {
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     id.as_str(),
-                    &json!({"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
+                    &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
                              "executionMode":"vm","layrProjectId":"p1"})
                     .to_string(),
                 ],

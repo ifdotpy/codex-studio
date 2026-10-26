@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { decodeSidebarRanks } from "./sidebarOrderRanks";
 import { describe, expect, it, vi } from "vitest";
 import type { Agent, Project } from "../types";
@@ -156,11 +155,7 @@ describe("complete multi-server sidebar projection", () => {
     const first = select([local]);
     const complete = select([local, remote]);
     expect(first.data.stateDir).toBe(complete.data.stateDir);
-    assert.ok(first.data.threads[0] != null);
-    assert.ok(complete.data.threads[0] != null);
     expect(first.data.threads[0].id).toBe(complete.data.threads[0].id);
-    assert.ok(first.data.runtime.projects[0] != null);
-    assert.ok(complete.data.runtime.projects[0] != null);
     expect(first.data.runtime.projects[0].path).toBe(
       complete.data.runtime.projects[0].path,
     );
@@ -183,7 +178,6 @@ describe("complete multi-server sidebar projection", () => {
     ]);
     const model = mergeSidebar([remote], 1, true);
     const project = model.data.runtime.projects[0];
-    assert.ok(project != null);
     expect(model.projectReferences.get(project.path!)?.owner).toBe(
       "unpaired-home",
     );
@@ -315,9 +309,7 @@ describe("complete multi-server sidebar projection", () => {
     const a = source("local");
     const b = source("remote");
     for (const value of [a, b]) {
-      assert.ok(value.sidebar.projects[0] != null);
       value.sidebar.projects[0].folders = [{ id: "folder", name: "Notes" }];
-      assert.ok(value.sidebar.threads[0] != null);
       value.sidebar.threads[0].projectFolder = "folder";
       value.sidebar.peerTeams = [
         { id: "team", name: value.id, projectPath: path, members: ["same"] },
@@ -417,7 +409,6 @@ describe("complete multi-server sidebar projection", () => {
     const model = mergeSidebar([remote, home]);
     expect(model.data.runtime.projects).toHaveLength(1);
     const project = model.data.runtime.projects[0];
-    assert.ok(project != null);
     expect(project.name).toBe("Home project");
     expect(project.folders?.map((row) => row.name)).toEqual([
       "Home folder",
@@ -426,23 +417,17 @@ describe("complete multi-server sidebar projection", () => {
       "Remote folder",
       "Child",
     ]);
-    assert.ok(model.data.threads[0] != null);
     const folder = model.folderReferences.get(
       model.data.threads[0].projectFolder!,
     );
     expect(folder?.owner).toBe("remote");
-    const nested = project.folders!.find((row) => {
-      assert.ok(model.data.threads[0] != null);
-      return row.id === model.data.threads[0].projectFolder;
-    });
+    const nested = project.folders!.find(
+      (row) => row.id === model.data.threads[0].projectFolder,
+    );
     expect(model.folderReferences.get(nested!.parentId!)?.owner).toBe("remote");
-    expect(
-      model.data.threads.every((row) => {
-        assert.ok(project != null);
-        return row.cwd === project.path;
-      }),
-    ).toBe(true);
-    assert.ok(model.data.runtime.peerTeams[0] != null);
+    expect(model.data.threads.every((row) => row.cwd === project.path)).toBe(
+      true,
+    );
     expect(model.data.runtime.peerTeams[0].projectPath).toBe(project.path);
     expect(model.wireProject("remote", project.path!)).toBe("/remote/path");
     expect(model.wireProject("local", project.path!)).toBe("project:shared");
@@ -479,7 +464,6 @@ describe("complete multi-server sidebar projection", () => {
     expect(found.map((row) => row.id)).toEqual([
       model.chatKey("remote", "same"),
     ]);
-    assert.ok(found[0] != null);
     expect(found[0].archived).toBe(true);
   });
 
@@ -491,14 +475,11 @@ describe("complete multi-server sidebar projection", () => {
     store.update("remote", remote.sidebar);
     store.update("remote", undefined);
     const sources = store.sources(["local", "remote"], new Set(["local"]));
-    assert.ok(sources[1] != null);
     expect(sources[1].sidebar).toBe(remote.sidebar);
     expect(sources[1].online).toBe(false);
     const select = createMergedSidebarSelector();
     const before = select(sources);
     expect(select(sources)).toBe(before);
-    assert.ok(sources[0]);
-    assert.ok(local.sidebar.projects[0]);
     const next = select([
       {
         ...sources[0],
@@ -590,10 +571,8 @@ describe("original saved sidebar state", () => {
         projectAliases: [{ serverId: "local", projectId: path, name: "local" }],
       },
     ]);
-    for (const value of [local, remote]) {
-      assert.ok(value.sidebar.projects[0]);
+    for (const value of [local, remote])
       value.sidebar.projects[0].folders = [{ id: "shared", name: "Notes" }];
-    }
     local.sidebar.collapsed = { [treeKey("shared")]: true };
     const model = mergeSidebar([local, remote]);
     expect(model.mapTreeKey("local", treeKey("shared"))).toBe(
@@ -746,7 +725,6 @@ describe("original saved sidebar state", () => {
     view.editPreference(tree(newer), before, { ...before, [key]: true });
     expect(shown(snapshot(false, 1_000_000 + 50_000), key)).toBe(true);
     expect(a.fields[field]).toMatchObject({ value: true });
-    assert.ok(a.fields[field] != null);
     expect(a.fields[field].timestamp).toBeGreaterThan(1_000_000 + 50_000);
     vi.useRealTimers();
   });
@@ -794,7 +772,6 @@ describe("original saved sidebar state", () => {
   it("writes only changed source fields, keeps unrelated keys and subscribes to original keys", () => {
     const local = source("local");
     const remote = source("remote");
-    assert.ok(remote.sidebar.projects[0] != null);
     remote.sidebar.projects[0].folders = [
       { id: "folder", name: "Remote folder" },
     ];
@@ -868,7 +845,6 @@ describe("original saved sidebar state", () => {
   it("saves collapse choices for teams supplied only by project metadata", () => {
     const local = source("local");
     const remote = source("remote");
-    assert.ok(remote.sidebar.projects[0] != null);
     remote.sidebar.projects[0].peerTeams = [
       { id: "legacy-team", name: "Team", members: ["same"] },
     ];
@@ -905,19 +881,18 @@ describe("original saved sidebar state", () => {
     const original = JSON.stringify([local.sidebar, remote.sidebar]);
     const model = mergeSidebar([local, remote]);
     const group = itemGroup(model.projectKey("local", path));
-    const order = model.order[group];
-    assert.ok(order);
-    const ids = [...order].reverse();
+    const ids = [...model.order[group]].reverse();
     const write = sidebarOrderWrite(model, "local", {
       ...model.order,
       [group]: ids,
     });
     expect(write.expected_revision).toBe(3);
     expect(write.groups[itemGroup(path)]).toEqual(["missing", "same"]);
-    const ranks =
-      write.groups[JSON.stringify(["combined-sidebar-ranks", group])];
-    assert.ok(ranks);
-    expect(decodeSidebarRanks(ranks)).toEqual(ids);
+    expect(
+      decodeSidebarRanks(
+        write.groups[JSON.stringify(["combined-sidebar-ranks", group])],
+      ),
+    ).toEqual(ids);
     expect(write.groups.projects).toEqual([path]);
     expect(JSON.stringify([local.sidebar, remote.sidebar])).toBe(original);
     const accepted = {

@@ -866,16 +866,9 @@ pub fn dispatch_notification_with_effects(
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    let provider = match crate::provider_adapter::ProviderKind::of_record(&agent)
-                        .map_err(|_| NotificationDispatchError::invalid())?
-                    {
-                        crate::provider_adapter::ProviderKind::Claude => {
-                            studio_runtime_schema::usage::UsageProvider::Claude
-                        }
-                        crate::provider_adapter::ProviderKind::Codex => {
-                            studio_runtime_schema::usage::UsageProvider::Codex
-                        }
-                    };
+                    let provider =
+                        studio_runtime_schema::provider_kind::ProviderKind::of_record(&agent)
+                            .map_err(|_| NotificationDispatchError::invalid())?;
                     let observation =
                         match studio_runtime_schema::usage::parse_token_usage(provider, params) {
                             Ok(usage) => TokenUsageObservation::Typed(usage),
@@ -2700,10 +2693,21 @@ mod tests {
                  CREATE TABLE runtime_search_next_meta(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,search_rowid INTEGER NOT NULL UNIQUE);
                  CREATE TABLE runtime_search_rollout(id INTEGER PRIMARY KEY,phase TEXT,cursor INTEGER,updated REAL);
                  INSERT INTO runtime_search_rollout VALUES(1,'complete',0,0);
-                 INSERT INTO runtime_agents VALUES('agent','{\"id\":\"agent\",\"rootId\":\"agent\",\"epoch\":1,\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0,\"activeTools\":[],\"autoWake\":false}');
                  INSERT INTO sync_entities VALUES('agent','agent',1,'old','{\"collection\":\"agent\",\"id\":\"agent\",\"value\":{\"id\":\"agent\",\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0}}',0);"),
             )
             .expect("notification dispatch tables create");
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES('agent',?1)",
+                [
+                    json!({"id":"agent","provider":studio_runtime_schema::ProviderKind::Codex,
+                    "rootId":"agent","epoch":1,"status":"running","threadId":"thread",
+                    "accountKey":"default","turnId":"turn","inFlight":true,"events":0,
+                    "activeTools":[],"autoWake":false})
+                    .to_string(),
+                ],
+            )
+            .expect("notification dispatch agent");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
@@ -3141,7 +3145,7 @@ mod tests {
         .to_string();
         store
             .transaction(move |tx| {
-                let agent = AgentRecord::from_value(json!({
+                let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":"agent",
                     "rootId":"agent",
                     "epoch":1,
@@ -3883,7 +3887,7 @@ mod tests {
                 "INSERT INTO runtime_agents VALUES(?1,?2)",
                 [
                     "foreign",
-                    r#"{"id":"foreign","rootId":"other-team","epoch":1,"status":"running","threadId":"other","accountKey":"default","events":0}"#,
+                    &json!({"id":"foreign","provider":studio_runtime_schema::ProviderKind::Codex,"rootId":"other-team","epoch":1,"status":"running","threadId":"other","accountKey":"default","events":0}).to_string(),
                 ],
             )
             .expect("foreign agent creates");
@@ -3936,7 +3940,7 @@ mod tests {
                 "UPDATE runtime_agents SET record=?2 WHERE id='agent'",
                 params![
                     "agent",
-                    json!({
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running",
                         "threadId":"thread","accountKey":"default","turnId":"turn",
                         "inFlight":true,"events":0,"activeTools":[],"autoWake":false,

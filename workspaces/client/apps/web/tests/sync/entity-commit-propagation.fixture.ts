@@ -1,4 +1,4 @@
-import type { ResourceChangeEvent } from "../playwright.ts";
+import type { FixtureResourceFrame } from "./browser-helpers.ts";
 
 // The removed persister probe is kept as a test-owned observation surface.
 export type PersisterCompletion = {
@@ -12,7 +12,7 @@ declare global {
     __entityFrames: Array<{
       at: number;
       streamIndex: number;
-      event: ResourceChangeEvent;
+      event: FixtureResourceFrame;
     }>;
     __entityStreamUrls: string[];
     __entityStreamAttempts: Array<{
@@ -35,27 +35,18 @@ export function installEntityPropagationProbe() {
   window.__entityMutationDecodes = [];
   const responseJson = Response.prototype.json;
   Response.prototype.json = async function (...args) {
-    const value: unknown = await responseJson.apply(this, args);
-    const rows =
-      value &&
-      typeof value === "object" &&
-      "_syncEntities" in value &&
-      Array.isArray(value._syncEntities)
-        ? value._syncEntities
-        : [];
-    if (this.url && new URL(this.url).pathname === "/api/leads" && rows.length)
+    // This observation reads the legacy mutation document returned by our fixture.
+    const value: {
+      _syncEntities?: Pick<import("../playwright.ts").SyncEntity, "seq">[];
+    } | null = await responseJson.apply(this, args);
+    if (
+      this.url &&
+      new URL(this.url).pathname === "/api/leads" &&
+      value?._syncEntities?.length
+    )
       window.__entityMutationDecodes.push({
         at: performance.timeOrigin + performance.now(),
-        sequences: rows.map((row: unknown) => {
-          if (
-            !row ||
-            typeof row !== "object" ||
-            !("seq" in row) ||
-            typeof row.seq !== "number"
-          )
-            throw new Error("Legacy mutation row has no sequence");
-          return row.seq;
-        }),
+        sequences: value._syncEntities.map((row) => row.seq),
       });
     return value;
   };

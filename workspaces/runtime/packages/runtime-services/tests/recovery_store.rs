@@ -444,11 +444,22 @@ enum Corpus {
 }
 
 fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
+    let agent_output = matches!(corpus, Corpus::Start);
     let corpus = match corpus {
         Corpus::Start => include_str!("recovery/start_oracle.json"),
         Corpus::Absence => include_str!("recovery/absence_oracle.json"),
     };
-    serde_json::from_str(corpus).expect("frozen recovery cases")
+    let mut cases: Vec<serde_json::Value> =
+        serde_json::from_str(corpus).expect("frozen recovery cases");
+    // Start/absence receipts in these frozen cases use the Codex thread API.
+    // Adapt their agent input and expected agent output, leaving receipts intact.
+    for case in &mut cases {
+        case["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        if agent_output && case["after"].is_object() {
+            case["after"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        }
+    }
+    cases
 }
 async fn seed_agent(store: &Arc<RuntimeStore>, agent: &serde_json::Value) {
     let agent = agent.clone();

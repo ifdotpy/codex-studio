@@ -134,11 +134,11 @@ describe("upload recovery scheduling", () => {
 
   it("notifies another tab about changes and releases the channel on unsubscribe", async () => {
     class TestBroadcastChannel {
+      readonly name: string;
       static channels = new Set<TestBroadcastChannel>();
       readonly listeners = new Set<(event: MessageEvent) => void>();
       closed = false;
 
-      readonly name: string;
       constructor(name: string) {
         this.name = name;
 

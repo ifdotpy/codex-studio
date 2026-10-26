@@ -5,7 +5,7 @@ import {
   useChatReadState,
   useVisibleChatResult,
 } from "../../src/components/useChatReadState.ts";
-import { snapshotFixture } from "../../src/snapshotFixture.ts";
+import type { Snapshot } from "../../src/types.ts";
 import type { Agent, Message } from "../../src/types.ts";
 import type {
   ChatReadState,
@@ -19,95 +19,64 @@ import {
 import type { ReadWrite } from "./chat-read-state.fixture.ts";
 type Controls = ReturnType<typeof useChatReadState>;
 type NativeRow = Message & { height: number; marginTop?: number };
-interface ChatReadHarness {
-  readWrite: typeof readWrite;
-  foreground: boolean;
-  visible: boolean;
-  calls: (ReadWrite & { workspace: string | null })[];
-  notifications: string[];
-  refreshes: number;
-  hold: boolean;
-  fail: boolean;
-  serverState: ChatReadState | null;
-  release: () => void;
-  releaseLost: (() => void) | null;
-  transientFailure: boolean;
-  lostWrites: ReadWrite[];
-  lostReplies: number;
-  controls: Controls;
-  previousControls: Controls | null;
-  agent: Agent;
-  state: ChatReadState | null;
-  marking: string[];
-  markUnread: () => Promise<void>;
-  observe: (proof: ChatReadProof) => void;
-  unmount: () => void;
-  setAgent: (value: Agent) => void;
-  setOpened: (value: string) => void;
-  setWorkspace: (value: string) => void;
-  setLoaded: (value: boolean) => void;
-  setMessage: (value: string) => void;
-  setOffset: (value: number) => void;
-  setStreaming: (value: boolean) => void;
-  setPhase: (value: Message["phase"]) => void;
-  replaceResult: () => void;
-  setTurnStatus: (value: Message["turnStatus"]) => void;
-  setLatestPage: (value: boolean) => void;
-  setResultText: (value: string) => void;
-  setGroupTurn: (value: string) => void;
-  setGroupTurns: (value: string) => void;
-  setNativeRows: (value: NativeRow[] | null) => void;
-  setRowsOpen: (value: boolean) => void;
-}
 declare global {
   interface Window {
-    chatReadFixture: ChatReadHarness;
+    readWrite: typeof readWrite;
+    foreground: boolean;
+    visible: boolean;
+    calls: (ReadWrite & { workspace: string | null })[];
+    notifications: string[];
+    refreshes: number;
+    hold: boolean;
+    fail: boolean;
+    serverState: ChatReadState | null;
+    release: () => void;
+    releaseLost: (() => void) | null;
+    transientFailure: boolean;
+    lostWrites: ReadWrite[];
+    lostReplies: number;
+    controls: Controls;
+    previousControls: Controls | null;
+    agent: Agent;
+    state: ChatReadState | null;
+    marking: string[];
+    markUnread: () => Promise<void>;
+    observe: (proof: ChatReadProof) => void;
+    unmount: () => void;
+    setAgent: (value: Agent) => void;
+    setOpened: (value: string) => void;
+    setWorkspace: (value: string) => void;
+    setLoaded: (value: boolean) => void;
+    setMessage: (value: string) => void;
+    setOffset: (value: number) => void;
+    setStreaming: (value: boolean) => void;
+    setPhase: (value: Message["phase"]) => void;
+    replaceResult: () => void;
+    setTurnStatus: (value: Message["turnStatus"]) => void;
+    setLatestPage: (value: boolean) => void;
+    setResultText: (value: string) => void;
+    setGroupTurn: (value: string) => void;
+    setGroupTurns: (value: string) => void;
+    setNativeRows: (value: NativeRow[] | null) => void;
+    setRowsOpen: (value: boolean) => void;
   }
 }
-const notReady = () => {
-  throw new Error("Fixture is not ready");
-};
-const initialHarness: Pick<
-  ChatReadHarness,
-  | "readWrite"
-  | "foreground"
-  | "visible"
-  | "calls"
-  | "notifications"
-  | "refreshes"
-  | "hold"
-  | "fail"
-  | "serverState"
-  | "release"
-  | "releaseLost"
-  | "transientFailure"
-  | "lostWrites"
-  | "lostReplies"
-  | "previousControls"
-> = {
-  readWrite,
-  foreground: false,
-  visible: true,
-  calls: [],
-  notifications: [],
-  refreshes: 0,
-  hold: false,
-  fail: false,
-  serverState: fixtureReadState(
-    localStorage.getItem("server-read-state") || "null",
-  ),
-  release: notReady,
-  releaseLost: null,
-  transientFailure: false,
-  lostWrites: [],
-  lostReplies: 0,
-  previousControls: null,
-};
+window.readWrite = readWrite;
+window.foreground = false;
+window.visible = true;
+window.calls = [];
+window.notifications = [];
+window.refreshes = 0;
+window.hold = false;
+window.fail = false;
+window.serverState = fixtureReadState(
+  localStorage.getItem("server-read-state") || "null",
+);
 Object.defineProperty(document, "visibilityState", {
   configurable: true,
-  get: () => (window.chatReadFixture.visible ? "visible" : "hidden"),
+  get: () => (window.visible ? "visible" : "hidden"),
 });
-document.hasFocus = () => window.chatReadFixture.foreground;
+document.hasFocus = () => window.foreground;
 
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
@@ -116,38 +85,33 @@ window.fetch = async (input, options) => {
   const url = new URL(request.url);
   if (url.pathname != "/api/organization") return nativeFetch(input, options);
   const body = readWrite(JSON.parse(await request.clone().text()));
-  window.chatReadFixture.calls.push({
+  window.calls.push({
     ...body,
     workspace: request.headers.get("X-Canvas-Workspace"),
   });
-  if (window.chatReadFixture.hold)
-    await new Promise<void>(
-      (resolve) => (window.chatReadFixture.release = resolve),
-    );
-  if (window.chatReadFixture.fail)
+  if (window.hold)
+    await new Promise<void>((resolve) => (window.release = resolve));
+  if (window.fail)
     return new Response(JSON.stringify({ error: "Read state changed" }), {
       status: 409,
     });
   const value = body.read_state;
-  window.chatReadFixture.serverState = {
+  window.serverState = {
     threadId: value.thread_id,
     turnId: value.turn_id,
     read: value.read,
     revision: value.expected_revision + 1,
   };
-  localStorage.setItem(
-    "server-read-state",
-    JSON.stringify(window.chatReadFixture.serverState),
-  );
+  localStorage.setItem("server-read-state", JSON.stringify(window.serverState));
   await nativeFetch("/api/test/read-state", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(window.chatReadFixture.serverState),
+    body: JSON.stringify(window.serverState),
   });
   return new Response(
     JSON.stringify({
       ...initial,
-      readState: window.chatReadFixture.serverState,
+      readState: window.serverState,
     }),
     { headers: { "Content-Type": "application/json" } },
   );
@@ -155,7 +119,7 @@ window.fetch = async (input, options) => {
 function Fixture() {
   const [agent, setAgent] = useState<Agent>({
       ...initial,
-      readState: initialHarness.serverState,
+      readState: window.serverState,
     }),
     [opened, setOpened] = useState("one"),
     [workspace, setWorkspace] = useState("first"),
@@ -173,44 +137,43 @@ function Fixture() {
     [nativeRows, setNativeRows] = useState<NativeRow[] | null>(null),
     [rowsOpen, setRowsOpen] = useState(true);
   const scroll = useRef<HTMLDivElement>(null);
-  const data = { ...snapshotFixture([agent]), stateDir: "/state" };
+  // The hook uses only stateDir, threads and runtime.agents from this partial snapshot.
+  const data = {
+    stateDir: "/state",
+    threads: [agent],
+    runtime: { agents: [agent] },
+  } as Snapshot;
   const controls = useChatReadState(
     data,
     opened,
-    (text) => window.chatReadFixture.notifications.push(text),
+    (text) => window.notifications.push(text),
     async () => {
-      window.chatReadFixture.refreshes++;
+      window.refreshes++;
     },
     workspace,
   );
-  window.chatReadFixture = Object.assign(
-    window.chatReadFixture ?? initialHarness,
-    {
-      controls: controls,
-      agent: agent,
-      state: controls.readStateFor(agent),
-      marking: [...controls.marking],
-      markUnread: () => controls.markUnread(agent),
-      setAgent: (value) => flushSync(() => setAgent(value)),
-      setOpened: (value) => flushSync(() => setOpened(value)),
-      setWorkspace: (value) => flushSync(() => setWorkspace(value)),
-      setLoaded: (value) => flushSync(() => setLoaded(value)),
-      setMessage: (value) => flushSync(() => setMessage(value)),
-      setOffset: (value) => flushSync(() => setOffset(value)),
-      setStreaming: (value) => flushSync(() => setStreaming(value)),
-      setPhase: (value) => flushSync(() => setPhase(value)),
-      replaceResult: () => flushSync(() => setNodeVersion((v) => v + 1)),
-      setTurnStatus: (value) => flushSync(() => setTurnStatus(value)),
-      setLatestPage: (value) => flushSync(() => setLatestPage(value)),
-      setResultText: (value) => flushSync(() => setResultText(value)),
-      setGroupTurn: (value) => flushSync(() => setGroupTurn(value)),
-      setGroupTurns: (value) => flushSync(() => setGroupTurns(value)),
-      setNativeRows: (value) => flushSync(() => setNativeRows(value)),
-      setRowsOpen: (value) => flushSync(() => setRowsOpen(value)),
-      observe: (proof) => controls.observeRead(proof),
-      unmount: () => appRoot.unmount(),
-    } satisfies Omit<ChatReadHarness, keyof typeof initialHarness>,
-  );
+  window.controls = controls;
+  window.agent = agent;
+  window.state = controls.readStateFor(agent);
+  window.marking = [...controls.marking];
+  window.markUnread = () => controls.markUnread(agent);
+  window.setAgent = (value) => flushSync(() => setAgent(value));
+  window.setOpened = (value) => flushSync(() => setOpened(value));
+  window.setWorkspace = (value) => flushSync(() => setWorkspace(value));
+  window.setLoaded = (value) => flushSync(() => setLoaded(value));
+  window.setMessage = (value) => flushSync(() => setMessage(value));
+  window.setOffset = (value) => flushSync(() => setOffset(value));
+  window.setStreaming = (value) => flushSync(() => setStreaming(value));
+  window.setPhase = (value) => flushSync(() => setPhase(value));
+  window.replaceResult = () => flushSync(() => setNodeVersion((v) => v + 1));
+  window.setTurnStatus = (value) => flushSync(() => setTurnStatus(value));
+  window.setLatestPage = (value) => flushSync(() => setLatestPage(value));
+  window.setResultText = (value) => flushSync(() => setResultText(value));
+  window.setGroupTurn = (value) => flushSync(() => setGroupTurn(value));
+  window.setGroupTurns = (value) => flushSync(() => setGroupTurns(value));
+  window.setNativeRows = (value) => flushSync(() => setNativeRows(value));
+  window.setRowsOpen = (value) => flushSync(() => setRowsOpen(value));
+  window.observe = (proof) => controls.observeRead(proof);
   useVisibleChatResult(
     scroll,
     agent,
@@ -269,7 +232,7 @@ function Fixture() {
     </>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing fixture root");
+const root = document.getElementById("root")!;
 const appRoot = createRoot(root);
+window.unmount = () => appRoot.unmount();
 appRoot.render(<Fixture />);

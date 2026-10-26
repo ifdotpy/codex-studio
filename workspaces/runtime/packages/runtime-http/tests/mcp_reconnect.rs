@@ -105,7 +105,7 @@ async fn fixture(
         })
         .await
         .unwrap();
-    let registry = json!({"version":1,"defaultAccountKey":"account","accounts":{"account":{"id":"account","provider":provider,"home":"/fixture","label":"Fixture","source":"Fixture","status":"ready"}},"logins":{}}).to_string();
+    let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"account","accounts":{"account":{"id":"account","provider":provider,"home":"/fixture","label":"Fixture","source":"Fixture","status":"ready"}},"logins":{}}).to_string();
     let policy = AccountPolicyState::from_startup(Some(registry.as_bytes()), []).unwrap();
     let session = Arc::new(Session {
         calls: Mutex::new(vec![]),

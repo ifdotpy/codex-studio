@@ -110,11 +110,12 @@ fn account_session_over(
     std::fs::write(
         &registry_path,
         serde_json::to_vec(&json!({
-            "version":1,
+            "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey":"default",
             "accounts":{"default":{
                 "id":"default","home":home,"label":"Codex","source":"Codex CLI",
-                "accountId":"fixture-account","status":"signedOut"
+                "accountId":"fixture-account","status":"signedOut",
+                "provider":studio_runtime_schema::ProviderKind::Codex
             }},
             "logins":{},"deleteReceipts":{}
         }))

@@ -1,4 +1,3 @@
-import { vi } from "vitest";
 import type { DraftVersion } from "../generated/rustOwned";
 import assert from "node:assert/strict";
 import {
@@ -12,6 +11,11 @@ import { draftVersionId } from "./draftIdentity.ts";
 import { activeDraftVersions } from "./draftVersions.ts";
 import { draftConflictHandler } from "./conflicts.ts";
 import { test } from "vitest";
+
+// The tests use only these Storage members; keep the fixture on the same global.
+const fixtureGlobal = globalThis as Omit<typeof globalThis, "localStorage"> & {
+  localStorage?: Pick<Storage, "length" | "key" | "getItem" | "setItem">;
+};
 
 const originalLocalStorage = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -43,7 +47,7 @@ test("current draft records stay scoped and never inspect the retired map", () =
     }
 
     const storage = new StorageFixture();
-    vi.stubGlobal("localStorage", storage);
+    fixtureGlobal.localStorage = storage;
     const a = `codex-drafts:${"a".repeat(32)}`;
     const b = `codex-drafts:${"b".repeat(32)}`;
     const retiredMap = JSON.stringify({ lead: "Retired draft", other: "Old" });
@@ -54,28 +58,28 @@ test("current draft records stay scoped and never inspect the retired map", () =
     });
     writeLocalDraftRecord(a, "removed", null);
     assert.deepEqual(readLocalDrafts(a), { lead: "Current local draft" });
-    assert.equal(readLocalDraftRecord(a, "lead")?.updated, 10);
-    assert.equal(readLocalDraftRecord(a, "removed")?.deleted, true);
+    assert.equal(readLocalDraftRecord(a, "lead")!.updated, 10);
+    assert.equal(readLocalDraftRecord(a, "removed")!.deleted, true);
 
     copyLocalDraftScope(a, b);
     assert.deepEqual(readLocalDrafts(b), { lead: "Current local draft" });
     assert.equal(
-      readLocalDraftRecord(b, "lead")?.workspace,
+      readLocalDraftRecord(b, "lead")!.workspace,
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     );
     assert.equal(storage.values.get(a), retiredMap);
     assert.equal(storage.values.has(b), false);
     assert.deepEqual(
-      JSON.parse(storage.values.get(localDraftKey(b, "lead")) ?? "null"),
+      JSON.parse(storage.values.get(localDraftKey(b, "lead"))!),
       {
-        ...JSON.parse(storage.values.get(localDraftKey(a, "lead")) ?? "null"),
+        ...JSON.parse(storage.values.get(localDraftKey(a, "lead"))!),
         workspace: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       },
     );
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else Reflect.deleteProperty(globalThis, "localStorage");
+    else delete fixtureGlobal.localStorage;
   }
 });
 
@@ -86,7 +90,7 @@ test("reads and rewrites current-key records left by the old migration", () => {
   );
   try {
     const values = new Map<string, string>();
-    vi.stubGlobal("localStorage", {
+    fixtureGlobal.localStorage = {
       get length() {
         return values.size;
       },
@@ -99,7 +103,7 @@ test("reads and rewrites current-key records left by the old migration", () => {
       setItem(key: string, value: string) {
         values.set(key, String(value));
       },
-    });
+    };
     const scope = `codex-drafts:${"c".repeat(32)}`;
     const migrated = (session: string, text: string) =>
       JSON.stringify({
@@ -123,15 +127,11 @@ test("reads and rewrites current-key records left by the old migration", () => {
       remote: "before",
       copy: "copied",
     });
-    assert.equal(readLocalDraftRecord(scope, "read")?.source, "local");
+    assert.equal(readLocalDraftRecord(scope, "read")!.source, "local");
     writeLocalDraftRecord(scope, "local", "local write", "local");
     writeLocalDraftRecord(scope, "remote", "remote write", "remote");
-    const local = JSON.parse(
-      values.get(localDraftKey(scope, "local")) ?? "null",
-    );
-    const remote = JSON.parse(
-      values.get(localDraftKey(scope, "remote")) ?? "null",
-    );
+    const local = JSON.parse(values.get(localDraftKey(scope, "local"))!);
+    const remote = JSON.parse(values.get(localDraftKey(scope, "remote"))!);
     assert.equal(local.source, "local");
     assert.equal(remote.source, "remote");
     for (const record of [local, remote]) {
@@ -144,16 +144,14 @@ test("reads and rewrites current-key records left by the old migration", () => {
     }
     const destination = `codex-drafts:${"d".repeat(32)}`;
     copyLocalDraftScope(scope, destination);
-    const copied = JSON.parse(
-      values.get(localDraftKey(destination, "copy")) ?? "null",
-    );
+    const copied = JSON.parse(values.get(localDraftKey(destination, "copy"))!);
     assert.equal(copied.text, "copied");
     assert.equal(copied.source, "local");
     assert.equal("legacyBaselineHash" in copied, false);
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else Reflect.deleteProperty(globalThis, "localStorage");
+    else delete fixtureGlobal.localStorage;
   }
 });
 
@@ -164,7 +162,7 @@ test("corruption stays scoped and draft versions retain conflict alternatives", 
   );
   try {
     const values = new Map<string, string>();
-    vi.stubGlobal("localStorage", {
+    fixtureGlobal.localStorage = {
       get length() {
         return values.size;
       },
@@ -177,7 +175,7 @@ test("corruption stays scoped and draft versions retain conflict alternatives", 
       setItem(key: string, value: string) {
         values.set(key, String(value));
       },
-    });
+    };
     const scope = `codex-drafts:${"a".repeat(32)}`;
     values.set(localDraftKey(scope, "broken"), "{");
     values.set(`codex-chat-draft:${"a".repeat(32)}:%E0%A4%A`, "{}");
@@ -289,7 +287,7 @@ test("corruption stays scoped and draft versions retain conflict alternatives", 
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else Reflect.deleteProperty(globalThis, "localStorage");
+    else delete fixtureGlobal.localStorage;
   }
 });
 
@@ -324,7 +322,7 @@ test("quota failure preserves the current draft record and pending journal", () 
       }
     }
     const storage = new QuotaStorage();
-    vi.stubGlobal("localStorage", storage);
+    fixtureGlobal.localStorage = storage;
     const scope = `codex-drafts:${"b".repeat(32)}`;
     writeLocalDraftRecord(scope, "chat", "saved text");
     const journalKey = `${scope}:pending:tab:chat`;
@@ -342,10 +340,10 @@ test("quota failure preserves the current draft record and pending journal", () 
     );
     assert.equal(storage.getItem(localDraftKey(scope, "chat")), record);
     assert.equal(storage.getItem(journalKey), journal);
-    assert.equal(readLocalDraftRecord(scope, "chat")?.text, "saved text");
+    assert.equal(readLocalDraftRecord(scope, "chat")!.text, "saved text");
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else Reflect.deleteProperty(globalThis, "localStorage");
+    else delete fixtureGlobal.localStorage;
   }
 });

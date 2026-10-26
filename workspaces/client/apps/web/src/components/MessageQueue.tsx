@@ -60,10 +60,8 @@ function isQueueAsset(value: unknown): value is QueueAsset {
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
-    "id" in value &&
-    "name" in value &&
-    typeof value.id === "string" &&
-    typeof value.name === "string"
+    typeof (value as QueueAsset).id === "string" &&
+    typeof (value as QueueAsset).name === "string"
   );
 }
 

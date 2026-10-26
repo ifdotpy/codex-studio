@@ -1576,9 +1576,9 @@ mod resource_tests {
             assert!(!spawn.description.contains("Default: gpt-6-luna"));
         }
         for record in [
-            json!({"id":"new", "isLead":true}),
-            json!({"id":"native", "isLead":true, "threadId":"thread", "nativeTeleportTool":"orchestration_teleport"}),
-            json!({"id":"legacy", "isLead":true, "threadId":"thread"}),
+            json!({"id":"new", "isLead":true, "provider":"codex"}),
+            json!({"id":"native", "isLead":true, "threadId":"thread", "nativeTeleportTool":"orchestration_teleport", "provider":"codex"}),
+            json!({"id":"legacy", "isLead":true, "threadId":"thread", "provider":"codex"}),
         ] {
             let text = role_guidance(&resources, &record).expect("emitted role guidance");
             assert!(text.contains("review defaults"), "{text}");
@@ -2144,7 +2144,10 @@ mod resource_tests {
             servers(json!({"id":"w", "parentId":"lead", "provider":"codex"})),
             Some(json!({"playwright":{"enabled":false},"aws.mcp":{"enabled":false}}))
         );
-        assert_eq!(servers(json!({"id":"l", "isLead":true})), None);
+        assert_eq!(
+            servers(json!({"id":"l", "isLead":true, "provider":"codex"})),
+            None
+        );
         assert_eq!(servers(json!({"id":"r", "provider":"codex"})), None);
         assert_eq!(
             servers(json!({"id":"c", "parentId":"lead", "provider":"claude"})),
@@ -2193,7 +2196,7 @@ mod resource_tests {
         for lead in [true, false] {
             let vm = guidance(
                 &resources,
-                &json!({"id":"agent", "isLead":lead, "executionMode":"vm"}),
+                &json!({"id":"agent", "isLead":lead, "executionMode":"vm", "provider":"codex"}),
                 Path::new("/state"),
             )
             .expect("layr guidance");
@@ -2212,7 +2215,7 @@ mod resource_tests {
             )));
             let native = guidance(
                 &resources,
-                &json!({"id":"agent", "isLead":lead}),
+                &json!({"id":"agent", "isLead":lead, "provider":"codex"}),
                 Path::new("/state"),
             )
             .expect("native guidance");
@@ -2222,7 +2225,7 @@ mod resource_tests {
         resources.role_guidance.remove(Path::new("layr/SKILL.md"));
         let refused = guidance(
             &resources,
-            &json!({"id":"agent", "isLead":true, "executionMode":"vm"}),
+            &json!({"id":"agent", "isLead":true, "executionMode":"vm", "provider":"codex"}),
             Path::new("/state"),
         );
         assert!(matches!(
@@ -2290,7 +2293,7 @@ mod workspace_fence_tests {
             .expect("resources");
         store.transaction_with(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
-                "status":"running","isLead":true,"cwd":"/project"})).expect("lead"))?;
+                "status":"running","isLead":true,"cwd":"/project","provider":studio_runtime_schema::ProviderKind::Claude})).expect("lead"))?;
             for mode in crate::claude_controls::PERMISSION_MODES {
                 for resumed in [false, true] {
                     let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
@@ -2324,7 +2327,7 @@ mod workspace_fence_tests {
         store
             .transaction_with(move |tx| {
                 let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
-                "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
+                "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout","provider":studio_runtime_schema::ProviderKind::Claude});
                 AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
                 for (mode, provider, role, ready, fenced, expected_sandbox) in [
                     (

@@ -2405,6 +2405,7 @@ mod daybreak_tests {
     fn monitor_preparation_accepts_submitted_running_actor_without_start_admission() {
         let record = json!({
             "id":"agent", "epoch":7, "autoWake":true, "deletedAt":null,
+            "provider":studio_runtime_schema::ProviderKind::Codex,
             "status":"running", "startAttempt":{"id":"submitted","submitted":true}
         });
         assert!(validate_monitor_actor(&record, 7).is_ok());

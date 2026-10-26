@@ -993,7 +993,7 @@ async fn terminal_source_writes_publish_summary_without_process_identity() {
 async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let worker = json!({"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
+    let worker = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
         "name":"Retained worker","accountKey":"default","deletedAt":1,
         "workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree","identity":{"cwd":"/fixture/retained"}},"receipt":{"reason":"Modified files"},"requestId":"private"}});
     write(

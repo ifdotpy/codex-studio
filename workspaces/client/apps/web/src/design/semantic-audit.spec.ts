@@ -42,7 +42,7 @@ test("Semantic colors and coarse modal/menu targets in the actual renderer", asy
     },
   });
   let log = "";
-  proc.stderr?.on("data", (chunk) => {
+  proc.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   const port = await waitForFixturePort(proc, { diagnostics: () => log });
@@ -163,10 +163,10 @@ test("Semantic colors and coarse modal/menu targets in the actual renderer", asy
           const close = page.locator(".mantine-Modal-close:visible").last();
           await expect(close).toBeVisible();
           const target = await close.boundingBox();
-          if (!target) throw new Error("Missing close button bounds");
+
           if (width === 390) {
-            expect(target.width).toBeGreaterThanOrEqual(44);
-            expect(target.height).toBeGreaterThanOrEqual(44);
+            expect(target!.width).toBeGreaterThanOrEqual(44);
+            expect(target!.height).toBeGreaterThanOrEqual(44);
           }
           await page.screenshot({
             path: join(artifacts, `${prefix}-modal.png`),

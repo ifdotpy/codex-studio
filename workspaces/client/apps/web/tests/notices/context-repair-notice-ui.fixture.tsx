@@ -1,8 +1,15 @@
 import type { Agent } from "../../src/types.ts";
-export type ContextRepairSnapshot = { label: string; agent: Agent };
+export type ContextRepairAgent = Omit<Agent, "capacityRetry"> & {
+  capacityRetry?: Omit<NonNullable<Agent["capacityRetry"]>, "updatedAt"> | null;
+};
+export type ContextRepairSnapshot = {
+  label: string;
+  agent: ContextRepairAgent;
+};
 declare global {
   interface Window {
-    applyContextRepairSnapshot: (snapshot: string) => void;
+    // Browser-access-notice-ui.fixture.tsx owns applySnapshot with BrowserAccessSnapshot.
+    applyContextRepairSnapshot: (snapshot: ContextRepairSnapshot) => void;
   }
 }
 
@@ -13,20 +20,19 @@ import "@mantine/core/styles.css";
 import { NativeError } from "../../src/components/NativeNotice.tsx";
 function Fixture() {
   const [snapshot, setSnapshot] = useState<ContextRepairSnapshot | null>(null);
-  // This fixture reads the snapshot serialized by its own spec.
-  window.applyContextRepairSnapshot = (serialized) => {
-    const snapshot: ContextRepairSnapshot = JSON.parse(serialized);
-    setSnapshot(snapshot);
-  };
+  window.applyContextRepairSnapshot = setSnapshot;
   return (
     <MantineProvider>
       <main data-case={snapshot?.label}>
-        {snapshot && <NativeError agent={snapshot.agent} />}
+        {snapshot && (
+          <NativeError
+            // The base partial capacityRetry fixture omits updatedAt.
+            agent={snapshot.agent as Agent}
+          />
+        )}
         <output>{JSON.stringify(snapshot?.agent)}</output>
       </main>
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing fixture root");
-createRoot(root).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

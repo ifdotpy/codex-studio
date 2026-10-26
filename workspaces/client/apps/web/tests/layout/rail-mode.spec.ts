@@ -1,4 +1,3 @@
-import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
@@ -119,7 +118,7 @@ for (const check of [
           exact: true,
         });
         await expect(outline).toBeFocused();
-        const menuBounds = await visibleBounds(page.getByRole("menu"));
+        const menuBounds = (await page.getByRole("menu").boundingBox())!;
         expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(867.5);
         expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(635.5);
         await page.keyboard.press("Enter");
@@ -188,7 +187,7 @@ for (const check of [
         )
         .all()) {
         if (!(await target.isVisible())) continue;
-        const r = await visibleBounds(target);
+        const r = (await target.boundingBox())!;
         if (!r || !r.width || !r.height) continue;
         expect(r.x + r.width).toBeLessThanOrEqual(867.5);
         expect(r.y + r.height).toBeLessThanOrEqual(635.5);

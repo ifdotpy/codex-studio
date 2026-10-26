@@ -18,7 +18,25 @@ fn corpus() -> &'static Value {
         } else {
             include_str!("wave7_p11_native/cases.json")
         };
-        serde_json::from_str(data).expect("frozen native corpus")
+        let mut data: Value = serde_json::from_str(data).expect("frozen native corpus");
+        // These frozen native actions/reviews exercise the Codex wire protocol.
+        // Keep their oracle independent and adapt only the historical identity.
+        for (group, fields) in [
+            ("outcomes", &["agent"][..]),
+            ("actions", &["agent", "after"][..]),
+            ("reviews", &["actor", "root", "child"][..]),
+            ("reviewTurns", &["child", "claimed", "submitted"][..]),
+            ("commands", &["agent"][..]),
+            ("cancellations", &["agent"][..]),
+            ("forks", &["agent"][..]),
+        ] {
+            for case in data[group].as_array_mut().expect("native cases") {
+                for field in fields {
+                    case[*field]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                }
+            }
+        }
+        data
     })
 }
 
@@ -971,9 +989,10 @@ fn commands_commit_before_send_and_reject_changed_input() {
 fn stored_native_action_errors_name_the_table_and_row() {
     let case = &corpus()["actions"][0];
     let db = db(case);
+    // Keep the schema-invalid witness writable under the explicit-provider column.
     db.execute(
-        r#"UPDATE runtime_agents SET record='{"id":"lead"}' WHERE id='lead'"#,
-        [],
+        "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
+        [json!({"id":"lead","provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
     )
     .expect("corrupt agent fixture");
     let request: Request = serde_json::from_value(case["request"].clone()).expect("request");

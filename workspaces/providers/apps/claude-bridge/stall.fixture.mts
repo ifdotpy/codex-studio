@@ -1,8 +1,7 @@
-import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
+import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile } from "./sdk-fixtures.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
-import { inputText } from "./sdk-fixtures.ts";
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
+import type { FixtureTextInput as SDKUserMessage } from "./sdk-fixtures.ts";
 
 export { resolveSettings } from "./sdk-fixtures.ts";
 import fs from "node:fs";
@@ -20,15 +19,13 @@ export function query({ prompt, options }: FixtureQuery) {
   const abort = new AbortController(),
     cwd = options.cwd;
   const session = options.sessionId || options.resume;
-  const configDir = process.env.CLAUDE_CONFIG_DIR;
-  if (!configDir) throw new Error("Missing fixture config directory");
   const history = path.join(
-    configDir,
+    process.env.CLAUDE_CONFIG_DIR!,
     "projects",
     cwd.replace(/[^a-zA-Z0-9]/g, "-"),
     session + ".jsonl",
   );
-  let interrupted = () => {},
+  let interrupted: (() => void) | null = null,
     wedged = false,
     deaf = false;
   let historyParent: string | null | undefined = null;
@@ -39,7 +36,10 @@ export function query({ prompt, options }: FixtureQuery) {
     (reading ||= prompt.next().then((input) => {
       reading = null;
       if (!input.done)
-        fs.appendFileSync(cwd + "/.inputs", inputText(input.value) + "\n");
+        fs.appendFileSync(
+          cwd + "/.inputs",
+          input.value.message.content[0].text + "\n",
+        );
       return input;
     }));
   const tool = {
@@ -51,7 +51,7 @@ export function query({ prompt, options }: FixtureQuery) {
   // Hold a steer like the CLI queue: no echo until the turn ends.
   const hold = (value: SDKUserMessage) => {
     queued.push(value);
-    if (inputText(value)?.includes("recorded")) {
+    if (value.message.content[0].text.includes("recorded")) {
       const uuid = randomUUID();
       fs.appendFileSync(
         history,
@@ -99,7 +99,7 @@ export function query({ prompt, options }: FixtureQuery) {
           return Promise.resolve({ still_queued: queued.map((q) => q.uuid) });
         return new Promise(() => {});
       }
-      interrupted();
+      interrupted!();
       return Promise.resolve({ still_queued: queued.map((q) => q.uuid) });
     },
     async *[Symbol.asyncIterator](): AsyncGenerator<
@@ -110,7 +110,7 @@ export function query({ prompt, options }: FixtureQuery) {
       while (!abort.signal.aborted) {
         const input = await read();
         if (input.done) return;
-        const text = inputText(input.value);
+        const text = input.value.message.content[0].text;
         fs.appendFileSync(
           history,
           JSON.stringify({
@@ -148,7 +148,7 @@ export function query({ prompt, options }: FixtureQuery) {
         if (text === "answer") {
           yield {
             type: "assistant",
-            uuid: randomUUID(),
+            uuid: "assistant-" + text,
             message: {
               id: "message-" + text,
               content: [{ type: "text", text: "done" }],
@@ -162,17 +162,17 @@ export function query({ prompt, options }: FixtureQuery) {
         // control channel does; it does not wait for the bridge to read the tool call.
         const asked =
           text === "approval"
-            ? options.canUseTool?.("Bash", tool.input, {
+            ? options.canUseTool!("Bash", tool.input, {
                 signal: abort.signal,
                 toolUseID: tool.id,
-                requestId: tool.id,
                 decisionReason: "[1mrm on a critical path[0m",
-              })
+                // This base fixture omits the unused SDK requestId.
+              } as Parameters<NonNullable<typeof options.canUseTool>>[2])
             : null;
         asked?.catch(() => {});
         yield {
           type: "assistant",
-          uuid: randomUUID(),
+          uuid: "assistant-" + text,
           message: { id: "message-" + text, content: [tool], usage },
         };
         if (text === "heartbeat") {
@@ -204,8 +204,7 @@ export function query({ prompt, options }: FixtureQuery) {
           continue;
         }
         if (text === "approval") {
-          const decision = await asked;
-          if (!decision) throw new Error("Missing fixture permission decision");
+          const decision = (await asked)!;
           fs.writeFileSync(cwd + "/.approved", decision.behavior);
           if (decision.behavior === "deny") {
             yield {

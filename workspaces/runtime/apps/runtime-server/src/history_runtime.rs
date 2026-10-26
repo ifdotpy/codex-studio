@@ -1558,9 +1558,9 @@ mod tests {
         std::fs::write(
             &account_path,
             serde_json::json!({
-                "version": 1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey": "default",
-                "accounts": {"default": {
+                "accounts": {"default": {"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id": "default", "home": root.path(), "label": "Fixture",
                     "source": "Codex CLI", "status": "signedOut"
                 }},
@@ -1599,9 +1599,9 @@ mod tests {
         std::fs::write(
             &account_path,
             json!({
-                "version": 1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey": "default",
-                "accounts": {"default": {
+                "accounts": {"default": {"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id": "default", "home": home, "label": "Fixture",
                     "source": "Codex CLI", "status": "signedOut"
                 }},
@@ -1779,9 +1779,9 @@ mod tests {
         std::fs::write(
             &account_path,
             json!({
-                "version": 1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey": "default",
-                "accounts": {"default": {
+                "accounts": {"default": {"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id": "default", "home": home, "label": "Fixture",
                     "source": "Codex CLI", "status": "signedOut"
                 }},
@@ -1900,14 +1900,14 @@ mod tests {
         std::fs::write(
             &account_path,
             json!({
-                "version": 1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey": "default",
                 "accounts": {
-                    "default": {
+                    "default": {"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id": "default", "home": root.path(), "label": "Fixture",
                         "source": "Codex CLI", "status": "signedOut"
                     },
-                    "login-removed": {
+                    "login-removed": {"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id": "login-removed", "home": root.path().join("removed-login-home"),
                         "label": "Removed", "source": "Codex CLI", "status": "signedOut"
                     }

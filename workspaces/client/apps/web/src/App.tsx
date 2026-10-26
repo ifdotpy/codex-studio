@@ -1,4 +1,5 @@
 import { useSubscription } from "./sync/subscriptions";
+import type { ProviderKind } from "./generated/providerKind.ts";
 import { submitRename, watchRenameResult } from "./renameRequest";
 import { randomUUID } from "./uuid";
 import {
@@ -995,10 +996,7 @@ export default function App({ active = true }: { active?: boolean }) {
     () =>
       accounts.data.accounts.map((account) => ({
         accountKey: account.id,
-        provider:
-          account.provider === "claude"
-            ? ("claude" as const)
-            : ("codex" as const),
+        provider: account.provider,
         email: account.email || null,
         plan: account.plan || null,
         status: account.disconnected ? "signedOut" : account.status,
@@ -3005,9 +3003,12 @@ export default function App({ active = true }: { active?: boolean }) {
                     (value): value is string => typeof value === "string",
                   )}
                 onSignIn={
-                  account.provider === "claude"
-                    ? setClaudeLoginKey
-                    : setCodexLoginKey
+                  (
+                    {
+                      codex: setCodexLoginKey,
+                      claude: setClaudeLoginKey,
+                    } satisfies Record<ProviderKind, (key: string) => void>
+                  )[account.provider]
                 }
               />
             ))}

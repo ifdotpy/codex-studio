@@ -1,5 +1,4 @@
 import { fixtureOrigin } from "../../tests/misc-fixture.ts";
-import { visibleBounds } from "../../tests/mobile/mobile-ui-fixture.ts";
 import { fileURLToPath } from "node:url";
 import {
   test,
@@ -64,7 +63,7 @@ test("Duo uses the bottom band for passive status and keeps every target above H
     );
     const status = page.locator(".session-cost-summary");
     await expect(status).toBeVisible();
-    const before = await visibleBounds(status);
+    const before = (await status.boundingBox())!;
     console.log(
       "passive-status-before-check",
       JSON.stringify(before),
@@ -72,13 +71,13 @@ test("Duo uses the bottom band for passive status and keeps every target above H
       34,
     );
     await expect
-      .poll(async () => (await visibleBounds(status)).y)
+      .poll(async () => (await status.boundingBox())!.y)
       .toBeGreaterThanOrEqual(635);
-    const rect = await visibleBounds(status);
+    const rect = (await status.boundingBox())!;
     expect(rect.y + rect.height).toBeLessThanOrEqual(669);
     await expect(page.locator(".token-rate")).toBeVisible();
     for (const target of await page.locator("button,textarea").all()) {
-      const box = await visibleBounds(target);
+      const box = (await target.boundingBox())!;
       expect(box.y + box.height).toBeLessThanOrEqual(635);
     }
     const band = page.locator(".viewport-bottom-band");

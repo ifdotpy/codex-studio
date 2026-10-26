@@ -1,4 +1,4 @@
-import { componentSnapshot, required } from "./componentTestFixtures";
+import { componentSnapshot } from "./componentTestFixtures";
 import type { BackgroundTask } from "../types";
 import assert from "node:assert/strict";
 import { it } from "vitest";
@@ -31,9 +31,9 @@ it("projects generated monitor and task payloads for renderer use", () => {
       ],
     }),
   );
-  assert.equal(required(tasks[0]).kind, "monitor");
-  assert.equal(activeTask(required(tasks[0])), false);
-  assert.equal(activeTask(required(tasks[1])), true);
+  assert.equal(tasks[0].kind, "monitor");
+  assert.equal(activeTask(tasks[0]), false);
+  assert.equal(activeTask(tasks[1]), true);
 });
 
 it("keeps a task entity visible when its optional kind is absent", () => {

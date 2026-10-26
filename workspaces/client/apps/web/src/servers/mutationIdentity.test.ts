@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 /// <reference lib="es2024.promise" />
 import { beforeEach, expect, it, vi } from "vitest";
 import { createHash, webcrypto } from "node:crypto";
@@ -161,8 +160,6 @@ it("releases a final pre-handler HTTP failure for the next user action", async (
     await expect(post("/api/sync/drafts", { rows: [] })).rejects.toMatchObject({
       status: 400,
     });
-    assert.ok(requests[0] != null);
-    assert.ok(requests[1] != null);
     expect(requests[0].headers.get("X-Studio-Request-Id")).not.toBe(
       requests[1].headers.get("X-Studio-Request-Id"),
     );
@@ -194,11 +191,9 @@ it("bounds an ordinary remote POST and keeps the same identity for its retry", a
     await entered.promise;
     expect(requests).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(16000);
-    assert.ok(requests[0] != null);
     expect(requests[0].signal.aborted).toBe(true);
     expect(await pending).toBe("NetworkTimeoutError");
     await post("/api/sync/drafts", { rows: [] });
-    assert.ok(requests[1] != null);
     expect(requests[1].headers.get("X-Studio-Request-Id")).toBe(
       requests[0].headers.get("X-Studio-Request-Id"),
     );
@@ -260,7 +255,6 @@ it("does not journal ephemeral subscription control requests after a lost respon
       }),
     ).rejects.toThrow("Lost control response");
     expect(rows.size).toBe(0);
-    assert.ok(requests[0] != null);
     expect(requests[0].headers.get("X-Studio-Request-Id")).toBeNull();
   } finally {
     vi.unstubAllGlobals();

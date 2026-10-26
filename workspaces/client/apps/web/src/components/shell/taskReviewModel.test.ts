@@ -1,4 +1,3 @@
-import { required } from "../componentTestFixtures";
 import { expect, test } from "vitest";
 import {
   DEFAULT_GATE_TIMEOUT_MS,
@@ -49,7 +48,7 @@ test("acceptance requires an override for missing, failed, running, and unknown 
               config: task.gate,
               revision: "abc",
               cwd: null,
-              monitorId: "monitor",
+              monitorId: "monitor" as string | null,
               exitCode: 1,
               output: "",
               log: null,
@@ -71,7 +70,7 @@ test("only a successful gate for the current configuration permits normal accept
           config: { command: "check" },
           revision: "abc",
           cwd: null,
-          monitorId: "monitor",
+          monitorId: "monitor" as string | null,
           exitCode: 0,
           output: "ok",
           log: null,
@@ -87,15 +86,8 @@ test("only a successful gate for the current configuration permits normal accept
       gate: { command: "check", timeout_ms: 1 },
     }),
   ).toBe(true);
-  const passedResult = required(passed.results[0]);
-  expect(
-    requiresGateOverride({
-      ...passed,
-      results: [
-        { ...passedResult, gate: { ...passedResult.gate, monitorId: null } },
-      ],
-    }),
-  ).toBe(true);
+  passed.results![0].gate!.monitorId = null;
+  expect(requiresGateOverride(passed)).toBe(true);
 });
 
 test("gate input validates the Rust-owned timeout bounds and supports disable", () => {

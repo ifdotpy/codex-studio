@@ -3,6 +3,7 @@ pub mod ledger;
 pub mod persisted;
 pub use persisted::parse_analytics_usage_row;
 
+use crate::provider_kind::ProviderKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -172,12 +173,6 @@ pub enum UsageObservation {
         reason: UsageGapReason,
     },
 }
-/// Provider at the usage conversion boundary; independent of provider services.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UsageProvider {
-    Codex,
-    Claude,
-}
 /// Invalid accounting evidence; callers must preserve this uncertainty.
 #[derive(Debug)]
 pub struct UsageParseError(pub String);
@@ -334,19 +329,20 @@ fn count(value: &Value, key: &str, optional: bool) -> Result<u64, UsageParseErro
         None => Err(UsageParseError(format!("missing {key}"))),
     }
 }
-fn legacy_tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, UsageParseError> {
+fn legacy_tokens(value: &Value, provider: ProviderKind) -> Result<UsageTokens, UsageParseError> {
     if !value.is_object() {
         return Err(UsageParseError("missing token breakdown".into()));
     }
     let input = count(value, "inputTokens", false)?;
     let read = count(value, "cachedInputTokens", true)?;
     let write = count(value, "cacheWriteInputTokens", true)?;
-    let (input, read, write) = if provider == UsageProvider::Codex {
-        let read = read.min(input);
-        let write = write.min(input - read);
-        (input - read - write, read, write)
-    } else {
-        (input, read, write)
+    let (input, read, write) = match provider {
+        ProviderKind::Codex => {
+            let read = read.min(input);
+            let write = write.min(input - read);
+            (input - read - write, read, write)
+        }
+        ProviderKind::Claude => (input, read, write),
     };
     Ok(UsageTokens {
         uncached_input: input,
@@ -364,7 +360,7 @@ fn legacy_tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, 
 /// Parse every supported usage notification once. Legacy branches support bridges
 /// already running when the typed contract is delivered and historical imports.
 pub fn parse_token_usage(
-    provider: UsageProvider,
+    provider: ProviderKind,
     params: &Value,
 ) -> Result<UsageObservation, UsageParseError> {
     if let Some(usage) = params.get("studioUsage") {
@@ -381,12 +377,15 @@ pub fn parse_token_usage(
                 .ok_or_else(|| UsageParseError("invalid modelContextWindow".into()))
         })
         .transpose()?;
-    let recovered = provider == UsageProvider::Codex
-        && (source == Some("responseRecord")
+    let response_evidence = match provider {
+        ProviderKind::Codex => (source == Some("responseRecord")
             || params
                 .get("rawTokenUsageRecord")
-                .is_some_and(Value::is_object));
-    if source == Some("claudeResponse") && provider == UsageProvider::Claude || recovered {
+                .is_some_and(Value::is_object))
+        .then_some(UsageEvidence::Recovered),
+        ProviderKind::Claude => (source == Some("claudeResponse")).then_some(UsageEvidence::Legacy),
+    };
+    if let Some(evidence) = response_evidence {
         let response_id = optional_text(params, "responseId")?
             .filter(|s| !s.is_empty())
             .ok_or_else(|| UsageParseError("missing responseId".into()))?;
@@ -409,11 +408,7 @@ pub fn parse_token_usage(
                     .unwrap_or(&usage["last"]),
                 provider,
             )?,
-            evidence: if recovered {
-                UsageEvidence::Recovered
-            } else {
-                UsageEvidence::Legacy
-            },
+            evidence,
             parent_tool_use_id: optional_text(params, "parentToolUseId")?,
             model_context_window,
         });
@@ -423,24 +418,24 @@ pub fn parse_token_usage(
     }
     // Synthetic imports and old Claude bridges may omit native-required fields.
     // Only native Codex notifications deserialize the exact vendored SDK mirror.
-    if provider == UsageProvider::Codex && source.is_none() {
-        let native: CodexThreadTokenUsageUpdatedNotification =
-            CodexThreadTokenUsageUpdatedNotification::deserialize(params)?;
-        return Ok(UsageObservation::Cumulative {
-            scope: UsageScope::CodexThread,
-            turn_id: Some(native.turn_id),
-            total: native.token_usage.total.tokens()?,
-            last: Some(native.token_usage.last.tokens()?),
-            model_context_window,
-            models: None,
-        });
-    }
+    let scope = match provider {
+        ProviderKind::Codex if source.is_none() => {
+            let native: CodexThreadTokenUsageUpdatedNotification =
+                CodexThreadTokenUsageUpdatedNotification::deserialize(params)?;
+            return Ok(UsageObservation::Cumulative {
+                scope: UsageScope::CodexThread,
+                turn_id: Some(native.turn_id),
+                total: native.token_usage.total.tokens()?,
+                last: Some(native.token_usage.last.tokens()?),
+                model_context_window,
+                models: None,
+            });
+        }
+        ProviderKind::Codex => UsageScope::CodexThread,
+        ProviderKind::Claude => UsageScope::ClaudeQuery,
+    };
     Ok(UsageObservation::Cumulative {
-        scope: if provider == UsageProvider::Codex {
-            UsageScope::CodexThread
-        } else {
-            UsageScope::ClaudeQuery
-        },
+        scope,
         turn_id,
         total: legacy_tokens(&usage["total"], provider)?,
         last: usage
@@ -471,14 +466,15 @@ pub struct LegacyUsageTotals {
 /// Read only pre-contract Claude total-only usage. A present studioUsage is
 /// authoritative: malformed typed observations never fall back to legacy input.
 pub fn parse_legacy_totals(
-    provider: UsageProvider,
+    provider: ProviderKind,
     params: &Value,
 ) -> Result<LegacyUsageTotals, UsageParseError> {
     let source = params.get("usageSource").and_then(Value::as_str);
-    if provider != UsageProvider::Claude
-        || params.get("studioUsage").is_some()
-        || source.is_some_and(|s| s != "claudeResponse")
-    {
+    match provider {
+        ProviderKind::Codex => return Err(UsageParseError("not legacy Claude usage".into())),
+        ProviderKind::Claude => {}
+    }
+    if params.get("studioUsage").is_some() || source.is_some_and(|s| s != "claudeResponse") {
         return Err(UsageParseError("not legacy Claude usage".into()));
     }
     let usage = &params["tokenUsage"];
@@ -577,8 +573,47 @@ mod tests {
         json!({"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":5,"outputTokens":10,"reasoningOutputTokens":3,"totalTokens":110})
     }
     #[test]
+    fn provider_usage_dispatch_preserves_live_and_persisted_categories() {
+        for (provider, scope, uncached, uncached_flag) in [
+            (ProviderKind::Codex, UsageScope::CodexThread, 75, false),
+            (ProviderKind::Claude, UsageScope::ClaudeQuery, 100, true),
+        ] {
+            let live = parse_token_usage(
+                provider,
+                &json!({
+                    "usageSource":"tokenCount", "turnId":"turn-1",
+                    "tokenUsage":{"total":breakdown(), "last":breakdown()}
+                }),
+            )
+            .expect("live counter");
+            let persisted = parse_analytics_usage_row(
+                provider,
+                &json!({
+                    "turnId":"turn-1", "total":breakdown(), "last":breakdown(),
+                    "inputTokensAreUncached":uncached_flag
+                }),
+            )
+            .expect("persisted counter");
+            assert_eq!(live, persisted);
+            let UsageObservation::Cumulative {
+                scope: actual_scope,
+                total,
+                ..
+            } = live
+            else {
+                panic!("cumulative");
+            };
+            assert_eq!(actual_scope, scope);
+            assert_eq!(total.uncached_input, uncached);
+            assert_eq!(total.cache_read_input, 20);
+            assert_eq!(total.cache_write_input, 5);
+            assert_eq!(total.output, 10);
+            assert!(parse_token_usage(provider, &json!({"usageSource":"otherProvider"})).is_err());
+        }
+    }
+    #[test]
     fn native_codex_inclusive_input_becomes_cumulative_uncached_input() {
-        let parsed = parse_token_usage(UsageProvider::Codex,&json!({"threadId":"t","turnId":"u","tokenUsage":{"total":breakdown(),"last":breakdown(),"modelContextWindow":200000}})).expect("native usage");
+        let parsed = parse_token_usage(ProviderKind::Codex,&json!({"threadId":"t","turnId":"u","tokenUsage":{"total":breakdown(),"last":breakdown(),"modelContextWindow":200000}})).expect("native usage");
         let UsageObservation::Cumulative {
             scope, total, last, ..
         } = parsed
@@ -595,14 +630,14 @@ mod tests {
         let p = json!({"usageSource":"claudeResponse","responseId":"r","model":"claude","requestUsage":breakdown()});
         let UsageObservation::Response {
             tokens, evidence, ..
-        } = parse_token_usage(UsageProvider::Claude, &p).expect("legacy response")
+        } = parse_token_usage(ProviderKind::Claude, &p).expect("legacy response")
         else {
             panic!("response");
         };
         assert_eq!(tokens.uncached_input, 100);
         assert_eq!(evidence, UsageEvidence::Legacy);
         let UsageObservation::Cumulative { scope, .. } = parse_token_usage(
-            UsageProvider::Claude,
+            ProviderKind::Claude,
             &json!({"tokenUsage":{"total":breakdown()}}),
         )
         .expect("legacy aggregate") else {
@@ -618,7 +653,7 @@ mod tests {
             evidence,
             model,
             ..
-        } = parse_token_usage(UsageProvider::Codex, &p).expect("rollout response")
+        } = parse_token_usage(ProviderKind::Codex, &p).expect("rollout response")
         else {
             panic!("response");
         };
@@ -627,7 +662,7 @@ mod tests {
         assert_eq!(tokens.uncached_input, 75);
         assert!(matches!(
             parse_token_usage(
-                UsageProvider::Codex,
+                ProviderKind::Codex,
                 &json!({"usageSource":"tokenCount","tokenUsage":{"total":breakdown()}})
             )
             .expect("rollout count"),
@@ -655,7 +690,7 @@ mod tests {
     #[test]
     fn studio_usage_rejects_unknown_fields_and_negative_or_fractional_tokens() {
         let mut usage = json!({"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":1,"cacheReadInput":0,"cacheWriteInput":0,"output":2}});
-        let parse = |v| parse_token_usage(UsageProvider::Claude, &json!({"studioUsage":v}));
+        let parse = |v| parse_token_usage(ProviderKind::Claude, &json!({"studioUsage":v}));
         assert!(parse(usage.clone()).is_ok());
         usage["extra"] = json!(1);
         assert!(parse(usage.clone()).is_err());
@@ -676,7 +711,7 @@ mod tests {
     fn claude_finality_gaps_parse_without_inventing_tokens() {
         for reason in ["unconfirmedStop", "noStream"] {
             let observation = parse_token_usage(
-                UsageProvider::Claude,
+                ProviderKind::Claude,
                 &json!({
                     "studioUsage": {"kind":"gap", "responseId":"r", "reason":reason}
                 }),
@@ -739,14 +774,13 @@ mod legacy_tests {
     #[test]
     fn old_claude_totals_do_not_invent_categories_or_accept_invalid_typed_usage() {
         let params = json!({"tokenUsage":{"total":{"totalTokens":25},"last":{"totalTokens":5},"modelContextWindow":1000}});
-        assert!(parse_token_usage(UsageProvider::Claude, &params).is_err());
-        let total =
-            parse_legacy_totals(UsageProvider::Claude, &params).expect("pre-contract total");
+        assert!(parse_token_usage(ProviderKind::Claude, &params).is_err());
+        let total = parse_legacy_totals(ProviderKind::Claude, &params).expect("pre-contract total");
         assert_eq!(total.total_tokens, 25);
         assert_eq!(total.last_total_tokens, Some(5));
-        assert!(parse_legacy_totals(UsageProvider::Codex, &params).is_err());
+        assert!(parse_legacy_totals(ProviderKind::Codex, &params).is_err());
         let mut invalid = params;
         invalid["studioUsage"] = json!({"kind":"unknown"});
-        assert!(parse_legacy_totals(UsageProvider::Claude, &invalid).is_err());
+        assert!(parse_legacy_totals(ProviderKind::Claude, &invalid).is_err());
     }
 }

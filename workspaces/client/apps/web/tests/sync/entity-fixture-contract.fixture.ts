@@ -32,8 +32,7 @@ export function installEntityContractProbe() {
     record.open = response.ok && !request.signal.aborted;
     const decoder = new TextDecoder();
     let pending = "";
-    if (!response.body) throw new Error("Fixture stream has no response body");
-    const observed = response.body.pipeThrough(
+    const observed = response.body!.pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           controller.enqueue(chunk);

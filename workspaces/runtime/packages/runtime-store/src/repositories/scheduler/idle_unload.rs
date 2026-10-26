@@ -304,7 +304,7 @@ mod tests {
     }
 
     fn agent(connection: &Connection, id: &str, fields: Value) {
-        let mut record = json!({"id":id,"rootId":id,"epoch":1,"status":"completed",
+        let mut record = json!({"id":id,"provider":"codex","rootId":id,"epoch":1,"status":"completed",
             "accountKey":"acct","threadId":"thread"});
         for (key, value) in fields.as_object().expect("fields").clone() {
             record[key] = value;

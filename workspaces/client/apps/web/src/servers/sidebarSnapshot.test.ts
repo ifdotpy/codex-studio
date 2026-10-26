@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
 import { navigationSnapshot } from "./navigation";
@@ -269,7 +268,7 @@ describe("server sidebar projection", () => {
     { revision: 9, groups: { projects: ["/server"] } },
   ])("retains server order support and migration state: %j", (order) => {
     const data = snapshot();
-    if (order !== undefined) data.runtime.sidebarOrder = order;
+    data.runtime.sidebarOrder = order;
     records.set(
       `codex-sidebar-order:${data.stateDir}`,
       JSON.stringify({ projects: ["/legacy"] }),
@@ -356,7 +355,6 @@ describe("server sidebar projection", () => {
       unread: true,
       inFlight: true,
     });
-    assert.ok(navigation.chats[0] != null);
     expect(navigation.sidebar?.indicators).toEqual([
       ["lead", navigation.chats[0].indicator],
     ]);

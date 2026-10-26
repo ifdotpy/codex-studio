@@ -1452,7 +1452,7 @@ mod lifecycle_scope_parity_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     fn agent(id: &str, root: &str, parent: Option<&str>, lead: bool) -> Value {
-        let mut record = json!({
+        let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":id,
             "rootId":root,
             "epoch":1,
@@ -1753,7 +1753,7 @@ mod archive_parity_tests {
                 (
                     "runtime_agents".to_owned(),
                     vec![
-                        json!({"id":"lead","rootId":"lead","epoch":4,"status":"running",
+                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":4,"status":"running",
                             "autoWake":true,"isLead":true}),
                         worker,
                     ],
@@ -1765,7 +1765,7 @@ mod archive_parity_tests {
     }
 
     fn worker(fields: Value) -> Value {
-        let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":2,
+        let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":2,
             "status":"completed","autoWake":true,"isLead":false,"role":"reviewer",
             "threadId":"thread-1","lastCompletedTurn":"turn-9",
             "lastCompletedTurnStatus":"completed"});

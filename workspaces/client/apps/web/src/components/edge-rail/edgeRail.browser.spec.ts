@@ -1,5 +1,4 @@
 import { fixtureOrigin } from "../../../tests/misc-fixture.ts";
-import { visibleBounds } from "../../../tests/mobile/mobile-ui-fixture.ts";
 import { fileURLToPath } from "node:url";
 import {
   test,
@@ -75,7 +74,7 @@ for (const capability of [
         name: "Conversation actions",
       });
       await expect(rail).toBeVisible();
-      expect(await visibleBounds(rail)).toEqual({
+      expect((await rail.boundingBox())!).toEqual({
         x: 867,
         y: 112,
         width: 84,
@@ -87,7 +86,7 @@ for (const capability of [
       });
       for (const label of ["Toggle conversations", "Messages, 3 need you"]) {
         const button = rail.getByRole("button", { name: label, exact: true });
-        const rect = await visibleBounds(button);
+        const rect = (await button.boundingBox())!;
         expect(rect.width).toBeGreaterThanOrEqual(44);
         expect(rect.height).toBeGreaterThanOrEqual(44);
         expect(rect.y + rect.height).toBeLessThanOrEqual(635);
@@ -101,15 +100,15 @@ for (const capability of [
         name: "Chat actions",
         exact: true,
       });
-      const actionsRect = await visibleBounds(actions);
+      const actionsRect = (await actions.boundingBox())!;
       expect(actionsRect.x + actionsRect.width / 2).toBe(951 - 48);
       await actions.click();
       const item = page.getByRole("menuitem", { name: "Existing action" });
       await expect(item).toBeVisible();
-      expect((await visibleBounds(item)).x).toBeLessThan(867);
+      expect((await item.boundingBox())!.x).toBeLessThan(867);
       // The menu opens at its button, keeps edgeRail.menuGap from the strip,
       // and ends above Home.
-      const menuRect = await visibleBounds(page.getByRole("menu"));
+      const menuRect = (await page.getByRole("menu").boundingBox())!;
       expect(Math.abs(menuRect.y - actionsRect.y)).toBeLessThanOrEqual(1);
       expect(menuRect.x + menuRect.width).toBeLessThanOrEqual(867 - 8);
       expect(menuRect.y + menuRect.height).toBeLessThanOrEqual(635);
@@ -126,14 +125,14 @@ for (const capability of [
         root.style.paddingLeft = "84px";
       });
       await expect(rail).toHaveAttribute("data-side", "left");
-      expect((await visibleBounds(rail)).x).toBe(0);
-      const leftActions = await visibleBounds(actions);
+      expect((await rail.boundingBox())!.x).toBe(0);
+      const leftActions = (await actions.boundingBox())!;
       expect(leftActions.x + leftActions.width / 2).toBe(48);
       await actions.click();
       await expect(item).toBeVisible();
-      expect((await visibleBounds(item)).x).toBeGreaterThanOrEqual(44);
+      expect((await item.boundingBox())!.x).toBeGreaterThanOrEqual(44);
       expect(
-        (await visibleBounds(page.getByRole("menu"))).x,
+        (await page.getByRole("menu").boundingBox())!.x,
       ).toBeGreaterThanOrEqual(84 + 8);
       await expect(page.getByRole("menu")).toHaveCSS("opacity", "1");
       await page.screenshot({
@@ -153,7 +152,7 @@ for (const capability of [
         root.style.paddingBottom = "0px";
       });
       await expect
-        .poll(async () => (await visibleBounds(rail)).height)
+        .poll(async () => (await rail.boundingBox())!.height)
         .toBe(128);
       await rail
         .getByRole("button", { name: "Chat actions", exact: true })

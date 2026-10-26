@@ -44,6 +44,23 @@ it("resolves an exact account key without selecting a duplicate or a missing rep
   ).toBeUndefined();
 });
 
+it("does not match an unknown provider to a known account identity", () => {
+  const account: AccountDeleteTarget = {
+    id: "unknown-provider",
+    // @ts-expect-error Deliberately exercise an unrecognized remote provider.
+    provider: "future-provider",
+    email: "target@example.invalid",
+    label: "Work",
+  };
+  expect(
+    accountForExternalCommand([account], {
+      provider: "codex",
+      email: account.email ?? null,
+      label: account.label,
+    }),
+  ).toBeUndefined();
+});
+
 it("resolves an external account action to the account's stored delete identity", () => {
   const accounts: AccountDeleteTarget[] = [
     {

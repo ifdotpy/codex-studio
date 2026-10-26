@@ -1276,10 +1276,12 @@ mod tests {
             .transaction(move |tx| {
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({
-                        "id":"source","rootId":"source","epoch":0,"status":"idle",
-                        "cwd":cwd,"threadId":"thread","isLead":true,"model":"gpt-5.6-sol"
-                    }))?,
+                    &AgentRecord::from_value(
+                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"source","rootId":"source","epoch":0,"status":"idle",
+                            "cwd":cwd,"threadId":"thread","isLead":true,"model":"gpt-5.6-sol"
+                        }),
+                    )?,
                 )?;
                 TranscriptRepository::put_item(
                     tx,
@@ -1298,7 +1300,7 @@ mod tests {
             .await
             .expect("seed");
         let policy = Arc::new(studio_runtime_services::account_policy::AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"fixture","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#), []
+            Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"fixture","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes()), []
         ).expect("policy"));
         let mut state = HttpState::new(
             "token".into(),

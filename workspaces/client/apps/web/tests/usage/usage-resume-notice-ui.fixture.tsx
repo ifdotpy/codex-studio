@@ -7,24 +7,25 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import { NativeError } from "../../src/components/NativeNotice.tsx";
 const dueAt = Number(new URLSearchParams(location.search).get("dueAt"));
-const resume = {
+type UsageResume = NonNullable<Agent["usageResume"]>;
+// Base resume omits cause/reason; authResume omits plannedAt/reason.
+function partialUsageResume(value: Partial<UsageResume>): UsageResume {
+  return value as UsageResume;
+}
+const resume = partialUsageResume({
   id: "resume-1",
-  cause: "usage_limit",
-  reason: null,
   status: "scheduled",
   dueAt: dueAt,
   plannedAt: dueAt,
   updatedAt: 1,
-};
-const authResume = {
+});
+const authResume = partialUsageResume({
   id: "auth-resume-1",
   status: "scheduled",
   cause: "auth",
-  plannedAt: null,
-  reason: null,
   dueAt: dueAt,
   updatedAt: 1,
-};
+});
 const agent: Agent = {
   id: "chat-1",
   rootId: "chat-1",

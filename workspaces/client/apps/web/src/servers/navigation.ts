@@ -13,9 +13,13 @@ import type { LocationProject } from "./projectLocations";
 import { chatIndicators } from "../components/chat-status/chatStatusModel";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
 import { sidebarSnapshot, type ServerSidebarSnapshot } from "./sidebarSnapshot";
+import {
+  isProviderKind,
+  type ProviderKind,
+} from "../generated/providerKind.ts";
 export type ServerAccount = {
   accountKey?: string;
-  provider: "codex" | "claude";
+  provider: ProviderKind;
   email: string | null;
   plan: string | null;
   status: string;
@@ -113,7 +117,7 @@ export type ServerCommand =
   | {
       action: "account-sign-in";
       accountKey?: string;
-      provider: "codex" | "claude";
+      provider: ProviderKind;
       email: string | null;
       label: string;
       serverLabel: string;
@@ -128,7 +132,7 @@ export type ServerCommand =
         | "disconnect"
         | "remove"
         | "configure-profile";
-      provider: "codex" | "claude";
+      provider: ProviderKind;
       email: string | null;
       label: string;
       nextLabel?: string;
@@ -270,7 +274,7 @@ export function isServerCommand(value: unknown): value is ServerCommand {
     return typeof command.agentId === "string";
   if (command.action === "account-sign-in")
     return (
-      (command.provider === "codex" || command.provider === "claude") &&
+      isProviderKind(command.provider) &&
       (command.email === null || typeof command.email === "string") &&
       typeof command.label === "string" &&
       typeof command.serverLabel === "string" &&
@@ -288,7 +292,7 @@ export function isServerCommand(value: unknown): value is ServerCommand {
         "remove",
         "configure-profile",
       ].includes(String(command.operation)) &&
-      (command.provider === "codex" || command.provider === "claude") &&
+      isProviderKind(command.provider) &&
       (command.operation !== "configure-profile" ||
         command.provider === "claude") &&
       (command.email === null || typeof command.email === "string") &&

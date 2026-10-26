@@ -1,8 +1,7 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
-import { randomUUID } from "node:crypto";
-import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
+import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile } from "./sdk-fixtures.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 
 import fs from "node:fs";
 export {
@@ -17,7 +16,7 @@ const usage = { input_tokens: 10, output_tokens: 2 };
 export function query({ prompt, options }: FixtureQuery) {
   const abort = new AbortController(),
     cwd = options.cwd;
-  let moved = () => {};
+  let moved: () => void;
   const movedPromise = new Promise<void>((resolve) => (moved = resolve));
   let foreground = false;
   return {
@@ -72,7 +71,7 @@ export function query({ prompt, options }: FixtureQuery) {
       };
       yield {
         type: "assistant",
-        uuid: randomUUID(),
+        uuid: "a-1",
         message: {
           id: "message-1",
           model: "claude-opus-5-5",
@@ -98,7 +97,7 @@ export function query({ prompt, options }: FixtureQuery) {
         task_type: "local_bash",
         is_backgrounded: false,
         description: "sleep 600",
-        uuid: randomUUID(),
+        uuid: "s-1",
       };
       await movedPromise;
       yield {
@@ -106,11 +105,11 @@ export function query({ prompt, options }: FixtureQuery) {
         subtype: "task_updated",
         task_id: "bash-1",
         patch: { is_backgrounded: true },
-        uuid: randomUUID(),
+        uuid: "s-2",
       };
       yield {
         type: "user",
-        uuid: randomUUID(),
+        uuid: "u-1",
         message: {
           role: "user",
           content: [
@@ -143,10 +142,10 @@ export function query({ prompt, options }: FixtureQuery) {
         status: "completed",
         output_file: cwd + "/bash-1.output",
         summary: "Background command completed (exit code 0)",
-        uuid: randomUUID(),
+        uuid: "s-3",
       };
-      await new Promise<void>((resolve) =>
-        abort.signal.addEventListener("abort", () => resolve(), { once: true }),
+      await new Promise<unknown>((resolve) =>
+        abort.signal.addEventListener("abort", resolve, { once: true }),
       );
     },
   };

@@ -99,7 +99,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
             .await
             .expect("voice store"),
     );
-    let actor = json!({
+    let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
         "id":"voice-http-agent", "rootId":"voice-http-agent", "epoch":7,
         "status":"idle", "isLead":true, "autoWake":true,
         "threadId":"voice-http-thread", "accountKey":"voice-http-account"
@@ -109,7 +109,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
             "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
             rusqlite::params!["voice-http-agent", actor.to_string()],
         )?;
-        let start_actor = json!({
+        let start_actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"voice-start-agent", "rootId":"voice-start-agent", "epoch":7,
             "status":"idle", "isLead":true, "autoWake":true,
             "threadId":"voice-http-thread", "accountKey":"voice-http-account"

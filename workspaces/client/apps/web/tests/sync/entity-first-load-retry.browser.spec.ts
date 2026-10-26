@@ -56,10 +56,10 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
     after: string | null;
   }[] = [];
   const pullDocumentCounts: number[] = [];
-  const {
-    promise: firstConnectedStream,
-    resolve: resolveFirstConnectedStream,
-  } = Promise.withResolvers<void>();
+  let resolveFirstConnectedStream: () => void;
+  const firstConnectedStream = new Promise<void>((resolve) => {
+    resolveFirstConnectedStream = resolve;
+  });
   const entityDocument = (): SyncEntity => ({
     op: "upsert",
     collection: "agent",
@@ -78,7 +78,7 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://fixture.local");
+      const url = new URL(req.url!, "http://fixture.local");
       requests.push(`${req.method} ${url.pathname}${url.search}`);
       if (url.pathname === "/check") {
         res.end("<!doctype html><div id='root'></div>");
@@ -129,7 +129,7 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
             );
             const stream = { res, resources };
             streams.add(stream);
-            resolveFirstConnectedStream();
+            resolveFirstConnectedStream!();
             res.on("close", () => streams.delete(stream));
           };
           if (streamHeadersDelayMs > 0)
@@ -189,9 +189,7 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
       return streams.size;
     },
     async close() {
-      await page.evaluate(() =>
-        window.entityFirstLoadRetryBrowserFixtureUnmountSnapshot?.(),
-      );
+      await page.evaluate(() => window.unmountSnapshot?.());
       await server.close();
     },
     setPullStatus(value: number | undefined) {
@@ -229,17 +227,13 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
 
 async function mount(page: Page, options?: FixtureOptions) {
   const fixture = await createFixture(page, options);
-  await page.waitForFunction(() =>
-    Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot),
-  );
+  await page.waitForFunction(() => Boolean(window.snapshot));
   return fixture;
 }
 
 async function waitForData(page: Page) {
   await page.waitForFunction(
-    () =>
-      Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot) &&
-      window.entityFirstLoadRetryBrowserFixtureSnapshot.data !== null,
+    () => Boolean(window.snapshot) && window.snapshot.data !== null,
     null,
     {
       timeout: 20_000,
@@ -254,9 +248,7 @@ test("first load reports failure and recovers without a legacy request", async (
   const fixture = await mount(page, { available: false });
   try {
     await page.waitForFunction(
-      () =>
-        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
-        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
+      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
     );
     assert.notEqual((await page.getByRole("alert").textContent())?.trim(), "");
     assert.equal(
@@ -265,9 +257,7 @@ test("first load reports failure and recovers without a legacy request", async (
     );
     fixture.setAvailable(true);
     await waitForData(page);
-    await page.waitForFunction(
-      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.error === "",
-    );
+    await page.waitForFunction(() => window.snapshot.error === "");
     assert.equal(
       fixture.requests.some((request) => request.includes("/api/state")),
       false,
@@ -299,9 +289,7 @@ test("records first content time while stream headers are held", async ({
   try {
     await waitForData(page);
     const firstContentMs = await page.evaluate(
-      () =>
-        performance.now() -
-        window.entityFirstLoadRetryBrowserFixtureSnapshotMountedAt,
+      () => performance.now() - window.snapshotMountedAt,
     );
     console.log(`FIRST_CONTENT_WITH_HELD_STREAM ${firstContentMs}`);
     assert.ok(firstContentMs < 5_000, `first content ${firstContentMs}ms`);
@@ -344,7 +332,7 @@ test("delivers one state change committed before the delayed stream attaches", a
     fixture.publish();
     await fixture.firstConnectedStream;
     await page.waitForFunction(() =>
-      window.entityFirstLoadRetryBrowserFixtureSnapshot?.data?.runtime?.agents?.some(
+      window.snapshot?.data?.runtime?.agents?.some(
         (agent) => agent.id === "lead" && agent.name === "Fixture 2",
       ),
     );
@@ -403,9 +391,7 @@ test("retries the initial pull after three transient failures", async ({
   try {
     await waitForData(page);
     assert.ok(fixture.counts.pull >= 4);
-    await page.waitForFunction(
-      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.error === "",
-    );
+    await page.waitForFunction(() => window.snapshot.error === "");
   } finally {
     await fixture.close();
   }
@@ -416,17 +402,10 @@ test("keeps the error visible for a permanent 503", async ({ page }) => {
   const fixture = await mount(page, { pullStatus: 503 });
   try {
     await page.waitForFunction(
-      () =>
-        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
-        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
+      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
     );
     await page.waitForTimeout(6_000);
-    assert.equal(
-      await page.evaluate(
-        () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
-      ),
-      null,
-    );
+    assert.equal(await page.evaluate(() => window.snapshot.data), null);
     assert.notEqual((await page.getByRole("alert").textContent())?.trim(), "");
   } finally {
     await fixture.close();
@@ -442,13 +421,11 @@ test("bounds retries for a permanent 503", async ({ page }) => {
   const fixture = await mount(page, { pullStatus: 503 });
   try {
     await page.waitForFunction(
-      () =>
-        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
-        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
+      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
     );
     await page.waitForTimeout(6_000);
     const offsets = fixture.pullAttempts.map((attempt) =>
-      Number((attempt.at - (fixture.pullAttempts[0]?.at ?? 0)).toFixed(1)),
+      Number((attempt.at - fixture.pullAttempts[0].at).toFixed(1)),
     );
     assert.ok(
       fixture.counts.pull <= 10,
@@ -464,9 +441,7 @@ test("does not retry a permanent 400", async ({ page }) => {
   const fixture = await mount(page, { pullStatus: 400 });
   try {
     await page.waitForFunction(
-      () =>
-        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
-        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
+      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
     );
     await page.waitForTimeout(2_000);
     assert.equal(fixture.counts.pull, 1);
@@ -482,38 +457,20 @@ test("clears a later subscription error after a successful pull", async ({
   const fixture = await mount(page, {});
   try {
     await waitForData(page);
-    const initial = await page.evaluate(
-      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
-    );
+    const initial = await page.evaluate(() => window.snapshot.data);
     fixture.setPullStatus(503);
     fixture.publish();
-    await page.waitForFunction(
-      () => Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
-      null,
-      {
-        timeout: 10_000,
-      },
-    );
-    assert.deepEqual(
-      await page.evaluate(
-        () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
-      ),
-      initial,
-    );
+    await page.waitForFunction(() => Boolean(window.snapshot.error), null, {
+      timeout: 10_000,
+    });
+    assert.deepEqual(await page.evaluate(() => window.snapshot.data), initial);
     fixture.setPullStatus(undefined);
     fixture.publish();
-    await page.waitForFunction(
-      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.error === "",
-      null,
-      {
-        timeout: 10_000,
-      },
-    );
-    assert.ok(
-      await page.evaluate(
-        () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
-      ),
-    );
+    await page.waitForFunction(() => window.snapshot.error === "", null, {
+      timeout: 10_000,
+    });
+
+    assert.ok(await page.evaluate(() => window.snapshot.data));
   } finally {
     await fixture.close();
   }

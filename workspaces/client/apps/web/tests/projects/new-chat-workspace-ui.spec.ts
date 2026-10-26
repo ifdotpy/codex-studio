@@ -116,10 +116,10 @@ async function setup(
       if (url.pathname === "/api/leads") {
         const creation = fixturePostBody<"/api/leads">(body);
         creations.push(creation);
-        if (!creation.id) throw new Error("Missing new chat request id");
+
         const row: import("../../src/types.ts").Agent = {
           ...snapshot.threads[0],
-          id: creation.id,
+          id: creation.id!,
           name: "New chat",
           cwd: creation.cwd,
           model: creation.model,
@@ -254,7 +254,7 @@ for (const system of ["Windows"]) {
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       await expect.poll(() => creations.length).toBe(1);
-      expect(creations[0]?.workspaceMode).toBe("worktree");
+      expect(creations[0].workspaceMode).toBe("worktree");
     } finally {
       await server.close();
     }
@@ -306,8 +306,8 @@ for (const width of [320, 390, 1440])
         ).toBeVisible();
         const bounds = await dialog.boundingBox();
         const viewport = page.viewportSize();
-        if (!bounds || !viewport) throw new Error("Missing workspace bounds");
-        expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport!.width);
         const evidence = process.env.MODELS_EVIDENCE;
         if (evidence) await mkdir(evidence, { recursive: true });
         await page.screenshot({
@@ -357,11 +357,11 @@ test("a paired server uses its own platform and catalog", async ({
   const remote = await setup("Linux", "Remote", true);
   try {
     const project = local.server.snapshot.runtime.projects[0];
-    if (!project?.path) throw new Error("Missing paired project");
+
     project.homeServerId = "local";
     project.locations = [
-      { serverId: "local", projectId: project.id, path: project.path },
-      { serverId: "remote", projectId: project.id, path: project.path },
+      { serverId: "local", projectId: project.id, path: project!.path! },
+      { serverId: "remote", projectId: project.id, path: project!.path! },
     ];
     local.server.discoverPeer(remote.server, "paired", "reachable");
     await context.addInitScript(
@@ -482,7 +482,7 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => creations.length).toBe(1);
-    expect(creations[0]?.model).toBe("claude-opus-5-5");
+    expect(creations[0].model).toBe("claude-opus-5-5");
     expect(creations[0]).not.toHaveProperty("worker_defaults");
   } finally {
     await server.close();

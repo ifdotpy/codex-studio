@@ -2770,6 +2770,10 @@ mod tests {
             .await
             .expect("fresh voice store");
         let mut extra = std::collections::BTreeMap::new();
+        extra.insert(
+            "provider".into(),
+            json!(studio_runtime_schema::ProviderKind::Codex),
+        );
         extra.insert("accountKey".into(), json!("default"));
         extra.insert("threadId".into(), json!("voice-thread"));
         extra.insert("isLead".into(), json!(true));

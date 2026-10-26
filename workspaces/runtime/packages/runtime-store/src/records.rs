@@ -1211,7 +1211,7 @@ mod tests {
     #[test]
     fn consuming_agent_projection_moves_extra_json() {
         let record = agent(json!({
-            "id":"agent-1", "rootId":"root-1", "epoch":3, "status":"running",
+            "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
             "futureField":[{"nested":"retained"}]
         }));
         let source_ptr = record.extra["futureField"]
@@ -1224,7 +1224,7 @@ mod tests {
         assert_eq!(
             projected,
             json!({
-                "id":"agent-1", "rootId":"root-1", "epoch":3, "status":"running",
+                "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
                 "futureField":[{"nested":"retained"}]
             })
         );
@@ -1284,7 +1284,7 @@ mod tests {
     #[test]
     fn agent_round_trip_keeps_unknown_json_fields_and_number_kinds() {
         let value = json!({
-            "id":"agent-1", "rootId":"agent-1", "epoch":2, "status":"idle",
+            "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle",
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993_i64
         });
         let record = agent(value.clone());
@@ -1337,7 +1337,7 @@ mod tests {
 
     #[test]
     fn unknown_agent_status_and_fields_survive_carrier_rewrite() {
-        let value = json!({"id":"agent-1","rootId":"agent-1","epoch":4,
+        let value = json!({"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,
             "status":"future-agent-state","future":{"enabled":true,"count":9007199254740993_i64}});
         let record = agent(value.clone());
         assert_eq!(
@@ -1354,8 +1354,10 @@ mod tests {
     fn table_upserts_reads_lists_and_inserts_only_once() {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
-        let first = agent(json!({"id":"a1","rootId":"a1","epoch":0,"status":"idle"}));
-        let second = agent(json!({"id":"a2","rootId":"a2","epoch":0,"status":"queued"}));
+        let first =
+            agent(json!({"id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}));
+        let second =
+            agent(json!({"id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}));
 
         assert!(table.insert_new(&first).expect("first insert succeeds"));
         assert!(!table.insert_new(&first).expect("duplicate id is ignored"));
@@ -1458,7 +1460,9 @@ mod tests {
         assert!(diagnostic.contains("value type array"));
         assert!(diagnostic.contains("length 1 items"));
         assert!(!diagnostic.contains("private user text"));
-        let mut invalid = agent(json!({"id":"write","rootId":"write","epoch":0,"status":"idle"}));
+        let mut invalid = agent(
+            json!({"id":"write","provider":"codex","rootId":"write","epoch":0,"status":"idle"}),
+        );
         invalid
             .extra
             .insert("autoWake".into(), json!("private user text"));
@@ -1573,7 +1577,9 @@ mod tests {
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         let table = Table::<AgentRecord>::new(&connection);
-        let blocked = agent(json!({"id":"blocked","rootId":"blocked","epoch":0,"status":"idle"}));
+        let blocked = agent(
+            json!({"id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
+        );
         assert!(matches!(
             table.insert_new(&blocked),
             Err(StoreError::Sqlite(_))

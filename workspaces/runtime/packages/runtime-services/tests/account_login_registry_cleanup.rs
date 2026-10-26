@@ -23,14 +23,14 @@ fn sign_in_outcomes(root: &Path) -> Value {
     let row = |key: &str, status: &str, identity: bool| {
         let home = root.join(key);
         std::fs::create_dir_all(&home).expect("home");
-        json!({"id":key,"home":home,"label":"Fixture","source":"Codex Agents",
+        json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":key,"home":home,"label":"Fixture","source":"Codex Agents",
             "accountId":identity.then_some("fixture-subscription"),"email":null,"plan":null,"status":status})
     };
     let receipt = |request: &str, key: &str, status: &str| json!({"requestId":request,"accountKey":key,"status":status,"createdAt":1.0});
     json!({
-        "version":1,"defaultAccountKey":"default",
+        "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default",
         "accounts":{
-            "default":{"id":"default","home":root,"source":"Fixture","label":"Default","status":"signedOut"},
+            "default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root,"source":"Fixture","label":"Default","status":"signedOut"},
             "login-identity":row("login-identity","signedOut",true),
             "login-failed":row("login-failed","error",false),
             "login-cancelled":row("login-cancelled","signedOut",false),

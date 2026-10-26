@@ -2,7 +2,19 @@ use serde_json::{Value, json};
 use studio_runtime_services::{capacity_retry, continuation::Snapshot};
 /// The stored-record inputs of the continuation corpus.
 fn cases() -> Value {
-    serde_json::from_str(include_str!("continuation/cases.json")).expect("corpus JSON")
+    let mut cases: Value =
+        serde_json::from_str(include_str!("continuation/cases.json")).expect("corpus JSON");
+    // The frozen corpus predates explicit identity for these Codex continuations.
+    for case in cases.as_array_mut().expect("corpus cases") {
+        case["input"]["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        for ancestor in case["input"]["ancestors"]
+            .as_array_mut()
+            .expect("corpus ancestors")
+        {
+            ancestor["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        }
+    }
+    cases
 }
 #[test]
 fn malformed_records_are_located_and_never_decided() {

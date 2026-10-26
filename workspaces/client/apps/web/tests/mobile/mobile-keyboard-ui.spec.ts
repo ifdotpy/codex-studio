@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { installMobileKeyboardUi } from "./mobile-keyboard-ui.fixture.ts";
-import { visibleBounds } from "./mobile-ui-fixture.ts";
 import { waitForFixturePort } from "../playwright.ts";
 // Test viewport geometry in a headless browser with isolated server state.
 import assert from "node:assert/strict";
@@ -179,11 +178,11 @@ for (const [platform, userAgent] of mobileBrowsers) {
       };
       await settle(844, 0);
       const composer = page.locator("#message");
-      const initialHeight = (await visibleBounds(composer)).height;
+      const initialHeight = (await composer.boundingBox())!.height;
       const draft = "Keyboard geometry fixture\n" + "Another line\n".repeat(99);
       await composer.fill(draft);
       await expect
-        .poll(async () => (await visibleBounds(composer)).height, {
+        .poll(async () => (await composer.boundingBox())!.height, {
           message: "A longer draft grows the input",
         })
         .toBeGreaterThan(initialHeight);
@@ -269,7 +268,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
           "47px",
         );
         assert.ok(
-          (await visibleBounds(page.locator(".workspace-header"))).y >= 59,
+          (await page.locator(".workspace-header").boundingBox())!.y >= 59,
           "A partial viewport shift must not move the header under the status bar",
         );
       }
@@ -486,30 +485,30 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       await settle(844, 0, 0);
       await composer.fill("");
-      const twoRowHeight = (await visibleBounds(composer)).height;
-      const shortDraftComposerHeight = (
-        await visibleBounds(page.locator("#composer"))
-      ).height;
+      const twoRowHeight = (await composer.boundingBox())!.height;
+      const shortDraftComposerHeight = (await page
+        .locator("#composer")
+        .boundingBox())!.height;
       assert.ok(Math.abs(twoRowHeight - 54.78125) < 1);
       assert.ok(Math.abs(shortDraftComposerHeight - 169.78125) < 1);
       await composer.fill("Short keyboard draft");
-      assert.equal((await visibleBounds(composer)).height, twoRowHeight);
+      assert.equal((await composer.boundingBox())!.height, twoRowHeight);
       await page.evaluate(() =>
         window.mobileKeyboardUi.setTestViewport({ height: 390, offsetTop: 54 }),
       );
       await settle(390, 54, 0);
-      assert.equal((await visibleBounds(composer)).height, twoRowHeight);
+      assert.equal((await composer.boundingBox())!.height, twoRowHeight);
       assert.equal(
-        (await visibleBounds(page.locator("#composer"))).height,
+        (await page.locator("#composer").boundingBox())!.height,
         shortDraftComposerHeight,
       );
       await page.evaluate(() =>
         window.mobileKeyboardUi.setTestViewport({ height: 330, offsetTop: 64 }),
       );
       const minimumViewport = await settle(330, 64, 0);
-      assert.equal((await visibleBounds(composer)).height, twoRowHeight);
+      assert.equal((await composer.boundingBox())!.height, twoRowHeight);
       assert.equal(
-        (await visibleBounds(page.locator("#composer"))).height,
+        (await page.locator("#composer").boundingBox())!.height,
         shortDraftComposerHeight,
       );
       assert.equal(minimumViewport.footerBottom, 394);
@@ -528,7 +527,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         window.mobileKeyboardUi.setTestViewport({ height: 844, offsetTop: 0 }),
       );
       await settle(844, 0);
-      const expandedSettingsHeight = (await visibleBounds(settings)).height;
+      const expandedSettingsHeight = (await settings.boundingBox())!.height;
       assert.equal(expandedSettingsHeight, 108);
       const assertEmptyKeyboard = async (height: number, top: number) => {
         await page.evaluate(
@@ -591,15 +590,15 @@ for (const [platform, userAgent] of mobileBrowsers) {
         const menus = settings.locator(".execution-menu");
         assert.equal(await menus.count(), 2);
         await settings.evaluate((node) => (node.scrollTop = 0));
-        let first = await visibleBounds(menus.nth(0));
-        let panel = await visibleBounds(settings);
+        let first = (await menus.nth(0).boundingBox())!;
+        let panel = (await settings.boundingBox())!;
         assert.ok(
           first.y >= panel.y &&
             first.y + first.height <= panel.y + panel.height,
         );
         await settings.evaluate((node) => (node.scrollTop = node.scrollHeight));
-        const last = await visibleBounds(menus.nth(1));
-        panel = await visibleBounds(settings);
+        const last = (await menus.nth(1).boundingBox())!;
+        panel = (await settings.boundingBox())!;
         assert.ok(
           last.y >= panel.y && last.y + last.height <= panel.y + panel.height,
         );
@@ -611,7 +610,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         window.mobileKeyboardUi.setTestViewport({ height: 844, offsetTop: 0 }),
       );
       await expect
-        .poll(async () => (await visibleBounds(settings)).height)
+        .poll(async () => (await settings.boundingBox())!.height)
         .toBe(expandedSettingsHeight);
       assert.equal(errors.length, 0, errors.join("\n"));
       console.log(

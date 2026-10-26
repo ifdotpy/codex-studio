@@ -14,7 +14,6 @@ import {
   fixtureAccount,
   fixtureAccounts,
   fixtureRuntime,
-  required,
 } from "./fixture-helpers.ts";
 const { negative }: { negative: boolean } = await (
   await fetch("/fixture-data")
@@ -33,19 +32,15 @@ const agent = {
 localStorage.setItem("account-sign-in:fixture", JSON.stringify("request"));
 declare global {
   interface Window {
-    accountErrorsFixture: {
-      changeError(error: JsonInput): void;
-      showSurface(surface: string): void;
-    };
+    changeError(error: JsonInput): void;
+    showSurface(surface: string): void;
   }
 }
 function Harness() {
   const [error, setError] = useState<JsonInput>(accountErrorFailure);
   const [surface, setSurface] = useState("signin");
-  window.accountErrorsFixture = {
-    changeError: setError,
-    showSurface: setSurface,
-  };
+  window.changeError = setError;
+  window.showSurface = setSurface;
   const data: AccountsState = fixtureAccounts({
     accounts: [
       fixtureAccount({
@@ -98,7 +93,7 @@ function Harness() {
           agent={agent}
           data={snapshot}
           allRequests={[]}
-          onClose={() => window.accountErrorsFixture.showSurface("signin")}
+          onClose={() => window.showSurface("signin")}
           onSelect={() => {}}
           refresh={async () => {}}
           notify={() => {}}
@@ -107,4 +102,4 @@ function Harness() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Harness />);
+createRoot(document.getElementById("root")!).render(<Harness />);

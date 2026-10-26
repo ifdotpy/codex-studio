@@ -169,7 +169,6 @@ export function createSendingMessageRemoval(
       Array.from({ length: Math.min(4, agents.length) }, async () => {
         while (next < agents.length) {
           const agent = agents[next++];
-          if (!agent) throw new Error("Missing sending-message agent");
           const queue = await get("/api/queue", {
             query: { agent: agent.id },
             workspaceId: scope.workspaceId,
