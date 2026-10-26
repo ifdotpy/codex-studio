@@ -159,7 +159,7 @@ test("Mobile Send Reliability Browser", async ({
     assert.equal(posts.length, 0);
     await context.setOffline(false);
     await first.evaluate(async () => {
-      window.reactRoot = window.mobileSendMount();
+      window.mobileSendReactRoot = window.mobileSendMount();
     });
     try {
       await until(
@@ -179,7 +179,7 @@ test("Mobile Send Reliability Browser", async ({
       throw error;
     }
     assert.deepEqual(posts, [body("offline-first")]);
-    await first.evaluate(() => window.reactRoot.unmount());
+    await first.evaluate(() => window.mobileSendReactRoot.unmount());
 
     // Persistence releases the caller before HTTP. Another tab can still cancel
     // an unattempted intention while the session read is in progress.
@@ -345,7 +345,7 @@ test("Mobile Send Reliability Browser", async ({
     }
     await context.setOffline(false);
     await first.evaluate(async () => {
-      window.reactRoot = window.mobileSendMount();
+      window.mobileSendReactRoot = window.mobileSendMount();
     });
     await until(
       () =>
@@ -369,7 +369,7 @@ test("Mobile Send Reliability Browser", async ({
       async () =>
         (await stored(first, orderedSecond.id))!.status === "accepted",
     );
-    await first.evaluate(() => window.reactRoot.unmount());
+    await first.evaluate(() => window.mobileSendReactRoot.unmount());
     // A missing current endpoint cannot silently obtain credentials elsewhere.
     missingSession = true;
     const failure = await first.evaluate(async (value) => {

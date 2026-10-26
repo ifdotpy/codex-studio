@@ -61,7 +61,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       window.hide();
       window.chat(false);
       window.compilations = 0;
-      window.show();
+      window.markdownShow();
     });
     await expect(page.locator("article a")).toHaveCount(2);
     assert.equal(
@@ -79,7 +79,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
     await page.evaluate(() => {
       window.hide();
       window.markdownAgent("second");
-      window.show();
+      window.markdownShow();
     });
     await page.getByRole("link", { name: "Changed report" }).click();
     await page.getByText("Current workspace file.", { exact: true }).waitFor();
@@ -127,11 +127,14 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
     await expect(page.locator("article strong")).toHaveText("prefix");
     await page.evaluate(() => {
       window.hide();
-      window.show();
+      window.markdownShow();
     });
     await expect(page.locator("article strong")).toHaveText("prefix");
     assert.equal(
-      await page.evaluate((text) => window.cache.get(text), streamingText),
+      await page.evaluate(
+        (text) => window.markdownCache.get(text),
+        streamingText,
+      ),
       undefined,
       "Streaming-only text is never shared in the completed cache",
     );

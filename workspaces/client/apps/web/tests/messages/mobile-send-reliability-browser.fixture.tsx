@@ -60,6 +60,6 @@ declare global {
     >;
     persistedRecord: ReturnType<Window["read"]>;
     outbox: ReturnType<typeof useOutbox>;
-    reactRoot: ReturnType<typeof createRoot>;
+    mobileSendReactRoot: ReturnType<typeof createRoot>;
   }
 }

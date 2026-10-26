@@ -6,7 +6,7 @@ import { MantineProvider } from "@mantine/core";
 import StreamingText from "../../src/components/conversation/transcript/StreamingText.tsx";
 import ConversationResults from "../../src/components/conversation/transcript/ConversationResults.tsx";
 import { completedMarkdown } from "../../src/native/markdownCache.ts";
-window.cache = completedMarkdown;
+window.markdownCache = completedMarkdown;
 window.compilations = 0;
 const save = completedMarkdown.set.bind(completedMarkdown);
 completedMarkdown.set = (...args) => {
@@ -38,7 +38,7 @@ function Harness() {
   window.chat = (otherChat) =>
     flushSync(() => setItems(otherChat ? other : initial));
   window.hide = () => flushSync(() => setShown(false));
-  window.show = () => flushSync(() => setShown(true));
+  window.markdownShow = () => flushSync(() => setShown(true));
   window.markdownAgent = (id) => flushSync(() => setAgent(id));
   window.text = (text, stream = false) =>
     flushSync(() => {
@@ -84,12 +84,12 @@ function Harness() {
 createRoot(document.getElementById("root")!).render(<Harness />);
 declare global {
   interface Window {
-    cache: typeof completedMarkdown;
+    markdownCache: typeof completedMarkdown;
     compilations: number;
     results: () => void;
     chat: (otherChat: boolean) => void;
     hide: () => void;
-    show: () => void;
+    markdownShow: () => void;
     markdownAgent: (id: string) => void;
     text: (text: string, stream?: boolean) => void;
   }
