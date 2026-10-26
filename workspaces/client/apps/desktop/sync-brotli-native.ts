@@ -172,7 +172,7 @@ try {
           credentialId: receipt.credentialId,
           url: origin + "/api/sync/stream?client=signed",
           headers: { Accept: "text/event-stream", "Accept-Encoding": "br" },
-        } as Parameters<typeof adapter.request>[0], // This fixture uses Request's object-form headers.
+        },
         controller.signal,
       );
       const reader = response.body!.getReader();
@@ -218,6 +218,6 @@ try {
   await desktop?.close();
   await browser?.close();
   server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await new Promise<Error | undefined>((resolve) => server.close(resolve));
   await rm(folder, { recursive: true, force: true });
 }
