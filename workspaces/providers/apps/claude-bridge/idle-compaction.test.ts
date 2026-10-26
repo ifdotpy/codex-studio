@@ -4,7 +4,7 @@ import {
   promptPrefix,
   idleRefusal,
   compactionEnabled,
-} from "./idle-compaction.mjs";
+} from "./idle-compaction.ts";
 
 test("reports the last request TTL and context, not cumulative result usage", () => {
   const s = { cwd: "/repo", model: "opus", developerInstructions: "rules" };

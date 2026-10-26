@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
-import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
+import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
 import { forkAtTurn, rollbackSession } from "./controls.ts";
 
 const roots = [];
@@ -140,7 +140,7 @@ for (const damage of ["malformed uuid", "unknown record"])
       },
     ];
     await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
-    const { createSessionStore } = await import("./session-store.mjs");
+    const { createSessionStore } = await import("./session-store.ts");
     f.session.turns = [
       {
         id: "stale",

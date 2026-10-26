@@ -1,12 +1,12 @@
 // @ts-check
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
-import { historyRecordKind } from "./history-records.mjs";
+import { historyRecordKind } from "./history-records.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   readNativeHistory,
   nativeHistoryRows,
   nativeUuid,
-} from "./native-history.mjs";
+} from "./native-history.ts";
 
 /** One UUID lookup for a complete history snapshot, shared by controls and recovery.
  * @param {sdk.SessionMessage[]} messages

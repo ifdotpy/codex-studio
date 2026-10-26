@@ -6,7 +6,7 @@ import path from "node:path";
 import {
   createSessionStore,
   ephemeralSessionOptions,
-} from "./session-store.mjs";
+} from "./session-store.ts";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const makeSession = () => ({
