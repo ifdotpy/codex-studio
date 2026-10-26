@@ -29,7 +29,16 @@ impl Fixture {
         } else {
             include_str!("relocation/oracle.json")
         };
-        let data = serde_json::from_str(corpus).expect("frozen relocation corpus");
+        let mut data: Value = serde_json::from_str(corpus).expect("frozen relocation corpus");
+        // Relocation consumes canonical records after startup migration. These
+        // historical cases belong to Codex; keep every other oracle field intact.
+        for case in data["cases"].as_array_mut().expect("cases") {
+            for pointer in ["/agent", "/expected/agent"] {
+                if let Some(agent) = case.pointer_mut(pointer).and_then(Value::as_object_mut) {
+                    agent.insert("provider".into(), json!("codex"));
+                }
+            }
+        }
         Self {
             root,
             template,
@@ -59,7 +68,7 @@ impl Fixture {
             } else if case["family"] == "tool" {
                 let record=&case["record"];let outbox=&case["outbox"];
                 AgentRepository::put(tx,&AgentRecord::from_value(json!({
-                    "id":record["agent"],"rootId":record["agent"],"epoch":record["epoch"],"status":"idle","accountKey":"default"
+                    "id":record["agent"],"rootId":record["agent"],"epoch":record["epoch"],"status":"idle","accountKey":"default","provider":"codex"
                 })).expect("tool actor record"))?;
                 tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",params![text(record,"id"),record.to_string()])?;
                 tx.execute("INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",params![text(record,"id"),case["previous"].to_string()])?;

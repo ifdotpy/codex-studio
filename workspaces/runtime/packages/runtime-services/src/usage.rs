@@ -1306,8 +1306,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("fixture directory");
         let state_dir = directory.path().join("state");
         let home = directory.path().join("profile");
-        let account =
-            json!({"id":"paused-long-scan","accountId":"acct","home":home,"status":"ready"});
+        let account = json!({"provider":"codex","id":"paused-long-scan","accountId":"acct","home":home,"status":"ready"});
         let clock_value = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000));
         let clock_for_worker = std::sync::Arc::clone(&clock_value);
         let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
@@ -1361,7 +1360,8 @@ mod tests {
         let state_dir = directory.path().join("state");
         let home = directory.path().join("profile");
         let key = "failed-save-backoff";
-        let account = json!({"id":key,"accountId":"acct","home":home,"status":"ready"});
+        let account =
+            json!({"provider":"codex","id":key,"accountId":"acct","home":home,"status":"ready"});
         let account_identity =
             crate::event_write::python_json(&json!([key, "acct", home.to_string_lossy().as_ref()]));
         let cache_root = state_dir
@@ -1422,7 +1422,7 @@ mod tests {
         let response = account_cost_snapshot(
             &root.join("state"),
             key,
-            &json!({"id":key,"accountId":account_id,"home":home,"status":"ready"}),
+            &json!({"provider":"codex","id":key,"accountId":account_id,"home":home,"status":"ready"}),
             122.0,
         )
         .expect("cache read");
@@ -1466,7 +1466,7 @@ mod tests {
         let response = account_cost_snapshot(
             &root.join("state"),
             key,
-            &json!({"id":key,"accountId":account_id,"home":home,"status":"ready"}),
+            &json!({"provider":"codex","id":key,"accountId":account_id,"home":home,"status":"ready"}),
             101.0,
         )
         .expect("cache read");

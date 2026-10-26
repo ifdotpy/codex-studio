@@ -64,14 +64,6 @@ fn session_cost_inner(
     accounts: &BTreeMap<String, Value>,
     has_account_profiles: bool,
 ) -> Result<Value, CostsError> {
-    let account_providers = accounts
-        .iter()
-        .map(|(key, account)| {
-            ProviderKind::of_record(account)
-                .map(|provider| (key.as_str(), provider))
-                .map_err(|_| CostsError::InvalidSessionState)
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let repository = AnalyticsRepository::new(store.root());
     let mut db = repository.open_read_only()?;
     let tx = db.transaction()?;
@@ -82,20 +74,15 @@ fn session_cost_inner(
     let mut has_claude_history = false;
     for (_, member) in &members {
         let provider = member.provider;
-        has_claude_history |= provider == Some(ProviderKind::Claude);
+        has_claude_history |= provider == ProviderKind::Claude;
         let account_key = member.account_key.as_deref().unwrap_or(DEFAULT_ACCOUNT);
-        let current = account_providers.get(account_key).copied();
-        // The current account's provider stands in for a missing embedded one.
-        has_claude_history |= provider.is_none() && current == Some(ProviderKind::Claude);
-        if let Some(resolved) = provider.or(current) {
-            providers_by_account.insert(account_key, pricing_provider(resolved));
-        }
+        providers_by_account.insert(account_key, pricing_provider(provider));
         for entry in member.account_history.iter().flatten() {
-            let (Some(key), Some(provider)) = (&entry.account_key, &entry.provider) else {
+            let Some(key) = &entry.account_key else {
                 continue;
             };
-            has_claude_history |= *provider == ProviderKind::Claude;
-            providers_by_account.insert(key, pricing_provider(*provider));
+            has_claude_history |= entry.provider == ProviderKind::Claude;
+            providers_by_account.insert(key, pricing_provider(entry.provider));
         }
     }
     if has_claude_history && !has_account_profiles {
@@ -995,7 +982,7 @@ fn read_local_claude_usage_inner(
             sessions.insert((current_key.to_owned(), thread_id.clone()));
         }
         for entry in member.account_history.iter().flatten() {
-            if entry.provider != Some(ProviderKind::Claude) {
+            if entry.provider != ProviderKind::Claude {
                 continue;
             }
             let (Some(account_key), Some(thread_id)) = (&entry.account_key, &entry.thread_id)
@@ -1639,7 +1626,7 @@ mod tests {
         )
         .expect("rollout");
         (
-            member(json!({"accountKey":"codex","threadId":"thread"})),
+            member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"})),
             BTreeMap::from([("codex".into(), json!({"provider":"codex","home":root}))]),
         )
     }
@@ -1972,7 +1959,7 @@ mod tests {
             format!("{header}\n{usage}\n"),
         )
         .expect("rollout");
-        let member = member(json!({"accountKey":"codex","threadId":"thread"}));
+        let member = member(json!({"provider":"codex","accountKey":"codex","threadId":"thread"}));
         let accounts = BTreeMap::from([(
             "codex".into(),
             json!({"provider":"codex","home":root.path()}),
@@ -2019,7 +2006,7 @@ mod tests {
             .await
             .expect("store");
         store.analytics_transaction::<_,StoreError>(|tx,_| {
-            AnalyticsCaptureRepository::write(tx,CaptureTable::Agents,&json!({"id":"agent","rootId":"agent"}))?;
+            AnalyticsCaptureRepository::write(tx,CaptureTable::Agents,&json!({"id":"agent","rootId":"agent","provider":"codex"}))?;
             let mut final_row = json!({"id":"final","agentId":"agent","rootId":"agent","at":1,"model":"gpt-5","responseId":"response",
                 "last":{"inputTokens":10,"outputTokens":50},"total":{},"studioUsage":{"kind":"response","responseId":"response","model":"gpt-5",
                     "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":50},"evidence":"live"}});
@@ -2255,6 +2242,7 @@ mod tests {
         let members = vec![(
             "agent".to_owned(),
             member(json!({
+                "provider":"claude",
                 "accountKey":"current",
                 "threadId":"thread-current",
                 "accountHistory":[{
@@ -2321,7 +2309,7 @@ mod tests {
         )]);
         let members = vec![(
             "agent".to_owned(),
-            member(json!({"accountKey":"acct","threadId":"thread"})),
+            member(json!({"provider":"claude","accountKey":"acct","threadId":"thread"})),
         )];
         let before = super::claude_log_lines_skipped();
         let rows = read_local_claude_usage(&state, &members, &accounts).expect("usage");
@@ -2386,7 +2374,7 @@ mod tests {
             snapshot.write_all(b"\"}]}}").expect("snapshot suffix");
             let members = vec![(
                 "agent".to_owned(),
-                member(json!({"accountKey":"acct","threadId":thread})),
+                member(json!({"provider":"claude","accountKey":"acct","threadId":thread})),
             )];
             let rows =
                 read_local_claude_usage(&state, &members, &accounts).expect("snapshot usage");
@@ -2411,7 +2399,7 @@ mod tests {
         .expect("write unknown snapshot format");
         let members = vec![(
             "agent".to_owned(),
-            member(json!({"accountKey":"acct","threadId":"thread-small"})),
+            member(json!({"provider":"claude","accountKey":"acct","threadId":"thread-small"})),
         )];
         assert!(matches!(
             read_local_claude_usage(&state, &members, &accounts),
@@ -2435,7 +2423,7 @@ mod tests {
         )]);
         let members = vec![(
             "agent".to_owned(),
-            member(json!({"accountKey":"account", "threadId":"thread"})),
+            member(json!({"provider":"codex","accountKey":"account", "threadId":"thread"})),
         )];
         assert!(
             read_local_claude_usage(temp.path(), &members, &accounts)

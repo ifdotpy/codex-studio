@@ -143,13 +143,12 @@ fn cost_observation(
 
 /// The members of an agent record that decide how its usage is priced and
 /// where its Claude session logs are.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostMember {
     #[serde(default)]
     pub account_key: Option<String>,
-    #[serde(default)]
-    pub provider: Option<ProviderKind>,
+    pub provider: ProviderKind,
     #[serde(default)]
     pub thread_id: Option<String>,
     #[serde(default)]
@@ -157,13 +156,12 @@ pub struct CostMember {
 }
 
 /// One earlier account of an agent.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CostAccountHistory {
     #[serde(default)]
     pub account_key: Option<String>,
-    #[serde(default)]
-    pub provider: Option<ProviderKind>,
+    pub provider: ProviderKind,
     #[serde(default)]
     pub thread_id: Option<String>,
 }
@@ -1118,12 +1116,13 @@ mod tests {
                 .is_err()
             );
         }
-        for provider in [json!("codex"), json!("claude"), serde_json::Value::Null] {
+        for provider in [json!("codex"), json!("claude")] {
             assert!(
                 serde_json::from_value::<super::CostMember>(json!({"provider":provider})).is_ok()
             );
         }
-        assert!(serde_json::from_value::<super::CostMember>(json!({})).is_ok());
+        assert!(serde_json::from_value::<super::CostMember>(json!({})).is_err());
+        assert!(serde_json::from_value::<super::CostMember>(json!({"provider":null})).is_err());
     }
     use super::ensure_cost_aggregate;
     use crate::analytics_capture::{AnalyticsCaptureRepository, CaptureTable};
@@ -1273,7 +1272,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_, StoreError>(|tx, _| {
-            let member = json!({"accountKey":"new","threadId":"new-thread","accountHistory":[{"accountKey":"acct","threadId":"thread"}]});
+            let member = json!({"provider":"claude","accountKey":"new","threadId":"new-thread","accountHistory":[{"provider":"claude","accountKey":"acct","threadId":"thread"}]});
             tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [member.to_string()])?;
             tx.execute("INSERT INTO analytics_agents(id,record) VALUES('unrelated',?1)", [json!({"accountHistory":["invalid history outside the selected tree"]}).to_string()])?;
             AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({
@@ -1295,9 +1294,10 @@ mod tests {
         [(
             "agent".to_owned(),
             super::CostMember {
+                provider: super::ProviderKind::Claude,
                 account_key: Some("acct".into()),
                 thread_id: Some("thread".into()),
-                ..Default::default()
+                account_history: None,
             },
         )]
     }

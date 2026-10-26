@@ -422,16 +422,21 @@ mod usage_tests {
             studio_runtime_schema::provider_kind::ProviderKind::Claude,
             &json!({"studioUsage":{"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":32,"cacheWriteInput":42,"output":7}}}),
         ).expect("typed usage");
-        for provider in [json!("future"), json!(""), json!(7), json!({})] {
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!("")),
+            Some(json!(7)),
+            Some(json!({})),
+        ] {
+            let mut agent = json!({"id":"agent","turnId":"turn"});
+            if let Some(provider) = &provider {
+                agent["provider"] = provider.clone();
+            }
             assert!(
-                snapshot
-                    .observe_cache(
-                        &json!({"id":"agent","provider":provider,"turnId":"turn"}),
-                        &usage,
-                        100.
-                    )
-                    .is_err(),
-                "provider {provider}"
+                snapshot.observe_cache(&agent, &usage, 100.).is_err(),
+                "provider {provider:?}"
             );
         }
     }
@@ -454,19 +459,12 @@ mod usage_tests {
             studio_runtime_schema::provider_kind::ProviderKind::Claude,
             &json!({"studioUsage":{"kind":"response","responseId":"r","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":32,"cacheWriteInput":42,"output":7}}}),
         ).expect("typed usage");
-        for (provider, input) in [
-            (None, 86),
-            (Some(Value::Null), 86),
-            (Some(json!("codex")), 86),
-            (Some(json!("claude")), 12),
-        ] {
+        for (provider, input) in [(ProviderKind::Codex, 86), (ProviderKind::Claude, 12)] {
             let mut agent = json!({"id":"agent","turnId":"turn"});
-            if let Some(provider) = provider {
-                agent["provider"] = provider;
-            }
+            agent["provider"] = json!(provider.key());
             let row = snapshot
                 .observe_cache(&agent, &usage, 100.)
-                .expect("known or legacy identity")
+                .expect("known identity")
                 .expect("cache observation");
             assert_eq!(row["firstTurnCache"]["inputTokens"], input);
         }

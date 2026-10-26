@@ -342,7 +342,7 @@ async fn prepare_legacy_gap_coverage(
 /// Missing or cross-scope evidence stays unknown; the capture writer cannot guess.
 async fn prepare_legacy_counter_ownership(
     store: &studio_runtime_store::RuntimeStore,
-    captures: &[(Value, Value)],
+    captures: &[(Value, ProviderKind, Value)],
 ) -> Result<(), BudgetError> {
     use studio_runtime_schema::usage::ledger::UsageLedgerRow;
     use studio_runtime_schema::usage::{UsageObservation as Parsed, UsageScope};
@@ -350,9 +350,7 @@ async fn prepare_legacy_counter_ownership(
     let candidates = store
         .read_async("budget/legacy-counter-aliases", move |tx| {
             let mut candidates = Vec::new();
-            for (agent, params) in captures {
-                let provider = ProviderKind::of_record(&agent)
-                    .map_err(|_| BudgetError::Invalid("runtime_agents/provider".into()))?;
+            for (agent, provider, params) in captures {
                 let Ok(observation) =
                     studio_runtime_schema::usage::parse_token_usage(provider, &params)
                 else {
@@ -462,9 +460,31 @@ pub async fn prepare_legacy_corrections(
     store: &studio_runtime_store::RuntimeStore,
     captures: Vec<(Value, Value)>,
 ) -> Result<(), BudgetError> {
+    let captures = store
+        .read_async("budget/prepare-provider-identity", move |tx| {
+            let mut prepared = Vec::with_capacity(captures.len());
+            for (agent, params) in captures {
+                let durable =
+                    BudgetRepository::agent(tx, agent["id"].as_str().unwrap_or_default())?;
+                let provider = ProviderKind::of_record(&durable)
+                    .map_err(|_| BudgetError::Invalid("runtime_agents/provider".into()))?;
+                if let Some(asserted) = agent.get("provider")
+                    && ProviderKind::of_field(Some(asserted))
+                        .map_err(|_| BudgetError::Invalid("runtime_agents/provider".into()))?
+                        != provider
+                {
+                    return Err(BudgetError::Invalid(
+                        "runtime_agents/provider/identity".into(),
+                    ));
+                }
+                prepared.push((agent, provider, params));
+            }
+            Ok::<_, BudgetError>(prepared)
+        })
+        .await?;
     let agents = captures
         .iter()
-        .filter_map(|(agent, _)| agent["id"].as_str().map(str::to_owned))
+        .filter_map(|(agent, _, _)| agent["id"].as_str().map(str::to_owned))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -477,12 +497,7 @@ pub async fn prepare_legacy_corrections(
     let candidates = store
         .read_async("budget/legacy-receipts", move |tx| {
             let mut candidates = Vec::new();
-            for (agent, params) in captures {
-                let provider = ProviderKind::of_record(&agent).map_err(|_| {
-                    studio_runtime_store::StoreError::SchemaValidation(
-                        "invalid runtime_agents/provider".into(),
-                    )
-                })?;
+            for (agent, provider, params) in captures {
                 let Ok(observation) = parse_token_usage(provider, &params) else {
                     continue;
                 };

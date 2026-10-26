@@ -1773,8 +1773,19 @@ mod usage_contract_tests {
 
     #[test]
     fn provider_identity_invalid_capture_is_refused() {
-        for provider in [json!("future"), json!(""), json!(7), json!({})] {
-            let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":provider,"threadId":"thread"});
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!("")),
+            Some(json!(7)),
+            Some(json!({})),
+        ] {
+            let mut agent =
+                json!({"id":"agent","name":"Agent","rootId":"root","threadId":"thread"});
+            if let Some(provider) = &provider {
+                agent["provider"] = provider.clone();
+            }
             let params = json!({"threadId":"thread","studioUsage":{"kind":"response","responseId":"r","model":"gpt-test","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}}});
             assert!(
                 PreparedCapture::event(
@@ -1787,24 +1798,17 @@ mod usage_contract_tests {
                     Default::default()
                 )
                 .is_err(),
-                "provider {provider}"
+                "provider {provider:?}"
             );
         }
     }
 
     #[test]
-    fn provider_identity_capture_preserves_known_and_legacy_typed_usage() {
-        for provider in [
-            None,
-            Some(Value::Null),
-            Some(json!("codex")),
-            Some(json!("claude")),
-        ] {
+    fn provider_identity_capture_preserves_known_typed_usage() {
+        for provider in ProviderKind::ALL {
             let mut agent =
                 json!({"id":"agent","name":"Agent","rootId":"root","threadId":"thread"});
-            if let Some(provider) = provider {
-                agent["provider"] = provider;
-            }
+            agent["provider"] = json!(provider.key());
             let params = json!({"threadId":"thread","studioUsage":{"kind":"response","responseId":"r","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}}});
             let prepared = PreparedCapture::event(
                 &agent,
@@ -1815,7 +1819,7 @@ mod usage_contract_tests {
                 CaptureSource::Live,
                 Default::default(),
             )
-            .expect("known or legacy identity");
+            .expect("known identity");
             let decision = decide(
                 CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
                     .expect("snapshot"),

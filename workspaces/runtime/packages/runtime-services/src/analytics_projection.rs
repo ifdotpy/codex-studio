@@ -578,12 +578,14 @@ mod tests {
         store
             .analytics_projection_transaction(|tx| {
                 for table in PROJECTED_TABLES {
-                    let keep = if table == "analytics_meta" {
-                        " WHERE key<>'trackingSince'"
+                    if table == "analytics_meta" {
+                        tx.execute(
+                            "DELETE FROM analytics_meta WHERE key=?1 OR key='usageGeneration'",
+                            [CURSOR_KEY],
+                        )?;
                     } else {
-                        ""
-                    };
-                    tx.execute(&format!("DELETE FROM {table}{keep}"), [])?;
+                        tx.execute(&format!("DELETE FROM {table}"), [])?;
+                    }
                 }
                 Ok::<_, StoreError>(())
             })

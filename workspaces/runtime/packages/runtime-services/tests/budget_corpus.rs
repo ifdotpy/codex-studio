@@ -7,8 +7,8 @@ use studio_runtime_services::{
     budget_service,
 };
 fn db(records: &Value, case: &Value) -> Connection {
-    let connection = Connection::open_in_memory().expect("SQLite");
-    connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL,breakdown TEXT,details TEXT);CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT);")).expect("schema");
+    let mut connection = Connection::open_in_memory().expect("SQLite");
+    connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_budget_usage(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,tokens INTEGER,at REAL,breakdown TEXT,details TEXT);CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT);").expect("schema");
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
@@ -65,6 +65,11 @@ fn db(records: &Value, case: &Value) -> Connection {
                 .expect("receipt");
         }
     }
+    let tx = connection.transaction().expect("fixture migration");
+    studio_runtime_store::provider_identity::migrate_canvas_2026_10_26(&tx, &BTreeMap::new())
+        .expect("migrate historical provider identities");
+    studio_runtime_store::agent_columns::prepare(&tx).expect("canonical agent columns");
+    tx.commit().expect("fixture migration commit");
     connection
 }
 fn stored(connection: &Connection) -> Value {
@@ -134,9 +139,18 @@ fn run(case: &Value, records: &Value) -> Value {
         let now = step["now"].as_f64().unwrap_or(100.);
         let result = match step["op"].as_str().expect("op") {
             "capture" => {
-                let mut agent = step.get("historical_agent").cloned().unwrap_or_else(|| {
-                    studio_runtime_store::budget::BudgetRepository::agent(&tx, id).expect("agent")
-                });
+                let mut agent = step
+                    .get("historical_agent")
+                    .cloned()
+                    .map(|mut agent| {
+                        // The frozen historical assertion is a Codex snapshot.
+                        agent["provider"] = json!("codex");
+                        agent
+                    })
+                    .unwrap_or_else(|| {
+                        studio_runtime_store::budget::BudgetRepository::agent(&tx, id)
+                            .expect("agent")
+                    });
                 match budget_service::capture(
                     &tx,
                     &mut agent,

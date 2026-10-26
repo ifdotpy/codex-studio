@@ -998,7 +998,7 @@ mod tests {
     ) -> NotificationPostCommit {
         NotificationPostCommit::TokenRateUsage(NotificationObservation {
             agent: Some(SharedJson::new(
-                json!({"id":agent_id,"rootId":agent_id,"turnId":turn}),
+                json!({"provider":"codex","id":agent_id,"rootId":agent_id,"turnId":turn}),
             )),
             method: "turn/started".into(),
             params: SharedJson::new(json!({"turnId":turn})),
@@ -1300,7 +1300,10 @@ mod tests {
     fn restored_claude_query_total_keeps_the_pending_estimate_until_response() {
         use studio_runtime_schema::usage::{UsageObservation, UsageScope, UsageTokens};
         let mut projector = RateProjector::default();
-        for (effect, bit) in provider_turn("provider", "agent", 0).into_iter().take(4) {
+        for (effect, bit) in provider_turn("provider", ProviderKind::Codex, "agent", 0)
+            .into_iter()
+            .take(4)
+        {
             assert!(projector.observe(&effect, bit));
         }
         let before = projector.snapshot();
@@ -1388,7 +1391,10 @@ mod tests {
     #[test]
     fn cumulative_fallback_reconciles_queued_stream_estimates() {
         let mut projector = RateProjector::default();
-        for (effect, bit) in provider_turn("provider", "agent", 0).into_iter().take(4) {
+        for (effect, bit) in provider_turn("provider", ProviderKind::Codex, "agent", 0)
+            .into_iter()
+            .take(4)
+        {
             assert!(projector.observe(&effect, bit));
         }
         assert!(projector.agents["agent"].response_duration_pending_tokens > 0.0);
@@ -1503,7 +1509,7 @@ mod tests {
         };
         let observation = |method: &str, at: f64| super::NotificationObservation {
             agent: Some(SharedJson::new(
-                json!({"id":"agent","inFlight":true,"turnId":"turn"}),
+                json!({"provider":"codex","id":"agent","inFlight":true,"turnId":"turn"}),
             )),
             method: method.into(),
             params: SharedJson::new(
@@ -1693,16 +1699,21 @@ mod tests {
 
     /// A mixed turn of both providers: Codex streams raw deltas, the Claude bridge streams
     /// coalesced character counts; both report usage and tool items.
-    fn provider_turn(provider: &str, agent: &str, base: u64) -> Vec<(NotificationPostCommit, u8)> {
+    fn provider_turn(
+        provider_handle: &str,
+        provider: ProviderKind,
+        agent: &str,
+        base: u64,
+    ) -> Vec<(NotificationPostCommit, u8)> {
         let observation = |cursor: u64, method: &str, params: serde_json::Value| {
             NotificationObservation {
                 agent: Some(SharedJson::new(
-                    json!({"id":agent,"rootId":"root","turnId":"turn","inFlight":true,"provider":if provider.starts_with("claude") { "claude" } else { "codex" }}),
+                    json!({"id":agent,"rootId":"root","turnId":"turn","inFlight":true,"provider":provider.key()}),
                 )),
                 method: method.into(),
                 params: SharedJson::new(params),
                 delivery: ProviderDeliveryIdentity {
-                    provider_handle: provider.into(),
+                    provider_handle: provider_handle.into(),
                     generation: 1,
                     cursor: base + cursor,
                 },
@@ -1710,10 +1721,9 @@ mod tests {
                 provider_at: 0.0,
             }
         };
-        let delta = if provider.starts_with("claude") {
-            json!({"coalescedDeltaCharacters":40})
-        } else {
-            json!({"delta":"some streamed answer text"})
+        let delta = match provider {
+            ProviderKind::Claude => json!({"coalescedDeltaCharacters":40}),
+            ProviderKind::Codex => json!({"delta":"some streamed answer text"}),
         };
         vec![
             (
@@ -1775,9 +1785,10 @@ mod tests {
         let mut direct = RateProjector::default();
         let observations = (0..8)
             .flat_map(|index| {
-                let provider = if index % 2 == 0 { "claude" } else { "codex" };
+                let provider = ProviderKind::ALL[index % ProviderKind::ALL.len()];
                 provider_turn(
                     &format!("{provider}-{index}"),
+                    provider,
                     &format!("agent-{index}"),
                     10,
                 )
@@ -1801,7 +1812,7 @@ mod tests {
             std::sync::Arc::new(crate::change_notifications::ChangeNotificationHub::new());
         let hub = TokenRateHub::with_change_hub(std::sync::Arc::clone(&changes));
         let mut subscriber = hub.subscribe();
-        let turn = provider_turn("codex", "agent", 0);
+        let turn = provider_turn("codex", ProviderKind::Codex, "agent", 0);
         let (started, _) = turn[0].clone();
         hub.publish_observation(started).expect("queue start");
         subscriber.changed().await.expect("leading frame");
@@ -1873,7 +1884,7 @@ mod tests {
         let mut moved = usage_effect("agent", "provider", 1, 2, "turn");
         if let NotificationPostCommit::TokenRateUsage(observation) = &mut moved {
             observation.agent = Some(SharedJson::new(
-                json!({"id":"agent","rootId":"other","turnId":"turn"}),
+                json!({"provider":"codex","id":"agent","rootId":"other","turnId":"turn"}),
             ));
         }
         assert!(observe(&mut projector, &moved));

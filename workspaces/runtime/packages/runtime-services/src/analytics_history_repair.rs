@@ -221,6 +221,57 @@ mod usage_contract_tests {
         }).await.expect("unchanged checkpoint");
     }
 
+    #[tokio::test]
+    async fn provider_identity_invalid_budget_prepare_preserves_gap_state_agent_and_sync() {
+        let (_temp, store, mut agent) = ledger_store("codex").await;
+        let gap = json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":"missing","reason":"queryClosed"}});
+        ledger_capture(
+            &store,
+            &agent,
+            gap.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_budget SET record=json_remove(record,'$.gapCoverage')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("pre-coverage budget");
+        store.analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+            tx.execute("UPDATE analytics_usage SET record=json_remove(record,'$.usageIdentity','$.receiptKey')", [])?;
+            Ok(())
+        }).await.expect("pre-ledger gap");
+        let snapshot = |tx: &rusqlite::Transaction<'_>| -> Result<Vec<String>, studio_runtime_store::StoreError> {
+            ["SELECT record FROM runtime_budget WHERE id='agent'", "SELECT record FROM runtime_agents WHERE id='agent'", "SELECT COALESCE(json_group_array(json_array(collection,id,seq,hash,payload,deleted)),'[]') FROM sync_entities"].into_iter().map(|sql| Ok(tx.query_row(sql, [], |row| row.get(0))?)).collect()
+        };
+        let before = store
+            .read_async("test/provider-prepare-before", snapshot)
+            .await
+            .expect("snapshot");
+        for provider in ["future", "claude"] {
+            agent["provider"] = json!(provider);
+            assert!(
+                crate::budget_service::prepare_legacy_corrections(
+                    &store,
+                    vec![(agent.clone(), gap.clone())]
+                )
+                .await
+                .is_err()
+            );
+            let after = store
+                .read_async("test/provider-prepare-after", snapshot)
+                .await
+                .expect("snapshot");
+            assert_eq!(after, before);
+        }
+    }
+
     async fn ledger_store(provider: &str) -> (tempfile::TempDir, RuntimeStore, Value) {
         let temp = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
