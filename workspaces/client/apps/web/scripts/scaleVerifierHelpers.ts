@@ -88,6 +88,7 @@ import {
 } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { fileURLToPath } from "node:url";
 
 // Approved paid-test profiles. Never use an account's default model: it can
 // resolve to an expensive one. `servedModelPrefix` is the owner of the family
@@ -948,18 +949,6 @@ export function releaseFifoBarriers(
   );
   const remaining = Math.min(240_000, deadlineAt - performance.now());
   assert.ok(remaining > 0, "Stage deadline elapsed before FIFO release.");
-  const script = String.raw`
-const fs = require("node:fs");
-const pathModule = require("node:path");
-for (let index = 1; index < process.argv.length; index += 2) {
-  const path = process.argv[index];
-  const token = process.argv[index + 1];
-  if (!pathModule.isAbsolute(path) || !/^[0-9a-f-]{36}$/i.test(token)) throw new Error("Unexpected worker identity.");
-  if (!fs.lstatSync(path).isFIFO()) throw new Error("Expected an owned FIFO.");
-  const fd = fs.openSync(path, "w");
-  try { fs.writeSync(fd, token + "\n"); } finally { fs.closeSync(fd); }
-}
-`;
   const seenPaths = new Set(paths);
   const seenTokens = new Set(tokens);
   assert.equal(
@@ -974,7 +963,10 @@ for (let index = 1; index < process.argv.length; index += 2) {
   );
   const child = spawn(
     process.execPath,
-    ["-e", script, ...workers.flatMap((worker) => [worker.path, worker.token])],
+    [
+      fileURLToPath(new URL("./scaleVerifierRelease.ts", import.meta.url)),
+      ...workers.flatMap((worker) => [worker.path, worker.token]),
+    ],
     {
       stdio: ["ignore", "ignore", "pipe"],
     },
