@@ -238,6 +238,8 @@ for (const size of sizes) {
                   mainFont: s.getPropertyValue("--studio-main-font-size"),
                   inlineStyle: node.style.cssText,
                   borderWidth: parseFloat(s.borderLeftWidth),
+                  paddingInline: parseFloat(s.paddingLeft),
+                  mask: s.maskImage,
                   background: s.backgroundColor,
                 },
               ];
@@ -301,7 +303,11 @@ for (const size of sizes) {
           expect(
             measurements["#messages .message.assistant"]?.background,
           ).not.toBe("rgba(0, 0, 0, 0)");
-          expect(measurements["#messages .prose"]?.width).toBeCloseTo(490, 0);
+          expect(measurements["#messages .prose"]?.width).toBeCloseTo(478, 0);
+          expect(
+            measurements["#messages .message.assistant"]?.paddingInline,
+          ).toBeGreaterThanOrEqual(12);
+          expect(measurements["#messages"]?.mask).toContain("linear-gradient");
           expect(measurements["#messages .prose"]?.lineHeight).toBeCloseTo(
             27.2,
             1,

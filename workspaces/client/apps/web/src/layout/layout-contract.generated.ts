@@ -860,9 +860,10 @@ export const layoutTokens = {
     kind: "dimension",
   },
   "duo.readingMax": {
-    value: 490,
+    value: 478,
     unit: "px",
-    purpose: "Duo transcript and composer maximum reading width",
+    purpose:
+      "Maximum Duo assistant text width inside the shared 504 px card and composer column",
     kind: "dimension",
   },
   "duo.bodyFont": {
@@ -920,7 +921,7 @@ export const layoutTokens = {
     kind: "spacing",
   },
   "duo.messageInset": {
-    value: 6,
+    value: 12,
     unit: "px",
     purpose: "Duo assistant card inner side padding around the reading column",
     kind: "spacing",
@@ -962,6 +963,12 @@ export const layoutTokens = {
     unit: "px",
     kind: "spacing",
     purpose: "Duo translucent title backdrop blur radius",
+  },
+  "duo.transcriptFade": {
+    value: 16,
+    unit: "px",
+    kind: "spacing",
+    purpose: "Duo transcript bottom fade before the passive usage row",
   },
 } as const;
 export const layoutValues = {
@@ -1251,7 +1258,7 @@ export const layoutValues = {
     heightMax: 700,
     widthMax: 1024,
     conversationMin: 34,
-    readingMax: 490,
+    readingMax: 478,
     bodyFont: 17,
     bodyLineHeight: 1.6,
     rowMin: 50,
@@ -1261,13 +1268,14 @@ export const layoutValues = {
     composerRadius: 24,
     railTop: 124,
     railGap: 13,
-    messageInset: 6,
+    messageInset: 12,
     columnGutter: 20,
     latestGap: 36,
     titleHeight: 64,
     titleInset: 12,
     titleOpacity: 0.82,
     titleBlur: 12,
+    transcriptFade: 16,
   },
 } as const;
 export const layoutQueries = {

@@ -52,6 +52,11 @@
 :root[data-duo-proportions] #conversation #messages {
   padding-inline: 0;
   scrollbar-gutter: auto;
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--layout-duo-transcript-fade)),
+    transparent
+  );
 }
 :root[data-duo-proportions]
   #conversation

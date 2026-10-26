@@ -780,9 +780,9 @@
       "kind": "dimension"
     },
     "duo.readingMax": {
-      "value": 490,
+      "value": 478,
       "unit": "px",
-      "purpose": "Duo transcript and composer maximum reading width",
+      "purpose": "Maximum Duo assistant text width inside the shared 504 px card and composer column",
       "kind": "dimension"
     },
     "duo.bodyFont": {
@@ -840,7 +840,7 @@
       "kind": "spacing"
     },
     "duo.messageInset": {
-      "value": 6,
+      "value": 12,
       "unit": "px",
       "purpose": "Duo assistant card inner side padding around the reading column",
       "kind": "spacing"
@@ -880,6 +880,12 @@
       "unit": "px",
       "kind": "spacing",
       "purpose": "Duo translucent title backdrop blur radius"
+    },
+    "duo.transcriptFade": {
+      "value": 16,
+      "unit": "px",
+      "kind": "spacing",
+      "purpose": "Duo transcript bottom fade before the passive usage row"
     }
   },
   "queries": {
