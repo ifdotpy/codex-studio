@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use studio_runtime_process::provider_seam::Shutdown;
+use studio_runtime_schema::ProviderKind;
 use studio_runtime_schema::shared_values::{
     MODEL_CATALOG_ADMISSION_WAIT_SECONDS, MODEL_CATALOG_CACHE_TTL_SECONDS,
     MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES,
@@ -80,7 +81,7 @@ async fn read_account_session_catalog(
     provider: String,
     stop: Shutdown,
 ) -> Result<Value, ()> {
-    if !matches!(provider.as_str(), "codex" | "claude") {
+    if provider.parse::<ProviderKind>().is_err() {
         return Err(());
     }
     let mut shutdown = stop.subscribe();
@@ -258,7 +259,7 @@ impl ModelCatalogService {
         provider: &str,
     ) -> AdmissionCatalogRead {
         let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
-        if !matches!(provider, "codex" | "claude") {
+        if provider.parse::<ProviderKind>().is_err() {
             return AdmissionCatalogRead::Unavailable;
         }
         let Ok(cache) = self.0.state.lock() else {
@@ -376,7 +377,7 @@ impl ModelCatalogService {
         provider: &str,
         retry: bool,
     ) -> CatalogRead {
-        // Both providers read the catalog over the account's retained session;
+        // Providers read the catalog over the account's retained session;
         // without that port there is no catalog source.
         let no_session = self
             .0
@@ -384,7 +385,7 @@ impl ModelCatalogService {
             .lock()
             .ok()
             .is_none_or(|session| session.is_none());
-        if !matches!(provider, "codex" | "claude")
+        if provider.parse::<ProviderKind>().is_err()
             || *self.0.stop.subscribe().borrow()
             || no_session
         {
