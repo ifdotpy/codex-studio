@@ -50,7 +50,6 @@ export async function readResourceBaselines(
         );
         for (const [index, entry] of (event.resourceVersions || []).entries()) {
           const resource = entry.resource || event.resources[index];
-          if (!resource) throw new Error("Missing fixture baseline resource");
           const key = subscriptionKey(resource);
           if (pending.has(key)) {
             if (!entry.cursor || !entry.replyKind)

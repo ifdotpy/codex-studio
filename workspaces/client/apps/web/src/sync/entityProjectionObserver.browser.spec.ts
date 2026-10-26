@@ -48,43 +48,32 @@ test("entity observer applies RxDB changes across tabs and resets before publica
     await page.evaluate(openProjection);
     await page.evaluate(startObserver);
     await page.waitForFunction(
-      () => window.syncObserver.snapshots.at(-1)?.threads.length === 2000,
+      () => window.snapshots.at(-1)?.threads.length === 2000,
     );
     await page.evaluate(async () => {
-      window.syncObserver.beforeBurst = window.syncObserver.snapshots.length;
-      window.syncObserver.beforeBurstReads =
-        window.syncObserver.observerReads.length;
-      window.syncObserver.burstStartedAt = performance.now();
-      await window.syncObserver.putRows(
+      window.beforeBurst = window.snapshots.length;
+      window.beforeBurstReads = window.observerReads.length;
+      window.burstStartedAt = performance.now();
+      await window.putRows(
         Array.from({ length: 100 }, (_, index) =>
-          window.syncObserver.entityRow(
-            `${index}`,
-            2001 + index,
-            `changed-${index}`,
-          ),
+          window.entityRow(`${index}`, 2001 + index, `changed-${index}`),
         ),
       );
     });
     await page.waitForFunction(
       () =>
-        window.syncObserver.snapshots
-          .at(-1)
-          ?.threads.find((agent) => agent.id === "99")?.name === "changed-99",
+        window.snapshots.at(-1)?.threads.find((agent) => agent.id === "99")
+          ?.name === "changed-99",
     );
     const burst = await page.evaluate(() => ({
-      publications:
-        window.syncObserver.snapshots.length - window.syncObserver.beforeBurst,
-      queries: window.syncObserver.queryCalls,
+      publications: window.snapshots.length - window.beforeBurst,
+      queries: window.queryCalls,
       unchanged:
-        window.syncObserver.snapshots[0]?.threads[100] ===
-        window.syncObserver.snapshots.at(-1)?.threads[100],
-      storageReads:
-        window.syncObserver.observerReads.length -
-        window.syncObserver.beforeBurstReads,
-      readIds: window.syncObserver.observerReads.at(-1)?.length,
-      elapsedMs:
-        window.syncObserver.lastPublishedAt -
-        window.syncObserver.burstStartedAt,
+        window.snapshots[0].threads[100] ===
+        window.snapshots.at(-1)!.threads[100],
+      storageReads: window.observerReads.length - window.beforeBurstReads,
+      readIds: window.observerReads.at(-1)!.length,
+      elapsedMs: window.lastPublishedAt - window.burstStartedAt,
     }));
     assert.equal(burst.publications, 1);
     assert.equal(burst.queries, 1, JSON.stringify(burst));
@@ -97,7 +86,7 @@ test("entity observer applies RxDB changes across tabs and resets before publica
     await writer.goto(`${origin}/observer-check`);
     await writer.evaluate(openProjection);
     await writer.evaluate(async () =>
-      window.syncObserver.putRows([
+      window.putRows([
         {
           id: "entity:agent:0",
           payload: "",
@@ -112,59 +101,51 @@ test("entity observer applies RxDB changes across tabs and resets before publica
     );
     await page.waitForFunction(
       () =>
-        window.syncObserver.snapshots
-          .at(-1)
-          ?.threads.find((agent) => agent.id === "0")?.name === "other tab",
+        window.snapshots.at(-1)?.threads.find((agent) => agent.id === "0")
+          ?.name === "other tab",
     );
     await page.evaluate(async () =>
-      window.syncObserver.putRows([
-        { ...window.syncObserver.entityRow("1", 3001), _deleted: true },
-      ]),
+      window.putRows([{ ...window.entityRow("1", 3001), _deleted: true }]),
     );
     await page.waitForFunction(
-      () => window.syncObserver.snapshots.at(-1)?.threads.length === 1999,
+      () => window.snapshots.at(-1)?.threads.length === 1999,
     );
     await page.evaluate(async () => {
-      window.syncObserver.beforeReset = window.syncObserver.snapshots.length;
-      window.syncObserver.staleDocuments =
-        await window.syncObserver.projections.storageInstance.findDocumentsById(
+      window.beforeReset = window.snapshots.length;
+      window.staleDocuments =
+        await window.projections.storageInstance.findDocumentsById(
           ["entity:agent:0", "entity:agent:2"],
           true,
         );
-      await window.syncObserver.putRows([
+      await window.putRows([
         { id: "state:entities:ready", payload: "resetting", seq: 2 },
       ]);
-      [window.syncObserver.staleMarker] =
-        await window.syncObserver.projections.storageInstance.findDocumentsById(
+      [window.staleMarker] =
+        await window.projections.storageInstance.findDocumentsById(
           ["state:entities:ready"],
           true,
         );
-      await window.syncObserver.putRows(
+      await window.putRows(
         Array.from({ length: 2000 }, (_, index) => ({
-          ...window.syncObserver.entityRow(`${index}`, 0),
+          ...window.entityRow(`${index}`, 0),
           _deleted: true,
         })),
       );
-      await window.syncObserver.putRows([
-        window.syncObserver.entityRow("0", 1, "replacement"),
-      ]);
+      await window.putRows([window.entityRow("0", 1, "replacement")]);
       await new Promise((resolve) => setTimeout(resolve, 70));
-      if (
-        window.syncObserver.snapshots.length !== window.syncObserver.beforeReset
-      )
+      if (window.snapshots.length !== window.beforeReset)
         throw new Error("Reset published a partial set");
-      await window.syncObserver.putRows([
+      await window.putRows([
         { id: "state:entities:ready", payload: "ready", seq: 3 },
       ]);
     });
     await page.waitForFunction(
-      () => window.syncObserver.snapshots.at(-1)?.threads.length === 1,
+      () => window.snapshots.at(-1)?.threads.length === 1,
     );
     const reset = await page.evaluate(() => ({
-      agents: window.syncObserver.snapshots.at(-1)?.threads,
-      publications:
-        window.syncObserver.snapshots.length - window.syncObserver.beforeReset,
-      queries: window.syncObserver.queryCalls,
+      agents: window.snapshots.at(-1)!.threads,
+      publications: window.snapshots.length - window.beforeReset,
+      queries: window.queryCalls,
     }));
     assert.deepEqual(reset, {
       agents: [{ id: "0", name: "replacement" }],
@@ -172,40 +153,37 @@ test("entity observer applies RxDB changes across tabs and resets before publica
       queries: 2,
     });
     const afterStaleEvents = await page.evaluate(async () => {
-      if (!window.syncObserver.staleMarker)
-        throw new Error("Missing stale marker");
-      const collection = window.syncObserver.projections;
+      const collection = window.projections;
       const database = collection.database;
-      database.$emit({
+      // The delayed-event fixture omits checkpoint id and lwt; the observer does not read them.
+      const staleEvents = {
         id: "delayed-old-epoch-events",
         collectionName: collection.name,
         isLocal: false,
         internal: false,
         databaseToken: database.token,
         storageToken: await database.storageToken,
-        checkpoint: { id: "", lwt: 0 },
+        checkpoint: {},
         context: "observer-stale-event-check",
-        events: [
-          ...window.syncObserver.staleDocuments,
-          window.syncObserver.staleMarker,
-        ].map((documentData) => ({
-          operation: "UPDATE",
-          documentId: documentData.id,
-          documentData,
-          previousDocumentData: documentData,
-        })),
-      });
+        events: [...window.staleDocuments, window.staleMarker].map(
+          (documentData) => ({
+            operation: "UPDATE",
+            documentId: documentData.id,
+            documentData,
+            previousDocumentData: documentData,
+          }),
+        ),
+      } as Parameters<typeof database.$emit>[0];
+      database.$emit(staleEvents);
       await new Promise((resolve) => setTimeout(resolve, 70));
       return {
-        agents: window.syncObserver.snapshots.at(-1)?.threads,
-        publications:
-          window.syncObserver.snapshots.length -
-          window.syncObserver.beforeReset,
-        queries: window.syncObserver.queryCalls,
+        agents: window.snapshots.at(-1)!.threads,
+        publications: window.snapshots.length - window.beforeReset,
+        queries: window.queryCalls,
       };
     });
     assert.deepEqual(afterStaleEvents, reset);
-    await page.evaluate(() => window.syncObserver.stopObserver());
+    await page.evaluate(() => window.stopObserver());
     assert.deepEqual(errors, []);
     console.log("ENTITY_OBSERVER_BROWSER", JSON.stringify({ burst, reset }));
   } finally {

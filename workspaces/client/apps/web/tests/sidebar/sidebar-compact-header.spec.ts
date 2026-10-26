@@ -1,5 +1,3 @@
-import { requiredFixtureValue } from "../servers/browser-fixture.ts";
-import assert from "node:assert/strict";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
@@ -61,7 +59,7 @@ for (const width of [1440, 390, 320] as const) {
         ] as const) {
           await expect(control).toBeInViewport({ ratio: 1 });
           const bounds = await control.boundingBox();
-          assert.ok(bounds);
+
           if (width < 760) {
             const target = await control.evaluate(
               () =>
@@ -72,12 +70,8 @@ for (const width of [1440, 390, 320] as const) {
                 ) *
                 parseFloat(getComputedStyle(document.documentElement).fontSize),
             );
-            expect(requiredFixtureValue(bounds).width).toBeGreaterThanOrEqual(
-              target,
-            );
-            expect(requiredFixtureValue(bounds).height).toBeGreaterThanOrEqual(
-              target,
-            );
+            expect(bounds!.width).toBeGreaterThanOrEqual(target);
+            expect(bounds!.height).toBeGreaterThanOrEqual(target);
           }
         }
         await search.focus();
@@ -121,7 +115,7 @@ for (const width of [1440, 390, 320] as const) {
               .click();
             await expect(sidebar).toBeInViewport({ ratio: 1 });
           }
-          await requiredFixtureValue(button).click();
+          await button!.click();
           const dialog = page.getByRole("dialog", { name: title, exact: true });
           await expect(dialog).toBeVisible();
           await dialog

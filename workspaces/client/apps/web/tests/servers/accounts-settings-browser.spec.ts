@@ -1,14 +1,12 @@
-import { requiredFixtureValue } from "./browser-fixture.ts";
 import { fixtureBarrier } from "./browser-fixture.ts";
-import assert from "node:assert/strict";
 import type { FixtureAccount } from "./browser-fixture.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
 import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
 import type { ScreenMessage } from "../../src/servers/screenChannel.ts";
 declare global {
   interface Window {
-    accountSettingsMessages: ScreenMessage[];
-    accountSettingsAccountMessages: ScreenMessage[];
+    __studioMessages: ScreenMessage[];
+    __studioAccountMessages: ScreenMessage[];
   }
 }
 import type { ServerFixture } from "./browser-fixture.ts";
@@ -99,15 +97,14 @@ test("accounts settings show per-server state and provider choices", async ({
   const empty = await fixture("Empty", true, []);
   await context.addInitScript(
     ({ destinations }) => {
-      window.accountSettingsAccountMessages = [];
-      window.accountSettingsMessages = [];
+      window.__studioAccountMessages = [];
+      window.__studioMessages = [];
       window.addEventListener(
         "message",
         (event: MessageEvent<ScreenMessage>) => {
-          if (window === window.top)
-            window.accountSettingsMessages.push(event.data);
+          if (window === window.top) window.__studioMessages.push(event.data);
           if (event.data?.kind === "studio-server-accounts")
-            window.accountSettingsAccountMessages.push(event.data);
+            window.__studioAccountMessages.push(event.data);
         },
       );
       const nativeFetch = window.fetch.bind(window);
@@ -273,7 +270,7 @@ test("accounts settings show per-server state and provider choices", async ({
       port: new URL(route.request().url()).port,
       body,
     });
-    assert.ok(remoteAccounts[1]);
+
     remoteAccounts[1].claudeOptions = body.options;
     await route.fulfill({
       status: 200,
@@ -317,20 +314,12 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect.poll(() => profilePosts.length).toBe(1);
   await expect(profile).toBeVisible();
   expect(profilePosts).toHaveLength(1);
-  expect(requiredFixtureValue(profilePosts[0]).port).toBe(
-    new URL(remote.origin).port,
-  );
-  expect(requiredFixtureValue(profilePosts[0]).body.account_key).toBe(
-    "remote-claude",
-  );
-  expect(
-    requiredFixtureValue(requiredFixtureValue(profilePosts[0]).body.options)
-      .autoCompactWindow,
-  ).toBe(225000);
-  expect(
-    requiredFixtureValue(requiredFixtureValue(profilePosts[0]).body.options)
-      .customModels,
-  ).toEqual([{ id: "remote-model", label: "Remote Model" }]);
+  expect(profilePosts[0]!.port).toBe(new URL(remote.origin).port);
+  expect(profilePosts[0]!.body.account_key).toBe("remote-claude");
+  expect(profilePosts[0]!.body.options!.autoCompactWindow).toBe(225000);
+  expect(profilePosts[0]!.body.options!.customModels).toEqual([
+    { id: "remote-model", label: "Remote Model" },
+  ]);
   await profile.getByRole("button", { name: "Close", exact: true }).click();
   await expect(profile).toBeHidden();
   await expect(settings).toBeVisible();
@@ -500,7 +489,7 @@ test("accounts settings show per-server state and provider choices", async ({
   let verificationReady = false;
   let finalStatusBarrier: Promise<void> | undefined;
   const loginRequestId = addStarts[0]?.loginId;
-  assert.ok(loginRequestId);
+
   // The provider has not acknowledged code delivery yet. Keep the stream's
   // current receipt pending while the explicit recovery reads below are gated.
   remote.setClaudeProgress(loginRequestId, {
@@ -589,12 +578,8 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await lostCodeResponse;
   expect(codeAttempts).toHaveLength(2);
-  expect(requiredFixtureValue(codeAttempts[0]).body.login_id).toBe(
-    requiredFixtureValue(codeAttempts[1]).body.login_id,
-  );
-  expect(requiredFixtureValue(codeAttempts[0]).requestId).toBe(
-    requiredFixtureValue(codeAttempts[1]).requestId,
-  );
+  expect(codeAttempts[0]!.body.login_id).toBe(codeAttempts[1]!.body.login_id);
+  expect(codeAttempts[0]!.requestId).toBe(codeAttempts[1]!.requestId);
   await expect(claudeSignIn).toContainText(
     "Studio could not confirm whether Claude received the authorization response.",
   );
@@ -642,15 +627,13 @@ test("accounts settings show per-server state and provider choices", async ({
       }),
     ]),
   );
-  const claudeWrites = remote.accountWrites.filter(
-    (write) =>
-      typeof write.path === "string" &&
-      write.path.startsWith("/api/accounts/claude/"),
+  const claudeWrites = remote.accountWrites.filter((write) =>
+    (write.path as string).startsWith("/api/accounts/claude/"),
   );
   expect(claudeWrites).toHaveLength(2);
   expect(new Set(claudeWrites.map((write) => write.requestId)).size).toBe(2);
   expect(
-    JSON.stringify(await page.evaluate(() => window.accountSettingsMessages)),
+    JSON.stringify(await page.evaluate(() => window.__studioMessages)),
   ).not.toContain(submittedCode);
   await claudeSignIn
     .getByRole("button", { name: "Close", exact: true })
@@ -777,8 +760,8 @@ test("accounts settings show per-server state and provider choices", async ({
   expect((await codexCancelResponse).ok()).toBe(true);
   await expect(codexSignIn).toContainText("Sign-in cancelled.");
   const codexWrites = remote.accountWrites.filter((write) =>
-    ["/api/accounts/login", "/api/accounts/login/cancel"].some(
-      (path) => path === write.path,
+    ["/api/accounts/login", "/api/accounts/login/cancel"].includes(
+      write.path as string,
     ),
   );
   expect(codexWrites).toHaveLength(2);

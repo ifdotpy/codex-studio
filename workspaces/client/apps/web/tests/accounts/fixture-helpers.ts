@@ -143,9 +143,10 @@ export async function readFixtureResponse<
 }
 
 export function fixtureAgentEntity(
-  documents: JsonInputOf<
-    import("../playwright.ts").SyncPullResponse["documents"]
-  >,
+  documents: Exclude<
+    ReturnType<typeof import("../playwright.ts").entityPullFixture>,
+    { reset: true }
+  >["documents"],
   id: string,
 ) {
   return documents

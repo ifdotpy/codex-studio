@@ -58,7 +58,7 @@ for (const source of ["init", "hook", "fork", "both"])
       await bridge.note(
         (note) =>
           note.method === "fixture/query" &&
-          !!(note.params.resume || note.params.sessionId),
+          (note.params.resume || note.params.sessionId),
       );
       const queries = (
         await fs.readFile(path.join(bridge.root, ".queries"), "utf8")
@@ -66,8 +66,8 @@ for (const source of ["init", "hook", "fork", "both"])
         .trim()
         .split("\n")
         .map(parseIdentityQueryRecord);
-      expect(queries[1]?.resume).toBe(NEW);
-      expect(queries[1]?.resume).not.toBe(CONVERSATION);
+      expect(queries[1].resume).toBe(NEW);
+      expect(queries[1].resume).not.toBe(CONVERSATION);
     } finally {
       await bridge.close();
     }
@@ -123,15 +123,15 @@ for (const phase of [
       } catch (error) {
         rejected = error;
       }
-      if (rejected instanceof Error)
-        expect(rejected.message).toMatch(
+      if (rejected)
+        expect((rejected as Error).message).toMatch(
           /native session.*unknown|transition.*unknown/i,
         );
       if (!rejected)
         await bridge.note(
           (note) =>
             note.method === "fixture/query" &&
-            !!(note.params.resume || note.params.sessionId),
+            (note.params.resume || note.params.sessionId),
         );
       const queries = (
         await fs.readFile(path.join(bridge.root, ".queries"), "utf8")
@@ -173,15 +173,14 @@ test("a rejected write-ahead save blocks live resume with an unknown transition"
       throw new Error("save denied");
     },
   );
+  // These one-off hook fixtures omit cwd and transcript_path, which the hook does not read.
   await expect(
     hook(
       {
-        cwd: session.cwd,
-        transcript_path: "fixture.jsonl",
         hook_event_name: "SessionStart",
         source: "clear",
         session_id: NEW,
-      },
+      } as Parameters<typeof hook>[0],
       undefined,
       { signal: new AbortController().signal },
     ),
@@ -212,22 +211,21 @@ test("another new-session source durably saves target and identity before hook r
       completedWrites++;
     },
   );
+  // This one-off hook fixture omits cwd and transcript_path, which the hook does not read.
   await hook(
     {
-      cwd: session.cwd,
-      transcript_path: "fixture.jsonl",
       hook_event_name: "SessionStart",
       source: "compact",
       session_id: NEW,
-    },
+    } as Parameters<typeof hook>[0],
     undefined,
     { signal: new AbortController().signal },
   );
   expect(snapshots).toHaveLength(2);
-  expect(snapshots[0]?.nativeId).toBe(OLD);
-  expect(snapshots[0]?.pendingNativeSession?.target).toBe(NEW);
-  expect(snapshots[1]?.nativeId).toBe(NEW);
-  expect(snapshots[1]?.pendingNativeSession).toBeUndefined();
+  expect(snapshots[0].nativeId).toBe(OLD);
+  expect(snapshots[0].pendingNativeSession!.target).toBe(NEW);
+  expect(snapshots[1].nativeId).toBe(NEW);
+  expect(snapshots[1].pendingNativeSession).toBeUndefined();
   expect(completedWrites).toBe(2);
 });
 

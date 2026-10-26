@@ -1,9 +1,10 @@
 import { expect, it, vi } from "vitest";
 import { createDataObserver } from "./data";
+import type { ResourceRef } from "./contracts";
 import type { ResourceVersion } from "../resourceEvents";
-import type { createSyncClient } from "../client";
 import type { ObserveSubscriptionData } from "./module";
-import type { ResourceData, ResourceRef } from "./contracts";
+// Partial sync fixtures: these cases never enter the transcript observer path.
+type SyncFixture = ReturnType<Parameters<typeof createDataObserver>[0]>;
 
 it.each([
   [{ kind: "processes", agentId: "lead" }, "processes", { processes: [] }],
@@ -37,14 +38,16 @@ it.each([
     };
     const accept = vi.fn();
     const dispose = createDataObserver(
-      ((): Partial<ReturnType<typeof createSyncClient>> & {
-        get: typeof get;
-      } => ({ get })) as Parameters<typeof createDataObserver>[0],
+      () => ({ get }) as { get: typeof get } & SyncFixture,
       events,
       undefined,
       get,
-    )(ref, accept, vi.fn());
-    receive({ epoch: "server", revision: 1, viewSnapshot: { [field]: value } });
+    )(ref as ResourceRef, accept, vi.fn());
+    receive({
+      epoch: "server",
+      revision: 1,
+      viewSnapshot: { [field]: value } as ResourceVersion["viewSnapshot"],
+    });
     await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(1));
     receive({ epoch: "server", revision: 2, viewSnapshot: { [field]: value } });
     await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(2));
@@ -76,7 +79,7 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
   const read = vi.fn(async () => ({ processes: [] }));
   const accept = vi.fn();
   const stop = createDataObserver(
-    () => ({}) as ReturnType<typeof createSyncClient>,
+    () => ({}) as SyncFixture,
     events,
     undefined,
     read,
@@ -96,7 +99,7 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
 
 it("work baselines and updates use the entity observer even when view recovery exists", async () => {
   let receive: (version?: ResourceVersion) => void = () => {};
-  let publish: Parameters<ObserveSubscriptionData>[1] = () => {};
+  let publish: (data: unknown) => void = () => {};
   const stopEvents = vi.fn();
   const stopEntities = vi.fn();
   const events = {
@@ -106,43 +109,30 @@ it("work baselines and updates use the entity observer even when view recovery e
     },
     watchResourceConnection: () => () => {},
   };
-  // This fixture observes only work and omits the unused failure callback.
   const observe = vi.fn((_ref: ResourceRef, accept: typeof publish) => {
     publish = accept;
     return stopEntities;
-  }) as ObserveSubscriptionData;
+  });
   const recover = vi.fn();
   const accept = vi.fn();
   const ref = { kind: "work", agentId: "lead" } as const;
   const dispose = createDataObserver(
-    () => ({}) as ReturnType<typeof createSyncClient>,
+    () => ({}) as SyncFixture,
     events,
-    observe,
+    observe as ObserveSubscriptionData,
     recover,
   )(ref, accept, vi.fn());
   expect(observe).toHaveBeenCalledOnce();
-  // The observer only forwards these values; work metadata is intentionally omitted.
-  type WorkData = ResourceData<typeof ref>;
-  type WorkFixture = {
-    items: Partial<WorkData["items"][number]>[];
-    tasks: WorkData["tasks"];
-  };
-  const first: WorkFixture = {
-    items: [{ id: "assignment", title: "Before" }],
-    tasks: [],
-  };
-  publish(first as WorkData);
+  const first = { items: [{ id: "assignment", title: "Before" }], tasks: [] };
+  publish(first);
   receive({
     epoch: "server",
     revision: 1,
     cursor: { workspaceId: "w", seq: 1 },
     replyKind: "snapshot",
   });
-  const next: WorkFixture = {
-    items: [{ id: "assignment", title: "After" }],
-    tasks: [],
-  };
-  publish(next as WorkData);
+  const next = { items: [{ id: "assignment", title: "After" }], tasks: [] };
+  publish(next);
   receive({
     epoch: "server",
     revision: 2,

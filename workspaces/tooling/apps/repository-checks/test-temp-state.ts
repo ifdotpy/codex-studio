@@ -35,8 +35,7 @@ export function temporaryStateFindings(
   if (file.endsWith(".rs")) {
     const resourceTypes = ["TempDir", "Child"];
     for (const match of code.matchAll(/struct\s+(\w+)\s*\{([^}]+)\}/g)) {
-      if (match[1] && /\b(?:TempDir|Child)\b/.test(match[2] ?? ""))
-        resourceTypes.push(match[1]);
+      if (/\b(?:TempDir|Child)\b/.test(match[2])) resourceTypes.push(match[1]);
     }
     for (const owner of resourceTypes) {
       if (

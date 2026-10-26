@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { expect, it } from "vitest";
 import { accountServers } from "./accountServers";
 import type { DiscoveredServer } from "./discoveryModel";
@@ -44,7 +43,6 @@ it("includes backend peers without UI credentials and preserves a registered cre
     "offline",
   ]);
   expect(rows[1]).toBe(registered);
-  assert.ok(rows[2] != null);
   expect(rows[2].credentialId).toBeUndefined();
 });
 

@@ -7,6 +7,14 @@ export type PairReceipt = Required<
   Pick<StudioServerIdentity, "id" | "origin" | "label" | "credentialId">
 >;
 export type PairInput = PairRequest;
+// IPC serializes ArrayBuffer; the internal adapter also accepts Request's byte views.
+export type AdapterRequest = Omit<ServerRequest, "body" | "method"> & {
+  method?: ServerRequest["method"];
+  body?: Extract<
+    NonNullable<RequestInit["body"]>,
+    { readonly byteLength: number }
+  >;
+};
 type Draft = {
   origin: string;
   serverId: string;
@@ -97,11 +105,10 @@ function createServerCredentials({
     let encrypted;
     try {
       encrypted = await fs.readFile(filename, "utf8");
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
-      if (error.code === "ENOENT") return { drafts: {}, servers: {} };
-      throw error;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return { drafts: {}, servers: {} };
+      throw error as NodeJS.ErrnoException;
     }
     secure();
     // The private paired-server document is written only by change() and encrypted by secure storage.
@@ -168,7 +175,7 @@ function createServerCredentials({
               bytes,
             ),
           ),
-          credential.privateKey ?? "",
+          credential.privateKey!,
         )
         .toString("base64"),
     );
@@ -218,30 +225,19 @@ function createServerCredentials({
         let { origin } = inputValue;
         const { invitation: input, requestId } = inputValue;
         origin = serveOrigin(origin);
-        const raw =
-          input && typeof input === "object" && "invitation" in input
-            ? input.invitation
-            : input;
-        if (!raw || typeof raw !== "object")
-          throw new Error("The pairing invitation is invalid.");
-        const invitation = raw as Record<string, unknown>;
+        // Pairing invitations are untrusted; inspect the owner contract at this single input boundary.
+        const document = input as Invitation & { invitation?: Invitation };
+        const invitation = document.invitation || document;
         if (
           invitation.protocol !== 1 ||
-          typeof invitation.inviteId !== "string" ||
           !invitation.inviteId ||
-          typeof invitation.token !== "string" ||
           !invitation.token ||
-          typeof invitation.serverId !== "string" ||
           !invitation.serverId ||
           invitation.serverId === "local" ||
-          typeof invitation.publicKey !== "string" ||
           !invitation.publicKey ||
-          typeof invitation.origin !== "string" ||
           serveOrigin(invitation.origin) !== origin
         )
           throw new Error("The pairing invitation is invalid.");
-        const serverId = invitation.serverId,
-          inviteId = invitation.inviteId;
         const draft = await change((state) => {
           if (state.drafts[requestId]) {
             const existing = state.drafts[requestId];
@@ -262,7 +258,7 @@ function createServerCredentials({
             .toString();
           const body = JSON.stringify({
             protocol: 1,
-            inviteId,
+            inviteId: invitation.inviteId,
             token: invitation.token,
             clientId,
             label: "Studio UI",
@@ -272,9 +268,9 @@ function createServerCredentials({
           });
           const value: Draft = {
             origin,
-            serverId,
+            serverId: invitation.serverId,
             clientId,
-            inviteId,
+            inviteId: invitation.inviteId,
             publicKey,
             privateKey: keys.privateKey
               .export({ type: "pkcs8", format: "pem" })
@@ -289,7 +285,7 @@ function createServerCredentials({
           draft,
           new Request(origin + "/api/multi-server/v1/pair", {
             method: "POST",
-            body: draft.body ?? null,
+            body: draft.body!,
             headers: { "Content-Type": "application/json" },
             signal: AbortSignal.timeout(15000),
           }),
@@ -306,9 +302,7 @@ function createServerCredentials({
           );
           if (response.status === 403 && value.code === "invite_unavailable") {
             await change((state) => {
-              const current = state.drafts[requestId];
-              if (!current) throw error;
-              current.rejected = true;
+              state.drafts[requestId].rejected = true;
             });
             error.code = "invite_unavailable";
           }
@@ -329,10 +323,7 @@ function createServerCredentials({
         const receipt = {
           id: value.serverId,
           origin,
-          label:
-            value.label ||
-            (typeof invitation.label === "string" ? invitation.label : "") ||
-            new URL(origin).hostname,
+          label: value.label || invitation.label || new URL(origin).hostname,
           credentialId: draft.clientId,
         };
         await change((state) => {
@@ -363,10 +354,10 @@ function createServerCredentials({
         credentialId,
         url,
         method = "GET",
-        headers = [],
+        headers = {},
         body,
         requestId,
-      }: ServerRequest,
+      }: AdapterRequest,
       signal?: AbortSignal,
     ) {
       const credential = (await read()).servers[serverId];
@@ -388,7 +379,7 @@ function createServerCredentials({
           method,
           headers,
           ...(body?.byteLength ? { body } : {}),
-          ...(signal ? { signal } : {}),
+          signal,
         }),
         requestId,
       );

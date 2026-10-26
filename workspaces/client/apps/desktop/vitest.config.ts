@@ -1,7 +1,6 @@
-import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
-export default defineConfig({
+export default {
   root: fileURLToPath(new URL(".", import.meta.url)),
   test: {
     include: ["*.test.ts"],
@@ -11,4 +10,4 @@ export default defineConfig({
     hookTimeout: 30_000,
     maxWorkers: 2,
   },
-});
+} satisfies Parameters<typeof import("vitest/config").defineConfig>[0];
