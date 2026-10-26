@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { codexContractSource as source } from "./provider-contract-sources.ts";
 
 type ObjectValue = Record<string, unknown>;
@@ -109,12 +109,15 @@ function fields(schema: ObjectValue, excluded?: string): string {
       const hasDefault = Object.hasOwn(property, "default");
       if (hasDefault && property.default !== 0)
         throw new Error(`Unsupported vendor default ${name}`);
-      if (required.includes(name) && type.startsWith("Option<"))
+      if (
+        (hasDefault && !optional) ||
+        (optional && !hasDefault && !type.startsWith("Option<"))
+      )
+        throw new Error(`Unsupported vendor presence codec: ${name}`);
+      if (!optional && type.startsWith("Option<"))
         throw new Error(
           `Required nullable vendor field needs an explicit presence codec: ${name}`,
         );
-      if (optional && !hasDefault && !type.startsWith("Option<"))
-        type = `Option<${type}>`;
       return `${hasDefault ? "    #[serde(default)]\n" : ""}    #[serde(rename = ${JSON.stringify(name)})]\n    pub ${identifier(snake(name))}: ${type},`;
     })
     .join("\n");
@@ -142,6 +145,13 @@ function renderType(
       ts: `export type ${name} = ${values.map((value) => JSON.stringify(value)).join(" | ")};\n`,
     };
   if (Array.isArray(schema.oneOf)) {
+    const taggedDerive = schema.oneOf.every((value) =>
+      Object.keys(object(object(value).properties)).every(
+        (name) => name === "type",
+      ),
+    )
+      ? derive.replace("Clone, Debug", "Clone, Copy, Debug")
+      : derive;
     const variants = schema.oneOf.map((value) => {
       const variant = object(value);
       const properties = object(variant.properties);
@@ -170,7 +180,7 @@ function renderType(
       })
       .join(" | ");
     return {
-      rust: `${derive}\n#[serde(tag = "type")]\n#[schemars(rename = ${JSON.stringify(name)})]\npub enum ${rustName} {\n${variants.join("\n")}\n}\n`,
+      rust: `${taggedDerive}\n#[serde(tag = "type")]\n#[schemars(rename = ${JSON.stringify(name)})]\npub enum ${rustName} {\n${variants.join("\n")}\n}\n`,
       ts: `export type ${name} = ${ts};\n`,
     };
   }
@@ -215,8 +225,21 @@ export function renderCodexContracts(
   const header = `// Generated from Codex CLI ${source.version} selected JSON Schema; do not edit.\n// Source: provider-contract-sources.ts; SHA-256: ${digest}\n`;
   const lifecycle = object(parse(lifecycleText).definitions);
   const usage = parse(usageText);
+  const threadStatus = object(lifecycle.ThreadStatus);
+  if (!Array.isArray(threadStatus.oneOf))
+    throw new Error("Missing vendor thread status variants");
+  // Recovery consumes only the discriminator. Derive that projection from the
+  // same owner; it neither invents active flags nor validates the full status.
+  const activity = {
+    oneOf: threadStatus.oneOf.map((value) => ({
+      type: "object",
+      properties: { type: object(object(value).properties).type },
+      required: ["type"],
+    })),
+  };
   const shapes = {
     ...lifecycle,
+    ThreadActivity: activity,
     ...object(usage.definitions),
     ThreadTokenUsageUpdatedNotification: usage,
   };
@@ -280,6 +303,61 @@ export function checkCodexContracts(
         `Stale Codex contract: ${entry.path}; run pnpm run contracts:vendor:generate`,
       );
   }
+}
+
+async function renderClaudeRateContract(directory: string): Promise<Rendered> {
+  const owner: typeof import("../../../providers/apps/claude-bridge/rate-limit-input.ts") =
+    await import(
+      pathToFileURL(
+        path.join(
+          directory,
+          "workspaces/providers/apps/claude-bridge/rate-limit-input.ts",
+        ),
+      ).href
+    );
+  const manifest = parse(
+    read(
+      path.join(
+        directory,
+        "workspaces/providers/apps/claude-bridge/package.json",
+      ),
+    ),
+  );
+  const version = object(manifest.dependencies)[
+    "@anthropic-ai/claude-agent-sdk"
+  ];
+  const target =
+    "workspaces/runtime/packages/runtime-schema/src/schemas/claude-rate-limit.schema.json";
+  const text =
+    JSON.stringify(
+      {
+        ...owner.rateLimitJsonSchema(),
+        $comment: `Owner: rate-limit-input.ts SDK projection, @anthropic-ai/claude-agent-sdk ${version}.`,
+      },
+      null,
+      2,
+    ) + "\n";
+  return {
+    path: target,
+    text: execFileSync(
+      path.join(directory, "node_modules/.bin/oxfmt"),
+      [
+        `--stdin-filepath=${target}`,
+        `--config=${path.join(directory, ".oxfmtrc.json")}`,
+      ],
+      { input: text, encoding: "utf8" },
+    ),
+  };
+}
+export async function checkClaudeRateContract(
+  directory = root,
+  reader = read,
+): Promise<void> {
+  const entry = await renderClaudeRateContract(directory);
+  if (reader(path.join(directory, entry.path)) !== entry.text)
+    throw new Error(
+      `Stale Claude rate contract: ${entry.path}; run pnpm run contracts:vendor:generate`,
+    );
 }
 export function refreshCodexSchemas(
   directory = root,
@@ -365,8 +443,15 @@ if (
 ) {
   if (process.argv.includes("--refresh"))
     refreshCodexSchemas(root, undefined, process.argv.includes("--check"));
+  const rustOnly = process.argv.includes("--rust-only");
   if (process.argv.includes("--write"))
-    for (const entry of renderCodexContracts())
+    for (const entry of renderCodexContracts(root, read, rustOnly))
       writeFileSync(path.join(root, entry.path), entry.text);
-  else checkCodexContracts(root, read, process.argv.includes("--rust-only"));
+  else checkCodexContracts(root, read, rustOnly);
+  if (!rustOnly) {
+    if (process.argv.includes("--write")) {
+      const entry = await renderClaudeRateContract(root);
+      writeFileSync(path.join(root, entry.path), entry.text);
+    } else await checkClaudeRateContract(root);
+  }
 }

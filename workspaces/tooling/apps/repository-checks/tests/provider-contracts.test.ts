@@ -8,10 +8,24 @@ import {
   renderCodexContracts,
   checkCodexContracts,
   refreshCodexSchemas,
+  checkClaudeRateContract,
 } from "../generate-provider-contracts.ts";
 import { codexContractSource } from "../provider-contract-sources.ts";
 
 const root = fileURLToPath(new URL("../../../../..", import.meta.url));
+
+test("the SDK-backed rate parser owns the committed Rust validation schema", async () => {
+  await checkClaudeRateContract(root);
+  await assert.rejects(
+    () =>
+      checkClaudeRateContract(root, (file) => {
+        const schema = JSON.parse(readFileSync(file, "utf8"));
+        schema.properties.status.enum.push("future");
+        return JSON.stringify(schema);
+      }),
+    /Stale Claude rate contract/,
+  );
+});
 
 test("committed Rust and TypeScript consume the same vendor schema", () => {
   assert.doesNotThrow(() => checkCodexContracts(root));
@@ -78,3 +92,26 @@ test("freshness refuses a stale owner rather than compiling the old types", () =
     /Stale Codex contract/,
   );
 });
+
+for (const mutation of ["requiredDefault", "optionalNonNullable"] as const) {
+  test(`generation refuses the unsupported ${mutation} presence codec`, () => {
+    assert.throws(
+      () =>
+        renderCodexContracts(root, (file) => {
+          const text = readFileSync(file, "utf8");
+          if (!file.endsWith("ThreadTokenUsageUpdatedNotification.json"))
+            return text;
+          const schema = JSON.parse(text);
+          if (mutation === "requiredDefault")
+            schema.definitions.TokenUsageBreakdown.required.push(
+              "cacheWriteInputTokens",
+            );
+          else
+            schema.definitions.ThreadTokenUsage.properties.modelContextWindow.type =
+              "integer";
+          return JSON.stringify(schema);
+        }),
+      /Unsupported vendor presence codec/,
+    );
+  });
+}

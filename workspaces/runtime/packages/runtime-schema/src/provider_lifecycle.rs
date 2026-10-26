@@ -35,7 +35,8 @@ pub struct ThreadIdentity {
 }
 
 pub use crate::codex_generated::{
-    CodexThreadActiveFlag, CodexThreadStatus, CodexTurnItemsView, CodexTurnStatus,
+    CodexThreadActiveFlag, CodexThreadActivity as ThreadActivity, CodexThreadStatus,
+    CodexTurnItemsView, CodexTurnStatus,
 };
 
 impl CodexTurnStatus {
@@ -64,20 +65,15 @@ impl CodexTurnItemsView {
 
 /// The shared decision needs only activity, never invented Codex active flags.
 /// Claude's mirror status has no activeFlags; it is not a CodexThreadStatus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum ThreadActivity {
-    NotLoaded,
-    Idle,
-    SystemError,
-    Active,
-}
 impl ThreadActivity {
     pub fn observe(status: &Value) -> Option<Self> {
         serde_json::from_value(status.clone()).ok()
     }
     pub const fn is_idle(self) -> bool {
-        matches!(self, Self::Idle | Self::NotLoaded)
+        match self {
+            Self::Idle | Self::NotLoaded => true,
+            Self::SystemError | Self::Active => false,
+        }
     }
 }
 

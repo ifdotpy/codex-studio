@@ -12,6 +12,14 @@ use serde::{Deserialize, Serialize};
 
 pub mod items;
 
+/// Unsupported live rate-limit evidence remains opaque and cannot supply an
+/// ordinary-usage or overage decision. This tag is generated for the bridge.
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum UnsupportedClaudeRateLimit {
+    Unsupported { raw: serde_json::Value },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderInputOrigin {

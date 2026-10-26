@@ -10,40 +10,36 @@ type NativeToolBlock = Extract<
   { type: "tool_use" }
 >;
 import type {
-  BridgeRateLimitInfo,
   BridgeRateBucket as LimitBucket,
   BridgeRateLimits,
 } from "./bridge-protocol.ts";
 type NativeLimits = NonNullable<SDKControlGetUsageResponse["rate_limits"]>;
-type NativeWindow = Partial<NonNullable<NativeLimits["five_hour"]>>;
-type UsageResponse = Partial<
-  Omit<SDKControlGetUsageResponse, "rate_limits">
-> & {
-  rate_limits?:
-    | {
-        [K in keyof NativeLimits]?: K extends "model_scoped"
-          ? (NativeWindow &
-              Pick<
-                NonNullable<NativeLimits["model_scoped"]>[number],
-                "display_name"
-              >)[]
-          : K extends "extra_usage"
-            ? Partial<NonNullable<NativeLimits[K]>> | null
-            : NativeWindow | null;
-      }
-    | null;
-};
-export type RateLimitInfo = BridgeRateLimitInfo;
+type NativeWindow =
+  | NonNullable<
+      NativeLimits[Exclude<keyof NativeLimits, "model_scoped" | "extra_usage">]
+    >
+  | NonNullable<NativeLimits["model_scoped"]>[number];
+type UsageResponse = Pick<
+  SDKControlGetUsageResponse,
+  "rate_limits_available" | "rate_limits" | "subscription_type"
+>;
+import {
+  parseRateLimitInfo,
+  rateWindowMinutes,
+  usagePolicy,
+  rateLimitFamily,
+} from "./rate-limit-input.ts";
+import type { RateLimitInfo } from "./rate-limit-input.ts";
+export type { RateLimitInfo } from "./rate-limit-input.ts";
+export {
+  overageAllowed,
+  parseRateLimitInfo,
+  rateLimitRejected,
+} from "./rate-limit-input.ts";
 export type Limits = Partial<BridgeRateLimits>;
 export type QueuedInput<T extends SDKUserMessage = SDKUserMessage> = T & {
   studioInputBatch?: QueuedInput<T>[];
 };
-import usagePolicyJson from "./usage-policy.ts";
-const usagePolicy: {
-  modelBuckets: Record<string, string>;
-  allowedOverageStatuses: string[];
-} = JSON.parse(usagePolicyJson);
-
 // Native Claude values normalized to Studio's existing public protocol.
 export function usageLimits(response: UsageResponse): BridgeRateLimits {
   if (!response.rate_limits_available || !response.rate_limits)
@@ -66,8 +62,8 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
     claude: {
       limitId: "claude",
       limitName: "Claude",
-      primary: window(raw.five_hour, 300),
-      secondary: window(raw.seven_day, 10080),
+      primary: window(raw.five_hour, rateWindowMinutes.primary),
+      secondary: window(raw.seven_day, rateWindowMinutes.secondary),
     },
   };
   const scoped = [...(raw.model_scoped || [])];
@@ -87,7 +83,7 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
     buckets[id] = {
       limitId: id,
       limitName: "Claude · " + row.display_name,
-      secondary: window(row, 10080),
+      secondary: window(row, rateWindowMinutes.secondary),
     };
   }
   return {
@@ -99,62 +95,33 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
 }
 export function limitEvent(
   current: Limits | null | undefined,
-  info: RateLimitInfo,
-) {
-  const result: Limits = structuredClone(
-    current || {
-      rateLimitsByLimitId: {
-        claude: { limitId: "claude", limitName: "Claude" },
-      },
-    },
-  );
-  const all = (result.rateLimitsByLimitId ||= {});
-  const main = (all.claude ||= { limitId: "claude", limitName: "Claude" });
-  const type = info.rateLimitType;
-  let bucket = main,
-    key: "primary" | "secondary" =
-      type === "five_hour" ? "primary" : "secondary";
-  if (type === "seven_day_overage_included") {
-    const names = Object.keys(all).filter(
-      (id) =>
-        id !== "claude" &&
-        !["claude-opus", "claude-sonnet", "claude-oauth-apps"].includes(id),
-    );
-    const id = names.length === 1 ? names[0]! : "claude-unknown-limit";
-    bucket = all[id] ||= { limitId: id, limitName: "Claude · Unknown limit" };
-  } else if (type === "seven_day_opus" || type === "seven_day_sonnet") {
-    const name = type === "seven_day_opus" ? "opus" : "sonnet",
-      id = usagePolicy.modelBuckets[name] ?? "";
-    bucket = all[id] ||= { limitId: id, limitName: "Claude · " + name };
-  } else if (!["five_hour", "seven_day"].includes(type as string)) {
-    if (!info.status && !info.overageStatus) return null;
-    const id = type === "overage" ? "claude-overage" : "claude-unknown-limit";
-    bucket = all[id] ||= {
-      limitId: id,
-      limitName: "Claude · " + (type || "Unknown limit"),
-    };
-  }
-  // Native events can grant overage without reporting utilization.
-  const hasStatus =
-    typeof info.status === "string" ||
-    typeof info.overageStatus === "string" ||
-    typeof info.isUsingOverage === "boolean" ||
-    typeof info.overageInUse === "boolean";
-  if (!Number.isFinite(info.utilization) && !hasStatus) return null;
-  bucket[key] = {
-    ...bucket[key],
-    ...(Number.isFinite(info.utilization)
-      ? {
-          usedPercent: Math.max(0, Math.min(100, info.utilization! * 100)),
-        }
-      : {}),
-    windowDurationMins: type === "five_hour" ? 300 : 10080,
-    ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
+  evidence: ReturnType<typeof parseRateLimitInfo>,
+): BridgeRateLimits {
+  const all = structuredClone(current?.rateLimitsByLimitId ?? {});
+  const main = all.claude ?? { limitId: "claude", limitName: "Claude" };
+  all.claude = main;
+  const result: BridgeRateLimits = {
+    ...current,
+    rateLimits: main,
+    rateLimitsByLimitId: all,
+    claudeRateLimit: evidence.type === "known" ? evidence.raw : evidence,
   };
-  // Replace permission on each event; a later rejection revokes it.
-  bucket.claudeRateLimit = structuredClone(info);
-  result.claudeRateLimit = structuredClone(info);
-  return Object.assign(result, { rateLimits: main, rateLimitsByLimitId: all });
+  if (evidence.type === "unsupported") return result;
+  const { info, scope } = evidence;
+  const bucket = (all[scope.id] ??= {
+    limitId: scope.id,
+    limitName: scope.label,
+  });
+  bucket[scope.window] = {
+    ...bucket[scope.window],
+    ...(info.utilization === undefined
+      ? {}
+      : { usedPercent: Math.max(0, Math.min(100, info.utilization * 100)) }),
+    windowDurationMins: rateWindowMinutes[scope.window],
+    ...(info.resetsAt === undefined ? {} : { resetsAt: info.resetsAt }),
+  };
+  bucket.claudeRateLimit = evidence.raw;
+  return result;
 }
 export function nativeItem(block: NativeToolBlock, cwd: string): FreshToolItem {
   const input = block.input;
@@ -233,16 +200,6 @@ export class InputQueue<
       }
     }
   }
-}
-
-// This is permission from a native rate-limit event, not the billing preference.
-export function overageAllowed(info: RateLimitInfo) {
-  if (info.overageStatus === "rejected") return false;
-  return (
-    usagePolicy.allowedOverageStatuses.includes(info.overageStatus as string) ||
-    info.isUsingOverage === true ||
-    info.overageInUse === true
-  );
 }
 
 // The SDK owns this closed input domain; new SDK variants require a decision.
@@ -341,13 +298,8 @@ export function modelFamily(model: unknown) {
     ) || null
   );
 }
-export function limitApplies(
-  info: Pick<RateLimitInfo, "rateLimitType">,
-  model: unknown,
-) {
+export function limitApplies(info: RateLimitInfo, model: unknown) {
   const family = modelFamily(model);
-  const scoped = Object.keys(usagePolicy.modelBuckets).find(
-    (name) => info.rateLimitType === "seven_day_" + name,
-  );
+  const scoped = rateLimitFamily(info);
   return !family || !scoped || family === scoped;
 }

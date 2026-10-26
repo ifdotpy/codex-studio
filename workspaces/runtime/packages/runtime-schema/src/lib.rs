@@ -20,6 +20,7 @@ pub mod provider_input;
 pub mod provider_kind;
 pub mod provider_lifecycle;
 pub mod provider_method_policy;
+pub mod provider_rate_limits;
 pub mod queue_command;
 pub mod shared_values;
 pub mod supervisor_contract;

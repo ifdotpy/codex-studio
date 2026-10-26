@@ -265,6 +265,15 @@ export interface components {
     } & {
       [key: string]: unknown;
     };
+    /**
+     * @description Unsupported live rate-limit evidence remains opaque and cannot supply an
+     *     ordinary-usage or overage decision. This tag is generated for the bridge.
+     */
+    UnsupportedClaudeRateLimit: {
+      raw: unknown;
+      /** @constant */
+      type: "unsupported";
+    };
   };
   responses: never;
   parameters: never;
@@ -307,3 +316,5 @@ export type TerminalTurn = components["schemas"]["TerminalTurn"];
 export type TerminalTurnStatus = components["schemas"]["TerminalTurnStatus"];
 export type ThreadIdentity = components["schemas"]["ThreadIdentity"];
 export type ToolDefinition = components["schemas"]["ToolDefinition"];
+export type UnsupportedClaudeRateLimit =
+  components["schemas"]["UnsupportedClaudeRateLimit"];

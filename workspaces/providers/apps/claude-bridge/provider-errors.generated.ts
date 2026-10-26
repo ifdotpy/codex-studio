@@ -80,17 +80,17 @@ export interface components {
       | "cyberPolicy"
       | "misalignmentPolicyViolation"
       | "tooManyDenials"
-      | "httpConnectionFailed"
-      | "responseStreamConnectionFailed"
       | "internalServerError"
       | "unauthorized"
       | "badRequest"
       | "threadRollbackFailed"
       | "sandboxError"
+      | "other"
+      | "httpConnectionFailed"
+      | "responseStreamConnectionFailed"
       | "responseStreamDisconnected"
       | "responseTooManyFailedAttempts"
-      | "activeTurnNotSteerable"
-      | "other";
+      | "activeTurnNotSteerable";
     /** @enum {string} */
     NonSteerableTurnKind: "review" | "compact";
   };
@@ -119,15 +119,15 @@ export const KNOWN_CODEX_ERROR_KINDS = [
   "cyberPolicy",
   "misalignmentPolicyViolation",
   "tooManyDenials",
-  "httpConnectionFailed",
-  "responseStreamConnectionFailed",
   "internalServerError",
   "unauthorized",
   "badRequest",
   "threadRollbackFailed",
   "sandboxError",
+  "other",
+  "httpConnectionFailed",
+  "responseStreamConnectionFailed",
   "responseStreamDisconnected",
   "responseTooManyFailedAttempts",
   "activeTurnNotSteerable",
-  "other",
 ] as const;

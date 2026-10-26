@@ -20,7 +20,7 @@ const root = fileURLToPath(new URL("../../../../..", import.meta.url));
 test(
   "Cargo refuses stale sources and regenerated incompatible vendor types",
   { timeout: 180000 },
-  () => {
+  async (context) => {
     const copy = mkdtempSync(path.join(tmpdir(), "studio-contract-compile-"));
     try {
       for (const file of [
@@ -79,6 +79,7 @@ test(
         const result = run(process.execPath, [
           "workspaces/tooling/apps/repository-checks/generate-provider-contracts.ts",
           "--write",
+          "--rust-only",
         ]);
         assert.equal(result.status, 0, result.stdout + result.stderr);
       };
@@ -132,6 +133,58 @@ test(
       generate();
       const restored = check();
       assert.equal(restored.status, 0, restored.stdout + restored.stderr);
+      await context.test(
+        "the real usage reader rejects a changed model context window type",
+        () => {
+          try {
+            const window = JSON.parse(originalUsage);
+            window.definitions.ThreadTokenUsage.properties.modelContextWindow =
+              { type: ["string", "null"] };
+            writeFileSync(usage, JSON.stringify(window));
+            generate();
+            const result = check();
+            assert.notEqual(
+              result.status,
+              0,
+              "The real usage reader must consume its generated window field",
+            );
+            assert.match(result.stderr, /usage\.rs/);
+          } finally {
+            writeFileSync(usage, originalUsage);
+            generate();
+          }
+        },
+      );
+      await context.test(
+        "the real idle decision rejects an added vendor activity discriminator",
+        () => {
+          try {
+            const status = JSON.parse(originalLifecycle);
+            status.definitions.ThreadStatus.oneOf.push({
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["futureActivity"] },
+              },
+              required: ["type"],
+            });
+            writeFileSync(lifecycle, JSON.stringify(status));
+            generate();
+            const result = check();
+            assert.notEqual(
+              result.status,
+              0,
+              "Recovery must consume the vendor-owned activity discriminators",
+            );
+            assert.match(result.stderr, /provider_lifecycle\.rs/);
+            assert.match(result.stderr, /FutureActivity.*not covered/);
+          } finally {
+            writeFileSync(lifecycle, originalLifecycle);
+            generate();
+          }
+        },
+      );
+      const final = check();
+      assert.equal(final.status, 0, final.stdout + final.stderr);
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }

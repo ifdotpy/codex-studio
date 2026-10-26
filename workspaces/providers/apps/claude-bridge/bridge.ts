@@ -16,6 +16,8 @@ import type {
   BridgeHistoricalItemEvent,
 } from "./bridge-protocol.ts";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { AskUserQuestionInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
+import { parseUserQuestions } from "./question-input.ts";
 import type {
   Query,
   Options,
@@ -170,6 +172,8 @@ import {
   legacyClaudeErrorInfo,
   providerNotice,
   limitApplies,
+  parseRateLimitInfo,
+  rateLimitRejected,
 } from "./features.ts";
 import {
   commandCatalog,
@@ -856,10 +860,13 @@ async function permissions(
   if (name.startsWith("mcp__studio__"))
     return { behavior: "allow", updatedInput: input };
   if (name === "AskUserQuestion") {
-    const questions = (
-      (input.questions as import("@anthropic-ai/claude-agent-sdk/sdk-tools").AskUserQuestionInput["questions"]) ||
-      []
-    ).map(
+    const nativeQuestions = parseUserQuestions(input.questions);
+    if (nativeQuestions === null)
+      return {
+        behavior: "deny",
+        message: "Claude supplied invalid question fields or choices.",
+      };
+    const questions = nativeQuestions.map(
       (q, i) =>
         ({
           ...q,
@@ -1892,6 +1899,7 @@ async function startSession(
                 {
                   question,
                   header: "Resume",
+                  multiSelect: false,
                   options: [
                     {
                       label: "Compact and continue",
@@ -1908,15 +1916,14 @@ async function startSession(
                   ],
                 },
               ],
-            },
+            } satisfies AskUserQuestionInput,
             { ...options, toolUseID: value.toolUseID || options.requestId },
           );
-          const selected = (
-            answer as Extract<
-              Awaited<ReturnType<CanUseTool>>,
-              { behavior: "allow" }
-            > & { updatedInput: { answers?: Record<string, unknown> } }
-          ).updatedInput?.answers?.[question];
+          const answers =
+            answer?.behavior === "allow"
+              ? answer.updatedInput?.answers
+              : undefined;
+          const selected = isRecord(answers) ? answers[question] : undefined;
           return selected
             ? {
                 behavior: "completed",
@@ -2094,16 +2101,16 @@ async function startSession(
       }
       const turn = active.turn || (parentToolUseId ? s.turns.at(-1) : null);
       if (m.type === "rate_limit_event") {
-        const next = limitEvent(lastLimits, m.rate_limit_info || {});
-        if (next) {
-          next.accountId = "claude:" + process.env.STUDIO_CLAUDE_ACCOUNT;
-          lastLimits = next;
-          emit("account/rateLimits/updated", next);
-        }
-        const info = m.rate_limit_info || {};
+        const evidence = parseRateLimitInfo(m.rate_limit_info);
+        const next = limitEvent(lastLimits, evidence);
+        next.accountId = "claude:" + process.env.STUDIO_CLAUDE_ACCOUNT;
+        lastLimits = next;
+        emit("account/rateLimits/updated", next);
+        if (evidence.type === "unsupported") continue;
+        const info = evidence.info;
         if (
           turn &&
-          info.status === "rejected" &&
+          rateLimitRejected(info) &&
           limitApplies(info, active.lastModel || s.model) &&
           !overageAllowed(info)
         )
@@ -2389,16 +2396,15 @@ async function startSession(
             "api_error_params" in m && isRecord(m.api_error_params)
               ? m.api_error_params
               : {};
-          const info = isRecord(params.rate_limit_info)
-            ? params.rate_limit_info
-            : undefined;
+          const evidence = parseRateLimitInfo(params.rate_limit_info);
           if (
             m.error === "rate_limit" &&
-            info?.status === "rejected" &&
+            evidence.type === "known" &&
+            rateLimitRejected(evidence.info) &&
             !parentToolUseId &&
             !turn.limitError
           )
-            limitReached(s, turn, info);
+            limitReached(s, turn, evidence.info);
         }
         active.lastModel = m.message.model || active.lastModel;
         if (

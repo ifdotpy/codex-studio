@@ -9,7 +9,6 @@ import type {
   SDKTaskUpdatedMessage,
   SDKTaskNotificationMessage,
   SDKBackgroundTasksChangedMessage,
-  SDKRateLimitInfo,
   SDKControlGetUsageResponse,
   Query,
   SlashCommand,
@@ -135,13 +134,6 @@ export type BridgeCommand = Required<
     "name" | "description" | "argumentHint" | "aliases" | "builtin"
   >
 >;
-export type BridgeRateLimitInfo = Omit<
-  Partial<SDKRateLimitInfo>,
-  "rateLimitType" | "utilization"
-> & {
-  rateLimitType?: string | undefined;
-  utilization?: number | null | undefined;
-};
 export type BridgeRateWindow = Pick<
   RateLimitWindowDto,
   "usedPercent" | "resetsAt" | "windowDurationMins"
@@ -151,7 +143,7 @@ export type BridgeRateBucket = Pick<
   "primary" | "secondary"
 > & {
   [K in "limitId" | "limitName"]: NonNullable<RateLimitBucketDto[K]>;
-} & { claudeRateLimit?: BridgeRateLimitInfo | undefined };
+} & { claudeRateLimit?: unknown };
 export interface BridgeRateLimits {
   rateLimits: BridgeRateBucket;
   rateLimitsByLimitId: Record<string, BridgeRateBucket>;
@@ -159,15 +151,11 @@ export interface BridgeRateLimits {
     | SDKControlGetUsageResponse["subscription_type"]
     | undefined;
   extraUsage?:
-    | Partial<
-        NonNullable<
-          NonNullable<SDKControlGetUsageResponse["rate_limits"]>["extra_usage"]
-        >
-      >
+    | NonNullable<SDKControlGetUsageResponse["rate_limits"]>["extra_usage"]
     | null
     | undefined;
   accountId?: string | undefined;
-  claudeRateLimit?: BridgeRateLimitInfo | undefined;
+  claudeRateLimit?: unknown;
 }
 export type BridgeModel = {
   id: ModelInfo["value"];
@@ -533,15 +521,12 @@ export type BridgeNotification<
 }[M];
 
 type NativeQuestion = AskUserQuestionInput["questions"][number];
-// The bridge forwards parsed questions; SDK input tuple cardinalities and
-// required multi-select defaults are not enforced on this wire boundary.
-export type BridgeUserQuestion = Pick<NativeQuestion, "question" | "header"> &
-  Partial<Omit<NativeQuestion, "question" | "header" | "options">> & {
-    options: NativeQuestion["options"][number][];
-    id: string;
-    isOther: true;
-    isSecret: false;
-  };
+// Fresh questions have passed the SDK-owned field and cardinality contract.
+export type BridgeUserQuestion = NativeQuestion & {
+  id: string;
+  isOther: true;
+  isSecret: false;
+};
 
 export interface BridgeServerRequests {
   "item/tool/requestUserInput": [

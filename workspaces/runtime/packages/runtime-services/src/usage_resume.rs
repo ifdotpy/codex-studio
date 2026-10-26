@@ -9,6 +9,9 @@ use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::provider_errors::{
     KnownCodexErrorKind, known_error_kind, raw_error_kind,
 };
+use studio_runtime_schema::provider_rate_limits::{
+    checked_claude_rate_info, rate_evidence_supported,
+};
 
 const RESET_GRACE: f64 = 5.0;
 const RESUME_MIN: f64 = 60.0;
@@ -61,6 +64,7 @@ impl LimitsObservation {
     fn fresh_for(&self, key: &str, after: f64, strict: bool) -> bool {
         !present(&self.raw, "error")
             && !flag(&self.raw, "stale")
+            && rate_evidence_supported(&self.raw["data"])
             && self.account_key == key
             && number(&self.raw, "at")
                 .is_some_and(|at| if strict { at > after } else { at >= after })
@@ -88,10 +92,12 @@ pub fn eligibility(observation: &Value, agent: &Value, now: f64) -> Value {
         .filter(|(_, bucket)| bucket.is_object())
         .map(|(id, _)| json!({"id": id, "overageAllowed": overage_allowed(data, agent, id)}))
         .collect();
-    let info = &data["claudeRateLimit"];
-    let overage = if text(info, "overageStatus") == "rejected" {
+    let info = rate_evidence_supported(data)
+        .then(|| checked_claude_rate_info(data).ok().flatten())
+        .flatten();
+    let overage = if info.is_some_and(|info| text(info, "overageStatus") == "rejected") {
         "rejected"
-    } else if flag(info, "isUsingOverage") || flag(info, "overageInUse") {
+    } else if info.is_some_and(|info| flag(info, "isUsingOverage") || flag(info, "overageInUse")) {
         "in_use"
     } else if applicable.iter().any(|b| flag(b, "overageAllowed")) {
         "allowed"
@@ -186,10 +192,12 @@ fn buckets<'a>(data: &'a Value, agent: &'a Value) -> impl Iterator<Item = (&'a s
         .filter(|(id, _)| relevant_bucket(id, agent))
 }
 fn overage_allowed(data: &Value, agent: &Value, id: &str) -> bool {
-    if text(agent, "provider") != ProviderKind::Claude.key() {
+    if text(agent, "provider") != ProviderKind::Claude.key() || !rate_evidence_supported(data) {
         return false;
     }
-    let info = &data["claudeRateLimit"];
+    let Ok(Some(info)) = checked_claude_rate_info(data) else {
+        return false;
+    };
     if text(info, "overageStatus") == "rejected" {
         return false;
     }
@@ -211,6 +219,9 @@ fn overage_allowed(data: &Value, agent: &Value, id: &str) -> bool {
             || flag(info, "overageInUse"))
 }
 fn reset_at(data: &Value, agent: &Value) -> Option<f64> {
+    if !rate_evidence_supported(data) {
+        return None;
+    }
     buckets(data, agent)
         .filter(|(id, _)| !overage_allowed(data, agent, id))
         .flat_map(|(_, b)| {
@@ -244,7 +255,8 @@ fn reset_at(data: &Value, agent: &Value) -> Option<f64> {
         .reduce(f64::max)
 }
 fn allowed(data: &Value, agent: &Value, now: f64) -> bool {
-    if !present(data, "rateLimits")
+    if !rate_evidence_supported(data)
+        || !present(data, "rateLimits")
         || data
             .get("ordinaryUsageAllowed")
             .is_some_and(|v| v != &Value::Bool(true))

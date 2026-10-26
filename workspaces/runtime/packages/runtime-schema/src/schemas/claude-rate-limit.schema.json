@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["allowed", "allowed_warning", "rejected"]
+    },
+    "rateLimitType": {
+      "type": "string",
+      "enum": [
+        "five_hour",
+        "seven_day",
+        "seven_day_opus",
+        "seven_day_sonnet",
+        "seven_day_overage_included",
+        "overage"
+      ]
+    },
+    "overageStatus": {
+      "type": "string",
+      "enum": ["allowed", "allowed_warning", "rejected"]
+    },
+    "utilization": {
+      "type": "number"
+    },
+    "resetsAt": {
+      "type": "number"
+    },
+    "overageResetsAt": {
+      "type": "number"
+    },
+    "isUsingOverage": {
+      "type": "boolean"
+    },
+    "overageInUse": {
+      "type": "boolean"
+    }
+  },
+  "required": ["status"],
+  "additionalProperties": {},
+  "$comment": "Owner: rate-limit-input.ts SDK projection, @anthropic-ai/claude-agent-sdk 0.3.308."
+}

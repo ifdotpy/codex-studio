@@ -6,7 +6,8 @@ import { readFileSync } from "node:fs";
 import { test } from "vitest";
 import {
   usageLimits,
-  limitEvent,
+  limitEvent as applyLimitEvent,
+  parseRateLimitInfo,
   nativeItem,
   InputQueue,
   claudeErrorInfo,
@@ -15,15 +16,31 @@ import {
   limitApplies,
 } from "./features.ts";
 
+const limitEvent = (
+  current: Parameters<typeof applyLimitEvent>[0],
+  raw: unknown,
+) => applyLimitEvent(current, parseRateLimitInfo(raw));
+const canUseOverage = (raw: unknown) => {
+  const evidence = parseRateLimitInfo(raw);
+  return evidence.type === "known" && overageAllowed(evidence.info);
+};
+
 test("subscription windows use percentages and seconds", () => {
   const raw = {
     rate_limits_available: true,
     subscription_type: "max",
     rate_limits: {
       five_hour: { utilization: 11, resets_at: "2026-09-22T08:00:00Z" },
-      seven_day: { utilization: 4 },
-      model_scoped: [{ display_name: "Fable", utilization: 7 }],
-      extra_usage: { is_enabled: true },
+      seven_day: { utilization: 4, resets_at: null },
+      model_scoped: [
+        { display_name: "Fable", utilization: 7, resets_at: null },
+      ],
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: null,
+        used_credits: null,
+        utilization: null,
+      },
     },
   };
   const actual = usageLimits(raw);
@@ -38,15 +55,26 @@ test("subscription windows use percentages and seconds", () => {
     actual.rateLimitsByLimitId["claude-fable"]!.secondary!.usedPercent,
     7,
   );
-  assert.deepEqual(actual.extraUsage, { is_enabled: true });
+  assert.deepEqual(actual.extraUsage, {
+    is_enabled: true,
+    monthly_limit: null,
+    used_credits: null,
+    utilization: null,
+  });
   assert.throws(
-    () => usageLimits({ rate_limits_available: false }),
+    () =>
+      usageLimits({
+        rate_limits_available: false,
+        subscription_type: null,
+        rate_limits: null,
+      }),
     /did not return/,
   );
 });
 test("invalid or absent utilization never becomes zero usage", () => {
   const actual = usageLimits({
     rate_limits_available: true,
+    subscription_type: null,
     rate_limits: { five_hour: { utilization: null, resets_at: "invalid" } },
   });
   assert.equal(actual.rateLimits.primary!.usedPercent, null);
@@ -56,13 +84,15 @@ test("invalid or absent utilization never becomes zero usage", () => {
 test("native events use fractional utilization without mutating cached windows", () => {
   const initial = usageLimits({
     rate_limits_available: true,
+    subscription_type: null,
     rate_limits: {
-      five_hour: { utilization: 11 },
-      seven_day: { utilization: 4 },
+      five_hour: { utilization: 11, resets_at: null },
+      seven_day: { utilization: 4, resets_at: null },
     },
   });
   const updated = limitEvent(initial, {
     rateLimitType: "five_hour",
+    status: "allowed",
     utilization: 0.25,
     resetsAt: 123,
   });
@@ -70,14 +100,15 @@ test("native events use fractional utilization without mutating cached windows",
   assert.equal(updated!.rateLimits.primary!.resetsAt, 123);
   assert.equal(initial.rateLimits.primary!.usedPercent, 11);
   assert.equal(updated!.rateLimits.secondary!.usedPercent, 4);
-  assert.equal(
-    limitEvent(initial, { rateLimitType: "unrecognized", utilization: 0.1 }),
-    null,
-  );
-  assert.equal(
-    limitEvent(initial, { rateLimitType: "five_hour", utilization: null }),
-    null,
-  );
+  for (const raw of [
+    { rateLimitType: "unrecognized", status: "rejected", utilization: 0.1 },
+    { rateLimitType: "five_hour", status: "allowed", utilization: null },
+  ]) {
+    assert.deepEqual(limitEvent(initial, raw).claudeRateLimit, {
+      type: "unsupported",
+      raw,
+    });
+  }
 });
 test("native tools preserve commands and file edits", () => {
   const command = nativeItem(
@@ -153,7 +184,8 @@ test("persistent queue preserves order and close releases an idle consumer", asy
 test("rate limit events retain overage permission without utilization", () => {
   const current = usageLimits({
     rate_limits_available: true,
-    rate_limits: { five_hour: { utilization: 100 } },
+    subscription_type: null,
+    rate_limits: { five_hour: { utilization: 100, resets_at: null } },
   });
   const info = {
     rateLimitType: "five_hour",
@@ -175,7 +207,7 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     utilization: 1,
     resetsAt: 100,
   });
-  assert.equal(overageAllowed(allowed!.claudeRateLimit!), true);
+  assert.equal(canUseOverage(allowed!.claudeRateLimit), true);
   const rejected = limitEvent(allowed, {
     rateLimitType: "five_hour",
     status: "rejected",
@@ -183,32 +215,40 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     isUsingOverage: true,
     resetsAt: 200,
   });
-  assert.equal(overageAllowed(rejected!.claudeRateLimit!), false);
+  assert.equal(canUseOverage(rejected!.claudeRateLimit), false);
   const unknown = limitEvent(allowed, {
     rateLimitType: "future_scope",
     status: "rejected",
     resetsAt: 900,
   });
-  assert.equal(overageAllowed(unknown!.claudeRateLimit!), false);
-  assert.equal(
-    unknown!.rateLimitsByLimitId["claude-unknown-limit"]!.secondary!.resetsAt,
-    900,
-  );
+  assert.equal(canUseOverage(unknown!.claudeRateLimit), false);
+  assert.deepEqual(unknown!.claudeRateLimit, {
+    type: "unsupported",
+    raw: { rateLimitType: "future_scope", status: "rejected", resetsAt: 900 },
+  });
+  assert.equal(unknown!.rateLimitsByLimitId["claude-unknown-limit"], undefined);
   const overage = limitEvent(allowed, {
     rateLimitType: "overage",
     status: "rejected",
     overageStatus: "allowed_warning",
   });
-  assert.equal(overageAllowed(overage!.claudeRateLimit!), true);
+  assert.equal(canUseOverage(overage!.claudeRateLimit), true);
 });
 
 test("model scope excludes only a known different family", () => {
-  const opus = { rateLimitType: "seven_day_opus" };
+  const opus = {
+    rateLimitType: "seven_day_opus",
+    status: "allowed",
+  } satisfies RateLimitInfo;
   assert.equal(limitApplies(opus, "sonnet"), false);
   assert.equal(limitApplies(opus, "claude-sonnet-4-6"), false);
   for (const model of ["opus", "default", "custom-sonnet-proxy", null])
     assert.equal(limitApplies(opus, model), true);
-  assert.equal(limitApplies({ rateLimitType: "future_scope" }, "sonnet"), true);
+  assert.equal(
+    parseRateLimitInfo({ rateLimitType: "future_scope", status: "allowed" })
+      .type,
+    "unsupported",
+  );
 });
 
 test("API error classification retains unrelated failure types", () => {

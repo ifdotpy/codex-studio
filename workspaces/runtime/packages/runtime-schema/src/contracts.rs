@@ -1219,6 +1219,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeSessionWire>();
         generator.subschema_for::<crate::provider_input::ClaudeBridgeTurnWire>();
+        generator.subschema_for::<crate::provider_input::UnsupportedClaudeRateLimit>();
         generator.subschema_for::<crate::provider_input::items::FreshItem>();
         generator.subschema_for::<crate::provider_lifecycle::TerminalTurn>();
         generator.subschema_for::<crate::provider_lifecycle::ThreadIdentity>();

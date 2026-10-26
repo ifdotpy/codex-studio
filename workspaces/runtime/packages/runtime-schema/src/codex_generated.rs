@@ -60,6 +60,22 @@ pub enum CodexTurnItemsView {
 }
 
 #[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(tag = "type")]
+#[schemars(rename = "ThreadActivity")]
+pub enum CodexThreadActivity {
+    #[serde(rename = "notLoaded")]
+    NotLoaded,
+    #[serde(rename = "idle")]
+    Idle,
+    #[serde(rename = "systemError")]
+    SystemError,
+    #[serde(rename = "active")]
+    Active,
+}
+
+#[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[schemars(rename = "ThreadTokenUsage")]

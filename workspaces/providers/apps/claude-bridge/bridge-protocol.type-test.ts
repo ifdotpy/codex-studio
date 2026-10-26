@@ -133,7 +133,11 @@ export const question = {
         id: "0",
         header: "Choice",
         question: "Proceed?",
-        options: [{ label: "Yes", description: "Continue" }],
+        options: [
+          { label: "Yes", description: "Continue" },
+          { label: "No", description: "Stop" },
+        ],
+        multiSelect: false,
         isOther: true,
         isSecret: false,
       },

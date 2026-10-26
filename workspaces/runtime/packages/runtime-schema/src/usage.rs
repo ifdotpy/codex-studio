@@ -352,14 +352,16 @@ pub fn parse_token_usage(
     let source = params.get("usageSource").and_then(Value::as_str);
     let turn_id = optional_text(params, "turnId")?;
     let usage = &params["tokenUsage"];
-    let model_context_window = usage
-        .get("modelContextWindow")
-        .filter(|v| !v.is_null())
-        .map(|v| {
-            v.as_u64()
-                .ok_or_else(|| UsageParseError("invalid modelContextWindow".into()))
-        })
-        .transpose()?;
+    let legacy_context_window = || {
+        usage
+            .get("modelContextWindow")
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| UsageParseError("invalid modelContextWindow".into()))
+            })
+            .transpose()
+    };
     let response_evidence = match provider {
         ProviderKind::Codex => (source == Some("responseRecord")
             || params
@@ -393,7 +395,7 @@ pub fn parse_token_usage(
             )?,
             evidence,
             parent_tool_use_id: optional_text(params, "parentToolUseId")?,
-            model_context_window,
+            model_context_window: legacy_context_window()?,
         });
     }
     if source.is_some() && source != Some("tokenCount") {
@@ -411,8 +413,12 @@ pub fn parse_token_usage(
             let CodexThreadTokenUsage {
                 total,
                 last,
-                model_context_window: _,
+                model_context_window,
             } = token_usage;
+            let model_context_window = model_context_window
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| UsageParseError("invalid modelContextWindow".into()))?;
             return Ok(UsageObservation::Cumulative {
                 scope: UsageScope::CodexThread,
                 turn_id: Some(turn_id),
@@ -434,7 +440,7 @@ pub fn parse_token_usage(
             .filter(|v| v.is_object() && !v.as_object().is_some_and(|m| m.is_empty()))
             .map(|v| legacy_tokens(v, provider))
             .transpose()?,
-        model_context_window,
+        model_context_window: legacy_context_window()?,
         models: None,
     })
 }
