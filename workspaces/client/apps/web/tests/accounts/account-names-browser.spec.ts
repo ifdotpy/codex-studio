@@ -1,56 +1,76 @@
+import type { Page } from "@playwright/test";
+import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
+import {
+  required,
+  fixtureUrl,
+  fixtureAccount,
+  fixtureAccounts,
+  fixtureRequest,
+  type FixtureRequest,
+} from "./fixture-helpers.ts";
+import type {} from "./account-names.fixture.tsx";
 import { join } from "node:path";
 import { test, expect, createFixtureViteServer } from "../playwright.ts";
 
-async function fixture(page) {
+async function fixture(page: Page) {
   page.on("pageerror", (error) =>
     console.error("Account fixture:", error.message),
   );
   const root = join(import.meta.dirname, "../../");
-  const entry = join(root, "account-names-fixture.tsx");
-  const accounts = [
-    {
-      id: "default",
-      home: "/fixture/codex",
-      source: "Codex",
-      provider: "codex",
-      label: "Personal",
-      email: "personal@example.com",
-      status: "signedOut",
-    },
-    {
-      id: "work",
-      home: "/fixture/claude",
-      source: "Claude Code",
-      provider: "claude",
-      label: "Work 1",
-      email: "work@example.com",
-      status: "signedOut",
-    },
-  ];
-  const data = () => ({
-    accounts,
-    archivedAccounts: [],
-    defaultAccountKey: "default",
-    logins: [],
-  });
-  const bodies = [];
+  const accounts: Account[] = (
+    [
+      {
+        id: "default",
+        home: "/fixture/codex",
+        source: "Codex",
+        provider: "codex",
+        label: "Personal",
+        email: "personal@example.com",
+        status: "signedOut",
+      },
+      {
+        id: "work",
+        home: "/fixture/claude",
+        source: "Claude Code",
+        provider: "claude",
+        label: "Work 1",
+        email: "work@example.com",
+        status: "signedOut",
+      },
+    ] satisfies Parameters<typeof fixtureAccount>[0][]
+  ).map(fixtureAccount);
+  const data = (): AccountsState =>
+    fixtureAccounts({
+      accounts,
+      archivedAccounts: [],
+      defaultAccountKey: "default",
+      logins: [],
+    });
+  const bodies: Array<FixtureRequest["body"]> = [];
   let loseResponse = false;
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/sync/identity")
       return route.fulfill({ status: 404, json: {} });
     if (path === "/api/accounts/name") {
-      const body = route.request().postDataJSON();
+      const body = fixtureRequest(
+        "/api/accounts/name",
+        route.request().postDataJSON(),
+      ).body;
       bodies.push(body);
-      accounts.find((account) => account.id === body.account_key).label =
-        body.label.trim();
+      required(
+        accounts.find((account) => account.id === body.account_key),
+      ).label = body.label.trim();
       if (loseResponse) {
         loseResponse = false;
         return route.abort("failed");
       }
     }
     if (path === "/api/claude/profiles") {
-      bodies.push(route.request().postDataJSON());
+      bodies.push(
+        fixtureRequest("/api/claude/profiles", route.request().postDataJSON())
+          .body,
+      );
       return route.fulfill({ json: data() });
     }
     await route.fulfill({
@@ -66,32 +86,23 @@ async function fixture(page) {
       {
         name: "account-names-fixture",
         configureServer(server) {
+          server.middlewares.use("/fixture-data", (_req, res) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify(data()));
+          });
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/account-names-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/accounts/account-names.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/account-names-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import Accounts from'/src/components/Accounts.tsx';import{theme}from'/src/theme.ts';import'@mantine/core/styles.css';import'/src/style.css';import'/src/appearance.css';
-const initial=${JSON.stringify(data())};
-function Fixture(){const[data,setData]=useState(initial);const[color,setColor]=useState('dark');window.setTheme=setColor;
-const state={data,setData,error:'',refresh:async()=>data};
-return <MantineProvider theme={theme} forceColorScheme={color}><main style={{padding:16,width:'100%',maxWidth:760,overflow:'auto'}}><Accounts state={state} managerOnly onError={()=>{}}/></main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
   });
   try {
     await server.listen();
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(`${fixtureUrl(server)}/check`);
   } catch (error) {
     await server.close();
     throw error;
@@ -184,9 +195,12 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
       ["light", 1280],
       ["dark", 390],
       ["light", 390],
-    ]) {
+    ] as const) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate((value) => window.setTheme(value), theme);
+      await page.evaluate(
+        (value) => window.accountNamesFixture.setTheme(value),
+        theme,
+      );
       await expect(page.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
         theme,
