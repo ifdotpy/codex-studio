@@ -50,14 +50,20 @@ print(json.dumps(sorted(missing)))
 // through a local module, and that neither the directory nor the standard library
 // supplies. An empty list means that the Python programs can start.
 export function missingPythonModules(
-  directory,
+  directory: string,
   entryPoints = pythonEntryPoints,
-) {
-  return JSON.parse(
+): string[] {
+  const result: unknown = JSON.parse(
     execFileSync(
       "python3",
       ["-I", "-S", "-c", missingModulesScript, directory, ...entryPoints],
       { encoding: "utf8" },
     ),
   );
+  if (
+    !Array.isArray(result) ||
+    !result.every((item: unknown) => typeof item === "string")
+  )
+    throw new Error("Invalid Python module report.");
+  return result;
 }

@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { signLinuxVM, signingIdentity } from "../../signing.mjs";
+import { signLinuxVM, signingIdentity } from "../../signing.ts";
 
 const source = path.dirname(fileURLToPath(import.meta.url));
-export function buildLinuxVM(output, identity = signingIdentity()) {
+export function buildLinuxVM(output: string, identity = signingIdentity()) {
   execFileSync(
     "xcrun",
     [

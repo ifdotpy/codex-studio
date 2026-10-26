@@ -22,7 +22,7 @@ const commitB = "b".repeat(40);
 
 test("desktop packaging uses the manifest-owned Electron version", async () => {
   const source = await readFile(
-    new URL("../../../../client/apps/desktop/package.mjs", import.meta.url),
+    new URL("../../../../client/apps/desktop/package.ts", import.meta.url),
     "utf8",
   );
   assert.doesNotMatch(
