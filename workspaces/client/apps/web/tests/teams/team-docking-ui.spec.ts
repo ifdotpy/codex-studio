@@ -113,7 +113,7 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
           await expect
             .poll(async () =>
               page.locator(".workspace").evaluate((workspace) => {
-                const panel = workspace.parentElement?.querySelector("#team");
+                const panel = workspace.parentElement!.querySelector("#team");
                 if (!panel) return false;
                 const edge = panel.getBoundingClientRect().left;
                 return [
@@ -133,9 +133,9 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
               gutter: parseFloat(
                 getComputedStyle(workspace).getPropertyValue("--chat-gutter"),
               ),
-              composer:
-                workspace.querySelector("#composer")?.getBoundingClientRect()
-                  .width ?? 0,
+              composer: workspace
+                .querySelector("#composer")!
+                .getBoundingClientRect().width,
             }));
           expect(
             Math.abs(

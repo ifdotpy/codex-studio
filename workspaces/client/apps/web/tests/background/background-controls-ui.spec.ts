@@ -714,6 +714,6 @@ test("Background controls", async ({ context }, testInfo) => {
   } finally {
     server.closeAllConnections();
     await page?.close();
-    await new Promise<void>((r) => server.close(() => r()));
+    await new Promise<void>((r) => server.close(r as (error?: Error) => void));
   }
 });

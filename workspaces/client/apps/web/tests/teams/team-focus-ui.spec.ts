@@ -43,14 +43,19 @@ for (const width of [1024, 390]) {
       worker.overview = { result: "Worker report", resultTruncated: true };
       if (index === 0) {
         worker.error = "Fixture error";
-        worker.commandProgress = [
+        // Base progress fixture omits lastOutputLine, unused by this focus check.
+        const commandProgress: Partial<
+          NonNullable<typeof worker.commandProgress>[number]
+        >[] = [
           {
             monitorId: "focus-command",
             stage: "Check focus",
-            lastOutputLine: "",
             startedAt: Date.now() / 1000,
           },
         ];
+        worker.commandProgress = commandProgress as NonNullable<
+          typeof worker.commandProgress
+        >;
       }
     });
     snapshot.runtime.agents = snapshot.threads;

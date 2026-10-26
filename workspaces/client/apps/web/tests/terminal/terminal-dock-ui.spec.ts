@@ -1,4 +1,3 @@
-import { fixturePostBody } from "../teams/helpers.ts";
 import {
   readTestState,
   entityPullFixtureForRequest,
@@ -139,11 +138,13 @@ test("Terminal dock", async () => {
       );
       res.setHeader(
         "Content-Type",
-        new Map([
-          [".js", "text/javascript"],
-          [".css", "text/css"],
-          [".html", "text/html"],
-        ]).get(extname(path)) || "application/octet-stream",
+        (
+          {
+            ".js": "text/javascript",
+            ".css": "text/css",
+            ".html": "text/html",
+          } as Record<string, string>
+        )[extname(path)] || "application/octet-stream",
       );
       res.end(await readFile(path));
     } catch {
@@ -184,30 +185,25 @@ test("Terminal dock", async () => {
     tail: "Deployment pending",
   } satisfies Monitor;
   const monitor = { ...monitorFields, kind: "monitor" };
-  const state: import("../playwright.ts").TestStateView = {
+  // Base transport fixture omits unused runtime collections and projection metadata.
+  const partialState: Omit<
+    Partial<import("../playwright.ts").TestStateView>,
+    "runtime"
+  > & { runtime: Partial<import("../playwright.ts").TestRuntimeView> } = {
     token: "terminal-fixture-token",
     stateDir: root,
     threads: [agent],
     chats: [],
-    edges: [],
     runtime: {
       agents: [agent],
-      tasks: [command],
-      monitors: [monitor],
       rooms: [],
       complaints: [],
-      projects: [],
-      events: [],
-      peerTeams: [],
+      monitors: [monitor],
+      tasks: [command],
       requests: [],
-      rules: [],
-      work: [],
-      nativeNotices: undefined,
-      sidebarOrder: undefined,
-      rateLimits: null,
-      rateLimitsByAccount: {},
     },
   };
+  const state = partialState as import("../playwright.ts").TestStateView;
   const shells: components["schemas"]["TerminalRecord"][] = Array.from(
     { length: 250 },
     (_, index) => ({
@@ -223,15 +219,17 @@ test("Terminal dock", async () => {
   const outputs = new Map(
     shells.map((shell) => [shell.id, `Welcome to ${shell.title}\r\n$ `]),
   );
-  type TerminalPath = Extract<
-    import("../../src/apiTypes.ts").ApiPostPath,
-    `/api/terminals/${string}`
+  type TerminalBody = Partial<
+    PostBody<"/api/terminals/create"> &
+      PostBody<"/api/terminals/input"> &
+      PostBody<"/api/terminals/resize"> &
+      PostBody<"/api/terminals/rename"> &
+      PostBody<"/api/terminals/close">
   >;
-  type Write = {
-    [Path in TerminalPath]: { path: Path; body: PostBody<Path> };
-  }[TerminalPath];
-  const writes: Write[] = [];
-  const writePaths: string[] = [];
+  const writes: { path: string; body: TerminalBody }[] = [];
+  /** Requests are authored by the renderer under test using these terminal routes. */
+  const fixtureTerminalBody = (route: Route): TerminalBody =>
+    route.request().postDataJSON();
   let uncertainInput = false;
   let failOutput = false,
     truncateOutput = false;
@@ -258,12 +256,12 @@ test("Terminal dock", async () => {
       const request = route.request(),
         url = new URL(request.url()),
         path = url.pathname;
+      let body: TerminalBody = {};
       if (request.method() === "POST") {
-        writePaths.push(path);
+        body = fixtureTerminalBody(route);
+        writes.push({ path, body });
         assert.equal(request.headers()["x-canvas-token"], state.token);
       }
-      if (path === "/api/terminals/resize" && request.method() === "POST")
-        writes.push({ path, body: fixturePostBody(route, path) });
       let value: unknown = {};
       if (path === "/api/sync/identity" || path === "/api/sync/stream")
         return route.continue();
@@ -288,11 +286,9 @@ test("Terminal dock", async () => {
       else if (path === "/api/limits") value = { data: null };
       else if (path === "/api/terminals") value = { items: shells };
       else if (path === "/api/terminals/create") {
-        const body = fixturePostBody(route, "/api/terminals/create");
-        writes.push({ path, body });
         const created: components["schemas"]["TerminalRecord"] = {
-          id: body.id,
-          agent: body.agent,
+          id: body.id!,
+          agent: body.agent!,
           title: "Terminal 251",
           cwd: agent.cwd!,
           status: "running",
@@ -347,8 +343,6 @@ test("Terminal dock", async () => {
         };
         truncateOutput = false;
       } else if (path === "/api/terminals/input") {
-        const body = fixturePostBody(route, "/api/terminals/input");
-        writes.push({ path, body });
         assert.ok(body.request_id);
         if (uncertainInput) {
           uncertainInput = false;
@@ -360,35 +354,31 @@ test("Terminal dock", async () => {
             },
           });
         }
-        const output = (outputs.get(body.id) || "") + body.text;
+        const output = (outputs.get(body.id!) || "") + body.text!;
         const commandOutput =
-          body.text.includes("\r") && output.includes("printf terminal-ok\r")
+          body.text!.includes("\r") && output.includes("printf terminal-ok\r")
             ? "terminal-ok\r\n"
             : "";
-        outputs.set(body.id, output + commandOutput);
-        if (body.text.includes("\r"))
-          publishResourceChanges([{ kind: "terminal", terminalId: body.id }]);
+        outputs.set(body.id!, output + commandOutput);
+        if (body.text!.includes("\r"))
+          publishResourceChanges([{ kind: "terminal", terminalId: body.id! }]);
       } else if (path === "/api/terminals/rename") {
-        const body = fixturePostBody(route, "/api/terminals/rename");
-        writes.push({ path, body });
         Object.assign(
-          shells.find((item) => item.id === body.id)!,
+          shells.find((item) => item.id === body.id!)!,
           {
             title: body.title,
           },
         );
       } else if (path === "/api/terminals/close") {
-        const body = fixturePostBody(route, "/api/terminals/close");
-        writes.push({ path, body });
         Object.assign(
-          shells.find((item) => item.id === body.id)!,
+          shells.find((item) => item.id === body.id!)!,
           {
             status: "closed",
           },
         );
         publishResourceChanges([
           { kind: "terminals" },
-          { kind: "terminal", terminalId: body.id },
+          { kind: "terminal", terminalId: body.id! },
         ]);
       }
       await route.fulfill({ json: value });
@@ -521,9 +511,9 @@ test("Terminal dock", async () => {
     await dock.locator(".xterm-helper-textarea").waitFor({ state: "attached" });
     const created = writes.find(
       (write) => write.path === "/api/terminals/create",
-    );
-    assert.ok(created);
-    assert.equal(created.body.agent, "lead");
+    )!;
+
+    assert.equal(created.body.agent!, "lead");
     await dock.locator(".xterm-helper-textarea").focus();
     await page.keyboard.type("printf terminal-ok");
     await page.keyboard.press("Enter");
@@ -535,7 +525,7 @@ test("Terminal dock", async () => {
     assert.equal(
       writes
         .filter((write) => write.path === "/api/terminals/input")
-        .map((write) => write.body.text)
+        .map((write) => write.body.text!)
         .join(""),
       "printf terminal-ok\r",
     );
@@ -602,7 +592,8 @@ test("Terminal dock", async () => {
     assert.ok(
       writes.some(
         (write) =>
-          write.path === "/api/terminals/input" && write.body.text === "\u0003",
+          write.path === "/api/terminals/input" &&
+          write.body.text! === "\u0003",
       ),
     );
     assert.ok(
@@ -717,7 +708,7 @@ test("Terminal dock", async () => {
       0,
     );
     assert.equal(
-      writePaths.filter((path) =>
+      writes.filter(({ path }) =>
         ["/api/native-command", "/api/monitor/input"].includes(path),
       ).length,
       0,

@@ -51,6 +51,7 @@ test("Ux request recovery browser", async ({
   const syncIdentity = syncIdentityFixture();
   const syncSnapshot = {
     ...fixtureSnapshot([]),
+    stateDir: "fixture",
     runtime: {
       ...fixtureSnapshot([]).runtime,
       nativeNotices: [],
@@ -92,11 +93,16 @@ test("Ux request recovery browser", async ({
       if (mode.endsWith("deadline"))
         await page.addInitScript(() => {
           const original = window.setTimeout;
-          window.setTimeout = Object.assign(
-            (callback: TimerHandler, delay?: number, ...args: unknown[]) =>
-              original(callback, delay === 15000 ? 100 : delay, ...args),
-            original,
-          );
+          window.setTimeout = ((
+            callback: TimerHandler,
+            delay?: number,
+            ...args: unknown[]
+          ) =>
+            original(
+              callback,
+              delay === 15000 ? 100 : delay,
+              ...args,
+            )) as typeof window.setTimeout;
         });
       await page.route("**/api/**", async (route) => {
         const request = route.request(),

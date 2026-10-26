@@ -87,7 +87,7 @@ test("Background Current Browser", async ({
             responseTarget: null,
             processes: data.runtime.monitors
               .filter((task) =>
-                ["approval", "running", "starting"].includes(task.status || ""),
+                ["approval", "running", "starting"].includes(task.status!),
               )
               .map((task) => ({
                 ...task,
@@ -160,7 +160,12 @@ test("Background Current Browser", async ({
             params: { monitorId: "approval" },
           },
         ],
-        monitors: [task("approval", "approval")],
+        monitors: [
+          {
+            ...task("approval", "approval"),
+            kind: "monitor",
+          } as import("../../src/types.ts").Monitor,
+        ],
         tasks: [
           task("active", "running"),
           {

@@ -187,7 +187,7 @@ test("workspace ui", async ({ page: testPage }) => {
       planAgent = (await readTestState(origin)).runtime.agents.find(
         (agent) => agent.id === lead.id,
       );
-      return !!planAgent?.threadId;
+      return !!planAgent!.threadId;
     }, "plan agent has a native thread");
     proc.stdin!.write(
       JSON.stringify({
@@ -275,7 +275,7 @@ test("workspace ui", async ({ page: testPage }) => {
     );
     await drawer.getByRole("button", { name: "Pause", exact: true }).click();
     await poll(
-      async () => (await get("/api/rules")).rules[0]?.status === "paused",
+      async () => (await get("/api/rules")).rules[0].status === "paused",
       "rule paused",
     );
     await drawer.getByRole("button", { name: "Delete", exact: true }).click();
@@ -359,12 +359,12 @@ test("workspace ui", async ({ page: testPage }) => {
       .waitFor();
     await drawer.getByRole("button", { name: "Pause", exact: true }).click();
     await poll(
-      async () => (await get("/api/rules")).rules[0]?.status === "paused",
+      async () => (await get("/api/rules")).rules[0].status === "paused",
       "low worker alert paused",
     );
     await drawer.getByRole("button", { name: "Resume", exact: true }).click();
     await poll(
-      async () => (await get("/api/rules")).rules[0]?.status === "active",
+      async () => (await get("/api/rules")).rules[0].status === "active",
       "low worker alert resumed",
     );
     await drawer.getByRole("button", { name: "Delete", exact: true }).click();
@@ -513,7 +513,7 @@ test("workspace ui", async ({ page: testPage }) => {
     await poll(
       async () =>
         (await get("/api/workspace", "?agent=" + lead.id + "&view=annotations"))
-          .annotations?.length === 1,
+          .annotations!.length === 1,
       "line comment stored",
     );
     assert.deepEqual(

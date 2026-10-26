@@ -249,9 +249,9 @@ test("file-viewers-browser", async ({ browser, page }) => {
 
     await page.getByRole("button", { name: "Source", exact: true }).click();
     assert(
-      (
-        (await page.locator(".file-preview-source").textContent()) || ""
-      ).includes("# Title"),
+      (await page.locator(".file-preview-source").textContent())!.includes(
+        "# Title",
+      ),
     );
     await page.getByRole("button", { name: "Preview", exact: true }).click();
     await page.getByRole("link", { name: "next", exact: true }).click();
@@ -281,9 +281,9 @@ test("file-viewers-browser", async ({ browser, page }) => {
     assert.equal(await page.locator("td").nth(2).textContent(), "c\td");
     await show("/data.json");
     assert(
-      (
-        (await page.locator(".file-preview-source").textContent()) || ""
-      ).includes('\n  "object": {'),
+      (await page.locator(".file-preview-source").textContent())!.includes(
+        '\n  "object": {',
+      ),
     );
     await page.getByRole("button", { name: "Source", exact: true }).click();
     assert.equal(
