@@ -1,6 +1,7 @@
 import type { BridgeNote } from "./testing/bridge-harness.ts";
 import type { BridgeNotificationParams } from "./bridge-protocol.ts";
 import type { UsageObservation } from "./usage-contract.generated.ts";
+type UsageNote = Extract<BridgeNote, { method: "thread/tokenUsage/updated" }>;
 type UsageParams = BridgeNotificationParams<"thread/tokenUsage/updated">;
 type ResponseId = Partial<
   Pick<Extract<UsageObservation, { kind: "response" }>, "responseId">
@@ -31,17 +32,11 @@ async function start(b: Awaited<ReturnType<typeof startBridge>>, text: string) {
   ).turn.id;
 }
 async function done(b: Awaited<ReturnType<typeof startBridge>>, id: string) {
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-      n.method === "turn/completed" && n.params.turn.id === id,
-  );
+  await b.note((n) => n.method === "turn/completed" && n.params.turn.id === id);
 }
 function observations(b: Awaited<ReturnType<typeof startBridge>>) {
   return b.notes
-    .filter(
-      (n): n is Extract<BridgeNote, { method: "thread/tokenUsage/updated" }> =>
-        n.method === "thread/tokenUsage/updated",
-    )
+    .filter((n) => n.method === "thread/tokenUsage/updated")
     .map((n): UsageObservation & ResponseId => n.params.studioUsage);
 }
 test("final stream usage is emitted before turn completion and replaces provisional assistant usage", async () => {
@@ -50,12 +45,7 @@ test("final stream usage is emitted before turn completion and replaces provisio
   await b.note(
     (n) => (n.params as Partial<UsageParams>)?.studioUsage?.kind === "response",
   );
-  expect(
-    b.notes.some(
-      (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-        n.method === "turn/completed",
-    ),
-  ).toBe(false);
+  expect(b.notes.some((n) => n.method === "turn/completed")).toBe(false);
   const response = observations(b).filter((o) => o?.kind === "response");
   expect(response).toHaveLength(1);
   expect(response[0]).toMatchObject({
@@ -74,19 +64,13 @@ test("final stream usage is emitted before turn completion and replaces provisio
     (n) => (n.params as Partial<UsageParams>)?.studioUsage?.kind === "response",
   );
   expect(usageIndex).toBeLessThan(
-    b.notes.findIndex(
-      (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-        n.method === "turn/completed",
-    ),
+    b.notes.findIndex((n) => n.method === "turn/completed"),
   );
 });
 test("every result is published before a steer echo can discard a deferred result", async () => {
   const b = await setup();
   const id = await start(b, "steer");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   await b.call("turn/steer", {
     threadId: b.thread,
     expectedTurnId: id,
@@ -94,7 +78,7 @@ test("every result is published before a steer echo can discard a deferred resul
     input: [{ type: "text", text: "continue" }],
   });
   await b.note(
-    (n): n is Extract<BridgeNote, { method: "item/completed" }> =>
+    (n) =>
       n.method === "item/completed" && n.params.item.clientId === "steer-1",
   );
   expect(observations(b).filter((o) => o?.kind === "cumulative")).toHaveLength(
@@ -115,10 +99,7 @@ test("equal per-turn results preserve cumulative totals and result-only turns ha
   await done(b, await start(b, "result-only"));
   const notes = b.notes
     .slice(before)
-    .filter(
-      (n): n is Extract<BridgeNote, { method: "thread/tokenUsage/updated" }> =>
-        n.method === "thread/tokenUsage/updated",
-    );
+    .filter((n) => n.method === "thread/tokenUsage/updated");
   expect(notes).toHaveLength(1);
   expect(notes[0].params.studioUsage).toMatchObject({
     kind: "cumulative",
@@ -168,7 +149,7 @@ test("background subagent final usage survives completion of its owning Studio t
   await done(b, turn);
   await b.writeSignal(".finish");
   await b.note(
-    (n): n is Extract<BridgeNote, { method: "item/completed" }> =>
+    (n) =>
       n.method === "item/completed" &&
       n.params.item.text === "Subagent: background-finished",
   );
@@ -210,10 +191,7 @@ test("emitted notifications match the shared Rust dispatch golden fixture", asyn
   await done(b, await start(b, "interrupted"));
   const notes = b.notes
     .slice(before)
-    .filter(
-      (n): n is Extract<BridgeNote, { method: "thread/tokenUsage/updated" }> =>
-        n.method === "thread/tokenUsage/updated",
-    );
+    .filter((n) => n.method === "thread/tokenUsage/updated");
   const selected = [
     notes.find((n) => n.params.studioUsage.kind === "response"),
     notes.find((n) => n.params.studioUsage.kind === "cumulative"),
@@ -235,7 +213,7 @@ test("background response starts retain the tool originating turn across Studio 
   const next = await start(b, "background-next");
   await done(b, next);
   const note = b.notes.find(
-    (n): n is Extract<BridgeNote, { method: "thread/tokenUsage/updated" }> =>
+    (n): n is UsageNote =>
       (n.params as Partial<UsageParams>)?.studioUsage?.kind === "response",
   );
   expect(note!.params.studioUsage).toMatchObject({
@@ -247,10 +225,7 @@ test("background response starts retain the tool originating turn across Studio 
 test("shutdown waits for delayed SDK close and flushes one unfinished response gap", async () => {
   const b = await setup();
   const turn = await start(b, "shutdown");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   await b.close();
   expect(observations(b)).toEqual([
     {
@@ -274,10 +249,7 @@ test("response context windows follow their own model rather than the query maxi
 test("turn interrupt reports unfinished usage as a gap rather than zero tokens", async () => {
   const b = await setup();
   const turn = await start(b, "interrupt");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
   await done(b, turn);
   expect(observations(b)).toEqual([
@@ -294,10 +266,7 @@ test("turn interrupt reports unfinished usage as a gap rather than zero tokens",
 test("shutdown bounds a stuck SDK consumer and still reports its gap once", async () => {
   const b = await setup({}, { STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50" });
   const turn = await start(b, "shutdown-stuck");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   await b.close();
   expect(observations(b)).toEqual([
     {
@@ -324,10 +293,7 @@ test("virtual-clock harness advances the bounded shutdown of a stuck SDK", async
   });
   bridges.push(b);
   const turn = await start(b, "shutdown-stuck");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   await b.close();
   expect(observations(b)).toEqual([
     {
@@ -351,14 +317,13 @@ test("discarding a stuck query drains unfinished subagent usage exactly once", a
   bridges.push(b);
   const turn = await start(b, "discard-stuck");
   await b.note(
-    (n): n is Extract<BridgeNote, { method: "item/completed" }> =>
+    (n) =>
       n.method === "item/completed" &&
       n.params.item.text === "Subagent: child-started",
   );
   await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
   await b.advanceUntil(
-    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-      n.method === "turn/completed" && n.params.turn.id === turn,
+    (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
   expect(observations(b).filter((o) => o.responseId === "response-1")).toEqual([
     {
@@ -402,15 +367,9 @@ test("shutdown never spends the full CLI exit timeout on a stuck consumer", asyn
   });
   bridges.push(b);
   await start(b, "shutdown-timing");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   await b.close();
-  const timing = await b.note(
-    (n): n is Extract<BridgeNote, { method: "fixture/shutdownTiming" }> =>
-      n.method === "fixture/shutdownTiming",
-  );
+  const timing = await b.note((n) => n.method === "fixture/shutdownTiming");
   expect(timing.params.durationMs).toBeLessThanOrEqual(2000);
 });
 
@@ -448,10 +407,7 @@ test("scripted Rust SDK close ends an aborted wait without inventing a successfu
   await b.close();
   expect(
     b.notes
-      .filter(
-        (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-          n.method === "turn/completed",
-      )
+      .filter((n) => n.method === "turn/completed")
       .some((n) => n.params.turn.status === "completed"),
   ).toBe(false);
   expect(
@@ -466,17 +422,9 @@ test("scripted Rust SDK close ends an aborted wait without inventing a successfu
 test("intentional shutdown preserves an unfinished turn for reconciliation instead of publishing failure", async () => {
   const b = await setup();
   await start(b, "shutdown");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   await b.close();
-  expect(
-    b.notes.filter(
-      (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-        n.method === "turn/completed",
-    ),
-  ).toEqual([]);
+  expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
   expect(observations(b)).toMatchObject([
     { kind: "gap", reason: "queryClosed" },
   ]);
@@ -495,21 +443,9 @@ for (const scenario of [
       });
       bridges.push(b);
       const turn = await start(b, scenario);
-      await b.note(
-        (
-          n,
-        ): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-          n.method === "provider/generationStarted",
-      );
+      await b.note((n) => n.method === "provider/generationStarted");
       if (scenario === "shutdown-persist")
-        await b.note(
-          (
-            n,
-          ): n is Extract<
-            BridgeNote,
-            { method: "fixture/persistFailureSettled" }
-          > => n.method === "fixture/persistFailureSettled",
-        );
+        await b.note((n) => n.method === "fixture/persistFailureSettled");
       if (scenario === "shutdown-deferred") {
         await b.call("turn/steer", {
           threadId: b.thread,
@@ -519,24 +455,14 @@ for (const scenario of [
         });
         await b.writeSignal(".finish");
         await b.note(
-          (
-            n,
-          ): n is Extract<
-            BridgeNote,
-            { method: "thread/tokenUsage/updated" }
-          > =>
-            n.method === "thread/tokenUsage/updated" &&
-            n.params.studioUsage.kind === "cumulative",
+          (n) =>
+            (n.params as Partial<UsageParams>)?.studioUsage?.kind ===
+            "cumulative",
         );
         await b.advanceTime(2000);
       }
       await b.close();
-      expect(
-        b.notes.filter(
-          (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-            n.method === "turn/completed",
-        ),
-      ).toEqual([]);
+      expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
       expect(
         observations(b).filter((o) => o.responseId === "response-1"),
       ).toEqual([
@@ -570,10 +496,7 @@ test("harness restart drives a virtual clock until the bridge exits", async () =
   });
   bridges.push(b);
   await start(b, "shutdown-deferred");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   const first = b.process;
   await b.restart();
   expect(first.exitCode !== null || first.signalCode !== null).toBe(true);
@@ -586,10 +509,7 @@ test("harness close reaps a bridge whose virtual clock cannot be driven", async 
   });
   bridges.push(b);
   await start(b, "shutdown-deferred");
-  await b.note(
-    (n): n is Extract<BridgeNote, { method: "provider/generationStarted" }> =>
-      n.method === "provider/generationStarted",
-  );
+  await b.note((n) => n.method === "provider/generationStarted");
   const child = b.process;
   child.disconnect();
   await b.close();
@@ -600,12 +520,7 @@ test("unexpected SDK end still publishes one failed completion", async () => {
   const b = await setup();
   const turn = await start(b, "query-close");
   await done(b, turn);
-  expect(
-    b.notes.filter(
-      (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-        n.method === "turn/completed",
-    ),
-  ).toMatchObject([
+  expect(b.notes.filter((n) => n.method === "turn/completed")).toMatchObject([
     {
       params: {
         turn: {
@@ -669,26 +584,15 @@ for (const scenario of ["shutdown-watchdog", "shutdown-watchdog-inflight"])
       bridges.push(b);
       const turn = await start(b, scenario);
       await b.note(
-        (n): n is Extract<BridgeNote, { method: "item/started" }> =>
-          n.method === "item/started" && n.params.item.id === "watch-tool",
+        (n) => n.method === "item/started" && n.params.item.id === "watch-tool",
       );
       if (scenario === "shutdown-watchdog-inflight") {
         await b.advanceTime(100);
-        await b.note(
-          (
-            n,
-          ): n is Extract<BridgeNote, { method: "fixture/stallSaveBlocked" }> =>
-            n.method === "fixture/stallSaveBlocked",
-        );
+        await b.note((n) => n.method === "fixture/stallSaveBlocked");
       }
       const before = b.notes.length;
       await b.close();
-      expect(
-        b.notes.some(
-          (n): n is Extract<BridgeNote, { method: "fixture/interrupt" }> =>
-            n.method === "fixture/interrupt",
-        ),
-      ).toBe(false);
+      expect(b.notes.some((n) => n.method === "fixture/interrupt")).toBe(false);
       expect(
         b.notes
           .slice(before)
@@ -698,12 +602,7 @@ for (const scenario of ["shutdown-watchdog", "shutdown-watchdog-inflight"])
               (n.params.item.stalled || n.params.item.studioNotice),
           ),
       ).toEqual([]);
-      expect(
-        b.notes.filter(
-          (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
-            n.method === "turn/completed",
-        ),
-      ).toEqual([]);
+      expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
       expect(
         observations(b).filter((o) => o.responseId === "response-1"),
       ).toEqual([

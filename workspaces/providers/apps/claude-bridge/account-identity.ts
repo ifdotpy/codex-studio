@@ -96,18 +96,23 @@ export function createAccountCheck({
     ".claude.json",
   ),
 }: {
-  expectedEmail?: string | undefined;
-  expectedIdentity?: string | undefined;
+  expectedEmail?: string;
+  expectedIdentity?: string;
   identityPath?: string;
   requireSubscription?: boolean;
   nativePath?: string;
 }) {
   let pinned = expectedIdentity;
   // The SDK account boundary preserves its existing checks and identity enrichment.
-  return function checkAccount<Account>(value: Account) {
-    const account = value as Account &
-      Partial<AccountInfo> &
-      Record<string, unknown>;
+  return function checkAccount<Account>(
+    account: Account &
+      Partial<
+        Record<
+          keyof AccountInfo | "organizationUuid" | "accountUuid" | "orgId",
+          unknown
+        >
+      >,
+  ) {
     if (!expectedEmail)
       reject(
         "expected_identity",

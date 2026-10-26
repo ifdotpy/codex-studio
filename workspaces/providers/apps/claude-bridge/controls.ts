@@ -212,7 +212,7 @@ export async function rollbackSession(
   request: {
     requestId: string;
     turnId: string;
-    restoreFiles?: boolean | undefined;
+    restoreFiles?: boolean;
   },
   deps: ControlDependencies,
 ) {

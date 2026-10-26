@@ -52,10 +52,7 @@ test("image refusal reaches the caller before a turn or SDK query exists", async
       code: "ENOENT",
     });
     assert.equal(
-      bridge.notes.some(
-        (note): note is Extract<BridgeNote, { method: "turn/started" }> =>
-          note.method === "turn/started",
-      ),
+      bridge.notes.some((note) => note.method === "turn/started"),
       false,
     );
   } finally {
@@ -85,10 +82,7 @@ test("missing native codecs refuse images while the bridge can still accept text
       threadId: bridge.thread,
       input: [{ type: "text", text: "hello" }],
     });
-    const input = await bridge.note(
-      (note): note is Extract<BridgeNote, { method: "fixture/input" }> =>
-        note.method === "fixture/input",
-    );
+    const input = await bridge.note((note) => note.method === "fixture/input");
     assert.deepEqual((input.params as FixtureMessage).content, [
       { type: "text", text: "hello" },
     ]);
@@ -110,10 +104,7 @@ test("the real image caller sends a bounded base64 image with its actual MIME ty
       threadId: bridge.thread,
       input: [{ type: "localImage", path: file }],
     });
-    const input = await bridge.note(
-      (note): note is Extract<BridgeNote, { method: "fixture/input" }> =>
-        note.method === "fixture/input",
-    );
+    const input = await bridge.note((note) => note.method === "fixture/input");
     const [block] = (input.params as FixtureMessage).content as FixtureImage[];
     assert.equal(block.type, "image");
     assert.equal(block.source.media_type, "image/png");
@@ -123,7 +114,7 @@ test("the real image caller sends a bounded base64 image with its actual MIME ty
     ).metadata();
     assert.equal(metadata.width, MAX_IMAGE_SIDE);
     await bridge.note(
-      (note): note is Extract<BridgeNote, { method: "turn/completed" }> =>
+      (note) =>
         note.method === "turn/completed" &&
         note.params.turn.id === result.turn.id,
     );
@@ -139,10 +130,7 @@ test("a refused image steer leaves the active turn unchanged", async () => {
       threadId: bridge.thread,
       input: [{ type: "text", text: "hold" }],
     });
-    await bridge.note(
-      (note): note is Extract<BridgeNote, { method: "fixture/input" }> =>
-        note.method === "fixture/input",
-    );
+    await bridge.note((note) => note.method === "fixture/input");
     const file = path.join(bridge.root, "broken.gif");
     await fs.writeFile(file, "broken");
     await assert.rejects(

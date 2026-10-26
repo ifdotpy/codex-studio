@@ -330,13 +330,14 @@ test("refuses a failed encode instead of returning the original", async () => {
 });
 
 test("refuses missing dimensions", async () => {
+  // Encoding methods are omitted: the invalid metadata must refuse before encoding.
+  const codec: (bytes: Buffer) => Pick<ImagePipeline, "metadata"> = () => ({
+    metadata: async () => ({ format: "png" }),
+  });
   await assert.rejects(
     prepareClaudeImage(
       Buffer.from("header without dimensions"),
-      // @ts-expect-error Missing pipeline methods deliberately witness refusal before encoding.
-      async () => () => ({
-        metadata: async () => ({ format: "png" }),
-      }),
+      async () => codec as ImageCodec,
     ),
     /Cannot send image.*dimensions cannot be verified/,
   );

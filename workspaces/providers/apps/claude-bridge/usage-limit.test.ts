@@ -1,4 +1,6 @@
 import type { BridgeNote } from "./testing/bridge-harness.ts";
+type TurnNote = Extract<BridgeNote, { method: "turn/completed" }>;
+type ItemNote = Extract<BridgeNote, { method: "item/completed" }>;
 // A Claude subscription limit through the real bridge with a scripted SDK. No
 // model calls. The messages follow what Claude Code writes to its stream when a
 // request is refused at the limit: a rate_limit_event, then a synthetic
@@ -36,12 +38,12 @@ async function start(text: string) {
 test("a limit that refuses a turn Claude started itself reports the provider reset", async () => {
   const { bridge, turn } = await start("work");
   const first = await bridge.note(
-    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
+    (n): n is TurnNote =>
       n.method === "turn/completed" && n.params.turn.id === turn,
   );
   assert.equal(first.params.turn.status, "completed");
   const own = await bridge.note(
-    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
+    (n): n is TurnNote =>
       n.method === "turn/completed" && n.params.turn.id !== turn,
   );
   assert.equal(own.params.turn.status, "failed");
@@ -51,7 +53,7 @@ test("a limit that refuses a turn Claude started itself reports the provider res
     resetsAt: RESET,
   });
   const shown = await bridge.note(
-    (n): n is Extract<BridgeNote, { method: "item/completed" }> =>
+    (n): n is ItemNote =>
       n.method === "item/completed" &&
       n.params.turnId === own.params.turn.id &&
       n.params.item.id ===
@@ -69,7 +71,7 @@ test("a limit that refuses a turn Claude started itself reports the provider res
 test("a limit without rate-limit details still reports a usage wait", async () => {
   const { bridge, turn } = await start("plain");
   const done = await bridge.note(
-    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
+    (n): n is TurnNote =>
       n.method === "turn/completed" && n.params.turn.id === turn,
   );
   assert.equal(done.params.turn.status, "failed");
