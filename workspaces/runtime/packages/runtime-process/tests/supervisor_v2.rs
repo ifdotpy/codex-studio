@@ -17,6 +17,440 @@ use studio_runtime_process::{
 };
 use support::*;
 
+/// Cleanup is authorized by a captured native member, including after the
+/// supervisor reaps the leader. Only disposable fixture processes are owned.
+#[cfg(target_os = "linux")]
+struct DisposableGroup {
+    group: u32,
+    members: Vec<(u32, String)>,
+}
+
+#[cfg(target_os = "linux")]
+impl DisposableGroup {
+    fn identity(pid: u32) -> Option<String> {
+        let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let fields: Vec<_> = raw.rsplit_once(')')?.1.split_whitespace().collect();
+        Some(format!("{}:{}:{}", fields[2], fields[3], fields[19]))
+    }
+
+    fn capture(&mut self, pid: u32) {
+        let identity = Self::identity(pid).unwrap();
+        assert_eq!(identity.split(':').next().unwrap(), self.group.to_string());
+        self.members.push((pid, identity));
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DisposableGroup {
+    fn drop(&mut self) {
+        if self
+            .members
+            .iter()
+            .any(|(pid, identity)| Self::identity(*pid).as_ref() == Some(identity))
+        {
+            let group = rustix::process::Pid::from_raw(i32::try_from(self.group).unwrap()).unwrap();
+            match rustix::process::kill_process_group(group, rustix::process::Signal::KILL) {
+                Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+                Err(error) => panic!("disposable group cleanup failed: {error}"),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct GroupCloseFixture {
+    // Kill the group before stopping its supervisor or deleting its state.
+    cleanup: DisposableGroup,
+    supervisor: Option<SupervisorProcess>,
+    client: SupervisorClient<std::os::unix::net::UnixStream>,
+    handle: SupervisorHandle,
+    opened: studio_runtime_process::OpenResult,
+    member: u32,
+    state: DisposableState,
+}
+
+#[cfg(target_os = "linux")]
+impl GroupCloseFixture {
+    fn start() -> Self {
+        Self::start_with_member(
+            "trap \"\" TERM; echo $$ > member.pid; echo ready > ready; exec /bin/sleep 60",
+        )
+    }
+
+    fn start_with_member(script: &str) -> Self {
+        let state = DisposableState::new();
+        let supervisor = SupervisorProcess::start(&state);
+        let mut client = connect_client(&state);
+        let handle = SupervisorHandle("operator-close-group".into());
+        let mut request = open_request(
+            &handle.0,
+            shell_command(
+                r#"
+mkfifo ready
+/bin/sh -c "$GROUP_MEMBER_SCRIPT" </dev/null >/dev/null 2>&1 &
+IFS= read -r ready < ready
+printf '{"ready":true}\n'
+wait
+"#,
+            ),
+            &state.0,
+        );
+        request
+            .env
+            .insert("GROUP_MEMBER_SCRIPT".into(), script.into());
+        let opened = client.open(request).unwrap();
+        let mut cleanup = DisposableGroup {
+            group: opened.pid,
+            members: Vec::new(),
+        };
+        cleanup.capture(opened.pid);
+        poll_event(&mut client, &handle, EventCursor(0), |event| {
+            event.payload["ready"] == true
+        });
+        let member = fs::read_to_string(state.0.join("member.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        cleanup.capture(member);
+        Self {
+            cleanup,
+            supervisor: Some(supervisor),
+            client,
+            handle,
+            opened,
+            member,
+            state,
+        }
+    }
+
+    fn close_request(&mut self) -> AdminCloseHandleRequest {
+        let health = self.client.health(HealthRequest::default()).unwrap();
+        let identity = health
+            .handles
+            .iter()
+            .find(|item| item.id == self.handle.0)
+            .unwrap();
+        AdminCloseHandleRequest {
+            handle: self.handle.clone(),
+            expected_pid: self.opened.pid,
+            expected_start_time: identity.start_time.clone().unwrap(),
+            expected_signature: identity.signature.clone(),
+            extra: BTreeMap::new(),
+        }
+    }
+
+    fn member_is_live(&self) -> bool {
+        fs::read_to_string(format!("/proc/{}/stat", self.member))
+            .ok()
+            .is_some_and(|raw| {
+                raw.rsplit_once(')').unwrap().1.split_whitespace().next() != Some("Z")
+            })
+    }
+
+    fn exit_leader(&mut self) {
+        assert!(self.cleanup.members.iter().any(|(pid, identity)| {
+            *pid == self.opened.pid && DisposableGroup::identity(*pid).as_ref() == Some(identity)
+        }));
+        let pid = rustix::process::Pid::from_raw(i32::try_from(self.opened.pid).unwrap()).unwrap();
+        rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+        poll_event(&mut self.client, &self.handle, EventCursor(0), |event| {
+            event.kind == EventKind::Exit
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn operator_close_waits_for_term_ignoring_group_member_after_leader_exit() {
+    let mut fixture = GroupCloseFixture::start();
+    let request = fixture.close_request();
+    let mut operator = SupervisorClient::connect_operator(
+        safe_socket_path(&fixture.state),
+        fixture.state.0.clone(),
+    )
+    .unwrap();
+    assert!(operator.admin_close_handle(request).unwrap().closed);
+    assert!(
+        !fixture.member_is_live(),
+        "operator close claimed success while a same-group TERM-ignoring member remained live"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn operator_close_kills_members_created_during_term_grace() {
+    let mut fixture = GroupCloseFixture::start_with_member(
+        r#"
+trap '/bin/sh -c '\''trap "" TERM; echo $$ > replacement.pid; exec /bin/sleep 60'\'' </dev/null >/dev/null 2>&1 & wait' TERM
+echo $$ > member.pid
+echo ready > ready
+/bin/sleep 60 & wait
+"#,
+    );
+    let request = fixture.close_request();
+    let mut operator = SupervisorClient::connect_operator(
+        safe_socket_path(&fixture.state),
+        fixture.state.0.clone(),
+    )
+    .unwrap();
+    let result = operator.admin_close_handle(request);
+    let replacement: u32 = fs::read_to_string(fixture.state.0.join("replacement.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    if DisposableGroup::identity(replacement).is_some() {
+        fixture.cleanup.capture(replacement);
+    }
+    assert!(result.unwrap().closed);
+    assert!(!fixture.member_is_live());
+    let live = fs::read_to_string(format!("/proc/{replacement}/stat"))
+        .ok()
+        .is_some_and(|raw| raw.rsplit_once(')').unwrap().1.split_whitespace().next() != Some("Z"));
+    assert!(!live, "new same-group member survived the confirmed close");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn gone_leader_with_live_group_refuses_close_retire_and_new_generation() {
+    let mut fixture = GroupCloseFixture::start();
+    let request = fixture.close_request();
+    fixture.exit_leader();
+    let mut operator = SupervisorClient::connect_operator(
+        safe_socket_path(&fixture.state),
+        fixture.state.0.clone(),
+    )
+    .unwrap();
+    assert!(operator.admin_close_handle(request).is_err());
+    assert!(
+        fixture
+            .client
+            .retire_command(RetireCommandRequest {
+                handle: fixture.handle.clone(),
+                generation: fixture.opened.generation,
+                extra: BTreeMap::new(),
+            })
+            .is_err()
+    );
+    assert!(
+        fixture
+            .client
+            .open(open_request(
+                &fixture.handle.0,
+                shell_command("exit 0"),
+                &fixture.state.0
+            ))
+            .is_err()
+    );
+    assert!(
+        fixture.member_is_live(),
+        "lost leader proof must never authorize a signal"
+    );
+    let row = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&fixture.state.0)
+        .unwrap()
+        .handle(&fixture.handle.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.snapshot.generation(), fixture.opened.generation.0);
+    assert!(
+        row.closed_at.is_none(),
+        "failed proof must retain unresolved ownership"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restart_recovery_stops_term_ignoring_group_after_leader_exit() {
+    let mut fixture = GroupCloseFixture::start();
+    drop(fixture.supervisor.take());
+    fixture.supervisor = Some(SupervisorProcess::start(&fixture.state));
+    let mut client = connect_client(&fixture.state);
+    let health = client.health(HealthRequest::default()).unwrap();
+    assert!(health.recovery.blocked.is_none());
+    assert!(health.handles.is_empty());
+    assert!(
+        !fixture.member_is_live(),
+        "recovery claimed termination while a group member remained live"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restart_recovery_with_gone_leader_preserves_unresolved_group() {
+    let mut fixture = GroupCloseFixture::start();
+    fixture.exit_leader();
+    drop(fixture.supervisor.take());
+    fixture.supervisor = Some(SupervisorProcess::start(&fixture.state));
+    let mut client = connect_client(&fixture.state);
+    let health = client.health(HealthRequest::default()).unwrap();
+    assert!(health.recovery.blocked.is_some());
+    assert!(health.handles.iter().any(|row| row.id == fixture.handle.0));
+    assert!(fixture.member_is_live());
+    assert!(
+        client
+            .open(open_request(
+                &fixture.handle.0,
+                shell_command("exit 0"),
+                &fixture.state.0
+            ))
+            .is_err()
+    );
+    let row = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&fixture.state.0)
+        .unwrap()
+        .handle(&fixture.handle.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.snapshot.generation(), fixture.opened.generation.0);
+    assert!(row.closed_at.is_none());
+    assert!(!row.recovery_proof);
+}
+
+/// This ignored test is an executable fixture run only by the disposable
+/// supervisor below. Tokio owns the signal handler; no unsafe pre-exec hook.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "disposable supervisor child executable"]
+fn leader_moves_group_on_term_fixture() {
+    let destination: i32 = std::env::var("GROUP_MOVE_DESTINATION")
+        .unwrap()
+        .parse()
+        .unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut term =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            println!("{{\"ready\":true}}");
+            term.recv().await.unwrap();
+            rustix::process::setpgid(None, rustix::process::Pid::from_raw(destination)).unwrap();
+            std::future::pending::<()>().await;
+        });
+}
+
+#[cfg(target_os = "linux")]
+struct MovingLeaderCleanup {
+    pid: u32,
+    start: String,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for MovingLeaderCleanup {
+    fn drop(&mut self) {
+        // This fixture deliberately changes PGID. Cleanup owns only its exact
+        // process start and must never signal the destination group.
+        if DisposableGroup::identity(self.pid)
+            .is_some_and(|identity| identity.rsplit_once(':').unwrap().1 == self.start)
+        {
+            let pid = rustix::process::Pid::from_raw(i32::try_from(self.pid).unwrap()).unwrap();
+            match rustix::process::kill_process(pid, rustix::process::Signal::KILL) {
+                Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+                Err(error) => panic!("moving fixture cleanup failed: {error}"),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct GroupDestination(std::process::Child);
+
+#[cfg(target_os = "linux")]
+impl Drop for GroupDestination {
+    fn drop(&mut self) {
+        if self.0.try_wait().unwrap().is_none() {
+            self.0.kill().unwrap();
+        }
+        self.0.wait().unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn restart_recovery_refuses_completion_when_live_leader_moves_group() {
+    use std::os::unix::process::CommandExt;
+    let state = DisposableState::new();
+    let destination = GroupDestination(
+        std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    // Pin the executable inode of this test, even if another worktree replaces
+    // the Cargo artifact path before the supervisor starts the fixture.
+    let helper = state.0.join("moving-leader");
+    fs::copy("/proc/self/exe", &helper).unwrap();
+    let supervisor = SupervisorProcess::start(&state);
+    let mut client = connect_client(&state);
+    let handle = SupervisorHandle("moving-recovery-leader".into());
+    let mut request = open_request(
+        &handle.0,
+        vec![
+            helper.to_string_lossy().into_owned(),
+            "--exact".into(),
+            format!(
+                "{}::leader_moves_group_on_term_fixture",
+                module_path!().rsplit("::").next().unwrap()
+            ),
+            "--ignored".into(),
+            "--nocapture".into(),
+        ],
+        &state.0,
+    );
+    request.env.insert(
+        "GROUP_MOVE_DESTINATION".into(),
+        destination.0.id().to_string(),
+    );
+    let opened = client.open(request).unwrap();
+    let _cleanup = MovingLeaderCleanup {
+        pid: opened.pid,
+        start: DisposableGroup::identity(opened.pid)
+            .unwrap()
+            .rsplit_once(':')
+            .unwrap()
+            .1
+            .to_owned(),
+    };
+    poll_event(&mut client, &handle, EventCursor(0), |event| {
+        event.payload["ready"] == true
+    });
+    drop(client);
+    drop(supervisor);
+    let _recovered = SupervisorProcess::start(&state);
+    let mut client = connect_client(&state);
+    let health = client.health(HealthRequest::default()).unwrap();
+    assert_eq!(
+        rustix::process::getpgid(rustix::process::Pid::from_raw(
+            i32::try_from(opened.pid).unwrap()
+        ))
+        .unwrap(),
+        rustix::process::Pid::from_raw(i32::try_from(destination.0.id()).unwrap()).unwrap()
+    );
+    assert!(
+        health.recovery.blocked.is_some(),
+        "recovery claimed closure while its exact leader remained live in another group"
+    );
+    assert!(health.handles.iter().any(|row| row.id == handle.0));
+    assert!(
+        client
+            .open(open_request(&handle.0, shell_command("exit 0"), &state.0))
+            .is_err()
+    );
+    let row = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&state.0)
+        .unwrap()
+        .handle(&handle.0)
+        .unwrap()
+        .unwrap();
+    assert!(row.closed_at.is_none());
+    assert!(!row.recovery_proof);
+    assert_eq!(row.snapshot.generation(), opened.generation.0);
+}
+
 struct DropOpenResponse {
     stream: std::os::unix::net::UnixStream,
     outgoing: Vec<u8>,
