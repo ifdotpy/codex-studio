@@ -51,6 +51,7 @@ test("plain 429 without a rate limit event has a typed terminal cause", async ()
 
 test("terminal result with only a plain HTTP 429 has a typed cause", async () => {
   const { turn } = await run([failed]);
+  assert.ok(turn.error);
   assert.equal(turn.error.codexErrorInfo, "rateLimitExceeded");
 });
 
@@ -128,6 +129,7 @@ test("an Opus rejection does not attach its reset to a Sonnet failure", async ()
       errors: ["Unrelated failure"],
     },
   ]);
+  assert.ok(turn.error);
   assert.equal(turn.error.codexErrorInfo, undefined);
   assert.ok(!("resetsAt" in turn.error) || turn.error.resetsAt === undefined);
 });
