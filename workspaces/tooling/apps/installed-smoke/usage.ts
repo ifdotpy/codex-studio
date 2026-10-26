@@ -187,13 +187,41 @@ export const TOKEN_CATEGORIES = [
   "reasoningOutput",
 ] as const;
 
+type ClaudeUsage = Parameters<
+  typeof import("../../../providers/apps/claude-bridge/usage.ts").responseTokens
+>[0];
+type NativeUsageDocument = Partial<Omit<ClaudeUsage, "cache_creation">> & {
+  cache_creation?: Partial<NonNullable<ClaudeUsage["cache_creation"]>> | null;
+} & Partial<
+    Record<
+      | "inputTokens"
+      | "cached_input_tokens"
+      | "cachedInputTokens"
+      | "cache_write_input_tokens"
+      | "cacheWriteInputTokens"
+      | "outputTokens"
+      | "reasoning_output_tokens"
+      | "reasoningOutputTokens",
+      ClaudeUsage["input_tokens"]
+    >
+  >;
+type JsonString = Extract<Schema["JsonValue"], string>;
+type NativeJournalDocument = Partial<Record<"type", JsonString>> & {
+  message?: Partial<Record<"id" | "model", JsonString>> & {
+    usage?: NativeUsageDocument;
+  };
+  payload?: Partial<Record<"model" | "response_id" | "turn_id", JsonString>> & {
+    usage?: NativeUsageDocument;
+  };
+};
+
 /** Codex includes cache reads in input; Claude reports uncached input separately. */
 export function nativeTokens(
   rawUsage: unknown,
   provider: Provider,
 ): Schema["UsageTokens"] {
-  // Provider journal numeric fields are read through one erased indexed view.
-  const usage = rawUsage as Record<string, number & Record<string, number>>;
+  // Sparse SDK usage plus legacy journal aliases; read directly as upstream does.
+  const usage = rawUsage as NativeUsageDocument;
   const input = usage.input_tokens ?? usage.inputTokens ?? 0;
   const cacheReadInput =
     usage.cache_read_input_tokens ??
@@ -261,11 +289,8 @@ export function nativeResponses(
   rawRecords: unknown[],
   provider: Schema["AnalyticsAgentRecord"]["provider"],
 ): Response[] {
-  // The journal owns these string-indexed fields; preserve the base optional checks.
-  const records = rawRecords as Record<
-    string,
-    string & Record<string, string>
-  >[];
+  // Sparse JSON journal envelopes keep message/payload objects distinct from strings.
+  const records = rawRecords as NativeJournalDocument[];
   const responses = new Map<string, Response>();
   let model: string | undefined;
   for (const row of records) {
@@ -290,7 +315,7 @@ export function nativeResponses(
       row.payload?.response_id
     ) {
       const p = row.payload;
-      responses.set(p.response_id, {
+      responses.set(p.response_id!, {
         responseId: p.response_id,
         turnId: p.turn_id,
         model: p.model ?? model,

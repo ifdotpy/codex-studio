@@ -1834,3 +1834,63 @@ test("mixed legacy and v4 token totals retain the known one-hour subset", async 
   }
   assert.equal(sumTokens([legacy]).cacheWriteInput1h, 0);
 });
+
+test("native usage boundaries accept sparse numeric fields and nested JSON documents", async () => {
+  const { default: ts } = await import("typescript");
+  const usageFile = path.resolve(
+    "workspaces/tooling/apps/installed-smoke/usage.ts",
+  );
+  const fixtureFile = path.resolve(
+    "workspaces/tooling/apps/installed-smoke/tests/fixtures/native-documents.ts",
+  );
+  const program = ts.createProgram([usageFile, fixtureFile], {
+    target: ts.ScriptTarget.ES2024,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    strict: true,
+    skipLibCheck: true,
+    noEmit: true,
+    allowImportingTsExtensions: true,
+  });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(usageFile)!;
+  const fixtures = program.getSourceFile(fixtureFile)!;
+  const variableType = (node: import("typescript").Node, name: string) => {
+    let declaration: import("typescript").VariableDeclaration | undefined;
+    const visit = (child: import("typescript").Node) => {
+      if (ts.isVariableDeclaration(child) && child.name.getText() === name)
+        declaration = child;
+      ts.forEachChild(child, visit);
+    };
+    visit(node);
+    assert.ok(declaration, name);
+    return checker.getTypeAtLocation(declaration.name);
+  };
+  const usageBoundary = source.statements.find(
+    (node) =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "nativeTokens",
+  )!;
+  const journalBoundary = source.statements.find(
+    (node) =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "nativeResponses",
+  )!;
+  const usageView = variableType(usageBoundary, "usage");
+  const journalView = checker.getIndexTypeOfType(
+    variableType(journalBoundary, "records"),
+    ts.IndexKind.Number,
+  )!;
+  assert.deepEqual(
+    [
+      checker.isTypeAssignableTo(
+        variableType(fixtures, "usageDocument"),
+        usageView,
+      ),
+      checker.isTypeAssignableTo(
+        variableType(fixtures, "journalDocument"),
+        journalView,
+      ),
+    ],
+    [true, true],
+    "the boundary views must accept the numeric and nested object values the journal stores",
+  );
+});

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync, execFileSync } from "node:child_process";
-import { javascriptFindings } from "./javascript-policy.ts";
+import {
+  javascriptFindings,
+  isTypeScriptProject,
+} from "./javascript-policy.ts";
 import { builtinModules, createRequire } from "node:module";
 import {
   appendFileSync,
@@ -690,17 +693,14 @@ function typeCacheDirectory(root: string) {
 }
 
 // docs/typescript.md: every tracked TypeScript project except the shared base is checked.
-function typescriptProjects(root: string) {
-  const listed = spawnSync(
-    "git",
-    ["ls-files", "--", "*tsconfig.json", "*tsconfig.*.json"],
-    { cwd: root, encoding: "utf8" },
-  );
+export function typescriptProjects(root: string) {
+  const listed = spawnSync("git", ["ls-files", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  });
   if (listed.status !== 0)
     throw new Error(`git ls-files failed: ${listed.stderr.trim()}`);
-  return listed.stdout
-    .split("\n")
-    .filter((file) => file && file !== "tsconfig.base.json");
+  return listed.stdout.split("\0").filter(isTypeScriptProject);
 }
 
 function cacheDirectory() {
