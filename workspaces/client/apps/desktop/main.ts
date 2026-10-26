@@ -354,7 +354,7 @@ function nativeDownload(
       );
   });
 }
-function signInForward(value: SignInForward) {
+function signInForward(value: SignInForward): SignInForward {
   if (!value || typeof value !== "object")
     throw new Error("Invalid sign-in forward.");
   const forward = {
