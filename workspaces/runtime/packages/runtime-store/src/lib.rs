@@ -3386,8 +3386,6 @@ mod commit_notification_tests {
                 ("runtime_federation_outbox", 0),
                 ("runtime_native_action_receipts", 1),
                 ("runtime_access_receipts", 1),
-                ("runtime_budget", 0),
-                ("runtime_budget_usage", 0),
                 ("runtime_account_transfers", 0),
                 ("runtime_orchestration_settings", 0),
                 ("runtime_requests", 0),
