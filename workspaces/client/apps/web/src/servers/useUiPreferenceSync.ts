@@ -121,10 +121,10 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
       if (applying) return;
       const paired = readServers();
       const current = [...paired];
-      const localIndex = servers.findIndex((server) => server.id === "local");
-      if (localIndex >= 0)
-        current.splice(localIndex, 0, {
-          ...servers[localIndex],
+      const local = servers.find((server) => server.id === "local");
+      if (local)
+        current.splice(servers.indexOf(local), 0, {
+          ...local,
           alias:
             localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
         });

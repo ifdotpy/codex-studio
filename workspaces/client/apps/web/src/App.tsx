@@ -2356,6 +2356,7 @@ export default function App({ active = true }: { active?: boolean }) {
         setSidebarCollapsed(false);
         setSidebar(true);
       }
+      return undefined;
     },
     new Set(
       agents
@@ -3682,21 +3683,17 @@ export default function App({ active = true }: { active?: boolean }) {
       <ProjectDeleteDialog {...projectDeletion.dialog} />
       <Modal
         opened={!!modal}
-        padding={
-          modal?.title === "New chat"
-            ? "var(--studio-model-dialog-padding)"
-            : undefined
-        }
+        {...(modal?.title === "New chat"
+          ? { padding: "var(--studio-model-dialog-padding)" }
+          : {})}
         closeOnEscape={modal?.title !== "New chat"}
         onClose={() => setModal(null)}
-        title={modal?.title}
-        size={
-          modal?.title === "Project settings"
-            ? modalSizes.settings
-            : modal?.title === "New chat"
-              ? "var(--studio-model-dialog-size)"
-              : undefined
-        }
+        {...(modal ? { title: modal.title } : {})}
+        {...(modal?.title === "Project settings"
+          ? { size: modalSizes.settings }
+          : modal?.title === "New chat"
+            ? { size: "var(--studio-model-dialog-size)" }
+            : {})}
       >
         <div className={modal?.title === "New chat" ? undefined : "picker"}>
           {modal?.body}

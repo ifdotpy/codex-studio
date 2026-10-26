@@ -1049,6 +1049,7 @@ function inventoryName(value: unknown): string | undefined {
     const candidate = value[key];
     if (typeof candidate === "string" && candidate) return candidate;
   }
+  return undefined;
 }
 
 function Profiles(c: Context) {
