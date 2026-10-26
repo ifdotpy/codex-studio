@@ -2,8 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, createFixtureViteServer } from "../playwright.mjs";
-import { fixture } from "./multi-server-fixture.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.ts";
+import { fixture } from "./multi-server-fixture.ts";
 
 test("bounded entities render initial and live changes with zero resource GETs", async ({
   page,

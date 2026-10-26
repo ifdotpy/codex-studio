@@ -10,12 +10,12 @@ export type ProjectChat = {
   id: string;
   name: string;
   serverId?: string | null;
-  provider?: string | null;
-  indicator?: ChatIndicator;
+  provider?: string | null | undefined;
+  indicator?: ChatIndicator | undefined;
   status?: string;
   unread?: boolean;
-  updated?: number | null;
-  created?: number | null;
+  updated?: number | null | undefined;
+  created?: number | null | undefined;
   pinned?: boolean;
   inFlight?: boolean;
   team?: boolean;
@@ -60,7 +60,7 @@ export function ChatServerLine({
   alias,
   offline = false,
 }: {
-  provider?: string;
+  provider?: string | undefined;
   alias: string;
   offline?: boolean;
 }) {

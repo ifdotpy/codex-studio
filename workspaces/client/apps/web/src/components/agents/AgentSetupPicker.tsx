@@ -11,7 +11,7 @@ export type AgentSetupPickerProps = {
   role: SetupRole;
   onRole: (role: SetupRole) => void;
   roleSwitchId?: string;
-  readOnlyReason?: string;
+  readOnlyReason?: string | undefined;
   provider: string;
   onProvider: (provider: string) => void;
   providers: string[];
@@ -25,7 +25,7 @@ export type AgentSetupPickerProps = {
   model: string;
   onModel: (model: string) => void;
   modelLabel: string;
-  modelId?: string;
+  modelId?: string | undefined;
   retainCurrentModel?: boolean;
   efforts: { value: string; label: string }[];
   effort: string;

@@ -6,6 +6,24 @@ import "../../src/style.css";
 import Conversation from "../../src/components/Conversation";
 import { ChatWaitSource } from "../../src/hooks/conversationData";
 
+import type { Agent } from "../../src/types";
+import type { components } from "../../src/generated/api";
+import { fixtureSnapshot } from "./snapshot.ts";
+
+declare global {
+  interface Window {
+    __uxChatSyncIdentity?: components["schemas"]["SyncIdentityResponse"];
+    chatFixture: {
+      select: (id: string) => void;
+      jump: (messageId: string) => void;
+      drafts: Record<string, string>;
+      id: string;
+      branchSelections: string[];
+      regularSelections: string[];
+    };
+  }
+}
+
 function Fixture() {
   const [id, setId] = useState("lead");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -19,7 +37,7 @@ function Fixture() {
   const [sending, setSending] = useState(false);
   const branchSelections = useRef<string[]>([]);
   const regularSelections = useRef<string[]>([]);
-  const agent: any = {
+  const agent = {
     id,
     rootId: id,
     isLead: false,
@@ -29,32 +47,25 @@ function Fixture() {
     status: "idle",
     canSend: true,
     activity: { phase: "idle" },
-  };
-  const accountsState: any = {
+  } satisfies Agent;
+  const accountsState: React.ComponentProps<
+    typeof Conversation
+  >["accountsState"] = {
     data: {
       accounts: [],
       archivedAccounts: [],
       defaultAccountKey: "default",
       logins: [],
+      defaultAccountGroups: [],
+      supportsDelete: true,
+      supportsDisconnect: true,
     },
     setData: () => {},
     error: "",
     refresh: async () => null,
     scope: "ux-chat-fixture",
   };
-  const data: any = {
-    stateDir: "ux-chat-fixture",
-    token: "fixture",
-    threads: [agent],
-    runtime: {
-      agents: [agent],
-      requests: [],
-      userTasks: [],
-      tasks: [],
-      monitors: [],
-      nativeNotices: [],
-    },
-  };
+  const data = fixtureSnapshot([agent]);
   const [waitSource] = useState(() => new ChatWaitSource());
   waitSource.set(data);
   const getDraft = useCallback(
@@ -85,7 +96,7 @@ function Fixture() {
     if (text !== previous)
       draftListeners.current.get(target)?.forEach((listener) => listener());
   };
-  (window as any).chatFixture = {
+  window.chatFixture = {
     select: setId,
     jump: (messageId: string) =>
       setJumpTarget({ messageId, requestId: crypto.randomUUID() }),
@@ -106,9 +117,20 @@ function Fixture() {
         )}
         <Conversation
           id={id}
-          syncWorkspaceId={(window as any).__uxChatSyncIdentity?.workspaceId}
+          {...(window.__uxChatSyncIdentity
+            ? { syncWorkspaceId: window.__uxChatSyncIdentity.workspaceId }
+            : {})}
           agent={agent}
-          data={data}
+          data={{
+            stateDir: data.stateDir,
+            threads: data.threads,
+            runtime: {
+              agents: data.runtime.agents,
+              requests: data.runtime.requests,
+              projects: data.runtime.projects,
+              nativeNotices: data.runtime.nativeNotices ?? [],
+            },
+          }}
           waitSource={waitSource}
           accountsState={accountsState}
           getDraft={getDraft}
@@ -132,22 +154,23 @@ function Fixture() {
           notify={setNotice}
           limits={null}
           reloadLimits={() => {}}
-          onPhase={() => {}}
           onSelect={(target) => {
             regularSelections.current.push(target);
             // The normal selection path rejects a chat missing from its snapshot.
-            if (data.threads.some((thread: any) => thread.id === target))
+            if (data.threads.some((thread) => thread.id === target))
               setId(target);
           }}
           onBranchCreated={(target) => {
             branchSelections.current.push(target);
             setId(target);
           }}
-          jumpTarget={jumpTarget}
+          {...(jumpTarget ? { jumpTarget } : {})}
           onJumpHandled={() => setJumpTarget(undefined)}
         />
       </main>
     </MantineProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<Fixture />);
+const root = document.getElementById("root");
+if (!root) throw new Error("Missing chat fixture root");
+createRoot(root).render(<Fixture />);

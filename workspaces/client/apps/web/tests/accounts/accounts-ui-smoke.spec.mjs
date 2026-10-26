@@ -7,7 +7,7 @@ import {
   accountTileButton,
   accountTileGroup,
   installApiSchemaFixtureHeaders,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";

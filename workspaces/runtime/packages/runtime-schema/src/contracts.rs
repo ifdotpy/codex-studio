@@ -361,8 +361,9 @@ fn api_schema_ts(schema_hash: &str) -> String {
 /// The Rust-owned constants appended to the generated API declarations.
 fn api_types_tail() -> String {
     format!(
-        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
+        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_IDENTITY_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
         crate::SYNC_PROTOCOL_VERSION,
+        crate::sync_protocol::SYNC_IDENTITY_PROTOCOL_VERSION,
         json_string(crate::SYNC_ENTITY_SCOPE),
         crate::TOKEN_RATE_MAX_ENTRIES,
         crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
@@ -841,6 +842,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         serde_json::json!({"type":"string", "const":crate::desktop::BACKEND_KIND});
     openapi["components"]["schemas"]["AnalyticsUsageRecord"]["properties"]["studioUsage"] =
         serde_json::json!({"$ref":"#/components/schemas/UsageObservation"});
+    openapi["components"]["schemas"]["SyncIdentityResponse"]["properties"]["syncProtocol"]["const"] =
+        serde_json::json!(crate::sync_protocol::SYNC_IDENTITY_PROTOCOL_VERSION);
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -983,7 +986,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
         generator.subschema_for::<crate::idle_compaction::CacheReport>();
         let mut schemas = generator.take_definitions(true);
-        for name in ["RateLimitBucketDto", "RateLimitWindowDto", "JsonValue"] {
+        for name in [
+            "RateLimitBucketDto",
+            "RateLimitWindowDto",
+            "JsonValue",
+            "ClaudeSessionSettings",
+            "ClaudeCustomModel",
+        ] {
             schemas.insert(name.into(), openapi["components"]["schemas"][name].clone());
         }
         let document = serde_json::json!({
@@ -1094,6 +1103,30 @@ mod tests {
                 .pointer("/components/schemas/AnalyticsUsageRecord/properties/studioUsage/$ref"),
             Some(&serde_json::json!("#/components/schemas/UsageObservation"))
         );
+    }
+
+    #[test]
+    fn stored_attempt_contract_exposes_provider_request_correlation() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        for (field, kind) in [
+            ("requestTicket", "string"),
+            ("connectionGeneration", "integer"),
+        ] {
+            assert_eq!(
+                document.pointer(&format!(
+                    "/components/schemas/StartAttemptRecordResponse/properties/{field}/type"
+                )),
+                Some(&serde_json::json!(kind))
+            );
+            assert_eq!(
+                document.pointer(&format!(
+                    "/components/schemas/ExecutionAttempt/properties/{field}/anyOf/0/$ref"
+                )),
+                Some(&serde_json::json!(format!(
+                    "#/components/schemas/StartAttemptRecordResponse/properties/{field}"
+                )))
+            );
+        }
     }
 
     #[test]

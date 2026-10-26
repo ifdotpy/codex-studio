@@ -1,4 +1,4 @@
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture, sourcePath } from "./sidebar-parity-fixture.mjs";
 
 const chat = (sidebar, name) =>

@@ -8,7 +8,7 @@ export default function OutboxControls({
   entry,
   edit,
 }: {
-  entry?: OutgoingMessage;
+  entry?: OutgoingMessage | undefined;
   edit: (entry: OutgoingMessage) => Promise<void>;
 }) {
   const { changeOutbox } = useServerOutbox();

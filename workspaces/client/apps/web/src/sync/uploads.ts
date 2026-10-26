@@ -124,7 +124,10 @@ export function createUploads(
         reject(error);
         return;
       }
-      const request = action(tx.objectStore(stores[0]), tx);
+      const [storeName] = stores;
+      if (storeName === undefined)
+        throw new Error("An upload transaction requires a store.");
+      const request = action(tx.objectStore(storeName), tx);
       tx.oncomplete = () => {
         db.close();
         resolve(request.result);
@@ -277,7 +280,12 @@ export function createUploads(
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onerror = () => reject(new Error(`Cannot read ${row.name}.`));
-        reader.onload = () => resolve(String(reader.result).split(",")[1]);
+        reader.onload = () => {
+          const [, content] = String(reader.result).split(",");
+          if (content === undefined)
+            reject(new Error(`Cannot read ${row.name}.`));
+          else resolve(content);
+        };
         reader.readAsDataURL(new Blob([bytes], { type: row.mime }));
       });
       const response = await syncPost(

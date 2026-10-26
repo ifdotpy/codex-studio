@@ -230,8 +230,8 @@ export const ToolCard = memo(function ToolCard({
   cwd,
 }: {
   item: Message;
-  agentId?: string;
-  cwd?: string;
+  agentId?: string | undefined;
+  cwd?: string | undefined;
 }) {
   const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const p = payload(item),
@@ -505,10 +505,12 @@ export default memo(function Activity({
   agentId,
 }: {
   items: Message[];
-  agentId?: string;
+  agentId?: string | undefined;
 }) {
   const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const summary = activitySummary(items);
+  const [first] = items;
+  if (!first) throw new Error("Activity has no messages");
   const running = summary.running;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
   const failed = summary.failed;
@@ -548,7 +550,7 @@ export default memo(function Activity({
             <strong className="activity-limit">Account limit reached · </strong>
           )}
           {items.length === 1
-            ? describe(items[0], payload(items[0])).label
+            ? describe(first, payload(first)).label
             : summary.label}
         </span>
         {items.length === 1 && reads.length > 0 && (

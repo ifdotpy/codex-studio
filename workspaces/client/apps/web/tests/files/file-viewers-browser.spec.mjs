@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 test("file-viewers-browser", async ({ browser, page }) => {
   test.setTimeout(120_000);

@@ -1,6 +1,13 @@
 import { createFrameBatch } from "./frameBatch";
 
-export type CachedTranscript = { payload: any | null; seq: number };
+import type { TranscriptPageData } from "../types";
+type TranscriptPayload = Omit<Partial<TranscriptPageData>, "items"> &
+  Pick<TranscriptPageData, "items">;
+type TranscriptItem = TranscriptPageData["items"][number];
+export type CachedTranscript = {
+  payload: TranscriptPayload | null;
+  seq: number;
+};
 export function createTranscriptCache() {
   const entries = new Map<
     string,
@@ -75,7 +82,7 @@ export function createTranscriptCache() {
   function cacheTranscriptValue(
     workspaceId: string,
     id: string,
-    payload: any | null,
+    payload: TranscriptPayload | null,
     seq: number,
     sizeHint?: number,
   ) {
@@ -107,9 +114,9 @@ export function createTranscriptCache() {
   function patchTranscriptValue(
     workspaceId: string,
     id: string,
-    payload: any,
+    payload: Omit<Partial<TranscriptPageData>, "items">,
     seq: number,
-    changed: any[],
+    changed: TranscriptPageData["items"],
     removed: string[],
     order?: string[],
   ) {
@@ -120,7 +127,7 @@ export function createTranscriptCache() {
     // Hooks retain published payloads between frame-batched notifications and
     // for history navigation. Patch a private array so removals cannot expose
     // null tombstones there; unchanged message objects keep their identities.
-    const oldItems = [...entry.value.payload.items] as any[];
+    const oldItems: (TranscriptItem | null)[] = [...entry.value.payload.items];
     const indexes = entry.itemIndexes;
     for (const item of changed) {
       if (typeof item?.id !== "string") continue;
@@ -143,24 +150,34 @@ export function createTranscriptCache() {
       indexes.delete(itemId);
       oldItems[index] = null;
     }
-    let items = oldItems;
+    let items: (TranscriptItem | null)[] = oldItems;
     if (order) {
       items = order
         .map((itemId) => {
           const index = indexes.get(itemId);
           return index === undefined ? undefined : oldItems[index];
         })
-        .filter(Boolean);
+        .filter(
+          (item): item is TranscriptItem => item !== null && item !== undefined,
+        );
     } else if (removed.length) {
-      items = oldItems.filter(Boolean);
+      items = oldItems.filter(
+        (item): item is TranscriptItem => item !== null && item !== undefined,
+      );
     }
     if (items !== oldItems || removed.length) {
       indexes.clear();
-      items.forEach((item, index) => indexes.set(item.id, index));
+      items.forEach((item, index) => {
+        if (item) indexes.set(item.id, index);
+      });
     }
     entry.value = {
       seq,
-      payload: { ...entry.value.payload, ...payload, items },
+      payload: {
+        ...entry.value.payload,
+        ...payload,
+        items: items.filter((item): item is TranscriptItem => item !== null),
+      },
     };
     if (entry.size < 0) entry.size = 0;
     size += entry.size - oldSize;

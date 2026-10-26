@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import type { ResourceChangeEvent } from "./resourceEvents";
@@ -207,6 +208,7 @@ describe("bounded stream entity delivery", () => {
       expect(delivery.requiresSnapshot(resource)).toBe(false);
       const latest = dispatch.mock.calls.at(-1)![0] as ResourceChangeEvent;
       expect(latest.epoch).toBe("new-owner");
+      assert.ok(latest.resourceVersions[0] != null);
       expect(latest.resourceVersions[0].cursor).toBeDefined();
       await vi.advanceTimersByTimeAsync(2000);
       expect(delivery.requiresSnapshot(resource)).toBe(false);
@@ -225,6 +227,7 @@ describe("bounded stream entity delivery", () => {
     const failed = vi.fn();
     const delivery = new ResourceEntityDelivery(persist, vi.fn(), failed);
     const queued: ResourceChangeEvent = frame(2);
+    assert.ok(queued.resourceVersions[0] != null);
     queued.resourceVersions[0].cursor = {
       workspaceId: queued.workspaceId,
       seq: 2,
@@ -466,6 +469,7 @@ describe("bounded stream entity delivery", () => {
     expect(dispatch.mock.calls.map(([event]) => event.revision)).toEqual([
       1, 2,
     ]);
+    assert.ok(dispatch.mock.calls[1] != null);
     expect(
       dispatch.mock.calls[1][0].resourceVersions[0].viewSnapshot.terminalOutput
         .text,

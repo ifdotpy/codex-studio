@@ -4,7 +4,7 @@ import {
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 

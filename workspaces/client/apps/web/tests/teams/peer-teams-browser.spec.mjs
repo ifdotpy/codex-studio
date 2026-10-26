@@ -1,4 +1,4 @@
-import { apiSchemaHeaders, test } from "../playwright.mjs";
+import { apiSchemaHeaders, test } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";

@@ -1,4 +1,4 @@
-import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import {
   expect,
   browserExecutablePath,
   skipIfWebKitCannotLaunch,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 const require = createRequire(
@@ -21,7 +21,7 @@ const webkitPath = webkit.executablePath();
 async function runDeadlineChecks(name, engine, executablePath) {
   // Browser request deadlines still expire after mobile JavaScript suspension.
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,

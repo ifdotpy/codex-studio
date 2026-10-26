@@ -140,33 +140,47 @@ export default function CombinedServerSidebar({
           else notify("The sidebar server is offline.");
           return;
         }
-        action({ kind: "project", path, folder }, (owner) => {
-          const group = model.groups.get(path);
-          const member = group?.members.find(
-            (item) => item.source.id === owner,
-          );
-          const nativeFolder = folder
-            ? member?.project.folders?.find(
-                (item) =>
-                  model.folderKey(owner, member.project.path || "", item.id) ===
-                  folder,
-              )?.id
-            : undefined;
-          if (folder && !nativeFolder)
-            throw new Error("The folder is unavailable on this server.");
-          return {
-            action: "new-chat",
-            path: model.wireProject(owner, path),
-            ...(nativeFolder
-              ? {
-                  folder: nativeFolder,
-                  projectId: group?.id,
-                  projectServerId:
-                    group?.home.project.homeServerId || group?.owner,
-                }
-              : {}),
-          };
-        });
+        action(
+          {
+            kind: "project",
+            path,
+            ...(folder === undefined ? {} : { folder }),
+          },
+          (owner) => {
+            const group = model.groups.get(path);
+            const member = group?.members.find(
+              (item) => item.source.id === owner,
+            );
+            const nativeFolder = folder
+              ? member?.project.folders?.find(
+                  (item) =>
+                    model.folderKey(
+                      owner,
+                      member.project.path || "",
+                      item.id,
+                    ) === folder,
+                )?.id
+              : undefined;
+            if (folder && !nativeFolder)
+              throw new Error("The folder is unavailable on this server.");
+            return {
+              action: "new-chat",
+              path: model.wireProject(owner, path),
+              ...(nativeFolder
+                ? {
+                    folder: nativeFolder,
+                    ...(group
+                      ? {
+                          projectId: group.id,
+                          projectServerId:
+                            group.home.project.homeServerId || group.owner,
+                        }
+                      : {}),
+                  }
+                : {}),
+            };
+          },
+        );
       }}
       newSharedChat={(path) =>
         path

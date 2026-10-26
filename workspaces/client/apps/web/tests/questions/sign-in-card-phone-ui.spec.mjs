@@ -8,8 +8,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
-import { browserExecutablePath } from "../browser-executable.mjs";
+import { test, expect } from "../playwright.ts";
+import { browserExecutablePath } from "../browser-executable.ts";
 
 const SIGN_IN =
   "https://id.example.com/authorize?client_id=cli&redirect_uri=http%3A%2F%2F127.0.0.1%3A40645%2Foauth%2Fcallback&state=s1";

@@ -2,6 +2,9 @@
 //! (`SyncProtocolResponse`) is checked against it and the web copy at the end
 //! of `api.ts` is rendered by `studio-contracts`.
 
+/// Version of the workspace identity endpoint; distinct from the entity stream protocol.
+pub const SYNC_IDENTITY_PROTOCOL_VERSION: u32 = 2;
+
 /// The single supported sync protocol version.
 pub const SYNC_PROTOCOL_VERSION: u32 = 4;
 /// `SYNC_PROTOCOL_VERSION` as text, for headers and query values.

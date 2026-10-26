@@ -6,7 +6,7 @@ import {
   rustUiFixture,
   queryFixtureDatabase,
   createFixtureViteServer,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Lose a real committed HTTP response, reload, and retry the same stored intention.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

@@ -9,7 +9,7 @@ import {
   expect,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Questions Ux Ui", async ({
   browser: _testBrowser,

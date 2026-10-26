@@ -20,12 +20,14 @@ import type {
 
 export type {
   JsonValue,
+  JsonInput,
+  JsonInputOf,
   Json,
   KnownApiFields,
   TranscriptWireItem,
   TranscriptPageData,
 } from "./apiTypes";
-import type { TranscriptWireItem } from "./apiTypes";
+import type { JsonInput, TranscriptWireItem } from "./apiTypes";
 export type Agent = AgentEntityDto;
 export type Chat = ChatEntityDto;
 export type PeerTeam = PeerTeamEntityDto;
@@ -116,7 +118,7 @@ export type LocalMessageAttachment = {
 };
 export type Message = Omit<
   TranscriptWireItem,
-  "assets" | "deliveryStatus" | "role" | "text" | "threadId"
+  "assets" | "deliveryStatus" | "nativeError" | "role" | "text" | "threadId"
 > & {
   assets?: Array<TranscriptAsset | LocalMessageAttachment> | null | undefined;
   deliveryStatus?:
@@ -124,6 +126,7 @@ export type Message = Omit<
     | "sending"
     | "paused"
     | undefined;
+  nativeError?: JsonInput | undefined;
   role: NonNullable<TranscriptWireItem["role"]>;
   text: NonNullable<TranscriptWireItem["text"]>;
   accountKey?: string | undefined;
