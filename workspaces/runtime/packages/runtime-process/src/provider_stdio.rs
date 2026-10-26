@@ -10,6 +10,10 @@ use std::{
     process::Stdio,
     sync::{Arc, Mutex, OnceLock},
 };
+use studio_runtime_providers::provider_diagnostics::{
+    REPLY_TIMING_DIAGNOSTIC_PREFIX, ReplyTimingDiagnostic, STDIN_TIMING_DIAGNOSTIC_PREFIX,
+    StdinTimingDiagnostic,
+};
 use studio_runtime_providers::{
     DecodedJournalPayload, Frame, Method, RequestId, ResponseBody, decode_journal_entry_borrowed,
 };
@@ -26,25 +30,11 @@ const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 const STDERR_LINE_LIMIT: usize = 64 * 1024;
 // Set to 1 only for the announced provider stdin timing profile.
 const STDIN_TIMING_DIAGNOSTICS_ENV: &str = "CODEX_RUNTIME_STDIN_TIMING_DIAGNOSTICS";
-const STDIN_TIMING_DIAGNOSTIC_PREFIX: &[u8] = b"studio_provider_stdin_write ";
-// Journals the reply to a witnessed request, under the same flag and owner.
-const REPLY_TIMING_DIAGNOSTIC_PREFIX: &[u8] = b"studio_provider_reply ";
 /// Requests whose physical stdin write and reply arrival the diagnostic journals.
 const WITNESSED_METHODS: [Method; 3] =
     [Method::TurnStart, Method::ThreadStart, Method::ThreadResume];
 
 static STDIN_TIMING_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StdinTimingDiagnostic<'a> {
-    provider_handle: &'a str,
-    generation: Generation,
-    operation_id: &'a OperationId,
-    request_id: RequestId,
-    method: &'static str,
-    stdin_flushed_at_ns: u128,
-}
 
 fn stdin_timing_diagnostics_enabled() -> bool {
     *STDIN_TIMING_DIAGNOSTICS_ENABLED
@@ -58,19 +48,6 @@ fn witnessed_method(write: &PreparedWrite) -> Option<Method> {
         .and_then(serde_json::Value::as_str)
         .and_then(Method::from_wire)
         .filter(|method| WITNESSED_METHODS.contains(method))
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReplyTimingDiagnostic<'a> {
-    provider_handle: &'a str,
-    generation: Generation,
-    operation_id: &'a OperationId,
-    request_id: &'a RequestId,
-    method: &'static str,
-    reply_at_ns: u128,
-    /// `result` or `error`.
-    outcome: &'static str,
 }
 
 /// Witnessed requests written but not yet answered, shared by the writer and reader.
@@ -112,8 +89,8 @@ impl ReplyWitness {
         let (operation_id, method) = self.pending.take(id)?;
         let diagnostic = ReplyTimingDiagnostic {
             provider_handle: self.handle.as_str(),
-            generation: self.generation,
-            operation_id: &operation_id,
+            generation: self.generation.0,
+            operation_id: &operation_id.0,
             request_id: id,
             method: method.as_str(),
             reply_at_ns: sample_timestamp(),
@@ -122,7 +99,7 @@ impl ReplyWitness {
                 ResponseBody::Error(_) => "error",
             },
         };
-        diagnostic_line(REPLY_TIMING_DIAGNOSTIC_PREFIX, &diagnostic)
+        diagnostic_line(REPLY_TIMING_DIAGNOSTIC_PREFIX.as_bytes(), &diagnostic)
     }
 }
 
@@ -145,13 +122,13 @@ fn stdin_timing_diagnostic_line(
     let request_id = serde_json::from_value(write.message().get("id")?.clone()).ok()?;
     let diagnostic = StdinTimingDiagnostic {
         provider_handle: handle.as_str(),
-        generation,
-        operation_id: write.operation_id(),
+        generation: generation.0,
+        operation_id: &write.operation_id().0,
         request_id,
         method: method.as_str(),
         stdin_flushed_at_ns,
     };
-    diagnostic_line(STDIN_TIMING_DIAGNOSTIC_PREFIX, &diagnostic)
+    diagnostic_line(STDIN_TIMING_DIAGNOSTIC_PREFIX.as_bytes(), &diagnostic)
 }
 
 fn write_stdin_timing_diagnostic_best_effort(line: &[u8]) {
@@ -1328,7 +1305,7 @@ mod tests {
                 },
                 emit_diagnostic: move |line: &[u8]| {
                     assert!(emit_flushed.load(Ordering::SeqCst));
-                    assert!(line.starts_with(STDIN_TIMING_DIAGNOSTIC_PREFIX));
+                    assert!(line.starts_with(STDIN_TIMING_DIAGNOSTIC_PREFIX.as_bytes()));
                     emitted_count.fetch_add(1, Ordering::SeqCst);
                 },
             },

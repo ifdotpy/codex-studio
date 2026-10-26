@@ -17,7 +17,7 @@ import {
   pruneLogs,
   recipePlan,
   unsafeRustFindings,
-} from "../facade.mjs";
+} from "../facade.ts";
 import {
   mkdtempSync,
   mkdirSync,
@@ -251,11 +251,11 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "--test-reporter=tap",
           "--test-name-pattern",
           "Cargo zero-match summaries",
-          "workspaces/tooling/apps/repository-checks/tests/gates.test.mjs",
-          "workspaces/tooling/apps/repository-checks/tests/facade.test.mjs",
-          "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs",
-          "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs",
-          "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs",
+          "workspaces/tooling/apps/repository-checks/tests/gates.test.ts",
+          "workspaces/tooling/apps/repository-checks/tests/facade.test.ts",
+          "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts",
+          "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts",
+          "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.ts",
           "workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs",
         ],
       ],
@@ -1185,7 +1185,7 @@ test("Playwright launcher clears BROWSER and removes state after success and fai
 
 test("tests retain temporary state ownership and follow the platform temp root", async () => {
   const { temporaryStateFindings, repositoryTemporaryStateFindings } =
-    await import("../test-temp-state.mjs");
+    await import("../test-temp-state.ts");
   assert.deepEqual(repositoryTemporaryStateFindings(process.cwd()), []);
   for (const source of [
     `let root = tempfile::tempdir().unwrap().${"keep"}();`,
@@ -1227,7 +1227,7 @@ test("tests retain temporary state ownership and follow the platform temp root",
 
 test("temporary state scan skips tracked files removed by the current change", async () => {
   const { repositoryTemporaryStateFindings } =
-    await import("../test-temp-state.mjs");
+    await import("../test-temp-state.ts");
   const root = mkdtempSync(
     path.join(os.tmpdir(), "studio-temp-state-deleted-"),
   );
@@ -1266,7 +1266,7 @@ test("installer recipe preserves directory arguments as literal positional value
     mkdirSync(tools);
     mkdirSync(path.dirname(binary), { recursive: true });
     writeFileSync(path.join(root, "justfile"), readFileSync("justfile"));
-    const budget = "workspaces/tooling/apps/repository-checks/gate-config.mjs";
+    const budget = "workspaces/tooling/apps/repository-checks/gate-config.ts";
     mkdirSync(path.dirname(path.join(root, budget)), { recursive: true });
     writeFileSync(path.join(root, budget), readFileSync(budget));
     writeFileSync(path.join(tools, "cargo"), "#!/bin/sh\nexit 0\n");

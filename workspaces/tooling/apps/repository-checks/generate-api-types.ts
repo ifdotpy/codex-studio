@@ -76,42 +76,44 @@ function optionalPropertyInputs(generated: string) {
     true,
     ts.ScriptKind.TS,
   );
-  const result = ts.transform(source, [
-    (context) => {
-      const visit: ts.Visitor = (node) => {
-        const updated = ts.visitEachChild(node, visit, context);
-        if (
-          !ts.isPropertySignature(updated) ||
-          !updated.questionToken ||
-          !updated.type
-        )
-          return updated;
-        const types = ts.isUnionTypeNode(updated.type)
-          ? [...updated.type.types]
-          : [updated.type];
-        if (!types.some((type) => type.kind === ts.SyntaxKind.UndefinedKeyword))
-          types.push(
-            ts.factory.createKeywordTypeNode(ts.SyntaxKind.UndefinedKeyword),
-          );
-        return ts.factory.updatePropertySignature(
-          updated,
-          updated.modifiers,
-          updated.name,
-          updated.questionToken,
-          ts.factory.createUnionTypeNode(types),
-        );
-      };
-      return (node) => ts.visitNode(node, visit, ts.isSourceFile) ?? node;
-    },
-  ]);
-  try {
-    const transformed = result.transformed[0];
-    if (!transformed)
-      throw new Error("Optional property transform produced no source");
-    return ts.createPrinter().printFile(transformed);
-  } finally {
-    result.dispose();
-  }
+  const insertions: { position: number; text: string }[] = [];
+  const visit = (node: ts.Node) => {
+    const extensionMap =
+      ts.isIndexSignatureDeclaration(node) &&
+      node.type &&
+      ts.isIndexedAccessTypeNode(node.type) &&
+      ts.isLiteralTypeNode(node.type.indexType) &&
+      ts.isStringLiteral(node.type.indexType.literal) &&
+      node.type.indexType.literal.text === "JsonValue";
+    if (
+      ((ts.isPropertySignature(node) && node.questionToken) || extensionMap) &&
+      node.type
+    ) {
+      const type = node.type;
+      const types = ts.isUnionTypeNode(type) ? type.types : [type];
+      if (
+        !types.some((member) => member.kind === ts.SyntaxKind.UndefinedKeyword)
+      ) {
+        const grouped =
+          ts.isFunctionTypeNode(type) ||
+          ts.isConstructorTypeNode(type) ||
+          ts.isConditionalTypeNode(type);
+        if (grouped)
+          insertions.push({ position: type.getStart(source), text: "(" });
+        insertions.push({
+          position: type.end,
+          text: grouped ? ") | undefined" : " | undefined",
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  for (const { position, text } of insertions.sort(
+    (a, b) => b.position - a.position,
+  ))
+    generated = generated.slice(0, position) + text + generated.slice(position);
+  return generated;
 }
 
 const input = process.argv[2];
