@@ -50,7 +50,8 @@ const AutosizeInput = memo(function AutosizeInput({
   );
 });
 
-/** Touch keyboards add a line on Enter; Cmd or Ctrl + Enter sends everywhere. */
+/** Touch keyboards add a line on Enter; ⌘/Ctrl + Enter sends everywhere.
+ * Shift + Enter always adds a line, with or without ⌘/Ctrl. */
 export function enterSends(
   event: {
     key: string;
@@ -61,8 +62,9 @@ export function enterSends(
   },
   touch: boolean,
 ) {
-  if (event.key !== "Enter" || event.isComposing) return false;
-  return event.metaKey || event.ctrlKey || (!touch && !event.shiftKey);
+  if (event.key !== "Enter" || event.isComposing || event.shiftKey)
+    return false;
+  return event.metaKey || event.ctrlKey || !touch;
 }
 
 export default function PromptInput(p: {
@@ -249,7 +251,7 @@ export default function PromptInput(p: {
         aria-label="Message"
         aria-description={
           p.mobile
-            ? "Use the send button to send."
+            ? "Enter adds a new line. Use the send button or ⌘/Ctrl + Enter to send."
             : p.managed
               ? "Enter sends to the current turn. Tab queues the message for the next turn. Shift + Enter adds a new line."
               : "Enter to send. Shift + Enter for a new line."
