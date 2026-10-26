@@ -2,93 +2,33 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-
-const teardownUrl = new URL(
-  "../../../../client/apps/web/scripts/scaleVerifierTeardown.ts",
-  import.meta.url,
-).href;
-const auditUrl = new URL(
-  "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts",
-  import.meta.url,
-).href;
+import type { TestContext } from "node:test";
+import type { FixtureMessage } from "./fixtures/scale-verifier-child.ts";
+import { mapLimited } from "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts";
+import { fileURLToPath } from "node:url";
 
 // A separate process receives real POSIX signals. Every gate is acknowledged
 // over IPC; no timing sleeps, live server, provider work or synthetic load.
-const fixture = `
-import assert from "node:assert/strict";
-import { runScaleVerifier } from ${JSON.stringify(teardownUrl)};
-const mode = process.argv[1];
-const gates = new Map();
-const wait = (stage) => new Promise((resolve) => {
-  gates.set(stage, resolve);
-  process.send({ stage });
-});
-process.on("message", ({ stage }) => gates.get(stage)?.());
-// The lifecycle must keep unresolved work and teardown alive without I/O.
-process.channel.unref();
-let interrupted = false;
-let remaining = ["lead-1", "worker-1"];
-let deletes = 0;
-const api = async (method, path, body) => {
-  process.send({ method, path, body });
-  if (method === "GET") {
-    await wait("audit");
-    if (mode === "audit-error") throw new Error("audit failed");
-  } else {
-    assert.deepEqual(body, { id: "lead-1" });
-    deletes += 1;
-    await wait("delete");
-    if (mode === "lost-delete-reply") throw new Error("delete outcome unknown");
-    remaining = [];
-  }
-};
-await runScaleVerifier(async ({ setCleanup, setRemaining }) => {
-  setRemaining(() => ({ agents: remaining, deleteAttempts: deletes }));
-  setCleanup(async () => {
-    try {
-      await api("GET", "/api/transcript/page?id=lead-1");
-    } finally {
-      await api("POST", "/api/conversation/delete", { id: "lead-1" });
-    }
-    process.send({ stage: "cleaned", remaining, deletes });
-  });
-  await wait("work");
-  if (mode === "error") throw new Error("work failed");
-  if (mode === "assertion") assert.fail("work assertion");
-  if (mode === "save-error") throw new Error("evidence write failed");
-  if (interrupted) throw new Error("interrupted");
-}, {
-  onInterrupt() {
-    interrupted = true;
-    gates.get("work")?.();
-  },
-}).catch((error) => {
-  process.stderr.write(error.message + "\\n");
-  process.exitCode ||= 1;
-});
-process.disconnect();
-`;
+const fixture = new URL("./fixtures/scale-verifier-child.ts", import.meta.url);
 
-function start(t, mode) {
-  const child = spawn(
-    process.execPath,
-    ["--input-type=module", "-e", fixture, mode],
-    {
-      stdio: ["ignore", "ignore", "pipe", "ipc"],
-    },
-  );
+function start(t: TestContext, mode: string) {
+  const child = spawn(process.execPath, [fileURLToPath(fixture), mode], {
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
+  });
   t.after(() => {
     if (child.exitCode === null) child.kill("SIGKILL");
   });
-  const events = new EventEmitter();
-  const messages = [];
+  const events = new EventEmitter<{ change: [] }>();
+  const messages: FixtureMessage[] = [];
   let stderr = "";
-  let exit = null;
-  child.on("message", (message) => {
+  let exit: { code: number | null; signal: NodeJS.Signals | null } | null =
+    null;
+  child.on("message", (message: FixtureMessage) => {
     messages.push(message);
     events.emit("change");
   });
-  child.stderr.on("data", (data) => {
+  assert.ok(child.stderr);
+  child.stderr.on("data", (data: Buffer) => {
     stderr += data;
     events.emit("change");
   });
@@ -96,14 +36,14 @@ function start(t, mode) {
     exit = { code, signal };
     events.emit("change");
   });
-  const until = async (predicate) => {
+  const until = async (predicate: () => boolean) => {
     while (!predicate()) {
       assert.equal(
         exit,
         null,
         `Child exited prematurely: ${JSON.stringify(exit)} ${stderr}`,
       );
-      await new Promise((resolve) => events.once("change", resolve));
+      await new Promise<void>((resolve) => events.once("change", resolve));
     }
   };
   return {
@@ -115,20 +55,20 @@ function start(t, mode) {
     get exit() {
       return exit;
     },
-    stage: (stage) =>
+    stage: (stage: string) =>
       until(() => messages.some((message) => message.stage === stage)),
-    signal: async (signal, count) => {
+    signal: async (signal: NodeJS.Signals, count: number) => {
       assert.ok(child.kill(signal));
       await until(
         () => stderr.split("waiting for teardown.").length - 1 >= count,
       );
     },
-    release: (stage) => child.send({ stage }),
+    release: (stage: string) => child.send({ stage }),
     finished: () => until(() => exit !== null),
   };
 }
 
-function assertOneDelete(run) {
+function assertOneDelete(run: ReturnType<typeof start>) {
   assert.deepEqual(
     run.messages
       .filter((message) => message.method)
@@ -158,13 +98,15 @@ for (const mode of [
       run.release("delete");
       await run.finished();
       assertOneDelete(run);
+      assert.ok(run.exit);
       assert.equal(run.exit.signal, null);
+      assert.ok(run.exit);
       assert.equal(run.exit.code, mode === "normal" ? 0 : 1);
     },
   );
 }
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
+for (const signal of ["SIGINT", "SIGTERM"] satisfies NodeJS.Signals[]) {
   test(
     `${signal} and a repeated signal during cleanup wait for one delete`,
     { timeout: 5_000 },
@@ -176,15 +118,17 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
       run.release("audit");
       await run.stage("delete");
       await run.signal(signal, 2);
-      assert.equal(run.exit, null);
+      assert.equal({ ...run }.exit, null);
       run.release("delete");
       await run.finished();
       assertOneDelete(run);
       assert.deepEqual(
-        run.messages.find((message) => message.stage === "cleaned").remaining,
+        run.messages.find((message) => message.stage === "cleaned")?.remaining,
         [],
       );
+      assert.ok(run.exit);
       assert.equal(run.exit.signal, null);
+      assert.ok(run.exit);
       assert.equal(run.exit.code, signal === "SIGINT" ? 130 : 143);
     },
   );
@@ -205,6 +149,7 @@ test(
     run.release("delete");
     await run.finished();
     assertOneDelete(run);
+    assert.ok(run.exit);
     assert.equal(run.exit.code, 143);
   },
 );
@@ -223,6 +168,7 @@ test(
     assert.ok(run.child.kill("SIGINT"));
     await run.finished();
     assertOneDelete(run);
+    assert.ok(run.exit);
     assert.equal(run.exit.code, 130);
     assert.match(
       run.stderr,
@@ -232,17 +178,17 @@ test(
 );
 
 test("failed parallel audit waits for every in-flight lane before teardown", async () => {
-  const { mapLimited } = await import(auditUrl);
-  let release;
-  const pending = new Promise((resolve) => {
-    release = resolve;
-  });
-  const stages = [];
-  const audit = mapLimited(["failed", "pending"], 2, async (id) => {
-    if (id === "failed") throw new Error("transcript failed");
-    await pending;
-    stages.push("audit settled");
-  });
+  const { promise: pending, resolve: release } = Promise.withResolvers<void>();
+  const stages: string[] = [];
+  const audit: Promise<void[]> = mapLimited(
+    ["failed", "pending"],
+    2,
+    async (id: string) => {
+      if (id === "failed") throw new Error("transcript failed");
+      await pending;
+      stages.push("audit settled");
+    },
+  );
   const finished = audit.catch(() => {
     stages.push("cleanup");
   });

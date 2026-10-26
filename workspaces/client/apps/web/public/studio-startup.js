@@ -1,9 +1,11 @@
+// @ts-check
 (() => {
   const updateUrl = new URL(window.location.href);
   if (updateUrl.searchParams.has("studio-update")) {
     updateUrl.searchParams.delete("studio-update");
     window.history.replaceState(null, "", updateUrl);
   }
+  /** @param {string} text */
   const notice = (text) => {
     const status = document.getElementById("studio-startup-status");
     const help = document.getElementById("studio-startup-help");
@@ -30,7 +32,7 @@
     notice("Studio could not open."),
   );
   if (
-    window.codexDesktop ||
+    "codexDesktop" in window ||
     !window.isSecureContext ||
     !("serviceWorker" in navigator) ||
     !document.querySelector('meta[name="studio-build"]')
@@ -54,12 +56,16 @@
             )
               return;
             checked = Date.now();
-            void registration.update().catch(() => {});
+            void registration
+              .update()
+              .catch // @ts-check
+              (() => {});
           };
           document.addEventListener("visibilitychange", update);
           window.addEventListener("online", update);
         })
-        .catch(() => {});
+        .catch // @ts-check
+        (() => {});
     },
     { once: true },
   );

@@ -1,4 +1,5 @@
 import test from "node:test";
+import type { GateStep } from "../facade.ts";
 import assert from "node:assert/strict";
 
 import { executeRecipe, gateSteps } from "../facade.ts";
@@ -15,7 +16,11 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
-const fakeStep = (id, lane, extra = {}) => ({
+const fakeStep = (
+  id: string,
+  lane: string,
+  extra: Partial<GateStep> = {},
+): GateStep => ({
   id,
   label: id,
   lane,
@@ -120,8 +125,8 @@ test("gate children discard ambient agent settings and keep explicit fixture set
 });
 
 test("fixed lanes overlap, gate the guest build, and summarize failures in declaration order", async () => {
-  const trace = [];
-  const releaseBuild = Promise.withResolvers();
+  const trace: string[] = [];
+  const releaseBuild = Promise.withResolvers<void>();
   const steps = [
     fakeStep("build", "rust", { provides: "workspace" }),
     fakeStep("rust-failure", "rust", { requires: "workspace" }),
@@ -168,7 +173,7 @@ test("fixed lanes overlap, gate the guest build, and summarize failures in decla
 });
 
 test("failed preparation skips consumers while independent lanes still run", async () => {
-  const trace = [];
+  const trace: string[] = [];
   const result = await executeRecipe(
     process.cwd(),
     "test-fast",
@@ -226,7 +231,7 @@ test("interrupt waits for running children and cancels unstarted dependents", as
     },
   );
   assert.ok(stopped);
-  assert.equal(result.steps[2].status, "cancelled");
+  assert.equal(result.steps[2]?.status, "cancelled");
   assert.equal(result.exitCode, 1);
 });
 
@@ -238,7 +243,7 @@ test(
     try {
       for (const cancel of [false, true]) {
         const controller = new AbortController();
-        let pid;
+        let pid: number | undefined;
         let captured = "";
         const source = `const {spawn}=require('node:child_process');
         const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
@@ -256,7 +261,7 @@ test(
               captured += text;
               const match = captured.match(/READY (\d+)/);
               if (match) {
-                pid = +match[1];
+                pid = Number(match[1]);
                 if (cancel) controller.abort();
               }
             },
@@ -283,7 +288,7 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
   for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
     const steps = gateSteps(process.cwd(), name);
     // Tools must start while type checks wait for WASM and web tests wait for Rust.
-    const lane = (id) => steps.find((step) => step.id === id).lane;
+    const lane = (id: string) => steps.find((step) => step.id === id)?.lane;
     assert.notEqual(lane("tooling"), lane("TypeScript projects"));
     assert.notEqual(lane("tooling"), lane("web unit tests"));
     assert.notEqual(lane("TypeScript projects"), lane("web unit tests"));
@@ -291,22 +296,22 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
       steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
     );
     const rust = steps.find((s) => s.id === "rust-tests");
-    assert.deepEqual(rust.commands[0][1].slice(0, 4), [
+    assert.deepEqual(rust?.commands?.[0]?.[1].slice(0, 4), [
       "nextest",
       "run",
       "--workspace",
       "--profile",
     ]);
     assert.ok(!JSON.stringify(steps).includes("--release"));
-    assert.equal(steps.find((s) => s.id === "guest").requires, "workspace");
+    assert.equal(steps.find((s) => s.id === "guest")?.requires, "workspace");
     assert.equal(
-      steps.find((s) => s.id === "web unit tests").requires,
+      steps.find((s) => s.id === "web unit tests")?.requires,
       "workspace",
     );
     assert.ok(
       steps
         .find((s) => s.id === "workspace")
-        .commands[0][1].includes("--examples"),
+        ?.commands?.[0]?.[1].includes("--examples"),
     );
   }
   assert.ok(
@@ -348,7 +353,9 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify({args: pro
       },
     );
     assert.equal(result.status, 0, result.stderr);
-    const recorded = JSON.parse(readFileSync(capture, "utf8"));
+    const recorded: { args: string[]; supervisor: string } = JSON.parse(
+      readFileSync(capture, "utf8"),
+    );
     assert.deepEqual(recorded.args, [
       "nextest",
       "run",
@@ -378,7 +385,7 @@ test("native platform filter keeps every common clause identical", () => {
   const [common, linux] = [
     ...source.matchAll(/default-filter = '''\n([\s\S]*?)\n'''/g),
   ].map((match) => match[1]);
-  assert.ok(linux.startsWith(common + "\n    | "));
+  assert.ok(linux?.startsWith(common + "\n    | "));
   assert.match(source, /platform = 'cfg\(target_os = "linux"\)'/);
   assert.match(source, /inherits = "ci"/);
 });

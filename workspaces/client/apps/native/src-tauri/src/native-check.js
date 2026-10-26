@@ -1,18 +1,37 @@
+// @ts-check
+/// <reference path="./native-check-types.ts" />
 (async () => {
   if (window.__studioCheckStarted) return;
   window.__studioCheckStarted = true;
+  const native = window.__TAURI__;
+  const events = native.event;
+  if (!events?.emit) throw new Error("Native check events are unavailable.");
+  const emit = events.emit;
+  /** @template [T=Record<string, unknown>]
+   * @param {string} id @param {string} method @param {unknown} [params]
+   * @returns {Promise<import("./native-check-types.ts").CheckResponse<T>>}
+   */
   const call = async (id, method, params = null) => {
-    await window.__TAURI__.event.emit("studio-native-check-step", {
+    await emit("studio-native-check-step", {
       id,
       method,
       origin: location.origin,
     });
-    const response = await window.__TAURI__.core.invoke("client_request", {
+    const response = await native.core.invoke("client_request", {
       request: { id, method, params },
     });
-    if (response.id !== id) throw new Error("Response identity changed");
-    return response;
+    if (
+      !response ||
+      typeof response !== "object" ||
+      !("id" in response) ||
+      response.id !== id
+    )
+      throw new Error("Response identity changed");
+    return /** @type {import("./native-check-types.ts").CheckResponse<T>} */ (
+      response
+    );
   };
+  /** @type {(condition: unknown, message: string) => asserts condition} */
   const assert = (condition, message) => {
     if (!condition) throw new Error(message);
   };
@@ -31,6 +50,7 @@
         typeof window.localStorage.flush === "function",
         "Large profile bootstrap did not finish",
       );
+      /** @type {import("./native-check-types.ts").CheckResponse<{id: string, snapshot: import("../../../web/src/native/importBrowserProfile.ts").BrowserProfileSnapshot}>} */
       const response = await call("census-manifest", "profile.snapshot", {
         owner: "root",
       });
@@ -40,12 +60,17 @@
       );
       let records = 0;
       for (const saved of response.result.snapshot.databases) {
-        const db = await new Promise((resolve, reject) => {
-          const request = indexedDB.open(saved.name, saved.version);
-          request.onupgradeneeded = () => request.transaction.abort();
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        });
+        const db = await new Promise(
+          /** @param {(value: IDBDatabase) => void} resolve */ (
+            resolve,
+            reject,
+          ) => {
+            const request = indexedDB.open(saved.name, saved.version);
+            request.onupgradeneeded = () => request.transaction?.abort();
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          },
+        );
         try {
           assert(
             db.objectStoreNames.length === saved.stores.length,
@@ -60,6 +85,7 @@
               request.onsuccess = () => resolve(request.result);
               request.onerror = () => reject(request.error);
             });
+            assert(store.chunks, "Imported store has no chunks");
             const expected = store.chunks.reduce(
               (sum, chunk) => sum + chunk.records,
               0,
@@ -75,25 +101,30 @@
         }
       }
       await window.localStorage.flush();
-      await window.__TAURI__.event.emit("studio-native-check-step", {
+      await emit("studio-native-check-step", {
         kind: "profile-census",
         databases: response.result.snapshot.databases.length,
         records,
       });
-      await window.__TAURI__.event.emit("studio-native-check-result", {
+      await emit("studio-native-check-result", {
         passed: true,
         mode: window.__studioCheckMode,
       });
       return;
     }
     if (window.__studioCheckMode.startsWith("profile-store-")) {
-      const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("native-profile-isolation", 1);
-        request.onupgradeneeded = () =>
-          request.result.createObjectStore("records");
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
+      const db = await new Promise(
+        /** @param {(value: IDBDatabase) => void} resolve */ (
+          resolve,
+          reject,
+        ) => {
+          const request = indexedDB.open("native-profile-isolation", 1);
+          request.onupgradeneeded = () =>
+            request.result.createObjectStore("records");
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        },
+      );
       const write = window.__studioCheckMode === "profile-store-write";
       const value = await new Promise((resolve, reject) => {
         const tx = db.transaction("records", write ? "readwrite" : "readonly");
@@ -125,7 +156,7 @@
         }
       }
       db.close();
-      await window.__TAURI__.event.emit("studio-native-check-result", {
+      await emit("studio-native-check-result", {
         passed: true,
         mode: window.__studioCheckMode,
       });
@@ -146,6 +177,7 @@
         document.querySelectorAll("iframe").length === 0,
         "Combined shell created a server iframe",
       );
+      /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").HttpResponse>} */
       const response = await call("shell-http-command", "api.request", {
         path: "/api/native-check",
         method: "POST",
@@ -162,13 +194,14 @@
           ) === "[97,0,255]",
         "Direct shell HTTP round trip failed: " + JSON.stringify(response),
       );
-      await window.__TAURI__.event.emit("studio-native-check-result", {
+      await emit("studio-native-check-result", {
         passed: true,
         mode: window.__studioCheckMode,
       });
       return;
     }
     if (window.__studioCheckMode === "write") {
+      /** @type {import("./native-check-types.ts").CheckResponse<boolean>} */
       const notification = await call("hidden-notification", "desktop.notify", {
         title: "Fixture",
         body: "Fixture",
@@ -178,6 +211,7 @@
         notification.result === false,
         "Hidden checks must not show a notification",
       );
+      /** @type {import("./native-check-types.ts").CheckResponse<boolean>} */
       const invalid = await call("invalid-notification", "desktop.notify", {
         title: "Fixture",
         body: "Fixture",
@@ -186,7 +220,7 @@
       assert(!!invalid.error, "Invalid notification target was accepted");
     }
     if (window.__studioCheckMode === "profile-import") {
-      await window.__TAURI__.event.emit("studio-native-check-step", {
+      await emit("studio-native-check-step", {
         kind: "profile-bootstrap",
         secure: isSecureContext,
         locks: !!navigator.locks,
@@ -215,11 +249,16 @@
           "remote draft survives",
         "Remote owner preference was lost",
       );
-      const remoteDb = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("migration-fixture:server:remote", 1);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
+      const remoteDb = await new Promise(
+        /** @param {(value: IDBDatabase) => void} resolve */ (
+          resolve,
+          reject,
+        ) => {
+          const request = indexedDB.open("migration-fixture:server:remote", 1);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        },
+      );
       const remoteValue = await new Promise((resolve, reject) => {
         const request = remoteDb
           .transaction("records")
@@ -231,6 +270,7 @@
       remoteDb.close();
       assert(remoteValue === "remote bytes", "Remote owner database was lost");
       await window.localStorage.flush();
+      /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
       const stored = await call(
         "profile-preferences",
         "preferences.raw_all",
@@ -247,11 +287,16 @@
         ),
         "Import receipt leaked into settings",
       );
-      const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("migration-fixture", 1);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
+      const db = await new Promise(
+        /** @param {(value: IDBDatabase) => void} resolve */ (
+          resolve,
+          reject,
+        ) => {
+          const request = indexedDB.open("migration-fixture", 1);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        },
+      );
       const record = await new Promise((resolve, reject) => {
         const request = db
           .transaction("records")
@@ -262,6 +307,7 @@
       });
       const nextKey = await new Promise((resolve, reject) => {
         const transaction = db.transaction("changes", "readwrite");
+        /** @type {IDBValidKey | undefined} */
         let key;
         const request = transaction
           .objectStore("changes")
@@ -288,7 +334,7 @@
         new Uint8Array(await record.file.arrayBuffer())[1] === 255,
         "Imported file bytes changed",
       );
-      await window.__TAURI__.event.emit("studio-native-check-result", {
+      await emit("studio-native-check-result", {
         passed: true,
         mode: "profile-import",
       });
@@ -331,7 +377,9 @@
     }
     if (window.__studioCheckMode === "frames") {
       const frame = document.createElement("iframe");
+      /** @type {Promise<Record<string, unknown>>} */
       const response = new Promise((resolve) => {
+        /** @param {MessageEvent} event */
         const listener = (event) => {
           if (
             event.source !== frame.contentWindow ||
@@ -348,7 +396,7 @@
       frame.hidden = true;
       document.body.append(frame);
       const result = await response;
-      await window.__TAURI__.event.emit("studio-native-check-step", result);
+      await emit("studio-native-check-step", result);
       assert(
         !result.parentReadable,
         "The server view can read its privileged parent",
@@ -364,7 +412,7 @@
         "Server view origin is ambiguous",
       );
       frame.remove();
-      await window.__TAURI__.event.emit("studio-native-check-result", {
+      await emit("studio-native-check-result", {
         passed: true,
         mode: "frames",
       });
@@ -374,6 +422,7 @@
       const identity = await call("cached-identity", "identity.get", {});
       const workspace = identity.result?.workspaceId;
       assert(workspace === "a".repeat(32), "Cached workspace was lost");
+      /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
       const before = await call("offline-read", "drafts.view", { workspace });
       const expected =
         window.__studioCheckMode === "drafts-offline-write"
@@ -383,6 +432,7 @@
         before.result?.drafts.room === expected,
         "Offline draft recovery failed",
       );
+      /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
       const edited = await call("offline-edit", "drafts.edit", {
         workspace,
         changes: { room: "offline Ж🦀" },
@@ -391,7 +441,7 @@
         edited.result?.drafts.room === "offline Ж🦀",
         "Offline edit failed",
       );
-      await window.__TAURI__.event.emit("studio-native-check-result", {
+      await emit("studio-native-check-result", {
         passed: true,
         mode: window.__studioCheckMode,
       });
@@ -427,6 +477,7 @@
           denied = true;
         }
         assert(denied, "Another workspace accepted a draft");
+        /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
         const imported = await call("import-browser-drafts", "drafts.import", {
           workspace,
           versions: [
@@ -444,6 +495,7 @@
           "Draft import receipt was lost",
         );
         if (window.__studioCheckMode === "network-drafts-write") {
+          /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
           const edited = await call("draft-write", "drafts.edit", {
             workspace,
             changes: { room: "saved Ж🦀" },
@@ -453,11 +505,13 @@
             "Draft did not commit",
           );
         }
+        /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
         const saved = await call("draft-read", "drafts.view", { workspace });
         assert(
           saved.result?.drafts.room === "saved Ж🦀",
           "Draft did not survive restart",
         );
+        /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
         const refreshed = await call("draft-refresh", "drafts.refresh", {
           workspace,
         });
@@ -467,18 +521,27 @@
           "Draft refresh failed",
         );
       } else if (window.__studioCheckMode === "network-stream") {
-        let receive;
+        /** @type {(value: Record<string, unknown>) => void} */
+        let receive = () => {};
+        /** @type {Promise<Record<string, unknown>>} */
         const received = new Promise((resolve) => {
           receive = resolve;
         });
-        const unlisten = await window.__TAURI__.event.listen(
+        const unlisten = await events.listen(
           "studio-client-event",
           ({ payload }) => {
             if (
+              payload &&
+              typeof payload === "object" &&
+              "event" in payload &&
               payload.event === "fixture-events" &&
-              payload.value?.data !== undefined
+              "value" in payload &&
+              payload.value &&
+              typeof payload.value === "object" &&
+              "data" in payload.value &&
+              payload.value.data !== undefined
             )
-              receive(payload.value);
+              receive(/** @type {Record<string, unknown>} */ (payload.value));
           },
         );
         const subscribed = await call("sse-subscribe", "view.subscribe", {
@@ -510,6 +573,7 @@
         }
         assert(rejected, "Wrong backend state was accepted");
       } else {
+        /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").HttpResponse>} */
         const response = await call("http-command", "api.request", {
           path: "/api/native-check",
           method: "POST",
@@ -527,7 +591,7 @@
         );
         assert(response.result.base64 === "YQD/", "Binary response changed");
       }
-      await window.__TAURI__.event.emit("studio-native-check-result", {
+      await emit("studio-native-check-result", {
         passed: true,
         mode: window.__studioCheckMode,
       });
@@ -555,6 +619,7 @@
       replay.result?.imported === 1,
       "Import receipt did not survive restart",
     );
+    /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
     const importedRead = await call("read-imported", "preferences.raw_all");
     assert(
       importedRead.result?.["imported-draft"] === "newer Ж🦀",
@@ -577,6 +642,7 @@
       });
       assert(changed.error, "Changed request identity was accepted");
     }
+    /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
     const read = await call("read-check", "preferences.raw_all");
     assert(
       read.result?.["native-check"] === value,
@@ -601,6 +667,7 @@
       window.localStorage.getItem("renderer-check") === value,
       "Renderer preference did not survive WebView restart",
     );
+    /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
     const browserRead = await call(
       "renderer-read-check",
       "preferences.raw_all",
@@ -616,12 +683,12 @@
       denied = true;
     }
     assert(denied, "Unconnected network service was allowed");
-    await window.__TAURI__.event.emit("studio-native-check-result", {
+    await emit("studio-native-check-result", {
       passed: true,
       mode: window.__studioCheckMode,
     });
   } catch (error) {
-    await window.__TAURI__.event.emit("studio-native-check-result", {
+    await emit("studio-native-check-result", {
       passed: false,
       error: String(error),
     });

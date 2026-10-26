@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 export const pythonEntryPoints = ["recover_backend.py", "install_update.py"];
 
 // Every Python file that package.mjs copies into Contents/Resources: the entry
-// points and the local modules that they import. check-package.mjs derives the
+// points and the local modules that they import. check-package.ts derives the
 // required modules from the imports of the packaged entry points, so a module
 // missing here fails that check.
 export const pythonResources = [

@@ -60,6 +60,9 @@ inherits = "ci"
 # Limit failures refresh the account and stream rateLimit entities without a renderer GET.
 # Actor timing uses a deterministic clock; registry durability observes completed SQLite checkpoints.
 # Typed accounting mappings, strict ingress and native SDK schema parity.
+# Supervisor handshake witness: generated input schemas accept success and error reply omissions.
+# Identity version witness: the named identity protocol is the only schema version constraint.
+# Backend validator parity witness: standalone startup and recovery consumers follow desktop::BACKEND_KIND.
 # Runtime metadata contract witness: emitted desktop backend and canonical analytics usage remain generated.
 # Attempt correlation contract witness: stored request tickets and connection generations remain typed.
 # Typed usage analytics: cumulative exclusion, final evidence preservation, and rollout normalization.
@@ -144,6 +147,9 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy_matches_generated_bridge_for_parameter_shapes))
     | (package(=studio-runtime-schema) & kind(lib) & test(runtime_metadata_contract_exposes_backend_and_usage_observations))
     | (package(=studio-runtime-schema) & kind(lib) & test(stored_attempt_contract_exposes_provider_request_correlation))
+    | (package(=studio-runtime-schema) & kind(lib) & test(supervisor_handshake_accepts_success_and_error_wire_replies))
+    | (package(=studio-runtime-schema) & kind(lib) & test(sync_identity_schema_has_only_the_named_version_constraint))
+    | (package(=studio-runtime-schema) & kind(lib) & test(backend_kind_parity_rejects_drift_in_every_packaged_validator))
     | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_same_thread_requests_hold_fresh_work_until_every_owner_settles))
     | (package(=studio-runtime-services) & binary(=integration) & test(/^provider_session_task::multiple_recovered_thread_owners_open_without_replay_and_hold_fresh_work$/))
     | (package(=studio-runtime-services) & kind(lib) & test(legacy_lightweight_mutations_recover_all_owners_without_replay))
@@ -246,6 +252,9 @@ default-filter = '''
     | (package(=studio-runtime-schema) & kind(lib) & test(provider_method_policy_matches_generated_bridge_for_parameter_shapes))
     | (package(=studio-runtime-schema) & kind(lib) & test(runtime_metadata_contract_exposes_backend_and_usage_observations))
     | (package(=studio-runtime-schema) & kind(lib) & test(stored_attempt_contract_exposes_provider_request_correlation))
+    | (package(=studio-runtime-schema) & kind(lib) & test(supervisor_handshake_accepts_success_and_error_wire_replies))
+    | (package(=studio-runtime-schema) & kind(lib) & test(sync_identity_schema_has_only_the_named_version_constraint))
+    | (package(=studio-runtime-schema) & kind(lib) & test(backend_kind_parity_rejects_drift_in_every_packaged_validator))
     | (package(=studio-runtime-providers) & binary(=connection) & test(recovered_same_thread_requests_hold_fresh_work_until_every_owner_settles))
     | (package(=studio-runtime-services) & binary(=integration) & test(/^provider_session_task::multiple_recovered_thread_owners_open_without_replay_and_hold_fresh_work$/))
     | (package(=studio-runtime-services) & kind(lib) & test(legacy_lightweight_mutations_recover_all_owners_without_replay))
