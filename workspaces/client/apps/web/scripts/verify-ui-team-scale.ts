@@ -1128,7 +1128,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
             .reduce(
               (counts, row) =>
                 counts.set(row.path, (counts.get(row.path) ?? 0) + 1),
-              new Map(),
+              new Map<HttpRow["path"], number>(),
             )
             .entries(),
         ].sort((left, right) => right[1] - left[1]),

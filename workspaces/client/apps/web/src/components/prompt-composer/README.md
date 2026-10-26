@@ -47,7 +47,7 @@ For an empty managed chat, model and worker settings remain below the composer.
 When the keyboard leaves a short visible viewport, that settings panel becomes
 internally scrollable so the send controls and usage footer stay visible.
 Closing the keyboard restores the expanded settings layout.
-`workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
+`workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.ts` checks simulated viewport
 changes with Android and iPhone identities in the browser selected by
 `BROWSER`; it does not open a real operating-system keyboard or language
 picker.
@@ -100,8 +100,8 @@ threshold.
 The mobile keyboard regression can also run independently:
 
 ```sh
-pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.mjs
-BROWSER=webkit pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.mjs
+pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.ts
+BROWSER=webkit pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.ts
 ```
 
 ## Recorded measurements

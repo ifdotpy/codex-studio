@@ -1,0 +1,736 @@
+import type { Server, ServerResponse } from "node:http";
+import type { ViteDevServer } from "vite";
+import type { Route } from "@playwright/test";
+import type { TranscriptPageResponse } from "../playwright.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type {
+  PendingUpload,
+  PendingUploadContent,
+} from "../../src/sync/uploads.ts";
+import type { UxChatFixtureSendBody } from "../fixtures/ux-chat.tsx";
+import { fixturePostBody, fixtureResourceRefs } from "./http.ts";
+// Isolated component fixture. All API requests use local test responses.
+import { createServer } from "node:http";
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import {
+  API_SCHEMA_HASH_HEADER,
+  createFixtureViteServer,
+  FIXTURE_OPTIMIZE_DEPS,
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  readApiSchemaHash,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+} from "../playwright.ts";
+
+// Posts here come from the generated branch route or this fixture's send callback.
+function readFixtureWrite(
+  body: unknown,
+): Partial<PostBody<"/api/branch"> & UxChatFixtureSendBody> {
+  return body as Partial<PostBody<"/api/branch"> & UxChatFixtureSendBody>;
+}
+
+test("Ux Chat Ui", async ({
+  browser: _testBrowser,
+  context: _testContext,
+  page: testPage,
+}) => {
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
+  const createViteServer = createFixtureViteServer;
+  const webRoot = join(repo, "workspaces/client/apps/web");
+  const syncIdentity = syncIdentityFixture();
+  const workspaceId = syncIdentity.workspaceId;
+  let server: Server | undefined;
+  let vite: ViteDevServer | undefined;
+  const syncStreams = new Set<ServerResponse>();
+  let syncRevision = 0;
+  let transcriptSeq = 1;
+  const publishTranscriptChange = () => {
+    const resource = { kind: "transcript", agentId: "lead" };
+    const revision = ++syncRevision;
+    for (const stream of syncStreams)
+      stream.write(
+        `event: resources\ndata: ${JSON.stringify({
+          epoch: "ux-chat-epoch",
+          protocol: 4,
+          reason: "change",
+          resources: [resource],
+          resourceVersions: [],
+          revision,
+          workspaceId,
+        })}\n\n`,
+      );
+  };
+  try {
+    vite = await createViteServer({
+      configFile: false,
+      root: webRoot,
+      logLevel: "error",
+      server: { middlewareMode: true, hmr: false },
+      optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
+      resolve: {
+        dedupe: ["react", "react-dom"],
+        alias: [
+          {
+            find: /^@mantine\/core$/,
+            replacement: require.resolve("@mantine/core"),
+          },
+          {
+            find: /^@mantine\/core\/styles\.css$/,
+            replacement: require.resolve("@mantine/core/styles.css"),
+          },
+        ],
+      },
+    });
+    server = createServer(async (request, response) => {
+      try {
+        const path = new URL(request.url ?? "/", "http://fixture").pathname;
+        const requestUrl = new URL(request.url ?? "/", "http://fixture");
+        if (path === "/api/sync/stream") {
+          const resources = fixtureResourceRefs(
+            requestUrl.searchParams.get("resources") || "[]",
+          );
+          response.writeHead(200, {
+            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream",
+            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+          });
+          response.write(apiSchemaHandshakeSse());
+          syncStreams.add(response);
+          response.on("close", () => syncStreams.delete(response));
+          response.write(
+            `event: resources\ndata: ${JSON.stringify({
+              epoch: "ux-chat-epoch",
+              protocol: 4,
+              reason: "initial",
+              resources,
+              resourceVersions: [],
+              revision: ++syncRevision,
+              workspaceId,
+            })}\n\n`,
+          );
+          return;
+        }
+        if (path === "/api/fixture-restore") {
+          historyVersion = "restored-version";
+          latestItems = records.slice(12);
+          transcriptSeq++;
+          publishTranscriptChange();
+          response.statusCode = 204;
+          response.end();
+          return;
+        }
+        if (path === "/api/fixture-live-update") {
+          latestItems = latestItems.map((item) => {
+            if (item.id === "item-13")
+              item.text = "Latest message after live update";
+            return item;
+          });
+          transcriptSeq++;
+          publishTranscriptChange();
+          response.statusCode = 204;
+          response.end();
+          return;
+        }
+        if (path === "/api/sync/identity") {
+          response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify(syncIdentity));
+          return;
+        }
+        if (path === "/api/sync/protocol") {
+          response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify(syncProtocolFixture()));
+          return;
+        }
+        if (path === "/api/sync/pull") {
+          const scope = requestUrl.searchParams.get("scope");
+          const after = Number(requestUrl.searchParams.get("after") || 0);
+          const document = {
+            id: scope,
+            seq: transcriptSeq,
+            payload: JSON.stringify(
+              snapshot(scope?.slice("transcript:".length)),
+            ),
+            _deleted: false,
+          };
+          response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+          response.setHeader("Content-Type", "application/json");
+          response.end(
+            JSON.stringify({
+              workspaceId,
+              generation: 1,
+              documents:
+                scope?.startsWith("transcript:") && after < document.seq
+                  ? [document]
+                  : [],
+              checkpoint: { seq: after < document.seq ? document.seq : after },
+              maxSeq: transcriptSeq,
+              initialHigh: transcriptSeq,
+            }),
+          );
+          return;
+        }
+        if (path === "/") {
+          response.setHeader("Content-Type", "text/html");
+          response.end(
+            `<html><script>window.__uxChatSyncIdentity=${JSON.stringify(syncIdentity)}</script><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="/tests/fixtures/ux-chat.tsx"></script></html>`,
+          );
+          return;
+        }
+        vite?.middlewares(request, response, () => {
+          response.statusCode = 404;
+          response.end("Not found");
+        });
+      } catch {
+        response.statusCode = 404;
+        response.end();
+      }
+    });
+    const runningServer = server;
+    await new Promise<void>((resolve) =>
+      runningServer.listen(0, "127.0.0.1", resolve),
+    );
+    const address = runningServer.address();
+    assert.ok(address && typeof address !== "string");
+    const page = testPage;
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.setViewportSize({ width: 1100, height: 800 });
+    page.setDefaultTimeout(10000);
+    const records: TranscriptPageResponse["items"] = Array.from(
+      { length: 14 },
+      (_, index) => ({
+        id: `item-${index}`,
+        role: index % 2 ? "assistant" : "user",
+        at: index + 1,
+        turnId: `turn-${Math.floor(index / 2)}`,
+        turnStatus: "completed",
+        text:
+          index === 3
+            ? "Unique historical assistant evidence"
+            : `Message ${index}. ` + "Readable history. ".repeat(25),
+      }),
+    );
+    const clipped = records[10];
+    assert.ok(clipped);
+    clipped.truncated = true;
+    clipped.text = "Clipped original prompt";
+    let latestItems = records.slice(10);
+    let historyVersion = "version-1";
+    let failBranch = true;
+    const writes: {
+      path: string;
+      body: Partial<PostBody<"/api/branch"> & UxChatFixtureSendBody>;
+    }[] = [];
+    const pageRequests: string[] = [];
+    let holdAround = false;
+    let pendingAround: (() => void) | undefined;
+    let resolveAroundStarted: (() => void) | undefined;
+    let aroundStarted = Promise.resolve();
+    const releaseAround = () => {
+      pendingAround?.();
+      pendingAround = undefined;
+    };
+    const snapshot = (
+      id: string | null | undefined,
+    ): TranscriptPageResponse => ({
+      items: id === "lead" ? latestItems : [],
+      nextCursor: id === "lead" ? "item-10" : null,
+      historyVersion,
+      truncated: id === "lead",
+      agent: { id: id ?? "", status: "idle" },
+    });
+    const fulfillApi = (
+      route: Route,
+      response: NonNullable<Parameters<Route["fulfill"]>[0]>,
+    ) =>
+      route.fulfill({
+        ...response,
+        headers: { ...apiSchemaHeaders(), ...response.headers },
+      });
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const path = url.pathname;
+      const id = url.searchParams.get("id");
+      if (path.startsWith("/api/sync/")) return route.continue();
+      if (path === "/api/fixture-restore") return route.continue();
+      if (path === "/api/fixture-live-update") return route.continue();
+      if (request.method() === "POST")
+        writes.push({ path, body: readFixtureWrite(request.postDataJSON()) });
+      if (path === "/api/transcript/stream")
+        return fulfillApi(route, {
+          status: 503,
+          json: { error: "Use fixture polling" },
+        });
+      if (path === "/api/transcript")
+        return fulfillApi(route, { json: snapshot(id) });
+      if (path === "/api/transcript/item")
+        return fulfillApi(route, {
+          json: {
+            ...records[10],
+            sourceId: "native-user-batch",
+            text: "Full original prompt beyond clipped text",
+            truncated: false,
+          },
+        });
+      if (path === "/api/transcript/search") {
+        const query = (url.searchParams.get("q") ?? "").toLowerCase();
+        return fulfillApi(route, {
+          json: {
+            results: records.filter((record) =>
+              record.text.toLowerCase().includes(query),
+            ),
+          },
+        });
+      }
+      if (path === "/api/transcript/page") {
+        pageRequests.push(url.search);
+        let items,
+          nextCursor,
+          nextAfterCursor = null;
+        if (url.searchParams.has("around")) {
+          if (holdAround) {
+            await new Promise<void>((resolve) => {
+              pendingAround = resolve;
+              resolveAroundStarted?.();
+            });
+          }
+          items = records.slice(2, 6);
+          nextCursor = "item-2";
+          nextAfterCursor = "item-5";
+        } else if (url.searchParams.has("after")) {
+          items = records.slice(6, 10);
+          nextCursor = "item-6";
+          nextAfterCursor = "item-9";
+        } else if (url.searchParams.get("before") === "item-10") {
+          items = records.slice(6, 10);
+          nextCursor = "item-6";
+        } else {
+          items = records.slice(0, 6);
+          nextCursor = null;
+        }
+        return fulfillApi(route, {
+          json: {
+            items,
+            nextCursor,
+            nextAfterCursor,
+            historyVersion,
+          } satisfies Omit<TranscriptPageResponse, "truncated">,
+        });
+      }
+      if (path === "/api/branch") {
+        if (failBranch) {
+          failBranch = false;
+          return fulfillApi(route, {
+            status: 503,
+            json: { error: "Lost branch response" },
+          });
+        }
+        const body = fixturePostBody("/api/branch", request.postDataJSON());
+        return fulfillApi(route, {
+          json: {
+            id: body.before ? "edited-branch" : "answer-branch",
+            draft: {
+              text: "Original",
+              prefixText: body.before ? "Earlier user instruction" : "",
+              assets: [],
+            },
+          } satisfies Pick<PostResult<"/api/branch">, "id" | "draft">,
+        });
+      }
+      if (path === "/api/queue")
+        return fulfillApi(route, { json: { items: [] } });
+      return fulfillApi(route, { json: { ok: true } });
+    });
+    await page.goto(`http://127.0.0.1:${address.port}`);
+    await page.locator('[data-message="item-10"]').waitFor();
+    const composer = page.locator("#message");
+    const sendSettled = () =>
+      page.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            const status = document.querySelector("#send-state");
+            if (!status) throw new Error("Missing send state");
+            let active = !!status.textContent;
+            const observer = new MutationObserver(() => {
+              if (status.textContent) active = true;
+              else if (active) {
+                observer.disconnect();
+                resolve();
+              }
+            });
+            observer.observe(status, {
+              childList: true,
+              characterData: true,
+              subtree: true,
+            });
+          }),
+      );
+    await composer.fill("Draft must remain unsent");
+    const firstSettled = sendSettled();
+    const firstSend = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/fixture-send",
+    );
+    await composer.press("Tab");
+    await firstSend;
+    await firstSettled;
+    await page.waitForFunction(
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+    );
+    assert.equal(
+      await composer.evaluate((element) => element === document.activeElement),
+      true,
+    );
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.path, "/api/fixture-send");
+    assert.equal(writes[0]?.body.text, "Draft must remain unsent");
+    assert.equal(writes[0]?.body.delivery, "next_turn");
+    await composer.fill("Send from button");
+    const buttonSend = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/fixture-send",
+    );
+    const buttonSettled = sendSettled();
+    await page.locator("#send").click();
+    await buttonSend;
+    await buttonSettled;
+    await page.waitForFunction(
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+    );
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1]?.body.delivery, "current_turn");
+    assert.equal(writes[1]?.body.text, "Send from button");
+    const longDraft = "L".repeat(12050);
+    await composer.fill(longDraft);
+    assert.equal(await composer.inputValue(), longDraft);
+    await page.locator("#draft-length-error").waitFor();
+    assert.equal(await page.locator("#send").isDisabled(), true);
+    await composer.press("Enter");
+    assert.equal(
+      writes.filter((write) => write.path === "/api/fixture-send").length,
+      2,
+    );
+    const attach = page.getByRole("button", {
+      name: "Attach text as a file",
+      exact: true,
+    });
+    assert.equal(
+      await attach.isEnabled(),
+      true,
+      "Long draft can become a file",
+    );
+    await attach.click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+    );
+    await page
+      .getByRole("button", { name: "Remove pending message.txt", exact: true })
+      .waitFor();
+    const savedUpload = await page.evaluate(
+      () =>
+        new Promise<{ name: string; bytes: number[] } | null>(
+          (resolve, reject) => {
+            const request = indexedDB.open("codex-studio-uploads", 2);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const database = request.result;
+              const transaction = database.transaction(
+                ["uploads", "contents"],
+                "readonly",
+              );
+              const rows = transaction.objectStore("uploads").getAll();
+              rows.onerror = () => reject(rows.error);
+              rows.onsuccess = () => {
+                // This database is written by the uploads owner in this renderer.
+                const uploads = rows.result as PendingUpload[];
+                const row = uploads.find((item) => item.name === "message.txt");
+                if (!row) return resolve(null);
+                const content = transaction.objectStore("contents").get(row.id);
+                content.onerror = () => reject(content.error);
+                content.onsuccess = () => {
+                  database.close();
+                  const savedContent = content.result as PendingUploadContent;
+                  if (!savedContent.bytes)
+                    throw new Error("Saved fixture upload has no bytes");
+                  resolve({
+                    name: row.name,
+                    bytes: Array.from(new Uint8Array(savedContent.bytes)),
+                  });
+                };
+              };
+            };
+          },
+        ),
+    );
+    assert.ok(savedUpload);
+    assert.equal(savedUpload.name, "message.txt");
+    assert.equal(Buffer.from(savedUpload.bytes).toString(), longDraft);
+    await page
+      .getByRole("button", { name: "Remove pending message.txt", exact: true })
+      .click();
+
+    await page.locator("#earlier-messages").click();
+    await page.locator('[data-message="item-6"]').waitFor();
+    assert.equal(await page.locator('[data-message="item-13"]').count(), 1);
+    await page.evaluate(() =>
+      fetch("/api/fixture-live-update", { method: "POST" }),
+    );
+    await page.waitForFunction(() =>
+      document
+        .querySelector('[data-message="item-13"]')
+        ?.textContent.includes("Latest message after live update"),
+    );
+    assert.equal(
+      await page.locator('[data-message="item-6"]').count(),
+      1,
+      "live updates preserve earlier pages",
+    );
+
+    await page
+      .getByRole("button", { name: "Browse prompts", exact: true })
+      .click();
+    const searchDialog = page.getByRole("dialog", { name: "Prompt history" });
+    await searchDialog
+      .getByRole("textbox", { name: "Search this chat" })
+      .fill("Unique historical assistant evidence");
+    await searchDialog
+      .getByRole("button", {
+        name: "Assistant Unique historical assistant evidence",
+        exact: true,
+      })
+      .click();
+    await page.locator('[data-message="item-3"][data-found="true"]').waitFor();
+    assert.equal(
+      await page.locator('[data-message="item-13"]').count(),
+      0,
+      "distant search shows context without an unmarked history gap",
+    );
+    const position = await page
+      .locator('[data-message="item-3"]')
+      .evaluate((element) => {
+        const root = document.querySelector("#messages");
+        if (!root) throw new Error("Missing messages");
+        return (
+          element.getBoundingClientRect().top - root.getBoundingClientRect().top
+        );
+      });
+    assert.ok(
+      position >= 0 && position < 100,
+      `exact result is visible: ${position}`,
+    );
+    await page.locator("#newer-messages").click();
+    await page.locator('[data-message="item-9"]').waitFor();
+    await page
+      .getByRole("button", { name: "Return to latest messages", exact: true })
+      .click();
+    await page.locator('[data-message="item-13"]').waitFor();
+    assert.equal(await page.locator('[data-message="item-3"]').count(), 0);
+
+    // The shell uses the same exact-ID navigation boundary, including repeated targets.
+    await page.evaluate(() => window.chatFixture.jump("item-3"));
+    await page.locator('[data-message="item-3"][data-found="true"]').waitFor();
+    await page.evaluate(() => window.chatFixture.jump("item-3"));
+    assert.equal(await page.locator('[data-message="item-3"]').count(), 1);
+    await page
+      .getByRole("button", { name: "Return to latest messages", exact: true })
+      .click();
+    await page.locator('[data-message="item-10"]').waitFor();
+
+    // Sending during a distant history read expresses new intent and cancels that view change.
+    holdAround = true;
+    aroundStarted = new Promise((resolve) => {
+      resolveAroundStarted = resolve;
+    });
+    await page.evaluate(() => window.chatFixture.jump("item-3"));
+    await aroundStarted;
+    resolveAroundStarted = undefined;
+    assert.ok(pendingAround, "the historical page read is pending");
+    await composer.fill("Send while history loads");
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+    );
+    const releasedAroundResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/transcript/page" &&
+        url.searchParams.get("around") === "item-3"
+      );
+    });
+    holdAround = false;
+    releaseAround();
+    await releasedAroundResponse;
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-message="item-13"]') &&
+        !document.querySelector('[data-message="item-3"]'),
+    );
+    assert.equal(await page.locator('[data-message="item-13"]').count(), 1);
+    assert.equal(await page.locator('[data-message="item-3"]').count(), 0);
+    assert.equal(
+      await page
+        .getByText("This message is unavailable in this conversation.", {
+          exact: true,
+        })
+        .count(),
+      0,
+    );
+    await composer.fill("Source chat draft");
+    await page
+      .locator('[data-message="item-10"]')
+      .getByRole("button", { name: "Edit in a new chat", exact: true })
+      .click();
+    const edit = page.getByRole("dialog", {
+      name: "Edit in a new chat",
+      exact: true,
+    });
+    assert.equal(
+      await edit
+        .getByRole("textbox", { name: "Draft for the new chat" })
+        .inputValue(),
+      "Full original prompt beyond clipped text",
+    );
+    await edit
+      .getByRole("textbox", { name: "Draft for the new chat" })
+      .fill("Reviewed edited prompt");
+    await edit
+      .getByRole("button", { name: "Create draft in new chat", exact: true })
+      .click();
+    await page.getByText("Lost branch response", { exact: true }).waitFor();
+    await edit
+      .getByRole("button", { name: "Create draft in new chat", exact: true })
+      .click();
+    await page.waitForFunction(() => window.chatFixture.id === "edited-branch");
+    assert.deepEqual(
+      await page.evaluate(() => window.chatFixture.branchSelections),
+      ["edited-branch"],
+    );
+    assert.deepEqual(
+      await page.evaluate(() => window.chatFixture.regularSelections),
+      [],
+      "new branch bypasses the stale existing-chat selection guard",
+    );
+    assert.equal(
+      await composer.inputValue(),
+      "Earlier user instruction\n\nReviewed edited prompt",
+    );
+    const attempts = writes.filter((write) => write.path === "/api/branch");
+    assert.equal(
+      attempts[0]?.body.id,
+      attempts[1]?.body.id,
+      "retry preserves the native branch request identity",
+    );
+    assert.equal(attempts[0]?.body.before, true);
+    assert.equal(
+      attempts[0]?.body.message_id,
+      "item-10",
+      "edit preserves the selected input identity inside a native batch",
+    );
+    assert.deepEqual(
+      writes
+        .filter((write) => write.path === "/api/fixture-send")
+        .map((write) => write.body.text),
+      [
+        "Draft must remain unsent",
+        "Send from button",
+        "Send while history loads",
+      ],
+      "branch creation never sends the reviewed draft",
+    );
+    await page.evaluate(() => window.chatFixture.select("lead"));
+    await page.locator('[data-message="item-13"]').waitFor();
+    assert.equal(await composer.inputValue(), "Source chat draft");
+    await page
+      .locator('[data-message="item-13"]')
+      .getByRole("button", {
+        name: "Another answer in a new chat",
+        exact: true,
+      })
+      .click();
+    const again = page.getByRole("dialog", {
+      name: "Another answer in a new chat",
+      exact: true,
+    });
+    await again
+      .getByRole("button", { name: "Create draft in new chat", exact: true })
+      .click();
+    await page.waitForFunction(() => window.chatFixture.id === "answer-branch");
+    assert.deepEqual(
+      await page.evaluate(() => window.chatFixture.branchSelections),
+      ["edited-branch", "answer-branch"],
+    );
+    assert.match(await composer.inputValue(), /Use the existing results/);
+    assert.deepEqual(
+      writes
+        .filter((write) => write.path === "/api/fixture-send")
+        .map((write) => write.body.text),
+      [
+        "Draft must remain unsent",
+        "Send from button",
+        "Send while history loads",
+      ],
+    );
+    assert.equal(
+      writes.filter((write) => write.path === "/api/branch").at(-1)?.body
+        .before,
+      undefined,
+    );
+
+    await page.evaluate(() => window.chatFixture.select("lead"));
+    await page.locator('[data-message="item-10"]').waitFor();
+    await page.locator("#earlier-messages").click();
+    await page.locator('[data-message="item-6"]').waitFor();
+    await page.evaluate(() =>
+      fetch("/api/fixture-restore", { method: "POST" }),
+    );
+    await page.waitForFunction(
+      () => !document.querySelector('[data-message="item-6"]'),
+    );
+    assert.equal(
+      await page.locator('[data-message="item-6"]').count(),
+      0,
+      "a restore invalidates cached history pages",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    await composer.fill(longDraft);
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth + 1,
+      ),
+    );
+    assert.equal(await composer.inputValue(), longDraft);
+    assert.ok(pageRequests.some((query) => query.includes("around=item-3")));
+    assert.deepEqual(errors, []);
+    console.log(
+      `PASS: chat send, Tab navigation, long draft, complete history, exact search, branch draft and restore boundaries.`,
+    );
+  } finally {
+    for (const stream of syncStreams) stream.destroy();
+    if (server) {
+      const runningServer = server;
+      await new Promise<void>((resolve) =>
+        runningServer.close(() => resolve()),
+      );
+    }
+    await vite?.close();
+  }
+});

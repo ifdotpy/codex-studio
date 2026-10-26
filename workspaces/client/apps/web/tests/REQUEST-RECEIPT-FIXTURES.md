@@ -7,14 +7,14 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 
 - `accounts/account-transfer-ui.spec.ts`
 - `accounts/accounts-ui-smoke.spec.ts`
-- `claude/claude-login-ui.spec.mjs`
+- `claude/claude-login-ui.spec.ts`
 - `drafts/dialog-drafts-ui.spec.ts`
 - `drafts/draft-push-coalescing-browser.spec.ts`
 - `files/upload-recovery-browser.spec.ts`
 - `messages/message-delivery-ui.spec.ts`
 - `messages/mobile-send-reliability-browser.spec.ts`
 - `messages/send-session-token-browser.spec.ts`
-- `mobile/mobile-send-reliability-ui.spec.mjs`
+- `mobile/mobile-send-reliability-ui.spec.ts`
 - `outbox/send-preflight-browser.spec.ts`
 - `projects/new-chat-workspace-ui.spec.ts`
 - `queue/queue-mutation-deadline-browser.spec.ts`
