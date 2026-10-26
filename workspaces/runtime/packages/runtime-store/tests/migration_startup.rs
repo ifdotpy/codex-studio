@@ -338,6 +338,68 @@ fn turn(thread: &str) -> Value {
 }
 
 #[tokio::test]
+async fn migration_terminal_empty_source_is_complete_before_new_turns_arrive() {
+    use studio_runtime_store::analytics_capture::{
+        AnalyticsCaptureRepository as Repo, CaptureTable,
+    };
+    let state = tempfile::tempdir().expect("state");
+    let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
+    let db = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
+    let checkpoint: String = db
+        .query_row(
+            "SELECT value FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("empty source has a completed checkpoint");
+    let completed: Value = serde_json::from_str(&checkpoint).expect("checkpoint JSON");
+    assert_eq!(
+        completed,
+        json!({"cursor":0,"end":0,"repaired":0,"ambiguous":0})
+    );
+    let record = turn("thread");
+    let stored = record.clone();
+    store
+        .analytics_transaction::<_, StoreError>(move |tx, _| {
+            Repo::write(tx, CaptureTable::Turns, &stored)
+        })
+        .await
+        .expect("new turn after migration");
+    store
+        .transaction(|tx| {
+            let notice = json!({"turnId":"turn","threadId":"thread","nativeError":{"message":"later notice"},"at":3});
+            tx.execute(
+                "INSERT INTO runtime_items(id,agent,record,created) VALUES('a:native-notice:error:turn','a',?1,3)",
+                [notice.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("new notice after migration");
+    drop(store);
+    for _ in 0..2 {
+        drop(
+            RuntimeStore::open(Some(state.path()))
+                .await
+                .expect("restart"),
+        );
+        assert_eq!(
+            Repo::read(&db, CaptureTable::Turns, "a:thread:turn").expect("turn"),
+            Some(record.clone()),
+            "completed migration must not capture later turns"
+        );
+        let current: String = db
+            .query_row(
+                "SELECT value FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("same checkpoint");
+        assert_eq!(current, checkpoint);
+    }
+}
+
+#[tokio::test]
 async fn migration_terminal_errors_convert_only_exact_persisted_evidence_before_open_returns() {
     use studio_runtime_store::analytics_capture::{
         AnalyticsCaptureRepository as Repo, CaptureTable,
@@ -347,6 +409,10 @@ async fn migration_terminal_errors_convert_only_exact_persisted_evidence_before_
         let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
         store
             .analytics_transaction::<_, StoreError>(move |tx, _| {
+                tx.execute(
+                    "DELETE FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+                    [],
+                )?;
                 Repo::write(tx, CaptureTable::Turns, &turn("thread"))?;
                 if thread.is_none() {
                     Repo::write(tx, CaptureTable::Turns, &turn("other"))?;
@@ -439,7 +505,7 @@ async fn migration_terminal_preflight_checks_later_pages_before_any_target_write
     let mut db = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
     let tx = db.transaction().expect("fixture");
     tx.execute(
-        "DELETE FROM analytics_meta WHERE key='providerIdentityFormat'",
+        "DELETE FROM analytics_meta WHERE key IN ('providerIdentityFormat','terminalErrorRepairV1')",
         [],
     )
     .expect("pending provider target");

@@ -530,9 +530,15 @@ async fn commit(
                     WorkWrite::Claim(input) => write(WorkWrite::Claim(input)).map_err(|error| match error {
                         WorkWriteError::Event(studio_runtime_services::event_write::EventWriteError::Store(error))
                         | WorkWriteError::Store(error) if matches!(&error,studio_runtime_store::StoreError::InvalidSyncObjectField {scope,..} if scope == WorkItemRecord::TABLE) => WorkCommitError::RefusedClaim(error),
-                        error => WorkCommitError::Write(error),
+                        error @ (WorkWriteError::Event(_)
+                        | WorkWriteError::Store(_)
+                        | WorkWriteError::NotImplemented(_)
+                        | WorkWriteError::PreparationWorker) => WorkCommitError::Write(error),
                     })?,
-                    command => write(command)?,
+                    command @ (WorkWrite::Create(_)
+                    | WorkWrite::Mutate(_)
+                    | WorkWrite::Submit(_)
+                    | WorkWrite::Accept(_)) => write(command)?,
                 };
                 let mut checks = Vec::new();
                 let mut rule_now = 0.0;

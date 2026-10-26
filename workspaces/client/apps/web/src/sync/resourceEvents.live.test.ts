@@ -695,6 +695,34 @@ it("coalesces chat switches into one POST without reopening the SSE stream", asy
   });
 });
 
+it("queues interests on an opening stream until its session arrives", async () => {
+  const f = await fixture(false, false, false, false);
+  const connection = vi.fn();
+  f.transport.watchResourceConnection(connection);
+  const transcript = { kind: "transcript", agentId: "chat" } as const;
+  f.transport.watchResourceChanges(transcript, vi.fn());
+  await vi.advanceTimersToNextTimerAsync();
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+  expect(f.post).not.toHaveBeenCalled();
+  expect(connection.mock.calls.some(([status]) => status === "degraded")).toBe(
+    false,
+  );
+
+  f.source.emit("session", { sessionId: "session-one" });
+  await vi.advanceTimersToNextTimerAsync();
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+  expect(f.post).toHaveBeenCalledTimes(1);
+  expect(f.post.mock.calls[0]?.[0]).toBe("/api/sync/subscriptions");
+  expect(f.post.mock.calls[0]?.[1]).toMatchObject({
+    sessionId: "session-one",
+    gen: 1,
+    add: [{ resource: transcript }],
+    remove: [],
+  });
+});
+
 it("reopens with the full desired set when a stream has not announced its session", async () => {
   const f = await fixture(false, false);
   const transcript = { kind: "transcript", agentId: "chat" } as const;

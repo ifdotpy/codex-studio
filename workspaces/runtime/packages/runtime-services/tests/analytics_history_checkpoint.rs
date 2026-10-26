@@ -1028,6 +1028,16 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
                 .await
                 .expect("ambiguous second turn");
         }
+        store
+            .analytics_transaction::<_, StoreError>(|tx, _| {
+                tx.execute(
+                    "DELETE FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("historical source predates terminal repair checkpoint");
         drop(store);
         let store = RuntimeStore::open(Some(root.path()))
             .await

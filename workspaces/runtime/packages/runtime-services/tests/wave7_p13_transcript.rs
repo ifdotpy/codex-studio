@@ -2,11 +2,14 @@
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
+use studio_runtime_schema::studio_errors::{
+    MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
+};
 use studio_runtime_services::{
     transcript,
     transcript_runtime::{self, PageRequest},
 };
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{RuntimeStore, StoreError};
 
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
@@ -39,10 +42,51 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
             .count()
     );
     let mut fault_count = 0;
+    let mut startup_refusals = 0;
     for case in cases {
         let name = case["path"].as_str().expect("snapshot name");
         let state = root.path().join(name);
         restore_snapshot(&fixtures.join(name), &state, root.path());
+        if case["phase"] == "malformed-turn" {
+            // The migration now reads this intentionally malformed source before readers run.
+            // Keep the frozen Python evidence, and require refusal without rewriting it.
+            assert_eq!(
+                case["pageError"],
+                "invalid stored object analytics_turns/agent:thread:turn"
+            );
+            let originals = ["canvas.sqlite3", "analytics.sqlite3"].map(|database| {
+                (
+                    database,
+                    std::fs::read(state.join(database)).expect("original database bytes"),
+                )
+            });
+            for _ in 0..2 {
+                let error = RuntimeStore::open(Some(&state))
+                    .await
+                    .err()
+                    .expect("malformed historical turn refuses startup");
+                assert!(
+                    matches!(&error, StoreError::Migration {
+                    id: "2026-10-26-terminal-errors",
+                    target: MigrationTarget::Analytics,
+                    phase: MigrationPhase::Validate,
+                    rollback: MigrationRollbackOutcome::NotRequired,
+                    source,
+                    rollback_error: None,
+                } if matches!(source.as_ref(), StoreError::SchemaValidation(object) if object == "analytics_turns")),
+                    "{error:?}"
+                );
+                for (database, bytes) in &originals {
+                    assert_eq!(
+                        &std::fs::read(state.join(database)).expect("refused database bytes"),
+                        bytes,
+                        "startup refusal changed {database}"
+                    );
+                }
+            }
+            startup_refusals += 1;
+            continue;
+        }
         let fixture_sync_high = {
             let db = rusqlite::Connection::open(state.join("canvas.sqlite3"))
                 .expect("restored snapshot reader");
@@ -376,6 +420,10 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
             assert_eq!(next["checkpoint"], got["checkpoint"]);
         }
     }
+    assert_eq!(
+        startup_refusals, 1,
+        "only the malformed turn is refused at startup"
+    );
     eprintln!("P13 injected write/commit boundaries: {fault_count}");
 }
 fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64) {

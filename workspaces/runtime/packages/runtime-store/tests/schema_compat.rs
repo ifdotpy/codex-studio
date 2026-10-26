@@ -2,6 +2,9 @@ use std::path::Path;
 
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::studio_errors::{
+    MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
+};
 use studio_runtime_store::{
     AgentId, AgentRepository, ChatMessageId, MessageRepository, QueueEvent, QueueEventId,
     QueueEventRepository, RuntimeStore, StoreError, TaskId, TaskRepository,
@@ -699,8 +702,15 @@ async fn missing_automatic_unique_index_is_named_and_left_untouched() {
         Err(error) => error,
     };
     assert!(
-        matches!(error, StoreError::SchemaObjectMismatch { ref object, ref reason, .. }
-            if object == "sync_documents" && reason.contains("UNIQUE/PRIMARY KEY")),
+        matches!(&error, StoreError::Migration {
+            id: "2026-10-20-agent-storage",
+            target: MigrationTarget::Canvas,
+            phase: MigrationPhase::Validate,
+            rollback: MigrationRollbackOutcome::NotRequired,
+            source,
+            rollback_error: None,
+        } if matches!(source.as_ref(), StoreError::SchemaObjectMismatch { database, object, reason }
+            if database == "canvas.sqlite3" && object == "sync_documents" && reason.contains("UNIQUE/PRIMARY KEY"))),
         "constraint error should identify sync_documents, got {error:?}"
     );
     assert_eq!(catalog(&canvas), before);
@@ -727,7 +737,15 @@ async fn unicode_altered_table_column_is_named_and_left_untouched() {
         Err(error) => error,
     };
     assert!(
-        matches!(error, StoreError::SchemaObjectMismatch { ref object, ref reason, .. } if object == "sync_identity" && reason.contains("column id")),
+        matches!(&error, StoreError::Migration {
+            id: "2026-10-20-agent-storage",
+            target: MigrationTarget::Canvas,
+            phase: MigrationPhase::Validate,
+            rollback: MigrationRollbackOutcome::NotRequired,
+            source,
+            rollback_error: None,
+        } if matches!(source.as_ref(), StoreError::SchemaObjectMismatch { database, object, reason }
+            if database == "canvas.sqlite3" && object == "sync_identity" && reason.contains("column id"))),
         "table error should name sync_identity.id, got {error:?}"
     );
     assert_eq!(catalog(&canvas), before);
@@ -1163,7 +1181,15 @@ async fn incompatible_sync_table_is_named_and_left_untouched() {
         Err(error) => error,
     };
     assert!(
-        matches!(error, StoreError::SchemaObjectMismatch { ref object, .. } if object == "sync_entities"),
+        matches!(&error, StoreError::Migration {
+            id: "2026-10-20-agent-storage",
+            target: MigrationTarget::Canvas,
+            phase: MigrationPhase::Validate,
+            rollback: MigrationRollbackOutcome::NotRequired,
+            source,
+            rollback_error: None,
+        } if matches!(source.as_ref(), StoreError::SchemaObjectMismatch { database, object, .. }
+            if database == "canvas.sqlite3" && object == "sync_entities")),
         "bootstrap should name sync_entities, got {error:?}"
     );
     assert_eq!(catalog(&canvas), before);

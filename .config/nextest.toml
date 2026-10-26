@@ -71,6 +71,7 @@ inherits = "ci"
 # Typed usage legacy compatibility, budget replay, gap, reset and dispatch witnesses.
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(managed_reads_preserve_corrupt_record_identity) | test(cold_agent_contexts_scan_work_once_for_many_agents) | test(a_crash_between_canvas_commit_and_projection_recovers_once))) |
     (package(=studio-runtime-store) & kind(lib) & test(malformed_start_submission_never_releases_input_or_changes_history)) |
     (package(=studio-runtime-services) & kind(lib) & (test(/account_worker::tests::retained::startup_first_pass_(refuses_|isolates_|reports_fatal_|continues_)/) | test(account_worker::tests::retained::connection_completion_))) |
     (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |
@@ -216,6 +217,7 @@ platform = 'cfg(target_os = "linux")'
 # Typed accounting mappings, strict ingress and native SDK schema parity.
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(managed_reads_preserve_corrupt_record_identity) | test(cold_agent_contexts_scan_work_once_for_many_agents) | test(a_crash_between_canvas_commit_and_projection_recovers_once))) |
     (package(=studio-runtime-store) & kind(lib) & test(malformed_start_submission_never_releases_input_or_changes_history)) |
     (package(=studio-runtime-services) & kind(lib) & (test(/account_worker::tests::retained::startup_first_pass_(refuses_|isolates_|reports_fatal_|continues_)/) | test(account_worker::tests::retained::connection_completion_))) |
     (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |

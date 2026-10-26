@@ -664,7 +664,7 @@ mod room_preparation_tests {
             let id = format!("agent-{index:04}");
             let agent = json!({"id":id,"provider":studio_runtime_schema::ProviderKind::Codex,"status":"idle"}).to_string();
             let work_id = format!("work-{index:04}");
-            let task = json!({"id":work_id,"owner":id,"results":[]}).to_string();
+            let task = json!({"id":work_id,"owner":id,"status":"running","results":[]}).to_string();
             transaction
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",

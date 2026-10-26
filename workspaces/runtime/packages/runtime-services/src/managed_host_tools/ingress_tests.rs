@@ -1544,8 +1544,8 @@ async fn managed_reads_preserve_corrupt_record_identity() {
     assert!(
         matches!(
             &search_result,
-            Err(CallbackError::Store(StoreError::InvalidStoredObject { table, id }))
-                if *table == "runtime_work" && id == "p05-corrupt-work"
+            Err(CallbackError::Store(StoreError::InvalidSyncObject { scope, id }))
+                if scope == "runtime_work" && id == "p05-corrupt-work"
         ),
         "corrupt work result: {search_result:?}"
     );

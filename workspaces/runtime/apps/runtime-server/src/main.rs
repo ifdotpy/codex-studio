@@ -2911,5 +2911,6 @@ mod startup_registry_tests {
             AccountPolicyState::from_startup(Some(&bytes), []).expect("strict startup policy");
         assert_eq!(policy.accounts().accounts[0]["provider"], "codex");
         assert_eq!(fs::read(path).expect("durable registry"), bytes);
+        drop(store);
     }
 }

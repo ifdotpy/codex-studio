@@ -53,6 +53,13 @@ fn repair(source: Source<'_, '_>, canvas: &Connection) -> StoreResult<()> {
     loop {
         let (start, end) = repair_checkpoint_cursor(&state)?;
         if start >= end {
+            if let Source::Apply(tx) = source {
+                // An empty source is complete too; later turns are outside this migration.
+                tx.execute(
+                    "INSERT INTO analytics_meta VALUES(?1,?2) ON CONFLICT(key) DO NOTHING",
+                    params![TERMINAL_ERROR_REPAIR_KEY, state.to_string()],
+                )?;
+            }
             return Ok(());
         }
         let rows=db.prepare("SELECT rowid,agent,record FROM analytics_turns WHERE rowid>?1 AND rowid<=?2 ORDER BY rowid LIMIT ?3")?.query_map(params![start,end,TERMINAL_REPAIR_PAGE_ROWS],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;

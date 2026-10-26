@@ -70,7 +70,11 @@ impl From<TranscriptStoreError> for TranscriptError {
 impl From<StoreError> for TranscriptError {
     fn from(error: StoreError) -> Self {
         match error {
-            StoreError::InvalidSyncObject { scope, id } => {
+            StoreError::InvalidStoredObject { table, id } => {
+                Self::InvalidStoredObject { table, id }
+            }
+            StoreError::InvalidSyncObject { scope, id }
+            | StoreError::InvalidSyncObjectField { scope, id, .. } => {
                 Self::InvalidStoredState { table: scope, id }
             }
             StoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))
@@ -84,13 +88,11 @@ impl From<StoreError> for TranscriptError {
             | StoreError::Migration { .. }
             | StoreError::UnsafeStateDirectory
             | StoreError::SchemaMismatch(_)
-            | StoreError::InvalidSyncObjectField { .. }
             | StoreError::InvalidStoredRecord { .. }
             | StoreError::SchemaObjectMismatch { .. }
             | StoreError::Sqlite(_)
             | StoreError::CommitOutcomeUnknown(_)
             | StoreError::Json(_)
-            | StoreError::InvalidStoredObject { .. }
             | StoreError::SchemaValidation(_)
             | StoreError::RecordContract(_)
             | StoreError::WriterPoisoned
@@ -630,33 +632,7 @@ pub(crate) fn search_work_in_transaction(
         ("runtime_complaints", "complaint", "title"),
         ("runtime_plans", "plan", "text"),
     ] {
-        for stored in
-            WorkspaceViewsRepository::records(connection, table).map_err(|error| match error {
-                StoreError::InvalidStoredObject { table, id } => {
-                    TranscriptError::InvalidStoredObject { table, id }
-                }
-                StoreError::StateDirectory(_)
-                | StoreError::AlreadyOwned
-                | StoreError::MissingDatabase(_)
-                | StoreError::Migration { .. }
-                | StoreError::UnsafeStateDirectory
-                | StoreError::SchemaMismatch(_)
-                | StoreError::InvalidSyncObject { .. }
-                | StoreError::InvalidSyncObjectField { .. }
-                | StoreError::InvalidStoredRecord { .. }
-                | StoreError::SchemaObjectMismatch { .. }
-                | StoreError::Sqlite(_)
-                | StoreError::CommitOutcomeUnknown(_)
-                | StoreError::Json(_)
-                | StoreError::SchemaValidation(_)
-                | StoreError::RecordContract(_)
-                | StoreError::WriterPoisoned
-                | StoreError::WriterActorInitialization(_)
-                | StoreError::WriterActorControl(_)
-                | StoreError::CommitActorOutcomeUnknown(_)
-                | StoreError::ReadTaskFailed => TranscriptError::Store,
-            })?
-        {
+        for stored in WorkspaceViewsRepository::records(connection, table)? {
             let Some(encoded) = stored.record else {
                 return Err(invalid_stored(table, &stored.id));
             };
