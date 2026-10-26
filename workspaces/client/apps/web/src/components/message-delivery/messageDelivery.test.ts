@@ -1,5 +1,4 @@
 import {
-  required,
   componentMessage,
   componentAttachment,
 } from "../componentTestFixtures";
@@ -19,13 +18,14 @@ import {
 } from "./messageDelivery.ts";
 import { it } from "vitest";
 
-const receipt: OutgoingMessage = {
+// The saved receipt fixture omits body.id and receipt.id.
+const receipt = {
   id: "one",
-  body: { id: "one", room: "lead", text: "Same text" },
+  body: { room: "lead", text: "Same text" },
   created: 1,
   status: "accepted",
-  receipt: { id: "one", status: "queued" },
-};
+  receipt: { status: "queued" },
+} as OutgoingMessage;
 const pending: Message = {
   id: "lead:one",
   role: "user",
@@ -57,27 +57,18 @@ it("does not restore a sending action over a materialized removed copy", () => {
 
 it("matches transcript rows by receipt identity and retains edited text and attachments", () => {
   assert.equal(
-    required(
-      required(
-        required(
-          outgoingTranscript(
-            [pending],
-            [
-              {
-                ...receipt,
-                attachments: [componentAttachment({ id: "asset-one" })],
-              },
-            ],
-          ).items[0],
-        ).assets,
-      )?.[0],
-    ).id,
+    outgoingTranscript(
+      [pending],
+      [
+        {
+          ...receipt,
+          attachments: [componentAttachment({ id: "asset-one" })],
+        },
+      ],
+    ).items[0].assets![0].id,
     "asset-one",
   );
-  assert.equal(
-    required(outgoingTranscript([], [receipt]).items[0]).text,
-    "Same text",
-  );
+  assert.equal(outgoingTranscript([], [receipt]).items[0].text, "Same text");
   assert.deepEqual(outgoingTranscript([pending], [receipt]).observed, []);
   assert.equal(outgoingTranscript([pending], [receipt]).items.length, 1);
   // An older server omits a reserved queue row before it materializes the input.
@@ -115,7 +106,7 @@ it("matches transcript rows by receipt identity and retains edited text and atta
     displayText: "Edited queue text",
   };
   assert.equal(
-    required(outgoingTranscript([], [edited]).items[0]).text,
+    outgoingTranscript([], [edited]).items[0].text,
     "Edited queue text",
   );
   assert.equal(edited.body.text, "Same text");
@@ -150,7 +141,7 @@ it("retires delivered local cards outside the page only with exact saved input p
   for (const materialized of [false, undefined] as const) {
     const unproven = {
       ...delivered,
-      receipt: { ...required(delivered.receipt), materialized },
+      receipt: { ...delivered.receipt!, materialized },
     };
     assert.equal(outgoingTranscript(latest, [unproven]).items.length, 2);
     assert.deepEqual(outgoingTranscript(latest, [unproven]).observed, []);
@@ -175,7 +166,7 @@ it("retires delivered local cards outside the page only with exact saved input p
   ] as const) {
     assert.equal(
       outgoingTranscript(latest, [
-        { ...delivered, receipt: { ...required(delivered.receipt), status } },
+        { ...delivered, receipt: { ...delivered.receipt!, status } },
       ]).items.length,
       2,
     );
@@ -200,11 +191,11 @@ it("normalizes legacy next-turn rows without rewriting their retry payload", () 
     ...receipt,
     body: { ...receipt.body, delivery: "after_turn" },
   };
-  const row = required(outgoingTranscript([], [legacy]).items[0]);
+  const row = outgoingTranscript([], [legacy]).items[0];
   assert.equal(row.requestedDelivery, "next_turn");
   assert.equal(legacy.body.delivery, "after_turn");
   assert.equal(
-    required(outgoingTranscript([], [receipt]).items[0]).requestedDelivery,
+    outgoingTranscript([], [receipt]).items[0].requestedDelivery,
     "current_turn",
   );
   for (const delivery of ["later", 1, false] as const) {
@@ -226,10 +217,8 @@ it("keeps explicit delivery modes queued until a message is dispatched", () => {
       ...receipt,
       body: { ...receipt.body, delivery },
     };
-    for (const source of [[], [pending]] as const) {
-      const message = required(
-        outgoingTranscript([...source], [local]).items[0],
-      );
+    for (const source of [[], [pending]] satisfies Message[][]) {
+      const message = outgoingTranscript(source, [local]).items[0];
       assert.equal(message.requestedDelivery, "current_turn");
       assert.equal(
         local.body.delivery,
@@ -311,12 +300,10 @@ it("keeps explicit delivery modes queued until a message is dispatched", () => {
     false,
   );
   assert.equal(
-    required(
-      outgoingTranscript(
-        [],
-        [{ ...receipt, receipt: { id: "one", status: "pending" } }],
-      ).items[0],
-    ).deliveryStatus,
+    outgoingTranscript(
+      [],
+      [{ ...receipt, receipt: { id: "one", status: "pending" } }],
+    ).items[0].deliveryStatus,
     "pending",
   );
 });
@@ -419,23 +406,21 @@ it("updates a matching receipt without replacing existing transcript content", (
   const entry: OutgoingMessage = {
     ...receipt,
     body: { ...receipt.body, delivery: "after_tool" },
-    attachments: [
-      componentAttachment(componentAttachment({ id: "outbox-asset" })),
-    ],
+    attachments: [componentAttachment({ id: "outbox-asset" })],
     status: "failed",
     error: "late receipt error",
   };
   const result = outgoingTranscript([durable], [entry]);
   assert.deepEqual(result.observed, ["one"]);
   assert.equal(result.items.length, 1);
-  assert.equal(required(result.items[0]).text, "server text");
-  assert.deepEqual(required(result.items[0]).assets, [
+  assert.equal(result.items[0].text, "server text");
+  assert.deepEqual(result.items[0].assets, [
     componentAttachment({ id: "server-asset" }),
   ]);
-  assert.equal(required(result.items[0]).requestedDelivery, "next_turn");
-  assert.equal(required(result.items[0]).deliveryStatus, "sent");
-  assert.equal(required(result.items[0]).deliveryError, undefined);
-  assert.equal(required(result.items[0]), durable);
+  assert.equal(result.items[0].requestedDelivery, "next_turn");
+  assert.equal(result.items[0].deliveryStatus, "sent");
+  assert.equal(result.items[0].deliveryError, undefined);
+  assert.equal(result.items[0], durable);
 
   const emptyDurable: Message = {
     ...durable,
@@ -453,8 +438,8 @@ it("updates a matching receipt without replacing existing transcript content", (
       },
     ],
   );
-  assert.equal(required(noAttachmentChange.items[0]).assets, undefined);
-  assert.equal(required(noAttachmentChange.items[0]), emptyDurable);
+  assert.equal(noAttachmentChange.items[0].assets, undefined);
+  assert.equal(noAttachmentChange.items[0], emptyDurable);
 });
 
 it("restores attachments and requested delivery to a local transcript row", () => {
@@ -476,10 +461,10 @@ it("restores attachments and requested delivery to a local transcript row", () =
       },
     ],
   );
-  assert.deepEqual(required(result.items[0]).assets, [
+  assert.deepEqual(result.items[0].assets, [
     componentAttachment({ id: "asset-one" }),
   ]);
-  assert.equal(required(result.items[0]).requestedDelivery, "current_turn");
+  assert.equal(result.items[0].requestedDelivery, "current_turn");
   assert.deepEqual(result.observed, []);
 
   const existingDelivery: Message = {
@@ -490,11 +475,8 @@ it("restores attachments and requested delivery to a local transcript row", () =
     [existingDelivery],
     [{ ...receipt, body: { ...receipt.body, delivery: "after_tool" } }],
   );
-  assert.equal(
-    required(unchangedDelivery.items[0]).requestedDelivery,
-    "next_turn",
-  );
-  assert.equal(required(unchangedDelivery.items[0]), existingDelivery);
+  assert.equal(unchangedDelivery.items[0].requestedDelivery, "next_turn");
+  assert.equal(unchangedDelivery.items[0], existingDelivery);
 });
 
 it("shows failed and uncertain receipts until the transcript confirms their outcome", () => {
@@ -510,8 +492,8 @@ it("shows failed and uncertain receipts until the transcript confirms their outc
       [present],
       [{ ...receipt, status, error: `${status} detail` }],
     );
-    assert.equal(required(result.items[0]).deliveryStatus, status);
-    assert.equal(required(result.items[0]).deliveryError, `${status} detail`);
+    assert.equal(result.items[0].deliveryStatus, status);
+    assert.equal(result.items[0].deliveryError, `${status} detail`);
     assert.deepEqual(result.observed, []);
 
     const alreadyLabeled: Message = { ...present, deliveryStatus: "sending" };
@@ -519,8 +501,8 @@ it("shows failed and uncertain receipts until the transcript confirms their outc
       [alreadyLabeled],
       [{ ...receipt, status, error: "must not overwrite" }],
     );
-    assert.equal(required(preserved.items[0]).deliveryStatus, "sending");
-    assert.equal(required(preserved.items[0]).deliveryError, undefined);
+    assert.equal(preserved.items[0].deliveryStatus, "sending");
+    assert.equal(preserved.items[0].deliveryError, undefined);
 
     const materializedWithoutLabel: Message = {
       ...present,
@@ -533,7 +515,7 @@ it("shows failed and uncertain receipts until the transcript confirms their outc
       [{ ...receipt, status, error: `${status} detail` }],
     );
     assert.deepEqual(notYetObserved.observed, []);
-    assert.equal(required(notYetObserved.items[0]).deliveryStatus, status);
+    assert.equal(notYetObserved.items[0].deliveryStatus, status);
   }
 });
 
@@ -553,7 +535,7 @@ it("creates local receipt rows with display content and accepted queue status", 
       delivery: "after_turn",
     },
   };
-  const row = required(outgoingTranscript([], [missingReceipt]).items[0]);
+  const row = outgoingTranscript([], [missingReceipt]).items[0];
   assert.equal(row.id, "lead:one");
   assert.equal(row.clientMessageId, "one");
   assert.equal(row.role, "user");
@@ -566,53 +548,49 @@ it("creates local receipt rows with display content and accepted queue status", 
   assert.equal(row.localDelivery, true);
   assert.equal(row.requestedDelivery, "next_turn");
 
-  const queued = required(
-    outgoingTranscript(
-      [],
-      [{ ...receipt, receipt: { id: "one", status: "reserved" } }],
-    ).items[0],
-  );
+  const queued = outgoingTranscript(
+    [],
+    [{ ...receipt, receipt: { id: "one", status: "reserved" } }],
+  ).items[0];
   assert.equal(queued.deliveryStatus, "accepted");
-  const waiting = required(
-    outgoingTranscript(
-      [],
-      [{ ...receipt, receipt: { id: "one", status: "pending" } }],
-    ).items[0],
-  );
+  const waiting = outgoingTranscript(
+    [],
+    [{ ...receipt, receipt: { id: "one", status: "pending" } }],
+  ).items[0];
   assert.equal(waiting.deliveryStatus, "pending");
-  const missing = required(
-    outgoingTranscript([], [{ ...receipt, receipt: undefined }]).items[0],
-  );
+  const missing = outgoingTranscript([], [{ ...receipt, receipt: undefined }])
+    .items[0];
   assert.equal(missing.deliveryStatus, "accepted");
-  const nonAccepted = required(
-    outgoingTranscript(
-      [],
-      [
-        {
-          ...receipt,
-          status: "queued",
-          receipt: { id: "one", status: "pending" },
-        },
-      ],
-    ).items[0],
-  );
+  const nonAccepted = outgoingTranscript(
+    [],
+    [
+      {
+        ...receipt,
+        status: "queued",
+        receipt: { id: "one", status: "pending" },
+      },
+    ],
+  ).items[0];
   assert.equal(nonAccepted.deliveryStatus, "queued");
 });
 
 it("labels every delivery state used by the chat and hides unknown states", () => {
-  const labels = [
-    ["sending", "Sending…"],
-    ["reserved", "Starting…"],
-    ["dispatching", "Sending…"],
-    ["pending", "Queued"],
-    ["queued", "Waiting to send"],
-    ["paused", "Retries paused"],
-    ["uncertain", "Delivery unconfirmed"],
-    ["failed", "Not sent"],
-    ["accepted", "Sent"],
-    ["cancelled", "Cancelled"],
-  ] satisfies [NonNullable<Message["deliveryStatus"]>, string][];
-  for (const [status, label] of labels)
+  const labels = {
+    sending: "Sending…",
+    reserved: "Starting…",
+    dispatching: "Sending…",
+    pending: "Queued",
+    queued: "Waiting to send",
+    paused: "Retries paused",
+    uncertain: "Delivery unconfirmed",
+    failed: "Not sent",
+    accepted: "Sent",
+    cancelled: "Cancelled",
+  } satisfies Partial<Record<NonNullable<Message["deliveryStatus"]>, string>>;
+  for (const [status, label] of Object.entries(labels) as [
+    keyof typeof labels,
+    string,
+  ][])
     assert.equal(
       deliveryLabel(componentMessage({ deliveryStatus: status })),
       label,
@@ -655,7 +633,8 @@ function localCards(
     .map((item) => ({
       label: deliveryLabel(item),
       retryControls: ["queued", "paused"].includes(
-        shown.find((entry) => entry.id === item.clientMessageId)?.status ?? "",
+        shown.find((entry) => entry.id === item.clientMessageId)
+          ?.status as string,
       ),
     }));
 }

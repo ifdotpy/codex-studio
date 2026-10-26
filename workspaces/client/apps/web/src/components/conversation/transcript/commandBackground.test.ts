@@ -1,4 +1,3 @@
-import { required } from "../../componentTestFixtures";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -64,7 +63,7 @@ describe("requestCommandBackground", () => {
       await requestCommandBackground(api, "lead", "turn", "toolu-1"),
     ).toEqual({ kind: "backgrounded" });
     const [post] = posts(calls);
-    if (!post) throw new Error("Expected post fixture result");
+
     expect(post.path).toBe("/api/processes/action");
     expect(post.value).toMatchObject({
       action: "background_command",
@@ -154,7 +153,7 @@ describe("requestCommandBackground", () => {
       (c) => (c.value as { requestId: string }).requestId,
     );
     expect(sent).toHaveLength(2);
-    expect(required(sent[1])).toBe(required(sent[0]));
+    expect(sent[1]).toBe(sent[0]);
   });
 
   it("reads a saved receipt without a second write", async () => {

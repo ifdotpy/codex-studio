@@ -1,3 +1,4 @@
+import type { GetResult } from "../apiTypes";
 import type { Message } from "../types";
 import type { get, syncPost, PostBody } from "../api";
 import type { stopRemovedMessage } from "../sync/send";
@@ -5,7 +6,6 @@ import type {
   saveRemovedMessage,
   removeMessageFromDevice,
 } from "./removedMessages";
-import { required } from "./componentTestFixtures";
 import { serverLocalStorage } from "../servers/storage";
 import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
@@ -22,7 +22,7 @@ vi.mock("../api", () => ({
   get: mocks.get,
   syncPost: mocks.syncPost,
   ApiError: class ApiError extends Error {
-    status: number;
+    declare status: number;
     constructor(message: string, status: number) {
       super(message);
       this.status = status;
@@ -51,8 +51,10 @@ vi.stubGlobal("localStorage", {
 
 // This test writes every saved cancellation document in the same process.
 function savedRequestId(key: string): unknown {
-  const saved: unknown = JSON.parse(required(storage.get(key)));
-  assert.ok(saved && typeof saved === "object" && "request_id" in saved);
+  const saved = JSON.parse(storage.get(key)!) as Extract<
+    PostBody<"/api/queue">,
+    { action: "cancel" }
+  >;
   return saved.request_id;
 }
 
@@ -117,19 +119,19 @@ it("loads cancellation eligibility through the typed queue query", async () => {
     deliveryStatus: "sending",
   };
   mocks.stopRemovedMessage.mockResolvedValue(false);
-  mocks.get.mockResolvedValue({
+  // Queue fixture omits item.created, item.status and capabilities.reorder.
+  const queueFixture = {
     items: [
       {
         id: "client-1",
         kind: "user",
         text: "hello",
-        created: 1,
-        status: "pending",
       },
     ],
     revision: "revision-7",
-    capabilities: { receipts: true, reorder: true },
-  });
+    capabilities: { receipts: true },
+  } as GetResult<"/api/queue">;
+  mocks.get.mockResolvedValue(queueFixture);
   mocks.syncPost.mockResolvedValue(
     {} satisfies Awaited<ReturnType<typeof syncPost<"/api/queue">>>,
   );
@@ -139,17 +141,20 @@ it("loads cancellation eligibility through the typed queue query", async () => {
   assert.deepEqual(mocks.get.mock.calls, [
     ["/api/queue", { query: { agent: "chat" }, workspaceId: "workspace" }],
   ]);
-  const [path, request, options] = required(mocks.syncPost.mock.calls[0]);
+  const [path, request, options] = mocks.syncPost.mock.calls[0];
   assert.equal(path, "/api/queue");
-  assert.equal(required(options).workspaceId, "workspace");
-  assert.equal(request.action, "cancel");
+  assert.equal(options!.workspaceId, "workspace");
   assert.deepEqual(
     {
       action: request.action,
       agent: request.agent,
       id: request.id,
-      expectedText: request.expectedText,
-      expected_revision: request.expected_revision,
+      expectedText: (
+        request as Extract<PostBody<"/api/queue">, { action: "cancel" }>
+      ).expectedText,
+      expected_revision: (
+        request as Extract<PostBody<"/api/queue">, { action: "cancel" }>
+      ).expected_revision,
     },
     {
       action: "cancel",

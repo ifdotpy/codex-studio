@@ -1,3 +1,4 @@
+import { componentAgent } from "../componentTestFixtures";
 import assert from "node:assert/strict";
 import { it } from "vitest";
 import { agentStopReason } from "../../types.ts";
@@ -8,12 +9,13 @@ it("identifies an explicit user or parent stop", () => {
     "Stopped by agent Release lead",
   ] as const)
     assert.equal(
-      agentStopReason({
-        id: "worker",
-        status: "paused",
-        autoWake: false,
-        error,
-      }),
+      agentStopReason(
+        componentAgent({
+          status: "paused",
+          autoWake: false,
+          error,
+        }),
+      ),
       error,
     );
 });
@@ -27,12 +29,13 @@ it("preserves errors without an exact explicit stop", () => {
     JSON.stringify({ message: "Stopped by user" }),
   ] as const)
     assert.equal(
-      agentStopReason({
-        id: "worker",
-        status: "paused",
-        autoWake: false,
-        error,
-      }),
+      agentStopReason(
+        componentAgent({
+          status: "paused",
+          autoWake: false,
+          error,
+        }),
+      ),
       "",
     );
   for (const state of [
@@ -42,7 +45,7 @@ it("preserves errors without an exact explicit stop", () => {
     { status: "paused" },
   ] as const)
     assert.equal(
-      agentStopReason({ id: "worker", ...state, error: "Stopped by user" }),
+      agentStopReason(componentAgent({ ...state, error: "Stopped by user" })),
       "",
     );
 });
