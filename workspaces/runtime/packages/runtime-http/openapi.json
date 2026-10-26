@@ -26033,6 +26033,17 @@
             "default": null,
             "title": "Clauderetryof"
           },
+          "connectionGeneration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StartAttemptRecordResponse/properties/connectionGeneration"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connectionId": {
             "anyOf": [
               {
@@ -26183,6 +26194,17 @@
             ],
             "default": null,
             "title": "Prepareerror"
+          },
+          "requestTicket": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StartAttemptRecordResponse/properties/requestTicket"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "responseError": {
             "anyOf": [
@@ -48902,6 +48924,11 @@
             "title": "Clauderetryof",
             "type": "string"
           },
+          "connectionGeneration": {
+            "description": "Provider connection generation persisted before submission; dimensionless.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "connectionId": {
             "default": null,
             "title": "Connectionid",
@@ -48963,6 +48990,10 @@
           },
           "prepareError": {
             "$ref": "#/components/schemas/JsonValue"
+          },
+          "requestTicket": {
+            "description": "Provider request ticket persisted before submission; dimensionless.",
+            "type": "string"
           },
           "responseError": {
             "$ref": "#/components/schemas/JsonValue"

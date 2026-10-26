@@ -35,8 +35,8 @@ export interface ChatActivity {
   created?: number | undefined;
   status: string;
   // Monitors and commands that outlive their turn. Only these appear above the chat.
-  background?: boolean;
-  commandTask?: boolean;
+  background?: boolean | undefined;
+  commandTask?: boolean | undefined;
 }
 
 export const endedWaitLabel = "Turn ended. Send a message to continue.";

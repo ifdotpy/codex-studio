@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -124,7 +125,7 @@ async function request(path: string, body?: unknown) {
   const response = await fetch(`${origin}${path}`, {
     headers,
     method: body === undefined ? "GET" : "POST",
-    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const value = await response.json();
   expect(response.ok, JSON.stringify(value)).toBe(true);
@@ -306,6 +307,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
       seq: 3,
     });
     const late = await waitRaw(2);
+    assert.ok(late.resourceVersions[0]);
     await client.persistResourceEntityChanges(
       {
         ...structuredClone(late),
@@ -326,18 +328,20 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
       seq: 3,
     });
     await write("tail", 20);
-    expect((await waitRaw(24)).resourceVersions[0].replyKind).toBe("snapshot");
+    expect((await waitRaw(24)).resourceVersions[0]?.replyKind).toBe("snapshot");
     await waitApplied(24, "tail");
     await write("new");
     await waitApplied(3, "new");
     await write("new", 0, "exited");
     await firstValueFrom(
       applied.pipe(
-        filter(
-          (event) =>
+        filter((event) => {
+          assert.ok(event.resourceVersions[0] != null);
+          return (
             event.resourceVersions[0].viewSnapshot?.terminalOutput?.status ===
-            "exited",
-        ),
+            "exited"
+          );
+        }),
         timeout(5000),
       ),
     );
@@ -352,6 +356,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     );
     await write("new" + "x".repeat(SYNC_TERMINAL_STREAM_MAX_CHARS + 1));
     const bounded = await waitRaw(SYNC_TERMINAL_STREAM_MAX_CHARS + 4);
+    assert.ok(bounded.resourceVersions[0] != null);
     expect(bounded.resourceVersions[0].replyKind).toBe("snapshot");
     expect(
       Array.from(
@@ -436,6 +441,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
         timeout(5000),
       ),
     );
+    assert.ok(reopened.resourceVersions[0] != null);
     expect(reopened.resourceVersions[0].replyKind).toBe("snapshot");
     expect(recover).not.toHaveBeenCalled();
     expect(mocks.syncGet.mock.calls).toHaveLength(reads);
