@@ -12,7 +12,6 @@ declare global {
     fileViewersBrowserSvgExecuted?: boolean;
   }
 }
-import { required } from "../teams/helpers.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
@@ -55,4 +54,4 @@ function App() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<App />);
+createRoot(document.getElementById("root")!).render(<App />);

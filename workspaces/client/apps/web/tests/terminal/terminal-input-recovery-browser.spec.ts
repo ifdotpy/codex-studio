@@ -133,7 +133,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     );
     await page.route(/\/api\/terminals\/output(?:\?.*)?$/, (route) => {
       const id = new URL(route.request().url()).searchParams.get("id");
-      if (failOutput.delete(id ?? ""))
+      if (failOutput.delete(id!))
         return route.fulfill({
           status: 503,
           json: { error: "Output connection lost" },
@@ -223,7 +223,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     };
     const input = (text: string) =>
       page.evaluate(
-        (text) => window.terminalInputRecoveryCurrentTerminal.input?.(text),
+        (text) => window.terminalInputRecoveryCurrentTerminal.input!(text),
         text,
       );
     const observed = (text: string) =>
@@ -362,7 +362,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       await reconnect();
       await page.getByText(/Previous input delivery is uncertain\./).waitFor();
       await page.evaluate(() =>
-        window.terminalInputRecoveryRetiredTerminal.input?.(
+        window.terminalInputRecoveryRetiredTerminal.input!(
           "discard-retired-callback",
         ),
       );
@@ -387,14 +387,14 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await page.evaluate(() => {
       window.terminalInputRecoveryRetiredTerminal =
         window.terminalInputRecoveryCurrentTerminal;
-      window.terminalInputRecoveryRoot?.unmount();
+      window.terminalInputRecoveryRoot!.unmount();
       window.terminalInputRecoveryRoot = null;
     });
     await mount();
     await accepted("unmount-fresh", true);
     await reply("unmount-old", "error");
     await page.evaluate(() =>
-      window.terminalInputRecoveryRetiredTerminal.input?.(
+      window.terminalInputRecoveryRetiredTerminal.input!(
         "discard-unmounted-callback",
       ),
     );

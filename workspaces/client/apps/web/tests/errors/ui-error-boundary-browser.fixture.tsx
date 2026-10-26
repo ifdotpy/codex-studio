@@ -7,7 +7,6 @@ declare global {
     };
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -46,7 +45,7 @@ function App() {
     </>
   );
 }
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   <Boundary label="Studio" fullPage>
     <App />
   </Boundary>,

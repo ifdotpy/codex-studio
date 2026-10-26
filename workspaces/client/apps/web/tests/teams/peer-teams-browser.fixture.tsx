@@ -1,6 +1,5 @@
 import type { Agent, Snapshot } from "../../src/types.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
-import { required } from "./helpers.ts";
 declare global {
   interface Window {
     peerTeamsFixture: {
@@ -115,7 +114,7 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);
 
 /** The browser and spec serialize their own complete fixture snapshot. */
 function parseSnapshot(serialized: string): Snapshot {

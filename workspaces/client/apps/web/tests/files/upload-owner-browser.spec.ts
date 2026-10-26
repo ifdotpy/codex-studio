@@ -58,20 +58,25 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
           syncPost: async (path, body, options) => {
             sent.push({ owner, path, body, options });
 
-            const asset = {
-              id: body.id,
+            // Base fixture omits agent, created, hash and image metadata unused by uploads.
+            const asset: Partial<
+              import("../../src/apiTypes.ts").PostResult<"/api/assets">
+            > = {
+              id: body.id!,
               name: body.name,
               path: `/${owner}/asset`,
               size: 3,
               mime: "text/plain",
-            } satisfies import("../../src/apiTypes.ts").PostResult<"/api/assets">;
+            };
+            const assetView =
+              asset as import("../../src/apiTypes.ts").PostResult<"/api/assets">;
             if (owner === "a") {
               startedA();
-              return new Promise<typeof asset>((resolve) => {
-                finishA = () => resolve(asset);
+              return new Promise<typeof assetView>((resolve) => {
+                finishA = () => resolve(assetView);
               });
             }
-            return asset;
+            return assetView;
           },
         });
       };
@@ -119,7 +124,9 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
     expect(result.cancelledB).toBe(false);
     expect(result.rowsA).toEqual([]);
     expect(result.rowsB).toHaveLength(1);
-    expect(result.assetB!.path).toBe("/b/asset");
+    const deliveredAsset = result.assetB as NonNullable<typeof result.assetB> &
+      Pick<import("../../src/apiTypes.ts").PostResult<"/api/assets">, "path">;
+    expect(deliveredAsset.path).toBe("/b/asset");
     expect(
       result.sent.map((row) => [
         row.owner,

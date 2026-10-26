@@ -3,7 +3,6 @@ declare global {
     studioOriginalSidebar: HTMLElement | null;
   }
 }
-import { waitForFixturePort } from "../playwright.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,11 +17,16 @@ test("another entry URL keeps one Studio tree after lazy modules load", async ({
     env: { ...process.env, FIXTURE_WORKER_COUNT: "2", FIXTURE_HOLD: "workers" },
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
+    const port = await new Promise<number>((resolve, reject) => {
+      fixture.stdout!.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error(log)));
+    });
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto(`http://127.0.0.1:${port}`);
     await expect(page.locator("#message")).toBeVisible({ timeout: 10_000 });

@@ -51,7 +51,8 @@ test("Peer teams browser", async ({
     await page.route("**/snapshot", (r) => r.fulfill({ json: state }));
     const applied = new Map<string, PeerRequest>();
     await page.route("**/api/peer-teams", async (route) => {
-      const body = fixturePostBody(route, "/api/peer-teams");
+      // The peer-team fixture sends only move, delete and save requests.
+      const body = fixturePostBody(route, "/api/peer-teams") as PeerRequest;
       requests.push(body);
       if (mode === "stale")
         return route.fulfill({

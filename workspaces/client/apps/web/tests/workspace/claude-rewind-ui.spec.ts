@@ -157,8 +157,11 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       restore_files: true,
     });
     const firstWrite = writes[0]!;
-    if (firstWrite.action !== "rollback") throw new Error("Expected rollback");
-    expect(firstWrite.request_id).toBeTruthy();
+
+    expect(
+      (firstWrite as Extract<typeof firstWrite, { action: "rollback" }>)
+        .request_id,
+    ).toBeTruthy();
     await page.setViewportSize({ width: 1200, height: 800 });
     await select.selectOption("ready");
     await expect(button).toBeEnabled();

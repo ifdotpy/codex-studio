@@ -14,7 +14,6 @@ declare global {
     backgroundCurrentBrowserNotifications: string[];
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -22,7 +21,7 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "../../src/style.css";
 import BackgroundTasks from "../../src/components/shell/BackgroundTasks.tsx";
-const root = createRoot(required(document.getElementById("root")));
+const root = createRoot(document.getElementById("root")!);
 window.backgroundCurrentBrowserRenderFixture = (
   serialized,
   leadId = "lead",

@@ -177,19 +177,13 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
         tasks[0]!.version++;
         tasks[0]!.decisions!.push({
           decision: "accept",
-          reason:
-            typeof body.result === "string"
-              ? body.result
-              : JSON.stringify(body.result),
+          reason: body.result as string,
           gateOverrideReason: body.override_reason,
           by: "lead",
           created: 3,
         });
       } else if (body.action === "update") {
-        if (
-          typeof body.result_schema === "object" &&
-          body.result_schema?.type === "invalid"
-        )
+        if ((body.result_schema as { type?: string })?.type === "invalid")
           return route.fulfill({
             status: 400,
             json: { error: "Invalid result_schema at /type: unknown type" },
@@ -202,30 +196,17 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
           version: tasks[1]!.version + 1,
         });
       } else if (body.action === "set_default_gate") {
-        if (body.gate === undefined) throw new Error("Missing default gate");
-        taskDefaultGate = body.gate;
+        taskDefaultGate = body.gate!;
       } else if (body.action === "create") {
-        const resultSchema = fixtureResultSchema(body.result_schema);
-        const gate = body.gate;
-        const serializedGate: components["schemas"]["WorkItem"]["gate"] =
-          gate && typeof gate === "object"
-            ? gate.timeout_ms === undefined
-              ? { command: gate.command }
-              : { command: gate.command, timeout_ms: gate.timeout_ms }
-            : gate;
-        tasks.push({
+        // This base fixture uses the renderer's request fields rather than a complete persisted WorkItem.
+        const createdTask = {
           ...common,
           ...body,
           id: "created-task",
-          title: body.title!,
-          description: body.description ?? undefined,
-          dependencies: body.dependencies ?? undefined,
-          version: body.version ?? common.version,
-          status: body.status!,
-          gate: serializedGate,
-          result_schema: resultSchema,
-          resultSchema,
-        } satisfies components["schemas"]["WorkItem"]);
+          status: body.status,
+          resultSchema: body.result_schema,
+        } as components["schemas"]["WorkItem"];
+        tasks.push(createdTask);
       } else if (body.action === "reject") {
         tasks[0]!.status = "ready";
         tasks[0]!.version++;
@@ -388,5 +369,6 @@ function fixtureResultSchema(
   | (components["schemas"]["WorkItem"]["resultSchema"] &
       components["schemas"]["JsonValue"])
   | undefined {
-  return schema === undefined ? undefined : JSON.parse(JSON.stringify(schema));
+  return schema as components["schemas"]["WorkItem"]["resultSchema"] &
+    components["schemas"]["JsonValue"];
 }

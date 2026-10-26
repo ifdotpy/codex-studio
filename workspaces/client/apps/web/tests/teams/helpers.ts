@@ -29,16 +29,9 @@ export async function fixturePostResult<Path extends ApiPostPath>(
 export function legacySyncEntities(
   response: unknown,
 ): SyncEntity[] | undefined {
-  if (
-    !response ||
-    typeof response !== "object" ||
-    !("_syncEntities" in response)
-  )
-    return undefined;
-  // Legacy fixture extensions used the generated entity DTOs before their removal.
-  return Array.isArray(response._syncEntities)
-    ? (response._syncEntities as SyncEntity[])
-    : undefined;
+  // Legacy fixture responses used these generated entity DTOs before their removal.
+  const legacyResponse = response as { _syncEntities?: SyncEntity[] };
+  return legacyResponse._syncEntities;
 }
 
 import type { ApiGetPath, GetResult } from "../../src/apiTypes.ts";

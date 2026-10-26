@@ -1,5 +1,5 @@
 import type { Browser, Page, Route } from "@playwright/test";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "../teams/helpers.ts";
 import type {} from "./upload-recovery-browser.fixture.tsx";
 import type {} from "./upload-recovery-browser.writer.fixture.tsx";
@@ -51,8 +51,20 @@ test("upload recovery browser", async ({ browser }) => {
       mode = "hold";
     const posts: PostBody<"/api/assets">[] = [],
       headers: (string | undefined)[] = [],
-      held: { route: Route; receipt: PostResult<"/api/assets"> }[] = [],
-      receipts = new Map<string, PostResult<"/api/assets">>();
+      held: {
+        route: Route;
+        receipt: Pick<
+          import("../../src/apiTypes.ts").PostResult<"/api/assets">,
+          "id" | "name" | "size" | "mime" | "image"
+        >;
+      }[] = [],
+      receipts = new Map<
+        string,
+        Pick<
+          import("../../src/apiTypes.ts").PostResult<"/api/assets">,
+          "id" | "name" | "size" | "mime" | "image"
+        >
+      >();
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -394,7 +406,7 @@ test("upload recovery browser", async ({ browser }) => {
       async () =>
         (await window.uploadRecoveryBrowserFixture.pending()).find(
           (row) => row.name === "reject.txt",
-        )?.id,
+        )!.id,
     );
     await page.evaluate(
       (id) => window.uploadRecoveryBrowserFixture.recovery.remove(id!),
@@ -492,7 +504,7 @@ test("upload recovery browser", async ({ browser }) => {
           tab.waitForFunction(
             () =>
               ["tab-a", "tab-b"].every((id) =>
-                window.uploadRecoveryBrowserWriter.attachments.lead?.some(
+                window.uploadRecoveryBrowserWriter.attachments.lead!.some(
                   (asset) => asset.id === id,
                 ),
               ),
@@ -518,13 +530,13 @@ test("upload recovery browser", async ({ browser }) => {
     const shared = await page.evaluate(() =>
       window
         .uploadRecoveryBrowserReadStoredAttachments()
-        .lead?.map(
+        .lead!.map(
           (
             asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
           ) => asset.id,
         ),
     );
-    assert.ok(shared?.includes("tab-a") && shared?.includes("tab-b"));
+    assert.ok(shared.includes("tab-a") && shared.includes("tab-b"));
     await other.close();
     expect(errors).toEqual([]);
     console.log(
@@ -605,7 +617,7 @@ async function setupAttachmentWriters(browser: Browser) {
         () =>
           window
             .uploadRecoveryBrowserReadStoredAttachments()
-            .lead?.map(
+            .lead!.map(
               (
                 asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
               ) => asset.id,
@@ -643,7 +655,7 @@ test("sequential cross-tab attachment writes converge", async ({ browser }) => {
     for (const tab of [writers.page, writers.other]) {
       const surviving = await writers.read(tab);
       assert.ok(
-        expected.every((id) => surviving?.includes(id)),
+        expected.every((id) => surviving!.includes(id)),
         `sequential writes did not converge; surviving value: ${JSON.stringify(surviving)}`,
       );
     }
@@ -675,7 +687,7 @@ test("20 concurrent cross-tab attachment pairs lose no update", async ({
       const surviving = snapshots.at(-1);
       if (
         writes.some((written) => !written) ||
-        !ids.every((id) => surviving?.includes(id))
+        !ids.every((id) => surviving!.includes(id))
       )
         lost.push({ pair, writes, surviving });
     }

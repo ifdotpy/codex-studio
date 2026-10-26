@@ -3,7 +3,6 @@ import {
   confirmedWorkspaceId,
 } from "./concurrency-fixture-data.ts";
 import type { Agent } from "../../src/types.ts";
-import { required } from "./helpers.ts";
 declare global {
   interface Window {
     confirmedConcurrencyFixture: {
@@ -51,4 +50,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

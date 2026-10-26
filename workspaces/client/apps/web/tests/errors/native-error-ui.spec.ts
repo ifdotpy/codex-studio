@@ -206,9 +206,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       .click();
     await page.locator("#message").fill("Exercise the live stream");
     await page.locator("#send").click();
-    let agent: Agent = (await state()).runtime.agents.find(
-      (a) => a.name === "Other project",
-    )!;
+    let agent!: Agent;
     await poll(async () => {
       agent = (await state()).runtime.agents.find(
         (a) => a.name === "Other project",

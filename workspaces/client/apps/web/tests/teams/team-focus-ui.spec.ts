@@ -1,4 +1,3 @@
-import { waitForFixturePort } from "../playwright.ts";
 import {
   test,
   expect,
@@ -21,7 +20,12 @@ for (const width of [1024, 390]) {
     const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const port = await waitForFixturePort(fixture);
+    const port = await new Promise<number>((resolve, reject) => {
+      fixture.stdout!.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error("Fixture exited")));
+    });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
     const lead = snapshot.threads.find((a) => a.name === "Release lead")!;

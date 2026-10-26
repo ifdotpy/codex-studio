@@ -14,7 +14,6 @@ declare global {
     structuredOperationalErrorsUiTranscriptionCalls: number;
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -29,7 +28,7 @@ import { Dictation } from "../../src/components/Dictation.tsx";
 import { saveRecording, listRecordings } from "../../src/dictation/storage.ts";
 window.structuredOperationalErrorsUiReadRecordings = () =>
   listRecordings("lead");
-const root = createRoot(required(document.getElementById("root")));
+const root = createRoot(document.getElementById("root")!);
 const agent: Agent = {
   id: "lead",
   rootId: "lead",

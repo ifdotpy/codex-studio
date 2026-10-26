@@ -206,12 +206,14 @@ test("Background controls", async ({ context }, testInfo) => {
       window.backgroundControlsSchemaHandshakeEvents = [];
       const add = EventSource.prototype.addEventListener;
       EventSource.prototype.addEventListener = function (
-        type,
-        listener,
-        options,
+        type: string,
+        listener:
+          | EventListenerOrEventListenerObject
+          | ((event: MessageEvent) => unknown),
+        options?: boolean | AddEventListenerOptions,
       ) {
         if (type !== "api-schema")
-          return add.call(this, type, listener, options);
+          return add.call(this, type, listener as EventListener, options);
         return add.call(
           this,
           type,

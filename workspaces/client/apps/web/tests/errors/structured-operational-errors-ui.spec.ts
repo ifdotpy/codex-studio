@@ -239,32 +239,34 @@ test("Structured operational errors ui", async ({
     }
     await page.evaluate((value) => {
       window.structuredOperationalErrorsUiTranscriptionCalls = 0;
-      if (!window.codexDesktop)
-        throw new Error("Missing fixture desktop bridge");
-      window.codexDesktop.prepareTranscription = async () => {
+
+      window.codexDesktop!.prepareTranscription = async () => {
         throw value;
       };
-      window.codexDesktop.transcribeAudio = async () => {
+      window.codexDesktop!.transcribeAudio = async () => {
         window.structuredOperationalErrorsUiTranscriptionCalls++;
-        return { text: "Must not run", provider: "fixture", onDevice: false };
+        // Base fixture intentionally omits provider metadata that this path never consumes.
+        return { text: "Must not run" } as Awaited<
+          ReturnType<
+            NonNullable<
+              NonNullable<typeof window.codexDesktop>["transcribeAudio"]
+            >
+          >
+        >;
       };
     }, value);
     await page
       .getByRole("button", { name: "Retry transcription", exact: true })
       .click();
     const deadline = Date.now() + 5000;
-    let persisted: Awaited<
+    let persisted!: Awaited<
       ReturnType<typeof import("../../src/dictation/storage.ts").listRecordings>
-    > = [];
+    >;
     while (Date.now() < deadline) {
       persisted = await page.evaluate(() =>
         window.structuredOperationalErrorsUiReadRecordings(),
       );
-      if (
-        typeof persisted[0]?.error === "string" &&
-        persisted[0]?.error?.includes("E_FIXTURE")
-      )
-        break;
+      if (persisted[0].error!.includes("E_FIXTURE")) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.deepEqual(JSON.parse(persisted[0]!.error!), value);

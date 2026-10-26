@@ -41,14 +41,16 @@ for (const width of [320, 1200]) {
     const pageReads: (string | null)[] = [];
     let connected = false;
     let thread = "thread";
-    let release = () => {};
+    let release!: () => void;
     const delayed = new Promise<void>((resolve) => {
       release = resolve;
     });
     let mode = "delayed";
     const inventory = (
       cursor: string | null,
-    ): GetResult<"/api/capabilities"> => ({
+    ): Omit<GetResult<"/api/capabilities">, "mcp"> & {
+      mcp: import("../../src/types.ts").JsonInput[];
+    } => ({
       agent: "agent",
       at: 1,
       model: "model",
@@ -74,7 +76,7 @@ for (const width of [320, 1200]) {
               name: "server-with-a-long-name-for-small-window-layout-check",
               status: connected ? "connected" : "failed",
               error: connected
-                ? null
+                ? undefined
                 : "The MCP endpoint refused the connection. Reconnect this server to try again.",
             },
           ],

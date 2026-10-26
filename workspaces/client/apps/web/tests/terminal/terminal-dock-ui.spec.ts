@@ -337,7 +337,7 @@ test("Terminal dock", async () => {
           });
         }
         const id = url.searchParams.get("id"),
-          output = outputs.get(id ?? "") || "",
+          output = outputs.get(id!) || "",
           shell = shells.find((item) => item.id === id);
         value = {
           text: output.slice(Number(url.searchParams.get("offset") || 0)),
@@ -393,9 +393,9 @@ test("Terminal dock", async () => {
       }
       await route.fulfill({ json: value });
     });
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    await page.goto(`http://127.0.0.1:${address.port}`);
+    await page.goto(
+      `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`,
+    );
     assert.equal(
       await page.locator("#import-chat, #other-sessions").count(),
       0,
@@ -412,18 +412,18 @@ test("Terminal dock", async () => {
       });
     const closedGeometry = await page.evaluate(() => {
       const dock = document
-        .querySelector(".terminal-dock")
-        ?.getBoundingClientRect();
+        .querySelector(".terminal-dock")!
+        .getBoundingClientRect();
       const sidebar = document
-        .querySelector("#sidebar")
-        ?.getBoundingClientRect();
+        .querySelector("#sidebar")!
+        .getBoundingClientRect();
       const workspace = document
-        .querySelector(".workspace")
-        ?.getBoundingClientRect();
+        .querySelector(".workspace")!
+        .getBoundingClientRect();
       return {
-        dock: dock?.toJSON(),
-        sidebar: sidebar?.toJSON(),
-        workspace: workspace?.toJSON(),
+        dock: dock.toJSON(),
+        sidebar: sidebar.toJSON(),
+        workspace: workspace.toJSON(),
         height: innerHeight,
       };
     });
@@ -452,19 +452,19 @@ test("Terminal dock", async () => {
     // A server view in the combined window has no sidebar: the closed dock is a full-width bar,
     // and the page ends above it, so the bar never covers the usage line.
     const frameGeometry = await page.evaluate(async () => {
-      const sidebar = document.querySelector("#sidebar");
-      if (!sidebar) throw new Error("Missing sidebar");
-      const parent = sidebar.parentNode;
-      if (!parent) throw new Error("Missing sidebar parent");
+      const sidebar = document.querySelector("#sidebar")!;
+
+      const parent = sidebar.parentNode!;
+
       const next = sidebar.nextSibling;
       sidebar.remove();
       await new Promise<void>((done) => requestAnimationFrame(() => done()));
       const dock = document
-        .querySelector(".terminal-dock")
-        ?.getBoundingClientRect();
-      const root = document.querySelector("#root")?.getBoundingClientRect();
+        .querySelector(".terminal-dock")!
+        .getBoundingClientRect();
+      const root = document.querySelector("#root")!.getBoundingClientRect();
       parent.insertBefore(sidebar, next);
-      return { dock: dock?.toJSON(), root: root?.toJSON(), width: innerWidth };
+      return { dock: dock.toJSON(), root: root.toJSON(), width: innerWidth };
     });
     assert.equal(frameGeometry.dock.left, 0, "The bar starts at the left edge");
     assert.equal(
@@ -480,16 +480,13 @@ test("Terminal dock", async () => {
     await dock.getByRole("button", { name: "Show terminals" }).click();
     await page.waitForFunction(() => {
       const dock = document
-        .querySelector(".terminal-dock")
-        ?.getBoundingClientRect();
+        .querySelector(".terminal-dock")!
+        .getBoundingClientRect();
       const workspace = document
-        .querySelector(".workspace")
-        ?.getBoundingClientRect();
+        .querySelector(".workspace")!
+        .getBoundingClientRect();
       return (
-        workspace &&
-        dock &&
-        Math.abs(workspace.bottom - dock.top) <= 1 &&
-        dock.width === innerWidth
+        Math.abs(workspace.bottom - dock.top) <= 1 && dock.width === innerWidth
       );
     });
     await dock
@@ -612,8 +609,8 @@ test("Terminal dock", async () => {
       writes.some(
         (write) =>
           write.path === "/api/terminals/resize" &&
-          (write.body.cols ?? 0) > 0 &&
-          (write.body.rows ?? 0) > 0,
+          write.body.cols! > 0 &&
+          write.body.rows! > 0,
       ),
     );
     await dock

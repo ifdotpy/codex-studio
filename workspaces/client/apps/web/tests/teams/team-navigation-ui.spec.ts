@@ -4,7 +4,6 @@ import {
   fixturePostResult,
   legacySyncEntities,
 } from "./helpers.ts";
-import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   test,
@@ -48,9 +47,22 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
   });
   const page = fixturePage;
   let log = "";
-  proc.stderr?.on("data", (data) => (log += data));
+  proc.stderr!.on("data", (data) => (log += data));
   try {
-    const port = await waitForFixturePort(proc, { diagnostics: () => log });
+    const port = await new Promise<number>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(Error("Fixture timeout\n" + log)),
+        30000,
+      );
+      proc.stdout!.once("data", (data) => {
+        clearTimeout(timeout);
+        resolve(Number(String(data).trim()));
+      });
+      proc.once("exit", () => {
+        clearTimeout(timeout);
+        reject(Error(log));
+      });
+    });
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
     const lead = initial.threads.find(
@@ -83,21 +95,21 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       const desiredStatus = new Map<string, AgentEntityDto["status"]>(
         workers.map((agent, index) => [
           worker(index).id,
-          new Map<number, AgentEntityDto["status"]>([
-            [3, "failed"],
-            [4, "paused"],
-            [7, "failed"],
-          ]).get(index) ??
+          (
+            { 3: "failed", 4: "paused", 7: "failed" } as Record<
+              number,
+              AgentEntityDto["status"]
+            >
+          )[index] ??
             (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
         ]),
       );
-      for (const change of documents ?? []) {
-        if (
-          !("op" in change) ||
-          change.op !== "upsert" ||
-          change.collection !== "agent"
-        )
-          continue;
+      // The fixture mutation documents use the generated operation envelope.
+      const changes = documents as
+        | Extract<SyncPullResponse["documents"][number], { op: unknown }>[]
+        | undefined;
+      for (const change of changes ?? []) {
+        if (change.op !== "upsert" || change.collection !== "agent") continue;
         if (change.id === worker(2).id) {
           change.value.name = longName;
           change.value.status = "approval";

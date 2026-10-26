@@ -47,7 +47,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
     const errors: string[] = [],
       requests: (string | null)[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    const fixtures = {
+    const fixtures: Record<string, string[]> = {
       "/docs/readme.md": [
         "text/markdown",
         "# Title\n\n**Bold** and [next](chapter.md#L2)\n\n![Diagram](image.svg)\n\n[table](table.csv)\n\n[bad link](./bad%ZZ.md)\n\n![Inline](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=)",

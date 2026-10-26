@@ -7,7 +7,6 @@ declare global {
     uxRequestRecoveryBrowserFailRefresh: boolean;
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -24,7 +23,7 @@ import {
   useAccounts,
   AccountTransferStatus,
 } from "../../src/components/Accounts.tsx";
-const mode = new URLSearchParams(location.search).get("case") || "";
+const mode = new URLSearchParams(location.search).get("case")!;
 const project: Project = {
   id: "/project",
   path: "/project",
@@ -120,7 +119,7 @@ let body =
     <MoveChatForm project={project} agent={agent} saved={saved} />
   ) : mode === "project-account" || mode === "unready" ? (
     <ProjectAccount
-      path={project.path || "/project"}
+      path={project.path!}
       project={
         mode === "unready" ? { ...project, accountKey: "expired" } : project
       }
@@ -141,6 +140,6 @@ let body =
       onAction={() => {}}
     />
   );
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   <MantineProvider>{body}</MantineProvider>,
 );

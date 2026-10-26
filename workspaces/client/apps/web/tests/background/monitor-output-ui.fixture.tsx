@@ -4,7 +4,6 @@ declare global {
     monitorOutputUiNotices: string[];
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -15,7 +14,7 @@ import BackgroundTasks from "../../src/components/shell/BackgroundTasks.tsx";
 const data = fixtureSnapshot([
   { id: "lead", rootId: "lead", name: "Lead", epoch: 2, accountKey: "default" },
 ]);
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   React.createElement(
     MantineProvider,
     { defaultColorScheme: "dark" },

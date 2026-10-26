@@ -1,6 +1,5 @@
 import type { TestAgent } from "../playwright.ts";
 import { fixturePostBody } from "./helpers.ts";
-import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   stubEntityState,
@@ -26,11 +25,16 @@ test("Team panel ui", async ({
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
+    const port = await new Promise<number>((resolve, reject) => {
+      fixture.stdout!.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error(log)));
+    });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
     const page = runnerPage;
@@ -360,10 +364,15 @@ test("Team panel scrolls past retained worktrees to the last worker", async ({
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
-  const port = await waitForFixturePort(fixture, { diagnostics: () => log });
+  const port = await new Promise<number>((resolve, reject) => {
+    fixture.stdout!.once("data", (chunk) =>
+      resolve(Number(String(chunk).trim())),
+    );
+    fixture.once("exit", () => reject(new Error(log)));
+  });
   const origin = `http://127.0.0.1:${port}`;
   const snapshot = await readTestState(origin);
   const lead = snapshot.threads.find((agent) => agent.name === "Release lead")!;

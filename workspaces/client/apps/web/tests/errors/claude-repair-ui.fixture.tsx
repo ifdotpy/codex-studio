@@ -1,5 +1,4 @@
 import type { Agent, Message } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -36,7 +35,7 @@ const items: Message[] = [
     },
   },
 ];
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   React.createElement(
     MantineProvider,
     null,
