@@ -20,6 +20,7 @@ import AccountSignInNotice from "./AccountSignInNotice";
 import type { Account } from "./Accounts";
 import { requiresThinking } from "studio-claude-bridge/thinking.ts";
 import "./claude-settings.css";
+import { CLAUDE_MCP_AUTO_BACKGROUND_MS } from "../generated/sharedValues.ts";
 
 function ClaudeDisclosure({
   title,
@@ -51,6 +52,7 @@ type ClaudeValues = {
   >;
   thinking: boolean;
   autoCompactWindow?: number | undefined;
+  mcpAutoBackground: boolean;
 };
 
 function permissionMode(value: string): ClaudeValues["permissionMode"] | null {
@@ -98,6 +100,7 @@ const valuesFrom = (
     value.settings?.permissionMode ||
     (agent.yoloMode === false ? "default" : "bypassPermissions"),
   thinking: value.settings?.thinking !== false,
+  mcpAutoBackground: value.settings?.mcpAutoBackground !== false,
   ...(value.settings?.autoCompactWindow
     ? { autoCompactWindow: Number(value.settings.autoCompactWindow) }
     : {}),
@@ -423,6 +426,18 @@ export function ClaudeSettings({
         alwaysOpen={!!permissionsTarget}
       >
         <div className="claude-advanced-content">
+          <Switch
+            label="Move slow MCP calls to the background"
+            description={`Eligible Model Context Protocol (MCP) calls continue in the background after ${CLAUDE_MCP_AUTO_BACKGROUND_MS / 1000} seconds.`}
+            checked={values.mcpAutoBackground}
+            disabled={locked}
+            onChange={(event) =>
+              void saveSetting("MCP background", {
+                mcpAutoBackground: event.currentTarget.checked,
+              })
+            }
+          />
+          {fieldStatus("MCP background")}
           <TextInput
             label="Auto-compact token limit"
             description="Blank uses the Claude default."

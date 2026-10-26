@@ -20159,6 +20159,10 @@
             "default": null,
             "title": "Launchargs"
           },
+          "mcpAutoBackground": {
+            "description": "Move eligible MCP calls to the background after 120 seconds. The default is on.",
+            "type": "boolean"
+          },
           "permissionMode": {
             "anyOf": [
               {
@@ -20385,6 +20389,10 @@
               }
             ],
             "title": "Autocompactwindow"
+          },
+          "mcpAutoBackground": {
+            "description": "Move eligible MCP calls to the background after 120 seconds. The default is on.",
+            "type": "boolean"
           },
           "permissionMode": {
             "anyOf": [

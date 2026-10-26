@@ -26,6 +26,8 @@ export default {
       "steer.test.ts",
       // Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.
       "stall-watch.test.ts",
+      // MCP calls move to a retained task after the native wait; the opt-out keeps the foreground stall watch.
+      "mcp-background.test.ts",
       // SDK UUID coverage, composite history controls and authoritative session transitions.
       "history-index.test.ts",
       "controls.test.ts",

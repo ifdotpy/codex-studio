@@ -74,6 +74,8 @@ export interface components {
        * @default null
        */
       launchArgs?: null | string | undefined;
+      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      mcpAutoBackground?: boolean | undefined;
       /**
        * Permissionmode
        * @default null

@@ -166,6 +166,7 @@ import { stripVTControlCharacters } from "node:util";
 import { createCommandTransport, commandMethods } from "./commands.ts";
 
 import { thinkingFlag } from "./thinking.ts";
+import { mcpBackgroundEnvironment } from "./session-policy.ts";
 import {
   createSessionStore,
   ephemeralSessionOptions,
@@ -588,6 +589,7 @@ const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
     includePartialMessages: true,
     env: nativeReviewerEnvironment(s) ?? {
       ...process.env,
+      ...mcpBackgroundEnvironment(s),
       ...(typeof s.claude?.env?.LAYR_ROOT === "string"
         ? {
             LAYR_PROJECT: undefined,

@@ -2,6 +2,9 @@
 //! VM guest copies are rendered from it by `studio-contracts`
 //! (`pnpm run contracts:generate`), and `pnpm run contracts:check` rejects drift.
 
+/// Native MCP foreground wait before automatic background transfer, in milliseconds.
+pub const CLAUDE_MCP_AUTO_BACKGROUND_MS: u64 = 120_000;
+
 // Command monitor output matching and bounded observation. Byte limits count UTF-8.
 /// Patterns one output monitor may watch.
 pub const MONITOR_OUTPUT_MAX_PATTERNS: usize = 16;

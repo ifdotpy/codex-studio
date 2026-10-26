@@ -243,6 +243,20 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
     assert.deepEqual(mutations, []);
     assert.deepEqual(errors, []);
 
+    await page.getByText("More settings and actions", { exact: true }).click();
+    const background = page.getByLabel("Move slow MCP calls to the background");
+    assert.equal(await background.isChecked(), true);
+    const saved = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/api/claude/session") &&
+        request.method() === "POST",
+    );
+    await background.uncheck();
+    const body: PostBody<"/api/claude/session"> = (await saved).postDataJSON();
+    assert.equal(body.action, "settings");
+    assert.equal(body.settings?.mcpAutoBackground, false);
+    assert.deepEqual(errors, []);
+
     // A chat without a native thread can return stored settings after sign-out.
     const emptyChat = await browser.newPage();
     const emptyChatRequests: PostBody<"/api/claude/session">[] = [];

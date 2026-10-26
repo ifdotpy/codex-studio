@@ -977,3 +977,14 @@ async fn live_permissions_claude_control_applies_while_running_and_pending_witho
         }
     }
 }
+
+#[test]
+fn mcp_auto_background_accepts_only_booleans() {
+    use studio_runtime_services::claude_controls::settings;
+    for value in [json!(true), json!(false)] {
+        assert!(settings(&json!({"mcpAutoBackground":value})).is_ok());
+    }
+    for value in [json!(null), json!(1), json!("true")] {
+        assert!(settings(&json!({"mcpAutoBackground":value})).is_err());
+    }
+}

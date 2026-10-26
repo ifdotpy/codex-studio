@@ -154,6 +154,11 @@ background tasks, questions, action approvals, and Studio agent tools. Limits sh
 five-hour, weekly, and model-specific subscription windows. The account menu shows
 the remaining weekly allowance.
 
+Claude chat settings include **Move slow MCP calls to the background**. The setting
+is on by default. Eligible Model Context Protocol (MCP) calls move to the
+background after 120 seconds. Their tasks remain in Studio until completion.
+Completion can start a new turn. The native tool rules can exclude a call.
+
 Chat settings includes Claude permission modes, extended thinking, automatic
 compaction, native commands and skills, and context rollback. Model, effort, and
 fast-mode controls use the native model catalog. Setup sheets show a compact native radio grid. The grid groups Claude families and Codex generations, newest first, with

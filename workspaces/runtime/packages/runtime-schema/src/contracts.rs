@@ -71,6 +71,10 @@ fn shared_values_ts() -> String {
     ts_constants(
         &mut text,
         &[
+            (
+                "CLAUDE_MCP_AUTO_BACKGROUND_MS",
+                values::CLAUDE_MCP_AUTO_BACKGROUND_MS.to_string(),
+            ),
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
                 "MODEL_WHITELIST_PREFERENCE_KEY",
@@ -978,6 +982,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         Rendered {
             path: web("workspaceModes.ts"),
             text: workspace_modes_ts(),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/session-policy.generated.ts".into(),
+            text: format!(
+                "// {HEADER}\nexport const MCP_AUTO_BACKGROUND_MS = {};\n",
+                values::CLAUDE_MCP_AUTO_BACKGROUND_MS
+            ),
         },
         Rendered {
             path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.ts"

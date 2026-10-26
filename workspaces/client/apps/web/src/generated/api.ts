@@ -10583,6 +10583,8 @@ export interface components {
        * @default null
        */
       launchArgs?: null | string | undefined;
+      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      mcpAutoBackground?: boolean | undefined;
       /**
        * Permissionmode
        * @default null
@@ -10675,6 +10677,8 @@ export interface components {
     ClaudeSettings: {
       /** Autocompactwindow */
       autoCompactWindow?: number | null | undefined;
+      /** @description Move eligible MCP calls to the background after 120 seconds. The default is on. */
+      mcpAutoBackground?: boolean | undefined;
       /** Permissionmode */
       permissionMode?:
         | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")
