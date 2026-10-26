@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { expect, it } from "vitest";
 import { roomLeadIds } from "./chatScope";
 import type { Agent, Room } from "./types";
@@ -37,7 +38,9 @@ it("resolves room leads by member without scanning the whole team", () => {
     return example;
   });
   reads = 0;
-  for (const { members, leads } of rooms) {
+  for (const example of rooms) {
+    assert.ok(example);
+    const { members, leads } = example;
     const room = { kind: "private", members } as Room;
     expect(roomLeadIds(room, agents)).toEqual(leads);
   }

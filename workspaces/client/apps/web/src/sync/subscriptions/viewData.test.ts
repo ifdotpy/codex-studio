@@ -4,6 +4,23 @@ import type { ResourceVersion } from "../resourceEvents";
 import type { createSyncClient } from "../client";
 import type { ObserveSubscriptionData } from "./module";
 import { createSubscriptionStore } from "./store";
+import type { components } from "../../generated/api";
+
+const roomView = {
+  messages: [
+    {
+      id: "new",
+      seq: 2,
+      created: 1,
+      deliveries: {},
+      room: "team",
+      sender: "lead",
+      senderName: "Lead",
+      text: "New message",
+    },
+  ],
+  room: { id: "team" },
+} satisfies components["schemas"]["ChatRead"];
 const sync = () => ({
   subscribeTranscriptProjection: vi.fn<
     ReturnType<typeof createSyncClient>["subscribeTranscriptProjection"]
@@ -17,11 +34,7 @@ it.each([
     "complaint",
     { id: "message", text: "Reply", responses: [], version: 1 },
   ],
-  [
-    { kind: "room", roomId: "team" },
-    "room",
-    { messages: [], room: { id: "team" } },
-  ],
+  [{ kind: "room", roomId: "team" }, "room", roomView],
   [
     { kind: "terminal-output", terminalId: "shell" },
     "terminalOutput",

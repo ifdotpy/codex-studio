@@ -18,9 +18,9 @@ Checks on 2026-09-22:
 - The web production build passed.
 - `node tests/desktop-notifications-ui.mjs` passed. It covers permission refusal,
   repeated snapshots, a later alert after permission recovery, and current-chat suppression.
-- `node desktop/test.mjs` passed, including native failure mapping and backend survival.
+- `node desktop/test.ts` passed, including native failure mapping and backend survival.
 - `npm run package` in `desktop/` passed with the dedicated certificate.
-- `node desktop/package-test.mjs` passed against the signed package.
+- `node desktop/package-test.ts` passed against the signed package.
 - A native probe bundle signed before and after a resource change retained the
   same certificate-based designated requirement. Both strict signature checks passed.
 
