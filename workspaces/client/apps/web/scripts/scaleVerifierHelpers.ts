@@ -1313,16 +1313,20 @@ export function sampleProviderProcesses(
 // checkout (workers do not edit files); `worktree` gives each its own Git
 // worktree. The 512-worker target uses `shared`; separate 30/128 checks use
 // `worktree`.
-export const WORKER_WORKSPACES = Object.freeze(["shared", "worktree"]);
+export const WORKER_WORKSPACES = Object.freeze(["shared", "worktree"] as const);
 export const DEFAULT_WORKER_WORKSPACE = "shared";
+
+function isWorkerWorkspace(
+  value: string,
+): value is (typeof WORKER_WORKSPACES)[number] {
+  return WORKER_WORKSPACES.some((workspace) => workspace === value);
+}
 
 export function parseWorkerWorkspace(value: string = DEFAULT_WORKER_WORKSPACE) {
   assert.ok(
-    WORKER_WORKSPACES.includes(value),
+    isWorkerWorkspace(value),
     `--worker-workspace must be one of ${WORKER_WORKSPACES.join(", ")}.`,
   );
-  assert.ok(value === "shared" || value === "worktree");
-  assert.ok(value === "shared" || value === "worktree");
   return value;
 }
 
