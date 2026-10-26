@@ -42,7 +42,9 @@ type Limits = {
   subscriptionType?: string | null | undefined;
   extraUsage?: unknown;
 };
-export type QueuedInput = SDKUserMessage & { studioInputBatch?: QueuedInput[] };
+export type QueuedInput<T extends SDKUserMessage = SDKUserMessage> = T & {
+  studioInputBatch?: QueuedInput<T>[];
+};
 import usagePolicyJson from "./usage-policy.ts";
 const usagePolicy: {
   modelBuckets: Record<string, string>;

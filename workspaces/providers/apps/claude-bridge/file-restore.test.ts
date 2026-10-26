@@ -1,6 +1,10 @@
 import type { Session, ControlReceipt } from "./session-state.ts";
 import type { NativeFileRecord } from "./file-restore.ts";
-import type { Query, RewindFilesResult } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Query,
+  RewindFilesResult,
+  SessionMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -73,10 +77,20 @@ async function createFixture(root: string) {
       },
     ],
   };
-  const messages = [
-    { type: "user", uuid: message, message: { content: "edit" } },
+  const messages: SessionMessage[] = [
+    {
+      type: "user",
+      uuid: message,
+      session_id: native,
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      message: { content: "edit" },
+    },
   ];
   const deps = {
+    forkSession: async () => {
+      throw new Error("first-turn rollback must not fork");
+    },
     getSessionMessages: async () => messages,
     persist: async (
       _session: Pick<Session, "controlRequests">,
@@ -267,6 +281,9 @@ test("a file first tracked after the target uses its first backup", async () =>
     f.messages.push({
       type: "user",
       uuid: later,
+      session_id: f.session.id,
+      parent_tool_use_id: null,
+      parent_agent_id: null,
       message: { content: "later" },
     });
     await fs.writeFile(
@@ -348,6 +365,9 @@ test("native retention permits recent checkpoints and refuses expired checkpoint
       f.messages.push({
         type: "user",
         uuid: message,
+        session_id: f.session.id,
+        parent_tool_use_id: null,
+        parent_agent_id: null,
         message: { content: "later" },
       });
       f.rows.push({

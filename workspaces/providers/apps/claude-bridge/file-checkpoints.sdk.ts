@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 import type {
   SDKSystemMessage,
@@ -23,6 +24,8 @@ export const forkSession = async () => {
 };
 export const getSessionMessages = async (id: string) => messages.get(id) || [];
 export function query({ prompt, options }: FixtureQuery) {
+  assert.ok(options.env);
+  const env = options.env;
   const log = (value: unknown) =>
     appendFileSync(
       path.join(options.cwd, "sdk-calls.jsonl"),
@@ -31,7 +34,7 @@ export function query({ prompt, options }: FixtureQuery) {
   log({
     kind: "query",
     enabled: options.enableFileCheckpointing,
-    env: options.env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING,
+    env: env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING,
     resume: options.resume,
   });
   const abort = new AbortController();
@@ -55,7 +58,7 @@ export function query({ prompt, options }: FixtureQuery) {
       if (!rewind.dryRun)
         copyFileSync(
           path.join(
-            process.env.CLAUDE_CONFIG_DIR,
+            process.env.CLAUDE_CONFIG_DIR ?? "",
             "file-history",
             options.resume ?? "",
             "0123456789abcdef@v1",
@@ -71,6 +74,8 @@ export function query({ prompt, options }: FixtureQuery) {
     async *[Symbol.asyncIterator]() {
       const input = await prompt.next();
       if (input.done) return;
+      assert.ok(input.value.uuid);
+      assert.ok(options.sessionId);
       messages.set(options.sessionId ?? "", [
         {
           type: "user",
@@ -80,6 +85,7 @@ export function query({ prompt, options }: FixtureQuery) {
         },
       ]);
       const config = process.env.CLAUDE_CONFIG_DIR;
+      assert.ok(config);
       const project = path.join(
         config,
         "projects",

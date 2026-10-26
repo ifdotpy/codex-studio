@@ -1,3 +1,4 @@
+import { isRecord } from "./move.ts";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -5,16 +6,6 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 const exec = promisify(execFile);
 type DiscoveryError = { message: string };
-type PluginInstall = {
-  installPath?: string;
-  scope?: string;
-  projectPath?: string;
-};
-type Settings = {
-  enabledPlugins?: Record<string, unknown>;
-  plugins?: Record<string, PluginInstall | PluginInstall[]>;
-};
-
 // Claude Code reads skills from the project, the user config directory and
 // installed plugins. Studio lists the same roots for the composer.
 function configDir() {
@@ -63,12 +54,8 @@ async function skillsIn(
     entries = await fs.readdir(root, { withFileTypes: true });
   } catch (error) {
     if (
-      (error && typeof error === "object" && "code" in error
-        ? error.code
-        : undefined) !== "ENOENT" &&
-      (error && typeof error === "object" && "code" in error
-        ? error.code
-        : undefined) !== "ENOTDIR"
+      !isRecord(error) ||
+      (error.code !== "ENOENT" && error.code !== "ENOTDIR")
     )
       errors.push({
         message: `${root}: ${error instanceof Error ? error.message : String(error)}`,
@@ -84,12 +71,8 @@ async function skillsIn(
       source = await fs.readFile(file, "utf8");
     } catch (error) {
       if (
-        (error && typeof error === "object" && "code" in error
-          ? error.code
-          : undefined) !== "ENOENT" &&
-        (error && typeof error === "object" && "code" in error
-          ? error.code
-          : undefined) !== "ENOTDIR"
+        !isRecord(error) ||
+        (error.code !== "ENOENT" && error.code !== "ENOTDIR")
       )
         errors.push({
           message: `${file}: ${error instanceof Error ? error.message : String(error)}`,
@@ -111,24 +94,12 @@ async function skillsIn(
 async function readSettings(file: string, errors: DiscoveryError[]) {
   try {
     const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value))
-      throw new Error("Settings must contain an object");
-    if (
-      ("enabledPlugins" in value ? value.enabledPlugins : undefined) != null &&
-      (typeof ("enabledPlugins" in value ? value.enabledPlugins : undefined) !==
-        "object" ||
-        Array.isArray(
-          "enabledPlugins" in value ? value.enabledPlugins : undefined,
-        ))
-    )
+    if (!isRecord(value)) throw new Error("Settings must contain an object");
+    if (value.enabledPlugins != null && !isRecord(value.enabledPlugins))
       throw new Error("enabledPlugins must contain an object");
-    return value as Settings;
+    return value;
   } catch (error) {
-    if (
-      (error && typeof error === "object" && "code" in error
-        ? error.code
-        : undefined) !== "ENOENT"
-    )
+    if (!isRecord(error) || error.code !== "ENOENT")
       errors.push({
         message: `${file}: ${error instanceof Error ? error.message : String(error)}`,
       });
@@ -192,11 +163,7 @@ async function pluginRoots(cwd: string, errors: DiscoveryError[]) {
         .map((name) => path.join(managed, "managed-settings.d", name)),
     );
   } catch (error) {
-    if (
-      (error && typeof error === "object" && "code" in error
-        ? error.code
-        : undefined) !== "ENOENT"
-    )
+    if (!isRecord(error) || error.code !== "ENOENT")
       errors.push({
         message: `${managed}: ${error instanceof Error ? error.message : String(error)}`,
       });
@@ -210,11 +177,17 @@ async function pluginRoots(cwd: string, errors: DiscoveryError[]) {
     Object.assign(enabled, settings.enabledPlugins || {});
   }
   const roots = [];
-  for (const [key, installs] of Object.entries(installed.plugins || {})) {
+  for (const [key, installs] of Object.entries(
+    isRecord(installed.plugins) ? installed.plugins : {},
+  )) {
     // Legacy registries contain one user installation without an explicit scope.
-    const candidates = Array.isArray(installs) ? installs : [installs];
+    const candidates: unknown[] = Array.isArray(installs)
+      ? installs
+      : [installs];
     for (const install of candidates) {
-      if (!install?.installPath) continue;
+      if (!isRecord(install) || !install.installPath) continue;
+      if (typeof install.installPath !== "string")
+        throw new TypeError("Invalid plugin installation path");
       let matches =
         install.scope === "user" ||
         install.scope === "managed" ||
