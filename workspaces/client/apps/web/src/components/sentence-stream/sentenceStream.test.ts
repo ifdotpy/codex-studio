@@ -44,7 +44,7 @@ it("keeps streamed text visible and returns sentence offsets", async () => {
     "Done. Use `value. next` here. Continue. ",
     "Done. **First. Second.** Next sentence. ",
     "Done. See [a label. More](https://example.com). Next. ",
-  ]) {
+  ] as const) {
     let previous = "";
     for (let size = 1; size <= input.length; size++) {
       const next = sentencePrefix(input.slice(0, size), true);
@@ -71,7 +71,7 @@ it("keeps streamed text visible and returns sentence offsets", async () => {
         { text: "Second!", index: 16 },
       ],
     ],
-  ]) {
+  ] satisfies [string, ReturnType<typeof sentences>][]) {
     assert.deepEqual(sentences(input), expected);
   }
 });

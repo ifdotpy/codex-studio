@@ -1,16 +1,13 @@
 import { hasNativeClient } from "../native/client";
 import { isolatedServerView, serverParentOrigin } from "./environment";
+import type { StudioServerIdentity } from "./serverIdentity.ts";
 import {
   defaultServerAlias,
   DEFAULT_LOCAL_SERVER_ALIAS,
   LOCAL_ALIAS_KEY,
   validateServerAlias,
 } from "./serverAliases";
-export type StudioServer = {
-  id: string;
-  label: string;
-  origin: string;
-  credentialId?: string;
+export type StudioServer = StudioServerIdentity & {
   workspaceId?: string;
   alias?: string | undefined;
 };
