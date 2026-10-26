@@ -1,0 +1,30 @@
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-reattach/workspaces/runtime/packages/runtime-services)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-services` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 2m 57s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_services-2a4b4886fde2aa64)
+
+running 2 tests
+test account_worker::tests::transport_reattach::a_reattached_turn_still_running_only_records_the_check ... FAILED
+test account_worker::tests::transport_reattach::a_reattached_turn_that_ended_while_detached_is_settled_from_native_history ... ok
+
+failures:
+
+---- account_worker::tests::transport_reattach::a_reattached_turn_still_running_only_records_the_check stdout ----
+
+thread 'account_worker::tests::transport_reattach::a_reattached_turn_still_running_only_records_the_check' (438979890) panicked at workspaces/runtime/packages/runtime-services/src/account_worker/tests/transport_reattach.rs:144:5:
+assertion `left == right` failed: {"accountKey":"default","autoWake":true,"compactions":0,"compactionsObservedOnly":false,"concurrency":1,"connectionCheck":{"accountKey":"default","at":1792829244.008359,"epoch":0,"nativeState":"active","previousError":null,"threadId":"fake-thread-0","turnId":"old-turn"},"connectionRecovery":{"at":1792829243.96488,"automatic":true,"outcome":"active","previousError":"Codex disconnected. Review the transcript before resuming.","source":"native_thread_read","supervisor":null,"turnId":"old-turn"},"contextUsage":null,"created":1.0,"cwd":"/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/worker-e6d8cff4-29c9-5286-982c-44ac2d0f887f","cyberAccessProgram":null,"daybreakEnabled":false,"disconnectRecovery":{"accountKey":"default","at":1.0,"autoWake":true,"automaticCheck":"6bc4fe2f100f21dec27ec77e36167a8e568f1e2b95574ff374204d277b02fcca","connectionId":null,"epoch":0,"startAttempt":{"accountKey":"default","activeAtReservation":false,"connectionGeneration":1,"epoch":0,"events":["annotation:input"],"id":"old-attempt","settingsFixed":true,"submitted":true,"threadId":"fake-thread-0","turnId":"old-turn"},"supervisor":{"generation":1},"threadId":"fake-thread-0","turnId":"old-turn"},"effort":"medium","environment":"host","epoch":0,"error":null,"events":0,"executionMode":"native","executionSettingsAccountKey":"default","fastMode":false,"hostProjectPath":"/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/worker-e6d8cff4-29c9-5286-982c-44ac2d0f887f","id":"fixture-agent","imageWorkspace":false,"imageWorkspaceBaseRef":null,"imageWorkspaceCreatedAt":null,"imageWorkspaceError":null,"imageWorkspaceHasGit":false,"imageWorkspacePhase":null,"imageWorkspaceReady":false,"imageWorkspaceRepo":null,"imageWorkspaceSubpath":".","inFlight":true,"isLead":true,"layrReady":false,"maxAgents":8,"maxAgentsExplicit":false,"model":"fake-model","name":"Rust turn fixture","nativeEffort":null,"needsTitle":false,"parentId":null,"profileId":null,"profileInstructions":"","prompt":"temporary","provider":"codex","role":"orchestrator","rootId":"fixture-agent","startAttempt":{"accountKey":"default","activeAtReservation":false,"connectionGeneration":1,"epoch":0,"events":["annotation:input"],"id":"old-attempt","settingsFixed":true,"submitted":true,"threadId":"fake-thread-0","turnId":"old-turn"},"status":"running","subagentConcurrencyVersion":2,"tail":"","threadId":"fake-thread-0","tokenBudget":null,"tokensUsed":0,"turnEpoch":0,"turnId":"old-turn","usageResumeEnabled":true,"workerBaseBehindMain":null,"workerBaseCommit":null,"workerBaseMainRef":null,"workerBaseRef":null,"workspaceBackend":null,"workspaceInGit":false,"workspaceMode":"shared","workspaceModeExplicit":false,"worktree":false,"worktreeReady":false,"worktreeWarning":null,"yoloMode":true}
+  left: String("running")
+ right: "completed"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    account_worker::tests::transport_reattach::a_reattached_turn_still_running_only_records_the_check
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 1688 filtered out; finished in 1.97s
+
+error: test failed, to rerun pass `-p studio-runtime-services --lib`
