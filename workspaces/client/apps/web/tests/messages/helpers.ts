@@ -1,8 +1,6 @@
 import type { Route } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 
-export { required } from "./browser-helpers.ts";
-
 /** The fixture consumes Studio requests using the generated route body contract. */
 export function requestBody<T>(route: Pick<Route, "request">): T {
   return route.request().postDataJSON() as T;
