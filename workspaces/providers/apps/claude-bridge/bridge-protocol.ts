@@ -497,16 +497,23 @@ export type BridgeNotification<
   [K in M]: { method: K; params: BridgeNotificationParams<K> };
 }[M];
 
+type NativeQuestion = AskUserQuestionInput["questions"][number];
+// The bridge forwards parsed questions; SDK input tuple cardinalities and
+// required multi-select defaults are not enforced on this wire boundary.
+export type BridgeUserQuestion = Pick<NativeQuestion, "question" | "header"> &
+  Partial<Omit<NativeQuestion, "question" | "header" | "options">> & {
+    options: NativeQuestion["options"][number][];
+    id: string;
+    isOther: true;
+    isSecret: false;
+  };
+
 export interface BridgeServerRequests {
   "item/tool/requestUserInput": [
     BridgeThreadParams & {
       turnId: string;
       itemId: string;
-      questions: (AskUserQuestionInput["questions"][number] & {
-        id: string;
-        isOther: true;
-        isSecret: false;
-      })[];
+      questions: BridgeUserQuestion[];
     },
     { answers?: Record<string, { answers: string[] }> | undefined },
   ];
