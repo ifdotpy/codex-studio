@@ -1,3 +1,11 @@
+import type { components } from "../../src/generated/api.ts";
+import type { PricingArtifact } from "../../src/generated/pricing.ts";
+import type { FixtureStep } from "../fixtures/fixture-scripts.ts";
+import type { Browser } from "@playwright/test";
+import type { ApiPostPath, PostBody, PostResult } from "../../src/apiTypes.ts";
+import { fixturePostBody, fixturePostResult } from "./browser-fixture.ts";
+import { visibleBounds } from "./mobile-ui-fixture.ts";
+import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   stubSessionCost,
@@ -22,16 +30,11 @@ test("Mobile client ui", async ({
     stdio: ["pipe", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const url = `http://127.0.0.1:${port}`;
     const page = await testBrowser.newPage({
       viewport: { width: 390, height: 844 },
@@ -39,7 +42,7 @@ test("Mobile client ui", async ({
       hasTouch: true,
     });
     await stubSessionCost(page);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(url);
     await page
@@ -104,7 +107,7 @@ test("Mobile client ui", async ({
         .getByRole("tab", { name: /^Team/ })
         .click();
     };
-    const startProjectChat = async (name) => {
+    const startProjectChat = async (name: string) => {
       await page.getByRole("button", { name, exact: true }).click();
       const dialog = page.getByRole("dialog", {
         name: "New chat",
@@ -119,7 +122,7 @@ test("Mobile client ui", async ({
       page
         .locator('.execution-profile-body[data-role="orchestrator"]')
         .locator('.setup-account[data-selected="true"]');
-    const inspectConversationTools = async (hasUsage) => {
+    const inspectConversationTools = async (hasUsage: boolean) => {
       const menu = page.locator(".conversation-header-tools-menu");
       const summary = page.locator(
         '.conversation-header-tools-summary[aria-label="Conversation tools"]',
@@ -165,7 +168,7 @@ test("Mobile client ui", async ({
       assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
       const snapshot = await readTestState(url);
       const selected = await page.evaluate(() =>
-        JSON.parse(localStorage.getItem("codex-mobile-opened")),
+        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null"),
       );
       const hasWorkers = snapshot.threads.some(
         (a) => a.rootId === selected && !a.isLead,
@@ -187,7 +190,7 @@ test("Mobile client ui", async ({
         ),
         `Page overflows at ${width}`,
       );
-      const composer = await page.locator("#composer").boundingBox();
+      const composer = await visibleBounds(page.locator("#composer"));
       if (width === 320) assert.ok(composer, "320px composer is present");
       else
         assert.ok(
@@ -276,21 +279,26 @@ test("Mobile client ui", async ({
       `Mobile composer font size should stay at least 16px (got ${mobileComposerFontSize}px)`,
     );
     await showProjectActions();
-    let originalBody, created;
-    let confirmServerCreation;
-    const serverCreated = new Promise((resolve) => {
+    type CreatedServer = {
+      originalBody: PostBody<"/api/leads">;
+      created: PostResult<"/api/leads">;
+    };
+    let confirmServerCreation: ((value: CreatedServer) => void) | undefined;
+    const serverCreated = new Promise<CreatedServer>((resolve) => {
       confirmServerCreation = resolve;
     });
     await page.route("**/api/leads", async (route) => {
-      originalBody = route.request().postDataJSON();
+      const originalBody = fixturePostBody<"/api/leads">(route.request());
       const response = await route.fetch();
       assert.ok(response.ok());
-      created = await response.json();
+      const created = await fixturePostResult<"/api/leads">(response);
       await route.abort("failed");
-      confirmServerCreation();
+      assert.ok(confirmServerCreation);
+      confirmServerCreation({ originalBody, created });
     });
     await startProjectChat("New chat in this project");
-    await serverCreated;
+    const { originalBody, created } = await serverCreated;
+    assert.ok(created.cwd, "Created fixture chat must have a project folder");
     await page
       .getByRole("button", { name: "Retry chat request", exact: true })
       .waitFor();
@@ -318,9 +326,14 @@ test("Mobile client ui", async ({
       originalBody,
       "Reload retries the exact chat request",
     );
-    assert.equal((await replayResponse.json()).id, created.id);
+    assert.equal(
+      (await fixturePostResult<"/api/leads">(replayResponse)).id,
+      created.id,
+    );
     await page.waitForFunction(
-      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")) === id,
+      (id) =>
+        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null") ===
+        id,
       created.id,
     );
     const serverState = await readTestState(url);
@@ -339,7 +352,10 @@ test("Mobile client ui", async ({
     assert.equal(await selectedAccount().isEnabled(), true);
     await closeChatSettings();
     // Use the real runtime to create another chat while the previous chat is empty.
-    const post = async (path, body) => {
+    const post = async <Path extends ApiPostPath>(
+      path: Path,
+      body: PostBody<Path>,
+    ) => {
       const response = await fetch(url + path, {
         method: "POST",
         headers: {
@@ -348,7 +364,7 @@ test("Mobile client ui", async ({
         },
         body: JSON.stringify(body),
       });
-      const result = await response.json();
+      const result = await fixturePostResult<Path>(response);
       assert.ok(response.ok, JSON.stringify(result));
       return result;
     };
@@ -395,8 +411,8 @@ test("Mobile client ui", async ({
     await startProjectChat("New chat in this project");
     const next = await nextResponse;
     assert.ok(next.ok());
-    const nextRequest = next.request().postDataJSON();
-    const nextChat = await next.json();
+    const nextRequest = fixturePostBody<"/api/leads">(next.request());
+    const nextChat = await fixturePostResult<"/api/leads">(next);
     assert.equal(nextRequest.reuse_empty, false);
     assert.equal(
       nextRequest.account_key,
@@ -412,7 +428,9 @@ test("Mobile client ui", async ({
       "The project account replaces the previous empty chat account",
     );
     await page.waitForFunction(
-      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")) === id,
+      (id) =>
+        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null") ===
+        id,
       nextChat.id,
     );
     assert.equal(
@@ -435,8 +453,8 @@ test("Mobile client ui", async ({
     await startProjectChat("New chat in fixture-account");
     const other = await otherResponse;
     assert.ok(other.ok());
-    const otherRequest = other.request().postDataJSON();
-    const otherChat = await other.json();
+    const otherRequest = fixturePostBody<"/api/leads">(other.request());
+    const otherChat = await fixturePostResult<"/api/leads">(other);
     assert.equal(otherRequest.reuse_empty, false);
     assert.equal(otherRequest.previous, nextChat.id);
     assert.equal(otherChat.id, otherRequest.id);
@@ -444,7 +462,9 @@ test("Mobile client ui", async ({
     assert.equal(otherChat.accountKey, alternate.id);
     assert.equal(otherChat.cwd, await realpath(profile));
     await page.waitForFunction(
-      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")) === id,
+      (id) =>
+        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null") ===
+        id,
       otherChat.id,
     );
     assert.equal(
@@ -458,7 +478,12 @@ test("Mobile client ui", async ({
     await page.locator(".terminal-dock").waitFor();
     await page.getByLabel("Add project", { exact: true }).waitFor();
     await page.locator("#messages-toggle").waitFor();
-    const manifest = await (await fetch(url + "/manifest.webmanifest")).json();
+    const manifest: unknown = await (
+      await fetch(url + "/manifest.webmanifest")
+    ).json();
+    assert.ok(
+      manifest && typeof manifest === "object" && "display" in manifest,
+    );
     assert.equal(manifest.display, "standalone");
     assert.equal(
       await page.locator(".sync-notices [role=alert]").count(),
@@ -482,7 +507,7 @@ test("Mobile client ui", async ({
   }
 });
 
-async function setupMobile320Composer(testBrowser) {
+async function setupMobile320Composer(testBrowser: Browser) {
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-composer-"));
   const fixture = spawn(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -514,26 +539,21 @@ async function setupMobile320Composer(testBrowser) {
                     cacheWriteInput: 0,
                     output: 1000000,
                   },
-                },
+                } satisfies components["schemas"]["UsageObservation"],
               },
             },
           },
         ],
-      }),
+      } satisfies Record<string, FixtureStep[]>),
     },
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
   let ownedContext;
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     // The real SSE cost projection needs a pricing artifact. The former GET
     // stub cannot supply a sessionCost entity to the current client. The
     // server refuses a non-empty fresh state directory, so write it here.
@@ -554,7 +574,7 @@ async function setupMobile320Composer(testBrowser) {
             },
           },
         },
-      }),
+      } satisfies PricingArtifact),
     );
     const page = await testBrowser.newPage({
       viewport: { width: 390, height: 844 },
@@ -596,7 +616,7 @@ async function setupMobile320Composer(testBrowser) {
     assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
     const snapshot = await readTestState(`http://127.0.0.1:${port}`);
     const selected = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("codex-mobile-opened")),
+      JSON.parse(localStorage.getItem("codex-mobile-opened") || "null"),
     );
     const selectedAgent = snapshot.threads.find(
       (agent) => agent.id === selected,
@@ -693,7 +713,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
       Array.from(element.children).map((child) => {
         const rect = child.getBoundingClientRect();
         return {
-          name: child.getAttribute("aria-label") || child.textContent.trim(),
+          name: child.getAttribute("aria-label") || child.textContent?.trim(),
           timingHint: child.classList.contains("composer-timing"),
           queueInTools:
             child.classList.contains("composer-queue-primary") &&
@@ -735,6 +755,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
       const queueBounds = await page
         .locator(".composer-queue-disclosure")
         .boundingBox();
+      assert.ok(queueBounds);
       assert.ok(queueBounds.width >= 44 && queueBounds.height >= 44);
       await disclosure.click();
       assert.equal(

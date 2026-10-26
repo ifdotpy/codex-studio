@@ -1,3 +1,12 @@
+import { build } from "esbuild";
+import type { BrowserContext, TestInfo } from "@playwright/test";
+import type { Server } from "node:http";
+import {
+  readShellManifest,
+  workerShellBuild,
+  workerIsActivated,
+} from "./mobile-loading-ui.fixture.ts";
+import { waitForFixturePort } from "../playwright.ts";
 import { spawnFixture as spawn, test, rustUiFixture } from "../playwright.ts";
 // Real production renderer, service worker, browser cache and isolated backend.
 import assert from "node:assert/strict";
@@ -8,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -22,9 +31,9 @@ test.afterEach(async ({ browser }, testInfo) => {
   );
 });
 
-async function initialShellGzipBytes(dist) {
+async function initialShellGzipBytes(dist: string) {
   const worker = await readFile(join(dist, "studio-sw.js"), "utf8");
-  const config = JSON.parse(worker.match(/^self\.STUDIO_SHELL = (.*);/)[1]);
+  const config = readShellManifest(worker);
   let gzip = 0;
   for (const path of config.initial) {
     const data = await readFile(join(dist, path === "/" ? "index.html" : path));
@@ -56,7 +65,26 @@ test("mobile loading ui", async ({ browser: _browser }) => {
   });
   const bytes = await initialShellGzipBytes(join(dir, "dist"));
   const worker = await readFile(join(dir, "dist/studio-sw.js"), "utf8");
-  const config = JSON.parse(worker.match(/^self\.STUDIO_SHELL = (.*);/)[1]);
+  const config = readShellManifest(worker);
+  const injectedScripts = await Promise.all(
+    [
+      "mobile-loading-worker.fixture.ts",
+      "mobile-loading-bootstrap.fixture.ts",
+    ].map(async (name) => {
+      const result = await build({
+        entryPoints: [fileURLToPath(new URL(name, import.meta.url))],
+        bundle: true,
+        write: false,
+        format: "iife",
+        target: "es2024",
+      });
+      const output = result.outputFiles[0];
+      assert.ok(output, "Fixture entry must compile");
+      return output.text;
+    }),
+  );
+  const [workerInjection, bootstrapInjection] = injectedScripts;
+  assert.ok(workerInjection && bootstrapInjection);
   const nextBuild = config.build + "-update";
   const bootstrapPath = config.initial.find((path) =>
     path.includes("/studio-startup-"),
@@ -64,7 +92,11 @@ test("mobile loading ui", async ({ browser: _browser }) => {
   const cssPath = config.initial.find((path) =>
     /\/index-[^/]+\.css$/.test(path),
   );
-  const replacements = [
+  assert.ok(
+    bootstrapPath && cssPath,
+    "Build must include startup script and stylesheet",
+  );
+  const replacements: [[string, string], [string, string]] = [
     [bootstrapPath, bootstrapPath.replace(".js", "-update.js")],
     [cssPath, cssPath.replace(".css", "-update.css")],
   ];
@@ -79,32 +111,29 @@ test("mobile loading ui", async ({ browser: _browser }) => {
   });
   let log = "",
     browser,
-    server;
-  proc.stderr.on("data", (data) => (log += data));
+    server: Server | undefined;
+  proc.stderr?.on("data", (data) => (log += data));
   try {
-    const backend = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (data) =>
-        resolve(`http://127.0.0.1:${Number(String(data).trim())}`),
-      );
-      proc.once("exit", () => reject(new Error(log)));
-    });
+    const backend = `http://127.0.0.1:${await waitForFixturePort(proc, { diagnostics: () => log })}`;
     let version = 1,
       documentDelay = 0,
       rejectEntry = false;
     let laptopDisconnected = false;
     let cacheUnavailable = false;
     let cacheFailureCount = 0;
-    const requests = [];
+    const requests: { path: string; bytes: number }[] = [];
     const activations = new Set();
     server = createServer(async (request, response) => {
-      const path = new URL(request.url, "http://localhost").pathname;
+      const path = new URL(request.url || "/", "http://localhost").pathname;
       if (laptopDisconnected) {
         request.socket.destroy();
         return;
       }
       if (path === "/test-worker-activated") {
         activations.add(
-          new URL(request.url, "http://localhost").searchParams.get("build"),
+          new URL(request.url || "/", "http://localhost").searchParams.get(
+            "build",
+          ),
         );
         response.writeHead(204);
         response.end();
@@ -118,7 +147,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       }
       if (path.startsWith("/api/")) {
         const proxy = httpRequest(
-          backend + request.url,
+          backend + (request.url || "/"),
           {
             method: request.method,
             headers: {
@@ -129,7 +158,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
             },
           },
           (upstream) => {
-            response.writeHead(upstream.statusCode, upstream.headers);
+            response.writeHead(upstream.statusCode ?? 502, upstream.headers);
             upstream.pipe(response);
           },
         );
@@ -161,9 +190,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
           data = Buffer.from(next);
         }
         if (path === replacements[0][1])
-          data = Buffer.from(
-            String(data) + "\nwindow.studioTestBootstrap = 'updated';",
-          );
+          data = Buffer.from(String(data) + "\n" + bootstrapInjection);
         if (path === replacements[1][1])
           data = Buffer.from(
             String(data) + "\n:root { --studio-test-build: updated; }",
@@ -189,10 +216,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
           return;
         }
         if (path === "/studio-sw.js")
-          data = Buffer.from(
-            String(data) +
-              `\nconst studioNativeCacheOpen = caches.open.bind(caches);\ncaches.open = async (...args) => {\n  const response = await fetch("/test-cache-storage").catch(() => null);\n  if (response && !response.ok) throw new Error("Storage unavailable");\n  return studioNativeCacheOpen(...args);\n};\nself.addEventListener("activate", event => event.waitUntil(fetch("/test-worker-activated?build=" + self.STUDIO_SHELL.build)));`,
-          );
+          data = Buffer.from(String(data) + "\n" + workerInjection);
         const type = path.endsWith(".js")
           ? "text/javascript"
           : path.endsWith(".css")
@@ -225,8 +249,13 @@ test("mobile loading ui", async ({ browser: _browser }) => {
         response.end();
       }
     });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    const listeningServer = server;
+    await new Promise<void>((resolve) =>
+      listeningServer.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
     browser = _browser;
     const context = await browser.newContext({
       viewport: { width: 390, height: 844 },
@@ -234,7 +263,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       hasTouch: true,
     });
     let page = await context.newPage();
-    const errors = [];
+    const errors: string[] = [];
     const offlineNetworkErrors = [];
     let lastNavigation = 0;
     const openSavedChat = async () => {
@@ -325,10 +354,10 @@ test("mobile loading ui", async ({ browser: _browser }) => {
 
     version = 2;
     await page.evaluate(async () =>
-      (await navigator.serviceWorker.getRegistration()).update(),
+      (await navigator.serviceWorker.getRegistration())?.update(),
     );
     await page.waitForFunction(
-      async () => !!(await navigator.serviceWorker.getRegistration()).waiting,
+      async () => !!(await navigator.serviceWorker.getRegistration())?.waiting,
     );
     assert.equal(
       await page.locator('meta[name="studio-build"]').getAttribute("content"),
@@ -347,7 +376,8 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     );
     assert.ok(
       await page.evaluate(
-        async () => !!(await navigator.serviceWorker.getRegistration()).waiting,
+        async () =>
+          !!(await navigator.serviceWorker.getRegistration())?.waiting,
       ),
       "The update does not claim a live client",
     );
@@ -359,7 +389,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       "Offline reload does not roll back the displayed build while its worker waits",
     );
     assert.equal(
-      await page.evaluate(() => window.studioTestBootstrap),
+      await page.evaluate(() => window.mobileLoadingUiBootstrap),
       "updated",
       "The newer cached JavaScript loads under the previous worker",
     );
@@ -383,24 +413,24 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       (text) => document.querySelector("textarea")?.value === text,
       draft,
     );
-    const nextWorker = useWebKit
+    const nextWorkerEntry = useWebKit
       ? null
       : (
           await Promise.all(
             context.serviceWorkers().map(async (worker) => ({
               worker,
-              build: await worker.evaluate(() => self.STUDIO_SHELL.build),
+              build: await worker.evaluate(workerShellBuild),
             })),
           )
-        ).find((entry) => entry.build === nextBuild).worker;
+        ).find((entry) => entry.build === nextBuild);
+    if (!useWebKit) assert.ok(nextWorkerEntry, "Updated worker exists");
+    const nextWorker = nextWorkerEntry?.worker;
     lastNavigation = Date.now();
     await page.close();
     const activationDeadline = Date.now() + 15000;
     const workerActivated = async () =>
       nextWorker
-        ? nextWorker.evaluate(
-            () => self.registration.active?.state === "activated",
-          )
+        ? nextWorker.evaluate(workerIsActivated)
         : activations.has(nextBuild);
     while (!(await workerActivated()) && Date.now() < activationDeadline)
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -412,7 +442,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     await page.goto(origin, { waitUntil: "domcontentloaded" });
     await openSavedChat();
     await page.waitForFunction(
-      async () => !(await navigator.serviceWorker.getRegistration()).waiting,
+      async () => !(await navigator.serviceWorker.getRegistration())?.waiting,
     );
     await page.waitForFunction(
       (text) => document.querySelector("textarea")?.value === text,
@@ -486,11 +516,12 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     version = 3;
     await page.evaluate(async () => {
       const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) throw new Error("Missing service worker registration");
       await registration.update();
       const installing = registration.installing;
       if (!installing)
         throw new Error("Invalid update did not start installation");
-      await new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         const inspect = () => {
           if (installing.state === "redundant") resolve();
           if (installing.state === "installed")
@@ -539,8 +570,8 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     );
   } finally {
     server?.closeAllConnections();
-    await new Promise((resolve) =>
-      server ? server.close(resolve) : resolve(),
+    await new Promise<void>((resolve) =>
+      server ? server.close(() => resolve()) : resolve(),
     );
   }
 });
