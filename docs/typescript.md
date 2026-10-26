@@ -23,7 +23,8 @@ product code, tests, fixtures, scripts, and tool configuration.
 ## Not allowed
 
 - `any`, `@ts-ignore`, and `@ts-nocheck`. Use `unknown` and narrow it.
-  `@ts-expect-error` is allowed only in a negative type test, with its reason.
+  `@ts-expect-error` is allowed only in a test, on a value that deliberately
+  violates its declared type, with the reason.
 - A cast (`as`) or non-null assertion (`!`) that hides a mismatch. Narrow with a
   check instead; cast only after a runtime check of untrusted input.
 - A copied type, constant, or helper instead of an import of its owner.

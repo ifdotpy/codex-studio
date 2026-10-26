@@ -90,7 +90,12 @@ const snapshot = combineBrowserProfiles(
 );
 assert.equal(snapshot.preferences["unexpected-app-run"], undefined);
 assert.equal(
-  JSON.parse(snapshot.preferences["codex-drafts:workspace"] ?? "null").room,
+  // The seed writes this exact preference immediately before export.
+  (
+    JSON.parse(
+      snapshot.preferences["codex-drafts:workspace"] ?? "null",
+    ) as Record<string, unknown>
+  ).room,
   "Сохранить 🦀",
 );
 const store = snapshot.databases

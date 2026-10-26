@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createFixture } from "./check-native.mjs";
+import { createFixture } from "./check-native.ts";
 
 test("native fixture preserves identity refusal, byte replies, and draft tombstones", async () => {
   const fixture = await createFixture("/fixture/state");
@@ -27,10 +27,10 @@ test("native fixture preserves identity refusal, byte replies, and draft tombsto
       Buffer.from([97, 0, 255]),
     );
     assert.equal(
-      fixture.commands[0].headers["x-studio-request-id"],
+      fixture.commands[0]?.headers["x-studio-request-id"],
       "original-http-command",
     );
-    const draft = (document) =>
+    const draft = (document: unknown) =>
       fetch(`${root}/api/sync/drafts`, {
         method: "POST",
         body: JSON.stringify({ rows: [{ newDocumentState: document }] }),

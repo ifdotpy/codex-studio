@@ -14,7 +14,7 @@ const webRoot = fileURLToPath(new URL("../..", import.meta.url));
 // is excluded from dangerousDisableAssetCspModification, Tauri marks each
 // inline <style> of index.html with a nonce and appends 'nonce-N' to style-src
 // (tauri-codegen inject_nonce_token, tauri manager replace_csp_nonce). The
-// tooling check native-style-policy.test.mjs guards that configuration.
+// tooling check native-style-policy.test.ts guards that configuration.
 async function nativeDocumentPolicy() {
   const { security } = JSON.parse(
     await readFile(

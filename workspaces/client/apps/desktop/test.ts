@@ -1,3 +1,5 @@
+import type { GetResult, PostResult } from "../web/src/apiTypes.ts";
+import type { SavedWindowState } from "./window-state.ts";
 import type { Notification, WebPreferences } from "electron";
 import type { DesktopBridge } from "./api.ts";
 import assert from "node:assert/strict";
@@ -21,6 +23,16 @@ type NativeTestState = {
 declare global {
   var __testOriginalFetch: typeof fetch;
   var __nativeFixture: NativeTestState;
+}
+// Typed Studio HTTP responses follow their generated Rust route contracts.
+async function readStudioResponse<T>(
+  response: Pick<Response, "json">,
+): Promise<T> {
+  return response.json();
+}
+// The harness reads the window-state document it just asked the desktop to write.
+function readWindowState(text: string): SavedWindowState {
+  return JSON.parse(text);
 }
 const root = import.meta.dirname;
 const temp = await mkdtemp(path.join(tmpdir(), "codex-desktop-test-"));
@@ -94,7 +106,7 @@ try {
     globalThis.fetch = async (...args) => {
       const response = await original(...args);
       if (String(args[0]).endsWith("/api/desktop")) {
-        const body = await response.json();
+        const body: GetResult<"/api/desktop"> = await response.json();
         return new Response(
           JSON.stringify({ ...body, backendBuild: "a".repeat(64) }),
         );
@@ -316,7 +328,7 @@ try {
   await page.getByRole("button", { name: "Attach files", exact: true }).click();
   const uploaded = await uploadResponse;
   assert.equal(uploaded.status(), 200);
-  const asset = await uploaded.json();
+  const asset = await readStudioResponse<PostResult<"/api/assets">>(uploaded);
   assert.equal(asset.name, "native-picker.txt");
   await page
     .locator(".attachment-chip")
@@ -375,12 +387,15 @@ try {
       if (["saveFile", "fileAction"].includes(methodName)) {
         if (typeof value !== "string")
           throw new Error("Native fixture value is unavailable.");
-        // The fixture serializes this value immediately before the click.
-        const parsed: { name: string; data: number[] } = JSON.parse(value);
-        value =
-          methodName === "saveFile"
-            ? { ...parsed, data: Uint8Array.from(parsed.data).buffer }
-            : parsed;
+        if (methodName === "saveFile") {
+          // The fixture serializes this save value immediately before the click.
+          type SaveValue = Parameters<
+            NonNullable<DesktopBridge["saveFile"]>
+          >[0];
+          const parsed: Omit<SaveValue, "data"> & { data: number[] } =
+            JSON.parse(value);
+          value = { ...parsed, data: Uint8Array.from(parsed.data).buffer };
+        } else value = JSON.parse(value);
       }
       const method: unknown = Reflect.get(bridge, methodName);
       if (typeof method !== "function")
@@ -472,9 +487,9 @@ try {
     false,
   );
   assert.deepEqual([...(await readFile(savedCopy))], nativeBytes);
-  const resolvedAsset = await (
-    await fetch(`${backend.origin}/api/file-info?asset=${asset.id}`)
-  ).json();
+  const resolvedAsset = await readStudioResponse<GetResult<"/api/file-info">>(
+    await fetch(`${backend.origin}/api/file-info?asset=${asset.id}`),
+  );
   for (const action of ["open", "reveal", "preview"])
     assert.equal(
       (
@@ -534,11 +549,7 @@ try {
     await page
       .frames()
       .at(1)
-      ?.evaluate(() => {
-        const bridge = window.codexDesktop;
-        if (!bridge) throw new Error("The desktop bridge is unavailable.");
-        return typeof bridge;
-      }),
+      ?.evaluate(() => typeof window.codexDesktop),
     "undefined",
   );
   assert.equal(
@@ -548,8 +559,11 @@ try {
   await desktop.evaluate(async ({ BrowserWindow, app }) => {
     const main = BrowserWindow.getAllWindows()[0];
     if (!main) throw new Error("Hidden window is unavailable.");
-    const { nativeAction } = await import(`${app.getAppPath()}/main.ts`);
+    const { nativeAction }: typeof import("./main.ts") = await import(
+      `${app.getAppPath()}/main.ts`
+    );
     const frame = main.webContents.mainFrame.frames[0];
+    if (!frame) throw new Error("The preview frame is unavailable.");
     try {
       await nativeAction(
         { sender: main.webContents, senderFrame: frame },
@@ -625,7 +639,7 @@ try {
   });
   await desktop.close();
   desktop = null;
-  const savedWindow = JSON.parse(
+  const savedWindow = readWindowState(
     await readFile(
       path.join(env.CODEX_DESKTOP_PROFILE, "window-state.json"),
       "utf8",

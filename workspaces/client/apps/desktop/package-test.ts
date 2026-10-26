@@ -1,3 +1,4 @@
+import type { GetResult } from "../web/src/apiTypes.ts";
 import assert from "node:assert/strict";
 import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
@@ -24,6 +25,10 @@ const executable =
     "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
   );
 const origin = `http://127.0.0.1:${port}`;
+// Rust owns this route; the generated contract is checked against the server.
+async function desktopIdentity(): Promise<GetResult<"/api/desktop">> {
+  return (await fetch(`${origin}/api/desktop`)).json();
+}
 let desktop: ElectronApplication | null = null;
 let pid;
 const temp = await mkdtemp(path.join(tmpdir(), "studio-pkg-"));
@@ -61,12 +66,18 @@ try {
     }),
     true,
   );
-  const speech = JSON.parse(
+  const speech: unknown = JSON.parse(
     execFileSync(
       path.join(path.dirname(executable), "../Resources/studio-speech"),
       ["--check"],
       { encoding: "utf8" },
     ),
+  );
+  assert.ok(
+    speech &&
+      typeof speech === "object" &&
+      "helperReady" in speech &&
+      "onDeviceOnly" in speech,
   );
   assert.equal(speech.helperReady, true);
   assert.equal(speech.onDeviceOnly, true);
@@ -101,7 +112,7 @@ try {
     );
     assert.ok(skill.includes(`name: codex-${role}`));
   }
-  const identity = await (await fetch(`${origin}/api/desktop`)).json();
+  const identity = await desktopIdentity();
   assert.equal(identity.backendKind, "rust");
   pid = identity.pid;
   assert.equal(identity.stateDir, await realpath(state));
@@ -125,7 +136,7 @@ try {
   await page.screenshot({ path: path.join(temp, "packaged-desktop.png") });
   await desktop.close();
   desktop = null;
-  assert.equal((await (await fetch(`${origin}/api/desktop`)).json()).pid, pid);
+  assert.equal((await desktopIdentity()).pid, pid);
   console.log(
     JSON.stringify({
       result: "PASS",

@@ -19,8 +19,96 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type ts from "typescript";
+import type { JSONReport } from "@playwright/test/reporter";
+import type { PathLike } from "node:fs";
+
+export interface WorkspacePackage {
+  name: string;
+  ecosystem: string;
+  dir?: string;
+  manifest?: PathLike | null;
+  docTests?: boolean;
+}
+export interface LocatedPackage extends WorkspacePackage {
+  dir: string;
+  manifest: string;
+}
+export type Command = [binary: string, args: string[]];
+export interface RunOptions {
+  script?: string;
+  name?: string;
+  passthrough?: string[];
+  cargoTargets?: string[];
+  reason?: string;
+  costCategory?: string;
+  selector?: string;
+  label?: string;
+  allowZeroTests?: boolean;
+  buildOnly?: boolean;
+  playwrightJsonReport?: boolean;
+  commands?: Command[];
+  logDirectory?: string;
+  write?: (text: string) => void;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}
+export interface StepResult {
+  status: string;
+  exitCode: number;
+  durationSeconds: number;
+  errors?: string[];
+  logPath?: string;
+}
+export interface GateStep {
+  id?: string;
+  label: string;
+  lane?: string;
+  requires?: string | null;
+  provides?: string;
+  requiresCargo?: boolean;
+  item: WorkspacePackage;
+  commands?: Command[];
+  options?: RunOptions;
+}
+interface RecipeOptions {
+  write?: (text: string) => void;
+  signal?: AbortSignal;
+  execute?: (
+    root: string,
+    item: WorkspacePackage,
+    caseName: string,
+    asJson: boolean,
+    options: RunOptions & { signal: AbortSignal; logDirectory: string },
+  ) => Promise<StepResult>;
+}
+export interface PackageManifest {
+  scripts?: Record<string, string>;
+  codexStudioChecks?: { test?: string; check?: string[] };
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+}
+interface CargoMetadata {
+  packages: {
+    name: string;
+    manifest_path: string;
+    targets?: { doctest?: boolean }[];
+    dependencies?: { name: string }[];
+  }[];
+}
+interface Counts {
+  passed: number | null;
+  failed: number | null;
+  skipped: number | null;
+  executed: number | null;
+  flaky?: number | null;
+  summaryFound?: boolean;
+}
+
 const MIN_JUST = [1, 58, 0];
-const COST = {
+const COST: Record<string, string> = {
   pnpm: "focused; package test only",
   cargo: "focused; package compile and test",
 };
@@ -34,7 +122,7 @@ const SOURCE_SKIP = new Set([
   "target",
   "coverage",
 ]);
-const UNSAFE_RUST_ALLOWLIST = [
+const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
   [
     "workspaces/runtime/packages/runtime-priority-sys/src/lib.rs",
     "OS priority syscall.",
@@ -114,21 +202,81 @@ const DECLARATION_SECTIONS = [
   "devDependencies",
   "peerDependencies",
   "optionalDependencies",
+] as const;
+// Only erased type imports may use these shared owners across workspace boundaries.
+const SHARED_TYPE_OWNERS = [
+  {
+    file: "workspaces/client/apps/desktop/backend.ts",
+    purpose: "Backend identity type consumed by native startup checks.",
+  },
+  {
+    file: "workspaces/client/apps/desktop/recovery.ts",
+    purpose:
+      "Recovery closure type shared by the staged native recovery entrypoint.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/native/host.ts",
+    purpose:
+      "Native host and HTTP response interfaces shared by native fixture checks.",
+  },
+  {
+    file: "workspaces/client/apps/desktop/api.ts",
+    purpose:
+      "Self-contained desktop bridge types shared by the host and renderer.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/native/importBrowserProfile.ts",
+    purpose:
+      "Browser profile document types shared by profile export fixtures and importers.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/apiTypes.ts",
+    purpose:
+      "Generated route aliases and JSON input views shared by client checks.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/servers/serverIdentity.ts",
+    purpose:
+      "Server identity fields shared by renderer discovery and desktop pairing.",
+  },
 ];
+
 const BOUNDARY_ALLOWLIST = [
+  {
+    importer: "codex-agents-web",
+    file: "src/dictation/storage.test.ts",
+    specifier: "../../../desktop/speech.ts",
+    reason:
+      "The existing WAV encoding and helper-error witness consumes the desktop speech implementation, previously loaded from speech.cjs.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "profile-export-fixture.ts",
+    specifier: "../web/src/native/importBrowserProfile.ts",
+    reason:
+      "The extracted hidden profile fixture retains the profile-export-test runtime witness against the renderer import owner.",
+  },
+  {
+    importer: "codex-studio-tooling",
+    file: "workspaces/tooling/apps/repository-checks/tests/fixtures/scale-verifier-child.ts",
+    specifier:
+      "../../../../../client/apps/web/scripts/scaleVerifierTeardown.ts",
+    reason:
+      "The typed child fixture verifies the signal and cleanup lifecycle through its owning implementation.",
+  },
+  {
+    importer: "codex-studio-tooling",
+    file: "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts",
+    specifier: "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts",
+    reason:
+      "The offline teardown witness consumes the audit concurrency helper through its owning implementation.",
+  },
   {
     importer: "studio-claude-bridge",
     file: "vitest.config.mjs",
     specifier: "../../../tooling/apps/repository-checks/gate-config.ts",
     reason:
       "Bridge test configuration consumes the repository's ambient-agent environment policy.",
-  },
-  {
-    importer: "codex-agents-desktop",
-    file: "bridge.d.ts",
-    specifier: "../web/src/desktop",
-    reason:
-      "The desktop bridge declaration re-exports the renderer's single bridge owner until it has a public package owner.",
   },
   {
     importer: "codex-agents-desktop",
@@ -139,7 +287,7 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "test.mjs",
+    file: "test.ts",
     specifier: "../web/tests/playwright.ts",
     reason:
       "The native desktop scenario reuses the renderer's browser test-state helper.",
@@ -188,7 +336,7 @@ const BOUNDARY_ALLOWLIST = [
   },
 ];
 
-function fail(message) {
+function fail(message: string): never {
   throw new Error(message);
 }
 
@@ -208,7 +356,7 @@ function rootFrom(start = process.cwd()) {
   fail(`Cannot locate repository root from ${start}`);
 }
 
-function exists(file) {
+function exists(file: PathLike) {
   try {
     readFileSync(file);
     return true;
@@ -231,12 +379,13 @@ function justVersion() {
   }
 }
 
-function compareVersions(a, b) {
-  for (let i = 0; i < b.length; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
+function compareVersions(a: number[], b: number[]) {
+  for (let i = 0; i < b.length; i += 1)
+    if (a[i] !== b[i]) return Number(a[i]) - Number(b[i]);
   return 0;
 }
 
-function runSync(command, args, cwd, label) {
+function runSync(command: string, args: string[], cwd: string, label: string) {
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
@@ -249,9 +398,9 @@ function runSync(command, args, cwd, label) {
   return result.stdout;
 }
 
-export function discover(root = rootFrom()) {
-  const packages = new Map();
-  const pnpm = JSON.parse(
+export function discover(root = rootFrom()): LocatedPackage[] {
+  const packages = new Map<string, LocatedPackage>();
+  const pnpm: { name?: string; path?: string }[] = JSON.parse(
     runSync(
       "pnpm",
       ["-r", "list", "--depth", "-1", "--json"],
@@ -272,7 +421,7 @@ export function discover(root = rootFrom()) {
   const cargoFile = path.join(root, "Cargo.toml");
   if (exists(cargoFile)) {
     assertPinnedCargoToolchain(root);
-    const metadata = JSON.parse(
+    const metadata: CargoMetadata = JSON.parse(
       runSync(
         "cargo",
         ["metadata", "--no-deps", "--format-version", "1"],
@@ -298,14 +447,14 @@ export function discover(root = rootFrom()) {
   return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function assertPinnedCargoToolchain(root) {
+function assertPinnedCargoToolchain(root: string) {
   const configPath = path.join(root, "rust-toolchain.toml");
   if (!exists(configPath)) return;
   const channel = readFileSync(configPath, "utf8").match(
     /^\s*channel\s*=\s*"([^"]+)"/m,
   )?.[1];
   if (!channel) return;
-  let installed;
+  let installed: string;
   try {
     installed = runSync(
       "rustup",
@@ -333,11 +482,14 @@ function assertPinnedCargoToolchain(root) {
     );
 }
 
-function target(root, pkg) {
+function target(root: string, pkg: string | undefined) {
   return packageTarget(discover(root), pkg);
 }
 
-export function packageTarget(packages, pkg) {
+export function packageTarget<T extends WorkspacePackage>(
+  packages: T[],
+  pkg: string | undefined,
+): T {
   const found = packages.find((item) => item.name === pkg);
   if (!found)
     fail(
@@ -346,11 +498,11 @@ export function packageTarget(packages, pkg) {
   return found;
 }
 
-function manifestFor(item) {
+function manifestFor(item: WorkspacePackage): PackageManifest {
   return item.manifest ? JSON.parse(readFileSync(item.manifest, "utf8")) : {};
 }
 
-function pnpmTestCommand(item, caseName) {
+function pnpmTestCommand(item: WorkspacePackage, caseName: string): Command[] {
   const manifest = manifestFor(item);
   const script = manifest.codexStudioChecks?.test;
   if (!script)
@@ -360,6 +512,7 @@ function pnpmTestCommand(item, caseName) {
   if (!manifest.scripts?.[script])
     fail(`Package ${item.name} declares missing test script ${script}`);
   const scriptText = manifest.scripts[script];
+  if (!scriptText) fail(`Missing script ${script}`);
   const nodeTest = scriptText.match(/node --test(?:\s+(.*))?/);
   if (nodeTest && caseName) {
     const args = [
@@ -393,7 +546,13 @@ function pnpmTestCommand(item, caseName) {
   return [["pnpm", args]];
 }
 
-export function commandFor(root, item, action, caseName = "", options = {}) {
+export function commandFor(
+  root: string,
+  item: WorkspacePackage,
+  action: string,
+  caseName = "",
+  options: RunOptions = {},
+): Command[] {
   if (item.ecosystem === "pnpm") {
     if (action === "test") {
       if (options.script) {
@@ -406,7 +565,9 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
       }
       const commands = pnpmTestCommand(item, caseName);
       if (options.name) {
-        const args = commands[0][1];
+        const first = commands[0];
+        if (!first) fail("Missing package test command");
+        const args = first[1];
         if (!args.includes("vitest"))
           fail("--name is supported only for Vitest packages");
         args.push("-t", options.name);
@@ -427,7 +588,9 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
   }
   if (item.ecosystem === "cargo") {
     if (action === "test") {
-      const filters = [caseName, options.name].filter(Boolean);
+      const filters = [caseName, options.name].filter(
+        (value): value is string => typeof value === "string" && Boolean(value),
+      );
       const filterset = filters
         .map((filter) => `test(~${escapeFilterMatcher(filter)})`)
         .join(" and ");
@@ -474,14 +637,19 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
         ],
       ],
       ...(item.docTests
-        ? [["cargo", ["test", "--doc", "--locked", "-p", item.name]]]
+        ? [
+            [
+              "cargo",
+              ["test", "--doc", "--locked", "-p", item.name],
+            ] satisfies Command,
+          ]
         : []),
     ];
   }
   fail(`Unsupported package ecosystem: ${item.ecosystem}`);
 }
 
-function escapeFilterMatcher(value) {
+function escapeFilterMatcher(value: string) {
   return value
     .replaceAll("\\", "\\\\")
     .replaceAll("\n", "\\n")
@@ -491,11 +659,11 @@ function escapeFilterMatcher(value) {
     .replaceAll(",", "\\,");
 }
 
-function shellQuote(value) {
+function shellQuote(value: string) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-function reproduction(root, commands) {
+function reproduction(root: string, commands: Command[]) {
   return commands
     .map(([bin, args]) => {
       const targetEnv =
@@ -507,12 +675,12 @@ function reproduction(root, commands) {
     .join(" && ");
 }
 
-function cargoTarget(root) {
+function cargoTarget(root: string) {
   return process.env.CARGO_TARGET_DIR || path.join(root, "target");
 }
 
 // One incremental TypeScript cache per checkout, outside the checkout.
-function typeCacheDirectory(root) {
+function typeCacheDirectory(root: string) {
   return path.join(
     cacheDirectory(),
     "typescript",
@@ -521,7 +689,7 @@ function typeCacheDirectory(root) {
 }
 
 // docs/typescript.md: every tracked TypeScript project except the shared base is checked.
-function typescriptProjects(root) {
+function typescriptProjects(root: string) {
   const listed = spawnSync(
     "git",
     ["ls-files", "--", "*tsconfig.json", "*tsconfig.*.json"],
@@ -545,7 +713,7 @@ function cacheDirectory() {
   );
 }
 
-export function pruneLogs(logRoot, now = Date.now()) {
+export function pruneLogs(logRoot: string, now = Date.now()) {
   mkdirSync(logRoot, { recursive: true });
   for (const entry of readdirSync(logRoot)) {
     if (!entry.startsWith("run-")) continue;
@@ -565,7 +733,14 @@ function makeLogDirectory() {
   return mkdtempSync(path.join(root, `run-${Date.now()}-`));
 }
 
-function plan(root, item, action, caseName, commands, options = {}) {
+function plan(
+  root: string,
+  item: WorkspacePackage,
+  action: string,
+  caseName: string,
+  commands: Command[],
+  options: RunOptions = {},
+) {
   const workingDirectory = root;
   const setup =
     item.ecosystem === "pnpm"
@@ -613,12 +788,17 @@ function plan(root, item, action, caseName, commands, options = {}) {
   };
 }
 
-function selectorDescription(item, caseName, options) {
+function selectorDescription(
+  item: WorkspacePackage,
+  caseName: string,
+  options: RunOptions,
+) {
   if (options.selector) return options.selector;
   if (item.ecosystem === "cargo")
     return `Cargo test-name substring${options.cargoTargets?.length ? `; Cargo target selection: ${options.cargoTargets.join(" ")}` : ""}${options.passthrough?.length ? `; test harness args after --: ${options.passthrough.join(" ")}` : ""}`;
   const manifest = manifestFor(item);
-  const script = manifest.scripts?.[manifest.codexStudioChecks?.test] ?? "";
+  const testScript = manifest.codexStudioChecks?.test;
+  const script = testScript ? (manifest.scripts?.[testScript] ?? "") : "";
   if (/\bvitest\b/.test(script))
     return `${caseName ? `Vitest positional file-path substring: ${caseName}` : "none (package default)"}${options.name ? `; Vitest -t name substring: ${options.name}` : ""}`;
   return caseName
@@ -626,7 +806,10 @@ function selectorDescription(item, caseName, options) {
     : "none (package default)";
 }
 
-function reportPlan(value, json) {
+function reportPlan(
+  value: ReturnType<typeof plan> | ReturnType<typeof recipePlan>,
+  json: boolean,
+) {
   if (json) process.stdout.write(`${JSON.stringify(value)}\n`);
   else
     process.stdout.write(
@@ -667,7 +850,7 @@ function browserSmokeTestOptions() {
   };
 }
 
-function browserPlan(root, smoke = false) {
+function browserPlan(root: string, smoke = false) {
   const item = packageTarget(discover(root), "codex-agents-web");
   const options = smoke ? browserSmokeTestOptions() : browserTestOptions();
   const value = plan(
@@ -684,13 +867,18 @@ function browserPlan(root, smoke = false) {
 
 // Bounded lanes share preparation milestones. Only Rust compiles Cargo targets;
 // types wait for WASM, web and guest tests wait for the workspace, tools start immediately.
-export function gateSteps(root, name) {
+export function gateSteps(root: string, name: string): GateStep[] {
   const packages = discover(root);
   const web = packageTarget(packages, "codex-agents-web");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   const fast = name === "test-fast";
   const nonRust = name === "test-fast-rest-non-rust";
-  const script = (id, item, command, options = {}) => ({
+  const script = (
+    id: string,
+    item: WorkspacePackage,
+    command: string,
+    options: RunOptions = {},
+  ): GateStep => ({
     id,
     label: id,
     lane: "types",
@@ -698,14 +886,19 @@ export function gateSteps(root, name) {
     item,
     options: { ...options, script: command },
   });
-  const nodeTest = (id, label, files) => ({
+  const nodeTest = (id: string, label: string, files: string[]): GateStep => ({
     id,
     label,
     lane: "js",
     item: tooling,
     commands: [["node", ["--test", ...files]]],
   });
-  const cargo = (id, label, args, options = {}) => ({
+  const cargo = (
+    id: string,
+    label: string,
+    args: string[],
+    options: RunOptions = {},
+  ): GateStep => ({
     id,
     label,
     lane: "rust",
@@ -714,7 +907,7 @@ export function gateSteps(root, name) {
     commands: [["cargo", args]],
     options,
   });
-  return [
+  const steps: GateStep[] = [
     {
       id: "wasm",
       label: "web WASM preparation",
@@ -824,10 +1017,10 @@ export function gateSteps(root, name) {
       "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
     ]),
     nodeTest("mac-sync", "Mac sync chunk read witness", [
-      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
+      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
     ]),
     nodeTest("native-fixture", "native WebView fixture", [
-      "workspaces/client/apps/native/check-native.test.mjs",
+      "workspaces/client/apps/native/check-native.test.ts",
     ]),
     nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
       "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
@@ -866,10 +1059,10 @@ export function gateSteps(root, name) {
           "node",
           [
             "--test",
-            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mjs",
+            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
           ],
         ],
-        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mjs"]],
+        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mts"]],
       ],
     },
     ...(name === "test-comprehensive"
@@ -886,10 +1079,11 @@ export function gateSteps(root, name) {
           },
         ]
       : []),
-  ].filter((step) => !nonRust || !step.requiresCargo);
+  ];
+  return steps.filter((step) => !nonRust || !step.requiresCargo);
 }
 
-function debugBinary(root, name) {
+function debugBinary(root: string, name: string) {
   return path.resolve(
     root,
     cargoTarget(root),
@@ -898,7 +1092,7 @@ function debugBinary(root, name) {
   );
 }
 
-function heavyTierCommands(root) {
+function heavyTierCommands(root: string): GateStep[] {
   return [
     {
       label: "full browser project",
@@ -908,7 +1102,7 @@ function heavyTierCommands(root) {
   ];
 }
 
-export function recipePlan(root, name) {
+export function recipePlan(root: string, name: string) {
   const commands =
     name === "test-heavy" ? heavyTierCommands(root) : gateSteps(root, name);
   const commandLists = commands.map(
@@ -967,7 +1161,12 @@ export function recipePlan(root, name) {
   };
 }
 
-export async function executeRecipe(root, name, steps, options = {}) {
+export async function executeRecipe(
+  root: string,
+  name: string,
+  steps: GateStep[],
+  options: RecipeOptions = {},
+) {
   const planned = recipePlan(root, name);
   const started = performance.now();
   const logDir = makeLogDirectory();
@@ -978,14 +1177,18 @@ export async function executeRecipe(root, name, steps, options = {}) {
   handlers.forEach((signal) => process.once(signal, abort));
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
-  const results = Array.from({ length: steps.length });
+  const results: (StepResult & {
+    id: string | undefined;
+    lane: string;
+    label: string;
+  })[] = [];
   const readiness = new Map(
     steps
       .filter((step) => step.provides)
-      .map((step) => [step.provides, Promise.withResolvers()]),
+      .map((step) => [step.provides, Promise.withResolvers<boolean>()]),
   );
   // CI's non-Rust lane consumes the build job's artifacts and never invokes Cargo.
-  const external = {
+  const external: Record<string, boolean> = {
     wasm: existsSync(
       path.join(
         root,
@@ -1010,15 +1213,15 @@ export async function executeRecipe(root, name, steps, options = {}) {
   };
   // Named serial lanes: no generic graph scheduler or resource inference.
   // Only Rust owns compilation; wasm and workspace build receipts unblock consumers.
-  const runLane = async (lane) => {
+  const runLane = async (lane: string) => {
     for (const [index, step] of steps.entries()) {
       if ((step.lane ?? "rust") !== lane) continue;
       const ready =
         !step.requires ||
         (readiness.has(step.requires)
-          ? await readiness.get(step.requires).promise
+          ? await readiness.get(step.requires)?.promise
           : external[step.requires]);
-      let result;
+      let result: StepResult;
       if (controller.signal.aborted || !ready) {
         result = {
           status: controller.signal.aborted ? "cancelled" : "skipped",
@@ -1058,13 +1261,15 @@ export async function executeRecipe(root, name, steps, options = {}) {
             status: "failed",
             exitCode: 1,
             durationSeconds: 0,
-            errors: [String(error.stack ?? error)],
+            errors: [
+              String(error instanceof Error ? (error.stack ?? error) : error),
+            ],
           };
         }
       }
       results[index] = { ...result, id: step.id, lane, label: step.label };
       if (step.provides)
-        readiness.get(step.provides).resolve(result.exitCode === 0);
+        readiness.get(step.provides)?.resolve(result.exitCode === 0);
     }
   };
   try {
@@ -1110,7 +1315,21 @@ export async function executeRecipe(root, name, steps, options = {}) {
   return result;
 }
 
-export function parseCounts(item, output) {
+function nextestCounter(
+  event: Record<string, unknown>,
+  name: "passed" | "failed" | "ignored",
+) {
+  const value = event[name];
+  if (value === undefined) return 0;
+  if (typeof value !== "number")
+    fail(`nextest suite counter ${name} must be a number`);
+  return value;
+}
+
+export function parseCounts(
+  item: Pick<WorkspacePackage, "ecosystem">,
+  output: string,
+) {
   // ANSI CSI sequences contain control characters by design.
   // oxlint-disable-next-line no-control-regex
   const normalizedOutput = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -1119,29 +1338,36 @@ export function parseCounts(item, output) {
       /^\s*Summary\s+\[[^\]]+\]\s+(\d+) tests run:\s+(.+)$/m,
     );
     if (summary) {
-      const passed = +(summary[2].match(/(\d+) passed/)?.[1] ?? 0);
+      const passed = +((summary[2] ?? "").match(/(\d+) passed/)?.[1] ?? 0);
       return {
         passed,
-        failed: +summary[1] - passed,
-        skipped: +(summary[2].match(/(\d+) skipped/)?.[1] ?? 0),
-        executed: +summary[1],
+        failed: Number(summary[1]) - passed,
+        skipped: +((summary[2] ?? "").match(/(\d+) skipped/)?.[1] ?? 0),
+        executed: Number(summary[1]),
         summaryFound: true,
       };
     }
     return normalizedOutput.split("\n").reduce(
       (counts, line) => {
-        let event;
+        let event: unknown;
         try {
           event = JSON.parse(line);
         } catch {
           return counts;
         }
-        if (event.type !== "suite" || !["ok", "failed"].includes(event.event))
+        if (
+          !isRecord(event) ||
+          event.type !== "suite" ||
+          (event.event !== "ok" && event.event !== "failed")
+        )
           return counts;
-        counts.passed += event.passed ?? 0;
-        counts.failed += event.failed ?? 0;
-        counts.skipped += event.ignored ?? 0;
-        counts.executed += (event.passed ?? 0) + (event.failed ?? 0);
+        const passed = nextestCounter(event, "passed");
+        const failed = nextestCounter(event, "failed");
+        const ignored = nextestCounter(event, "ignored");
+        counts.passed += passed;
+        counts.failed += failed;
+        counts.skipped += ignored;
+        counts.executed += passed + failed;
         counts.summaryFound = true;
         return counts;
       },
@@ -1157,12 +1383,19 @@ export function parseCounts(item, output) {
       failed: +(line.match(/(\d+) failed/)?.[1] ?? 0),
       skipped: +(line.match(/(\d+) skipped/)?.[1] ?? 0),
     }));
-    const result = rows.reduce(
+    const result = rows.reduce<{
+      passed: number;
+      failed: number;
+      skipped: number;
+      executed: number;
+      summaryFound: boolean;
+    }>(
       (sum, row) => ({
         passed: sum.passed + row.passed,
         failed: sum.failed + row.failed,
         skipped: sum.skipped + row.skipped,
         executed: sum.executed + row.passed + row.failed,
+        summaryFound: true,
       }),
       { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: true },
     );
@@ -1182,10 +1415,10 @@ export function parseCounts(item, output) {
   );
   if (tap)
     return {
-      passed: +tap[2],
-      failed: +tap[3],
-      skipped: +tap[5],
-      executed: +tap[2] + +tap[3],
+      passed: Number(tap[2]),
+      failed: Number(tap[3]),
+      skipped: Number(tap[5]),
+      executed: Number(tap[2]) + Number(tap[3]),
       summaryFound: true,
     };
   const nodeSpec = normalizedOutput.match(
@@ -1193,21 +1426,49 @@ export function parseCounts(item, output) {
   );
   if (nodeSpec)
     return {
-      passed: +nodeSpec[2],
-      failed: +nodeSpec[3],
-      skipped: +nodeSpec[4],
-      executed: +nodeSpec[2] + +nodeSpec[3],
+      passed: Number(nodeSpec[2]),
+      failed: Number(nodeSpec[3]),
+      skipped: Number(nodeSpec[4]),
+      executed: Number(nodeSpec[2]) + Number(nodeSpec[3]),
       summaryFound: true,
     };
   return { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: false };
 }
 
-export function evaluatePlaywrightReport(reportText, processExitCode) {
-  const errors = [];
-  let failures = [];
+const playwrightStatNames = [
+  "expected",
+  "unexpected",
+  "flaky",
+  "skipped",
+] as const;
+type PlaywrightStats = Pick<
+  JSONReport["stats"],
+  (typeof playwrightStatNames)[number]
+>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+function hasPlaywrightStats(value: unknown): value is PlaywrightStats {
+  return (
+    isRecord(value) &&
+    playwrightStatNames.every((name) => {
+      const stat = value[name];
+      return (
+        typeof stat === "number" && Number.isSafeInteger(stat) && stat >= 0
+      );
+    })
+  );
+}
+
+export function evaluatePlaywrightReport(
+  reportText: unknown,
+  processExitCode: number,
+) {
+  const errors: string[] = [];
+  let failures: ReturnType<typeof playwrightFailureSummaries> = [];
   if (processExitCode !== 0)
     errors.push(`Playwright exited with code ${processExitCode}`);
-  let report;
+  let report: unknown;
   try {
     if (reportText === null || reportText === undefined)
       throw new Error("Playwright JSON report is missing");
@@ -1215,20 +1476,15 @@ export function evaluatePlaywrightReport(reportText, processExitCode) {
       typeof reportText === "string" ? JSON.parse(reportText) : reportText;
     failures = playwrightFailureSummaries(report);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     errors.push(
-      error.message === "Playwright JSON report is missing"
-        ? error.message
-        : `Playwright JSON report is invalid: ${error.message}`,
+      message === "Playwright JSON report is missing"
+        ? message
+        : `Playwright JSON report is invalid: ${message}`,
     );
   }
-  const stats = report?.stats;
-  const statNames = ["expected", "unexpected", "flaky", "skipped"];
-  if (
-    !stats ||
-    statNames.some(
-      (name) => !Number.isSafeInteger(stats[name]) || stats[name] < 0,
-    )
-  ) {
+  const stats = isRecord(report) ? report.stats : undefined;
+  if (!hasPlaywrightStats(stats)) {
     if (report)
       errors.push("Playwright JSON report has invalid or missing stats");
     return {
@@ -1266,33 +1522,54 @@ export function evaluatePlaywrightReport(reportText, processExitCode) {
   };
 }
 
-function playwrightFailureSummaries(report) {
-  const failures = [];
-  const visitSuite = (suite, parents = []) => {
+function playwrightArray(value: unknown): unknown[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("Invalid Playwright array");
+  return value;
+}
+
+function playwrightFailureSummaries(report: unknown) {
+  const failures: { title: string; error: string }[] = [];
+  const visitSuite = (suite: unknown, parents: unknown[] = []) => {
+    if (!isRecord(suite)) throw new Error("Invalid Playwright suite");
     const suiteTitles = suite.title ? [...parents, suite.title] : parents;
-    for (const spec of suite.specs ?? []) {
-      for (const test of spec.tests ?? []) {
-        const results = test.results ?? [];
+    const specs = playwrightArray(suite.specs);
+    for (const spec of specs) {
+      if (!isRecord(spec)) throw new Error("Invalid Playwright spec");
+      const tests = playwrightArray(spec.tests);
+      for (const test of tests) {
+        if (!isRecord(test)) throw new Error("Invalid Playwright test");
+        const results = playwrightArray(test.results);
         if (
           test.status !== "unexpected" &&
           test.status !== "flaky" &&
-          !results.some((result) =>
-            ["failed", "timedOut"].includes(result.status),
+          !results.some(
+            (result) =>
+              isRecord(result) &&
+              ["failed", "timedOut"].includes(String(result.status)),
           )
         )
           continue;
-        const result = results.find((entry) =>
-          ["failed", "timedOut", "interrupted"].includes(entry.status),
+        const result = results.find(
+          (entry) =>
+            isRecord(entry) &&
+            ["failed", "timedOut", "interrupted"].includes(
+              String(entry.status),
+            ),
         );
-        const error = result?.errors?.[0] ?? test.errors?.[0];
+        const resultErrors = isRecord(result)
+          ? playwrightArray(result.errors)
+          : [];
+        const testErrors = playwrightArray(test.errors);
+        const error = resultErrors[0] ?? testErrors[0];
         const detail =
           typeof error === "string"
             ? error
-            : (error?.message ??
-              result?.status ??
+            : ((isRecord(error) ? error.message : undefined) ??
+              (isRecord(result) ? result.status : undefined) ??
               test.status ??
               "unexpected result");
-        const firstLine = String(detail).split(/\r?\n/, 1)[0].trim();
+        const firstLine = (String(detail).split(/\r?\n/, 1)[0] ?? "").trim();
         failures.push({
           title: [...suiteTitles, spec.title, test.projectName]
             .filter(Boolean)
@@ -1301,9 +1578,12 @@ function playwrightFailureSummaries(report) {
         });
       }
     }
-    for (const child of suite.suites ?? []) visitSuite(child, suiteTitles);
+    const children = playwrightArray(suite.suites);
+    for (const child of children) visitSuite(child, suiteTitles);
   };
-  for (const suite of report.suites ?? []) visitSuite(suite);
+  if (!isRecord(report)) throw new Error("Invalid Playwright report");
+  const suites = playwrightArray(report.suites);
+  for (const suite of suites) visitSuite(suite);
   return failures;
 }
 
@@ -1311,25 +1591,25 @@ const NEXTTEST_INSTALL =
   "cargo install cargo-nextest --version 0.9.146 --locked";
 const NEXTTEST_MISSING = `cargo-nextest 0.9.146 is required. Install it with: ${NEXTTEST_INSTALL}`;
 
-export function nextestError(output) {
+export function nextestError(output: string) {
   return output.includes(NEXTTEST_MISSING) ||
     /no such command.*nextest|could not find.*cargo-nextest/i.test(output)
     ? NEXTTEST_MISSING
     : null;
 }
 
-export function nextestSelectionError(exitCode) {
+export function nextestSelectionError(exitCode: number | null) {
   return exitCode === 4
     ? "nextest found no tests matching this selection"
     : null;
 }
 
 export async function execute(
-  root,
-  item,
-  caseName,
+  root: string,
+  item: WorkspacePackage,
+  caseName: string,
   asJson = false,
-  options = {},
+  options: RunOptions = {},
 ) {
   const commands =
     options.commands ?? commandFor(root, item, "test", caseName, options);
@@ -1342,7 +1622,7 @@ export async function execute(
   mkdirSync(logDir, { recursive: true });
   appendFileSync(logPath, "");
   const started = performance.now();
-  let counts = {
+  let counts: Counts = {
     passed: null,
     failed: null,
     flaky: null,
@@ -1350,10 +1630,10 @@ export async function execute(
     executed: null,
   };
   let exitCode = 0;
-  let signal = null;
+  let signal: NodeJS.Signals | null = null;
   let output = "";
-  let playwrightFailures = [];
-  const errors = [];
+  let playwrightFailures: { title: string; error: string }[] = [];
+  const errors: string[] = [];
   for (const [bin, args] of commands) {
     if (options.signal?.aborted) {
       signal = "SIGTERM";
@@ -1487,22 +1767,28 @@ function usage() {
   );
 }
 
-export function parseSelection(requestedCase, rest) {
+export function parseSelection(
+  requestedCase: string | undefined,
+  rest: string[],
+) {
   let name = "";
-  let passthrough = [];
-  let cargoTargets = [];
-  const flags = [];
+  let passthrough: string[] = [];
+  let cargoTargets: string[] = [];
+  const flags: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    if (arg === undefined) continue;
     if (arg === "--") {
       const forwarded = rest
         .slice(index + 1)
         .filter((value) => value !== "--json");
       for (let cursor = 0; cursor < forwarded.length; cursor += 1) {
         const option = forwarded[cursor];
+        if (option === undefined) continue;
         if (["--test", "--bin", "--example", "--bench"].includes(option)) {
-          if (!forwarded[cursor + 1]) fail(`${option} requires a target name`);
-          cargoTargets.push(option, forwarded[cursor + 1]);
+          const target = forwarded[cursor + 1];
+          if (!target) fail(`${option} requires a target name`);
+          cargoTargets.push(option, target);
           cursor += 1;
         } else if (
           [
@@ -1519,12 +1805,12 @@ export function parseSelection(requestedCase, rest) {
       break;
     }
     if (arg === "--name") {
-      const values = [];
-      while (
-        rest[index + 1] &&
-        !["--", "--json", "--dry-run", "--name"].includes(rest[index + 1])
-      ) {
-        values.push(rest[index + 1]);
+      const values: string[] = [];
+      while (true) {
+        const next = rest[index + 1];
+        if (!next || ["--", "--json", "--dry-run", "--name"].includes(next))
+          break;
+        values.push(next);
         index += 1;
       }
       name = values.join(" ");
@@ -1537,9 +1823,9 @@ export function parseSelection(requestedCase, rest) {
   };
 }
 
-function workspaceFiles(root) {
-  const files = [];
-  function visit(directory) {
+function workspaceFiles(root: string) {
+  const files: string[] = [];
+  function visit(directory: string) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       if (entry.isDirectory() && SOURCE_SKIP.has(entry.name)) continue;
       const full = path.join(directory, entry.name);
@@ -1552,9 +1838,9 @@ function workspaceFiles(root) {
   return files;
 }
 
-function workspaceRustFiles(root) {
-  const files = [];
-  function visit(directory) {
+function workspaceRustFiles(root: string) {
+  const files: string[] = [];
+  function visit(directory: string) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       if (entry.isDirectory() && SOURCE_SKIP.has(entry.name)) continue;
       const full = path.join(directory, entry.name);
@@ -1574,8 +1860,11 @@ function workspaceRustFiles(root) {
   return files;
 }
 
-export function unsafeRustFindings(root, files = workspaceRustFiles(root)) {
-  const findings = [];
+export function unsafeRustFindings(
+  root: string,
+  files = workspaceRustFiles(root),
+) {
+  const findings: { file: string; message: string }[] = [];
   for (const file of files) {
     const relativeFile = path.relative(root, file).split(path.sep).join("/");
     if (UNSAFE_RUST_ALLOWLIST_BY_FILE.has(relativeFile)) continue;
@@ -1589,9 +1878,9 @@ export function unsafeRustFindings(root, files = workspaceRustFiles(root)) {
   return findings;
 }
 
-function maskRustCommentsAndStrings(source) {
+function maskRustCommentsAndStrings(source: string) {
   const chars = [...source];
-  const blank = (start, end) => {
+  const blank = (start: number, end: number) => {
     for (let index = start; index < end; index++)
       if (chars[index] !== "\n") chars[index] = " ";
   };
@@ -1689,10 +1978,25 @@ function maskRustCommentsAndStrings(source) {
   return chars.join("");
 }
 
-function packageImports(root, file, source) {
+interface ModuleReference {
+  specifier: string;
+  typeOnly: boolean;
+}
+
+function sharedTypeTarget(root: string, target: string) {
+  const file = path.relative(root, target).split(path.sep).join("/");
+  return (
+    /(?:^|\/)generated\/|\.generated\.ts$/.test(file) ||
+    SHARED_TYPE_OWNERS.some((owner) => owner.file === file)
+  );
+}
+
+function packageImports(root: string, file: string, source: string) {
   try {
     const require = createRequire(import.meta.url);
-    const ts = require(require.resolve("typescript"));
+    const ts: typeof import("typescript") = require(
+      require.resolve("typescript"),
+    );
     const kind = /\.[cm]?tsx?$/.test(file)
       ? ts.ScriptKind.TS
       : ts.ScriptKind.JS;
@@ -1703,16 +2007,48 @@ function packageImports(root, file, source) {
       true,
       kind,
     );
-    const specs = [];
-    function visit(node) {
+    const specs: ModuleReference[] = [];
+    function visit(node: ts.Node) {
       if (
         (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
         ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        let typeOnly = false;
+        if (ts.isImportDeclaration(node)) {
+          const clause = node.importClause;
+          typeOnly =
+            clause?.isTypeOnly === true ||
+            Boolean(
+              clause &&
+              !clause.name &&
+              clause.namedBindings &&
+              ts.isNamedImports(clause.namedBindings) &&
+              clause.namedBindings.elements.length > 0 &&
+              clause.namedBindings.elements.every((item) => item.isTypeOnly),
+            );
+        } else {
+          const clause = node.exportClause;
+          typeOnly =
+            node.isTypeOnly ||
+            Boolean(
+              clause &&
+              ts.isNamedExports(clause) &&
+              clause.elements.length > 0 &&
+              clause.elements.every((item) => item.isTypeOnly),
+            );
+        }
+        specs.push({ specifier: node.moduleSpecifier.text, typeOnly });
+      }
+      if (
+        ts.isImportTypeNode(node) &&
+        ts.isLiteralTypeNode(node.argument) &&
+        ts.isStringLiteral(node.argument.literal)
       )
-        specs.push(node.moduleSpecifier.text);
+        specs.push({ specifier: node.argument.literal.text, typeOnly: true });
       if (
         ts.isCallExpression(node) &&
-        node.arguments.length &&
+        node.arguments[0] &&
         ts.isStringLiteral(node.arguments[0])
       ) {
         const expression = node.expression;
@@ -1727,22 +2063,26 @@ function packageImports(root, file, source) {
           (name === "resolve" &&
             expression.getText(script) === "require.resolve")
         )
-          specs.push(node.arguments[0].text);
+          specs.push({ specifier: node.arguments[0].text, typeOnly: false });
       }
       ts.forEachChild(node, visit);
     }
     visit(script);
     return specs;
   } catch {
-    const specs = [];
+    const specs: ModuleReference[] = [];
     const pattern =
       /\b(?:from\s*|import\s*\(|import\s+|export\s+[^;]*?\sfrom\s*|require\s*\()\s*["']([^"']+)["']/g;
-    for (const match of source.matchAll(pattern)) specs.push(match[1]);
+    for (const match of source.matchAll(pattern))
+      if (match[1]) specs.push({ specifier: match[1], typeOnly: false });
     return specs;
   }
 }
 
-function packageRootFor(file, packages) {
+function packageRootFor(
+  file: string,
+  packages: (LocatedPackage & { root: string })[],
+) {
   const workspacePackage = packages
     .filter((item) => item.dir !== ".")
     .filter((item) => {
@@ -1759,7 +2099,7 @@ function packageRootFor(file, packages) {
     : undefined;
 }
 
-function packageName(specifier) {
+function packageName(specifier: string) {
   if (
     !specifier ||
     specifier.startsWith(".") ||
@@ -1773,7 +2113,7 @@ function packageName(specifier) {
     : specifier.split("/")[0];
 }
 
-function declaredDependencies(item) {
+function declaredDependencies(item: WorkspacePackage) {
   const manifest = item.manifest ? manifestFor(item) : {};
   return new Set(
     DECLARATION_SECTIONS.flatMap((section) =>
@@ -1782,7 +2122,7 @@ function declaredDependencies(item) {
   );
 }
 
-function allowlisted(importer, file, specifier) {
+function allowlisted(importer: string, file: string, specifier: string) {
   return BOUNDARY_ALLOWLIST.some(
     (entry) =>
       entry.importer === importer &&
@@ -1791,7 +2131,7 @@ function allowlisted(importer, file, specifier) {
   );
 }
 
-function globMatches(pattern, value) {
+function globMatches(pattern: string, value: string) {
   const regex = pattern
     .split("**")
     .map((part) =>
@@ -1804,7 +2144,11 @@ function globMatches(pattern, value) {
   return new RegExp(`^${regex}$`).test(value);
 }
 
-export function boundaryFindings(root, packages, files = workspaceFiles(root)) {
+export function boundaryFindings(
+  root: string,
+  packages: LocatedPackage[],
+  files = workspaceFiles(root),
+) {
   // JavaScript files belong to pnpm packages. A Cargo crate inside a pnpm app
   // (such as a Tauri src-tauri crate) has no JavaScript manifest of its own.
   const rooted = packages
@@ -1815,7 +2159,13 @@ export function boundaryFindings(root, packages, files = workspaceFiles(root)) {
   const builtins = new Set(
     builtinModules.flatMap((name) => [name, `node:${name}`]),
   );
-  const findings = [];
+  const findings: {
+    rule: string;
+    importer: string;
+    file: string;
+    specifier: string;
+    message: string;
+  }[] = [];
   for (const file of files) {
     const importer = packageRootFor(file, rooted);
     if (!importer) continue;
@@ -1825,9 +2175,10 @@ export function boundaryFindings(root, packages, files = workspaceFiles(root)) {
       .join("/");
     const declared = declaredDependencies(importer);
     const source = readFileSync(file, "utf8");
-    for (const specifier of packageImports(root, file, source)) {
+    for (const { specifier, typeOnly } of packageImports(root, file, source)) {
       if (specifier.startsWith(".")) {
         const targetPath = path.resolve(path.dirname(file), specifier);
+        if (typeOnly && sharedTypeTarget(root, targetPath)) continue;
         const target = packageRootFor(targetPath, rooted);
         const destinationApp = appPackages.find((app) => {
           const dir = path.resolve(root, app.dir);
@@ -1861,6 +2212,15 @@ export function boundaryFindings(root, packages, files = workspaceFiles(root)) {
       const name = packageName(specifier);
       if (!name || builtins.has(name) || name.startsWith("node:")) continue;
       const destination = byName.get(name);
+      if (
+        typeOnly &&
+        destination &&
+        sharedTypeTarget(
+          root,
+          path.resolve(root, destination.dir, specifier.slice(name.length + 1)),
+        )
+      )
+        continue;
       if (
         importer.dir.includes("/packages/") &&
         destination?.dir.includes("/apps/")
@@ -1906,11 +2266,16 @@ export function checkBoundaries(root = rootFrom(), packages = discover(root)) {
   return 0;
 }
 
-export function affectedPlan(root, base, packages, changedFiles) {
+export function affectedPlan(
+  root: string,
+  base: string,
+  packages: LocatedPackage[],
+  changedFiles: string[],
+) {
   if (!changedFiles.length)
     fail(`No changed files found by git diff --name-only ${base}...HEAD`);
-  const reasons = new Map();
-  const allPackages = (reason) =>
+  const reasons = new Map<string, string>();
+  const allPackages = (reason: string) =>
     packages.forEach((item) =>
       reasons.set(item.name, `conservative widening: ${reason}`),
     );
@@ -1944,8 +2309,12 @@ export function affectedPlan(root, base, packages, changedFiles) {
       reason.startsWith("conservative widening"),
     )
   ) {
-    const dependents = new Map(packages.map((item) => [item.name, new Set()]));
-    const cargoMetadata = packages.some((item) => item.ecosystem === "cargo")
+    const dependents = new Map(
+      packages.map((item) => [item.name, new Set<string>()]),
+    );
+    const cargoMetadata: CargoMetadata | null = packages.some(
+      (item) => item.ecosystem === "cargo",
+    )
       ? JSON.parse(
           runSync(
             "cargo",
@@ -1961,7 +2330,7 @@ export function affectedPlan(root, base, packages, changedFiles) {
           if (byWorkspaceDependency(item.manifest, dependency, packages))
             dependents.get(dependency)?.add(item.name);
       } else if (item.ecosystem === "cargo") {
-        for (const dependency of cargoMetadata.packages.find(
+        for (const dependency of cargoMetadata?.packages.find(
           (pkg) => pkg.name === item.name,
         )?.dependencies ?? [])
           if (
@@ -1977,7 +2346,7 @@ export function affectedPlan(root, base, packages, changedFiles) {
     const queue = [...reasons.keys()];
     while (queue.length) {
       const dependency = queue.shift();
-      for (const dependent of dependents.get(dependency) ?? []) {
+      for (const dependent of dependents.get(dependency ?? "") ?? []) {
         if (reasons.has(dependent)) continue;
         reasons.set(dependent, `reverse dependency of ${dependency}`);
         queue.push(dependent);
@@ -1986,12 +2355,21 @@ export function affectedPlan(root, base, packages, changedFiles) {
   }
   return packages
     .filter((item) => reasons.has(item.name))
-    .map((item) => ({ package: item.name, reason: reasons.get(item.name) }));
+    .map((item) => ({
+      package: item.name,
+      reason: reasons.get(item.name) ?? "",
+    }));
 }
 
-function byWorkspaceDependency(manifestPath, dependency, packages) {
+function byWorkspaceDependency(
+  manifestPath: PathLike | undefined,
+  dependency: string,
+  packages: WorkspacePackage[],
+) {
   if (!manifestPath) return false;
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const manifest: PackageManifest = JSON.parse(
+    readFileSync(manifestPath, "utf8"),
+  );
   return DECLARATION_SECTIONS.some((section) => {
     const value = manifest[section]?.[dependency];
     return (
@@ -2016,7 +2394,7 @@ export function runContractsCheck(root = rootFrom()) {
   return 0;
 }
 
-function runAffected(root, base, dryRun) {
+function runAffected(root: string, base: string, dryRun: boolean) {
   const changed = runSync(
     "git",
     ["diff", "--name-only", `${base}...HEAD`],
@@ -2126,7 +2504,7 @@ export async function main(argv = process.argv.slice(2)) {
       options.script = "test:browser:smoke:prepared";
     return (await execute(root, item, "", json, options)).exitCode;
   }
-  if (!["test", "test-plan", "check"].includes(action)) {
+  if (!["test", "test-plan", "check"].includes(action ?? "")) {
     usage();
     return action ? 2 : 0;
   }
@@ -2166,7 +2544,7 @@ export async function main(argv = process.argv.slice(2)) {
     requestedCase === "--name" ? [requestedCase, ...rest] : rest,
   );
   const { caseName, options } = selection;
-  const effective = action === "test-plan" ? "test" : action;
+  const effective = action === "test-plan" ? "test" : (action ?? "");
   const commands = commandFor(root, item, effective, caseName, options);
   if (action === "test-plan" || (action === "check" && dryRun)) {
     reportPlan(plan(root, item, effective, caseName, commands, options), json);
@@ -2179,7 +2557,7 @@ export async function main(argv = process.argv.slice(2)) {
     const started = performance.now();
     let output = "";
     let exitCode = 0;
-    const errors = [];
+    const errors: string[] = [];
     for (const [bin, args] of commands) {
       const env =
         bin === "cargo"
@@ -2265,8 +2643,10 @@ if (
     .then((code) => {
       process.exitCode = code;
     })
-    .catch((error) => {
-      process.stderr.write(`${error.message}\n`);
+    .catch((error: unknown) => {
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n`,
+      );
       process.exitCode = 1;
     });
 }

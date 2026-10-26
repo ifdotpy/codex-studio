@@ -1,4 +1,7 @@
 // Exercise the native host through hidden WebViews and disposable fixtures.
+import type { BackendIdentity } from "../desktop/backend.ts";
+import type { components } from "../web/src/generated/api.ts";
+import type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -12,6 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:http";
+import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -24,10 +28,14 @@ const BINARY = path.join(ROOT, "target/debug/studio-native-client");
 const SCENARIO_TIMEOUT_MS = 60_000;
 const ERROR_TAIL_CHARACTERS = 4_000;
 
-async function run(directory, mode, extra = {}) {
+async function run(
+  directory: string,
+  mode: string,
+  extra: NodeJS.ProcessEnv = {},
+) {
   const report = path.join(directory, "webview-result.json");
   await rm(report, { force: true });
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     STUDIO_NATIVE_CHECK_DIR: directory,
     STUDIO_NATIVE_CHECK_MODE: mode,
@@ -86,11 +94,15 @@ async function run(directory, mode, extra = {}) {
   console.log(`Hidden WebView ${mode}: passed`);
 }
 
-export async function createFixture(directory) {
-  const commands = [];
+export async function createFixture(directory: string) {
+  const commands: { headers: IncomingHttpHeaders; body: Buffer }[] = [];
   let identityState = path.join(directory, "wrong-state");
   const server = createServer(async (request, response) => {
-    const send = (status, body, headers = {}) => {
+    const send = (
+      status: number,
+      body: string | Buffer,
+      headers: OutgoingHttpHeaders = {},
+    ) => {
       const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
       response.writeHead(status, {
         "Content-Length": bytes.length,
@@ -99,7 +111,7 @@ export async function createFixture(directory) {
       });
       response.end(bytes);
     };
-    const json = (body) =>
+    const json = (body: unknown) =>
       send(200, JSON.stringify(body), { "Content-Type": "application/json" });
     if (request.method === "GET") {
       if (request.url === "/api/native-check-events")
@@ -109,13 +121,23 @@ export async function createFixture(directory) {
           { "Content-Type": "text/event-stream" },
         );
       if (request.url === "/api/sync/identity")
-        return json({ workspaceId: "a".repeat(32), chatState: true });
-      if (request.url.startsWith("/api/sync/pull?scope=drafts&"))
+        return json({
+          workspaceId: "a".repeat(32),
+          chatState: true,
+        } satisfies Pick<
+          components["schemas"]["SyncIdentityResponse"],
+          "workspaceId"
+        > &
+          Record<string, unknown>);
+      if (request.url?.startsWith("/api/sync/pull?scope=drafts&"))
         return json({
           workspaceId: "a".repeat(32),
           documents: [],
           checkpoint: { seq: 0 },
-        });
+        } satisfies Pick<
+          components["schemas"]["SyncPullResponse"],
+          "workspaceId" | "documents" | "checkpoint"
+        >);
       if (request.url === "/api/desktop")
         return json({
           application: "codex-agents",
@@ -124,9 +146,11 @@ export async function createFixture(directory) {
           pid: process.pid,
           stateDir: identityState,
           backendBuild: "a".repeat(64),
-        });
+        } satisfies BackendIdentity);
       if (request.url === "/api/session")
-        return json({ token: "fixture-native-token" });
+        return json({
+          token: "fixture-native-token",
+        } satisfies components["schemas"]["SessionResponse"]);
       return send(404, '{"error":"Unknown fixture path"}');
     }
     if (request.method === "POST") {
@@ -157,14 +181,16 @@ export async function createFixture(directory) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
   return {
-    port: server.address().port,
+    port: address.port,
     commands,
     acceptIdentity() {
       identityState = directory;
     },
     close() {
-      return new Promise((resolve, reject) =>
+      return new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );
     },
@@ -182,12 +208,12 @@ async function main() {
       ["store-a", "profile-store-write"],
       ["store-b", "profile-store-empty"],
       ["store-a", "profile-store-read"],
-    ]) {
+    ] as const) {
       const target = path.join(directory, profile);
       await run(target, mode, { CODEX_DESKTOP_PROFILE: target });
     }
     const archive = path.join(directory, "profile.json");
-    const combined = {
+    const combined: BrowserProfileArchive = {
       version: 1,
       id: "fixture-profile",
       owners: {
@@ -292,6 +318,7 @@ async function main() {
       for (const database of snapshot.databases)
         for (const store of database.stores) {
           const records = store.records;
+          assert.ok(records);
           delete store.records;
           store.chunks = [];
           if (records.length) {
@@ -314,7 +341,7 @@ async function main() {
     for (const mode of ["write", "read", "frames"]) await run(directory, mode);
     const fixture = await createFixture(directory);
     try {
-      const env = {
+      const env: NodeJS.ProcessEnv = {
         CODEX_AGENTS_STATE_DIR: directory,
         CODEX_DESKTOP_PORT: String(fixture.port),
         STUDIO_NATIVE_CHECK_NETWORK: "1",
@@ -342,6 +369,7 @@ async function main() {
         "Expected two distinct commands",
       );
       const [command, shell] = fixture.commands;
+      assert.ok(command && shell);
       assert.equal(shell.body.toString(), "null");
       assert.equal(shell.headers["x-studio-request-id"], "shell-http-command");
       assert.equal(command.body.toString(), "null");

@@ -518,7 +518,7 @@ test("shutdown never spends the full CLI exit timeout on a stuck consumer", asyn
 test("scripted Rust SDK close ends an aborted wait without inventing a successful response", async () => {
   const fixture = await fs.readFile(
     new URL(
-      "../../../runtime/apps/runtime-server/tests/fixtures/claude-sdk.mjs",
+      "../../../runtime/apps/runtime-server/tests/fixtures/claude-sdk.mts",
       import.meta.url,
     ),
     "utf8",

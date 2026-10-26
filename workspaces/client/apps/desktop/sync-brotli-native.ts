@@ -145,7 +145,9 @@ try {
         fetchRequest: async (request) => {
           const url = new URL(request.url);
           if (url.pathname.endsWith("/pair")) {
-            const body = await request.json();
+            const body: unknown = await request.json();
+            if (!body || typeof body !== "object" || !("clientId" in body))
+              throw new Error("Fixture client identity is unavailable.");
             return new Response(
               JSON.stringify({
                 ...invitation,
