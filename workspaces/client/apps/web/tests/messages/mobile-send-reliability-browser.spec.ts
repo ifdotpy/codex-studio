@@ -128,8 +128,8 @@ test("Mobile Send Reliability Browser", async ({
     const stored = (page: Page, id: string) =>
       page.evaluate((id) => window.read(id), id);
     const start = (page: Page, value: MessageRequest) =>
-      page.evaluate((value) => window.start(value), value);
-    const settle = (page: Page) => page.evaluate(() => window.result);
+      page.evaluate((value) => window.mobileSendStart(value), value);
+    const settle = (page: Page) => page.evaluate(() => window.mobileSendResult);
     const reply = (
       route: Route,
       id: string,

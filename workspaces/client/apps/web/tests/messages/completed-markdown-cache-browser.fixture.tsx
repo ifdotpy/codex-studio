@@ -39,7 +39,7 @@ function Harness() {
     flushSync(() => setItems(otherChat ? other : initial));
   window.hide = () => flushSync(() => setShown(false));
   window.show = () => flushSync(() => setShown(true));
-  window.agent = (id) => flushSync(() => setAgent(id));
+  window.markdownAgent = (id) => flushSync(() => setAgent(id));
   window.text = (text, stream = false) =>
     flushSync(() => {
       setItems([{ id: "only", role: "assistant", text }]);
@@ -90,7 +90,7 @@ declare global {
     chat: (otherChat: boolean) => void;
     hide: () => void;
     show: () => void;
-    agent: (id: string) => void;
+    markdownAgent: (id: string) => void;
     text: (text: string, stream?: boolean) => void;
   }
 }

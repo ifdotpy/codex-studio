@@ -27,10 +27,10 @@ const initialize = async () => {
     const doc = await window.storage.db.outbox.findOne(id).exec();
     return doc && JSON.parse(doc.getLatest().payload);
   };
-  window.start = (body) => {
+  window.mobileSendStart = (body) => {
     window.persisted = false;
     window.settled = false;
-    window.result = window.send
+    window.mobileSendResult = window.send
       .durableSend(body, [], () => {
         window.persisted = true;
         window.persistedRecord = window.read(body.id);
@@ -60,12 +60,14 @@ declare global {
       import("../../src/sync/send.ts").OutboxEntry,
       "id"
     > | null>;
-    start: (
+    mobileSendStart: (
       body: Parameters<typeof import("../../src/sync/send.ts").durableSend>[0],
     ) => void;
     persisted: boolean;
     settled: boolean;
-    result: ReturnType<typeof import("../../src/sync/send.ts").durableSend>;
+    mobileSendResult: ReturnType<
+      typeof import("../../src/sync/send.ts").durableSend
+    >;
     persistedRecord: ReturnType<Window["read"]>;
     outbox: ReturnType<typeof useOutbox>;
     reactRoot: ReturnType<typeof createRoot>;

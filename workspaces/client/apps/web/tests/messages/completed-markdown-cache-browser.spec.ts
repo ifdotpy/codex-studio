@@ -78,7 +78,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
     assert.equal(await page.evaluate(() => window.compilations), 1);
     await page.evaluate(() => {
       window.hide();
-      window.agent("second");
+      window.markdownAgent("second");
       window.show();
     });
     await page.getByRole("link", { name: "Changed report" }).click();
