@@ -17,9 +17,9 @@
   Reads still use the existing connection APIs: `CANVAS_READER_CONNECTION_CAPACITY`
   in `src/lib.rs` owns the total limit of four readers, including the reserved
   version reader; the ordinary pool derives its capacity from that owner. No
-  Python, general schema migration, or state directory creation. Sync DDL is
-  sourced only from `src/sync_schema.sql`.
-  Python persisted models and the OpenAPI document own the schemas.
+  Python runtime is required. Fresh-state creation and dated server migrations
+  run through this crate before normal access. Sync DDL is sourced only from
+  `src/sync_schema.sql`; persisted record contracts belong to `runtime-schema`.
 - **Invariants:** One exclusive runtime lock, one serialized Canvas writer
   using `BEGIN IMMEDIATE`, independent query-only read connections, WAL with
   `synchronous=NORMAL` and a periodic flush (`sqlite_durability`), and fail-closed checks for required tables, columns,
@@ -28,13 +28,34 @@
   reports invalid records with one table/key error while preserving extension
   fields. Repositories declare whether each table is required or conditional;
   bootstrapped feature tables are required after `RuntimeStore::open`.
-- **Configuration owner:** `codex_state.py` currently defines state path
-  resolution; this crate mirrors its environment and platform rules. The
+- **Configuration owner:** This crate resolves the existing state-directory
+  identity and acquires its runtime lock. The
   committed `runtime-state-schema.json` describes SQLite catalog requirements;
   JSON-record schemas are committed source under `runtime-schema/src/schemas`.
 - **Focused check:** run `CODEX_AGENTS_PYTHON=/nonexistent cargo test -p studio-runtime-store`.
   Tests create disposable state through Rust; historical record data is frozen in
   `tests/fixtures/record-round-trip.json` and decoded into typed records.
+
+## Dated startup migrations
+
+[`src/migrations/mod.rs`](src/migrations/mod.rs) owns the migration trait,
+ordered catalog, target transactions, and diagnostic phases. Dated modules hold
+historical conversions; current DDL, codecs, and validators retain their named
+owners. [`src/account_registry.rs`](src/account_registry.rs) is the shared
+current registry codec and atomic file writer used by migration and services.
+
+The runtime opener validates known sources and runs the migration barrier under
+the existing runtime lock before exposing normal readers, recovery, or workers.
+The server binds its listener only after startup validation succeeds. Supervisor
+journal migration uses the same contract at supervisor startup under its own
+lock; the runtime opener does not mutate an occupied supervisor journal.
+
+Each database target has its own transaction. Failed uncommitted changes roll
+back; earlier committed targets remain and are validated on restart. File
+replacement uses its existing atomic writer and reports uncertain durability
+after a failed post-replacement synchronization. There is no global database and
+file rollback. See the [migration policy](../../../../docs/runtime-migrations.md)
+for preserved evidence, removal conditions, and client/vendor ownership limits.
 
 ## Canvas writer actor
 
@@ -280,10 +301,10 @@ both databases through `RuntimeStore::open`, compare their complete catalogs
 across independent roots, and verify that reopening preserves them. The tests
 require no Python interpreter or backend source files.
 
-`RuntimeStore::open` verifies the Python-owned core schema, then prepares the
-sync schema family in one immediate transaction, and finally verifies the
-repository requirements that bootstrap provides. The Rust store owns this
-family from first open onward (one-way move). Callers can rely on a successful
+`RuntimeStore::open` verifies the supported core schema, then the migration
+runner prepares and validates the sync family within the Canvas target's
+immediate transaction. The Rust store owns this family, including its current
+repository requirements. Callers can rely on a successful
 `RuntimeStore::open`; no separate preparation call or prepared-state gate is
 needed. Its only DDL source is
 `src/sync_schema.sql`; bootstrap builds a scratch catalog from that file.
@@ -333,12 +354,12 @@ Opening can write this schema on its first run. The store has no read-only open
 path today; if a future read-only state checker is added, it must report an
 unprepared sync family without invoking bootstrap.
 
-This bootstrap owns only sync tables and related indexes/triggers. Other
-lazily created families (including Canvas graph tables, analytics projections,
-execution state, and search indexes) remain owned by their existing creators;
-the feature and migration inventory is in
+The sync bootstrap owns only sync tables and related indexes/triggers. The
+migration runner calls the current DDL owners for the other startup families;
+it does not duplicate their schemas. Runtime projection maintenance that depends
+on current source evidence remains with its service owner. The historical
+catalog inventory is in
 [the state-format inventory](../../../../docs/runtime-state-formats.md#feature-and-migration-schema-beyond-a-fresh-start).
-The one-time cutover upgrade is not part of this crate method.
 
 This crate owns the fresh-start snapshot at
 `workspaces/runtime/packages/runtime-store/src/runtime-state-schema.json`.

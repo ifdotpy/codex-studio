@@ -16,9 +16,8 @@ Parse external provider names at the boundary. Missing, unknown, or malformed
 names must remain unsupported, never select an existing provider by default.
 Convert historical representations in a dated storage migration before normal
 readers run; do not retain compatibility defaults in the identity owner or callers.
-Each migration records its introduction date and the oldest supported upgrade
-source. Remove it only when supported installations and restorable backups have
-crossed that format boundary; elapsed time alone does not establish this.
+Follow the [runtime migration policy](../../docs/runtime-migrations.md) for the
+single migration owner, dates, supported sources, rollback, and removal rules.
 
 Provider dispatch must be exhaustive: use an enum `match` or a typed mapping that
 requires every supported provider. Do not use `if provider == "codex" ... else ...`,

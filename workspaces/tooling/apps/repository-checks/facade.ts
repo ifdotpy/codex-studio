@@ -957,6 +957,15 @@ export function gateSteps(root: string, name: string): GateStep[] {
         options: { allowZeroTests: true },
       },
       {
+        id: "provider-contracts",
+        label: "provider contract drift witnesses",
+        lane: "rust",
+        requires: "workspace",
+        requiresCargo: true,
+        item: tooling,
+        commands: [["pnpm", ["--dir", root, "run", "test:provider-contracts"]]],
+      },
+      {
         ...cargo("rust-tests", "Rust nextest", [
           "nextest",
           "run",

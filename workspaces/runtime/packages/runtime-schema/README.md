@@ -8,7 +8,7 @@
   `OPENAPI_URI`, the `JsonSchemaRegistry` type alias, and values in
   `shared_values`; `DeliveryMoment` and its explicit legacy parser in
   [`src/delivery.rs`](src/delivery.rs).
-- **Boundaries:** This crate owns no SQL, records, route handlers, or request
+- **Boundaries:** This crate owns no SQL, record persistence, route handlers, or request
   route parsing. The shared delivery contract owns canonical timing and legacy
   spelling normalization. `runtime-store` owns stored-object validation through `Table<R>`;
   `runtime-http` owns request validation and resolves schema references through
@@ -29,7 +29,8 @@ against the same OpenAPI document and the persisted-state schema documents.
 This crate owns the shared runtime contracts: `src/shared_values.rs`,
 `src/agent_limits.rs`, `src/api_schema.rs`, `src/multi_server_protocol.rs`,
 `src/sync_protocol.rs`, `src/delivery.rs`, `src/provider_kind.rs`,
-`src/provider_method_policy.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
+`src/provider_method_policy.rs`, `src/token_rate_limits.rs`, `src/records.rs`,
+and `src/studio_errors.rs`. The `studio-contracts`
 binary (`src/contracts.rs`) renders their TypeScript, Swift, and VM guest copies
 and the web API types of `runtime-http/openapi.json`, and holds the committed
 OpenAPI and persisted-state schemas to these owners. Refresh the copies with
@@ -39,6 +40,18 @@ JSON schemas in `src/schemas` are committed source. Draft payload schemas and
 with schemars, through the same contract commands. `AgentCommandProgress` and
 `AgentStall` in `src/agent_progress.rs` also derive their OpenAPI fragments;
 the renderer refreshes those two components before generating API types and identity.
+
+[`src/records.rs`](src/records.rs) owns `WorkStatus` and `WorkspaceMode`.
+The store imports these enums; OpenAPI components and HTTP types are generated
+from the same owner, including the narrower lead-creation mode set. Checked work
+readers require a known status and string-list dependencies. Progress retains its
+existing default for an omitted update time but refuses a present invalid or null
+value instead of treating it as time zero.
+
+[`src/studio_errors.rs`](src/studio_errors.rs) owns diagnostic kinds, context,
+causes, and effect certainty. Its generated contracts are shared by the runtime,
+SSE publication, and App errors UI. An error message alone does not prove that
+an operation had no effects.
 
 [`src/queue_command.rs`](src/queue_command.rs) owns queue mutation commands.
 The HTTP adapter and service consume its strict tagged enum; the contract renderer
@@ -101,8 +114,9 @@ OpenAPI parity checks use this owner, and `studio-contracts` generates the web t
 parser. Response evidence, cumulative counter scope, and missing final usage remain
 explicit. `studio-contracts` generates the observation JSON schema, named OpenAPI
 components, and the Claude bridge's `usage-contract.generated.ts`. The committed
-Codex notification schema under `src/schemas/codex` comes from Codex CLI 0.164.0
-`app-server generate-json-schema`; a short-tier parity witness checks the Rust mirror.
+Codex notification schemas under `src/schemas/codex` come from the pinned vendor
+source. The unified provider generator derives the consumed Rust declarations;
+freshness checks and actual-consumer mutation tests enforce that relationship.
 
 The [`usage/persisted.rs`](src/usage/persisted.rs) adapter owns legacy analytics
 usage column interpretation. It prefers canonical `studioUsage`, preserves
@@ -130,22 +144,42 @@ normalized model.
 [`provider_kind.rs`](src/provider_kind.rs) owns shared provider identity.
 The contract renderer generates the web identity module and schema references
 from it. The store's
-[dated identity migration](../runtime-store/src/provider_identity.rs) converts
+[dated identity migration](../runtime-store/src/migrations/m2026_10_26_provider_identity.rs) converts
 historical owned representations before strict current readers run.
 
-[`provider_errors.rs`](src/provider_errors.rs) owns the closed classification of
-20 known Codex error tags. The committed
+The [pinned vendor source](../../../tooling/apps/repository-checks/provider-contract-sources.ts)
+owns the Codex version and selected extraction paths. The
+[unified generator](../../../tooling/apps/repository-checks/generate-provider-contracts.ts)
+derives Rust declarations in [`codex_generated.rs`](src/codex_generated.rs) and
+the bridge's selected TypeScript leaves from committed vendor JSON. Lifecycle,
+usage, and error adapters import those generated definitions; they do not own
+handwritten copies. The committed
 [`CodexErrorInfo.json`](src/schemas/codex/CodexErrorInfo.json) is the vendor-owned
-error leaf from Codex CLI 0.164.0 experimental schema generation, including its
-structured payloads and open future-value branch. The
-[vendor-error generator](../../../tooling/apps/repository-checks/generate-provider-errors.ts)
-owns extraction and provenance checks; its refresh entrypoint is defined in the
-[root manifest](../../../../package.json). `studio-contracts` renders
+error leaf, including its structured payloads and open future-value branch.
+[`provider_errors.rs`](src/provider_errors.rs) consumes its generated known tags.
+`studio-contracts` renders
 [`provider-errors.generated.ts`](../../../providers/apps/claude-bridge/provider-errors.generated.ts).
 The [assistant error adapter](../../../providers/apps/claude-bridge/features.ts)
 uses the SDK's error type directly with an exhaustive mapping and checks runtime
 tags before indexing it. Unknown or ambiguous errors remain unclassified with
 their raw evidence intact; this is not full error-payload validation.
+
+The [root manifest](../../../../package.json) owns the vendor commands:
+
+- `pnpm run contracts:vendor:generate` regenerates consumers from committed sources.
+- `pnpm run contracts:vendor:check` checks generated output and provenance offline.
+- `pnpm run contracts:vendor:refresh` extracts the selected sources from the pinned CLI.
+- `pnpm run contracts:vendor:verify-source` compares the committed sources with
+  fresh extraction from that CLI and refuses an absent or mismatched executable.
+
+Cargo checks generated freshness before compiling the schema crate. Normal
+offline builds require Node and rustfmt, but do not need installed JavaScript
+packages, the provider CLI, or a model request. The Claude rate projection records
+committed source and artifact fingerprints; the full vendor check also verifies
+the installed SDK declaration digest. Provider upgrades
+must also run source verification; offline freshness cannot inspect an unrelated
+installed executable. Mutation tests alter consumed vendor fields and variants
+and require actual production consumers to fail compilation.
 
 [`provider_input/items.rs`](src/provider_input/items.rs) owns the six fresh
 Claude bridge item variants: user message, agent message, command execution,
@@ -154,21 +188,17 @@ their serialized envelope in
 [`runtime-contract.generated.ts`](../../../providers/apps/claude-bridge/runtime-contract.generated.ts).
 The [bridge](../../../providers/apps/claude-bridge/bridge.ts) uses that contract
 for new item emission, preserving true omission of absent native fields rather
-than inventing nulls or strings. SDK tool arguments, results, and compaction
-metadata stay opaque. A separate historical emitter handles only retained old
+than inventing nulls or strings. Tool payloads outside the explicitly validated
+contracts below, results, and compaction metadata stay opaque. A separate historical emitter handles only retained old
 records that cannot be losslessly converted into fresh required fields; it does
 not invent identities. This output contract is not an ingress validator.
 
 [`provider_lifecycle.rs`](src/provider_lifecycle.rs) defines shared terminal
 outcomes and read-only thread/turn observations. Selected vendor status leaves
-come from Codex CLI 0.164.0 experimental TypeScript and JSON Schema generation;
-the [lifecycle generator](../../../tooling/apps/repository-checks/generate-provider-lifecycle.ts)
-owns the extraction into
+come from the same pinned source and unified generator through
 [`lifecycle.schema.json`](src/schemas/codex/lifecycle.schema.json) and the bridge's
 [`codex-generated`](../../../providers/apps/claude-bridge/codex-generated) modules.
-Its entrypoint is `node workspaces/tooling/apps/repository-checks/generate-provider-lifecycle.ts`
-from the repository root. Rust mirrors have parity witnesses against those
-leaves. The contract renderer adds `TerminalTurn`, `TerminalTurnStatus`, and
+The contract renderer adds `TerminalTurn`, `TerminalTurnStatus`, and
 `ThreadIdentity` to the bridge's generated runtime contract. The
 [SDK result adapter](../../../providers/apps/claude-bridge/provider-lifecycle.ts)
 maps the SDK result lifecycle fields and validates those fields at ingress.
@@ -182,3 +212,25 @@ prove a terminal outcome or idle thread; retained receipts, raw history, and the
 distinction between Studio thread and native session identity remain intact.
 These projections do not validate a complete SDK result or rewrite stored thread
 and turn records.
+
+Claude types come directly from its pinned SDK. Runtime parsers must construct
+values checked against the SDK projection; a trusted TypeScript predicate alone
+does not prove that its checks track a changed SDK field. Intentionally open
+native history remains validated opaque evidence where the SDK publishes no
+closed shape.
+
+The bridge's [`question-input.ts`](../../../providers/apps/claude-bridge/question-input.ts)
+validates fresh question fields and tuple cardinalities against the SDK type,
+including the synthetic dialog caller. Its
+[`rate-limit-input.ts`](../../../providers/apps/claude-bridge/rate-limit-input.ts)
+owns the SDK-derived rate projection. The unified provider generator emits its
+JSON schema, consumed by [`provider_rate_limits.rs`](src/provider_rate_limits.rs)
+before resume or compaction decisions. Unsupported evidence retains its raw
+payload in a generated envelope and cannot establish a fresh, allowed limit.
+
+Two known declaration inconsistencies are isolated in
+[`sdk-contract-gaps.ts`](../../../providers/apps/claude-bridge/sdk-contract-gaps.ts)
+using exact vendor input/output types and narrowly described expected errors.
+The matching compiler witnesses require these directives to fail as unused when
+the vendor repairs its declarations. This exception does not authorize casts or
+parallel vendor types elsewhere.

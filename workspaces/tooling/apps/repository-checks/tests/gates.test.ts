@@ -297,6 +297,17 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
     assert.ok(
       steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
     );
+    const providerContracts = steps.find((s) => s.id === "provider-contracts");
+    assert.ok(
+      providerContracts,
+      "provider source mutations must run in both tiers",
+    );
+    assert.equal(providerContracts.lane, "rust");
+    assert.equal(providerContracts.requiresCargo, true);
+    assert.equal(providerContracts.requires, "workspace");
+    assert.deepEqual(providerContracts.commands, [
+      ["pnpm", ["--dir", process.cwd(), "run", "test:provider-contracts"]],
+    ]);
     const rust = steps.find((s) => s.id === "rust-tests");
     const [rustCommand] = rust?.commands ?? [];
     assert.ok(rustCommand);
