@@ -1016,6 +1016,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<studio_client_domain::protocol::Request>();
         generator.subschema_for::<studio_client_domain::protocol::Response>();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
+        generator.subschema_for::<studio_client_domain::drafts::DraftView>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},

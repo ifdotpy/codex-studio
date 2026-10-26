@@ -30,6 +30,12 @@ export interface components {
        */
       updated: number;
     };
+    DraftView: {
+      conflicts: components["schemas"]["DraftVersion"][];
+      drafts: {
+        [key: string]: string;
+      };
+    };
     MarkdownBlock:
       | components["schemas"]["MarkdownTree"]
       | {
@@ -106,6 +112,7 @@ export type operations = Record<string, never>;
 
 export type CommandError = components["schemas"]["CommandError"];
 export type DraftVersion = components["schemas"]["DraftVersion"];
+export type DraftView = components["schemas"]["DraftView"];
 export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
 export type MarkdownKind = components["schemas"]["MarkdownKind"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
