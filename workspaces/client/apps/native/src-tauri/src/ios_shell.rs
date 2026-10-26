@@ -4,6 +4,7 @@
 //! `ios_viewport.js`; see README.md "iOS shell".
 
 use crate::ios_insets::{Geometry, Insets, reported};
+use crate::ios_server::{BUILD_DEFAULT, choose, saved_value, valid_server};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -23,6 +24,8 @@ use objc2_ui_kit::{
 use objc2_web_kit::{WKScriptMessage, WKScriptMessageHandler, WKUserContentController};
 use std::cell::Cell;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Manager, WebviewWindow};
 
 /// Script message handler name used by `ios_viewport.js`.
@@ -59,27 +62,32 @@ pub fn start_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The page origin to load. A launch environment value wins over the saved
-/// value, so simulator tests never change the user's choice.
+/// Time, in seconds, for the first server page to finish loading before the
+/// shell shows the start page with the saved address and a retry.
+const FIRST_LOAD_TIMEOUT: u64 = 12;
+/// Set when a server page finished loading in this launch.
+static SERVER_LOADED: AtomicBool = AtomicBool::new(false);
+/// The main window, for the start page gesture.
+static MAIN_WINDOW: OnceLock<WebviewWindow> = OnceLock::new();
+
+/// The page to load; see ios_server::choose for the order.
 pub fn server_url(app: &tauri::App) -> Option<tauri::Url> {
-    if let Some(value) = std::env::var("STUDIO_SERVER_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        return valid_server(&value);
-    }
-    let path = app.path().app_config_dir().ok()?.join(SERVER_FILE);
-    valid_server(std::fs::read_to_string(path).ok()?.trim())
+    let launch = std::env::var("STUDIO_SERVER_URL").ok();
+    let saved = saved_server(app.handle());
+    choose(launch.as_deref(), saved.as_deref(), BUILD_DEFAULT)
 }
 
-/// HTTPS servers, or plain HTTP only on this device's loopback (simulator tests).
-fn valid_server(value: &str) -> Option<tauri::Url> {
-    let url: tauri::Url = value.parse().ok()?;
-    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
-    let scheme_ok = url.scheme() == "https" || (url.scheme() == "http" && loopback);
-    // Path and query stay, so a simulator check can pass `?layoutDebug=1`.
-    (scheme_ok && url.host_str().is_some() && url.username().is_empty() && url.password().is_none())
-        .then_some(url)
+fn saved_server(app: &tauri::AppHandle) -> Option<String> {
+    std::fs::read_to_string(app.path().app_config_dir().ok()?.join(SERVER_FILE)).ok()
+}
+
+fn start_url(failed: bool) -> tauri::Url {
+    format!(
+        "{START_SCHEME}://localhost/{}",
+        if failed { "?failed=1" } else { "" }
+    )
+    .parse()
+    .expect("start page URL")
 }
 
 /// Serve the first-launch page and save the chosen server. The page holds a
@@ -98,12 +106,24 @@ pub fn start_page(
             .unwrap()
     };
     if request.uri().path() != "/connect" {
-        let saved = server_url_text(ctx.app_handle()).unwrap_or_default();
+        let saved = saved_server(ctx.app_handle())
+            .or_else(|| BUILD_DEFAULT.map(str::to_owned))
+            .unwrap_or_default();
+        let failed = request
+            .uri()
+            .query()
+            .is_some_and(|q| q.contains("failed=1"));
+        let message = if failed {
+            "Studio did not open from this address. Check that Tailscale is on, then tap Connect."
+        } else {
+            ""
+        };
         return html(
             200,
             include_str!("ios_start.html")
                 .replace("{{token}}", token)
-                .replace("{{saved}}", &escape(&saved)),
+                .replace("{{message}}", message)
+                .replace("{{saved}}", &escape(saved.trim())),
         );
     }
     let query = tauri::Url::parse(&format!(
@@ -146,10 +166,6 @@ pub fn start_page(
         200,
         format!("<!doctype html><script>location.replace({target})</script>"),
     )
-}
-
-fn server_url_text(app: &tauri::AppHandle) -> Option<String> {
-    std::fs::read_to_string(app.path().app_config_dir().ok()?.join(SERVER_FILE)).ok()
 }
 
 fn escape(value: &str) -> String {
@@ -372,6 +388,7 @@ fn keyboard_from(
 /// keyboard, and connect the viewport receiver.
 pub fn configure(window: &WebviewWindow) {
     let webkit_keyboard = std::env::var("STUDIO_SHELL_WEBKIT_KEYBOARD").as_deref() == Ok("1");
+    let main_window = window.clone();
     let _ = window.with_webview(move |platform| unsafe {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
@@ -438,6 +455,7 @@ pub fn configure(window: &WebviewWindow) {
             ));
         }
         push(&webview, KEYBOARD.get());
+        install_server_switch(mtm, &webview, &main_window);
         if diagnostics() {
             let target = Weak::from(&*webview);
             let block = block2::RcBlock::new(move |_timer: NonNull<objc2_foundation::NSTimer>| {
@@ -453,7 +471,19 @@ pub fn configure(window: &WebviewWindow) {
 }
 
 /// Resend the geometry after each page load; the receiver is new per document.
-pub fn page_loaded(window: &tauri::Webview) {
+pub fn page_loaded(window: &tauri::Webview, url: &tauri::Url) {
+    // Remember the server after each successful load, so the home screen
+    // icon opens it next time.
+    if let Some(value) = saved_value(url) {
+        SERVER_LOADED.store(true, Ordering::SeqCst);
+        let app = window.app_handle();
+        if saved_server(app).as_deref().map(str::trim) != Some(value.as_str()) {
+            if let Ok(dir) = app.path().app_config_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(dir.join(SERVER_FILE), &value);
+            }
+        }
+    }
     let _ = window.with_webview(|platform| unsafe {
         if let Some(webview) = Retained::retain(platform.inner() as *mut UIView) {
             push(&webview, KEYBOARD.get());
@@ -475,4 +505,52 @@ pub fn open_external(url: &tauri::Url) {
         let options = NSDictionary::<NSString, AnyObject>::new();
         let _: () = msg_send![&*app, openURL: &*target, options: &*options, completionHandler: Option::<&block2::DynBlock<dyn Fn(objc2::runtime::Bool)>>::None];
     }
+}
+
+/// Show the start page with the saved address when the server page does not
+/// finish loading in time (for example, Tailscale is off).
+pub fn watch_first_load(window: &WebviewWindow) {
+    let window = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(FIRST_LOAD_TIMEOUT));
+        if !SERVER_LOADED.load(Ordering::SeqCst) {
+            let _ = window.navigate(start_url(true));
+        }
+    });
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "StudioServerSwitch"]
+    struct ServerSwitch;
+
+    impl ServerSwitch {
+        /// A two-finger long press opens the start page to change the server.
+        #[unsafe(method(open:))]
+        fn open(&self, recognizer: &AnyObject) {
+            let state: isize = unsafe { msg_send![recognizer, state] };
+            // UIGestureRecognizerStateBegan
+            if state == 1 {
+                if let Some(window) = MAIN_WINDOW.get() {
+                    let _ = window.navigate(start_url(false));
+                }
+            }
+        }
+    }
+);
+
+fn install_server_switch(mtm: MainThreadMarker, webview: &UIView, window: &WebviewWindow) {
+    let _ = MAIN_WINDOW.set(window.clone());
+    let target: Retained<ServerSwitch> = unsafe { msg_send![ServerSwitch::alloc(mtm), init] };
+    unsafe {
+        let class = objc2::runtime::AnyClass::get(c"UILongPressGestureRecognizer").expect("UIKit");
+        let recognizer: Retained<AnyObject> = msg_send![msg_send![class, alloc], initWithTarget: &*target, action: objc2::sel!(open:)];
+        let _: () = msg_send![&*recognizer, setNumberOfTouchesRequired: 2usize];
+        let _: () = msg_send![&*recognizer, setMinimumPressDuration: 1.5f64];
+        let _: () = msg_send![&*recognizer, setCancelsTouchesInView: false];
+        let _: () = msg_send![webview, addGestureRecognizer: &*recognizer];
+    }
+    // The recognizer keeps a weak target; keep it for the app lifetime.
+    std::mem::forget(target);
 }

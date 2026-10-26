@@ -105,11 +105,21 @@ keyboard closes. Code: `src-tauri/src/ios_shell.rs`, `ios_viewport.js`,
 - The web view loads the Studio web client from the user's server, not the
   bundled renderer. The page receives no Tauri commands. The server keeps its
   Tailscale authentication.
-- Server address: the `STUDIO_SERVER_URL` launch environment value, else the
-  address saved by the first-launch page (`studio-shell://localhost/`, saved
-  as `server-url.txt` in the app configuration folder). The shell accepts
-  `https://` addresses, and `http://` only on `127.0.0.1` or `localhost`.
-  Reinstall the app to choose another server.
+- Server address, first valid of (`src-tauri/src/ios_server.rs`):
+  1. the `STUDIO_SERVER_URL` launch environment value (simulator and device
+     checks);
+  2. the address saved after the last successful server page load
+     (`server-url.txt` in the app configuration folder);
+  3. a build default compiled in from `STUDIO_DEFAULT_SERVER_URL` or the
+     untracked `src-tauri/ios-default-server.txt` (Xcode runs the Rust build
+     with its own environment, so the file is the reliable way).
+     With none, the first-launch page (`studio-shell://localhost/`) asks for it.
+     The shell accepts `https://` addresses, and `http://` only on `127.0.0.1`
+     or `localhost`.
+- If no server page finishes loading within 12 s (for example, Tailscale is
+  off), the start page opens with the saved address and a Connect button to
+  retry. A two-finger long press (1.5 s) opens it at any time to change the
+  server.
 - Links that ask for a new window open in the system browser.
 
 ### Viewport API
