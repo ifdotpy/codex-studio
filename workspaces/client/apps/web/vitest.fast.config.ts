@@ -53,7 +53,7 @@ export default {
       "src/scaleVerifierHelpers.test.ts",
       "src/uiTeamScaleHelpers.test.ts",
       "src/uiTeamScaleAudit.test.ts",
-      "src/verifyRustChatLifecycle.test.mjs",
+      "src/verifyRustChatLifecycle.test.ts",
       "src/components/agents/AgentProgress.test.ts",
       "src/components/agents/ExecutionSettings.receipt.test.ts",
       "src/components/models/modelOption.test.ts",
