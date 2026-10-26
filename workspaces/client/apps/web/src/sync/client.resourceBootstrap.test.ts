@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
 import type { Snapshot } from "../types";
@@ -36,10 +35,9 @@ vi.mock("../servers/eventSource", () => ({
     onopen = null;
     onerror = null;
     closed = false;
-    readonly url: string;
+    declare readonly url: string;
     constructor(url: string) {
       this.url = url;
-
       mocks.sources.push(this);
     }
     addEventListener(name: string, accept: (event: Event) => void) {
@@ -211,7 +209,6 @@ async function setup() {
   };
   const dispatch = vi.fn((event: ResourceChangeEvent) => {
     const entry = event.resourceVersions[0];
-    assert.ok(entry != null);
     notify({
       epoch: event.epoch,
       revision: entry.revision,
@@ -341,8 +338,6 @@ it("keeps a partial scoped cache independent from canonical state readiness", as
   const f = await setup();
   const frame = f.frame(3);
   frame.resources = [{ kind: "agentDetail", agentId: "lead" }];
-  assert.ok(frame.resourceVersions[0] != null);
-  assert.ok(frame.resources[0]);
   frame.resourceVersions[0].resource = frame.resources[0];
   frame.resourceVersions[0].entityChanges!.documents = [
     {
@@ -526,7 +521,6 @@ it.each([false, true])(
     const assembler = new EntityTransferAssembler();
     let interval: Awaited<ReturnType<typeof assembler.receive>>;
     try {
-      assert.ok(captured.resourceVersions[0] != null);
       if (staged)
         interval = await assembler.receive({
           protocol: captured.protocol,
@@ -606,7 +600,6 @@ it.each([false, true])(
     stops.push(stop, subscriptions.dispose);
     await vi.waitFor(() => expect(mocks.sources).toHaveLength(1));
     const source = mocks.sources[0];
-    assert.ok(source != null);
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     source.emit("session", { sessionId: "quiet-work-session" });
     const frame = (seq: number, snapshot: boolean): ResourceChangeEvent => ({
@@ -663,7 +656,6 @@ it.each([false, true])(
       durableBase ? { workspaceId: f.workspaceId, seq: 4 } : undefined,
     );
     const replacement = mocks.sources[1];
-    assert.ok(replacement != null);
     const query = new URL(replacement.url).searchParams;
     if (durableBase)
       expect(JSON.parse(query.get("since")!)).toContainEqual({
@@ -830,7 +822,6 @@ it.each([
       source.emit("api-schema", { hash: API_SCHEMA_HASH });
       if (staged) {
         const frame = f.frame(5);
-        assert.ok(frame.resourceVersions[0] != null);
         const encoded = JSON.stringify(frame.resourceVersions[0].entityChanges);
         const split = Math.floor(encoded.length / 2);
         const metadata = {
@@ -882,7 +873,6 @@ it.each([
       stopProjection();
       transport.dispose();
       finish();
-      assert.ok(persistStaged.mock.results[0] != null);
       await persistStaged.mock.results[0].value;
       expect(
         await f.client.readSubscriptionCursor({ kind: "state" }),
@@ -939,7 +929,6 @@ it.each(["burst", "inline removal", "staged removal"])(
     stops.push(stop, ...stopOthers, subscriptions.dispose);
     await vi.waitFor(() => expect(mocks.sources).toHaveLength(1));
     const source = mocks.sources[0];
-    assert.ok(source != null);
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     let finish!: () => void;
     source.emit("session", { sessionId: "quiet-work-discard-session" });
@@ -1007,8 +996,6 @@ it.each(["burst", "inline removal", "staged removal"])(
       ],
     };
     try {
-      assert.ok(source != null);
-      assert.ok(frame.resourceVersions[0] != null);
       if (staged)
         source.emit("entity-transfer", {
           protocol: frame.protocol,

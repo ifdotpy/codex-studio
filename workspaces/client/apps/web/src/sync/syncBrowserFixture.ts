@@ -1,11 +1,19 @@
+import type { Snapshot } from "../types";
+import type { ResourceConnectionState } from "./resourceEvents";
 import type { ViteDevServer } from "vite";
 import type { components } from "../generated/api";
 
+declare global {
+  interface Window {
+    snapshot: Snapshot | null;
+    connection: ResourceConnectionState | "closed";
+    checkpoint: () => Promise<number | undefined>;
+  }
+}
+
+// Each fixture listens on its configured TCP port before reading this address.
 export function fixturePort(server: ViteDevServer): number {
-  const address = server.httpServer?.address();
-  if (!address || typeof address === "string")
-    throw new Error("Fixture server has no TCP address");
-  return address.port;
+  return (server.httpServer!.address() as import("node:net").AddressInfo).port;
 }
 
 export function fixtureSubscriptions(
@@ -19,7 +27,7 @@ export function fixtureResources(
   body: string | null,
 ): components["schemas"]["ResourceRef"][] {
   // Resource query parameters come from the same renderer's subscription transport.
-  return JSON.parse(body || "[]") as components["schemas"]["ResourceRef"][];
+  return JSON.parse(body!) as components["schemas"]["ResourceRef"][];
 }
 
 export type FixturePull = { scope: string | null; after: number };

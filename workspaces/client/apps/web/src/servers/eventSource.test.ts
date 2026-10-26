@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 /// <reference lib="es2024.promise" />
 import { expect, it, vi, afterEach } from "vitest";
 import { EventStreamParser } from "./eventSource";
@@ -67,7 +66,6 @@ it.each(["", "&tokenRates=false", "&tokenRates=true"])(
     await delivered.promise;
     expect(frames).toEqual(["Привет 🦀"]);
     source.close();
-    assert.ok(fetchRequest.mock.calls[0] != null);
     expect(fetchRequest.mock.calls[0][0].signal.aborted).toBe(true);
     expect(() =>
       stream.enqueue(

@@ -68,8 +68,7 @@ async function createHarness(
 async function expectMessageInViewport(page: Page, id: string) {
   await page.waitForFunction(
     (messageId) => {
-      const root = document.querySelector("#messages");
-      if (!root) throw new Error("Missing messages root");
+      const root = document.querySelector("#messages")!;
       const message = Array.from(
         root.querySelectorAll<HTMLElement>("[data-message]"),
       ).find((candidate) => candidate.dataset.message === messageId);
@@ -92,31 +91,27 @@ test("forward paging keeps the reading row mounted and at its viewport offset", 
   const { page, close } = await createHarness(browser, 0, 160, false);
   try {
     const anchor = page.locator('[data-message="message-19"]');
-    await page.evaluate(() => window.historyAnchorFixture.scrollToMessage(20));
+    await page.evaluate(() => window.scrollToMessage(20));
     await expect(anchor).toBeAttached();
     await waitForFrames(page);
-    await page.evaluate(() =>
-      window.historyAnchorFixture.commitViewportAnchor(),
-    );
+    await page.evaluate(() => window.commitViewportAnchor());
     await waitForFrames(page, 2);
     const originalOffset = await anchor.evaluate(
       (node) =>
         node.getBoundingClientRect().top -
-        (document.querySelector("#messages")?.getBoundingClientRect().top ??
-          Number.NaN),
+        document.querySelector("#messages")!.getBoundingClientRect().top,
     );
     expect(originalOffset).toBeCloseTo(-56, 0);
-    await page.evaluate(() => window.historyAnchorFixture.appendForwardPage());
+    await page.evaluate(() => window.appendForwardPage());
     await page.evaluate(async () => {
       for (let frame = 0; frame < 25; frame++)
         await new Promise<void>((resolve) =>
           requestAnimationFrame(() => resolve()),
         );
-      window.historyAnchorFixture.releaseScroll();
+      window.releaseScroll();
     });
     const restored = await page.evaluate(() => {
-      const root = document.querySelector("#messages");
-      if (!root) throw new Error("Missing messages root");
+      const root = document.querySelector("#messages")!;
       const message = document.querySelector('[data-message="message-19"]');
       return message
         ? {
@@ -145,17 +140,15 @@ test("upward scrolling through prepends reaches the oldest row", async ({
 }) => {
   const { page, close } = await createHarness(browser, 240, 120);
   try {
-    await page.evaluate(() => window.historyAnchorFixture.scrollToMessage(10));
+    await page.evaluate(() => window.scrollToMessage(10));
     await waitForFrames(page);
-    await page.evaluate(() =>
-      window.historyAnchorFixture.commitViewportAnchor(),
-    );
+    await page.evaluate(() => window.commitViewportAnchor());
     await waitForFrames(page, 2);
-    await page.evaluate(() => window.historyAnchorFixture.scrollToTopAsUser());
-    await page.evaluate(() => window.historyAnchorFixture.prependPage(120));
+    await page.evaluate(() => window.scrollToTopAsUser());
+    await page.evaluate(() => window.prependPage(120));
     await waitForFrames(page);
-    await page.evaluate(() => window.historyAnchorFixture.scrollToTopAsUser());
-    await page.evaluate(() => window.historyAnchorFixture.prependPage(0));
+    await page.evaluate(() => window.scrollToTopAsUser());
+    await page.evaluate(() => window.prependPage(0));
     await expectMessageInViewport(page, "message-0");
   } finally {
     await close();
@@ -167,13 +160,11 @@ test("an explicit jump to the oldest row is not undone by a prepend", async ({
 }) => {
   const { page, close } = await createHarness(browser, 120, 120);
   try {
-    await page.evaluate(() => window.historyAnchorFixture.scrollToMessage(20));
+    await page.evaluate(() => window.scrollToMessage(20));
     await waitForFrames(page);
-    await page.evaluate(() =>
-      window.historyAnchorFixture.commitViewportAnchor(),
-    );
+    await page.evaluate(() => window.commitViewportAnchor());
     await waitForFrames(page, 2);
-    await page.evaluate(() => window.historyAnchorFixture.jumpToOldest());
+    await page.evaluate(() => window.jumpToOldest());
     await waitForFrames(page, 25);
     await expectMessageInViewport(page, "message-0");
   } finally {

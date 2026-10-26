@@ -1,5 +1,3 @@
-import { requiredFixtureValue } from "../servers/browser-fixture.ts";
-import assert from "node:assert/strict";
 import { remoteNetwork } from "../servers/browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
@@ -19,8 +17,8 @@ for (const viewport of [
     await page.emulateMedia({ colorScheme });
     const local = await fixture("Local");
     const remote = await fixture("Remote", true);
-    requiredFixtureValue(local.snapshot.threads[0]).pinned = true;
-    requiredFixtureValue(remote.snapshot.threads[0]).pinned = true;
+    local.snapshot.threads[0]!.pinned = true;
+    remote.snapshot.threads[0]!.pinned = true;
     local.discoverPeer(remote);
     try {
       await remoteNetwork(context, remote);
@@ -92,9 +90,10 @@ for (const viewport of [
       await expect(remoteFrame.locator(".chat-pin")).toBeVisible();
       const ownedFrame = page.locator('iframe[title="Studio on Remote"]');
       const before = await ownedFrame.getAttribute("src");
-      const href = await remoteBrand.getAttribute("href");
-      assert.ok(href && before);
-      const brandURL = new URL(href, before);
+      const brandURL = new URL(
+        (await remoteBrand.getAttribute("href"))!,
+        before!,
+      );
       expect(brandURL.href).toBe(before);
       await remoteBrand.click();
       await expect(remoteFrame.locator("html")).toHaveAttribute(
