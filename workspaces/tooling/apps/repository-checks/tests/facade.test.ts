@@ -82,10 +82,9 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   );
   const title = spec.match(/test\(\s*"([^"]+)"/)?.[1];
   assert.ok(title, "the real IndexedDB witness must remain registered");
-  const manifest: PackageManifest = JSON.parse(
+  const scripts: NonNullable<PackageManifest["scripts"]> = JSON.parse(
     readFileSync(`${web}/package.json`, "utf8"),
-  );
-  const scripts = manifest.scripts;
+  ).scripts;
   const smoke = scripts!["test:browser:smoke:prepared"];
   const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
   assert.ok(grep, "package.json owns the smoke selector");
@@ -563,7 +562,7 @@ test("hosted non-Rust checks consume prepared inputs and cannot compile Cargo", 
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   const remaining = workflow
     .split("  fast-rest:\n")[1]
-    ?.split("  fast-rust:\n")[0];
+    .split("  fast-rust:\n")[0];
   assert.match(remaining, /needs: rust-build-tests/);
   assert.match(remaining, /name: prepared-check-inputs/);
   assert.doesNotMatch(remaining, /client-build-setup|cargo build|clippy/);
@@ -1138,7 +1137,7 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
     const calls: string[][] = readFileSync(log, "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line));
+      .map(JSON.parse as (source: string) => string[]);
     assert.deepEqual(calls[0], [
       "build",
       "-p",
@@ -1339,10 +1338,9 @@ test("repository gates use manifest packages without the retired backend", () =>
       /apps\/server|studio-operations-python|codex_python|test-server\.py/,
     );
   }
-  const manifest: PackageManifest = JSON.parse(
+  const scripts: NonNullable<PackageManifest["scripts"]> = JSON.parse(
     readFileSync("package.json", "utf8"),
-  );
-  const scripts = manifest.scripts;
+  ).scripts;
   assert.equal(scripts!["typecheck:runtime"], undefined);
   assert.equal(scripts!["test:server:python"], undefined);
   assert.match(scripts!["test:server:bridge"]!, /studio-claude-bridge/);
