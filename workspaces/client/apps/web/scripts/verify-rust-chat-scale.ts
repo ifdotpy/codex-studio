@@ -2992,8 +2992,8 @@ export function runEventEvidenceQuery(
         )
         .get(item.id, item.agentId) as
         | (Required<
-            Pick<EvidenceEvent, "id" | "agentId" | "kind" | "status" | "error">
-          > & { record: string | null })
+            Pick<EvidenceEvent, "id" | "agentId" | "kind" | "status">
+          > & { error: string | null; record: string | null })
         | undefined;
       if (!row)
         return {
