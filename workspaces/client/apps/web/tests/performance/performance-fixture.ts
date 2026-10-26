@@ -1,6 +1,5 @@
 import type { Agent } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
-import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
 import type { ViteDevServer } from "vite";
 export function fixtureOrigin(server: ViteDevServer) {
   const address = server.httpServer?.address();
@@ -24,13 +23,6 @@ export type PerformanceTranscriptItem = Pick<
   | "toolStatus"
   | "title"
 >;
-
-export function fixturePostBody<Path extends ApiPostPath>(
-  value: unknown,
-): PostBody<Path> {
-  // Fixture callers are the typed renderer under test.
-  return value as PostBody<Path>;
-}
 
 export function transcriptFixtureAgent(
   agent: Agent,

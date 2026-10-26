@@ -1,5 +1,5 @@
 import type { PostResult } from "../../src/apiTypes.ts";
-import { fixturePostBody } from "./performance-fixture.ts";
+import { fixturePostBody } from "../mobile/browser-fixture.ts";
 import type { Request } from "@playwright/test";
 import type { Agent } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
@@ -258,8 +258,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
       route.fulfill({
         headers: apiSchemaHeaders(),
         json: {
-          id: fixturePostBody<"/api/messages">(route.request().postDataJSON())
-            .id,
+          id: fixturePostBody<"/api/messages">(route.request()).id,
           status: "sent",
         },
       }),
@@ -270,9 +269,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
         request.method() === "POST" && request.url().endsWith("/api/messages"),
     );
     await page.locator("#send").click();
-    const submitted = fixturePostBody<"/api/messages">(
-      (await sent).postDataJSON(),
-    );
+    const submitted = fixturePostBody<"/api/messages">(await sent);
     expect(submitted.room).toBe(firstWorker.id);
     expect(submitted.text).toBe("Instruction for the selected worker.");
     await expect(page.locator("#message")).toHaveValue("");
