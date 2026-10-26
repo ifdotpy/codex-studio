@@ -31,10 +31,11 @@ it("resolves room leads by member without scanning the whole team", () => {
     { members: ["a511", "a510", "a449", "a448"], leads: ["a448"] },
     { members: ["missing", "missing", "unknown", "unknown"], leads: [] },
   ];
-  const rooms = Array.from(
-    { length: ROOM_COUNT },
-    (_, index) => examples[index % examples.length],
-  );
+  const rooms = Array.from({ length: ROOM_COUNT }, (_, index) => {
+    const example = examples[index % examples.length];
+    if (!example) throw new Error("A room example is required.");
+    return example;
+  });
   reads = 0;
   for (const { members, leads } of rooms) {
     const room = { kind: "private", members } as Room;

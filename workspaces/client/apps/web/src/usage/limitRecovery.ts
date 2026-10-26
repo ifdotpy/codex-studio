@@ -7,7 +7,7 @@ export type LimitRecovery = {
   title: string;
   message: string;
   resetAt?: number;
-  eligibility?: UsageEligibility;
+  eligibility?: UsageEligibility | undefined;
   action?: { label: string; href: string };
   ownerRequest?: string;
 };

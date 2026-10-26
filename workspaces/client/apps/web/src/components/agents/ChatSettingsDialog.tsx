@@ -19,8 +19,8 @@ type Props = {
   settingsOpen: boolean;
   accountModalOpen: boolean;
   setSettingsOpen: (value: boolean) => void;
-  agent?: Agent | null;
-  lead?: Agent | null;
+  agent?: Agent | null | undefined;
+  lead?: Agent | null | undefined;
   accounts: ReturnType<typeof useAccounts>;
   notify: (message: string) => unknown;
   agentModels: ReturnType<typeof useWorkerModels>;
@@ -30,7 +30,7 @@ type Props = {
   creating: boolean;
   newChat: (path?: string) => unknown;
   project: () => void;
-  selectedAccount?: Account;
+  selectedAccount?: Account | undefined;
   setClaudeLoginKey: (key: string) => void;
 };
 

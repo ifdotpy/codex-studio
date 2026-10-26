@@ -19,8 +19,17 @@ type Queue =
   paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
 type QueueMutation =
   paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
-type Target = { chat: string; message: Message; queue?: Queue; kind?: string };
-type Scope = { stateDir: string; workspaceId?: string; kind?: string };
+type Target = {
+  chat: string;
+  message: Message;
+  queue?: Queue | undefined;
+  kind?: string;
+};
+type Scope = {
+  stateDir: string;
+  workspaceId?: string | undefined;
+  kind?: string;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -159,6 +168,7 @@ export function createSendingMessageRemoval(
       Array.from({ length: Math.min(4, agents.length) }, async () => {
         while (next < agents.length) {
           const agent = agents[next++];
+          if (!agent) throw new Error("Missing sending-message agent");
           const queue = await get("/api/queue", {
             query: { agent: agent.id },
             workspaceId: scope.workspaceId,
