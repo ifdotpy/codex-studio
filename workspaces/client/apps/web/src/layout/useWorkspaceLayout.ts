@@ -5,6 +5,7 @@ import {
   deriveWorkspaceLayout,
   type LayoutRect,
   type PanePathInput,
+  type SafeInsets,
 } from "./deriveWorkspaceLayout";
 
 const emptyRect: LayoutRect = { x: 0, y: 0, width: 0, height: 0 };
@@ -24,6 +25,7 @@ export function useWorkspaceLayout(options: {
     duo: boolean;
     primaryCoarse: boolean;
     available: LayoutRect;
+    safeInsets: SafeInsets;
     hinge: NonNullable<PanePathInput["hinge"]>;
   }>({
     host: emptyRect,
@@ -33,6 +35,7 @@ export function useWorkspaceLayout(options: {
     duo: false,
     primaryCoarse: false,
     available: emptyRect,
+    safeInsets: { top: 0, right: 0, bottom: 0, left: 0 },
     hinge: { status: "unknown" },
   });
   const rowRef = useCallback(
@@ -107,6 +110,7 @@ export function useWorkspaceLayout(options: {
             (app?.clientHeight || view.innerHeight) - top - bottom,
           ),
         },
+        safeInsets: { top, right, bottom, left },
         hinge,
       };
       setGeometry((old) =>

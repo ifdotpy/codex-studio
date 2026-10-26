@@ -50,7 +50,8 @@
 
 /* Paint the pane under the system strip; root padding still bounds its content. */
 html:has(.workspace[data-edge-rail="true"]) body #root,
-html:has(.workspace[data-edge-rail="true"]) .viewport-bottom-band {
+html:has(.workspace[data-edge-rail="true"])
+  .viewport-bottom-band:not([data-pane-path]) {
   background-color: var(--surface);
 }
 

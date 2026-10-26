@@ -24,3 +24,18 @@ merges. It verifies the consumer contract, not native shell publication.
 Touch drawers paint through the bottom safe inset. Their scroll content
 reserves that inset. While a touch modal is open, the passive usage band
 is hidden so the conversation cannot show below the modal.
+
+## Pane background bounds
+
+`useWorkspaceLayout` measures the app safe insets in CSS pixels.
+`deriveWorkspaceLayout` uses the bottom inset to extend Sidebar, Team,
+Workspace and Terminals backgrounds through the Home region.
+Conversation bounds keep the safe content frame. Navigation content reserves
+the same bottom inset as inner padding. The navigation layer covers the
+passive conversation usage band; the edge rail stays above navigation.
+
+The conversation uses left-position motion so its native title stays fixed
+to the viewport. Other panes keep their transform slides. The title text
+starts inside the conversation column, clear of the sidebar and top rail.
+The passive bottom-band helper has no background during the pane path;
+the extended panes supply that paint.

@@ -194,6 +194,12 @@ function derivePanePath(
     visible.splice(0, visible.length, last);
     panes[last] = { ...frame };
   }
+  // Navigation paints through Home; conversation content keeps the safe frame.
+  const bottomInset = finiteNonnegative(input.safeInsets?.bottom ?? 0);
+  for (const name of ["sidebar", "panel"] as const) {
+    const pane = panes[name];
+    if (pane) pane.height += bottomInset;
+  }
   return {
     mode: pair ? "pair" : "single",
     visible,

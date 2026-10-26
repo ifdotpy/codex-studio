@@ -557,3 +557,99 @@ test("Portrait PWA keeps its pane pair while the keyboard reduces the visible he
     await fixture.close();
   }
 });
+
+for (const size of [
+  { name: "open", width: 951, height: 669, hinge: "open" },
+  { name: "portrait", width: 669, height: 951, hinge: "open" },
+  { name: "closed", width: 653, height: 951, hinge: "closed" },
+]) {
+  test(`Duo ${size.name} pane backgrounds reach the physical bottom`, async ({
+    page,
+    context,
+  }) => {
+    const { fixture, cdp } = await openPaneFixture(page, context);
+    try {
+      await page.evaluate((hinge) => {
+        document.documentElement.dataset.nativeHinge = hinge;
+        window.dispatchEvent(new Event("studio-native-viewport"));
+      }, size.hinge);
+      if (size.height > size.width) {
+        await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+          insets: { top: 0, right: 0, bottom: 34, left: 0 },
+        });
+      }
+      await page.setViewportSize({ width: size.width, height: size.height });
+      const sidebar = page.locator("#sidebar");
+      if (!(await sidebar.isVisible()))
+        await page.locator("#sidebar-toggle:visible").first().click();
+      await expect(sidebar).toBeVisible();
+      const background = async (selector: string, contentSelector: string) => {
+        const node = page.locator(selector);
+        const result = await node.evaluate(async (element) => {
+          element.getAnimations().forEach((animation) => animation.finish());
+          await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => resolve()),
+          );
+          const rect = element.getBoundingClientRect();
+          const hit = document.elementFromPoint(
+            rect.x + rect.width / 2,
+            window.innerHeight - 2,
+          );
+          return {
+            bottom: rect.bottom,
+            height: window.innerHeight,
+            ownsBottom: !!hit && element.contains(hit),
+          };
+        });
+        expect.soft(result.bottom).toBeCloseTo(result.height, 1);
+        expect.soft(result.ownsBottom).toBe(true);
+        await expect(page.locator(contentSelector)).toHaveCSS(
+          "padding-bottom",
+          "34px",
+        );
+      };
+      await expect(page.locator(".viewport-bottom-band")).toHaveCSS(
+        "background-image",
+        "none",
+      );
+      await expect(page.locator(".viewport-bottom-band")).toHaveCSS(
+        "background-color",
+        "rgba(0, 0, 0, 0)",
+      );
+      await background("#sidebar", "#sidebar");
+      await page.screenshot({
+        path: test.info().outputPath(`${size.name}-sidebar-bottom.png`),
+      });
+      if (size.hinge === "closed") {
+        await sidebar
+          .getByRole("button")
+          .filter({ hasText: "Local Saved pin" })
+          .filter({ has: page.locator("strong") })
+          .first()
+          .click();
+        await expect(sidebar).toBeHidden();
+      }
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+      await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+      const panel = page.locator(
+        '.workspace-panel-inline.duo-pane-panel[aria-label="Team panel"]',
+      );
+      await expect(panel).toBeVisible();
+      await panel.evaluate((node) =>
+        node.getAnimations().forEach((animation) => animation.finish()),
+      );
+      await background(
+        '.workspace-panel-inline.duo-pane-panel[aria-label="Team panel"]',
+        ".duo-pane-body",
+      );
+      await page.screenshot({
+        path: test.info().outputPath(`${size.name}-team-bottom.png`),
+      });
+    } finally {
+      await cdp.detach().catch(() => {});
+      await fixture.close();
+    }
+  });
+}

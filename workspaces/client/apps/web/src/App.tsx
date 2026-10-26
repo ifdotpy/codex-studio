@@ -2896,7 +2896,11 @@ export default function App({ active = true }: { active?: boolean }) {
           className="workspace"
           hidden={!!panePath && !panePath.panes.conversation}
           style={
-            panePath ? panePathStyle(panePath.panes.conversation) : undefined
+            panePath
+              ? panePathStyle(panePath.panes.conversation, {
+                  viewportFixedChildren: true,
+                })
+              : undefined
           }
           data-edge-rail={railGeometry ? "true" : undefined}
           data-show-message-avatars={studioPreferences.showMessageAvatars}

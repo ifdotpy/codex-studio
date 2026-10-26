@@ -102,11 +102,39 @@
 }
 
 @starting-style {
-  .workspace-frame[data-pane-path] > .workspace,
   .duo-pane-panel {
     translate: 100% 0;
   }
   #sidebar[data-presentation="path"] {
     translate: -100% 0;
+  }
+}
+
+/* Navigation covers the passive conversation band; the rail stays above it. */
+#sidebar[data-presentation="path"],
+.duo-pane-panel,
+.terminal-pane-path {
+  z-index: var(--layout-layers-navigation);
+}
+#sidebar[data-presentation="path"] {
+  padding-bottom: var(--viewport-safe-bottom);
+}
+.duo-pane-body,
+.terminal-pane-path .terminal-dock-body {
+  box-sizing: border-box;
+  padding-bottom: var(--viewport-safe-bottom);
+  scroll-padding-bottom: var(--viewport-safe-bottom);
+}
+
+/* Keep the native title fixed to the viewport while the conversation slides. */
+.workspace-frame[data-pane-path] > .workspace {
+  translate: none;
+  transition:
+    left var(--layout-pane-path-motion-duration) ease-out,
+    width var(--layout-pane-path-motion-duration) ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-frame[data-pane-path] > .workspace {
+    transition: none;
   }
 }

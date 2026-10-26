@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 export function TranscriptTitleBar({ children }: { children: ReactNode }) {
   const bar = useRef<HTMLElement>(null);
   const [clearance, setClearance] = useState<number>();
+  const [start, setStart] = useState<number>();
   useLayoutEffect(() => {
     const node = bar.current;
     if (!node) return;
@@ -27,6 +28,12 @@ export function TranscriptTitleBar({ children }: { children: ReactNode }) {
         }
       }
       const first = rail?.querySelector("button")?.getBoundingClientRect();
+      const pane = rail && node.closest(".workspace-frame[data-pane-path]");
+      setStart(
+        pane
+          ? Math.max(0, node.parentElement!.getBoundingClientRect().left)
+          : undefined,
+      );
       setClearance(
         first
           ? Math.max(0, node.getBoundingClientRect().right - first.left)
@@ -59,6 +66,10 @@ export function TranscriptTitleBar({ children }: { children: ReactNode }) {
       ref={bar}
       className="duo-transcript-bar"
       style={{
+        paddingInlineStart:
+          start === undefined
+            ? undefined
+            : `calc(${start}px + var(--layout-duo-column-gutter))`,
         paddingInlineEnd:
           clearance === undefined
             ? undefined

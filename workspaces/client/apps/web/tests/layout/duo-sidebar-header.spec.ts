@@ -87,6 +87,10 @@ test("A Duo drawer returns focus to its rail opener after Escape and an outside 
       insets: { top: 0, right: 84, bottom: 34, left: 0 },
     });
     await page.setViewportSize({ width: 653, height: 951 });
+    test.skip(
+      (await sidebar.getAttribute("data-presentation")) === "path",
+      "Pane navigation uses retained screens instead of a modal Drawer.",
+    );
     const opener = page.locator(".edge-rail #sidebar-toggle");
     for (const close of ["escape", "outside", "opener"]) {
       await opener.click();

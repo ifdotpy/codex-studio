@@ -145,6 +145,19 @@ describe("Duo pane path", () => {
     expect(result?.panes.conversation?.width).toBe(334.5);
     expect(result?.panes.panel?.width).toBe(334.5);
   });
+  it.each([null, "team", "workspace", "terminals"] as const)(
+    "extends navigation backgrounds through the Home inset, panel %s",
+    (panel) => {
+      const result = deriveWorkspaceLayout({
+        ...base,
+        safeInsets: { top: 0, right: 82, bottom: 34, left: 0 },
+        panePath: { ...state, panel },
+      }).panePath!;
+      const navigation = panel ? result.panes.panel! : result.panes.sidebar!;
+      expect(navigation.y + navigation.height).toBe(669);
+      expect(result.panes.conversation?.height).toBe(635);
+    },
+  );
   it("leaves desktop and fine primary touch input unchanged", () => {
     expect(layout({ primaryCoarse: false })).toBeNull();
     expect(

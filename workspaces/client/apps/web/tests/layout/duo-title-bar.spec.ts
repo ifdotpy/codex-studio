@@ -101,6 +101,11 @@ for (const size of [
           .poll(async () => (await heading.boundingBox())?.width)
           .toBe(size.width);
         await expect(heading).toHaveCSS("height", "82px");
+        const conversation = await page.locator("#conversation").boundingBox();
+        const title = await heading
+          .locator(".conversation-heading")
+          .boundingBox();
+        expect(title!.x).toBeGreaterThanOrEqual(conversation!.x);
         const textRight = await heading
           .locator(".conversation-heading")
           .evaluate((node) => node.getBoundingClientRect().right);

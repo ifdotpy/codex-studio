@@ -4,12 +4,17 @@ import type { CSSProperties, ReactNode } from "react";
 import type { LayoutRect } from "../../layout/deriveWorkspaceLayout";
 import "./duo-pane-path.css";
 
-export function panePathStyle(rect: LayoutRect | null): CSSProperties {
+export function panePathStyle(
+  rect: LayoutRect | null,
+  options: { viewportFixedChildren?: boolean } = {},
+): CSSProperties {
   return {
     position: "absolute",
-    left: 0,
+    left: options.viewportFixedChildren ? (rect?.x ?? 0) : 0,
     top: rect?.y ?? 0,
-    transform: `translateX(${rect?.x ?? 0}px)`,
+    transform: options.viewportFixedChildren
+      ? undefined
+      : `translateX(${rect?.x ?? 0}px)`,
     width: rect?.width ?? 0,
     height: rect?.height ?? 0,
   };
