@@ -118,7 +118,7 @@ fn session_cost_inner(
         })
         .collect::<BTreeSet<CostReceipt>>();
     let partition =
-        studio_runtime_store::cost_aggregate::partition_journal_receipts(&tx, &receipts)?;
+        studio_runtime_store::cost_aggregate::partition_journal_receipts(&tx, &receipts, &members)?;
     local_claude.retain(|row| {
         partition.accepted.contains(&(
             row.account_key.clone(),
@@ -126,7 +126,7 @@ fn session_cost_inner(
             row.usage.id.clone(),
         ))
     });
-    let groups = cost_groups(&tx, &root, &partition.accepted)?;
+    let groups = cost_groups(&tx, &root, &partition)?;
     tx.commit()?;
 
     let loaded = crate::pricing::load_pricing(store.root())
