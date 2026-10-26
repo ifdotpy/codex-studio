@@ -18,7 +18,12 @@ import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.mjs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { recordPass, reusedResult, stepKey } from "./test-result-cache.mjs";
+import {
+  crateKeys,
+  recordPass,
+  reusedResult,
+  stepKey,
+} from "./test-result-cache.mjs";
 
 const MIN_JUST = [1, 58, 0];
 const COST = {
@@ -744,6 +749,7 @@ export function gateSteps(root, name) {
         fast ? "fast" : "ci",
       ]),
       requires: "workspace",
+      crateReuse: true,
     },
     ...(!fast
       ? [
@@ -1012,6 +1018,8 @@ export async function executeRecipe(root, name, steps, options = {}) {
           : external[step.requires]);
       let result;
       let cacheKey;
+      let crates;
+      let stale = [];
       if (controller.signal.aborted || !ready) {
         result = {
           status: controller.signal.aborted ? "cancelled" : "skipped",
@@ -1029,38 +1037,80 @@ export async function executeRecipe(root, name, steps, options = {}) {
       ) {
         // Same inputs as an earlier passing run: reuse it like a build artifact.
       } else {
-        try {
-          result = await (options.execute ?? execute)(
+        // A Cargo workspace test step runs only the crates without a passing result.
+        let commands = step.commands;
+        crates =
+          step.crateReuse &&
+          crateKeys(
             root,
-            step.item,
-            "",
-            false,
-            {
-              ...step.options,
-              ...(step.commands ? { commands: step.commands } : {}),
-              label: step.label,
-              env,
-              signal: controller.signal,
-              logDirectory: path.join(
-                logDir,
-                `${String(index + 1).padStart(2, "0")}-${step.id ?? "step"}`.replaceAll(
-                  /[^a-zA-Z0-9._-]/g,
-                  "-",
-                ),
+            JSON.parse(
+              runSync(
+                "cargo",
+                ["metadata", "--format-version", "1", "--locked"],
+                root,
+                "cargo metadata",
               ),
-              write: () => {},
-            },
+            ),
+            step,
           );
-        } catch (error) {
+        stale = crates
+          ? [...crates].filter(
+              ([name, key]) =>
+                !key || !reusedResult(root, { id: `${step.id}-${name}` }, key),
+            )
+          : [];
+        if (crates && !stale.length)
           result = {
-            status: "failed",
-            exitCode: 1,
+            status: "passed",
+            exitCode: 0,
             durationSeconds: 0,
-            errors: [String(error.stack ?? error)],
+            reused: true,
           };
-        }
+        else if (crates)
+          commands = step.commands.map(([command, args]) => [
+            command,
+            args.flatMap((arg) =>
+              arg === "--workspace"
+                ? stale.flatMap(([name]) => ["-p", name])
+                : [arg],
+            ),
+          ]);
+        if (!result)
+          try {
+            result = await (options.execute ?? execute)(
+              root,
+              step.item,
+              "",
+              false,
+              {
+                ...step.options,
+                ...(commands ? { commands } : {}),
+                label: step.label,
+                env,
+                signal: controller.signal,
+                logDirectory: path.join(
+                  logDir,
+                  `${String(index + 1).padStart(2, "0")}-${step.id ?? "step"}`.replaceAll(
+                    /[^a-zA-Z0-9._-]/g,
+                    "-",
+                  ),
+                ),
+                write: () => {},
+              },
+            );
+          } catch (error) {
+            result = {
+              status: "failed",
+              exitCode: 1,
+              durationSeconds: 0,
+              errors: [String(error.stack ?? error)],
+            };
+          }
       }
       if (cacheKey && !result.reused) recordPass(root, step, cacheKey, result);
+      if (crates && !result.reused)
+        for (const [name, key] of stale)
+          if (key) recordPass(root, { id: `${step.id}-${name}` }, key, result);
       results[index] = { ...result, id: step.id, lane, label: step.label };
       if (step.provides)
         readiness.get(step.provides).resolve(result.exitCode === 0);

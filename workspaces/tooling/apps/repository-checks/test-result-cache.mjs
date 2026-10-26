@@ -73,3 +73,44 @@ export function recordPass(root, step, key, result) {
     JSON.stringify({ status, exitCode, passed, failed, skipped, executed }),
   );
 }
+
+/** Per-crate keys for a Cargo test step whose command has `--workspace`. A crate's key covers
+ * its own folder and the folders of every workspace crate it depends on, transitively.
+ * Returns undefined when reuse is off. A crate with uncommitted inputs has no key. */
+export function crateKeys(root, metadata, step, env = process.env) {
+  if (env.STUDIO_TEST_REUSE === "0") return undefined;
+  const members = new Set(metadata.workspace_members);
+  const packages = new Map(metadata.packages.map((p) => [p.id, p]));
+  const deps = new Map(
+    metadata.resolve.nodes
+      .filter((node) => members.has(node.id))
+      .map((node) => [
+        node.id,
+        node.deps.map((dep) => dep.pkg).filter((id) => members.has(id)),
+      ]),
+  );
+  const folder = (id) =>
+    path.relative(root, path.dirname(packages.get(id).manifest_path));
+  const keys = new Map();
+  for (const id of members) {
+    const seen = new Set([id]);
+    const stack = [id];
+    while (stack.length)
+      for (const dep of deps.get(stack.pop()) ?? [])
+        if (!seen.has(dep)) seen.add(dep) && stack.push(dep);
+    const name = packages.get(id).name;
+    keys.set(
+      name,
+      stepKey(
+        root,
+        {
+          id: `${step.id}-${name}`,
+          commands: step.commands,
+          inputs: [".config/nextest.toml", ...[...seen].map(folder).sort()],
+        },
+        env,
+      ),
+    );
+  }
+  return keys;
+}
