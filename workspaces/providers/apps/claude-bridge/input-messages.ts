@@ -1,3 +1,4 @@
+import type { Item } from "./session-state.ts";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 export type InputGroup = {
@@ -12,7 +13,6 @@ export type StudioInputMessage = QueuedInput<
   }
 >;
 
-import type { Item } from "./session-state.ts";
 import type { QueuedInput } from "./features.ts";
 import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.ts";
 

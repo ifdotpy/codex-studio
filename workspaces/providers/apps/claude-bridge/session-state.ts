@@ -72,7 +72,7 @@ export interface Item {
   status?: string | undefined;
   tool?: string | undefined;
   arguments?: Record<string, unknown> | undefined;
-  command?: string | undefined;
+  command?: unknown;
   cwd?: string | undefined;
   aggregatedOutput?: string | undefined;
   exitCode?: number | null | undefined;

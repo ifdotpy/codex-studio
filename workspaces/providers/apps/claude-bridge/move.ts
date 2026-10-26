@@ -2,9 +2,9 @@ import type { Session } from "./session-state.ts";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 export type ProofTool = {
   name: string;
-  description?: string;
-  input_schema?: Record<string, unknown> | undefined;
-  schema?: Record<string, unknown>;
+  description?: unknown;
+  input_schema?: unknown;
+  schema?: unknown;
   [key: string]: unknown;
 };
 export type ToolProof = {
@@ -47,7 +47,10 @@ export const canonicalJson = (value: unknown) =>
       : entry,
   );
 
-export const movePrompt = { snapshot: true, excludeDynamicSections: true };
+export const movePrompt = {
+  snapshot: true,
+  excludeDynamicSections: true,
+} as const;
 
 const completeTool = (entry: unknown): entry is ProofTool => {
   if (!isRecord(entry)) return false;

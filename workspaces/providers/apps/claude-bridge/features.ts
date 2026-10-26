@@ -1,9 +1,12 @@
 import type {
   SDKControlGetUsageResponse,
-  SDKRateLimitInfo,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { components } from "../../../client/apps/web/src/generated/api.ts";
+import type {
+  BridgeRateLimitInfo,
+  BridgeRateBucket as LimitBucket,
+  BridgeRateLimits,
+} from "./bridge-protocol.ts";
 type NativeLimits = NonNullable<SDKControlGetUsageResponse["rate_limits"]>;
 type NativeWindow = Partial<NonNullable<NativeLimits["five_hour"]>>;
 type UsageResponse = Partial<
@@ -23,25 +26,8 @@ type UsageResponse = Partial<
       }
     | null;
 };
-export type RateLimitInfo = Omit<
-  Partial<SDKRateLimitInfo>,
-  "rateLimitType" | "utilization"
-> & {
-  rateLimitType?: string | undefined;
-  utilization?: number | null;
-};
-type LimitBucket = {
-  [K in "limitId" | "limitName" | "primary" | "secondary"]?:
-    | components["schemas"]["RateLimitBucketDto"][K]
-    | undefined;
-} & { claudeRateLimit?: RateLimitInfo };
-type Limits = {
-  rateLimits?: LimitBucket;
-  rateLimitsByLimitId?: Record<string, LimitBucket>;
-  claudeRateLimit?: RateLimitInfo;
-  subscriptionType?: string | null | undefined;
-  extraUsage?: unknown;
-};
+export type RateLimitInfo = BridgeRateLimitInfo;
+export type Limits = Partial<BridgeRateLimits>;
 export type QueuedInput<T extends SDKUserMessage = SDKUserMessage> = T & {
   studioInputBatch?: QueuedInput<T>[];
 };
@@ -52,7 +38,7 @@ const usagePolicy: {
 } = JSON.parse(usagePolicyJson);
 
 // Native Claude values normalized to Studio's existing public protocol.
-export function usageLimits(response: UsageResponse) {
+export function usageLimits(response: UsageResponse): BridgeRateLimits {
   if (!response.rate_limits_available || !response.rate_limits)
     throw new Error(
       "Claude did not return subscription limits for this account",

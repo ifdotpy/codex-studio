@@ -78,7 +78,7 @@ test("external proof lists only current server aliases and never transfers crede
     },
     (catalog: ExternalServer[]) => {
       const schema = catalog[0]?.tools[0]?.input_schema;
-      assert.ok(schema);
+      assert.ok(schema && typeof schema === "object" && "type" in schema);
       schema.type = "array";
     },
     (catalog: ExternalServer[]) => {

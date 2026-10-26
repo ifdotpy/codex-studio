@@ -30,6 +30,7 @@ import type {
   SessionMetadata,
 } from "./session-state.ts";
 import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
+import type { Limits } from "./features.ts";
 import type { Stall, ToolClock } from "./stall-watch.ts";
 
 type TaskMessage = Extract<SDKMessage, { subtype: `task_${string}` }>;
@@ -296,7 +297,7 @@ function streamText(item: Item, state: AssistantBlockState) {
     },
   });
 }
-let lastLimits: ReturnType<typeof usageLimits> | undefined;
+let lastLimits: Limits | undefined;
 const root = process.argv[2] || "";
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
