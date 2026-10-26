@@ -11,7 +11,7 @@ import {
   releaseTargetEnvironment,
   verifyReleaseBinaries,
   writeReleaseManifest,
-} from "../../../../client/apps/desktop/release-binaries.mjs";
+} from "../../../../client/apps/desktop/release-binaries.ts";
 import {
   parseFlowArguments,
   planFlow,
@@ -41,7 +41,10 @@ async function fakeRelease(commit = commitA) {
   return directory;
 }
 
-async function withRelease(callback, commit) {
+async function withRelease(
+  callback: (directory: string) => Promise<void>,
+  commit?: string,
+) {
   const directory = await fakeRelease(commit);
   try {
     await callback(directory);
@@ -89,7 +92,11 @@ test("refuses binaries built from another commit", () =>
 test("refuses a binary that changed after the build", () =>
   withRelease(async (directory) => {
     await writeFile(
-      path.join(directory, "release", releaseArtifacts()[0]),
+      path.join(
+        directory,
+        "release",
+        releaseArtifacts()[0] ?? assert.fail("missing release artifact"),
+      ),
       "rebuilt elsewhere",
     );
     await assert.rejects(
@@ -101,10 +108,20 @@ test("refuses a binary that changed after the build", () =>
 test("refuses another platform, a missing binary and a missing manifest", () =>
   withRelease(async (directory) => {
     await assert.rejects(
-      verifyReleaseBinaries({ directory, commit: commitA, arch: "other" }),
+      verifyReleaseBinaries({
+        directory,
+        commit: commitA,
+        arch: process.arch === "x64" ? "arm64" : "x64",
+      }),
       /were built for/,
     );
-    await rm(path.join(directory, "release", releaseArtifacts()[1]));
+    await rm(
+      path.join(
+        directory,
+        "release",
+        releaseArtifacts()[1] ?? assert.fail("missing second release artifact"),
+      ),
+    );
     await assert.rejects(
       verifyReleaseBinaries({ directory, commit: commitA }),
       /are missing/,
@@ -118,10 +135,11 @@ test("refuses another platform, a missing binary and a missing manifest", () =>
 
 test("refuses a manifest that omits a required artifact", () =>
   withRelease(async (directory) => {
-    const manifest = JSON.parse(
-      await readFile(manifestPath(directory), "utf8"),
-    );
-    delete manifest.files[releaseArtifacts()[0]];
+    const manifest: Awaited<ReturnType<typeof writeReleaseManifest>> =
+      JSON.parse(await readFile(manifestPath(directory), "utf8"));
+    delete manifest.files[
+      releaseArtifacts()[0] ?? assert.fail("missing release artifact")
+    ];
     await writeFile(manifestPath(directory), JSON.stringify(manifest));
     await assert.rejects(
       verifyReleaseBinaries({ directory, commit: commitA }),
@@ -165,20 +183,29 @@ test("a packager refuses another commit and a dirty checkout", () =>
 test("a build removes the old manifest first and records the built commit", async () => {
   const directory = await fakeRelease(commitB);
   try {
-    const calls = [];
+    const calls: {
+      command: string;
+      args: string[];
+      target: string | undefined;
+    }[] = [];
     const manifest = await buildReleaseBinaries({
       repository: "/repo",
       directory,
       state: () => ({ commit: commitA, dirty: false }),
       run: (command, args, options) => {
-        calls.push({ command, args, target: options.env.CARGO_TARGET_DIR });
+        calls.push({ command, args, target: options.env?.CARGO_TARGET_DIR });
         return verifyReleaseBinaries({ directory, commit: commitB }).then(
           () => assert.fail("the old manifest must be gone during the build"),
-          (error) => assert.match(error.message, /have no manifest/),
+          (error: unknown) =>
+            assert.match(
+              error instanceof Error ? error.message : String(error),
+              /have no manifest/,
+            ),
         );
       },
     });
     assert.equal(manifest.commit, commitA);
+    assert.ok(calls[0]);
     assert.equal(calls[0].command, "cargo");
     assert.ok(calls[0].args.includes("--locked"));
     assert.ok(calls[0].args.includes("--release"));
@@ -209,8 +236,12 @@ test("a build refuses a dirty checkout and a commit that moved", async () => {
       buildReleaseBinaries({
         repository: "/repo",
         directory,
-        state: () => states.shift(),
-        run: () => {},
+        state: () => {
+          const next = states.shift();
+          assert.ok(next);
+          return next;
+        },
+        run: () => "",
       }),
       /changed during the build/,
     );
@@ -222,7 +253,7 @@ test("a build refuses a dirty checkout and a commit that moved", async () => {
 test("the package flow runs the dev-profile host check unless CI is stated", () => {
   const { out, hostedCiPassed } = parseFlowArguments(["/tmp/out"]);
   assert.equal(hostedCiPassed, false);
-  const plan = (skip) =>
+  const plan = (skip: boolean) =>
     planFlow({ out, hostedCiPassed: skip, directory: "/r", commit: commitA });
   assert.deepEqual(
     plan(false).map((step) => step.label),
@@ -235,20 +266,26 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
       "check package start",
     ],
   );
-  assert.match(plan(false)[0].args[0], /desktop\/signing-check\.mjs$/);
-  assert.equal(plan(false)[1].args[0], "test-native-webview");
+  assert.match(plan(false)[0]?.args?.[0] ?? "", /desktop\/signing-check\.ts$/);
+  assert.equal(plan(false)[1]?.args?.[0], "test-native-webview");
   const skipped = plan(true)[1];
+  assert.ok(skipped);
   assert.equal(skipped.command, undefined);
-  assert.match(skipped.skipped, new RegExp(commitA));
+  assert.match(skipped.skipped ?? "", new RegExp(commitA));
   assert.equal(plan(true).length, 6);
   assert.equal(
     plan(false).some(
       (step) =>
-        step.resolvePython || step.needsPython || step.command === "python3",
+        ("resolvePython" in step && step.resolvePython) ||
+        ("needsPython" in step && step.needsPython) ||
+        step.command === "python3",
     ),
     false,
   );
-  assert.match(plan(false).at(-1).args[0], /check-package-start\.mjs$/);
+  assert.match(
+    plan(false).at(-1)?.args?.[0] ?? "",
+    /check-package-start\.mjs$/,
+  );
   assert.equal(
     parseFlowArguments(["/tmp/out", "--hosted-ci-passed"]).hostedCiPassed,
     true,

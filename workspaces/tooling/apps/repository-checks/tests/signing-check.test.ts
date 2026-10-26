@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import childProcess, { execFileSync } from "node:child_process";
 import {
@@ -12,7 +12,7 @@ import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { signingCheckReport } from "../../../../client/apps/desktop/signing-check.mjs";
+import { signingCheckReport } from "../../../../client/apps/desktop/signing-check.ts";
 
 const identity = "0123456789ABCDEF0123456789ABCDEF01234567";
 const password = "fixture-password-that-must-never-appear";
@@ -24,7 +24,7 @@ const desktop = fileURLToPath(
 
 // A temporary HOME holds signing.json, the password file and an empty keychain
 // file. A fake security replaces the two security calls of signing.mjs.
-function fixture(options = {}) {
+function fixture(options: { json?: string } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), "signing-check-"));
   const config = path.join(root, ".config/codex-studio");
   mkdirSync(config, { recursive: true });
@@ -47,46 +47,61 @@ function fixture(options = {}) {
 
 function withSecurity(
   { unlock = { status: 0, stderr: "" }, identities = identity } = {},
-  callback,
+  callback: (calls: SecurityCalls) => void,
 ) {
-  const originals = {
-    spawnSync: childProcess.spawnSync,
-    execFileSync: childProcess.execFileSync,
-  };
-  const calls = { unlock: 0, find: 0, inputs: [], args: [] };
-  childProcess.spawnSync = (command, args, options) => {
-    calls.unlock++;
-    calls.inputs.push(options.input);
-    calls.args.push([command, ...args]);
-    return unlock;
-  };
-  childProcess.execFileSync = (command, args) => {
-    calls.find++;
-    calls.args.push([command, ...args]);
-    return identities;
-  };
+  const calls: SecurityCalls = { unlock: 0, find: 0, inputs: [], args: [] };
+  mock.method(
+    childProcess,
+    "spawnSync",
+    (command: string, args: string[], options: { input: string }) => {
+      calls.unlock++;
+      calls.inputs.push(options.input);
+      calls.args.push([command, ...args]);
+      return unlock;
+    },
+  );
+  mock.method(
+    childProcess,
+    "execFileSync",
+    (command: string, args: string[]) => {
+      calls.find++;
+      calls.args.push([command, ...args]);
+      return identities;
+    },
+  );
   syncBuiltinESMExports();
   try {
     return callback(calls);
   } finally {
-    Object.assign(childProcess, originals);
+    mock.restoreAll();
     syncBuiltinESMExports();
   }
 }
 
-function inFixture(options, security, callback) {
+interface SecurityCalls {
+  unlock: number;
+  find: number;
+  inputs: string[];
+  args: string[][];
+}
+function inFixture(
+  options: Parameters<typeof fixture>[0],
+  security: Parameters<typeof withSecurity>[0],
+  callback: (files: ReturnType<typeof fixture>, calls: SecurityCalls) => void,
+) {
   const files = fixture(options);
   const home = process.env.HOME;
   process.env.HOME = files.root;
   try {
     return withSecurity(security, (calls) => callback(files, calls));
   } finally {
-    process.env.HOME = home;
+    if (home === undefined) delete process.env.HOME;
+    else process.env.HOME = home;
     rmSync(files.root, { recursive: true, force: true });
   }
 }
 
-function assertNoSecrets(report) {
+function assertNoSecrets(report: ReturnType<typeof signingCheckReport>) {
   assert.equal(report.line.includes(password), false);
 }
 
@@ -97,11 +112,14 @@ test("passes with the keychain path and the identity fingerprint", () =>
       ok: true,
       line: `PASS: keychain ${files.keychain} identity ${identity}`,
     });
-    assertNoSecrets(report, files);
+    assertNoSecrets(report);
     assert.equal(calls.unlock, 1);
     assert.equal(calls.find, 1);
     // The password reaches security only through stdin.
-    assert.match(calls.inputs[0], /^unlock-keychain -p "fixture-password/);
+    assert.match(
+      calls.inputs[0] ?? "",
+      /^unlock-keychain -p "fixture-password/,
+    );
     assert.equal(JSON.stringify(calls.args).includes(password), false);
   }));
 
@@ -157,7 +175,7 @@ test("fails when the password file is missing or has a loose mode", () => {
     chmodSync(files.passwordFile, 0o640);
     const report = signingCheckReport({});
     assert.match(report.line, /Password file .* has mode 0640\./);
-    assertNoSecrets(report, files);
+    assertNoSecrets(report);
     assert.equal(calls.unlock + calls.find, 0);
   });
   inFixture({}, {}, (files, calls) => {
@@ -191,7 +209,7 @@ test("fails with the security message when the unlock is refused", () => {
     });
     assert.equal(calls.unlock, 1);
     assert.equal(calls.find, 0);
-    assertNoSecrets(report, files);
+    assertNoSecrets(report);
   });
 });
 
@@ -207,7 +225,7 @@ test("fails when the identity is not in the keychain", () =>
         new RegExp(`certificate ${identity} is not in keychain `),
       );
       assert.equal(calls.unlock, 1);
-      assertNoSecrets(report, files);
+      assertNoSecrets(report);
     },
   ));
 
