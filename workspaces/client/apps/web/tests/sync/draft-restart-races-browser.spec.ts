@@ -1,17 +1,12 @@
 import type { Page } from "@playwright/test";
 import type { SyncDocument } from "../../src/sync/client.ts";
 type DraftPull = { at: number; after: number; docs: SyncDocument[] };
-function gate<T>() {
-  const started = Promise.withResolvers<T>();
-  const released = Promise.withResolvers<void>();
-  return {
-    startedPromise: started.promise,
-    startedResolve: started.resolve,
-    release: released.resolve,
-    releasePromise: released.promise,
-  };
-}
-type Gate<T> = ReturnType<typeof gate<T>>;
+type Gate<T> = {
+  startedPromise: Promise<T>;
+  startedResolve: (value: T) => void;
+  release: () => void;
+  releasePromise: Promise<void>;
+};
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Connect } from "vite";
 import { fixtureOrigin } from "./helpers.ts";
@@ -136,6 +131,17 @@ async function createFixture(page: Page) {
       );
   });
 
+  const gate = <T>(): Gate<T> => {
+    let startedResolve!: (value: T) => void;
+    let release!: () => void;
+    const startedPromise = new Promise<T>((resolve) => {
+      startedResolve = resolve;
+    });
+    const releasePromise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { startedPromise, startedResolve, release, releasePromise };
+  };
   const waitFor = async (
     condition: () => unknown | Promise<unknown>,
     message: string,
@@ -321,9 +327,7 @@ test("a later trigger in the outage is served at the restart interval", async ({
       "trigger B gets a deferred pull while push remains failed",
       timing.restartMinInterval + 1_000,
     );
-    const lastPull = fx.pulls.at(-1);
-    assert.ok(lastPull);
-    const pullBAt = lastPull.at;
+    const pullBAt = fx.pulls.at(-1)!.at;
     assert.ok(
       pullBDispatchedAt - restartAAt < timing.restartMinInterval,
       "trigger B arrived before the minimum restart interval elapsed",

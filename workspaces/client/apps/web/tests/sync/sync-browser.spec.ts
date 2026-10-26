@@ -256,8 +256,7 @@ test("Sync Browser", async ({
     const stored = await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const row = await db.outbox.findOne("intent-one").exec();
-      if (!row) throw new Error("Missing outbox row");
-      return JSON.parse(row.payload);
+      return JSON.parse(row!.payload);
     });
     assert.equal(stored.status, "queued");
     failSend = false;

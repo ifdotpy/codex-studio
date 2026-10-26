@@ -56,12 +56,7 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     let reply: PostResult<"/api/connection-recovery"> = {
       status: "unconfirmed",
     };
-    const held: { route?: Route | undefined } = {};
-    const heldRoute = () => {
-      const route = held.route;
-      if (!route) throw new Error("Missing held recovery route");
-      return route;
-    };
+    let held: Route | undefined;
     let hold = false,
       fail = false;
     await page.route("**/api/**", async (route) => {
@@ -73,7 +68,7 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
         token: request.headers()["x-canvas-token"],
       });
       if (hold) {
-        held.route = route;
+        held = route;
         return;
       }
       await route.fulfill(
@@ -89,33 +84,31 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     });
     await button.waitFor();
     const history = await page.locator("[data-history]").elementHandle();
-    assert.ok(history);
+
     assert.equal(
       requests.length,
       0,
       "mounting the notice does not start recovery",
     );
     hold = true;
-    await button.evaluate((node) => {
-      if (!(node instanceof HTMLElement))
-        throw new Error("Missing recovery button");
+    await button.evaluate((node: HTMLElement) => {
       node.click();
       node.click();
     });
     await page.waitForFunction(
       () => document.querySelector("button")?.disabled,
     );
-    for (let attempt = 0; !held.route && attempt < 100; attempt++)
+    for (let attempt = 0; !held && attempt < 100; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.ok(held.route);
+    assert.ok(held);
     assert.equal(
       requests.length,
       1,
       "duplicate click cannot start another recovery check",
     );
-    await heldRoute().fulfill({ json: reply });
+    await held!.fulfill({ json: reply });
     hold = false;
-    held.route = undefined;
+    held = undefined;
     await page
       .getByRole("status")
       .filter({ hasText: "previous outcome remains unconfirmed" })
@@ -234,9 +227,9 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
 
     hold = true;
     await button.click();
-    for (let attempt = 0; !held.route && attempt < 100; attempt++)
+    for (let attempt = 0; !held && attempt < 100; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.ok(held.route);
+    assert.ok(held);
     await page.evaluate(
       (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),
       {
@@ -247,7 +240,7 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
       },
     );
     await page.locator('[data-agent="second"]').waitFor();
-    await heldRoute().fulfill({
+    await (held as Route).fulfill({
       json: { status: "reconciled", outcome: "completed" },
     });
     await page.evaluate(
@@ -268,7 +261,7 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     );
     assert.equal(await button.isEnabled(), true);
     hold = false;
-    held.route = undefined;
+    held = undefined;
     reply = { status: "unconfirmed", checked: true };
     await page.evaluate(
       (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),

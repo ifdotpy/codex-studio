@@ -108,7 +108,7 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://fixture.local");
+      const url = new URL(req.url!, "http://fixture.local");
       if (!url.pathname.startsWith("/api/")) {
         if (url.pathname === "/check") {
           res.setHeader("Content-Type", "text/html");

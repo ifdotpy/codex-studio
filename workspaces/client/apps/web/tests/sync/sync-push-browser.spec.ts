@@ -37,7 +37,7 @@ test("Sync push", async ({ context: testContext }) => {
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const json = (value: unknown) => {
         for (const [name, value] of Object.entries(
           apiSchemaHeaders({ "Content-Type": "application/json" }),

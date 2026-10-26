@@ -1,3 +1,5 @@
+import type { GetResult } from "../../src/apiTypes.ts";
+import type { FixturePullResponse } from "./helpers.ts";
 import { fixtureOrigin } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -37,7 +39,12 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
     let deltaReplies = 0;
     const pulls: { scope: string | null; after: number }[] = [];
     await context.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          GetResult<"/api/sync/identity">,
+          "workspaceId"
+        >,
+      }),
     );
     await context.route("**/api/sync/pull?**", (route) => {
       const url = new URL(route.request().url());
@@ -46,7 +53,11 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       pulls.push({ scope, after });
       if (scope === "drafts")
         return route.fulfill({
-          json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
+          json: {
+            workspaceId,
+            documents: [],
+            checkpoint: { seq: 0 },
+          } satisfies FixturePullResponse,
         });
       if (scope === "state:entities:v1")
         return route.fulfill({
@@ -55,7 +66,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
             generation: 1,
             documents: [],
             checkpoint: { seq: 0 },
-          },
+          } satisfies FixturePullResponse,
         });
       if (scope !== "transcript:lead")
         throw new Error(`Unexpected sync scope ${scope}`);
@@ -74,7 +85,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
               },
             ],
             checkpoint: { seq: 2 },
-          },
+          } satisfies FixturePullResponse,
         });
       const snapshot = {
         title: "Unchanged chat",
@@ -88,7 +99,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
               ? [{ id: scope, seq: 1, payload: JSON.stringify(snapshot) }]
               : [],
           checkpoint: { seq: after === 0 ? 1 : after },
-        },
+        } satisfies FixturePullResponse,
       });
     });
     const origin = fixtureOrigin(server);
@@ -107,16 +118,15 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       });
       const succeeded = await prefetchTranscript(workspaceId, "lead");
       const row = await db.projections.findOne("transcript:lead").exec();
-      if (!row) throw new Error("Missing transcript projection");
       return {
         succeeded,
         payload: peekTranscript(workspaceId, "lead")?.payload,
-        stored: JSON.parse(row.payload),
+        stored: JSON.parse(row!.payload),
       };
     }, workspaceId);
     assert.equal(online.succeeded, true);
-    assert.ok(online.payload);
-    assert.deepEqual(online.payload.items, [
+
+    assert.deepEqual(online.payload!.items, [
       { id: "item-a", text: "still here" },
     ]);
     assert.equal(online.stored.format, 2);
@@ -138,8 +148,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       const { db } = await syncDatabase();
       const succeeded = await prefetchTranscript(workspaceId, "lead");
       const row = await db.projections.findOne("transcript:lead").exec();
-      if (!row) throw new Error("Missing transcript projection");
-      return { succeeded, stored: JSON.parse(row.payload) };
+      return { succeeded, stored: JSON.parse(row!.payload) };
     }, workspaceId);
     assert.equal(delta.succeeded, true);
     assert.equal(delta.stored.format, 2);

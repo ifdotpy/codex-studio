@@ -64,7 +64,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const json = (value: unknown, status = 200) => {
         res.writeHead(
           status,
@@ -102,7 +102,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
         streams.add(stream);
         res.on("close", () => streams.delete(stream));
       } else if (url.pathname === "/api/sync/pull") {
-        const scope = url.searchParams.get("scope") ?? "";
+        const scope = url.searchParams.get("scope")!;
         const kind = scope.slice(11);
         const count = (attempts.get(kind) || 0) + 1;
         attempts.set(kind, count);

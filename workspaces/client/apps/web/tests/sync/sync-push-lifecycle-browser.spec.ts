@@ -37,7 +37,7 @@ test("Sync Push Lifecycle Browser", async ({
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const json = (value: unknown) => {
         for (const [name, value] of Object.entries(
           apiSchemaHeaders({ "Content-Type": "application/json" }),
@@ -81,8 +81,7 @@ test("Sync Push Lifecycle Browser", async ({
     await expect.poll(() => Boolean(identityResponse)).toBe(true);
     await page.evaluate(() => window.syncSyncPushLifecycleBrowserStopPush());
     delayIdentity = false;
-    if (!identityResponse) throw new Error("Missing delayed identity response");
-    identityResponse();
+    identityResponse!();
     await page.evaluate(() =>
       window.syncSyncPushLifecycleBrowserClient.syncDatabase(),
     );

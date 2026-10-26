@@ -90,7 +90,7 @@ test("Sync http connection budget browser", async ({
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const json = (value: unknown) => {
         res.writeHead(
           200,
@@ -144,7 +144,7 @@ test("Sync http connection budget browser", async ({
             streamResources.delete(res);
           });
         } else if (url.pathname === "/api/sync/pull") {
-          const scope = url.searchParams.get("scope") ?? "";
+          const scope = url.searchParams.get("scope")!;
           if (scope.startsWith("transcript:warm-")) {
             held.add(res);
             res.on("close", () => held.delete(res));
@@ -184,7 +184,7 @@ test("Sync http connection budget browser", async ({
           });
           req.on("end", () => {
             const message = fixturePostBody<"/api/messages">(JSON.parse(body));
-            assert.ok(message.id);
+
             const previous = messages.get(message.id);
             if (previous) assert.deepEqual(previous.body, message);
             messages.set(message.id, {
@@ -251,7 +251,7 @@ test("Sync http connection budget browser", async ({
     await pages[0].waitForFunction(
       () =>
         window.syncHttpConnectionBudgetBrowserFixtureSnapshot.error ||
-        window.syncHttpConnectionBudgetBrowserFixtureSnapshot.data?.token,
+        window.syncHttpConnectionBudgetBrowserFixtureSnapshot.data!.token,
       undefined,
       { timeout: 20000 },
     );
@@ -297,10 +297,9 @@ test("Sync http connection budget browser", async ({
     await Promise.all(
       pages.map((page) =>
         page.waitForFunction(() => {
-          const runtime =
-            window.syncHttpConnectionBudgetBrowserFixtureSnapshot.data?.runtime;
           return (
-            runtime && "marker" in runtime && runtime.marker === "revision-2"
+            window.syncHttpConnectionBudgetBrowserFixtureSnapshot.data!.runtime
+              .marker === "revision-2"
           );
         }),
       ),

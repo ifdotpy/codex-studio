@@ -31,10 +31,8 @@ test("Draft sync ui", async ({
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
-  if (!fixture.stdout || !fixture.stderr)
-    throw new Error("Fixture output pipes unavailable");
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
@@ -42,7 +40,7 @@ test("Draft sync ui", async ({
       if (!fixture.stdout) throw new Error("Missing fixture stdout");
       if (!fixture.stdout) throw new Error("Missing fixture stdout");
       if (!fixture.stdout) throw new Error("Missing fixture stdout");
-      fixture.stdout.once("data", (chunk) =>
+      fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));
@@ -52,8 +50,8 @@ test("Draft sync ui", async ({
     const sessionAgent = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     );
-    assert.ok(sessionAgent);
-    const session = sessionAgent.id;
+
+    const session = sessionAgent!.id;
     const { workspaceId } = await (
       await fetch(origin + "/api/sync/identity")
     ).json();
@@ -269,16 +267,15 @@ test("Draft sync ui", async ({
     const panel = phone.locator(".draft-versions");
     await panel.waitFor();
     const bounds = await panel.boundingBox();
-    assert.ok(bounds);
+
     assert.ok(
-      bounds.height <= 321 && bounds.width <= 366,
+      bounds!.height <= 321 && bounds!.width <= 366,
       JSON.stringify(bounds),
     );
     const after = await phone.locator("#composer").boundingBox();
-    assert.ok(before);
-    assert.ok(after);
+
     assert.ok(
-      Math.abs(before.y - after.y) < 1,
+      Math.abs(before!.y - after!.y) < 1,
       "Conflict preview must not shrink the chat",
     );
     await phone
@@ -304,10 +301,10 @@ test("Draft sync ui", async ({
     const previous = (await documents()).find(
       (doc) => doc.id === `offline-0:${session}`,
     );
-    assert.ok(previous);
+
     await push(
       {
-        ...JSON.parse(previous.payload),
+        ...JSON.parse(previous!.payload),
         text: "Changed alternative",
         updated: stamp + 100,
       },
@@ -359,16 +356,14 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
-  if (!fixture.stdout || !fixture.stderr)
-    throw new Error("Fixture output pipes unavailable");
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
     const port = await new Promise((resolve, reject) => {
       if (!fixture.stdout) throw new Error("Missing fixture stdout");
-      fixture.stdout.once("data", (chunk) =>
+      fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", (code) =>
@@ -451,8 +446,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     const attempts: components["schemas"]["DraftPushRow"][] = [];
     let failPush = false;
     let remotePulled = false;
-    const { promise: remotePullCompleted, resolve: completeRemotePull } =
-      Promise.withResolvers<void>();
+    let completeRemotePull: () => void;
+    const remotePullCompleted = new Promise<void>((resolve) => {
+      completeRemotePull = resolve;
+    });
     let targetId = "";
     let remoteText = "";
     const pageErrors: string[] = [];
@@ -482,7 +479,7 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       await route.fulfill({ response, body: JSON.stringify(body) });
       if (containsRemoteWinner) {
         remotePulled = true;
-        completeRemotePull();
+        completeRemotePull!();
       }
     });
     await page.clock.install();
@@ -560,8 +557,8 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       "a healthy pull cannot hide the failed push",
     );
     const statusBounds = await status.boundingBox();
-    assert.ok(statusBounds);
-    assert.ok(statusBounds.height < 50, "failure is a compact status");
+
+    assert.ok(statusBounds!.height < 50, "failure is a compact status");
     const recovered = savedText(remoteText);
     failPush = false;
     await page.clock.runFor(
@@ -571,11 +568,11 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     const current = (await documents()).find(
       (document) => document.id === targetId,
     );
-    assert.ok(current);
-    const version: DraftVersion = JSON.parse(current.payload);
+
+    const version: DraftVersion = JSON.parse(current!.payload);
     assert.equal(version.text, remoteText);
-    assert.ok(version.alternatives);
-    assert.ok(version.alternatives.includes("Pending local conflict"));
+
+    assert.ok(version.alternatives!.includes("Pending local conflict"));
     assert.ok(
       attempts.some(
         (row) =>

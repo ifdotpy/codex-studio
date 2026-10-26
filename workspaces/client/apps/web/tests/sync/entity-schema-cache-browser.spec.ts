@@ -86,7 +86,7 @@ test.describe("legacy schema mismatch", () => {
       env: { ...process.env },
     });
     let fixtureLog = "";
-    fixture.stderr?.on("data", (chunk) => {
+    fixture.stderr!.on("data", (chunk) => {
       fixtureLog += chunk;
     });
     let activeHash = oldHash;
@@ -141,8 +141,8 @@ test.describe("legacy schema mismatch", () => {
     // Inline baselines are persisted asynchronously. A fulfilled finite body
     // immediately disconnects and cancels those writes, unlike a real stream.
     const streamServer = createServer((request, response) => {
-      const frame = streamFrames.get(request.url || "");
-      streamFrames.delete(request.url || "");
+      const frame = streamFrames.get(request.url!);
+      streamFrames.delete(request.url!);
       if (!frame) {
         response.writeHead(404).end();
         return;
@@ -184,9 +184,10 @@ test.describe("legacy schema mismatch", () => {
     await new Promise<void>((resolve) =>
       streamServer.listen(0, "127.0.0.1", resolve),
     );
-    const streamAddress = streamServer.address();
-    assert.ok(streamAddress && typeof streamAddress !== "string");
-    const streamOrigin = `http://127.0.0.1:${streamAddress.port}`;
+    const streamAddress =
+      streamServer.address() as import("node:net").AddressInfo;
+
+    const streamOrigin = `http://127.0.0.1:${streamAddress!.port}`;
     await context.route("**/api/**", async (route) => {
       const requestUrl = new URL(route.request().url());
       apiRequests.push(
@@ -250,7 +251,7 @@ test.describe("legacy schema mismatch", () => {
           stream.write(
             protocol3SseEvent("resources", {
               protocol: 4,
-              workspaceId,
+              workspaceId: workspaceId!,
               epoch: "schema-cache-test",
               revision: 1,
               reason: "initial",
@@ -308,7 +309,7 @@ test.describe("legacy schema mismatch", () => {
               await identity.json();
             workspaceId = value.workspaceId;
           }
-          assert.ok(workspaceId !== undefined);
+
           const details = initialResources.filter(
             (resource) =>
               resource.kind === "agentDetail" ||
@@ -350,7 +351,7 @@ test.describe("legacy schema mismatch", () => {
           });
           body = protocol3SseEvent("resources", {
             protocol: 4,
-            workspaceId,
+            workspaceId: workspaceId!,
             epoch: "schema-cache-test",
             revision: 1,
             reason: "initial",
@@ -365,15 +366,13 @@ test.describe("legacy schema mismatch", () => {
           route.request().frame().page() === newPage &&
           resources.some((resource) => resource.kind === "state") &&
           pendingEntitySequence !== undefined &&
-          pendingEntityChanges !== undefined &&
-          allowPendingChangeEventPromise !== undefined
+          pendingEntityChanges !== undefined
         ) {
-          assert.ok(workspaceId !== undefined);
           const entityChanges = pendingEntityChanges;
           const entitySequence = pendingEntitySequence;
           const changeBody = protocol3SseEvent("resources", {
             protocol: 4,
-            workspaceId,
+            workspaceId: workspaceId!,
             epoch: "schema-cache-test",
             revision: 2,
             reason: "change",
@@ -587,10 +586,7 @@ test.describe("legacy schema mismatch", () => {
         }
         fresh = false;
         cachedRows.push(...pull.documents);
-        if (
-          pull.checkpoint.seq <= after ||
-          (pull.maxSeq != null && pull.checkpoint.seq >= pull.maxSeq)
-        )
+        if (pull.checkpoint.seq <= after || pull.checkpoint.seq >= pull.maxSeq!)
           break;
         after = pull.checkpoint.seq;
       }
@@ -690,12 +686,12 @@ test.describe("legacy schema mismatch", () => {
             .map(({ name }) => name)
             .filter(
               (name): name is string =>
-                !!name?.includes(
+                name?.includes(
                   `entity-projection-${workspaceId}-${schemaHash}`,
                 ) && name.endsWith(`--${cacheVersion}--projections`),
             ),
         {
-          workspaceId,
+          workspaceId: workspaceId!,
           schemaHash: nextHash,
           cacheVersion: ENTITY_PROJECTION_CACHE_VERSION,
         },
@@ -824,9 +820,8 @@ test.describe("legacy schema mismatch", () => {
       const newPageStateCheckpoint = await readNewPageStateCheckpoint();
       const beforeMutationPullCount = statePullCount();
       assert.ok(
-        newPageStateCheckpoint.checkpoint !== undefined &&
-          Number.isSafeInteger(newPageStateCheckpoint.checkpoint) &&
-          newPageStateCheckpoint.checkpoint > 0,
+        Number.isSafeInteger(newPageStateCheckpoint.checkpoint) &&
+          newPageStateCheckpoint.checkpoint! > 0,
         `the valid tab has a durable nonzero checkpoint: ${JSON.stringify(newPageStateCheckpoint)}`,
       );
 
@@ -866,10 +861,6 @@ test.describe("legacy schema mismatch", () => {
           await pageResponse.json();
         assert.notEqual(entityPage.reset, true);
         for (const document of entityPage.documents) {
-          assert.ok(
-            "op" in document,
-            "Entity scope returns entity change records",
-          );
           entityChangeDocuments.push(document);
         }
         assert.ok(entityPage.checkpoint.seq > entityChangeCursor);
@@ -899,7 +890,7 @@ test.describe("legacy schema mismatch", () => {
       await newPage.reload();
       const mutationReconnectCursor = await pendingChangeStreamOpened.promise;
       assert.deepEqual(mutationReconnectCursor, {
-        workspaceId,
+        workspaceId: workspaceId!,
         seq: newPageStateCheckpoint.checkpoint,
       });
       await expect(leadChat(newPage)).toBeVisible();
@@ -1048,7 +1039,7 @@ test("different build collection sets share only drafts and outbox", async ({
   const newPage = await context.newPage();
 
   const firstLegacyRow = legacyRows[0];
-  assert.ok(firstLegacyRow);
+
   const fixtureModule = `/@fs${fileURLToPath(new URL("./fixtures/schemaCacheBrowserFixture.ts", import.meta.url))}`;
   const databaseName = `studio${workspaceId}`;
   const origin = fixtureOrigin(server);

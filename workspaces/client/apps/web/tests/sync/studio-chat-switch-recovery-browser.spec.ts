@@ -3,7 +3,10 @@ import type { ResourceRef } from "../playwright.ts";
 import { fixtureResources, fixturePostBody } from "./helpers.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Connect } from "vite";
-import { fixtureOrigin } from "./helpers.ts";
+import {
+  studioChatSwitchWorkspaceId as workspaceId,
+  fixtureOrigin,
+} from "./helpers.ts";
 import type {} from "./studio-chat-switch-recovery-browser.fixture.tsx";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -23,7 +26,6 @@ test("selected Studio chat recovers after slow cursor preparation without reload
   page,
 }, testInfo) => {
   test.setTimeout(60_000);
-  const workspaceId = "e".repeat(32);
   const snapshot = {
     chats: [],
     threads: [],
@@ -106,7 +108,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://fixture.invalid");
+      const url = new URL(req.url!, "http://fixture.invalid");
       if (
         url.pathname.startsWith("/api/") &&
         req.method === "GET" &&
@@ -137,9 +139,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
         url.pathname === "/api/sync/pull" &&
         url.searchParams.get("scope")?.startsWith("transcript:")
       ) {
-        const id = (url.searchParams.get("scope") ?? "").slice(
-          "transcript:".length,
-        );
+        const id = url.searchParams.get("scope")!.slice("transcript:".length);
         return json({
           workspaceId,
           ...entityPullFixtureForRequest(snapshot, url, {

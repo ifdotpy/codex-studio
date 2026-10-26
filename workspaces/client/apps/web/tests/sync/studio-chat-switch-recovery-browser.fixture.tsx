@@ -1,3 +1,4 @@
+import { studioChatSwitchWorkspaceId as workspaceId } from "./helpers.ts";
 import { fixtureElement } from "./browser-helpers.ts";
 
 import React, { useEffect, useState } from "react";
@@ -42,7 +43,7 @@ function Panel({ id, selected }: { id: string; selected: boolean }) {
     "agent",
     true,
     "fixture",
-    "e".repeat(32),
+    workspaceId,
     selected,
   );
   useEffect(() => {

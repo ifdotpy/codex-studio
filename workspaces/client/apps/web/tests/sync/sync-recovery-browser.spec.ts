@@ -31,9 +31,7 @@ test("Sync recovery browser", async ({
   try {
     const page = runnerPage,
       errors: string[] = [];
-    page.on("pageerror", (error) =>
-      errors.push(error instanceof Error ? error.message : String(error)),
-    );
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     let identityStatus = 503,
       hangSession = false,
       failPull = false,
@@ -135,24 +133,19 @@ test("Sync recovery browser", async ({
     await page.waitForFunction(
       () =>
         window.syncRecoveryBrowserFixtureSnapshot?.error &&
-        window.syncRecoveryBrowserFixtureOutbox?.error,
+        window.syncRecoveryBrowserFixtureOutbox.error,
     );
     identityStatus = 200;
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
-    await page.waitForFunction(() => {
-      const first = window.syncRecoveryBrowserFixtureSnapshot.data?.runtime;
-      const second = window.syncRecoveryBrowserFixtureSecond.data?.runtime;
-      return (
-        first &&
-        "marker" in first &&
-        first.marker === "replicated" &&
-        second &&
-        "marker" in second &&
-        second.marker === "replicated" &&
+    await page.waitForFunction(
+      () =>
+        window.syncRecoveryBrowserFixtureSnapshot.data?.runtime?.marker ===
+          "replicated" &&
+        window.syncRecoveryBrowserFixtureSecond.data?.runtime?.marker ===
+          "replicated" &&
         !window.syncRecoveryBrowserFixtureSnapshot.error &&
-        !window.syncRecoveryBrowserFixtureOutbox.error
-      );
-    });
+        !window.syncRecoveryBrowserFixtureOutbox.error,
+    );
     failPull = true;
     nextStreamResourceEvent = true;
     await page.evaluate(() => {
@@ -176,11 +169,8 @@ test("Sync recovery browser", async ({
         !window.syncRecoveryBrowserFixtureSecond.error,
     );
     assert.equal(
-      await page.evaluate(() =>
-        window.syncRecoveryBrowserFixtureSnapshot.data?.runtime &&
-        "marker" in window.syncRecoveryBrowserFixtureSnapshot.data.runtime
-          ? window.syncRecoveryBrowserFixtureSnapshot.data.runtime.marker
-          : undefined,
+      await page.evaluate(
+        () => window.syncRecoveryBrowserFixtureSnapshot.data!.runtime.marker,
       ),
       "replicated",
       "An empty pull clears stale errors without a new snapshot",
@@ -194,20 +184,20 @@ test("Sync recovery browser", async ({
         return null;
       } catch (error) {
         return {
-          name: error instanceof Error ? error.name : "",
-          message: error instanceof Error ? error.message : String(error),
+          name: (error as Error).name,
+          message: (error as Error).message,
           elapsed: performance.now() - start,
         };
       }
     });
     hangSession = false;
-    assert.ok(timeout);
+
     assert.equal(
-      timeout.name,
+      timeout!.name,
       "NetworkTimeoutError",
       `Timeout result: ${JSON.stringify(timeout)}`,
     );
-    assert.ok(timeout.elapsed < 2000);
+    assert.ok(timeout!.elapsed < 2000);
     const body = {
       id: "receipt-check",
       room: "lead",
@@ -311,11 +301,11 @@ test("Sync recovery browser", async ({
           text: "Do not cross workspaces",
         });
       } catch (error) {
-        return error instanceof Error ? error.message : String(error);
+        return (error as Error).message;
       }
     });
-    assert.ok(rejected);
-    assert.match(rejected, /workspace changed/);
+
+    assert.match(rejected!, /workspace changed/);
     assert.equal(sends.length, beforeSwitch);
     assert.deepEqual(errors, []);
     console.log(

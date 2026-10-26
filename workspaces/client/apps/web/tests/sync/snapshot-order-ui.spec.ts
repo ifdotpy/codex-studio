@@ -2,7 +2,6 @@ import { installSnapshotOrderProbe } from "./snapshot-order.fixture.ts";
 import {
   legacyMutationDocuments,
   fixtureProtocol,
-  fixtureObject,
   fixtureRequestId,
 } from "./entity-fixture-protocol.ts";
 import type { Page, Route } from "@playwright/test";
@@ -50,14 +49,14 @@ async function runSnapshotOrderUi(
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
-  assert.ok(lead);
+
   const worker = initial.threads.find(
-    (agent) => agent.rootId === lead.id && agent.name === "Worker 00",
+    (agent) => agent.rootId === lead!.id && agent.name === "Worker 00",
   );
-  assert.ok(worker);
+
   const seededWorker = await fixtureCommand("snapshot-revision-0", {
     operation: "rename",
-    agent: worker.id,
+    agent: worker!.id,
     name: "Worker revision 0",
   });
   assert.equal(
@@ -82,10 +81,8 @@ async function runSnapshotOrderUi(
   let revision = 0,
     holdNext = false,
     currentFailure = false;
-  const held: {
-    oldRequest?: { route: Route; revision: number };
-    pendingAnswer?: Route;
-  } = {};
+  let oldRequest: { route: Route; revision: number } | null = null;
+  let pendingAnswer: Route | undefined;
   const mutationSequences = new Map<number, number>();
   await page.route("**/api/sync/pull?*", async (route) => {
     const url = new URL(route.request().url());
@@ -104,7 +101,7 @@ async function runSnapshotOrderUi(
     requests.push({ revision, held: holdNext, failure: currentFailure });
     if (holdNext) {
       holdNext = false;
-      held.oldRequest = { route, revision };
+      oldRequest = { route, revision };
       return;
     }
     await route.fulfill(
@@ -117,7 +114,7 @@ async function runSnapshotOrderUi(
     const fixtureId = `snapshot-revision-${revision}`;
     const committed = await fixtureCommand(fixtureId, {
       operation: "rename",
-      agent: worker.id,
+      agent: worker!.id,
       name: `Worker revision ${revision}`,
       status: ["queued", "running", "failed"][revision],
     });
@@ -135,13 +132,13 @@ async function runSnapshotOrderUi(
     });
   });
   await page.route("**/api/answer", async (route) => {
-    held.pendingAnswer = route;
+    pendingAnswer = route;
   });
   await page.addInitScript(installSnapshotOrderProbe);
   await page.goto(origin);
-  await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.locator(`[data-chat="${lead!.id}"]`).click();
   await page.locator("#team-toggle").click();
-  const workerButton = page.locator(`[data-worker="${worker.id}"]`);
+  const workerButton = page.locator(`[data-worker="${worker!.id}"]`);
   await workerButton.getByText("Worker revision 0", { exact: true }).waitFor();
 
   // The real Mantine loading state must not translate the button label.
@@ -188,10 +185,7 @@ async function runSnapshotOrderUi(
       state.frames =
         state.previous &&
         current.every(
-          (value, index) =>
-            Math.abs(
-              value - (state.previous?.[index] ?? Number.NaN ?? Number.NaN),
-            ) < 0.1,
+          (value, index) => Math.abs(value - state.previous![index]) < 0.1,
         )
           ? state.frames + 1
           : 0;
@@ -350,8 +344,7 @@ async function runSnapshotOrderUi(
       state.frames =
         state.previous &&
         current.every(
-          (value, index) =>
-            Math.abs(value - (state.previous?.[index] ?? Number.NaN)) < 0.1,
+          (value, index) => Math.abs(value - state.previous![index]) < 0.1,
         )
           ? state.frames + 1
           : 0;
@@ -371,10 +364,7 @@ async function runSnapshotOrderUi(
     window.__snapshotOrderLabelFrames.phase = "loading";
   });
   await answer.click();
-  const pendingAnswer = await waitFor(
-    () => held.pendingAnswer,
-    "Answer request reaches the held route",
-  );
+  await waitFor(() => pendingAnswer, "Answer request reaches the held route");
   await page.waitForFunction(() =>
     document.querySelector(
       '.request-answer-actions button[data-loading="true"]',
@@ -386,7 +376,7 @@ async function runSnapshotOrderUi(
     "Loading keeps the inner button transform unset",
   );
   const during = await label.boundingBox();
-  assert.ok(before && during);
+
   const geometryFrames = await page.evaluate(() => {
     const record = window.__snapshotOrderLabelFrames;
     record.phase = "done";
@@ -420,7 +410,7 @@ async function runSnapshotOrderUi(
 
   for (const key of ["x", "y", "width", "height"] as const)
     assert.ok(
-      Math.abs(before[key] - during[key]) <= 1,
+      Math.abs(before![key] - during![key]) <= 1,
       `Loading label ${key} stays stable; before=${JSON.stringify(before)}, during=${JSON.stringify(during)}, frames=${JSON.stringify(geometryFrames)}`,
     );
   const requestId = fixtureRequestId(pendingAnswer.request().postDataJSON());
@@ -443,20 +433,14 @@ async function runSnapshotOrderUi(
   await pendingAnswer.fulfill({ response: serverAnswer, json: answerResponse });
   await card.waitFor({ state: "hidden" });
   assert.ok(
-    mutationDocuments?.some(
-      (document) =>
-        document.id === serverTombstone.id &&
-        "_deleted" in document &&
-        document._deleted,
+    mutationDocuments!.some(
+      (document) => document.id === serverTombstone.id && document._deleted,
     ),
   );
   assert.equal(
     entityPulls.some((pull) =>
       pull.documents.some(
-        (document) =>
-          document.id === serverTombstone.id &&
-          "_deleted" in document &&
-          document._deleted,
+        (document) => document.id === serverTombstone.id && document._deleted,
       ),
     ),
     false,
@@ -464,13 +448,10 @@ async function runSnapshotOrderUi(
   );
 
   for (const oldFailure of [false, true]) {
-    delete held.oldRequest;
+    oldRequest = null;
     holdNext = true;
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    const oldRequest = await waitFor(
-      () => held.oldRequest,
-      "Background snapshot poll is held",
-    );
+    await waitFor(() => oldRequest, "Background snapshot poll is held");
     const oldRevision = revision;
     revision++;
     const newerSession = page
@@ -498,30 +479,14 @@ async function runSnapshotOrderUi(
                   version.entityChanges?.documents?.some((document) => {
                     if (document.id !== `entity:agent:${workerId}`)
                       return false;
-                    if (
-                      !("payload" in document) ||
-                      typeof document.payload !== "string"
-                    )
-                      return false;
-                    const payload: unknown = JSON.parse(document.payload);
-                    if (
-                      !payload ||
-                      typeof payload !== "object" ||
-                      !("value" in payload)
-                    )
-                      return false;
-                    const value = payload.value;
                     return (
-                      !!value &&
-                      typeof value === "object" &&
-                      "name" in value &&
-                      value.name === expectedName
+                      JSON.parse(document.payload).value.name === expectedName
                     );
                   }),
                 ),
               ),
             {
-              workerId: worker.id,
+              workerId: worker!.id,
               expectedName: `Worker revision ${revision}`,
             },
           ),
@@ -530,12 +495,8 @@ async function runSnapshotOrderUi(
     const workerRows = committedFrame.frame.resourceVersions.flatMap(
       (version) =>
         (version.entityChanges?.documents ?? []).flatMap((document) => {
-          if (document.id !== `entity:agent:${worker.id}`) return [];
-          if (!("payload" in document) || typeof document.payload !== "string")
-            return [];
-          const value = fixtureObject(
-            fixtureObject(JSON.parse(document.payload)).value,
-          );
+          if (document.id !== `entity:agent:${worker!.id}`) return [];
+          const value = JSON.parse(document.payload).value;
           return [{ seq: document.seq, name: value.name }];
         }),
     );
@@ -544,8 +505,7 @@ async function runSnapshotOrderUi(
     )?.seq;
     const committedMutationSequence = mutationSequences.get(revision);
     assert.ok(
-      committedWorkerSequence !== undefined &&
-        Number.isSafeInteger(committedWorkerSequence) &&
+      Number.isSafeInteger(committedWorkerSequence) &&
         committedWorkerSequence === committedMutationSequence &&
         committedWorkerSequence > seededWorker.seq,
       "The pushed worker entity matches the committed mutation sequence and advances the seeded entity",

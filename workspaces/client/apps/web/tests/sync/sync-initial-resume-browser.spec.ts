@@ -1,3 +1,5 @@
+import type { GetResult } from "../../src/apiTypes.ts";
+import type { FixturePullResponse } from "./helpers.ts";
 import { fixtureOrigin } from "./helpers.ts";
 // A saved partial first-page marker reconstructs its original baseline.
 import assert from "node:assert/strict";
@@ -19,8 +21,8 @@ test("sync initial resume browser", async ({ page }) => {
     const workspaceId = "a".repeat(32);
     const pulls: Record<string, string>[] = [];
     const live = Array.from({ length: 499 }, (_, index) => ({
-      op: "upsert",
-      collection: "agent",
+      op: "upsert" as const,
+      collection: "agent" as const,
       id: `worker-${index}`,
       value: { id: `worker-${index}`, name: `Worker ${index}` },
       seq: index + 2,
@@ -32,7 +34,12 @@ test("sync initial resume browser", async ({ page }) => {
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          GetResult<"/api/sync/identity">,
+          "workspaceId"
+        >,
+      }),
     );
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
@@ -59,6 +66,18 @@ test("sync initial resume browser", async ({ page }) => {
           checkpoint: { seq: 601 },
           maxSeq: 601,
           initialHigh: 600,
+        } satisfies Omit<FixturePullResponse, "documents"> & {
+          documents: (Pick<
+            import("../playwright.ts").SyncEntity,
+            "op" | "collection" | "id" | "seq"
+          > & {
+            value: Partial<
+              Extract<
+                import("../playwright.ts").SyncEntity,
+                { collection: "agent"; op: "upsert" }
+              >["value"]
+            >;
+          })[];
         },
       });
     });
@@ -134,7 +153,6 @@ test("sync initial resume browser", async ({ page }) => {
           ["entity:agent:stale"],
           true,
         );
-        if (!row) throw new Error("Missing stale projection");
         return row._deleted;
       }),
       true,

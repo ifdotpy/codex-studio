@@ -128,10 +128,8 @@ test("draft pull waits for a real trigger without blocking push recovery", async
               error
                 ? {
                     code:
-                      typeof error === "object" &&
-                      error !== null &&
-                      "code" in error
-                        ? error.code
+                      typeof error === "object"
+                        ? (error as Error & { code?: string }).code
                         : undefined,
                     message: String(error),
                   }

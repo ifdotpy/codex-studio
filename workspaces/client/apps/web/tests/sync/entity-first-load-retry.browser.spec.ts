@@ -56,10 +56,10 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
     after: string | null;
   }[] = [];
   const pullDocumentCounts: number[] = [];
-  const {
-    promise: firstConnectedStream,
-    resolve: resolveFirstConnectedStream,
-  } = Promise.withResolvers<void>();
+  let resolveFirstConnectedStream: () => void;
+  const firstConnectedStream = new Promise<void>((resolve) => {
+    resolveFirstConnectedStream = resolve;
+  });
   const entityDocument = (): SyncEntity => ({
     op: "upsert",
     collection: "agent",
@@ -78,7 +78,7 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://fixture.local");
+      const url = new URL(req.url!, "http://fixture.local");
       requests.push(`${req.method} ${url.pathname}${url.search}`);
       if (url.pathname === "/check") {
         res.end("<!doctype html><div id='root'></div>");
@@ -129,7 +129,7 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
             );
             const stream = { res, resources };
             streams.add(stream);
-            resolveFirstConnectedStream();
+            resolveFirstConnectedStream!();
             res.on("close", () => streams.delete(stream));
           };
           if (streamHeadersDelayMs > 0)
@@ -448,7 +448,7 @@ test("bounds retries for a permanent 503", async ({ page }) => {
     );
     await page.waitForTimeout(6_000);
     const offsets = fixture.pullAttempts.map((attempt) =>
-      Number((attempt.at - (fixture.pullAttempts[0]?.at ?? 0)).toFixed(1)),
+      Number((attempt.at - fixture.pullAttempts[0].at).toFixed(1)),
     );
     assert.ok(
       fixture.counts.pull <= 10,
@@ -509,6 +509,7 @@ test("clears a later subscription error after a successful pull", async ({
         timeout: 10_000,
       },
     );
+
     assert.ok(
       await page.evaluate(
         () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,

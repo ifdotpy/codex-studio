@@ -208,7 +208,6 @@ const runSyncCrossTabScenario = async (
   let noCoordination: Page | undefined;
   let otherWorkspaceContext: BrowserContext | undefined;
   const pages: Page[] = [];
-  const pageAt = (index: number) => requiredEntry(pages, index);
   const waitFor = async (
     predicate: () => boolean | Promise<boolean>,
     message: string,
@@ -262,11 +261,11 @@ const runSyncCrossTabScenario = async (
           super(...args);
           window.crossTabDiagnostics.sources.push(this);
           this.addEventListener("message", (event) =>
-            window.crossTabDiagnostics.sse.push(String(event.data)),
+            window.crossTabDiagnostics.sse.push(event.data),
           );
           for (const name of ["resources", "heartbeat", "token-rates"])
             this.addEventListener(name, (event) =>
-              window.crossTabDiagnostics.sse.push(String(event.data)),
+              window.crossTabDiagnostics.sse.push(event.data),
             );
         }
       };
@@ -362,7 +361,7 @@ const runSyncCrossTabScenario = async (
     const beforeForeignSchemaMessage = await Promise.all(
       pages.map((page) => page.evaluate(() => ({ ...window.crossTabCounts }))),
     );
-    await pageAt(7).evaluate(async (currentWorkspace) => {
+    await pages[7].evaluate(async (currentWorkspace) => {
       const { API_SCHEMA_HASH } = await import("/src/generated/apiSchema.ts");
       const { resourceCoordinationNames } =
         await import("/src/sync/resourceConnection.ts");
@@ -439,7 +438,7 @@ const runSyncCrossTabScenario = async (
             (prior) =>
               window.crossTabCounts.transcripts > prior.transcripts &&
               window.crossTabCounts.state === prior.state,
-            requiredEntry(before, index),
+            before[index],
             { timeout: 5000 },
           ),
         ),
@@ -460,7 +459,7 @@ const runSyncCrossTabScenario = async (
       );
       throw error;
     }
-    await pageAt(0).evaluate(async () => {
+    await pages[0].evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.crossTabQueueCallbacks = 0;
       window.crossTabStopQueueCallbacks = client.watchResourceChanges(
@@ -468,7 +467,7 @@ const runSyncCrossTabScenario = async (
         () => window.crossTabQueueCallbacks++,
       );
     });
-    await pageAt(2).evaluate(async () => {
+    await pages[2].evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.crossTabCostCallbacks = 0;
       window.crossTabStopCostCallbacks = client.watchResourceChanges(
@@ -477,18 +476,18 @@ const runSyncCrossTabScenario = async (
       );
     });
     await Promise.all([
-      pageAt(0).waitForFunction(() => window.crossTabQueueCallbacks > 0),
-      pageAt(2).waitForFunction(() => window.crossTabCostCallbacks > 0),
+      pages[0].waitForFunction(() => window.crossTabQueueCallbacks > 0),
+      pages[2].waitForFunction(() => window.crossTabCostCallbacks > 0),
     ]);
-    const costBeforeUnrelated = await pageAt(2).evaluate(
+    const costBeforeUnrelated = await pages[2].evaluate(
       () => window.crossTabCostCallbacks,
     );
     sendChange(workspaceId, { kind: "costs" });
-    await pageAt(2).waitForFunction(
+    await pages[2].waitForFunction(
       (prior) => window.crossTabCostCallbacks > prior,
       costBeforeUnrelated,
     );
-    const queueFollower = pageAt(1);
+    const queueFollower = pages[1];
     await queueFollower.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.crossTabLateQueueCallbacks = 0;
@@ -522,11 +521,11 @@ const runSyncCrossTabScenario = async (
     const stableQueueCallbacks = await queueFollower.evaluate(
       () => window.crossTabLateQueueCallbacks,
     );
-    const costBeforeHeartbeat = await pageAt(2).evaluate(
+    const costBeforeHeartbeat = await pages[2].evaluate(
       () => window.crossTabCostCallbacks,
     );
     sendChange(workspaceId, { kind: "costs" });
-    await pageAt(2).waitForFunction(
+    await pages[2].waitForFunction(
       (prior) => window.crossTabCostCallbacks > prior,
       costBeforeHeartbeat,
     );
@@ -548,7 +547,7 @@ const runSyncCrossTabScenario = async (
       ),
     );
     const takeoverSubscriberIndex = initialOwnerIndex === 1 ? 0 : 1;
-    await pageAt(takeoverSubscriberIndex).evaluate(async () => {
+    await pages[takeoverSubscriberIndex].evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.crossTabTakeoverQueueCallbacks = 0;
       window.crossTabStopTakeoverQueue = client.watchResourceChanges(
@@ -567,8 +566,8 @@ const runSyncCrossTabScenario = async (
         ),
       "the original owner did not learn the second tab's unique queue subscription",
     );
-    await pageAt(0).evaluate(() => window.crossTabStopQueueCallbacks());
-    await pageAt(2).evaluate(() => window.crossTabStopCostCallbacks());
+    await pages[0].evaluate(() => window.crossTabStopQueueCallbacks());
+    await pages[2].evaluate(() => window.crossTabStopCostCallbacks());
     await queueFollower.evaluate(() => window.crossTabStopLateQueue());
     const streamsBeforeHidingOwner = streamsOpened;
     const requestsBeforeHidingOwner = streamRequestRecords.length;
@@ -593,7 +592,7 @@ const runSyncCrossTabScenario = async (
         ),
       ),
     );
-    await pageAt(initialOwnerIndex).evaluate(() => {
+    await pages[initialOwnerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
         value: true,
@@ -601,7 +600,7 @@ const runSyncCrossTabScenario = async (
       document.dispatchEvent(new Event("visibilitychange"));
     });
     try {
-      await pageAt(initialOwnerIndex).waitForFunction(
+      await pages[initialOwnerIndex].waitForFunction(
         () =>
           window.crossTabDiagnostics.sources.every(
             (source) => source.readyState === EventSource.CLOSED,
@@ -667,24 +666,22 @@ const runSyncCrossTabScenario = async (
         ),
       );
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; ${JSON.stringify(
-          {
-            streamsOpened,
-            streamsBeforeHidingOwner,
-            streamCount: streams.size,
-            diagnostics: diagnostics.map((entry) => ({
-              hidden: entry.hidden,
-              states: entry.states,
-              openSources: entry.sources.filter(
-                (source) => source.readyState === 1,
-              ).length,
-              sentKinds: entry.sent.map((message) => message.kind || "other"),
-              receivedKinds: entry.received.map(
-                (message) => message.kind || "other",
-              ),
-            })),
-          },
-        )}`,
+        `${(error as Error).message}; ${JSON.stringify({
+          streamsOpened,
+          streamsBeforeHidingOwner,
+          streamCount: streams.size,
+          diagnostics: diagnostics.map((entry) => ({
+            hidden: entry.hidden,
+            states: entry.states,
+            openSources: entry.sources.filter(
+              (source) => source.readyState === 1,
+            ).length,
+            sentKinds: entry.sent.map((message) => message.kind || "other"),
+            receivedKinds: entry.received.map(
+              (message) => message.kind || "other",
+            ),
+          })),
+        })}`,
       );
     }
     assert.ok(
@@ -737,17 +734,14 @@ const runSyncCrossTabScenario = async (
           resource.agentId === "takeover-unique-queue",
       );
     assert.ok(
-      hasUniqueQueue(
-        requiredEntry(takeoverRequests, takeoverRequests.length - 1).resources,
-      ),
+      hasUniqueQueue(takeoverRequests[takeoverRequests.length - 1].resources),
       `the final takeover query contains the subscribed queue: ${JSON.stringify(takeoverRequests)}`,
     );
     let takeoverSequence;
     for (let index = 0; index < takeoverRequests.length - 1; index++) {
       assert.ok(
-        (requiredEntry(takeoverRequests, index).closedAt ??
-          Number.POSITIVE_INFINITY) <=
-          requiredEntry(takeoverRequests, index + 1).openedAt,
+        (takeoverRequests[index].closedAt ?? Number.POSITIVE_INFINITY) <=
+          takeoverRequests[index + 1].openedAt,
         `takeover never has two open streams at once: ${JSON.stringify(takeoverRequests)}`,
       );
     }
@@ -755,25 +749,24 @@ const runSyncCrossTabScenario = async (
       takeoverSequence = "one request opens with the peer subscription union";
     } else if (takeoverRequests.length === 2) {
       const sameQuery =
-        requiredEntry(takeoverRequests, 0).resourceQuery ===
-        requiredEntry(takeoverRequests, 1).resourceQuery;
+        takeoverRequests[0].resourceQuery === takeoverRequests[1].resourceQuery;
       if (sameQuery) {
         takeoverSequence =
           "duplicate identical union query; first stream was replaced";
       } else {
         assert.equal(
-          hasUniqueQueue(requiredEntry(takeoverRequests, 0).resources),
+          hasUniqueQueue(takeoverRequests[0].resources),
           false,
           `the first query is local-only before the peer's queue is discovered: ${JSON.stringify(takeoverRequests)}`,
         );
         assert.ok(
-          requiredEntry(takeoverRequests, 0).resources.every((resource) =>
-            requiredEntry(takeoverRequests, 1).resources.some(
+          takeoverRequests[0].resources.every((resource) =>
+            takeoverRequests[1].resources.some(
               (entry) => JSON.stringify(entry) === JSON.stringify(resource),
             ),
           ) &&
-            requiredEntry(takeoverRequests, 0).resources.length <
-              requiredEntry(takeoverRequests, 1).resources.length,
+            takeoverRequests[0].resources.length <
+              takeoverRequests[1].resources.length,
           `the replacement query extends the first query with discovered peer subscriptions: ${JSON.stringify(takeoverRequests)}`,
         );
         takeoverSequence =
@@ -797,9 +790,9 @@ const runSyncCrossTabScenario = async (
       "the sole active stream carries the new owner's local resources plus the discovered peer queue",
     );
     const takeoverOwnerIndex = openSourcesByPage.findIndex((count) => count);
-    const peerQueueArrivedBeforeFirstOpen = await pageAt(
-      takeoverOwnerIndex,
-    ).evaluate(
+    const peerQueueArrivedBeforeFirstOpen = await pages[
+      takeoverOwnerIndex
+    ].evaluate(
       (firstOpenAt) =>
         window.crossTabDiagnostics.received.some(
           (message) =>
@@ -811,7 +804,7 @@ const runSyncCrossTabScenario = async (
                 resource.agentId === "takeover-unique-queue",
             ),
         ),
-      requiredEntry(takeoverRequests, 0).openedAt,
+      takeoverRequests[0].openedAt,
     );
     process.stdout.write(
       `TAKEOVER_STREAM_SEQUENCE ${JSON.stringify({
@@ -848,8 +841,7 @@ const runSyncCrossTabScenario = async (
         ),
         openIntervalMs:
           takeoverRequests.length > 1
-            ? requiredEntry(takeoverRequests, 1).openedAt -
-              requiredEntry(takeoverRequests, 0).openedAt
+            ? takeoverRequests[1].openedAt - takeoverRequests[0].openedAt
             : undefined,
         activeStreamsAtEnd: streams.size,
       })}\n`,
@@ -868,24 +860,24 @@ const runSyncCrossTabScenario = async (
         ),
       "the replacement owner did not rediscover the surviving peer's unique queue",
     );
-    const takeoverQueueBefore = await pageAt(takeoverSubscriberIndex).evaluate(
+    const takeoverQueueBefore = await pages[takeoverSubscriberIndex].evaluate(
       () => window.crossTabTakeoverQueueCallbacks,
     );
     sendChange(workspaceId, {
       kind: "queue",
       agentId: "takeover-unique-queue",
     });
-    await pageAt(takeoverSubscriberIndex).waitForFunction(
+    await pages[takeoverSubscriberIndex].waitForFunction(
       (previous) => window.crossTabTakeoverQueueCallbacks > previous,
       takeoverQueueBefore,
       { timeout: 5000 },
     );
-    const takeoverQueueAfterChange = await pageAt(
-      takeoverSubscriberIndex,
-    ).evaluate(() => window.crossTabTakeoverQueueCallbacks);
-    await pageAt(takeoverSubscriberIndex).waitForTimeout(3500);
+    const takeoverQueueAfterChange = await pages[
+      takeoverSubscriberIndex
+    ].evaluate(() => window.crossTabTakeoverQueueCallbacks);
+    await pages[takeoverSubscriberIndex].waitForTimeout(3500);
     assert.equal(
-      await pageAt(takeoverSubscriberIndex).evaluate(
+      await pages[takeoverSubscriberIndex].evaluate(
         () => window.crossTabTakeoverQueueCallbacks,
       ),
       takeoverQueueAfterChange,
@@ -907,7 +899,7 @@ const runSyncCrossTabScenario = async (
         (_, index) =>
           index !== resumedOwnerIndex && index !== initialOwnerIndex,
       );
-      const follower = pageAt(followerIndex);
+      const follower = pages[followerIndex];
       await follower.evaluate(async () => {
         Object.defineProperty(document, "hidden", {
           configurable: true,
@@ -969,8 +961,8 @@ const runSyncCrossTabScenario = async (
         { timeout: 5000 },
       );
       await follower.evaluate(() => window.crossTabStopResumedQueue());
-      await pageAt(1).evaluate(() => window.crossTabStopTakeoverQueue());
-      await pageAt(initialOwnerIndex).evaluate(() => {
+      await pages[1].evaluate(() => window.crossTabStopTakeoverQueue());
+      await pages[initialOwnerIndex].evaluate(() => {
         Object.defineProperty(document, "hidden", {
           configurable: true,
           value: false,
@@ -991,7 +983,7 @@ const runSyncCrossTabScenario = async (
       const resumedOwnerConvergence = {
         waitPassed: !duplicateWaitError,
         streams: [...streamResources.values()],
-        resumedOwnerSources: await pageAt(initialOwnerIndex).evaluate(() =>
+        resumedOwnerSources: await pages[initialOwnerIndex].evaluate(() =>
           window.crossTabDiagnostics.sources.map((source) => ({
             readyState: source.readyState,
             url: source.url,
@@ -1033,7 +1025,7 @@ const runSyncCrossTabScenario = async (
             resourcesDuringOverlap,
             streamsAfterTenSeconds,
             resources: [...streamResources.values()],
-            resumedOwnerSources: await pageAt(initialOwnerIndex).evaluate(() =>
+            resumedOwnerSources: await pages[initialOwnerIndex].evaluate(() =>
               window.crossTabDiagnostics.sources.map((source) => ({
                 readyState: source.readyState,
                 url: source.url,
@@ -1071,7 +1063,7 @@ const runSyncCrossTabScenario = async (
       if (duplicateWaitError) throw duplicateWaitError;
       return;
     }
-    await pageAt(1).evaluate(() => window.crossTabStopTakeoverQueue());
+    await pages[1].evaluate(() => window.crossTabStopTakeoverQueue());
     const beforeOffline = await Promise.all(
       pages.map((page) => page.evaluate(() => ({ ...window.crossTabCounts }))),
     );
@@ -1098,7 +1090,7 @@ const runSyncCrossTabScenario = async (
               (!needsState || window.crossTabCounts.state > prior.state) &&
               window.crossTabCounts.transcripts > prior.transcripts,
             {
-              prior: requiredEntry(beforeOffline, index),
+              prior: beforeOffline[index],
               needsState: index < 8,
             },
             { timeout: 5000 },
@@ -1135,20 +1127,18 @@ const runSyncCrossTabScenario = async (
     if (checkDuplicateBaseline) {
       for (let index = 0; index < pages.length; index++) {
         const expected = {
-          state:
-            requiredEntry(beforeOffline, index).state +
-            Number(hadStateWatch[index]),
-          transcripts: requiredEntry(beforeOffline, index).transcripts + 1,
+          state: beforeOffline[index].state + Number(hadStateWatch[index]),
+          transcripts: beforeOffline[index].transcripts + 1,
         };
         assert.deepEqual(
-          requiredEntry(afterRecovery, index).counts,
+          afterRecovery[index].counts,
           expected,
           `tab ${index} reconciles its unchanged same-version resume baseline exactly once`,
         );
       }
       const duplicateWindowStartedAt = Date.now();
       sendSameVersionBaselineToStreams(workspaceId);
-      await pageAt(0).waitForTimeout(3500);
+      await pages[0].waitForTimeout(3500);
       const duplicateWindowEndedAt = Date.now();
       const afterDuplicateAudit = await Promise.all(
         pages.map((page) =>
@@ -1213,7 +1203,7 @@ const runSyncCrossTabScenario = async (
       ),
     );
     const replacementFollowerIndex = streamOwnerIndex === 0 ? 1 : 0;
-    await pageAt(replacementFollowerIndex).evaluate(() => {
+    await pages[replacementFollowerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
         value: false,
@@ -1223,9 +1213,9 @@ const runSyncCrossTabScenario = async (
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(streams.size, 1, "one owner stream remains before failover");
     assert.equal(
-      await pageAt(streamOwnerIndex).evaluate(
+      await pages[streamOwnerIndex].evaluate(
         async (name) =>
-          ((await navigator.locks.query()).held || []).some(
+          (await navigator.locks.query()).held!.some(
             (lock) => lock.name === name,
           ),
         streamLockName,
@@ -1235,7 +1225,7 @@ const runSyncCrossTabScenario = async (
     );
     const failoverStarted = Date.now();
     const streamsOpenedBeforeFailover = streamsOpened;
-    await pageAt(streamOwnerIndex).close();
+    await pages[streamOwnerIndex].close();
     pages.splice(streamOwnerIndex, 1);
     await waitFor(
       () =>
@@ -1267,7 +1257,7 @@ const runSyncCrossTabScenario = async (
         return index;
       }),
     );
-    await pageAt(workspaceOwnerIndex).evaluate(() => {
+    await pages[workspaceOwnerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
         value: false,
@@ -1309,7 +1299,7 @@ const runSyncCrossTabScenario = async (
         ),
       );
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; workspace stream diagnostic: ${JSON.stringify({ streamsOpened, activeWorkspaces: [...streams].map((response) => streamWorkspaces.get(response)), diagnostics })}`,
+        `${(error as Error).message}; workspace stream diagnostic: ${JSON.stringify({ streamsOpened, activeWorkspaces: [...streams].map((response) => streamWorkspaces.get(response)), diagnostics })}`,
       );
     }
     assert.equal(
@@ -1333,7 +1323,7 @@ const runSyncCrossTabScenario = async (
               (!window.crossTabHasStateWatch ||
                 window.crossTabCounts.state > prior.state) &&
               window.crossTabCounts.transcripts > prior.transcripts,
-            requiredEntry(beforeWorkspaceMove, index),
+            beforeWorkspaceMove[index],
             { timeout: 4500 },
           ),
         ),
@@ -1359,7 +1349,7 @@ const runSyncCrossTabScenario = async (
     otherWorkspaceContext = undefined;
     await context.close();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(Number(streams.size)).toBe(0);
+    expect(streams.size).toBe(0);
     noCoordination = await browser.newPage();
     await noCoordination.addInitScript(() => {
       Object.defineProperty(window, "BroadcastChannel", { value: undefined });
@@ -1424,12 +1414,6 @@ test("resumed former owner closes its duplicate stream @performance", async ({
   test.setTimeout(180_000);
   await runSyncCrossTabScenario(browser, true);
 });
-
-function requiredEntry<T>(items: readonly T[], index: number): T {
-  const item = items[index];
-  assert.ok(item !== undefined, `Missing fixture entry at index ${index}`);
-  return item;
-}
 
 type CrossTabCounts = { state: number; transcripts: number };
 declare global {
