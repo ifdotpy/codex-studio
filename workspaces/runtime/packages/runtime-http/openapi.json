@@ -16052,6 +16052,11 @@
             "title": "Showmessageavatars",
             "type": "boolean"
           },
+          "showTerminals": {
+            "default": true,
+            "title": "Showterminals",
+            "type": "boolean"
+          },
           "sidebarFontSize": {
             "default": 14,
             "maximum": 24,

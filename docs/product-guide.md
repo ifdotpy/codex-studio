@@ -543,6 +543,9 @@ The sidebar has one close control on both desktop and mobile layouts.
 the same account manager as the chat menu: add accounts, view saved accounts,
 remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
 text size, transcript width, message author icons, and sidebar shortcut preferences.
+In **Appearance**, **Show terminals** hides or shows the Terminals section.
+Terminals are visible by default. The choice syncs with Studio preferences and
+survives reloads; hiding the section leaves terminal sessions running.
 
 The **Models** tab controls which models appear in this server's pickers. Its
 compact grid fills the available width and wraps to fewer columns on phones.

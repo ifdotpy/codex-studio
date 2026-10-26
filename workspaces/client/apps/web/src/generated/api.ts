@@ -8757,6 +8757,11 @@ export interface components {
        */
       showMessageAvatars?: boolean | undefined;
       /**
+       * Showterminals
+       * @default true
+       */
+      showTerminals?: boolean | undefined;
+      /**
        * Sidebarfontsize
        * @default 14
        */
