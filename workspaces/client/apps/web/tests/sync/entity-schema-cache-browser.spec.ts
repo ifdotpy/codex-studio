@@ -4,6 +4,7 @@ import type { components } from "../../src/generated/api.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
 import { fixtureOrigin, fixtureResources, fixturePostBody } from "./helpers.ts";
 import type { Connect } from "vite";
+type ResourceRef = components["schemas"]["ResourceRef"];
 type Projection = components["schemas"]["SyncDocument"];
 type ResourceRevisionEntry = components["schemas"]["ResourceRevisionEntry"];
 type EntityChangeBatch = components["schemas"]["EntityChangeBatch"];
@@ -154,8 +155,9 @@ test.describe("legacy schema mismatch", () => {
       sessionStreams.set(frame.sessionId, response);
       response.write(
         apiSchemaHandshakeSse(
-          protocol3SseEvent("session", { sessionId: frame.sessionId }) +
-            frame.body,
+          protocol3SseEvent("session", {
+            sessionId: frame.sessionId,
+          } satisfies components["schemas"]["SyncSessionEvent"]) + frame.body,
           { hash: frame.hash },
         ),
       );
@@ -202,7 +204,9 @@ test.describe("legacy schema mismatch", () => {
         return route.fulfill({
           status: 426,
           headers: { [API_SCHEMA_HASH_HEADER]: activeHash },
-          json: { error: "Renderer schema mismatch" },
+          json: {
+            error: "Renderer schema mismatch",
+          } satisfies components["schemas"]["ErrorResponse"],
         });
       if (
         requestUrl.pathname === "/api/sync/pull" &&
@@ -237,7 +241,11 @@ test.describe("legacy schema mismatch", () => {
         const { workspaceId }: GetResult<"/api/sync/identity"> = await fetch(
           new URL("/api/sync/identity", backendOrigin),
         ).then((response) => response.json());
-        stream.write(protocol3SseEvent("subscriptions", { gen: change.gen }));
+        stream.write(
+          protocol3SseEvent("subscriptions", {
+            gen: change.gen,
+          } satisfies components["schemas"]["SyncSubscriptionAck"]),
+        );
         if (resources.length)
           stream.write(
             protocol3SseEvent("resources", {
@@ -249,16 +257,11 @@ test.describe("legacy schema mismatch", () => {
               resources,
               resourceVersions: resources.map(
                 (resource) =>
-                  baselines.find(
-                    (entry) =>
-                      entry.resource?.kind === resource.kind &&
-                      ("agentId" in (entry.resource || {})
-                        ? Reflect.get(entry.resource || {}, "agentId")
-                        : undefined) ===
-                        ("agentId" in resource ? resource.agentId : undefined),
+                  baselines.find((entry) =>
+                    fixtureResourceMatches(entry.resource, resource),
                   ) || { resource, revision: 1 },
               ),
-            }),
+            } satisfies components["schemas"]["ResourceChangeEvent"]),
           );
         return route.fulfill({
           status: 200,
@@ -331,13 +334,8 @@ test.describe("legacy schema mismatch", () => {
                       replyKind: "delta",
                     }
                   : undefined) ||
-                detailVersions.find(
-                  (entry) =>
-                    entry.resource?.kind === resource.kind &&
-                    ("agentId" in (entry.resource || {})
-                      ? Reflect.get(entry.resource || {}, "agentId")
-                      : undefined) ===
-                      ("agentId" in resource ? resource.agentId : undefined),
+                detailVersions.find((entry) =>
+                  fixtureResourceMatches(entry.resource, resource),
                 ) || { resource, revision: 1 },
             );
           streamDiagnostics.push({
@@ -358,7 +356,7 @@ test.describe("legacy schema mismatch", () => {
             reason: "initial",
             resources: initialResources,
             resourceVersions,
-          });
+          } satisfies components["schemas"]["ResourceChangeEvent"]);
         }
         let pendingChange: PendingChange | undefined;
         if (
@@ -389,7 +387,7 @@ test.describe("legacy schema mismatch", () => {
                 entityChanges,
               },
             ],
-          });
+          } satisfies components["schemas"]["ResourceChangeEvent"]);
           pendingChange = {
             body: changeBody,
             sequence: entitySequence,
@@ -419,7 +417,9 @@ test.describe("legacy schema mismatch", () => {
         return route.fulfill({
           status: 503,
           headers: { [API_SCHEMA_HASH_HEADER]: activeHash },
-          json: { error: "temporary first pull failure" },
+          json: {
+            error: "temporary first pull failure",
+          } satisfies components["schemas"]["ErrorResponse"],
         });
       }
       try {
@@ -460,7 +460,9 @@ test.describe("legacy schema mismatch", () => {
         return route.fulfill({
           status: 503,
           headers: { [API_SCHEMA_HASH_HEADER]: activeHash },
-          json: { error: `Fixture request failed: ${String(error)}` },
+          json: {
+            error: `Fixture request failed: ${String(error)}`,
+          } satisfies components["schemas"]["ErrorResponse"],
         });
       }
     });
@@ -1171,4 +1173,16 @@ function fixtureCursors(
   return JSON.parse(
     value || "[]",
   ) as components["schemas"]["SubscriptionAdd"][];
+}
+
+/** Preserve the fixture's kind/agent matching for baseline records. */
+function fixtureResourceMatches(
+  left: ResourceRef | null | undefined,
+  right: ResourceRef,
+) {
+  return (
+    left?.kind === right.kind &&
+    (left && "agentId" in left ? left.agentId : undefined) ===
+      ("agentId" in right ? right.agentId : undefined)
+  );
 }

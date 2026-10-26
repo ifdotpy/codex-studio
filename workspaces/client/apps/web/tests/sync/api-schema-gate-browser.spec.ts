@@ -1,3 +1,4 @@
+import type { components } from "../../src/generated/api.ts";
 import { installSchemaGateFixture } from "./fixtures/schemaGateBrowserFixture.ts";
 import { fixtureOrigin, fixtureResources } from "./helpers.ts";
 import type { GetResult, PostResult } from "../../src/apiTypes.ts";
@@ -214,7 +215,7 @@ test("cold schema identity failure shows a reloadable error", async ({
         status: 503,
         json: {
           error: "Studio API schema identity is unavailable; restart Studio.",
-        },
+        } satisfies components["schemas"]["ErrorResponse"],
       });
     return route.continue();
   });
@@ -270,7 +271,9 @@ test("a warm server rollback preserves the draft and stops the stale stream", as
         rejections++;
         return route.fulfill({
           status: 426,
-          json: { error: "Old sync protocol" },
+          json: {
+            error: "Old sync protocol",
+          } satisfies components["schemas"]["ErrorResponse"],
         });
       }
       const response = await route.fetch();
@@ -852,7 +855,10 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
               revision: 1,
               reason: "initial",
               resources,
-            }),
+            } satisfies Omit<
+              components["schemas"]["ResourceChangeEvent"],
+              "resourceVersions"
+            >),
             { hash: rendererHash },
           ),
         });

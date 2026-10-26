@@ -173,12 +173,12 @@ const runSyncCrossTabScenario = async (
         "http://localhost",
       ).searchParams.get("resources");
       const resources = fixtureResources(resourceQuery);
-      const requestRecord = {
+      const requestRecord: (typeof streamRequestRecords)[number] = {
         openedAt: Date.now(),
         url: req.url,
         resourceQuery,
         resources,
-        closedAt: undefined as number | undefined,
+        closedAt: undefined,
       };
       streamRequestRecords.push(requestRecord);
       if (
