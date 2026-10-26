@@ -98,7 +98,7 @@ export function externalAliases(proof: ToolProof) {
 }
 // User-authored MCP files have no generated wire contract. Narrow their transport
 // fields once, retaining the complete config (including credentials) locally.
-function parseExternalConfig(value: unknown): ExternalConfig {
+export function parseExternalConfig(value: unknown): ExternalConfig {
   if (!isRecord(value)) throw new Error("Unsupported MCP transport");
   if (value.type === undefined || value.type === "stdio") {
     if (
