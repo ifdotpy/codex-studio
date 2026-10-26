@@ -15,6 +15,7 @@ export const layoutEdgeRailMetrics: EdgeRailMetrics = {
   minimumInset: layoutValues.edgeRail.minInset,
   statusReserve: layoutValues.edgeRail.statusReserve,
   targetSize: layoutValues.edgeRail.buttonSize,
+  statusColumnCenter: layoutValues.edgeRail.statusColumnCenter,
 };
 
 type RootStyle = Pick<
@@ -45,7 +46,8 @@ export function useEdgeRail(
   enabled = true,
 ) {
   const [geometry, setGeometry] = useState<EdgeRailGeometry | null>(null);
-  const { minimumInset, statusReserve, targetSize } = metrics;
+  const { minimumInset, statusReserve, targetSize, statusColumnCenter } =
+    metrics;
   useEffect(() => {
     if (!enabled) {
       setGeometry(null);
@@ -62,7 +64,7 @@ export function useEdgeRail(
           getComputedStyle(root),
           hasTouchCapability(coarse.matches, navigator.maxTouchPoints),
         ),
-        { minimumInset, statusReserve, targetSize },
+        { minimumInset, statusReserve, targetSize, statusColumnCenter },
       );
       setGeometry((current) =>
         JSON.stringify(current) === JSON.stringify(next) ? current : next,
@@ -92,6 +94,6 @@ export function useEdgeRail(
       window.visualViewport?.removeEventListener("resize", schedule);
       window.visualViewport?.removeEventListener("scroll", schedule);
     };
-  }, [enabled, minimumInset, statusReserve, targetSize]);
+  }, [enabled, minimumInset, statusReserve, targetSize, statusColumnCenter]);
   return enabled ? geometry : null;
 }

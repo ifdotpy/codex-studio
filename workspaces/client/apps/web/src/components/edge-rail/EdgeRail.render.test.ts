@@ -13,6 +13,7 @@ const props: EdgeRailProps = {
     bottom: 34,
     height: 523,
     targetSize: 44,
+    center: 42,
   },
   sidebar: { expanded: true, onClick: action },
   messages: { count: 3, onClick: action },

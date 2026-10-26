@@ -757,6 +757,18 @@ export const layoutTokens = {
     purpose:
       "Main src/components/conversation/empty-chat-settings.css query: @container composer (max-width: 20em) {",
   },
+  "edgeRail.statusColumnCenter": {
+    value: 48,
+    unit: "px",
+    purpose:
+      "Distance from the outer screen edge to the center of the system status column (clock, Wi-Fi) in the iPhone Duo side strip; rail buttons center on it (measured on the device, iOS 27.2)",
+  },
+  "edgeRail.menuGap": {
+    value: 8,
+    unit: "px",
+    purpose:
+      "Space between the rail chat actions menu and the inner edge of the side strip",
+  },
   "edgeRail.buttonSize": {
     value: 48,
     unit: "px",
@@ -1004,6 +1016,8 @@ export const layoutValues = {
   edgeRail: {
     minInset: 64,
     statusReserve: 112,
+    statusColumnCenter: 48,
+    menuGap: 8,
     buttonSize: 48,
   },
   legacy_main_App: {
