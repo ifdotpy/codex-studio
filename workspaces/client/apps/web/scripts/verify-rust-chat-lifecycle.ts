@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import type { Page, Request, Response } from "playwright";
-import type {
-  components,
-  AgentEntityDto,
-  JsonValue,
-} from "../src/generated/api.ts";
+import type { components, AgentEntityDto } from "../src/generated/api.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { SCALE_PROVIDER, requireScaleModel } from "./scaleVerifierHelpers.ts";
+import type { JsonInput } from "../src/apiTypes.ts";
+import {
+  parseVerifierApi,
+  readVerifierResponse,
+  readVerifierRequest,
+} from "./verifierApi.ts";
+import {
+  decodeLegacyAgentDocument,
+  SCALE_PROVIDER,
+  requireScaleModel,
+} from "./scaleVerifierHelpers.ts";
 
 type ApiSchemas = components["schemas"];
 type Options = {
@@ -54,7 +60,7 @@ type Traffic = {
 type Stage = {
   state?: string;
   request?:
-    | JsonValue
+    | JsonInput
     | ApiSchemas["CreateLeadRequest"]
     | ApiSchemas["ManagedMessageBody"]
     | ApiSchemas["IdRequest"];
@@ -268,8 +274,10 @@ function redactUrl(url: string) {
   return parsed.href;
 }
 
-function redactValue(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) return value.map(redactValue);
+function redactValue(value: JsonInput): JsonInput;
+function redactValue(value: JsonInput | undefined): JsonInput | undefined;
+function redactValue(value: JsonInput | undefined): JsonInput | undefined {
+  if (Array.isArray(value)) return value.map((item) => redactValue(item));
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
@@ -351,7 +359,7 @@ function assertTrafficHealthy(traffic: Traffic, journal: Journal) {
 
 async function jsonResponse<T>(response: Response): Promise<T | null> {
   try {
-    return await response.json();
+    return await readVerifierResponse<T>(response);
   } catch {
     return null;
   }
@@ -367,17 +375,39 @@ async function inspectReceipt(page: Page, chatId: string, messageId: string) {
         credentials: "same-origin",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      let body: ApiSchemas["MessageReceipts"] | null;
-      try {
-        body = await response.json();
-      } catch {
-        body = null;
-      }
+      const body = await response.text().catch(() => null);
       return { status: response.status, body };
     },
     { requestUrl: url.href, timeoutMs: RECEIPT_TIMEOUT_MS },
   );
-  return result;
+  let body: ApiSchemas["MessageReceipts"] | null = null;
+  try {
+    if (result.body !== null)
+      body = parseVerifierApi<ApiSchemas["MessageReceipts"]>(result.body);
+  } catch {}
+  return { ...result, body };
+}
+
+// Serialized browser boundary for pending creations written by this renderer.
+// Keep malformed persisted JSON throwing, as in the original baseline read.
+export function readPendingCreationIds() {
+  const ids: string[] = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith("codex-pending-creation:")) continue;
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+    const request: unknown = JSON.parse(raw);
+    if (
+      request &&
+      typeof request === "object" &&
+      "id" in request &&
+      typeof request.id === "string" &&
+      request.id
+    )
+      ids.push(request.id);
+  }
+  return ids;
 }
 
 async function ownershipBaseline(page: Page) {
@@ -386,18 +416,7 @@ async function ownershipBaseline(page: Page) {
     .evaluateAll((rows) =>
       rows.map((row) => row.getAttribute("data-chat")).filter(Boolean),
     );
-  const pendingCreationIds = await page.evaluate(() => {
-    const ids: string[] = [];
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
-      if (!key?.startsWith("codex-pending-creation:")) continue;
-      const raw = localStorage.getItem(key);
-      if (!raw) continue;
-      const request: ApiSchemas["CreateLeadRequest"] = JSON.parse(raw);
-      if (typeof request?.id === "string" && request.id) ids.push(request.id);
-    }
-    return ids;
-  });
+  const pendingCreationIds = await page.evaluate(readPendingCreationIds);
   return {
     capturedAt: new Date().toISOString(),
     existingChatIds: [...new Set(existingChatIds)],
@@ -616,7 +635,8 @@ async function main() {
     if (response.status() >= 400) {
       let detail;
       try {
-        const body: ApiSchemas["ErrorResponse"] = await response.json();
+        const body =
+          await readVerifierResponse<ApiSchemas["ErrorResponse"]>(response);
         if (typeof body.error === "string") detail = body.error.slice(0, 1500);
       } catch {}
       const failure = {
@@ -633,17 +653,11 @@ async function main() {
       response.status() < 400
     ) {
       try {
-        const body: ApiSchemas["SyncPullResponse"] = await response.json();
+        const body =
+          await readVerifierResponse<ApiSchemas["SyncPullResponse"]>(response);
         for (const document of body.documents || []) {
-          if (
-            !("payload" in document) ||
-            document._deleted ||
-            typeof document.payload !== "string"
-          )
-            continue;
-          const entity: ApiSchemas["SyncEntityPayload"] = JSON.parse(
-            document.payload,
-          );
+          const entity = decodeLegacyAgentDocument(document);
+          if (!entity) continue;
           if (entity.collection !== "agent" || entity.id !== journal.chatId)
             continue;
           traffic.agentStates.push({
@@ -684,9 +698,9 @@ async function main() {
 
   await page.route("**/api/leads", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const body: ApiSchemas["CreateLeadRequest"] = route
-      .request()
-      .postDataJSON();
+    const body = readVerifierRequest<ApiSchemas["CreateLeadRequest"]>(
+      route.request(),
+    );
     assert.equal(
       body.account_key,
       SCALE_PROVIDER.accountKey,
@@ -745,9 +759,9 @@ async function main() {
   });
   await page.route("**/api/messages", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const body: ApiSchemas["ManagedMessageBody"] = route
-      .request()
-      .postDataJSON();
+    const body = readVerifierRequest<ApiSchemas["ManagedMessageBody"]>(
+      route.request(),
+    );
     assert.equal(
       journal.model,
       SCALE_PROVIDER.model,
@@ -768,7 +782,7 @@ async function main() {
   });
   await page.route("**/api/conversation/delete", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const body: ApiSchemas["IdRequest"] = route.request().postDataJSON();
+    const body = readVerifierRequest<ApiSchemas["IdRequest"]>(route.request());
     if (body.id !== journal.chatId)
       throw new Error("Refused to delete a chat outside this lifecycle.");
     if (
@@ -888,7 +902,7 @@ async function main() {
       }
     } else {
       traffic.stage = "create";
-      const catalog: ApiSchemas["ModelCatalogResponse"] = await page.evaluate(
+      const catalogText = await page.evaluate(
         async ({ account, timeoutMs }) => {
           const response = await fetch(
             `/api/models?account_key=${encodeURIComponent(account)}`,
@@ -899,10 +913,12 @@ async function main() {
           );
           if (!response.ok)
             throw new Error(`Model catalog returned HTTP ${response.status}.`);
-          return response.json();
+          return response.text();
         },
         { account: SCALE_PROVIDER.accountKey, timeoutMs: CATALOG_TIMEOUT_MS },
       );
+      const catalog =
+        parseVerifierApi<ApiSchemas["ModelCatalogResponse"]>(catalogText);
       requireScaleModel(catalog);
       const projectSections = page.locator("[data-project-path]");
       await projectSections.first().waitFor();

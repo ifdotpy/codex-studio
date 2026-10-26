@@ -23,7 +23,7 @@ export type AuditItem = Partial<
     | "title"
     | "phase"
   >
-> & { inputs?: AuditInput[] | null };
+> & { inputs?: AuditInput[] | null | undefined };
 export type AuditEntry = { kind: string; [field: string]: unknown };
 export type Audit = {
   failures: AuditEntry[];
