@@ -3,7 +3,7 @@
 // of a real Studio backend. Never run from the ordinary test tiers. Headless
 // Chromium only; no window is activated and no operating-system input is sent.
 import assert from "node:assert/strict";
-import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
+import { runScaleVerifier } from "./scaleVerifierTeardown.ts";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -22,7 +22,7 @@ import {
   scaleProfile,
   parseWorkerWorkspace,
   showsUpstreamLimit,
-} from "./scaleVerifierHelpers.mjs";
+} from "./scaleVerifierHelpers.ts";
 import {
   CLEANUP_DEADLINE_MS,
   DIAGNOSTICS_INTERVAL_MS,

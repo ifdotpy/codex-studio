@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { SCALE_PROVIDER, requireScaleModel } from "./scaleVerifierHelpers.mjs";
+import { SCALE_PROVIDER, requireScaleModel } from "./scaleVerifierHelpers.ts";
 
 const DEFAULT_MODEL = SCALE_PROVIDER.model;
 const DEFAULT_EFFORT = SCALE_PROVIDER.effort;
