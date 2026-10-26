@@ -1382,7 +1382,7 @@ fn read_vm_claude_credentials(
         let node = find_vm_node().ok_or_else(|| {
             WorkerError::PreparationRefused("vm-credentials/node-unavailable".into())
         })?;
-        let helper = claude_bridge_dir.join("refresh-auth.mjs");
+        let helper = claude_bridge_dir.join("bridge.mjs");
         if !helper.is_file() {
             return Err(WorkerError::PreparationRefused(
                 "vm-credentials/refresh-helper-unavailable".into(),
@@ -1747,7 +1747,7 @@ fn find_vm_node() -> Option<PathBuf> {
     is_executable(&homebrew_node).then_some(homebrew_node)
 }
 
-/// Invoke the existing refresh-auth.mjs helper, matching
+/// Invoke the bridge.mjs launcher in authentication-refresh mode, matching
 /// `codex_linux_vm_auth.py:122-156`. It emits one bounded readiness line; the
 /// caller releases its held query only after the on-disk access token is
 /// outside the native refresh window. Child output never includes secrets.
@@ -1764,6 +1764,7 @@ fn run_vm_claude_refresh_helper(
     let mut command = CommandWrap::with_new(node.as_os_str(), |command| {
         command
             .arg(helper)
+            .arg("--refresh-auth")
             .env_clear()
             .envs(environment)
             .stdin(Stdio::piped())
@@ -3026,12 +3027,14 @@ mod vm_claude_refresh_tests {
             .unwrap(),
         )
         .unwrap();
-        let helper = root.path().join("refresh-auth.mjs");
+        let helper = root.path().join("bridge.mjs");
         fs::write(&helper, "// fake helper entrypoint\n").unwrap();
         let node = root.path().join("fake-node");
         fs::write(
             &node,
             r##"#!/bin/sh
+[ "${1##*/}" = "bridge.mjs" ] || exit 1
+[ "$2" = "--refresh-auth" ] || exit 1
 cat > "$CLAUDE_CONFIG_DIR/.credentials.json" <<'JSON'
 {"claudeAiOauth":{"accessToken":"fresh-fake-token","expiresAt":4102444800000,"scopes":["user:inference"],"subscriptionType":"pro"}}
 JSON

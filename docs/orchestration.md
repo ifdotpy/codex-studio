@@ -935,7 +935,7 @@ reconnects to that process. A Codex interrupt leaves the thread's background
 terminals running, so Stop and delete then send `thread/backgroundTerminals/clean`.
 The Claude bridge stops its background tasks as part of the interrupt.
 
-Claude tool stall recovery follows the [bridge watchdog](../workspaces/providers/apps/claude-bridge/stall-watch.mjs):
+Claude tool stall recovery follows the [bridge watchdog](../workspaces/providers/apps/claude-bridge/stall-watch.ts):
 
 1. An unfinished tool call arms one timer for the earliest eligible deadline.
 2. CLI progress moves the silence deadline; tool results remove their deadline.

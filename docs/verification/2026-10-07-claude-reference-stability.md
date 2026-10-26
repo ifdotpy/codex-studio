@@ -31,7 +31,7 @@ The change uses byte offsets, repairs a failed append before another persist can
 After a compaction error, the store reads the journal state before it uses a rollback offset.
 Failed writes still reject their promises. The change adds no file synchronization policy for power loss.
 
-Files: `scripts/claude_bridge/session-store.mjs` and `scripts/claude_bridge/session-store.test.mjs`.
+Files: `scripts/claude_bridge/session-store.ts` and `scripts/claude_bridge/session-store.test.ts`.
 
 ### Tool cancellation
 

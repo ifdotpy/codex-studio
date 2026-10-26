@@ -67,7 +67,7 @@ test("bridge config removes ambient agent settings before workers inherit them",
       "--input-type=module",
       "-e",
       `
-    await import(${JSON.stringify(new URL("../../../../providers/apps/claude-bridge/vitest.config.mjs", import.meta.url).href)});
+    await import(${JSON.stringify(new URL("../../../../providers/apps/claude-bridge/vitest.config.ts", import.meta.url).href)});
     const assert = await import('node:assert/strict');
     for (const key of ['CLAUDE_CONFIG_DIR', 'CLAUDECODE', 'STUDIO_CLAUDE_OPTIONS', 'AI_AGENT'])
       assert.equal(process.env[key], undefined, key);

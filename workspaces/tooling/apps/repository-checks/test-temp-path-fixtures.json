@@ -65,14 +65,14 @@
     "let file = script(\"project_1\", \"/tmp/a'b/tool\").unwrap();",
     "\"#!/bin/sh\\nrm -f \\\"$0\\\"\\nexec '/tmp/a'\\\\''b/tool' keys --project 'project_1' --clear\\n\""
   ],
-  "workspaces/providers/apps/claude-bridge/command-background.test.mjs": [
+  "workspaces/providers/apps/claude-bridge/command-background.test.ts": [
     "yield {type:'user',uuid:'u-1',message:{role:'user',content:[{type:'tool_result',tool_use_id:'toolu-1',content:'Command running in background with ID: bash-1. Output is being written to: /tmp/bash-1.output'}]},tool_use_result:{stdout:'',stderr:'',interrupted:false,backgroundTaskId:'bash-1',backgroundedByUser:true}};",
     "yield {type:'system',subtype:'task_notification',task_id:'bash-1',tool_use_id:'toolu-1',status:'completed',output_file:'/tmp/bash-1.output',summary:'Background command completed (exit code 0)',uuid:'s-3'};"
   ],
-  "workspaces/providers/apps/claude-bridge/disk-full.test.mjs": [
+  "workspaces/providers/apps/claude-bridge/disk-full.test.ts": [
     "cwd: \"/tmp/work\","
   ],
-  "workspaces/providers/apps/claude-bridge/session-store.test.mjs": [
+  "workspaces/providers/apps/claude-bridge/session-store.test.ts": [
     "cwd: \"/tmp/work\",",
     "cwd: \"/tmp/title\","
   ],

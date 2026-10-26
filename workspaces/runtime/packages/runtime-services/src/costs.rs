@@ -1176,7 +1176,7 @@ fn valid_session_id(value: &str) -> bool {
 /// is read from the bridge source instead of being copied here.
 fn claude_session_format() -> &'static str {
     static FORMAT: LazyLock<&'static str> = LazyLock::new(|| {
-        include_str!("../../../../providers/apps/claude-bridge/session-store.mjs")
+        include_str!("../../../../providers/apps/claude-bridge/session-store.ts")
             .split_once("const FORMAT = \"")
             .and_then(|(_, rest)| rest.split_once('"'))
             .map(|(format, _)| format)

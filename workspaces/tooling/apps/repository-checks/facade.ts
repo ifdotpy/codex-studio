@@ -273,7 +273,7 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "studio-claude-bridge",
-    file: "vitest.config.mjs",
+    file: "vitest.config.ts",
     specifier: "../../../tooling/apps/repository-checks/gate-config.ts",
     reason:
       "Bridge test configuration consumes the repository's ambient-agent environment policy.",
