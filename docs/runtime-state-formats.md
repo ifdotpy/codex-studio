@@ -41,6 +41,14 @@ replacing it with the explicit-provider fingerprint and removing the marker in
 the same transaction. Changed inputs still conflict; saved results are not
 requested from the provider again.
 
+Historical usage rows can outlive their agent metadata. Before the analytics
+format cutover, the migration preserves their former cost interpretation:
+complete orphan facts gain typed usage without new receipt keys; sparse facts
+retain their unknown counts and gain an explicit provider for that historical
+interpretation. Existing typed facts stay unchanged. Ordinary readers require
+explicit identity from the row or its owner; reopening a converted database does
+not repair newly orphaned legacy rows.
+
 This migration supports states written before 2026-10-26. Remove it when the
 supported upgrade and backup-restore paths no longer admit that representation
 and marked title effects have completed conversion or reached a terminal state,
