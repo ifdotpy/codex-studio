@@ -197,6 +197,21 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
     await expect
       .poll(() => bounds("#viewport-content"))
       .toEqual({ left: 12, top: 59, right: 867, bottom: 635, height: 576 });
+    // iOS 27.2 Duo shell: WebKit reports the side strip as top 82; the
+    // shell's lengths replace env() on all four sides.
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+      insets: { top: 82, right: 0, bottom: 34, left: 0 },
+    });
+    await page.evaluate(() => {
+      const style = document.documentElement.style;
+      style.setProperty("--native-safe-top", "0px");
+      style.setProperty("--native-safe-right", "82px");
+      style.setProperty("--native-safe-bottom", "34px");
+      style.setProperty("--native-safe-left", "0px");
+    });
+    await expect
+      .poll(() => bounds("#viewport-content"))
+      .toEqual({ left: 0, top: 0, right: 869, bottom: 635, height: 635 });
     expect(errors).toEqual([]);
   } finally {
     await page.close();

@@ -10,6 +10,8 @@ export type LayoutFrameSample = {
   rootTop: number;
   sidebar: number[] | null;
   composer: number[] | null;
+  /** Native shell keyboard overlap the page has received, in CSS px. */
+  nativeKeyboard?: number | null;
 };
 
 /** Keep the raw frames before a delayed pan, after its first change, and at close. */

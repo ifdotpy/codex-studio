@@ -424,7 +424,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       assert.equal(
         (await settle(844, 0)).bottomInset,
-        "env(safe-area-inset-bottom)",
+        "var(--viewport-device-safe-bottom)",
       );
       await page.setViewportSize({ width: 640, height: 390 });
       await page.evaluate(() => {

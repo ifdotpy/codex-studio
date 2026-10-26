@@ -145,7 +145,7 @@ it("tracks a wide touch viewport with the keyboard already open", () => {
   mount();
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   expect(root.setAttribute).toHaveBeenCalledWith("data-viewport-surface", "");
 });
@@ -160,7 +160,7 @@ it("pins the Duo keyboard before the viewport event returns", () => {
   expect(root.style.get("--mobile-viewport-top")).toBe("346px");
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   expect(root.setAttribute).toHaveBeenCalledWith(
     "data-viewport-keyboard-compact",
@@ -173,7 +173,7 @@ it("pins the Duo keyboard before the viewport event returns", () => {
   expect(root.style.get("--mobile-viewport-top")).toBe("0px");
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
 });
 it("marks short keyboard space below 400px and restores passive status at the boundary", () => {
@@ -246,15 +246,15 @@ it("updates toolbar, keyboard, offset, and rotation geometry without focus chang
   mount();
   resize({ height: 620 });
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   resize({ height: 350, offsetTop: 20 });
   expect(root.style.get("--mobile-viewport-top")).toBe("20px");
   expect(root.style.get("--mobile-safe-area-top")).toBe(
-    "max(0px, calc(env(safe-area-inset-top) - 20px))",
+    "max(0px, calc(var(--viewport-device-safe-top) - 20px))",
   );
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   windowMock.innerHeight = root.clientHeight = 951;
   Object.assign(viewport, { height: 951, offsetTop: 0 });
@@ -480,4 +480,42 @@ it("leaves desktop focus native and removes interception on owner cleanup", () =
   cleanup?.();
   cleanup = undefined;
   expect(gesture(textarea).defaultPrevented).toBe(false);
+});
+it("follows native shell keyboard events with their UIKit timing and ignores the visual viewport", () => {
+  const state = {
+    insets: { top: 0, right: 84, bottom: 34, left: 0 },
+    keyboard: null as null | {
+      overlap: number;
+      duration: number;
+      curve: number;
+    },
+  };
+  vi.stubGlobal("__studioNativeViewport", { version: 1, state });
+  const send = (keyboard: typeof state.keyboard) => {
+    state.keyboard = keyboard;
+    windowMock.dispatchEvent(
+      new CustomEvent("studio-native-viewport", { detail: { ...state } }),
+    );
+  };
+  mount();
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  // WebKit's own keyboard geometry is not the source in the shell.
+  resize({ height: 300, offsetTop: 200 });
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  expect(root.style.get("--mobile-viewport-top")).toBe("0px");
+  send({ overlap: 300, duration: 350, curve: 7 });
+  expect(frames.size).toBe(0);
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(true);
+  expect(root.style.get("--keyboard-motion")).toBe(
+    "350ms cubic-bezier(0.38, 0.7, 0.125, 1)",
+  );
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  send({ overlap: 0, duration: 250, curve: 0 });
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  expect(root.style.get("--keyboard-motion")).toBe(
+    "250ms cubic-bezier(0.42, 0, 0.58, 1)",
+  );
+  cleanup?.();
+  cleanup = undefined;
+  expect(root.style.has("--keyboard-motion")).toBe(false);
 });

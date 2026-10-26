@@ -1,4 +1,5 @@
 import { useLayoutEffect, useState } from "react";
+import { nativeViewport } from "../native/nativeViewport";
 import { touchPointerMedia } from "./touchCapability";
 import { layoutValues } from "../layout/layout-contract.generated";
 import { viewportGestureCountAttribute } from "./mobileViewport";
@@ -111,6 +112,7 @@ export function LayoutDebug() {
         rootTop: root.getBoundingClientRect().top,
         sidebar: sidebarRect(),
         composer: composer ? [composer.top, composer.bottom] : null,
+        nativeKeyboard: nativeViewport()?.keyboard?.overlap ?? null,
       });
       capturePending = true;
     };
