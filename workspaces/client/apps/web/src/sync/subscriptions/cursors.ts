@@ -25,7 +25,14 @@ export function parseAppliedCursor(
       Number.isSafeInteger(cursor.seq) &&
       cursor.seq >= 0
     )
-      return { workspaceId, seq: cursor.seq };
+      return {
+        workspaceId,
+        seq: cursor.seq,
+        ...(Number.isSafeInteger(cursor.terminalGeneration) &&
+        cursor.terminalGeneration! >= 0
+          ? { terminalGeneration: cursor.terminalGeneration }
+          : {}),
+      };
   } catch {
     /* A damaged cache has no resumable projection. */
   }

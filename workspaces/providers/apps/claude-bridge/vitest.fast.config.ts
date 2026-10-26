@@ -9,6 +9,7 @@ export default {
     include: [
       "launcher.test.ts",
       "request-regressions.test.ts",
+      "live-permissions.test.ts",
       // Native tool plan fields retain their raw wire values.
       "protocol-output.test.ts",
       "output-compatibility.test.ts",

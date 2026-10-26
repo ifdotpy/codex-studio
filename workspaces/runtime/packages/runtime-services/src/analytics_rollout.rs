@@ -463,6 +463,7 @@ mod tests {
                     at,
                     at,
                     crate::analytics_capture::CaptureSource::Rollout,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
                 )
                 .expect("import event");
                 crate::analytics_capture::capture(&store, prepared)
