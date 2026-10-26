@@ -110,8 +110,8 @@ export function query({ prompt, options }: SessionFixtureQuery) {
           session_id: options.resume || options.sessionId,
         };
         if (text === "running") {
-          await new Promise<void>((resolve) =>
-            abort.signal.addEventListener("abort", () => resolve(), {
+          await new Promise<unknown>((resolve) =>
+            abort.signal.addEventListener("abort", resolve, {
               once: true,
             }),
           );

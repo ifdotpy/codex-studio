@@ -153,11 +153,11 @@ export function fixtureQuery(
       !input.done &&
       input.value.message.content[0].text === "/clear"
     ) {
-      await new Promise<void>((resolve) =>
+      await new Promise<unknown>((resolve) =>
         process.stdout.write(
           JSON.stringify({ method: "fixture/consumed-clear", params: {} }) +
             "\n",
-          () => resolve(),
+          resolve,
         ),
       );
       process.kill(process.pid, "SIGKILL");
