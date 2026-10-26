@@ -1,3 +1,4 @@
+import { canonicalJson } from "./move.ts";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -19,6 +20,13 @@ import {
   exactTurnTools,
 } from "./move.ts";
 import { externalAliases } from "./move-external.ts";
+
+// The same test writes these fixtures, so canonicalization preserves their type.
+function canonicalFixture<T>(value: T): T {
+  const text = canonicalJson(value);
+  assert.ok(text !== undefined);
+  return JSON.parse(text);
+}
 
 test("move exports only its native session, preserves bytes and refuses conflicts", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-"));
@@ -532,17 +540,9 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
       input_schema: { type: "object" },
     },
   ];
-  const sorted = JSON.parse(
-    JSON.stringify(current, (key, value) =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? Object.fromEntries(
-            Object.keys(value)
-              .sort()
-              .map((k) => [k, value[k]]),
-          )
-        : value,
-    ),
-  );
+  const sorted = canonicalFixture(current);
+  assert.ok(sorted[0]);
+  assert.ok(sorted[1]);
   const proof = {
     inlineTools: false,
     tools: [{ name: "Bash", input_schema: { type: "object" } }],
@@ -584,19 +584,7 @@ test("a move restores the exact tool order that the paired channel sorted", () =
     },
   ];
   // What the canonical JSON of the channel delivers.
-  const sorted = (value: unknown) =>
-    JSON.parse(
-      JSON.stringify(value, (key, entry) =>
-        entry && typeof entry === "object" && !Array.isArray(entry)
-          ? Object.fromEntries(
-              Object.keys(entry)
-                .sort()
-                .map((k) => [k, entry[k]]),
-            )
-          : entry,
-      ),
-    );
-  const moved = sorted({
+  const moved = canonicalFixture({
     id: "s",
     dynamicTools: original,
     dynamicToolsJson: JSON.stringify(original),
@@ -613,7 +601,7 @@ test("a move restores the exact tool order that the paired channel sorted", () =
       input_schema: original[0]?.inputSchema,
     },
   ];
-  const proof = sorted({
+  const proof = canonicalFixture({
     compiledTools: compiled,
     compiledToolsJson: JSON.stringify(compiled),
   });
@@ -733,17 +721,7 @@ test("later turns of a moved session keep the exact tool order the server sorted
   ];
   const session = { dynamicToolsJson: JSON.stringify(source) };
   // The server stores records with sorted keys and sends that copy on later turns.
-  const sorted = JSON.parse(
-    JSON.stringify(source, (key, value) =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? Object.fromEntries(
-            Object.keys(value)
-              .sort()
-              .map((k) => [k, value[k]]),
-          )
-        : value,
-    ),
-  );
+  const sorted = canonicalFixture(source);
   const proof = await compile(source);
   assert.notDeepEqual(
     (await compile(sorted))[0]?.input_schema?.required,
