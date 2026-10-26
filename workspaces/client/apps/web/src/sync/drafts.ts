@@ -600,12 +600,10 @@ export function createBrowserDrafts(options: {
                 });
             }
             if (stopped) return;
-            const sub = db.drafts
-              .find()
-              .$.subscribe((docs: RxDocument<SyncDocument>[]) => {
-                pendingDocuments = docs;
-                publication.schedule();
-              });
+            const sub = db.drafts.find().$.subscribe((docs) => {
+              pendingDocuments = docs;
+              publication.schedule();
+            });
             unsubscribe = () => {
               sub.unsubscribe();
               publication.cancel();

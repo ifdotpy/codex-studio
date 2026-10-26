@@ -1,12 +1,11 @@
-import assert from "node:assert/strict";
-import { createRxDatabase } from "rxdb";
-import { getRxStorageMemory } from "rxdb/plugins/storage-memory";
 import type {
   RxChangeEventBulk,
   RxDocumentData,
-  RxCollection,
   RxStorageInstance,
+  RxJsonSchema,
 } from "rxdb";
+type WitnessDocument = { id: string; value: number };
+import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
@@ -35,9 +34,7 @@ const delay = () => new Promise((resolve) => setTimeout(resolve, 10));
 const failures: string[] = [];
 // Unpatched RxDB leaves a rejected incremental write as an unhandled rejection.
 process.on("unhandledRejection", (error) => {
-  failures.push(
-    `unhandled rejection: ${error instanceof Error ? error.stack : error}`,
-  );
+  failures.push(`unhandled rejection: ${(error as Error)?.stack ?? error}`);
 });
 
 async function testEventCache(
@@ -48,20 +45,12 @@ async function testEventCache(
   >,
 ) {
   function makeBatch() {
-    const payload: RxDocumentData<{ payload: string }> = {
-      payload: "x".repeat(2 * 1024 * 1024),
-      _deleted: false,
-      _attachments: {},
-      _meta: { lwt: 1 },
-      _rev: "1-a",
-    };
-    const bulk: RxChangeEventBulk<{ payload: string }> = {
-      id: "fixture",
-      checkpoint: { id: "a", lwt: 1 },
-      context: "fixture",
-      databaseToken: "fixture",
-      storageToken: "fixture",
-      internal: false,
+    // Cache identity needs no storage metadata (_rev, _meta, _deleted, _attachments).
+    const payload = { payload: "x".repeat(2 * 1024 * 1024) } as RxDocumentData<{
+      payload: string;
+    }>;
+    // The cache converter ignores batch ids, checkpoint, context and storage tokens.
+    const bulk = {
       collectionName: "projections",
       isLocal: false,
       events: [
@@ -72,7 +61,7 @@ async function testEventCache(
           previousDocumentData: payload,
         },
       ],
-    };
+    } as RxChangeEventBulk<{ payload: string }>;
     const first = implementation.rxChangeEventBulkToRxChangeEvents(bulk);
     assert.equal(
       implementation.rxChangeEventBulkToRxChangeEvents(bulk),
@@ -86,8 +75,7 @@ async function testEventCache(
   let released = false;
   for (let i = 0; i < 100; i++) {
     await delay();
-    assert.ok(global.gc);
-    global.gc();
+    global.gc!();
     await delay();
     if (refs.every((ref) => ref.deref() === undefined)) {
       released = true;
@@ -101,97 +89,83 @@ async function testEventCache(
   );
 }
 
-type WitnessDocument = { id: string; value: number };
-async function databaseFixture(format: string) {
-  const database = await createRxDatabase({
-    name: "gcwitness" + format + Math.random().toString(36).slice(2),
-    storage: getRxStorageMemory(),
-    multiInstance: false,
-  });
-  const collections = await database.addCollections<{
-    projections: RxCollection<WitnessDocument>;
-  }>({
-    projections: {
-      schema: {
-        version: 0,
-        primaryKey: "id",
-        type: "object",
-        properties: {
-          id: { type: "string", maxLength: 100 },
-          value: { type: "number" },
-        },
-        required: ["id", "value"],
-        additionalProperties: false,
-      },
-    },
-  });
-  const storageInstance: RxStorageInstance<WitnessDocument, unknown, unknown> =
-    collections.projections.storageInstance;
-  return { database, storageInstance };
-}
-const document: RxDocumentData<WitnessDocument> = {
-  id: "deleted-row",
-  value: 0,
-  _deleted: false,
-  _attachments: {},
-  _meta: { lwt: 1 },
-  _rev: "1-a",
-};
 async function testProjectionConflict(format: string) {
   const helperFile = `${rxdbRoot}/dist/${format}/rx-storage-helper.js`;
   const helper: Pick<typeof import("rxdb"), "getWrappedStorageInstance"> =
     format === "esm"
       ? await import(pathToFileURL(helperFile).href)
       : require(helperFile);
-  const { database, storageInstance } = await databaseFixture(format);
+  // The wrapper only reads the primary key; validation and indexes are unused here.
+  const schema = { primaryKey: "id" } as RxJsonSchema<
+    RxDocumentData<WitnessDocument>
+  >;
   const callCounts = new Map<string, number>();
-  storageInstance.bulkWrite = async (rows, context) => {
-    callCounts.set(context, (callCounts.get(context) ?? 0) + 1);
-    return {
-      error: rows.map((writeRow) => ({
-        status: 409,
-        isError: true,
-        context,
-        documentId: writeRow.document.id,
-        writeRow,
-        documentInDb: {
-          ...writeRow.document,
-          _deleted: true,
-          _meta: { lwt: 1 },
-          _rev: "1-existing",
-        },
-      })),
-    };
-  };
-  try {
-    const wrapped = helper.getWrappedStorageInstance(
-      database,
-      storageInstance,
-      storageInstance.schema,
-    );
-    const write = { document: { ...document } };
-    const projectionResult = await wrapped.bulkWrite(
-      [write],
-      "studio-projection-pull",
-    );
-    assert.equal(projectionResult.error.length, 1);
-    assert.equal(
-      callCounts.get("studio-projection-pull"),
-      1,
-      `${format}: projection 409 remains visible without an automatic retry`,
-    );
-    await wrapped.bulkWrite(
-      [{ ...write, document: { ...write.document } }],
-      "replication",
-    );
-    assert.equal(
-      callCounts.get("replication"),
-      2,
-      `${format}: automatic deleted-document reinsertion remains enabled elsewhere`,
-    );
-  } finally {
-    await database.close();
-  }
+  // The wrapper uses schema and bulkWrite; storage lifecycle methods are unused.
+  const storageInstance = {
+    schema,
+    internals: {},
+    collectionName: "projections",
+    databaseName: "studio",
+    options: {},
+    async bulkWrite(
+      rows: Parameters<
+        RxStorageInstance<WitnessDocument, unknown, unknown>["bulkWrite"]
+      >[0],
+      context: string,
+    ) {
+      callCounts.set(context, (callCounts.get(context) ?? 0) + 1);
+      return {
+        error: [
+          {
+            status: 409,
+            documentId: "deleted-row",
+            writeRow: rows[0],
+            documentInDb: {
+              _deleted: true,
+              _meta: { lwt: 1 },
+              _rev: "1-existing",
+            },
+          },
+        ],
+      };
+    },
+  } as RxStorageInstance<WitnessDocument, unknown, unknown>;
+  // The wrapper uses the token, storage set and lock; database lifecycle methods are unused.
+  const database = {
+    token: "test-token",
+    storageInstances: new Set(),
+    lockedRun: <T>(operation: () => T) => operation(),
+  } as Parameters<typeof helper.getWrappedStorageInstance>[0];
+  const wrapped = helper.getWrappedStorageInstance(
+    database,
+    storageInstance,
+    schema,
+  );
+  // Storage metadata and value are unused by the forced-conflict write.
+  const write = {
+    document: { id: "deleted-row", _deleted: false },
+    previous: undefined,
+  } as Parameters<typeof wrapped.bulkWrite>[0][number];
+  const projectionResult = await wrapped.bulkWrite(
+    [write],
+    "studio-projection-pull",
+  );
+  assert.equal(projectionResult.error.length, 1);
+  assert.equal(
+    callCounts.get("studio-projection-pull"),
+    1,
+    `${format}: projection 409 remains visible without an automatic retry`,
+  );
+
+  await wrapped.bulkWrite(
+    [{ ...write, document: { ...write.document } }],
+    "replication",
+  );
+  assert.equal(
+    callCounts.get("replication"),
+    2,
+    `${format}: automatic deleted-document reinsertion remains enabled elsewhere`,
+  );
 }
 
 async function testIncrementalWriteFailure(format: string) {
@@ -203,54 +177,59 @@ async function testIncrementalWriteFailure(format: string) {
       ? await import(pathToFileURL(queueFile).href)
       : require(queueFile);
   let failNext = true;
-  const { database, storageInstance } = await databaseFixture(format);
-  storageInstance.bulkWrite = async () => {
-    if (failNext) {
-      failNext = false;
-      throw new Error("disk full");
-    }
-    return { error: [] };
+  // The queue calls bulkWrite only; storage schema and lifecycle methods are unused.
+  const storageInstance = {
+    async bulkWrite(
+      rows: Parameters<
+        RxStorageInstance<WitnessDocument, unknown, unknown>["bulkWrite"]
+      >[0],
+    ) {
+      if (failNext) {
+        failNext = false;
+        throw new Error("disk full");
+      }
+      return { error: [], success: rows.map((row) => row.document) };
+    },
   };
-  try {
-    const queue = new IncrementalWriteQueue<WitnessDocument>(
-      storageInstance,
-      "id",
-      async () => {},
-      () => {},
-    );
-    const state: RxDocumentData<WitnessDocument> = {
-      ...document,
-      id: "outbox-row",
-    };
-    const settle = <T>(
-      work: Promise<T>,
-    ): Promise<{ value?: T; error?: unknown; pending?: boolean }> =>
-      Promise.race([
-        work.then(
-          (value) => ({ value }),
-          (error) => ({ error }),
-        ),
-        delay().then(() => ({ pending: true })),
-      ]);
-    const failed = await settle(
-      queue.addWrite(state, async (doc) => ({ ...doc, value: 1 })),
-    );
-    assert.equal(
-      failed.error instanceof Error ? failed.error.message : undefined,
-      "disk full",
-      `${format}: a rejected storage write rejects its caller`,
-    );
-    const next = await settle(
-      queue.addWrite(state, async (doc) => ({ ...doc, value: 2 })),
-    );
-    assert.equal(
-      next.value?.value,
-      2,
-      `${format}: the next incremental write runs after a rejected write`,
-    );
-  } finally {
-    await database.close();
-  }
+  const queue = new IncrementalWriteQueue<WitnessDocument>(
+    storageInstance as typeof storageInstance &
+      RxStorageInstance<WitnessDocument, unknown, unknown>,
+    "id",
+    async () => {},
+    () => {},
+  );
+  // This queue witness does not use _meta, _deleted or attachments.
+  const state = {
+    id: "outbox-row",
+    value: 0,
+    _rev: "1-a",
+  } as RxDocumentData<WitnessDocument>;
+  const settle = <T>(
+    work: Promise<T>,
+  ): Promise<{ value?: T; error?: unknown; pending?: boolean }> =>
+    Promise.race([
+      work.then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      ),
+      delay().then(() => ({ pending: true })),
+    ]);
+  const failed = await settle(
+    queue.addWrite(state, async (doc) => ({ ...doc, value: 1 })),
+  );
+  assert.equal(
+    (failed.error as Error | undefined)?.message,
+    "disk full",
+    `${format}: a rejected storage write rejects its caller`,
+  );
+  const next = await settle(
+    queue.addWrite(state, async (doc) => ({ ...doc, value: 2 })),
+  );
+  assert.equal(
+    next.value?.value,
+    2,
+    `${format}: the next incremental write runs after a rejected write`,
+  );
 }
 
 for (const format of ["esm", "cjs"]) {
@@ -270,9 +249,7 @@ for (const format of ["esm", "cjs"]) {
     try {
       await verify();
     } catch (error) {
-      failures.push(
-        `${format} ${name}: ${error instanceof Error ? error.stack : String(error)}`,
-      );
+      failures.push(`${format} ${name}: ${(error as Error).stack}`);
     }
   }
 }

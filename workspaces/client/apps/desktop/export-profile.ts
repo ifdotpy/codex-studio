@@ -9,6 +9,7 @@ import type {
   BrowserProfileArchive,
 } from "../web/src/native/importBrowserProfile.ts";
 import { app, BrowserWindow, session, safeStorage } from "electron";
+import type { SpawnSyncReturns } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { open, link, unlink, mkdir, rm } from "node:fs/promises";
 import { readFileSync, realpathSync, writeSync } from "node:fs";
@@ -29,6 +30,17 @@ export type ExportManifest = {
   >[0]["destination"];
 };
 
+// The migration caller writes this document; existing checks below reject unsupported origins.
+function readExportManifest(text: string): ExportManifest {
+  return JSON.parse(text);
+}
+// The isolated reader emits this document; existing chunk checks below stay authoritative.
+function readChunkPayload(
+  text: string,
+): import("./profile-export-reader.ts").ProfileChunkPayload {
+  return JSON.parse(text);
+}
+
 // Explicit origins are required: an offline profile can contain several old
 // frame ports. The migration caller must enumerate them before importing.
 async function main() {
@@ -40,31 +52,16 @@ async function main() {
   try {
     if (!manifestPath)
       throw new Error("Supply an offline profile export manifest.");
-    const input: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
-    if (
-      !input ||
-      typeof input !== "object" ||
-      !("profile" in input) ||
-      typeof input.profile !== "string" ||
-      !("output" in input) ||
-      typeof input.output !== "string"
-    )
-      throw new Error("Supply an offline profile export manifest.");
+    const input = readExportManifest(readFileSync(manifestPath, "utf8"));
     const profile = realpathSync(input.profile);
     const output = path.resolve(input.output);
     if (output === profile || output.startsWith(profile + path.sep))
       throw new Error("Export outside the original profile.");
-    if (
-      !("origins" in input) ||
-      !Array.isArray(input.origins) ||
-      !input.origins.length
-    )
+    if (!Array.isArray(input.origins) || !input.origins.length)
       throw new Error("Supply every saved Studio browser origin.");
     const origins = [
       ...new Set(
-        input.origins.map((value: unknown) => {
-          if (typeof value !== "string")
-            throw new Error("Only saved local Studio origins can be exported.");
+        input.origins.map((value) => {
           const url = new URL(value);
           if (
             url.protocol !== "http:" ||
@@ -84,20 +81,18 @@ async function main() {
         }),
       ),
     ];
-    const sourceContexts = "contexts" in input ? (input.contexts ?? {}) : {};
+    const contexts = input.contexts ?? {};
     if (
-      typeof sourceContexts !== "object" ||
-      Array.isArray(sourceContexts) ||
-      Object.entries(sourceContexts).some(
+      typeof contexts !== "object" ||
+      Array.isArray(contexts) ||
+      Object.entries(contexts).some(
         ([origin, parent]) =>
           !origins.includes(origin) ||
-          typeof parent !== "string" ||
           !origins.includes(parent) ||
           origin === parent,
       )
     )
       throw new Error("Invalid source frame context.");
-    const contexts = sourceContexts as Record<string, string>;
     // Refuse before requesting Electron's singleton lock: contacting a live
     // singleton would send it a second-instance event and could activate it.
     let owners;
@@ -109,15 +104,13 @@ async function main() {
       }).trim();
     } catch (error) {
       if (
-        !(error instanceof Error) ||
-        !("status" in error) ||
-        error.status !== 1 ||
-        String("stderr" in error ? error.stderr || "" : "").trim()
+        (error as SpawnSyncReturns<string>).status !== 1 ||
+        String((error as SpawnSyncReturns<string>).stderr || "").trim()
       )
         throw error;
       // lsof can report matching owners and still exit 1 when another lookup
       // in the recursive scan fails. Its stdout remains evidence of use.
-      owners = String("stdout" in error ? error.stdout || "" : "").trim();
+      owners = String((error as SpawnSyncReturns<string>).stdout || "").trim();
     }
     if (owners)
       throw new Error(
@@ -151,24 +144,21 @@ async function main() {
         },
       );
     });
-    const rawDestinations = "owners" in input ? (input.owners ?? {}) : {};
+    const destinations = input.owners ?? {};
     if (
-      typeof rawDestinations !== "object" ||
-      Array.isArray(rawDestinations) ||
-      Object.entries(rawDestinations).some(
+      typeof destinations !== "object" ||
+      Array.isArray(destinations) ||
+      Object.entries(destinations).some(
         ([owner, origin]) =>
           !(owner === "root" || /^server:[a-zA-Z0-9_-]+$/.test(owner)) ||
-          typeof origin !== "string" ||
           !origins.includes(origin),
       )
     )
       throw new Error("Invalid destination owner mapping.");
-    const destinations = rawDestinations as Record<string, string>;
     const id = randomUUID();
     const partsName = path.basename(output) + "." + id + ".parts";
     partsDirectory = path.join(path.dirname(output), partsName);
     await mkdir(partsDirectory, { mode: 0o700 });
-    const parts = partsDirectory;
     const snapshots: BrowserProfileSnapshot[] = [];
     for (const origin of origins) {
       console.error("Export source " + (snapshots.length + 1));
@@ -199,7 +189,7 @@ async function main() {
         await window.webContents.debugger.sendCommand("Runtime.addBinding", {
           name: "studioExportChunk",
         });
-        let failTransfer: (reason: unknown) => void = () => {};
+        let failTransfer!: (reason: unknown) => void;
         const transferFailed = new Promise<never>((_, reject) => {
           failTransfer = reject;
         });
@@ -207,34 +197,30 @@ async function main() {
         void transferFailed.catch(() => {});
         window.webContents.debugger.on(
           "message",
-          async (_event, method, params: unknown, sessionId) => {
+          async (
+            _event,
+            method,
+            params: {
+              name: string;
+              payload: string;
+              executionContextId?: number;
+            },
+            sessionId,
+          ) => {
             if (
               method !== "Runtime.bindingCalled" ||
-              !params ||
-              typeof params !== "object" ||
-              !("name" in params) ||
               params.name !== "studioExportChunk"
             )
               return;
             let requestId: number | undefined;
             let result: ChunkReply;
             try {
-              if (!("payload" in params) || typeof params.payload !== "string")
-                throw new Error("Invalid migration chunk.");
               if (Buffer.byteLength(params.payload) > 64 * 1024 * 1024 + 1024)
                 throw new Error("Migration chunk is too large.");
-              const payload: unknown = JSON.parse(params.payload);
-              if (!payload || typeof payload !== "object" || !("id" in payload))
-                throw new Error("Invalid migration chunk.");
-              requestId =
-                typeof payload.id === "number" ? payload.id : undefined;
+              const payload = readChunkPayload(params.payload);
+              requestId = payload.id;
               if (
-                !payload ||
-                typeof payload !== "object" ||
-                !("id" in payload) ||
-                typeof payload.id !== "number" ||
-                !Number.isSafeInteger(payload.id) ||
-                !("records" in payload) ||
+                !Number.isSafeInteger(requestId) ||
                 !Array.isArray(payload.records)
               )
                 throw new Error("Invalid migration chunk.");
@@ -245,18 +231,12 @@ async function main() {
               let file;
               try {
                 file = await open(
-                  path.join(parts, sha256 + ".json"),
+                  path.join(partsDirectory!, sha256 + ".json"),
                   "wx",
                   0o600,
                 );
               } catch (error) {
-                if (
-                  !(
-                    error instanceof Error &&
-                    "code" in error &&
-                    error.code === "EEXIST"
-                  )
-                )
+                if ((error as NodeJS.ErrnoException).code !== "EEXIST")
                   throw error;
               }
               if (file) {
@@ -283,22 +263,14 @@ async function main() {
                 "Runtime.evaluate",
                 {
                   expression: `window.__studioExportReplies.get(${JSON.stringify(requestId)})?.(${JSON.stringify(result)})`,
-                  contextId:
-                    "executionContextId" in params
-                      ? params.executionContextId
-                      : undefined,
+                  contextId: params.executionContextId,
                 },
                 // Electron reports the root session as an empty string, but
                 // sendCommand accepts only an omitted id for that session.
                 sessionId || undefined,
               )
-              .then((response: unknown) => {
-                if (
-                  response &&
-                  typeof response === "object" &&
-                  "exceptionDetails" in response &&
-                  response.exceptionDetails
-                )
+              .then((response: { exceptionDetails?: unknown }) => {
+                if (response.exceptionDetails)
                   throw new Error(
                     "The profile reader rejected a chunk acknowledgement.",
                   );
@@ -336,8 +308,7 @@ async function main() {
     }
     await exportServerCredentials({
       profile,
-      destination:
-        "nativeCredentials" in input ? input.nativeCredentials : undefined,
+      destination: input.nativeCredentials,
       safeStorage,
     });
     const bytes = JSON.stringify({

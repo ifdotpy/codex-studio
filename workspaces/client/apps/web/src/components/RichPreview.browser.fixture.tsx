@@ -12,8 +12,7 @@ const scheme =
     ? "dark"
     : "light";
 const root = document.getElementById("root");
-if (!root) throw new Error("Missing preview fixture root");
-createRoot(root).render(
+createRoot(root!).render(
   e(
     MantineProvider,
     { forceColorScheme: scheme },

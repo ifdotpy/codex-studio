@@ -1,4 +1,4 @@
-import test, { mock } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import childProcess, { execFileSync } from "node:child_process";
 import {
@@ -50,30 +50,35 @@ function withSecurity(
   callback: (calls: SecurityCalls) => void,
 ) {
   const calls: SecurityCalls = { unlock: 0, find: 0, inputs: [], args: [] };
-  mock.method(
-    childProcess,
-    "spawnSync",
-    (command: string, args: string[], options: { input: string }) => {
-      calls.unlock++;
-      calls.inputs.push(options.input);
-      calls.args.push([command, ...args]);
-      return unlock;
-    },
-  );
-  mock.method(
-    childProcess,
-    "execFileSync",
-    (command: string, args: string[]) => {
-      calls.find++;
-      calls.args.push([command, ...args]);
-      return identities;
-    },
-  );
+  // The security fixture implements only the two calls used by signing.ts.
+  const securityProcess = childProcess as {
+    spawnSync: (
+      command: string,
+      args: string[],
+      options: { input: string },
+    ) => typeof unlock;
+    execFileSync: (command: string, args: string[]) => typeof identities;
+  };
+  const originals = {
+    spawnSync: childProcess.spawnSync,
+    execFileSync: childProcess.execFileSync,
+  };
+  securityProcess.spawnSync = (command, args, options) => {
+    calls.unlock++;
+    calls.inputs.push(options.input);
+    calls.args.push([command, ...args]);
+    return unlock;
+  };
+  securityProcess.execFileSync = (command, args) => {
+    calls.find++;
+    calls.args.push([command, ...args]);
+    return identities;
+  };
   syncBuiltinESMExports();
   try {
     return callback(calls);
   } finally {
-    mock.restoreAll();
+    Object.assign(childProcess, originals);
     syncBuiltinESMExports();
   }
 }
@@ -95,8 +100,7 @@ function inFixture(
   try {
     return withSecurity(security, (calls) => callback(files, calls));
   } finally {
-    if (home === undefined) delete process.env.HOME;
-    else process.env.HOME = home;
+    process.env.HOME = home;
     rmSync(files.root, { recursive: true, force: true });
   }
 }
@@ -116,10 +120,7 @@ test("passes with the keychain path and the identity fingerprint", () =>
     assert.equal(calls.unlock, 1);
     assert.equal(calls.find, 1);
     // The password reaches security only through stdin.
-    assert.match(
-      calls.inputs[0] ?? "",
-      /^unlock-keychain -p "fixture-password/,
-    );
+    assert.match(calls.inputs[0], /^unlock-keychain -p "fixture-password/);
     assert.equal(JSON.stringify(calls.args).includes(password), false);
   }));
 

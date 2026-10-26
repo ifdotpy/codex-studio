@@ -1,37 +1,25 @@
-import type { Snapshot } from "../types";
-import type { ResourceConnectionState } from "./resourceEvents";
 declare global {
   interface Window {
-    syncDelivery: {
-      snapshot: Snapshot | null;
-      syncErrors: string[];
-      connection: ResourceConnectionState | "closed";
-      stopConnection: () => void;
-      stopProjection: () => void;
-      checkpoint: () => Promise<number | undefined>;
-    };
+    syncErrors: string[];
+    stopConnection: () => void;
+    stopProjection: () => void;
   }
 }
 export const initializeDelivery = async () => {
   const client = await import("/src/sync/client.ts");
-  window.syncDelivery = {
-    snapshot: null,
-    syncErrors: [],
-    connection: "closed",
-    stopConnection: () => {},
-    stopProjection: () => {},
-    checkpoint: async () => undefined,
-  };
-  window.syncDelivery.stopConnection = client.watchResourceConnection(
-    (state) => (window.syncDelivery.connection = state),
+  window.snapshot = null;
+  window.syncErrors = [];
+  window.connection = "closed";
+  window.stopConnection = client.watchResourceConnection(
+    (state) => (window.connection = state),
   );
-  window.syncDelivery.stopProjection = client.subscribeStateProjection(
-    (snapshot) => (window.syncDelivery.snapshot = snapshot),
+  window.stopProjection = client.subscribeStateProjection(
+    (snapshot) => (window.snapshot = snapshot),
     (error) => {
-      if (error) window.syncDelivery.syncErrors.push(String(error));
+      if (error) window.syncErrors.push(String(error));
     },
   );
-  window.syncDelivery.checkpoint = async () => {
+  window.checkpoint = async () => {
     const { db } = await client.syncDatabase();
     return (await db.projections.findOne("state:entities:checkpoint").exec())
       ?.seq;

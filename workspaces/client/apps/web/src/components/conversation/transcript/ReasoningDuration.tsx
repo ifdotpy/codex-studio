@@ -4,7 +4,19 @@ import type { Message } from "../../../types";
 import { useVisualActivity } from "../../../hooks/useVisualActivity";
 import "./reasoning-duration.css";
 
-export default function ReasoningDuration({ item }: { item: Message }) {
+export default function ReasoningDuration({
+  item,
+}: {
+  item: Pick<
+    Message,
+    | "id"
+    | "sourceId"
+    | "reasoningSince"
+    | "reasoningObservedAt"
+    | "reasoningMs"
+    | "observedWait"
+  >;
+}) {
   const [visualRef, visualActive] = useVisualActivity<HTMLDivElement>();
   const [clock, setClock] = useState<{ start: number; elapsed: number } | null>(
     null,

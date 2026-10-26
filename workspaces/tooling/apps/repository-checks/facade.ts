@@ -386,8 +386,7 @@ function justVersion() {
 }
 
 function compareVersions(a: number[], b: number[]) {
-  for (let i = 0; i < b.length; i += 1)
-    if (a[i] !== b[i]) return Number(a[i]) - Number(b[i]);
+  for (let i = 0; i < b.length; i += 1) if (a[i] !== b[i]) return a[i] - b[i];
   return 0;
 }
 
@@ -518,7 +517,7 @@ function pnpmTestCommand(item: WorkspacePackage, caseName: string): Command[] {
   if (!manifest.scripts?.[script])
     fail(`Package ${item.name} declares missing test script ${script}`);
   const scriptText = manifest.scripts[script];
-  if (!scriptText) fail(`Missing script ${script}`);
+
   const nodeTest = scriptText.match(/node --test(?:\s+(.*))?/);
   if (nodeTest && caseName) {
     const args = [
@@ -571,9 +570,7 @@ export function commandFor(
       }
       const commands = pnpmTestCommand(item, caseName);
       if (options.name) {
-        const first = commands[0];
-        if (!first) fail("Missing package test command");
-        const args = first[1];
+        const args = commands[0][1];
         if (!args.includes("vitest"))
           fail("--name is supported only for Vitest packages");
         args.push("-t", options.name);
@@ -594,11 +591,9 @@ export function commandFor(
   }
   if (item.ecosystem === "cargo") {
     if (action === "test") {
-      const filters = [caseName, options.name].filter(
-        (value): value is string => typeof value === "string" && Boolean(value),
-      );
+      const filters = [caseName, options.name].filter(Boolean);
       const filterset = filters
-        .map((filter) => `test(~${escapeFilterMatcher(filter)})`)
+        .map((filter) => `test(~${escapeFilterMatcher(filter!)})`)
         .join(" and ");
       return [
         [
@@ -803,8 +798,8 @@ function selectorDescription(
   if (item.ecosystem === "cargo")
     return `Cargo test-name substring${options.cargoTargets?.length ? `; Cargo target selection: ${options.cargoTargets.join(" ")}` : ""}${options.passthrough?.length ? `; test harness args after --: ${options.passthrough.join(" ")}` : ""}`;
   const manifest = manifestFor(item);
-  const testScript = manifest.codexStudioChecks?.test;
-  const script = testScript ? (manifest.scripts?.[testScript] ?? "") : "";
+  const script =
+    manifest.scripts?.[manifest.codexStudioChecks?.test as string] ?? "";
   if (/\bvitest\b/.test(script))
     return `${caseName ? `Vitest positional file-path substring: ${caseName}` : "none (package default)"}${options.name ? `; Vitest -t name substring: ${options.name}` : ""}`;
   return caseName
@@ -913,200 +908,212 @@ export function gateSteps(root: string, name: string): GateStep[] {
     commands: [["cargo", args]],
     options,
   });
-  const steps: GateStep[] = [
-    {
-      id: "wasm",
-      label: "web WASM preparation",
-      lane: "rust",
-      requiresCargo: true,
-      item: web,
-      options: { script: "build:wasm", allowZeroTests: true },
-      provides: "wasm",
-    },
-    {
-      ...script("renderer", web, "build:bundle:prepared", {
-        allowZeroTests: true,
-      }),
-      label: "renderer build",
-      lane: "rust",
-      provides: "renderer",
-      requiresCargo: true,
-    },
-    {
-      ...cargo(
-        "workspace",
-        "Rust workspace build",
-        ["build", "--workspace", "--tests", "--bins", "--examples", "--locked"],
-        { buildOnly: true },
-      ),
-      requires: "renderer",
-      provides: "workspace",
-    },
-    {
-      id: "contracts",
-      label: "generated contracts",
-      lane: "rust",
-      requires: "workspace",
-      requiresCargo: true,
-      item: tooling,
-      commands: [[debugBinary(root, "studio-contracts"), ["--check"]]],
-      options: { allowZeroTests: true },
-    },
-    {
-      ...cargo("rust-tests", "Rust nextest", [
-        "nextest",
-        "run",
-        "--workspace",
-        "--profile",
-        fast ? "fast" : "ci",
-      ]),
-      requires: "workspace",
-    },
-    ...(!fast
-      ? [
-          {
-            ...cargo(
-              "clippy",
-              "Rust Clippy",
-              [
+  return (
+    [
+      {
+        id: "wasm",
+        label: "web WASM preparation",
+        lane: "rust",
+        requiresCargo: true,
+        item: web,
+        options: { script: "build:wasm", allowZeroTests: true },
+        provides: "wasm",
+      },
+      {
+        ...script("renderer", web, "build:bundle:prepared", {
+          allowZeroTests: true,
+        }),
+        label: "renderer build",
+        lane: "rust",
+        provides: "renderer",
+        requiresCargo: true,
+      },
+      {
+        ...cargo(
+          "workspace",
+          "Rust workspace build",
+          [
+            "build",
+            "--workspace",
+            "--tests",
+            "--bins",
+            "--examples",
+            "--locked",
+          ],
+          { buildOnly: true },
+        ),
+        requires: "renderer",
+        provides: "workspace",
+      },
+      {
+        id: "contracts",
+        label: "generated contracts",
+        lane: "rust",
+        requires: "workspace",
+        requiresCargo: true,
+        item: tooling,
+        commands: [[debugBinary(root, "studio-contracts"), ["--check"]]],
+        options: { allowZeroTests: true },
+      },
+      {
+        ...cargo("rust-tests", "Rust nextest", [
+          "nextest",
+          "run",
+          "--workspace",
+          "--profile",
+          fast ? "fast" : "ci",
+        ]),
+        requires: "workspace",
+      },
+      ...(!fast
+        ? [
+            {
+              ...cargo(
                 "clippy",
-                "--workspace",
-                "--all-targets",
-                "--locked",
-                "--",
-                "-D",
-                "warnings",
-              ],
-              { buildOnly: true },
+                "Rust Clippy",
+                [
+                  "clippy",
+                  "--workspace",
+                  "--all-targets",
+                  "--locked",
+                  "--",
+                  "-D",
+                  "warnings",
+                ],
+                { buildOnly: true },
+              ),
+              requires: "renderer",
+            },
+          ]
+        : []),
+      {
+        ...script("TypeScript projects", tooling, "", { allowZeroTests: true }),
+        commands: typescriptProjects(root).map((project) => [
+          "pnpm",
+          [
+            "exec",
+            "tsc",
+            "--project",
+            project,
+            "--incremental",
+            "--tsBuildInfoFile",
+            path.join(
+              typeCacheDirectory(root),
+              `${project.replaceAll(/[^a-zA-Z0-9._-]/g, "-")}.tsbuildinfo`,
             ),
-            requires: "renderer",
-          },
-        ]
-      : []),
-    {
-      ...script("TypeScript projects", tooling, "", { allowZeroTests: true }),
-      commands: typescriptProjects(root).map((project) => [
-        "pnpm",
-        [
-          "exec",
-          "tsc",
-          "--project",
-          project,
-          "--incremental",
-          "--tsBuildInfoFile",
-          path.join(
-            typeCacheDirectory(root),
-            `${project.replaceAll(/[^a-zA-Z0-9._-]/g, "-")}.tsbuildinfo`,
+          ],
+        ]),
+      },
+      {
+        ...script(
+          "web unit tests",
+          web,
+          fast ? "test:unit:fast" : "test:unit:prepared",
+        ),
+        requires: "workspace",
+        lane: "web",
+      },
+      ...["studio-claude-bridge", "codex-agents-desktop"].map(
+        (packageName) => ({
+          ...script(
+            packageName,
+            packageTarget(packages, packageName),
+            fast || packageName === "codex-agents-desktop"
+              ? "test:fast"
+              : "test",
           ),
-        ],
+          requires: null,
+          lane: "js",
+        }),
+      ),
+      nodeTest("retained-helpers", "retained Python helper boundaries", [
+        "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
       ]),
-    },
-    {
-      ...script(
-        "web unit tests",
-        web,
-        fast ? "test:unit:fast" : "test:unit:prepared",
-      ),
-      requires: "workspace",
-      lane: "web",
-    },
-    ...["studio-claude-bridge", "codex-agents-desktop"].map((packageName) => ({
-      ...script(
-        packageName,
-        packageTarget(packages, packageName),
-        fast || packageName === "codex-agents-desktop" ? "test:fast" : "test",
-      ),
-      requires: null,
-      lane: "js",
-    })),
-    nodeTest("retained-helpers", "retained Python helper boundaries", [
-      "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
-    ]),
-    nodeTest("mac-sync", "Mac sync chunk read witness", [
-      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
-    ]),
-    nodeTest("native-fixture", "native WebView fixture", [
-      "workspaces/client/apps/native/check-native.test.ts",
-      "workspaces/client/apps/native/recovery-package.test.ts",
-    ]),
-    nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
-      "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
-    ]),
-    nodeTest("retired-server", "retired server action witness", [
-      "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
-    ]),
-    {
-      id: "boundaries",
-      label: "workspace boundary guards",
-      lane: "js",
-      item: tooling,
-      commands: [
-        [
-          "node",
+      nodeTest("mac-sync", "Mac sync chunk read witness", [
+        "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
+      ]),
+      nodeTest("native-fixture", "native WebView fixture", [
+        "workspaces/client/apps/native/check-native.test.ts",
+        "workspaces/client/apps/native/recovery-package.test.ts",
+      ]),
+      nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
+        "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
+      ]),
+      nodeTest("retired-server", "retired server action witness", [
+        "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
+      ]),
+      {
+        id: "boundaries",
+        label: "workspace boundary guards",
+        lane: "js",
+        item: tooling,
+        commands: [
           [
-            path.join(
-              root,
-              "workspaces/tooling/apps/repository-checks/facade.ts",
-            ),
-            "boundaries-check",
+            "node",
+            [
+              path.join(
+                root,
+                "workspaces/tooling/apps/repository-checks/facade.ts",
+              ),
+              "boundaries-check",
+            ],
           ],
         ],
-      ],
-      options: { allowZeroTests: true },
-    },
-    {
-      id: "javascript-policy",
-      label: "tracked JavaScript exceptions",
-      lane: "js",
-      item: tooling,
-      commands: [
-        [
-          "node",
+        options: { allowZeroTests: true },
+      },
+      {
+        id: "javascript-policy",
+        label: "tracked JavaScript exceptions",
+        lane: "js",
+        item: tooling,
+        commands: [
           [
-            path.join(
-              root,
-              "workspaces/tooling/apps/repository-checks/facade.ts",
-            ),
-            "javascript-check",
+            "node",
+            [
+              path.join(
+                root,
+                "workspaces/tooling/apps/repository-checks/facade.ts",
+              ),
+              "javascript-check",
+            ],
           ],
         ],
-      ],
-      options: { allowZeroTests: true },
-    },
-    { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
-    {
-      id: "guest",
-      label: "VM guest Python suite",
-      lane: "guest",
-      requires: "workspace",
-      item: tooling,
-      commands: [
-        [
-          "node",
+        options: { allowZeroTests: true },
+      },
+      { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
+      {
+        id: "guest",
+        label: "VM guest Python suite",
+        lane: "guest",
+        requires: "workspace",
+        item: tooling,
+        commands: [
           [
-            "--test",
-            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
+            "node",
+            [
+              "--test",
+              "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
+            ],
           ],
+          ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mts"]],
         ],
-        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mts"]],
-      ],
-    },
-    ...(name === "test-comprehensive"
-      ? [
-          {
-            ...script(
-              "browser smoke subset",
-              web,
-              "test:browser:smoke:prepared",
-              browserSmokeTestOptions(),
-            ),
-            requires: "workspace",
-            lane: "web",
-          },
-        ]
-      : []),
-  ];
-  return steps.filter((step) => !nonRust || !step.requiresCargo);
+      },
+      ...(name === "test-comprehensive"
+        ? [
+            {
+              ...script(
+                "browser smoke subset",
+                web,
+                "test:browser:smoke:prepared",
+                browserSmokeTestOptions(),
+              ),
+              requires: "workspace",
+              lane: "web",
+            },
+          ]
+        : []),
+    ] satisfies GateStep[]
+  ).filter((step) => !nonRust || !step.requiresCargo);
 }
 
 function debugBinary(root: string, name: string) {
@@ -1207,7 +1214,7 @@ export async function executeRecipe(
     id: string | undefined;
     lane: string;
     label: string;
-  })[] = [];
+  })[] = Array.from({ length: steps.length });
   const readiness = new Map(
     steps
       .filter((step) => step.provides)
@@ -1245,7 +1252,7 @@ export async function executeRecipe(
       const ready =
         !step.requires ||
         (readiness.has(step.requires)
-          ? await readiness.get(step.requires)?.promise
+          ? await readiness.get(step.requires)!.promise
           : external[step.requires]);
       let result: StepResult;
       if (controller.signal.aborted || !ready) {
@@ -1287,15 +1294,13 @@ export async function executeRecipe(
             status: "failed",
             exitCode: 1,
             durationSeconds: 0,
-            errors: [
-              String(error instanceof Error ? (error.stack ?? error) : error),
-            ],
+            errors: [String((error as Error).stack ?? error)],
           };
         }
       }
       results[index] = { ...result, id: step.id, lane, label: step.label };
       if (step.provides)
-        readiness.get(step.provides)?.resolve(result.exitCode === 0);
+        readiness.get(step.provides)!.resolve(result.exitCode === 0);
     }
   };
   try {
@@ -1364,12 +1369,12 @@ export function parseCounts(
       /^\s*Summary\s+\[[^\]]+\]\s+(\d+) tests run:\s+(.+)$/m,
     );
     if (summary) {
-      const passed = +((summary[2] ?? "").match(/(\d+) passed/)?.[1] ?? 0);
+      const passed = +(summary[2].match(/(\d+) passed/)?.[1] ?? 0);
       return {
         passed,
-        failed: Number(summary[1]) - passed,
-        skipped: +((summary[2] ?? "").match(/(\d+) skipped/)?.[1] ?? 0),
-        executed: Number(summary[1]),
+        failed: +summary[1] - passed,
+        skipped: +(summary[2].match(/(\d+) skipped/)?.[1] ?? 0),
+        executed: +summary[1],
         summaryFound: true,
       };
     }
@@ -1414,14 +1419,13 @@ export function parseCounts(
       failed: number;
       skipped: number;
       executed: number;
-      summaryFound: boolean;
+      summaryFound?: boolean;
     }>(
       (sum, row) => ({
         passed: sum.passed + row.passed,
         failed: sum.failed + row.failed,
         skipped: sum.skipped + row.skipped,
         executed: sum.executed + row.passed + row.failed,
-        summaryFound: true,
       }),
       { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: true },
     );
@@ -1441,10 +1445,10 @@ export function parseCounts(
   );
   if (tap)
     return {
-      passed: Number(tap[2]),
-      failed: Number(tap[3]),
-      skipped: Number(tap[5]),
-      executed: Number(tap[2]) + Number(tap[3]),
+      passed: +tap[2],
+      failed: +tap[3],
+      skipped: +tap[5],
+      executed: +tap[2] + +tap[3],
       summaryFound: true,
     };
   const nodeSpec = normalizedOutput.match(
@@ -1452,40 +1456,18 @@ export function parseCounts(
   );
   if (nodeSpec)
     return {
-      passed: Number(nodeSpec[2]),
-      failed: Number(nodeSpec[3]),
-      skipped: Number(nodeSpec[4]),
-      executed: Number(nodeSpec[2]) + Number(nodeSpec[3]),
+      passed: +nodeSpec[2],
+      failed: +nodeSpec[3],
+      skipped: +nodeSpec[4],
+      executed: +nodeSpec[2] + +nodeSpec[3],
       summaryFound: true,
     };
   return { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: false };
 }
 
-const playwrightStatNames = [
-  "expected",
-  "unexpected",
-  "flaky",
-  "skipped",
-] as const;
-type PlaywrightStats = Pick<
-  JSONReport["stats"],
-  (typeof playwrightStatNames)[number]
->;
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
-function hasPlaywrightStats(value: unknown): value is PlaywrightStats {
-  return (
-    isRecord(value) &&
-    playwrightStatNames.every((name) => {
-      const stat = value[name];
-      return (
-        typeof stat === "number" && Number.isSafeInteger(stat) && stat >= 0
-      );
-    })
-  );
-}
-
 export function evaluatePlaywrightReport(
   reportText: unknown,
   processExitCode: number,
@@ -1494,23 +1476,29 @@ export function evaluatePlaywrightReport(
   let failures: ReturnType<typeof playwrightFailureSummaries> = [];
   if (processExitCode !== 0)
     errors.push(`Playwright exited with code ${processExitCode}`);
-  let report: unknown;
+  let report: JSONReport | undefined;
   try {
     if (reportText === null || reportText === undefined)
       throw new Error("Playwright JSON report is missing");
-    report =
-      typeof reportText === "string" ? JSON.parse(reportText) : reportText;
+    report = (
+      typeof reportText === "string" ? JSON.parse(reportText) : reportText
+    ) as JSONReport;
     failures = playwrightFailureSummaries(report);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     errors.push(
-      message === "Playwright JSON report is missing"
-        ? message
-        : `Playwright JSON report is invalid: ${message}`,
+      (error as Error).message === "Playwright JSON report is missing"
+        ? (error as Error).message
+        : `Playwright JSON report is invalid: ${(error as Error).message}`,
     );
   }
-  const stats = isRecord(report) ? report.stats : undefined;
-  if (!hasPlaywrightStats(stats)) {
+  const stats = report?.stats;
+  const statNames = ["expected", "unexpected", "flaky", "skipped"] as const;
+  if (
+    !stats ||
+    statNames.some(
+      (name) => !Number.isSafeInteger(stats[name]) || stats[name] < 0,
+    )
+  ) {
     if (report)
       errors.push("Playwright JSON report has invalid or missing stats");
     return {
@@ -1548,54 +1536,38 @@ export function evaluatePlaywrightReport(
   };
 }
 
-function playwrightArray(value: unknown): unknown[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) throw new Error("Invalid Playwright array");
-  return value;
-}
-
-function playwrightFailureSummaries(report: unknown) {
+function playwrightFailureSummaries(report: JSONReport) {
   const failures: { title: string; error: string }[] = [];
-  const visitSuite = (suite: unknown, parents: unknown[] = []) => {
-    if (!isRecord(suite)) throw new Error("Invalid Playwright suite");
+  const visitSuite = (
+    suite: JSONReport["suites"][number],
+    parents: string[] = [],
+  ) => {
     const suiteTitles = suite.title ? [...parents, suite.title] : parents;
-    const specs = playwrightArray(suite.specs);
-    for (const spec of specs) {
-      if (!isRecord(spec)) throw new Error("Invalid Playwright spec");
-      const tests = playwrightArray(spec.tests);
-      for (const test of tests) {
-        if (!isRecord(test)) throw new Error("Invalid Playwright test");
-        const results = playwrightArray(test.results);
+    for (const spec of suite.specs ?? []) {
+      for (const test of spec.tests ?? []) {
+        const results = test.results ?? [];
         if (
           test.status !== "unexpected" &&
           test.status !== "flaky" &&
-          !results.some(
-            (result) =>
-              isRecord(result) &&
-              ["failed", "timedOut"].includes(String(result.status)),
+          !results.some((result) =>
+            ["failed", "timedOut"].includes(result.status!),
           )
         )
           continue;
-        const result = results.find(
-          (entry) =>
-            isRecord(entry) &&
-            ["failed", "timedOut", "interrupted"].includes(
-              String(entry.status),
-            ),
+        const result = results.find((entry) =>
+          ["failed", "timedOut", "interrupted"].includes(entry.status!),
         );
-        const resultErrors = isRecord(result)
-          ? playwrightArray(result.errors)
-          : [];
-        const testErrors = playwrightArray(test.errors);
-        const error = resultErrors[0] ?? testErrors[0];
+        const error =
+          result?.errors?.[0] ??
+          (test as typeof test & { errors?: JSONReport["errors"] }).errors?.[0];
         const detail =
           typeof error === "string"
             ? error
-            : ((isRecord(error) ? error.message : undefined) ??
-              (isRecord(result) ? result.status : undefined) ??
+            : (error?.message ??
+              result?.status ??
               test.status ??
               "unexpected result");
-        const firstLine = (String(detail).split(/\r?\n/, 1)[0] ?? "").trim();
+        const firstLine = String(detail).split(/\r?\n/, 1)[0].trim();
         failures.push({
           title: [...suiteTitles, spec.title, test.projectName]
             .filter(Boolean)
@@ -1604,12 +1576,9 @@ function playwrightFailureSummaries(report: unknown) {
         });
       }
     }
-    const children = playwrightArray(suite.suites);
-    for (const child of children) visitSuite(child, suiteTitles);
+    for (const child of suite.suites ?? []) visitSuite(child, suiteTitles);
   };
-  if (!isRecord(report)) throw new Error("Invalid Playwright report");
-  const suites = playwrightArray(report.suites);
-  for (const suite of suites) visitSuite(suite);
+  for (const suite of report.suites ?? []) visitSuite(suite);
   return failures;
 }
 
@@ -1803,18 +1772,17 @@ export function parseSelection(
   const flags: string[] = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
-    if (arg === undefined) continue;
+
     if (arg === "--") {
       const forwarded = rest
         .slice(index + 1)
         .filter((value) => value !== "--json");
       for (let cursor = 0; cursor < forwarded.length; cursor += 1) {
         const option = forwarded[cursor];
-        if (option === undefined) continue;
+
         if (["--test", "--bin", "--example", "--bench"].includes(option)) {
-          const target = forwarded[cursor + 1];
-          if (!target) fail(`${option} requires a target name`);
-          cargoTargets.push(option, target);
+          if (!forwarded[cursor + 1]) fail(`${option} requires a target name`);
+          cargoTargets.push(option, forwarded[cursor + 1]);
           cursor += 1;
         } else if (
           [
@@ -1832,11 +1800,11 @@ export function parseSelection(
     }
     if (arg === "--name") {
       const values: string[] = [];
-      while (true) {
-        const next = rest[index + 1];
-        if (!next || ["--", "--json", "--dry-run", "--name"].includes(next))
-          break;
-        values.push(next);
+      while (
+        rest[index + 1] &&
+        !["--", "--json", "--dry-run", "--name"].includes(rest[index + 1])
+      ) {
+        values.push(rest[index + 1]);
         index += 1;
       }
       name = values.join(" ");
@@ -2080,7 +2048,7 @@ function packageImports(root: string, file: string, source: string) {
     const pattern =
       /\b(?:from\s*|import\s*\(|import\s+|export\s+[^;]*?\sfrom\s*|require\s*\()\s*["']([^"']+)["']/g;
     for (const match of source.matchAll(pattern))
-      if (match[1]) specs.push({ specifier: match[1], typeOnly: false });
+      specs.push({ specifier: match[1], typeOnly: false });
     return specs;
   }
 }
@@ -2351,7 +2319,7 @@ export function affectedPlan(
           if (byWorkspaceDependency(item.manifest, dependency, packages))
             dependents.get(dependency)?.add(item.name);
       } else if (item.ecosystem === "cargo") {
-        for (const dependency of cargoMetadata?.packages.find(
+        for (const dependency of cargoMetadata!.packages.find(
           (pkg) => pkg.name === item.name,
         )?.dependencies ?? [])
           if (
@@ -2367,7 +2335,7 @@ export function affectedPlan(
     const queue = [...reasons.keys()];
     while (queue.length) {
       const dependency = queue.shift();
-      for (const dependent of dependents.get(dependency ?? "") ?? []) {
+      for (const dependent of dependents.get(dependency!) ?? []) {
         if (reasons.has(dependent)) continue;
         reasons.set(dependent, `reverse dependency of ${dependency}`);
         queue.push(dependent);
@@ -2378,7 +2346,7 @@ export function affectedPlan(
     .filter((item) => reasons.has(item.name))
     .map((item) => ({
       package: item.name,
-      reason: reasons.get(item.name) ?? "",
+      reason: reasons.get(item.name)!,
     }));
 }
 
@@ -2526,7 +2494,7 @@ export async function main(argv = process.argv.slice(2)) {
       options.script = "test:browser:smoke:prepared";
     return (await execute(root, item, "", json, options)).exitCode;
   }
-  if (!["test", "test-plan", "check"].includes(action ?? "")) {
+  if (!["test", "test-plan", "check"].includes(action!)) {
     usage();
     return action ? 2 : 0;
   }
@@ -2566,7 +2534,7 @@ export async function main(argv = process.argv.slice(2)) {
     requestedCase === "--name" ? [requestedCase, ...rest] : rest,
   );
   const { caseName, options } = selection;
-  const effective = action === "test-plan" ? "test" : (action ?? "");
+  const effective = action === "test-plan" ? "test" : action!;
   const commands = commandFor(root, item, effective, caseName, options);
   if (action === "test-plan" || (action === "check" && dryRun)) {
     reportPlan(plan(root, item, effective, caseName, commands, options), json);
@@ -2666,9 +2634,7 @@ if (
       process.exitCode = code;
     })
     .catch((error: unknown) => {
-      process.stderr.write(
-        `${error instanceof Error ? error.message : String(error)}\n`,
-      );
+      process.stderr.write(`${(error as Error).message}\n`);
       process.exitCode = 1;
     });
 }

@@ -283,8 +283,7 @@ export const Attar: Story = {
 };
 
 /** Screenshot fixture leaves interaction state untouched. */
-const { play: _play, ...overview } = Dispatch;
-export const Overview: Story = overview;
+export const Overview: Story = { ...Dispatch, play: undefined };
 
 export const Workspace: Story = {
   render: (args) => (

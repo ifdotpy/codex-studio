@@ -17,7 +17,7 @@ export class EventStreamParser {
   private data: string[] = [];
   private type = "message";
   private first = true;
-  private emit: (type: string, data: string) => void;
+  declare private emit: (type: string, data: string) => void;
   constructor(emit: (type: string, data: string) => void) {
     this.emit = emit;
   }

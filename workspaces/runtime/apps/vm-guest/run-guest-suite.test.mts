@@ -19,12 +19,11 @@ async function start(args: string[], cwd: string) {
     cwd,
     detached: true,
     stdio: ["pipe", "ignore", "ignore", "ipc"],
-  });
-  const exited = once(child, "exit");
-  assert.ok(child.pid);
+  }) as ReturnType<typeof spawn> & { exited: ReturnType<typeof once> };
+  child.exited = once(child, "exit");
   await once(child, "message");
   child.disconnect();
-  return Object.assign(child, { exited, pid: child.pid });
+  return child;
 }
 
 function alive(pid: number) {
@@ -53,8 +52,7 @@ test(
       ),
       start(["-e", WAIT], outside),
     ]);
-    const [named, working, stubborn, other] = children.map(({ pid }) => pid);
-    assert.ok(named && working && stubborn && other);
+    const [named, working, stubborn, other] = children.map(({ pid }) => pid!);
     try {
       const found = suiteProcesses(folder).map(({ pid }) => pid);
       for (const pid of [named, working, stubborn])
@@ -100,14 +98,12 @@ test("cases within one module overlap and keep ordered output, failures and skip
     barrier.close();
     rmSync(folder, { recursive: true, force: true });
   });
-  const address = barrier.address();
-  assert.ok(address && typeof address !== "string");
   writeFileSync(
     path.join(folder, "test_a.py"),
     `import os,socket,sys,unittest
 class A(unittest.TestCase):
  def setUp(self):
-  with socket.create_connection(('127.0.0.1',${address.port}),timeout=5) as peer:
+  with socket.create_connection(('127.0.0.1',${(barrier.address() as import("node:net").AddressInfo).port}),timeout=5) as peer:
    self.assertEqual(peer.recv(5),b'ready')
  def test_fail(self): self.fail('case failure')
  @unittest.skip('fixture')

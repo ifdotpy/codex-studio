@@ -12,9 +12,7 @@ function serverFrameHost(id: string) {
     }
   }
   if (bits) encoded += alphabet[(value << (5 - bits)) & 31];
-  const labels = encoded.match(/.{1,50}/g);
-  if (!labels) throw new TypeError("Server frame identity is empty.");
-  return "studio-" + labels.join(".") + ".localhost";
+  return "studio-" + encoded.match(/.{1,50}/g)!.join(".") + ".localhost";
 }
 function frameOwner(
   url: string | undefined,
@@ -22,8 +20,8 @@ function frameOwner(
   shellOrigin: string,
 ) {
   try {
-    const value = new URL(url ?? "");
-    const base = new URL(assetsOrigin ?? "");
+    const value = new URL(url!);
+    const base = new URL(assetsOrigin!);
     const owner = value.searchParams.get("studio-server");
     if (
       !/^[a-zA-Z0-9_-]{1,128}$/.test(owner || "") ||
@@ -33,8 +31,7 @@ function frameOwner(
       value.password
     )
       return;
-    if (owner === null) return;
-    const host = serverFrameHost(owner);
+    const host = serverFrameHost(owner!);
     if (
       value.protocol !== base.protocol ||
       value.port !== base.port ||
@@ -46,7 +43,7 @@ function frameOwner(
     if (
       navigation.length > 1 ||
       (navigation.length === 1 &&
-        !["classic", "combined"].includes(navigation[0] ?? ""))
+        !["classic", "combined"].includes(navigation[0]))
     )
       return;
     if (

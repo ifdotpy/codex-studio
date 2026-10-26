@@ -1,13 +1,8 @@
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { waitForFixturePort } from "../fixture-readiness.ts";
-import type { SyncPullResponse, entityPullFixture } from "../playwright.ts";
-import type {
-  ApiGetPath,
-  GetResult,
-  JsonInputOf,
-  PostBody,
-} from "../../src/apiTypes.ts";
+import type { entityPullFixture } from "../playwright.ts";
+import type { ApiGetPath, GetResult, PostBody } from "../../src/apiTypes.ts";
 
 /** This fixture's stdout protocol is emitted by our own Node child. */
 function parseFixtureReply(line: string) {
@@ -148,7 +143,10 @@ export function legacyMutationDocuments(value: unknown) {
 }
 
 export function entityRows<
-  T extends JsonInputOf<SyncPullResponse>["documents"][number],
+  T extends Exclude<
+    ReturnType<typeof entityPullFixture>,
+    { reset: true }
+  >["documents"][number],
 >(documents: T[]) {
   const isEntity = (
     document: T,

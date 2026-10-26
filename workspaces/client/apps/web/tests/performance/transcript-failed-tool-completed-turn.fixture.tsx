@@ -1,4 +1,3 @@
-import { required } from "./performance-fixture.ts";
 import type { Message } from "../../src/types.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -40,7 +39,7 @@ const initial: Message[] = [
 
 function App() {
   const [items, setItems] = useState<Message[]>(initial);
-  window.failedToolFailCompletedTurnTool = () =>
+  window.failCompletedTurnTool = () =>
     flushSync(() =>
       setItems((old) =>
         old.map((item) =>
@@ -76,9 +75,9 @@ function App() {
   );
 }
 
-createRoot(required(document.getElementById("root"))).render(<App />);
+createRoot(document.getElementById("root")!).render(<App />);
 declare global {
   interface Window {
-    failedToolFailCompletedTurnTool: () => void;
+    failCompletedTurnTool: () => void;
   }
 }

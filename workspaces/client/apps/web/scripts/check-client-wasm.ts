@@ -42,11 +42,14 @@ const actual: MarkdownBlock[][] = cases.map(([text, streaming]) =>
   JSON.parse(parse_markdown(text, streaming)),
 );
 assert.deepEqual(actual, JSON.parse(native.stdout));
-const unfinished = actual[2]?.[0];
-assert.ok(unfinished);
-assert.equal("kind" in unfinished ? unfinished.kind : undefined, undefined);
+assert.equal(
+  (actual[2][0] as Extract<MarkdownBlock, { kind: string }>).kind,
+  undefined,
+);
 assert.deepEqual(
-  actual[3]?.map((block) => ("kind" in block ? block.kind : undefined)),
+  actual[3].map(
+    (block) => (block as Extract<MarkdownBlock, { kind: string }>).kind,
+  ),
   ["html", "html"],
 );
 assert.ok(!JSON.stringify(actual[5]).includes("javascript:"));

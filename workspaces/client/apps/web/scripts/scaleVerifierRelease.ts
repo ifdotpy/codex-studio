@@ -6,7 +6,7 @@ import { isAbsolute } from "node:path";
 for (let index = 2; index < process.argv.length; index += 2) {
   const path = process.argv[index];
   const token = process.argv[index + 1];
-  if (!path || !token || !isAbsolute(path) || !/^[0-9a-f-]{36}$/i.test(token))
+  if (!isAbsolute(path) || !/^[0-9a-f-]{36}$/i.test(token))
     throw new Error("Unexpected worker identity.");
   if (!lstatSync(path).isFIFO()) throw new Error("Expected an owned FIFO.");
   const fd = openSync(path, "w");

@@ -6,6 +6,10 @@ import type { exportBrowserProfile } from "./export-browser-profile.ts";
 export type ChunkReply =
   | { value: BrowserProfileChunk; error?: never }
   | { error: string; value?: never };
+export type ProfileChunkPayload = {
+  id: number;
+  records: BrowserProfileRecord[];
+};
 type ChunkForward = {
   kind: "profile-export-chunk";
   id: number;
@@ -38,9 +42,7 @@ export async function loadSourceFrame(origin: string) {
       const { id, payload } = event.data;
       window.__studioExportReplies.set(id, (result) => {
         window.__studioExportReplies.delete(id);
-        if (!frame.contentWindow)
-          throw new Error("The saved profile frame is unavailable.");
-        frame.contentWindow.postMessage(
+        frame.contentWindow!.postMessage(
           { kind: "profile-export-reply", id, result },
           origin,
         );
@@ -86,9 +88,12 @@ export async function captureSourceProfile(
         clearTimeout(timer);
         window.__studioExportReplies.delete(id);
         if (result.error) reject(new Error(result.error));
-        else if (result.value) resolve(result.value);
+        else resolve(result.value!);
       });
-      const payload = JSON.stringify({ id, records });
+      const payload = JSON.stringify({
+        id,
+        records,
+      } satisfies ProfileChunkPayload);
       if (parentOrigin)
         parent.postMessage(
           { kind: "profile-export-chunk", id, payload },
