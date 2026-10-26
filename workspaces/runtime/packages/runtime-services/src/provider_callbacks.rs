@@ -17,8 +17,7 @@ pub(crate) use cards::answer_signature;
 pub use cards::{
     AnswerAuthority, NATIVE_REQUEST_METHODS, NativeAdmission, admit_native, answer, answer_value,
     expire, expire_ended_generations, interactive as is_native_request,
-    pending_native_delete_context, prepare_delete, prepare_full_access_pending,
-    prepare_user_answer, resolve,
+    pending_native_delete_context, prepare_delete, prepare_user_answer, resolve,
 };
 pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,

@@ -220,10 +220,10 @@ async fn permission_app(
     .unwrap()
 }
 
-#[tokio::test]
-async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_again() {
-    use studio_runtime_services::provider_callbacks::*;
-    let (root, store, context) = fixture().await;
+async fn pending_codex_approval(
+    store: &Arc<studio_runtime_store::RuntimeStore>,
+    context: &studio_runtime_services::provider_callbacks::CallbackContext,
+) -> (String, studio_runtime_providers::Frame) {
     let actor = context.agent.clone();
     store.transaction(move |tx| {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.yoloMode',json('false'),'$.inFlight',json('true')) WHERE id=?1", [&actor])?;
@@ -235,12 +235,27 @@ async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_agai
         params: Some(json!({"threadId":context.thread,"turnId":context.turn,"command":"fixture"})),
         fields: Default::default(),
     });
-    let NativeAdmission::Card(id) = admit_native(store.clone(), &context, &frame, 1, 10.0)
+    let studio_runtime_services::provider_callbacks::NativeAdmission::Card(id) =
+        studio_runtime_services::provider_callbacks::admit_native(
+            store.clone(),
+            context,
+            &frame,
+            1,
+            10.0,
+        )
         .await
         .unwrap()
     else {
         panic!("pending approval")
     };
+    (id, frame)
+}
+
+#[tokio::test]
+async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_again() {
+    use studio_runtime_services::provider_callbacks::*;
+    let (root, store, context) = fixture().await;
+    let (id, frame) = pending_codex_approval(&store, &context).await;
     let port = Arc::new(Port::default());
     let app = permission_app(root.path(), store.clone(), port.clone()).await;
     let body = json!({"id":context.agent,"yolo_mode":true,"request_id":"live-full","expected_account_key":"default"});
@@ -330,4 +345,19 @@ async fn live_permissions_live_previous_still_donates_settings() {
     .await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["yoloMode"], false);
+}
+
+#[tokio::test]
+async fn live_permissions_failed_auto_answer_stays_pending_for_the_user() {
+    let (root, store, context) = fixture().await;
+    let (id, _) = pending_codex_approval(&store, &context).await;
+    let port = Arc::new(Port::default());
+    *port.next.lock().unwrap() = Some(ReplyOutcome::NotSent);
+    let app = permission_app(root.path(), store.clone(), port.clone()).await;
+    let full = json!({"id":context.agent,"yolo_mode":true,"request_id":"pending-full","expected_account_key":"default"});
+    let (status, value) = call(&app, "/api/conversation", full, "token").await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["yoloMode"], true);
+    assert_eq!(stored(&store, &id)["status"], "pending");
+    assert_eq!(port.calls.lock().unwrap().len(), 1);
 }

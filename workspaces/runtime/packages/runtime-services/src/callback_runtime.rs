@@ -168,9 +168,22 @@ impl CallbackRuntime {
         root: &str,
         now: f64,
     ) -> Result<(), CallbackError> {
-        let replies = callbacks::prepare_full_access_pending(&self.store, root, now).await?;
-        for reply in replies {
-            self.deliver(&reply).await?;
+        let root = root.to_owned();
+        let ids = self.store.read_async::<_, CallbackError>("runtime-services/callback_runtime/permissions", move |db| {
+            let mut query = db.prepare(
+                "SELECT r.id FROM runtime_requests r JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
+                 WHERE json_extract(r.record,'$.status')='pending'
+                 AND json_extract(r.record,'$.method') IN ('item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval')
+                 AND json_extract(a.record,'$.yoloMode')=1 AND COALESCE(json_extract(a.record,'$.provider'),'codex')!='claude'
+                 AND (a.id=?1 OR json_extract(a.record,'$.rootId')=?1)"
+            )?;
+            Ok(query.query_map([root], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).await?;
+        // Use the user-click path independently for each card; one failure does not undo Full.
+        for id in ids {
+            if let Err(error) = self.answer(&id, &json!({"decision":"accept"}), now).await {
+                eprintln!("Approval remains available through its user card: {error}");
+            }
         }
         Ok(())
     }

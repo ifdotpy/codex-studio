@@ -9,6 +9,7 @@ import type { Agent } from "../../types";
 
 const h = vi.hoisted(() => ({
   cells: new Map<string, any[]>(),
+  storage: new Map<string, unknown>(),
   scope: "",
   scoped: "",
   cursor: 0,
@@ -69,8 +70,8 @@ vi.mock("../../servers/ServerServicesContext", () => ({
   useServerStorage: () => ({ setItem: vi.fn(), removeItem: vi.fn() }),
   useServerApi: () => ({
     post: h.post,
-    saved: (_key: string, fallback: unknown) => fallback,
-    save: vi.fn(),
+    saved: (key: string, fallback: unknown) => h.storage.get(key) ?? fallback,
+    save: (key: string, value: unknown) => h.storage.set(key, value),
   }),
 }));
 vi.mock("../models/modelWhitelist", () => ({
@@ -181,6 +182,7 @@ afterEach(() => {
   for (const cells of h.cells.values())
     for (const cell of cells) cell.cleanup?.();
   h.cells.clear();
+  h.storage.clear();
   h.scoped = "";
   h.effects = [];
   h.post.mockReset();
@@ -431,4 +433,24 @@ test("Codex describes the selected Ask mode truthfully", () => {
     (node) => node.props["aria-label"] === "Full access without approval",
   )!;
   expect(permission.props.description).toBe("Tools ask for permission.");
+});
+
+test("a superseding Ask intent prevents reuse of a lost Full request identity", async () => {
+  const control = (agent: Agent) =>
+    children(render(agent, true).controls).find(
+      (node) => node.props["aria-label"] === "Full access without approval",
+    )!;
+  const ask = { ...initial, yoloMode: false };
+  const full = { ...initial, yoloMode: true };
+  h.post.mockRejectedValueOnce(new Error("response lost"));
+  control(ask).props.onChange({ currentTarget: { checked: true } });
+  await vi.waitFor(() => expect(control(full).props.disabled).toBe(false));
+  const lostFullId = h.post.mock.calls[0][1].request_id;
+  h.post.mockResolvedValueOnce(ask);
+  control(full).props.onChange({ currentTarget: { checked: false } });
+  await vi.waitFor(() => expect(control(ask).props.disabled).toBe(false));
+  h.post.mockResolvedValueOnce(full);
+  control(ask).props.onChange({ currentTarget: { checked: true } });
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
+  expect(h.post.mock.calls[2][1].request_id).not.toBe(lostFullId);
 });

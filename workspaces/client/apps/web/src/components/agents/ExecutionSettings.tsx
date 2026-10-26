@@ -1210,10 +1210,15 @@ function ScopedExecutionSettings({
     const generation = ++refreshGeneration.current;
     let confirmed = false;
     try {
-      const storageKey = `permissions:${agent.id}:${accountOf(agent)}:${enabled}`;
+      // Retry the unresolved click; a different selection replaces its identity.
+      const storageKey = `permissions:${agent.id}:${accountOf(agent)}`;
+      const intent = saved<{ value: boolean; request_id: string } | null>(
+        storageKey,
+        null,
+      );
       const requestId =
-        saved<string | null>(storageKey, null) || crypto.randomUUID();
-      save(storageKey, requestId);
+        intent?.value === enabled ? intent.request_id : crypto.randomUUID();
+      save(storageKey, { value: enabled, request_id: requestId });
       const canonical = await post("/api/conversation", {
         id: agent.id,
         request_id: requestId,
