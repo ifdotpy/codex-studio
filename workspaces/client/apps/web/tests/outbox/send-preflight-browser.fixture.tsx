@@ -45,9 +45,7 @@ declare global {
     >;
   }
 }
-async function read(
-  id: string,
-): Promise<import("../../src/sync/send.ts").OutboxEntry> {
+async function read(id: string): Promise<ReturnType<typeof readOutbox>> {
   const doc = await window.preflightSend_storage.db.outbox.findOne(id).exec();
   if (!doc) throw new Error("Missing outbox record");
   // The renderer writes and reads this outbox document.
