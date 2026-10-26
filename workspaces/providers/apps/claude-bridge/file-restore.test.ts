@@ -22,6 +22,21 @@ import {
 } from "./file-restore.ts";
 import { rollbackSession } from "./controls.ts";
 
+// Shared SDK message defaults for the initial checkpoint and later history records.
+function userMessage(
+  sessionId: string,
+  uuid: string,
+  content: string,
+): SessionMessage {
+  return {
+    type: "user",
+    uuid,
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    message: { content },
+  };
+}
 type Fixture = {
   cwd: string;
   config: string;
@@ -101,16 +116,7 @@ async function fixture(run: (fixture: Fixture) => Promise<void>) {
         },
       ],
     };
-    const messages: SessionMessage[] = [
-      {
-        type: "user",
-        uuid: message,
-        session_id: native,
-        parent_tool_use_id: null,
-        parent_agent_id: null,
-        message: { content: "edit" },
-      },
-    ];
+    const messages: SessionMessage[] = [userMessage(native, message, "edit")];
     const deps = {
       forkSession: async () => {
         throw new Error("first-turn rollback must not fork");
@@ -302,14 +308,7 @@ test("a file first tracked after the target uses its first backup", async () =>
         trackedFileBackups: { "a.txt": f.entries["a.txt"] },
       },
     });
-    f.messages.push({
-      type: "user",
-      uuid: later,
-      session_id: f.session.id,
-      parent_tool_use_id: null,
-      parent_agent_id: null,
-      message: { content: "later" },
-    });
+    f.messages.push(userMessage(f.session.id, later, "later"));
     await fs.writeFile(
       f.history,
       f.rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
@@ -340,7 +339,7 @@ test("a failed final descriptor save retains a durable pre-rewind copy and resum
       if (session.controlRequests!.restore?.status === "completed")
         throw new Error("final save failed");
 
-      saved = structuredClone(f.session);
+      saved = structuredClone(session as Session);
     };
     await assert.rejects(
       rollbackSession(f.session, f.request, f.deps),
