@@ -27,10 +27,14 @@ function unpack(value: Packed, strings: string[]): unknown {
     return value.slice(1).map((item) => unpack(item, strings));
   const entries: [string, unknown][] = [];
   for (let index = 1; index < value.length; index += 2) {
-    entries.push([
-      strings[value[index] as number],
-      unpack(value[index + 1], strings),
-    ]);
+    const keyIndex = value[index];
+    const item = value[index + 1];
+    if (typeof keyIndex !== "number" || item === undefined)
+      throw new Error("Markdown cache contains an invalid object entry.");
+    const key = strings[keyIndex];
+    if (key === undefined)
+      throw new Error("Markdown cache contains an invalid string reference.");
+    entries.push([key, unpack(item, strings)]);
   }
   return Object.fromEntries(entries);
 }
@@ -40,10 +44,12 @@ function unpack(value: Packed, strings: string[]): unknown {
 export class MarkdownCache {
   private entries = new Map<string, { json: string; bytes: number }>();
   private bytes = 0;
-  constructor(
-    private maxBytes = 4 * 1024 * 1024,
-    private maxEntries = 512,
-  ) {}
+  private maxBytes: number;
+  private maxEntries: number;
+  constructor(maxBytes = 4 * 1024 * 1024, maxEntries = 512) {
+    this.maxBytes = maxBytes;
+    this.maxEntries = maxEntries;
+  }
   get(text: string): unknown | undefined {
     const entry = this.entries.get(text);
     if (!entry) return undefined;
@@ -76,9 +82,10 @@ export class MarkdownCache {
     this.entries.set(text, { json, bytes });
     this.bytes += bytes;
     while (this.bytes > this.maxBytes || this.entries.size > this.maxEntries) {
-      const oldest = this.entries.keys().next().value!;
-      this.bytes -= this.entries.get(oldest)!.bytes;
-      this.entries.delete(oldest);
+      const oldest = this.entries.entries().next();
+      if (oldest.done) break;
+      this.bytes -= oldest.value[1].bytes;
+      this.entries.delete(oldest.value[0]);
     }
   }
 }

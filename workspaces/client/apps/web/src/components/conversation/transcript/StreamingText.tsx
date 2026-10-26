@@ -13,8 +13,8 @@ export default memo(function StreamingText({
 }: {
   text: string;
   streaming?: boolean;
-  agentId?: string;
-  basePath?: string;
+  agentId?: string | undefined;
+  basePath?: string | undefined;
 }) {
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [linkError, setLinkError] = useState("");

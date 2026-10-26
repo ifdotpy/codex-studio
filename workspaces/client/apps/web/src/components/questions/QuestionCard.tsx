@@ -30,7 +30,7 @@ export default memo(function QuestionCard({
   card: QuestionCardModel;
   messageId?: string;
   /** Text of the agent message that already shows the question, if any. */
-  messageText?: string;
+  messageText?: string | undefined;
   onAnswer?: (requestId: string) => void;
 }) {
   const shown = messageText?.trim();

@@ -50,19 +50,19 @@ type Actions = {
   remove: () => void;
 };
 type Bindings = HTMLAttributes<HTMLElement> & {
-  "data-folder-drop"?: string;
-  "data-sidebar-group"?: string;
-  "data-sidebar-id"?: string;
-  "data-drop-edge"?: string;
+  "data-folder-drop"?: string | undefined;
+  "data-sidebar-group"?: string | undefined;
+  "data-sidebar-id"?: string | undefined;
+  "data-drop-edge"?: string | undefined;
 };
 type Props = {
-  disabled?: boolean;
+  disabled?: boolean | undefined;
   row: Agent;
   selected: boolean;
   serverAlias: string;
   showServer: boolean;
-  indicator?: ChatIndicator;
-  serverOffline?: boolean;
+  indicator?: ChatIndicator | undefined;
+  serverOffline?: boolean | undefined;
   renaming: boolean;
   organizing: boolean;
   name: string;

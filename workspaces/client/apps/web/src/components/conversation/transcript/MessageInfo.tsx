@@ -13,10 +13,10 @@ type Metadata = GetResult<"/api/analytics">;
 
 export type MessageInfoProps = {
   message: Message;
-  agentId?: string;
+  agentId?: string | undefined;
   stateDir: string;
-  rootId?: string;
-  accounts?: UsageAccount[];
+  rootId?: string | undefined;
+  accounts?: UsageAccount[] | undefined;
   onCopy: (value: string) => void;
 };
 
