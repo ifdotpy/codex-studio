@@ -837,6 +837,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
+    openapi["components"]["schemas"]["DesktopResponse"]["properties"]["backendKind"] =
+        serde_json::json!({"type":"string", "const":crate::desktop::BACKEND_KIND});
+    openapi["components"]["schemas"]["AnalyticsUsageRecord"]["properties"]["studioUsage"] =
+        serde_json::json!({"$ref":"#/components/schemas/UsageObservation"});
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -972,6 +976,37 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             + "\n",
     });
     if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<crate::provider_input::ToolDefinition>();
+        generator.subschema_for::<crate::idle_compaction::CacheReport>();
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Bridge runtime contracts","version":"1"},
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/runtime-contract.generated.ts".into(),
+            text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_deserialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<crate::pricing::PricingArtifact>();
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Pricing artifact","version":"1"},
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: web("pricing.ts"),
+            text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
         let mut usage_generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
@@ -991,7 +1026,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
+        generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
+        generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
+        generator.subschema_for::<studio_client_domain::protocol::Request>();
+        generator.subschema_for::<studio_client_domain::protocol::Response>();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
+        generator.subschema_for::<studio_client_domain::drafts::DraftView>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},
@@ -999,7 +1039,11 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         });
         rendered.push(Rendered {
             path: web("rustOwned.ts"),
-            text: api_types(root, &document, "--rust-owned")?,
+            text: api_types(root, &document, "--rust-owned")? + &format!(
+                "export const STDIN_TIMING_DIAGNOSTIC_PREFIX = {};\nexport const REPLY_TIMING_DIAGNOSTIC_PREFIX = {};\n",
+                json_string(crate::provider_diagnostics::STDIN_TIMING_DIAGNOSTIC_PREFIX),
+                json_string(crate::provider_diagnostics::REPLY_TIMING_DIAGNOSTIC_PREFIX),
+            ),
         });
         rendered.push(Rendered {
             path: web("api.ts"),
@@ -1031,6 +1075,20 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_metadata_contract_exposes_backend_and_usage_observations() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        assert_eq!(
+            document.pointer("/components/schemas/DesktopResponse/properties/backendKind/const"),
+            Some(&serde_json::json!("rust"))
+        );
+        assert_eq!(
+            document
+                .pointer("/components/schemas/AnalyticsUsageRecord/properties/studioUsage/$ref"),
+            Some(&serde_json::json!("#/components/schemas/UsageObservation"))
+        );
+    }
 
     #[test]
     fn markdown_output_matches_rust_owned_schema() {
