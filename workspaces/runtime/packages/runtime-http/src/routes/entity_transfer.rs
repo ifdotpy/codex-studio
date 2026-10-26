@@ -133,7 +133,7 @@ async fn prepare(
         let through = page.max_sequence;
         let snapshot = page.reset;
         let mut after = if snapshot { 0 } else { since.as_ref().map_or(0, |cursor| cursor.seq) };
-        let cursor = SubscriptionCursor { workspace_id: workspace.clone(), seq: through };
+        let cursor = SubscriptionCursor { terminal_generation: None, workspace_id: workspace.clone(), seq: through };
         let transfer_id = uuid::Uuid::new_v4().to_string();
         let metadata = json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":workspace,"epoch":epoch,"revision":revision,"reason":reason,"resource":resource,"cursor":cursor,"replyKind":if snapshot {"snapshot"}else{"delta"},"transferId":transfer_id});
         let mut spool = None;
