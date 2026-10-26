@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import type { Browser, BrowserContext, Page, Response } from "playwright";
 import { browserExecutablePath } from "../tests/browser-executable.ts";
 import { startRustBackend } from "../tests/fixtures/rust-ui-fixture.ts";
 
@@ -41,14 +42,14 @@ const paths = [
 ];
 const expected = new Map(
   await Promise.all(
-    paths.map(async (path) => [
+    paths.map(async (path): Promise<[string, Buffer]> => [
       path,
       await readFile(join(dist, path === "/" ? "index.html" : path)),
     ]),
   ),
 );
 let backend;
-let browser;
+let browser: Browser | undefined;
 try {
   await mkdir(join(root, "state"));
   backend = await startRustBackend(join(root, "state"));
@@ -59,18 +60,18 @@ try {
   });
   const runs = [];
   for (const mode of ["identity", "br"]) {
-    const context = await browser.newContext({
+    const context: BrowserContext = await browser.newContext({
       serviceWorkers: "block",
       ...(mode === "identity"
         ? { extraHTTPHeaders: { "Accept-Encoding": "identity" } }
         : {}),
     });
     try {
-      const page = await context.newPage();
+      const page: Page = await context.newPage();
       const cdp = await context.newCDPSession(page);
       await cdp.send("Network.enable");
       await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
-      const errors = [];
+      const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(String(error)));
       await page.goto(backend.origin, { waitUntil: "load" });
       await page
@@ -80,7 +81,7 @@ try {
       // Fetch every original once with the browser's real HTTP decoder. This
       // gives both modes exactly the same resource set, including lazy chunks.
       for (const path of paths) {
-        const responsePromise = page.waitForResponse(
+        const responsePromise: Promise<Response> = page.waitForResponse(
           (response) => new URL(response.url()).pathname === path,
         );
         await page.evaluate(async (path) => {
@@ -113,7 +114,7 @@ try {
           encoding,
           transferredBodyBytes: sizes.responseBodySize,
           transferredHeaderBytes: sizes.responseHeadersSize,
-          decodedBytes: expected.get(path).length,
+          decodedBytes: expected.get(path)?.length,
         });
       }
       assert.deepEqual(errors, [], "renderer loaded without page errors");
@@ -136,7 +137,9 @@ try {
       await context.close();
     }
   }
-  assert.ok(runs[1].transferredBodyBytes < runs[0].transferredBodyBytes);
+  const [identity, compressed] = runs;
+  assert.ok(identity && compressed);
+  assert.ok(compressed.transferredBodyBytes < identity.transferredBodyBytes);
   await writeFile(
     reportPath,
     JSON.stringify(

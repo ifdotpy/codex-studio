@@ -1,3 +1,4 @@
+import { nativeRecoveryResourceFiles } from "./recovery-package.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
@@ -17,7 +18,7 @@ if (!application) throw new Error("Supply the packaged .app path.");
 const bundle = path.resolve(application);
 const resources = path.join(bundle, "Contents/Resources");
 const workspace = path.join(resources, "workspace");
-const plist = (key) =>
+const plist = (key: string) =>
   execFileSync(
     "plutil",
     [
@@ -56,15 +57,18 @@ assert.deepEqual(
 for (const file of [
   "workspace/web/dist/index.html",
   "helpers/studio-speech",
-  "helpers/recovery.ts",
-  "helpers/desktop-recovery/recovery.ts",
-  "helpers/desktop-recovery/backend.ts",
-  "helpers/desktop-recovery/restart-environment.ts",
+  ...nativeRecoveryResourceFiles,
   "studio-fs-events",
   "studio-linux-vm",
   ...pythonEntryPoints,
 ])
   await access(path.join(resources, file));
+assert.equal(
+  JSON.parse(
+    await readFile(path.join(resources, "helpers/package.json"), "utf8"),
+  ).type,
+  "module",
+);
 assert.deepEqual(
   missingPythonModules(resources),
   [],

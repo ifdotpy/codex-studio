@@ -3,12 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const root = new URL("../../../../../", import.meta.url);
-const read = (path) => readFileSync(new URL(path, root), "utf8");
+const read = (path: string) => readFileSync(new URL(path, root), "utf8");
 
 test("the retired server replacement action has no route, request, or UI caller", () => {
-  const spec = JSON.parse(
-    read("workspaces/runtime/packages/runtime-http/openapi.json"),
-  );
+  const spec: typeof import("../../../../runtime/packages/runtime-http/openapi.json") =
+    JSON.parse(read("workspaces/runtime/packages/runtime-http/openapi.json"));
   const request =
     spec.paths["/api/multi-server"].post.requestBody.content["application/json"]
       .schema;

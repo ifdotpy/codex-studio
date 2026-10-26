@@ -4,7 +4,7 @@ import path from "node:path";
 // The bridge manifest owns the native package set. A deploy keeps every required
 // platform; the native app retains only the codecs its host can execute.
 export async function pruneBridgeImageCodecs(
-  directory,
+  directory: string,
   { platform = process.platform, arch = process.arch } = {},
 ) {
   const manifest = JSON.parse(

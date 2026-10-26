@@ -15,15 +15,17 @@ const configUrl = new URL(
   import.meta.url,
 );
 
-function canModify(setting, directive) {
+function canModify(setting: unknown, directive: string) {
   if (setting === undefined || typeof setting === "boolean") return !setting;
   assert.ok(Array.isArray(setting), "unexpected CSP modification setting");
   return !setting.includes(directive);
 }
 
 test("the native host serves its configured inline style policy", async () => {
-  const { security } = JSON.parse(await readFile(configUrl, "utf8")).app;
-  const directives = new Map(
+  const config: typeof import("../../../../client/apps/native/src-tauri/tauri.conf.json") =
+    JSON.parse(await readFile(configUrl, "utf8"));
+  const { security } = config.app;
+  const directives = new Map<string | undefined, string[]>(
     security.csp
       .split(";")
       .map((part) => part.trim().split(/\s+/))

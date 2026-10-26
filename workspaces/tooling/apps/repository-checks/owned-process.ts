@@ -7,15 +7,26 @@ import {
 
 // Every command owns a new Unix process group, including nested pnpm/Cargo children.
 // Never signal the caller's group, and reap owned children before reporting terminal state.
+export interface LoggedResult {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  output: string;
+}
+export interface LoggedOptions {
+  signal?: AbortSignal | undefined;
+  timeoutMs?: number;
+  onOutput?: (output: string) => void;
+}
+
 export function runLogged(
-  command,
-  args,
-  cwd,
-  log,
+  command: string,
+  args: string[],
+  cwd: string,
+  log: string,
   environment = process.env,
-  { signal, timeoutMs = GATE_COMMAND_TIMEOUT_MS, onOutput } = {},
+  { signal, timeoutMs = GATE_COMMAND_TIMEOUT_MS, onOutput }: LoggedOptions = {},
 ) {
-  return new Promise((resolve) => {
+  return new Promise<LoggedResult>((resolve) => {
     const group = process.platform !== "win32";
     const child = spawn(command, args, {
       cwd,
@@ -24,43 +35,46 @@ export function runLogged(
       env: environment,
     });
     let output = "";
-    let interrupted = null;
-    let error = null;
-    let escalation = null;
+    let interrupted: NodeJS.Signals | null = null;
+    let error: Error | null = null;
+    let escalation: ReturnType<typeof setTimeout> | null = null;
     let cleanupDone = Promise.resolve();
-    const send = (sig) => {
+    const send = (sig: NodeJS.Signals) => {
       if (!child.pid) return false;
       try {
         if (group) process.kill(-child.pid, sig);
         else child.kill(sig);
         return true;
       } catch (err) {
-        if (err.code !== "ESRCH") error = err;
+        if (!(err instanceof Error && "code" in err && err.code === "ESRCH"))
+          error = err instanceof Error ? err : new Error(String(err));
         return false;
       }
     };
     const stop = () => {
       if (escalation || !send("SIGTERM")) return;
-      cleanupDone = new Promise((done) => {
+      cleanupDone = new Promise<void>((done) => {
         escalation = setTimeout(() => {
           send("SIGKILL");
           done();
         }, PROCESS_STOP_GRACE_MS);
       });
     };
-    const interrupt = (sig) => {
+    const interrupt = (sig: NodeJS.Signals) => {
       interrupted = sig;
       stop();
     };
     const abort = () => interrupt("SIGTERM");
-    const handlers = signal
+    const handlers: [NodeJS.Signals, () => void][] = signal
       ? []
-      : ["SIGINT", "SIGTERM", "SIGHUP"].map((sig) => {
-          const handler = () => interrupt(sig);
-          process.once(sig, handler);
-          return [sig, handler];
-        });
-    const capture = (chunk) => {
+      : (["SIGINT", "SIGTERM", "SIGHUP"] satisfies NodeJS.Signals[]).map(
+          (sig) => {
+            const handler = () => interrupt(sig);
+            process.once(sig, handler);
+            return [sig, handler];
+          },
+        );
+    const capture = (chunk: Buffer) => {
       output += chunk.toString();
       appendFileSync(log, chunk);
       onOutput?.(chunk.toString());

@@ -1,3 +1,5 @@
+import type { TokenRate } from "./tokenRate.ts";
+import type { components } from "../generated/api";
 import assert from "node:assert/strict";
 import { it as test, vi } from "vitest";
 import {
@@ -36,7 +38,9 @@ test("tween and display formatting honor user-visible boundaries", () => {
 
 test("team and footer interests share snapshots and replay on reopen", () => {
   const cache = createTokenRateCache();
-  const callbacks = new Set();
+  const callbacks = new Set<
+    Parameters<Parameters<typeof cache.configureTokenRateStream>[0]>[0]
+  >();
   vi.stubGlobal("window", {});
   cache.configureTokenRateStream((listener) => {
     callbacks.add(listener);
@@ -51,8 +55,8 @@ test("team and footer interests share snapshots and replay on reopen", () => {
     rate: 42,
     outputTokens: 84,
   };
-  const footer = [],
-    worker = [];
+  const footer: (TokenRate | null)[] = [],
+    worker: (TokenRate | null)[] = [];
   const stopFooter = cache.subscribeTokenRate("worker", (value) =>
     footer.push(value),
   );
@@ -61,11 +65,11 @@ test("team and footer interests share snapshots and replay on reopen", () => {
     (value) => worker.push(value),
   );
   const closeFooter = cache.watchTokenRateInterest();
-  let closeTeam = cache.watchTeamTokenRates("team");
+  let closeTeam: (() => void) | undefined = cache.watchTeamTokenRates("team");
   try {
     assert.equal(callbacks.size, 2);
-    const publish = (record) => {
-      const event = {
+    const publish = (record: TokenRate) => {
+      const event: components["schemas"]["ResourceTokenRatesEvent"] = {
         protocol: 4,
         workspaceId: "workspace",
         epoch: "epoch",
@@ -101,8 +105,8 @@ test("team and footer interests share snapshots and replay on reopen", () => {
 
 test("subscriptions unsubscribe independently and retain completed turn samples", () => {
   const cache = createTokenRateCache();
-  const first = [],
-    second = [];
+  const first: (TokenRate | null)[] = [],
+    second: (TokenRate | null)[] = [];
   const stopFirst = cache.subscribeTokenRate("agent", (value) =>
     first.push(value),
   );

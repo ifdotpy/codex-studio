@@ -1,3 +1,5 @@
+import { snapshotFixture } from "../snapshotFixture";
+import type { Agent, Snapshot, Request, Complaint } from "../types";
 import assert from "node:assert/strict";
 import {
   SIGN_IN_ALERT_GRACE_SECONDS,
@@ -17,29 +19,13 @@ const lead = {
   lastCompletedTurn: "turn-1",
   lastCompletedTurnStatus: "completed",
   tail: "The checks pass.",
-};
+} satisfies Agent;
 
-const snapshot = (threads = [lead], requests = [], complaints = []) => ({
-  token: "",
-  stateDir: "/fixture",
-  threads,
-  chats: [],
-  nodes: threads,
-  edges: [],
-  runtime: {
-    agents: threads,
-    rooms: [],
-    tasks: [],
-    monitors: [],
-    requests,
-    complaints,
-    rules: [],
-    projects: [],
-    peerTeams: [],
-    events: [],
-    work: [],
-  },
-});
+const snapshot = (
+  threads: Agent[] = [lead],
+  requests: Request[] = [],
+  complaints: Complaint[] = [],
+): Snapshot => snapshotFixture(threads, { requests, complaints });
 
 it("builds completed reply notifications with a bounded title and body", () => {
   const alerts = desktopAlerts(
@@ -51,7 +37,7 @@ it("builds completed reply notifications with a bounded title and body", () => {
       { ...lead, id: "no-turn", lastCompletedTurn: "" },
       { ...lead, id: "in-flight", inFlight: true },
       { ...lead, id: "deleted", deletedAt: 1 },
-      { ...lead, id: "moved", movedTo: { server: "target" } },
+      { ...lead, id: "moved", movedTo: { server: "target", move: "move" } },
       { ...lead, id: "imported", moveImportPending: true },
       {
         ...lead,
@@ -77,8 +63,14 @@ it("builds completed reply notifications with a bounded title and body", () => {
     body: "The checks pass.",
     target: { agentId: "lead", section: "messages" },
   });
+
+  assert.ok(alerts[1]);
   assert.equal(alerts[1].title.length, 160);
+
+  assert.ok(alerts[1] !== null && alerts[1] !== undefined);
   assert.equal(alerts[1].body, "Open the chat to read the reply.");
+
+  assert.ok(alerts[2] !== null && alerts[2] !== undefined);
   assert.equal(alerts[2].body, "b".repeat(2000));
 });
 
@@ -106,6 +98,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
         status: "failed",
         lastCompletedTurn: "",
         turnId: "",
+        // @ts-expect-error message is deliberately numeric in a malformed native error.
         error: { message: 7 },
       },
       {
@@ -120,6 +113,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
         id: "false-error",
         status: "failed",
         lastCompletedTurn: "",
+        // @ts-expect-error error is deliberately boolean instead of a diagnostic.
         error: false,
       },
       {
@@ -127,6 +121,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
         id: "numeric-error",
         status: "failed",
         lastCompletedTurn: "",
+        // @ts-expect-error error is deliberately numeric instead of a diagnostic.
         error: 7,
       },
       {
@@ -141,6 +136,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
         id: "not-object-message",
         status: "failed",
         lastCompletedTurn: "",
+        // @ts-expect-error error is deliberately an array instead of a diagnostic.
         error: [],
       },
     ]),
@@ -176,19 +172,19 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
 });
 
 it("turns active requests into question or approval notifications", () => {
-  const requests = [
+  const requests: Request[] = [
     {
       id: "question",
       agent: "lead",
       status: "pending",
-      params: { questions: [{ question: "Which scope?" }] },
+      params: { questions: [{ id: "q", question: "Which scope?" }] },
     },
     { id: "approval", agent: "lead", status: "pending" },
     {
       id: "empty-question",
       agent: "lead",
       status: "pending",
-      params: { questions: [{ question: "" }] },
+      params: { questions: [{ id: "q", question: "" }] },
     },
     {
       id: "no-questions",
@@ -200,6 +196,7 @@ it("turns active requests into question or approval notifications", () => {
       id: "null-question",
       agent: "lead",
       status: "pending",
+      // @ts-expect-error questions deliberately contains a null question.
       params: { questions: [null] },
     },
     {
@@ -256,7 +253,7 @@ it("turns active requests into question or approval notifications", () => {
 });
 
 it("uses the server's user-response flag for complaint alerts", () => {
-  const complaints = [
+  const complaints: Complaint[] = [
     {
       id: "for-user",
       leadId: "lead",
@@ -309,6 +306,7 @@ it("uses the server's user-response flag for complaint alerts", () => {
       id: "other-recipient",
       leadId: "lead",
       author: "lead",
+      // @ts-expect-error recipient is deliberately outside the generated recipient set.
       recipient: "team",
       needsUserResponse: false,
       title: "Internal.",
@@ -374,7 +372,7 @@ it("keeps completed-thread alerts with empty entity collections", () => {
 
 it("does not show a complaint from before the window started when its page arrives late", () => {
   const started = 1_000_000 * 1000;
-  const complaint = (version, updated) => ({
+  const complaint = (version: number, updated: number): Complaint => ({
     id: "c-1",
     leadId: "lead",
     title: "Need a decision",
@@ -387,18 +385,27 @@ it("does not show a complaint from before the window started when its page arriv
   const [old] = desktopAlerts(
     snapshot([lead], [], [complaint(1, 900_000)]),
   ).filter((alert) => alert.id.startsWith("complaint:"));
+  assert.ok(old);
   assert.equal(old.at, 900_000);
   assert.equal(fresh(old), false);
   // A new version of the same complaint after the start is a new event.
   const [next] = desktopAlerts(
     snapshot([lead], [], [complaint(2, 1_000_010)]),
   ).filter((alert) => alert.id.startsWith("complaint:"));
+  assert.ok(next);
   assert.equal(fresh(next), true);
   // A record without a time keeps the earlier rule.
-  assert.equal(fresh({ ...old, at: undefined }), true);
+  const { at: _at, ...withoutTime } = old;
+  assert.equal(fresh(withoutTime), true);
 });
 
-const signIn = (fields = {}) => ({
+const signInParams = {
+  bridgeId: "b1",
+  host: "id.example.com",
+  expiresAt: 1600,
+  source: "host",
+} satisfies NonNullable<Request["params"]>;
+const signIn = (fields: Partial<Request> = {}): Request => ({
   id: "card-1",
   method: "browser/open",
   agent: "lead",
@@ -415,7 +422,7 @@ const signIn = (fields = {}) => ({
 
 it("alerts once with sound for a sign-in card that is still open after the grace", () => {
   assert.equal(SIGN_IN_ALERT_GRACE_SECONDS, 10);
-  const ids = (now, request = signIn()) =>
+  const ids = (now: number, request = signIn()) =>
     desktopAlerts(snapshot([lead], [request]), now)
       .map(({ id }) => id)
       .filter((id) => id !== "completed:lead:turn-1");
@@ -440,7 +447,7 @@ it("alerts once with sound for a sign-in card that is still open after the grace
 
 it("reminds once before a sign-in card closes, and not while a phone sign-in waits", () => {
   assert.equal(SIGN_IN_REMINDER_SECONDS, 300);
-  const ids = (now, request = signIn()) =>
+  const ids = (now: number, request = signIn()) =>
     desktopAlerts(snapshot([lead], [request]), now)
       .map(({ id }) => id)
       .filter((id) => id.startsWith("signin"));
@@ -460,7 +467,7 @@ it("reminds once before a sign-in card closes, and not while a phone sign-in wai
   // The person already opened the page on a phone: the card waits for the pasted result.
   const waiting = signIn({
     params: {
-      ...signIn().params,
+      ...signInParams,
       phase: "waiting",
       waiting: { expiresAt: 1600 },
     },
@@ -469,7 +476,7 @@ it("reminds once before a sign-in card closes, and not while a phone sign-in wai
   // A card whose deadline passed gives no reminder.
   assert.deepEqual(ids(1601), ["signin:card-1"]);
   // A card shorter than the grace plus the reminder lead gets only the first alert.
-  const short = signIn({ params: { ...signIn().params, expiresAt: 1200 } });
+  const short = signIn({ params: { ...signInParams, expiresAt: 1200 } });
   assert.deepEqual(ids(1100, short), ["signin:card-1"]);
 });
 

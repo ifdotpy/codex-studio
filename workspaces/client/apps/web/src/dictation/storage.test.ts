@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { validateAudio, transcribe } from "../../../desktop/speech.ts";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,9 +7,6 @@ import { wav } from "./storage.ts";
 import { test } from "vitest";
 
 test("speech WAV encoding and helper errors remain bounded and retryable", async () => {
-  const { validateAudio, transcribe } = createRequire(import.meta.url)(
-    "../../../desktop/speech.ts",
-  );
   const data = await wav(
     [new Int16Array([0, 32767, -32768])],
     16000,

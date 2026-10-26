@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+import type { DraftVersion } from "../generated/rustOwned";
 import assert from "node:assert/strict";
 import {
   copyLocalDraftScope,
@@ -19,29 +21,29 @@ const originalLocalStorage = Object.getOwnPropertyDescriptor(
 test("current draft records stay scoped and never inspect the retired map", () => {
   try {
     class StorageFixture {
-      values = new Map();
+      values = new Map<string, string>();
       get length() {
         return this.values.size;
       }
-      key(index) {
+      key(index: number) {
         return [...this.values.keys()][index] ?? null;
       }
-      getItem(key) {
+      getItem(key: string) {
         assert.doesNotMatch(key, /^codex-drafts:[^:]+$/);
         return this.values.get(key) ?? null;
       }
-      setItem(key, value) {
+      setItem(key: string, value: string) {
         assert.doesNotMatch(key, /^codex-drafts:[^:]+$/);
         this.values.set(String(key), String(value));
       }
-      removeItem(key) {
+      removeItem(key: string) {
         assert.doesNotMatch(key, /^codex-drafts:[^:]+$/);
         this.values.delete(key);
       }
     }
 
     const storage = new StorageFixture();
-    globalThis.localStorage = storage;
+    vi.stubGlobal("localStorage", storage);
     const a = `codex-drafts:${"a".repeat(32)}`;
     const b = `codex-drafts:${"b".repeat(32)}`;
     const retiredMap = JSON.stringify({ lead: "Retired draft", other: "Old" });
@@ -52,25 +54,28 @@ test("current draft records stay scoped and never inspect the retired map", () =
     });
     writeLocalDraftRecord(a, "removed", null);
     assert.deepEqual(readLocalDrafts(a), { lead: "Current local draft" });
-    assert.equal(readLocalDraftRecord(a, "lead").updated, 10);
-    assert.equal(readLocalDraftRecord(a, "removed").deleted, true);
+    assert.equal(readLocalDraftRecord(a, "lead")?.updated, 10);
+    assert.equal(readLocalDraftRecord(a, "removed")?.deleted, true);
 
     copyLocalDraftScope(a, b);
     assert.deepEqual(readLocalDrafts(b), { lead: "Current local draft" });
     assert.equal(
-      readLocalDraftRecord(b, "lead").workspace,
+      readLocalDraftRecord(b, "lead")?.workspace,
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     );
     assert.equal(storage.values.get(a), retiredMap);
     assert.equal(storage.values.has(b), false);
-    assert.deepEqual(JSON.parse(storage.values.get(localDraftKey(b, "lead"))), {
-      ...JSON.parse(storage.values.get(localDraftKey(a, "lead"))),
-      workspace: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    });
+    assert.deepEqual(
+      JSON.parse(storage.values.get(localDraftKey(b, "lead")) ?? "null"),
+      {
+        ...JSON.parse(storage.values.get(localDraftKey(a, "lead")) ?? "null"),
+        workspace: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+    );
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else delete globalThis.localStorage;
+    else Reflect.deleteProperty(globalThis, "localStorage");
   }
 });
 
@@ -80,23 +85,23 @@ test("reads and rewrites current-key records left by the old migration", () => {
     "localStorage",
   );
   try {
-    const values = new Map();
-    globalThis.localStorage = {
+    const values = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
       get length() {
         return values.size;
       },
-      key(index) {
+      key(index: number) {
         return [...values.keys()][index] ?? null;
       },
-      getItem(key) {
+      getItem(key: string) {
         return values.get(key) ?? null;
       },
-      setItem(key, value) {
+      setItem(key: string, value: string) {
         values.set(key, String(value));
       },
-    };
+    });
     const scope = `codex-drafts:${"c".repeat(32)}`;
-    const migrated = (session, text) =>
+    const migrated = (session: string, text: string) =>
       JSON.stringify({
         version: 1,
         workspace: scope.slice("codex-drafts:".length),
@@ -118,11 +123,15 @@ test("reads and rewrites current-key records left by the old migration", () => {
       remote: "before",
       copy: "copied",
     });
-    assert.equal(readLocalDraftRecord(scope, "read").source, "local");
+    assert.equal(readLocalDraftRecord(scope, "read")?.source, "local");
     writeLocalDraftRecord(scope, "local", "local write", "local");
     writeLocalDraftRecord(scope, "remote", "remote write", "remote");
-    const local = JSON.parse(values.get(localDraftKey(scope, "local")));
-    const remote = JSON.parse(values.get(localDraftKey(scope, "remote")));
+    const local = JSON.parse(
+      values.get(localDraftKey(scope, "local")) ?? "null",
+    );
+    const remote = JSON.parse(
+      values.get(localDraftKey(scope, "remote")) ?? "null",
+    );
     assert.equal(local.source, "local");
     assert.equal(remote.source, "remote");
     for (const record of [local, remote]) {
@@ -135,14 +144,16 @@ test("reads and rewrites current-key records left by the old migration", () => {
     }
     const destination = `codex-drafts:${"d".repeat(32)}`;
     copyLocalDraftScope(scope, destination);
-    const copied = JSON.parse(values.get(localDraftKey(destination, "copy")));
+    const copied = JSON.parse(
+      values.get(localDraftKey(destination, "copy")) ?? "null",
+    );
     assert.equal(copied.text, "copied");
     assert.equal(copied.source, "local");
     assert.equal("legacyBaselineHash" in copied, false);
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else delete globalThis.localStorage;
+    else Reflect.deleteProperty(globalThis, "localStorage");
   }
 });
 
@@ -152,21 +163,21 @@ test("corruption stays scoped and draft versions retain conflict alternatives", 
     "localStorage",
   );
   try {
-    const values = new Map();
-    globalThis.localStorage = {
+    const values = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
       get length() {
         return values.size;
       },
-      key(index) {
+      key(index: number) {
         return [...values.keys()][index] ?? null;
       },
-      getItem(key) {
+      getItem(key: string) {
         return values.get(key) ?? null;
       },
-      setItem(key, value) {
+      setItem(key: string, value: string) {
         values.set(key, String(value));
       },
-    };
+    });
     const scope = `codex-drafts:${"a".repeat(32)}`;
     values.set(localDraftKey(scope, "broken"), "{");
     values.set(`codex-chat-draft:${"a".repeat(32)}:%E0%A4%A`, "{}");
@@ -209,21 +220,43 @@ test("corruption stays scoped and draft versions retain conflict alternatives", 
       [tabB, original.id],
     );
 
-    const merge = async (master, fork) =>
+    const merge = async (
+      master: Pick<
+        DraftVersion,
+        "id" | "text" | "updated" | "seen" | "alternatives"
+      >,
+      fork: Pick<
+        DraftVersion,
+        "id" | "text" | "updated" | "seen" | "alternatives"
+      >,
+    ): Promise<DraftVersion> =>
       JSON.parse(
         (
-          await draftConflictHandler.resolve({
-            realMasterState: {
-              id: master.id,
-              payload: JSON.stringify(master),
-              seq: 0,
+          await draftConflictHandler.resolve(
+            {
+              realMasterState: {
+                id: master.id,
+                payload: JSON.stringify({
+                  device: "device",
+                  session: "chat",
+                  ...master,
+                } satisfies DraftVersion),
+                seq: 0,
+                _deleted: false,
+              },
+              newDocumentState: {
+                id: fork.id,
+                payload: JSON.stringify({
+                  device: "device",
+                  session: "chat",
+                  ...fork,
+                } satisfies DraftVersion),
+                seq: 0,
+                _deleted: false,
+              },
             },
-            newDocumentState: {
-              id: fork.id,
-              payload: JSON.stringify(fork),
-              seq: 0,
-            },
-          })
+            "fixture conflict",
+          )
         ).payload,
       );
     const alternatives = await merge(
@@ -256,7 +289,7 @@ test("corruption stays scoped and draft versions retain conflict alternatives", 
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else delete globalThis.localStorage;
+    else Reflect.deleteProperty(globalThis, "localStorage");
   }
 });
 
@@ -267,18 +300,18 @@ test("quota failure preserves the current draft record and pending journal", () 
   );
   try {
     class QuotaStorage {
-      values = new Map();
+      values = new Map<string, string>();
       capacity = Infinity;
       get length() {
         return this.values.size;
       }
-      key(index) {
+      key(index: number) {
         return [...this.values.keys()][index] ?? null;
       }
-      getItem(key) {
+      getItem(key: string) {
         return this.values.get(key) ?? null;
       }
-      setItem(key, value) {
+      setItem(key: string, value: string) {
         const next =
           [...this.values].reduce(
             (total, [name, text]) =>
@@ -291,7 +324,7 @@ test("quota failure preserves the current draft record and pending journal", () 
       }
     }
     const storage = new QuotaStorage();
-    globalThis.localStorage = storage;
+    vi.stubGlobal("localStorage", storage);
     const scope = `codex-drafts:${"b".repeat(32)}`;
     writeLocalDraftRecord(scope, "chat", "saved text");
     const journalKey = `${scope}:pending:tab:chat`;
@@ -309,10 +342,10 @@ test("quota failure preserves the current draft record and pending journal", () 
     );
     assert.equal(storage.getItem(localDraftKey(scope, "chat")), record);
     assert.equal(storage.getItem(journalKey), journal);
-    assert.equal(readLocalDraftRecord(scope, "chat").text, "saved text");
+    assert.equal(readLocalDraftRecord(scope, "chat")?.text, "saved text");
   } finally {
     if (originalLocalStorage)
       Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
-    else delete globalThis.localStorage;
+    else Reflect.deleteProperty(globalThis, "localStorage");
   }
 });

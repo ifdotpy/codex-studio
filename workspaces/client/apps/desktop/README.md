@@ -216,7 +216,7 @@ focus. A click opens the chat or the request that needs attention.
 Alerts use the existing chat snapshot without separate workspace reads. The first
 snapshot after launch establishes a baseline; old events do not repeat.
 The desktop app must remain running. macOS notification settings still apply.
-Run `pnpm --filter codex-agents-web run test:unit -- desktopAlerts.test.mjs` and
+Run `pnpm --filter codex-agents-web run test:unit -- desktopAlerts.test.ts` and
 `pnpm --filter codex-agents-web run test:browser -- desktop-notifications-ui.spec.mjs` from the repository root. The UI check
 records native bridge calls; it does not display or verify macOS banners.
 

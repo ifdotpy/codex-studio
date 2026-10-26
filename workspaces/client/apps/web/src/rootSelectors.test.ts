@@ -1,15 +1,7 @@
+import { cssFiles } from "./cssFixtureFiles";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { it } from "vitest";
-
-function cssFiles(directory) {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return cssFiles(path);
-    return entry.name.endsWith(".css") ? [path] : [];
-  });
-}
 
 // `#root:has(...)` makes the browser test the whole app tree after each DOM
 // change. The owning components set data attributes on <html> instead.

@@ -1,10 +1,11 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { cssFiles } from "./cssFixtureFiles";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 
 const sourceRoot = fileURLToPath(new URL(".", import.meta.url));
-const read = (path) => readFileSync(join(sourceRoot, path), "utf8");
+const read = (path: string) => readFileSync(join(sourceRoot, path), "utf8");
 
 it("shares the main-area scrollbar palette with native panes and Mantine controls", () => {
   const css = read("style.css");
@@ -23,16 +24,6 @@ it("shares the main-area scrollbar palette with native panes and Mantine control
 });
 
 it("keeps palette ownership global and preserves native scrolling and Mantine viewport hiding", () => {
-  function cssFiles(dir) {
-    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-      const path = join(dir, entry.name);
-      return entry.isDirectory()
-        ? cssFiles(path)
-        : path.endsWith(".css")
-          ? [path]
-          : [];
-    });
-  }
   const declarations = cssFiles(sourceRoot).flatMap((path) =>
     [
       ...readFileSync(path, "utf8").matchAll(/scrollbar-color:\s*([^;]+);/g),
