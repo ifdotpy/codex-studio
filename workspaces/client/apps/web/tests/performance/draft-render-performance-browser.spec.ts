@@ -1,3 +1,5 @@
+import type { Page } from "@playwright/test";
+import type { components } from "../../src/generated/api.ts";
 import type { LocalDraftRecord } from "../../src/sync/draftStorage.ts";
 import { fixtureOrigin } from "./performance-fixture.ts";
 import assert from "node:assert/strict";
@@ -51,24 +53,8 @@ test("Draft Render Performance Browser @performance", async ({
           body: "<!doctype html><title>Isolated draft hook audit</title>",
         }),
       );
-      await page.route("**/api/sync/identity", (r) =>
-        r.fulfill({
-          json: { workspaceId },
-          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
-        }),
-      );
-      await page.route("**/api/sync/drafts", (r) => r.fulfill({ json: [] }));
-      await page.route("**/api/sync/pull?*", (r) =>
-        r.fulfill({
-          json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
-        }),
-      );
-      await page.route("**/api/sync/stream*", (r) =>
-        r.fulfill({
-          contentType: "text/event-stream",
-          body: apiSchemaHandshakeSse(),
-        }),
-      );
+      await installDraftSyncRoutes(page, workspaceId);
+
       await page.goto(`${fixtureOrigin(server)}/check`);
       // The first development request starts Vite's dependency optimizer. Do
       // not import app modules until that one-time scan/build has settled.
@@ -300,26 +286,8 @@ test("Draft Render Performance Browser @performance", async ({
           body: "<!doctype html><title>Second draft tab</title>",
         }),
       );
-      await other.route("**/api/sync/identity", (route) =>
-        route.fulfill({
-          json: { workspaceId },
-          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
-        }),
-      );
-      await other.route("**/api/sync/drafts", (route) =>
-        route.fulfill({ json: [] }),
-      );
-      await other.route("**/api/sync/pull?*", (route) =>
-        route.fulfill({
-          json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
-        }),
-      );
-      await other.route("**/api/sync/stream*", (route) =>
-        route.fulfill({
-          contentType: "text/event-stream",
-          body: apiSchemaHandshakeSse(),
-        }),
-      );
+      await installDraftSyncRoutes(other, workspaceId);
+
       await other.goto(`${fixtureOrigin(server)}/check`);
       await other.evaluate(async () =>
         (
@@ -381,3 +349,34 @@ test("Draft Render Performance Browser @performance", async ({
     await server.close();
   }
 });
+
+async function installDraftSyncRoutes(page: Page, workspaceId: string) {
+  await page.route("**/api/sync/identity", (r) =>
+    r.fulfill({
+      json: { workspaceId } satisfies Pick<
+        components["schemas"]["SyncIdentityResponse"],
+        "workspaceId"
+      >,
+      headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+    }),
+  );
+  await page.route("**/api/sync/drafts", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/sync/pull?*", (r) =>
+    r.fulfill({
+      json: {
+        workspaceId,
+        documents: [],
+        checkpoint: { seq: 0 },
+      } satisfies Pick<
+        components["schemas"]["SyncPullResponse"],
+        "workspaceId" | "documents" | "checkpoint"
+      >,
+    }),
+  );
+  await page.route("**/api/sync/stream*", (r) =>
+    r.fulfill({
+      contentType: "text/event-stream",
+      body: apiSchemaHandshakeSse(),
+    }),
+  );
+}

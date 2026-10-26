@@ -1,3 +1,4 @@
+import type { components } from "../../src/generated/api.ts";
 import { build } from "esbuild";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { fixtureOrigin } from "./performance-fixture.ts";
@@ -41,9 +42,14 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
             }));
             // The fixture measures the actual local projection and hook. The
             // resource transport has separate protocol and recovery contracts.
-            build.onLoad({ filter: /resourceEvents\.ts$/ }, () => ({
-              contents:
-                "export function watchResourceChanges(){return()=>{}};export function watchResourceConnection(){return()=>{}};export function acknowledgeEntitySequences(){};",
+            build.onLoad({ filter: /resourceEvents\.ts$/ }, async () => ({
+              contents: await readFile(
+                new URL(
+                  "./sidebar-resource-events.fixture.ts",
+                  import.meta.url,
+                ),
+                "utf8",
+              ),
               loader: "ts",
             }));
             build.onLoad(
@@ -98,8 +104,15 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
                 return;
               }
               let value;
-              if (path === "/api/sync/identity") value = { workspaceId };
-              if (path === "/api/session") value = { token: "fixture" };
+              if (path === "/api/sync/identity")
+                value = { workspaceId } satisfies Pick<
+                  components["schemas"]["SyncIdentityResponse"],
+                  "workspaceId"
+                >;
+              if (path === "/api/session")
+                value = {
+                  token: "fixture",
+                } satisfies components["schemas"]["SessionResponse"];
               if (path === "/api/sync/pull")
                 value = {
                   workspaceId,
@@ -107,7 +120,14 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
                   checkpoint: { seq: 22 },
                   maxSeq: 22,
                   initialHigh: 22,
-                };
+                } satisfies Pick<
+                  components["schemas"]["SyncPullResponse"],
+                  | "workspaceId"
+                  | "documents"
+                  | "checkpoint"
+                  | "maxSeq"
+                  | "initialHigh"
+                >;
               if (value) {
                 response.setHeader("Content-Type", "application/json");
                 response.end(JSON.stringify(value));

@@ -1,3 +1,4 @@
+import type { components } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as TranscriptWireItem } from "./performance-fixture.ts";
 import type { TranscriptPageResponse } from "../playwright.ts";
 import { required } from "./performance-fixture.ts";
@@ -58,7 +59,10 @@ instance = await fixture("Performance", false, {
   ...(process.argv[4] ? { dist: process.argv[4] } : {}),
   handle({ url, json, snapshot }) {
     if (url.pathname === "/api/changes") {
-      json({ scope: "chat", git: true, files: [], diff: "" });
+      json({ scope: "chat", git: true, files: [], diff: "" } satisfies Pick<
+        components["schemas"]["ChangesResponse"],
+        "scope" | "git" | "files" | "diff"
+      >);
       return true;
     }
     if (url.pathname === "/api/linux-vm/settings") {
@@ -72,7 +76,7 @@ instance = await fixture("Performance", false, {
         state: "running",
         allocatedDiskBytes: 1024,
         error: null,
-      });
+      } satisfies components["schemas"]["LinuxVMSettingsResponse"]);
       return true;
     }
     if (url.pathname === "/api/desktop") {
@@ -82,11 +86,16 @@ instance = await fixture("Performance", false, {
         pid: process.pid,
         stateDir: dir,
         backendBuild: "a".repeat(64),
-      });
+      } satisfies Pick<
+        components["schemas"]["DesktopResponse"],
+        "application" | "protocol" | "pid" | "stateDir" | "backendBuild"
+      >);
       return true;
     }
     if (url.pathname === "/api/session") {
-      json({ token: "local-only" });
+      json({
+        token: "local-only",
+      } satisfies components["schemas"]["SessionResponse"]);
       return true;
     }
     if (
