@@ -29,14 +29,34 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
       if (!frame) frame = requestAnimationFrame(update);
     };
     const resize = new ResizeObserver(schedule);
+    const content = new MutationObserver(schedule);
+    let watchingContent = false;
     const update = () => {
       frame = 0;
       const shown =
-        document.documentElement.hasAttribute("data-viewport-surface") &&
+        document.documentElement.hasAttribute("data-touch-input") &&
+        !document.documentElement.hasAttribute("data-viewport-keyboard") &&
         Number.parseFloat(getComputedStyle(root).paddingBottom) > 0;
       if (shown && !host.isConnected) document.body.append(host);
       if (!shown) host.remove();
       setVisible(shown);
+      if (!shown) {
+        content.disconnect();
+        watchingContent = false;
+        if (observedSidebar) resize.unobserve(observedSidebar);
+        if (observedWorkspace) resize.unobserve(observedWorkspace);
+        observedSidebar = observedWorkspace = undefined;
+        return;
+      }
+      if (!watchingContent) {
+        content.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["class", "style", "data-presentation"],
+        });
+        watchingContent = true;
+      }
       const column = [
         ...root.querySelectorAll('#sidebar[data-presentation="inline"]'),
       ].find((node) => node.getBoundingClientRect().width > 0);
@@ -67,11 +87,14 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
     };
     resize.observe(root);
     const mutation = new MutationObserver(schedule);
-    mutation.observe(document.documentElement, { attributes: true });
-    mutation.observe(root, {
+    mutation.observe(document.documentElement, {
       attributes: true,
-      childList: true,
-      subtree: true,
+      attributeFilter: [
+        "style",
+        "class",
+        "data-touch-input",
+        "data-viewport-keyboard",
+      ],
     });
     window.addEventListener("resize", schedule);
     update();
@@ -79,6 +102,7 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
       cancelAnimationFrame(frame);
       resize.disconnect();
       mutation.disconnect();
+      content.disconnect();
       window.removeEventListener("resize", schedule);
       host.remove();
     };

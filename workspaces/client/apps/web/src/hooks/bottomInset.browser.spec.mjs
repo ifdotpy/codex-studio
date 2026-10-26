@@ -81,7 +81,10 @@ test("Duo uses the bottom band for passive status and keeps every target above H
         n.dispatchEvent(event);
         return event.defaultPrevented;
       }),
-    ).toBe(true);
+    ).toBe(false);
+    await expect(page.locator("html")).not.toHaveAttribute(
+      "data-viewport-surface",
+    );
     const status = page.locator(".session-cost-summary");
     await expect(status).toBeVisible();
     const before = await status.boundingBox();
