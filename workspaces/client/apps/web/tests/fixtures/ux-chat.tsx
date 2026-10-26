@@ -11,6 +11,12 @@ import type { components } from "../../src/generated/api";
 import type { OutgoingMessage } from "../../src/sync/send";
 import { fixtureSnapshot } from "./snapshot.ts";
 
+/** JSON body authored by this fixture, excluding the local persistence callback. */
+export type UxChatFixtureSendBody = { text: string } & Omit<
+  NonNullable<Parameters<React.ComponentProps<typeof Conversation>["send"]>[0]>,
+  "onPersist"
+>;
+
 declare global {
   interface Window {
     __uxChatSyncIdentity?: components["schemas"]["SyncIdentityResponse"];
@@ -167,7 +173,10 @@ function Fixture() {
               await fetch("/api/fixture-send", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text: getDraft(id), ...options }),
+                body: JSON.stringify({
+                  text: getDraft(id),
+                  ...options,
+                } satisfies UxChatFixtureSendBody),
               });
               setDraft("");
             } finally {
