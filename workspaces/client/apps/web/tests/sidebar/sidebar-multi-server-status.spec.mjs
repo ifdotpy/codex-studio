@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "../servers/multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "../servers/multi-server-fixture.ts";
 import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
 
 test("paired sidebar shows the chat provider and server alias", async ({

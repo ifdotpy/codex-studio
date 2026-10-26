@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test } from "../playwright.ts";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {

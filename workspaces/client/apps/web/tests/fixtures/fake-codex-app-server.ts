@@ -29,6 +29,13 @@
 //   {"complete": true}              finish the turn (ends a hold)
 // A script that does not hold completes its turn after the last step. A held
 // turn also completes, as interrupted, on turn/interrupt.
+import type { FixtureStep, FixtureScript } from "./fixture-scripts.ts";
+import {
+  parseFixtureScripts,
+  parseFixtureAgentSteps,
+  parseFixtureModels,
+  readProviderObject,
+} from "./fixture-scripts.ts";
 import { createInterface } from "node:readline";
 import { createServer } from "node:net";
 import { readFileSync, rmSync } from "node:fs";
@@ -40,7 +47,7 @@ if (process.argv.includes("--version")) {
 }
 
 const models = process.env.FAKE_CODEX_MODELS
-  ? JSON.parse(readFileSync(process.env.FAKE_CODEX_MODELS, "utf8"))
+  ? parseFixtureModels(readFileSync(process.env.FAKE_CODEX_MODELS, "utf8"))
   : ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna", "gpt-6-astra"].map(
       (model) => ({
         id: model,
@@ -53,8 +60,8 @@ const models = process.env.FAKE_CODEX_MODELS
         ),
       }),
     );
-const scripts = process.env.FAKE_CODEX_SCRIPT
-  ? JSON.parse(readFileSync(process.env.FAKE_CODEX_SCRIPT, "utf8"))
+const scripts: FixtureScript[] = process.env.FAKE_CODEX_SCRIPT
+  ? parseFixtureScripts(readFileSync(process.env.FAKE_CODEX_SCRIPT, "utf8"))
   : [];
 const DEFAULT_STEPS = [{ say: "Fixture reply" }];
 
@@ -62,16 +69,21 @@ let turnCount = 0;
 let threadCount = 0;
 let callCount = 0;
 /** Turn in flight per thread: thread id -> turn id. */
-const turns = new Map();
+const turns = new Map<string, string>();
 /** Waiters for replies to requests this provider sent: request id -> resolve. */
-const replies = new Map();
+const replies = new Map<string, (message: unknown) => void>();
 /** Ends of held turns: turn id -> {complete, interrupt}. */
-const holds = new Map();
+const holds = new Map<
+  string,
+  { complete: () => void; interrupt: () => void }
+>();
 
-const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
-const notify = (method, params) => send({ method, params });
+const send = (message: unknown) =>
+  process.stdout.write(JSON.stringify(message) + "\n");
+const notify = (method: string, params: Record<string, unknown>) =>
+  send({ method, params });
 
-function call(method, params) {
+function call(method: string, params: Record<string, unknown>) {
   const id = `fixture-call-${++callCount}`;
   return new Promise((resolve) => {
     replies.set(id, resolve);
@@ -79,7 +91,7 @@ function call(method, params) {
   });
 }
 
-async function runStep(threadId, turnId, step) {
+async function runStep(threadId: string, turnId: string, step: FixtureStep) {
   const itemId = step.item ?? `${turnId}-item-${++callCount}`;
   if ("say" in step) {
     notify("item/started", {
@@ -141,7 +153,11 @@ async function runStep(threadId, turnId, step) {
  * Run steps on a turn. Returns "hold" when a step kept the turn open, the
  * failure message when one ended it as failed, and null otherwise.
  */
-async function runSteps(threadId, turnId, steps) {
+async function runSteps(
+  threadId: string,
+  turnId: string,
+  steps: FixtureStep[],
+) {
   for (const step of steps) {
     if (step.hold) return "hold";
     if (step.fail !== undefined) return { failure: step.fail };
@@ -150,7 +166,7 @@ async function runSteps(threadId, turnId, steps) {
   return null;
 }
 
-async function runTurn(threadId, turnId, input) {
+async function runTurn(threadId: string, turnId: string, input: unknown) {
   notify("turn/started", {
     threadId,
     turn: { id: turnId, status: "inProgress" },
@@ -159,10 +175,13 @@ async function runTurn(threadId, turnId, input) {
   const steps =
     scripts.find((script) => text.includes(script.prompt))?.steps ??
     DEFAULT_STEPS;
-  let turn = { id: turnId, status: "completed" };
+  let turn: { id: string; status: string; error?: { message: string } } = {
+    id: turnId,
+    status: "completed",
+  };
   const outcome = await runSteps(threadId, turnId, steps);
   if (outcome === "hold")
-    turn.status = await new Promise((resolve) =>
+    turn.status = await new Promise<string>((resolve) =>
       holds.set(turnId, {
         complete: () => resolve("completed"),
         interrupt: () => resolve("interrupted"),
@@ -179,7 +198,7 @@ async function runTurn(threadId, turnId, input) {
   notify("turn/completed", { threadId, turn });
 }
 
-function result(method, params) {
+function result(method: string, params: Record<string, unknown>) {
   switch (method) {
     case "thread/start":
       return { thread: { id: `fixture-thread-${++threadCount}` } };
@@ -193,24 +212,33 @@ function result(method, params) {
 }
 
 createInterface({ input: process.stdin }).on("line", (line) => {
-  const message = JSON.parse(line);
+  const message = readProviderObject(line);
   if (message.method === undefined) {
-    replies.get(message.id)?.(message);
-    replies.delete(message.id);
+    if (typeof message.id === "string") {
+      replies.get(message.id)?.(message);
+      replies.delete(message.id);
+    }
     return;
   }
   if (message.id === undefined) return;
-  const { method, params = {} } = message;
+  const { method } = message;
+  if (typeof method !== "string")
+    throw new Error("Invalid fixture provider method");
+  const params = readProviderObject(JSON.stringify(message.params ?? {}));
   if (method === "turn/start") {
     // The id is fixed here: concurrent turns must report the id this reply names.
+    const threadId = params.threadId;
+    if (typeof threadId !== "string")
+      throw new Error("Invalid fixture thread id");
     const turnId = `fixture-turn-${++turnCount}`;
-    turns.set(params.threadId, turnId);
+    turns.set(threadId, turnId);
     send({ id: message.id, result: { turn: { id: turnId } } });
-    setImmediate(() => runTurn(params.threadId, turnId, params.input));
+    setImmediate(() => runTurn(threadId, turnId, params.input));
     return;
   }
   if (method === "turn/interrupt") {
-    holds.get(params.turnId)?.interrupt();
+    if (typeof params.turnId === "string")
+      holds.get(params.turnId)?.interrupt();
     send({ id: message.id, result: {} });
     return;
   }
@@ -222,7 +250,13 @@ if (process.env.FAKE_CODEX_CONTROL) {
   process.on("exit", () => rmSync(path, { force: true }));
   createServer((socket) => {
     createInterface({ input: socket }).on("line", async (line) => {
-      const { id, thread, steps } = JSON.parse(line);
+      const control = readProviderObject(line);
+      const { id, thread } = control;
+      if (typeof thread !== "string")
+        throw new Error("Invalid fixture control thread");
+      const steps =
+        parseFixtureAgentSteps(JSON.stringify({ control: control.steps }))
+          .control ?? [];
       const turnId = turns.get(thread);
       if (turnId) await runSteps(thread, turnId, steps);
       socket.write(JSON.stringify({ id, ok: turnId !== undefined }) + "\n");

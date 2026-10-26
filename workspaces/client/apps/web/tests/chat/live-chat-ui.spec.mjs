@@ -3,7 +3,7 @@ import {
   test,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real app-server notification handlers, SQLite sync stream, and browser. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

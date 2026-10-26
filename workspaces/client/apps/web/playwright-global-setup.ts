@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { serverBinary } from "./tests/fixtures/rust-ui-fixture.mjs";
+import { serverBinary } from "./tests/fixtures/rust-ui-fixture.ts";
 
 // Fail once, before any test, when the Rust server the fixtures run is missing.
 export default function globalSetup() {

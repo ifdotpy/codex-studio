@@ -16,7 +16,7 @@ import {
   syncProtocolFixture,
   test,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("transcript fixture applies its sequence before the request cursor", async () => {
   const snapshot = {

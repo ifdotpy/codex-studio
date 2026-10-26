@@ -5,7 +5,7 @@ import {
   spawnFixture as spawn,
   rustUiFixture,
   queryFixtureDatabase,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real App, Conversation, and RxDB. Only an isolated fixture receives writes.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";

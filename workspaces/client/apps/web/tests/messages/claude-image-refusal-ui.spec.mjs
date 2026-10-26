@@ -7,7 +7,7 @@ import {
   apiSchemaHeaders,
   handleEntitySyncFixtureRequest,
   syncIdentityFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import { prepareClaudeImage } from "../../../../../providers/apps/claude-bridge/images.mjs";
 
 test("Claude image refusal remains visible and preserves the draft", async ({

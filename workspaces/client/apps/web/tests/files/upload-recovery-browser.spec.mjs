@@ -1,17 +1,17 @@
 // Real File blobs, IndexedDB transactions, recovery hooks, and composer input.
-import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { apiSchemaHeaders, test, expect } from "../playwright.mjs";
+import { apiSchemaHeaders, test, expect } from "../playwright.ts";
 
 test("upload recovery browser", async ({ browser }) => {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const cache = await mkdtemp(join(tmpdir(), "studio-upload-recovery-"));
   const server = await createServer({
     configFile: false,
@@ -490,7 +490,7 @@ async function setupAttachmentWriters(browser) {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const cache = await mkdtemp(join(tmpdir(), "studio-upload-race-"));
   const server = await createServer({
     configFile: false,

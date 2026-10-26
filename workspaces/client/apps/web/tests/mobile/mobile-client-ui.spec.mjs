@@ -5,10 +5,10 @@ import {
   test,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Isolated server and headless browser. No model requests or user state.
 import assert from "node:assert/strict";
-import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.mjs";
+import { fixtureStateDirectory } from "../fixtures/rust-ui-fixture.ts";
 import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

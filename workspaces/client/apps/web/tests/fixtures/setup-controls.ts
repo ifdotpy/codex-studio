@@ -1,7 +1,8 @@
+import type { Locator } from "@playwright/test";
 // Operate the visible segmented control or account tiles through real clicks.
-export function setupControl(locator) {
+export function setupControl(locator: Locator) {
   return {
-    selectOption: async (value) => {
+    selectOption: async (value: string) => {
       if (await locator.evaluate((node) => node.tagName === "SELECT")) {
         await locator.selectOption(value);
         return;
@@ -38,16 +39,18 @@ export function setupControl(locator) {
     isDisabled: async () =>
       (await locator.isDisabled()) ||
       (await locator.getAttribute("aria-disabled")) === "true",
-    getAttribute: (attribute) => locator.getAttribute(attribute),
-    waitFor: (options) => locator.waitFor(options),
-    locator: (...args) => locator.locator(...args),
+    getAttribute: (attribute: string) => locator.getAttribute(attribute),
+    waitFor: (options: Parameters<Locator["waitFor"]>[0]) =>
+      locator.waitFor(options),
+    locator: (...args: Parameters<Locator["locator"]>) =>
+      locator.locator(...args),
   };
 }
-export async function chooseSetupValue(locator, value) {
+export async function chooseSetupValue(locator: Locator, value: string) {
   await setupControl(locator).selectOption(value);
 }
 // Native switches expose checked state directly.
-export function setupToggle(locator) {
+export function setupToggle(locator: Locator) {
   return {
     check: async () => {
       if (!(await locator.isChecked())) await locator.click();

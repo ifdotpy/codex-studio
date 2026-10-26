@@ -9,7 +9,7 @@ import {
   protocol3SseEvent,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 // Render the real App against an isolated server. Updates are complete v4 batches;
 // the fixture refuses a limits read so a hidden hydration/poll cannot pass.

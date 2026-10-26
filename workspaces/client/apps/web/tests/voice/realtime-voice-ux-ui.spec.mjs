@@ -7,7 +7,7 @@ import {
   apiSchemaHandshakeSse,
   syncIdentityFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Realtime voice ux", async ({ context }, testInfo) => {
   test.setTimeout(180_000);

@@ -1,3 +1,4 @@
+import type { components } from "../../src/generated/api.ts";
 import { subscriptionKey } from "../../src/sync/subscriptions/contracts.ts";
 import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 
@@ -6,11 +7,13 @@ const RESOURCE_BASELINE_TIMEOUT_MS = 15_000;
 
 /**
  * Read one baseline per requested view, then release the real fixture stream.
- * @param {string} origin
- * @param {import("../../src/generated/api").components["schemas"]["ResourceRef"][]} resources
- * @returns {Promise<import("../../src/generated/api").components["schemas"]["ResourceRevisionEntry"][]>}
  */
-export async function readResourceBaselines(origin, resources) {
+export async function readResourceBaselines(
+  origin: string,
+  resources: import("../../src/generated/api.ts").components["schemas"]["ResourceRef"][],
+): Promise<
+  import("../../src/generated/api.ts").components["schemas"]["ResourceRevisionEntry"][]
+> {
   if (!resources.length) return [];
   const url = new URL("/api/sync/stream", origin);
   url.searchParams.set("protocol", String(SYNC_PROTOCOL_VERSION));
@@ -23,7 +26,7 @@ export async function readResourceBaselines(origin, resources) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const pending = new Set(resources.map(subscriptionKey));
-  const entries = [];
+  const entries: components["schemas"]["ResourceRevisionEntry"][] = [];
   let buffer = "";
   try {
     for (;;) {
@@ -38,7 +41,7 @@ export async function readResourceBaselines(origin, resources) {
         const frame = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
         if (!frame.startsWith("event: resources\n")) continue;
-        const event = JSON.parse(
+        const event: components["schemas"]["ResourceChangeEvent"] = JSON.parse(
           frame
             .split("\n")
             .filter((line) => line.startsWith("data: "))
@@ -47,6 +50,7 @@ export async function readResourceBaselines(origin, resources) {
         );
         for (const [index, entry] of (event.resourceVersions || []).entries()) {
           const resource = entry.resource || event.resources[index];
+          if (!resource) throw new Error("Missing fixture baseline resource");
           const key = subscriptionKey(resource);
           if (pending.has(key)) {
             if (!entry.cursor || !entry.replyKind)

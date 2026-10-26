@@ -1,4 +1,4 @@
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 import { detectTextClipping } from "./text-clipping.mjs";
 
 test("text audit detects clipping and covered controls", async ({ page }) => {
