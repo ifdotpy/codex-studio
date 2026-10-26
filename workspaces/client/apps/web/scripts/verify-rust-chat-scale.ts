@@ -84,12 +84,8 @@ type ReplyEntry = NonNullable<
 >;
 type AttemptEvidence = Pick<
   Schema["ExecutionAttempt"],
-  "id" | "accountKey" | "events"
-> & {
-  requestTicket?: unknown;
-  connectionGeneration?: unknown;
-  runAccountKey?: unknown;
-};
+  "id" | "accountKey" | "events" | "requestTicket" | "connectionGeneration"
+> & { runAccountKey?: Schema["ExecutionAttempt"]["accountKey"] };
 export type RetainedInputRows = RetainedInput[];
 type TeamChild = {
   id: string;
@@ -3106,13 +3102,17 @@ export function runEventEvidenceQuery(
             typeof attempt.id === "string" &&
               (attempt.accountKey === null ||
                 typeof attempt.accountKey === "string") &&
-              (attempt.events === null || typeof attempt.events === "string"),
+              (attempt.events === null || typeof attempt.events === "string") &&
+              (attempt.requestTicket === null ||
+                typeof attempt.requestTicket === "string") &&
+              (attempt.connectionGeneration === null ||
+                typeof attempt.connectionGeneration === "number") &&
+              (attempt.runAccountKey === null ||
+                typeof attempt.runAccountKey === "string"),
           );
           return {
             id: attempt.id,
-            ...(attempt.accountKey === null
-              ? {}
-              : { accountKey: attempt.accountKey }),
+            accountKey: attempt.accountKey,
             requestTicket: attempt.requestTicket,
             connectionGeneration: attempt.connectionGeneration,
             runAccountKey: attempt.runAccountKey,
