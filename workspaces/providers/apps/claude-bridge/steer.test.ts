@@ -227,6 +227,42 @@ test.concurrent("a steer read without an echo is neither acknowledged nor report
   assert.equal(ack(bridge, "event-6"), undefined);
 });
 
+test.concurrent("a consumed steer in the SDK result is acknowledged before turn completion", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "consumed");
+  await steer(bridge, turn, "consumed-event");
+  await read(bridge, "steer text");
+  await end(bridge);
+  const done = await completed(bridge, turn);
+  const delivered = ack(bridge, "consumed-event");
+  assert.ok(delivered);
+  assert.equal(delivered.params.turnId, turn);
+  assert.ok(bridge.notes.indexOf(delivered) < bridge.notes.indexOf(done));
+  assert.equal(acks(bridge, "consumed-event").length, 1);
+});
+
+test.concurrent("a partially consumed composite steer remains unconfirmed", async ({
+  startBridge,
+}) => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "consumed-partial");
+  await bridge.call("turn/steer", {
+    threadId: bridge.thread,
+    expectedTurnId: turn,
+    clientUserMessageId: "partial-event",
+    input: [
+      { type: "text", text: "service", inputOrigin: "studio_event" },
+      { type: "text", text: "human", inputOrigin: "human" },
+    ],
+  });
+  await read(bridge, "human");
+  await end(bridge);
+  await completed(bridge, turn);
+  assert.equal(ack(bridge, "partial-event"), undefined);
+});
+
 test.concurrent("only the server's unsubscribe closes a session, never a busy one", async ({
   startBridge,
 }) => {

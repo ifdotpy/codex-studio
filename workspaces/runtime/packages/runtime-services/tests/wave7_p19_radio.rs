@@ -378,7 +378,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
                 None,
                 1000.0,
             )
-            .map(|v| json!(v))
+            .map(|v| json!(v == radio_runtime::QuestionAnswerRoute::ConsumedByRadio))
         }).await,
         "bind" => store.transaction_with(move |db| {
             radio_runtime::bind_reserved(
@@ -645,7 +645,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
     let question = case["body"]["question"].clone();
     store.transaction_with(move |db|->Result<(),ProjectsError> {
-        assert!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?);
+        assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
         Ok(())
     }).await.expect("P04 caller commits both writes");

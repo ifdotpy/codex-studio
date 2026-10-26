@@ -301,6 +301,12 @@ export function fixtureQuery(
           continue;
         }
         let late = null;
+        let consumed: string | undefined;
+        if (text === "consumed") consumed = (await read()).value!.uuid;
+        if (text === "consumed-partial") {
+          consumed = (await read()).value!.uuid;
+          await read();
+        }
         if (text === "ack") {
           for (;;) {
             const next = await read();
@@ -357,6 +363,7 @@ export function fixtureQuery(
             is_error: false,
             usage,
             result: "done",
+            ...(consumed ? { user_message_uuids: [consumed] } : {}),
           };
         if (config.holdPulledTail && text === "pulled")
           await until(cwd + "/.allow-tail", abort.signal);
