@@ -1347,7 +1347,7 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
   );
 
   const fallback = (agent: Agent) =>
-    required(chatActivities(makeSnapshot([agent])).get(agent.id)?.[0]);
+    chatActivities(makeSnapshot([agent])).get(agent.id)?.[0];
   for (const [status, label] of [
     ["queued", "Waiting to start"],
     ["starting", "Starting"],
