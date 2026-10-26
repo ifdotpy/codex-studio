@@ -6,6 +6,7 @@ import type {
 } from "./session-state.ts";
 import type { HistoryReadOptions } from "./history-index.ts";
 import type { JournalChange } from "./journal-repair.ts";
+import type { BridgeRepairReport } from "./bridge-protocol.ts";
 import { object } from "./history-records.ts";
 export interface StoreOptions {
   maxCacheBytes?: number;
@@ -47,6 +48,10 @@ function parseSessionSnapshot(
   return JSON.parse(text);
 }
 function parseSessionMetadata(text: string): SessionMetadata {
+  return JSON.parse(text);
+}
+function parseJournalRepairReport(text: string): JournalRepairReport {
+  // The same bridge writes these repair markers; keep the existing checks below.
   return JSON.parse(text);
 }
 
@@ -869,7 +874,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
   }
   // This read must remain available when get() refuses a damaged session.
   // Do not call readAll(): it can compact a confirmed journal repair.
-  async function repairReport(id: string) {
+  async function repairReport(id: string): Promise<BridgeRepairReport> {
     await ready;
     const marker = fileFor(id).replace(/\.json$/, ".repair.json");
     let handle;
@@ -879,7 +884,7 @@ export function createSessionStore(root: string, options: StoreOptions = {}) {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       if (bytesRead > MAX_REPAIR_REPORT_BYTES)
         throw new Error("Claude repair report exceeds the read limit");
-      const report: unknown = JSON.parse(
+      const report = parseJournalRepairReport(
         buffer.subarray(0, bytesRead).toString("utf8"),
       );
       if (

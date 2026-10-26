@@ -109,7 +109,7 @@ export interface Turn {
   limitError?:
     | { codexErrorInfo: string | undefined; resetsAt?: number }
     | undefined;
-  apiErrorInfo?: string | undefined;
+  apiErrorInfo?: string | null | undefined;
 }
 export interface ControlReceipt {
   kind: "rollback";

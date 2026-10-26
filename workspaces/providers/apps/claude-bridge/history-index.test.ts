@@ -331,8 +331,17 @@ for (const behavior of [
 
 test("bridge sources have no absolute host import dependencies", async () => {
   const directory = new URL(".", import.meta.url);
-  for (const name of await fs.readdir(directory)) {
-    if (!/\.(?:mjs|mts)$/.test(name)) continue;
+  const sources = (await fs.readdir(directory)).filter((name) =>
+    /\.(?:mjs|mts|ts|cts)$/.test(name),
+  );
+  expect(sources).toEqual(
+    expect.arrayContaining([
+      "bridge.ts",
+      "history-index.ts",
+      "session-store.ts",
+    ]),
+  );
+  for (const name of sources) {
     const source = await fs.readFile(new URL(name, directory), "utf8");
     expect(source, name).not.toMatch(
       /(?:from\s*|import\s*\()['"]\/(?:work|home|Users|tmp)\//,
