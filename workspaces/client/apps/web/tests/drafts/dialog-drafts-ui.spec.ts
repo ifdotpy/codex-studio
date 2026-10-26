@@ -1,4 +1,5 @@
-import { fixturePostBody } from "../drafts/draft-fixture-helpers.ts";
+import type { components } from "../../src/generated/api.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 // Real components, isolated Vite server, mocked requests. No model or user state.
@@ -66,7 +67,15 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       const path = new URL(route.request().url()).pathname;
       if (path === "/api/directories") {
         directoryReads++;
-        return route.fulfill({ json: { path: "/project", directories: [] } });
+        return route.fulfill({
+          json: {
+            path: "/project",
+            directories: [],
+          } satisfies Pick<
+            components["schemas"]["DirectoriesResponse"],
+            "path" | "directories"
+          >,
+        });
       }
       if (path === "/api/complaint") {
         detailReads++;
@@ -78,9 +87,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
         return route.fulfill({ json: message });
       }
       if (path === "/api/complaints") {
-        const body = fixturePostBody<"/api/complaints">(
-          route.request().postDataJSON(),
-        );
+        const body = requestBody<PostBody<"/api/complaints">>(route);
         if (!body.status) throw new Error("Expected response status");
         sent.push(body);
         if (sent.length === 1)

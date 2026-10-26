@@ -1,3 +1,4 @@
+import type { components } from "../../src/generated/api.ts";
 import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -25,11 +26,23 @@ test("malformed current-draft key does not crash hook initialization", async ({
     page.on("pageerror", (error) => errors.push(error.message));
     const workspaceId = "a".repeat(32);
     await context.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          components["schemas"]["SyncIdentityResponse"],
+          "workspaceId"
+        >,
+      }),
     );
     await context.route("**/api/sync/pull?*", (route) =>
       route.fulfill({
-        json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
+        json: {
+          workspaceId,
+          documents: [],
+          checkpoint: { seq: 0 },
+        } satisfies Pick<
+          components["schemas"]["SyncPullResponse"],
+          "workspaceId" | "documents" | "checkpoint"
+        >,
       }),
     );
     const origin = fixtureOrigin(server);

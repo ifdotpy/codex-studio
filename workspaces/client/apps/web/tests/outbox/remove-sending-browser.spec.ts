@@ -1,4 +1,4 @@
-import { fixturePostBody } from "../drafts/draft-fixture-helpers.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { Page } from "playwright";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import {
@@ -237,7 +237,9 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     if (request.method() === "POST") {
       const path = new URL(request.url()).pathname;
       if (path === "/api/queue")
-        mutations.push(fixturePostBody<"/api/queue">(request.postDataJSON()));
+        mutations.push(
+          requestBody<PostBody<"/api/queue">>({ request: () => request }),
+        );
       if (path === "/api/messages" || path === "/api/stop") starts.push(path);
     }
   });

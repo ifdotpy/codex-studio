@@ -1,7 +1,6 @@
-import {
-  fixturePostBody,
-  readLocalDraft,
-} from "../drafts/draft-fixture-helpers.ts";
+import type { components } from "../../src/generated/api.ts";
+import { requestBody } from "../messages/helpers.ts";
+import { readLocalDraft } from "../drafts/draft-fixture-helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 import assert from "node:assert/strict";
@@ -32,18 +31,27 @@ test("Draft recovery", async ({ context: testContext }) => {
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          components["schemas"]["SyncIdentityResponse"],
+          "workspaceId"
+        >,
+      }),
     );
     await page.route("**/api/sync/drafts", (route) => {
-      pushes.push(
-        ...fixturePostBody<"/api/sync/drafts">(route.request().postDataJSON())
-          .rows,
-      );
+      pushes.push(...requestBody<PostBody<"/api/sync/drafts">>(route).rows);
       return route.fulfill({ json: [] });
     });
     await page.route("**/api/sync/pull?*", (route) =>
       route.fulfill({
-        json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
+        json: {
+          workspaceId,
+          documents: [],
+          checkpoint: { seq: 0 },
+        } satisfies Pick<
+          components["schemas"]["SyncPullResponse"],
+          "workspaceId" | "documents" | "checkpoint"
+        >,
       }),
     );
     const origin = fixtureOrigin(server);

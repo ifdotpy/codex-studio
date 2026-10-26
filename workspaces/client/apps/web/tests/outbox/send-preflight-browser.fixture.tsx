@@ -1,3 +1,4 @@
+import { readOutbox } from "../drafts/draft-fixture-helpers.ts";
 export async function mount() {
   window.preflightSend_send = await import("../../src/sync/send.ts");
   window.preflightSend_storage = await (
@@ -50,5 +51,5 @@ async function read(
   const doc = await window.preflightSend_storage.db.outbox.findOne(id).exec();
   if (!doc) throw new Error("Missing outbox record");
   // The renderer writes and reads this outbox document.
-  return JSON.parse(doc.getLatest().payload);
+  return readOutbox(doc.getLatest().payload);
 }

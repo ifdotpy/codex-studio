@@ -1,4 +1,4 @@
-import { fixturePostBody } from "../drafts/draft-fixture-helpers.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import {
   test,
@@ -48,9 +48,7 @@ test("offline send has one saved-message status and preserves its delivery ident
           await stubSessionCost(page);
           await page.route("**/api/messages", async (route) => {
             if (route.request().method() !== "POST") return route.fallback();
-            const body = fixturePostBody<"/api/messages">(
-              route.request().postDataJSON(),
-            );
+            const body = requestBody<PostBody<"/api/messages">>(route);
             if (body.text !== text) return route.fallback();
             posts.push(body);
             await deliveryGate;

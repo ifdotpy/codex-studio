@@ -1,6 +1,7 @@
-import { fixturePostBody } from "../drafts/draft-fixture-helpers.ts";
+import type { components } from "../../src/generated/api.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { Route } from "playwright";
-import type { PostBody } from "../../src/apiTypes.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 // Real outbox and API calls against a local fixture. No native model requests.
 import assert from "node:assert/strict";
@@ -46,23 +47,37 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     );
     await page.route("**/api/sync/identity", (route) => {
       if (preflight) preflight.identities.push(route);
-      else return route.fulfill({ json: { workspaceId } });
+      else
+        return route.fulfill({
+          json: { workspaceId } satisfies Pick<
+            components["schemas"]["SyncIdentityResponse"],
+            "workspaceId"
+          >,
+        });
     });
     await page.route("**/api/session", (route) => {
       if (preflight) preflight.sessions.push(route);
-      else return route.fulfill({ json: { token: "fixture" } });
+      else
+        return route.fulfill({
+          json: {
+            token: "fixture",
+          } satisfies components["schemas"]["SessionResponse"],
+        });
     });
     await page.route("**/api/messages", async (route) => {
-      const body = fixturePostBody<"/api/messages">(
-        route.request().postDataJSON(),
-      );
+      const body = requestBody<PostBody<"/api/messages">>(route);
       posts.push({ body, headers: route.request().headers() });
       effects.add(body.id);
       if (loseResponse) {
         loseResponse = false;
         await route.abort("failed");
       } else
-        await route.fulfill({ json: { id: body.id, status: "delivered" } });
+        await route.fulfill({
+          json: {
+            id: body.id,
+            status: "delivered",
+          } satisfies PostResult<"/api/messages">,
+        });
     });
     await page.goto(origin + "check");
     await page.evaluate(async () => {

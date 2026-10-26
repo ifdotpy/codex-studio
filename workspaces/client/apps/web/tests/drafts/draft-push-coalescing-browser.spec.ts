@@ -1,5 +1,7 @@
-import { fixturePostBody, readDraft } from "../drafts/draft-fixture-helpers.ts";
-import type { PostBody } from "../../src/apiTypes.ts";
+import type { components } from "../../src/generated/api.ts";
+import { requestBody } from "../messages/helpers.ts";
+import { readDraft } from "../drafts/draft-fixture-helpers.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -28,19 +30,28 @@ test("draft pushes coalesce at the production replication boundary", async ({
       route.fulfill({ body: "<!doctype html><title>Draft push</title>" }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          components["schemas"]["SyncIdentityResponse"],
+          "workspaceId"
+        >,
+      }),
     );
     await page.route("**/api/sync/pull?*", (route) =>
       route.fulfill({
-        json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
+        json: {
+          workspaceId,
+          documents: [],
+          checkpoint: { seq: 0 },
+        } satisfies Pick<
+          components["schemas"]["SyncPullResponse"],
+          "workspaceId" | "documents" | "checkpoint"
+        >,
       }),
     );
     await page.route("**/api/sync/drafts", async (route) => {
       pushTimes.push(await page.evaluate(() => Date.now()));
-      pushes.push(
-        fixturePostBody<"/api/sync/drafts">(route.request().postDataJSON())
-          .rows,
-      );
+      pushes.push(requestBody<PostBody<"/api/sync/drafts">>(route).rows);
       if (failNextPush) {
         failNextPush = false;
         await route.fulfill({ status: 503, body: "temporarily unavailable" });
@@ -49,15 +60,20 @@ test("draft pushes coalesce at the production replication boundary", async ({
       await route.fulfill({ json: [] });
     });
     await page.route("**/api/session", (route) =>
-      route.fulfill({ json: { token: "test-session" } }),
+      route.fulfill({
+        json: {
+          token: "test-session",
+        } satisfies components["schemas"]["SessionResponse"],
+      }),
     );
     await page.route("**/api/messages", async (route) => {
-      const body = fixturePostBody<"/api/messages">(
-        route.request().postDataJSON(),
-      );
+      const body = requestBody<PostBody<"/api/messages">>(route);
       messages.push(body);
       await route.fulfill({
-        json: { id: body.id, status: "delivered" },
+        json: {
+          id: body.id,
+          status: "delivered",
+        } satisfies PostResult<"/api/messages">,
       });
     });
     const origin = fixtureOrigin(server);

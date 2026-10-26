@@ -1,14 +1,13 @@
-import {
-  readTranscript,
-  fixturePostBody,
-  fixtureGet,
-} from "../drafts/draft-fixture-helpers.ts";
+import { responseJson } from "../messages/helpers.ts";
+import { requestBody } from "../messages/helpers.ts";
+import { readTranscript } from "../drafts/draft-fixture-helpers.ts";
 import type { Browser, BrowserContext, Route } from "playwright";
 import type { ViteDevServer } from "vite";
 import type {
   PostBody,
   GetResult,
   TranscriptWireItem,
+  TranscriptPageData,
 } from "../../src/apiTypes.ts";
 declare global {
   interface Window {
@@ -71,9 +70,8 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       fixture.once("exit", () => reject(new Error(log)));
     });
     const target = `http://127.0.0.1:${port}`;
-    const identity = await fixtureGet(
+    const identity = await responseJson<GetResult<"/api/sync/identity">>(
       await fetch(target + "/api/sync/identity"),
-      "/api/sync/identity",
     );
     server = await createServer({
       optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
@@ -127,9 +125,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     });
     await context.route("**/api/messages", async (route) => {
       if (route.request().method() !== "POST") return route.fallback();
-      const body = fixturePostBody<"/api/messages">(
-        route.request().postDataJSON(),
-      );
+      const body = requestBody<PostBody<"/api/messages">>(route);
       posts.push(body);
       if (holdPost) return holdPost(route);
       const response = await fetch(target + "/api/messages", {
@@ -150,7 +146,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     const deliverTranscriptOutbox = async (route: Route) => {
       if (!showDeliveredOutbox) return route.fallback();
       const response = await route.fetch();
-      const transcript = await fixtureGet(response, "/api/transcript");
+      const transcript = await responseJson<TranscriptPageData>(response);
       transcript.items = markOutboxDelivered(transcript.items);
       await route.fulfill({ response, json: transcript });
     };
@@ -165,8 +161,8 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         (item.id.endsWith(":lost-response-pause") ||
           item.id.endsWith(":lost-response-pause:0")));
     const markOutboxDelivered = (
-      items: GetResult<"/api/transcript">["items"],
-    ): GetResult<"/api/transcript">["items"] =>
+      items: TranscriptPageData["items"],
+    ): TranscriptPageData["items"] =>
       items.map((item) => {
         if (isLostResponse(item))
           return {
@@ -198,7 +194,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       if (!showDeliveredOutbox || route.request().method() !== "GET")
         return route.fallback();
       const response = await route.fetch();
-      const queue = await fixtureGet(response, "/api/queue");
+      const queue = await responseJson<GetResult<"/api/queue">>(response);
       queue.items = queue.items.filter(
         (item) => item.id !== "lost-response-pause",
       );
@@ -210,21 +206,21 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       const scope = pullUrl.searchParams.get("scope");
       if (!scope?.startsWith("transcript:")) return route.fallback();
       const response = await route.fetch();
-      const result = await fixtureGet(response, "/api/sync/pull");
+      const result = await responseJson<GetResult<"/api/sync/pull">>(response);
       if (!("documents" in result))
         throw new Error("Unexpected reset response");
       const current = result.documents.find(
         (document) => document.id === scope,
       );
       if (!deliveredTranscriptDocument) {
-        const transcript =
+        const transcript: TranscriptPageData =
           current && "payload" in current
             ? readTranscript(current.payload)
-            : await (
+            : await responseJson<TranscriptPageData>(
                 await fetch(
                   `${target}/api/transcript?id=${scope.slice("transcript:".length)}`,
-                )
-              ).json();
+                ),
+              );
         transcript.items = markOutboxDelivered(transcript.items);
         const after = Number(pullUrl.searchParams.get("after") || 0);
         deliveredTranscriptDocument = {
@@ -288,9 +284,8 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       body: PostBody<"/api/messages">,
       text: string,
     ) => {
-      const transcript = await fixtureGet(
+      const transcript = await responseJson<TranscriptPageData>(
         await fetch(`${target}/api/transcript?id=${body.room}`),
-        "/api/transcript",
       );
       const key = `${body.room}:${body.id}`;
       const matches = (
@@ -330,6 +325,8 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
           ).syncDatabase();
           return (await db.outbox.find().exec()).map((row) => ({
             payload: row.payload,
+            status: "status" in row ? row.status : undefined,
+            error: "error" in row ? row.error : undefined,
           }));
         });
         throw new Error(
