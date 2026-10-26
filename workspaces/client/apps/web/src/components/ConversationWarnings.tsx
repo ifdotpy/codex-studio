@@ -29,10 +29,7 @@ function warningTitle(value: unknown, fallback: string) {
         : "Provider";
     return `${provider} version needs attention`;
   }
-  const first = text
-    .split(/\n|[.!?](?:\s|$)/)
-    .shift()
-    ?.trim();
+  const first = text.split(/\n|[.!?](?:\s|$)/)[0].trim();
   if (!first) return fallback;
   const words = first.split(/\s+/);
   return words.length > 8 ? `${words.slice(0, 8).join(" ")}…` : first;
