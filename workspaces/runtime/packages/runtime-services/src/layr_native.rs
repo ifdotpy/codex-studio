@@ -9,7 +9,7 @@ pub const STORE_DIRECTORY: &str = "store";
 /// Length of a SHA-256 project ID, in hexadecimal bytes.
 pub(super) const PROJECT_ID_HEX_BYTES: usize = 64;
 /// Host Layr release required by Studio's command contract.
-pub const LAYR_VERSION: &str = "0.2.3";
+pub const LAYR_VERSION: &str = "0.4.0";
 
 pub fn store_path(state_dir: &Path) -> PathBuf {
     state_dir.join(NATIVE_LAYR_DIRECTORY).join(STORE_DIRECTORY)

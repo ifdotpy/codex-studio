@@ -67,9 +67,12 @@ fn recv_with_fds(sock: &UnixStream, buf: &mut [u8]) -> Result<(usize, Vec<OwnedF
 pub fn forward(argv: &[String]) -> Result<i32> {
     let path = socket_path();
     let sock = UnixStream::connect(&path).map_err(|e| connect_error(&path, &e))?;
+    negotiate(&sock)?;
     let cwd = std::env::current_dir()?;
     let env: HashMap<String, String> = std::env::vars().collect();
-    let req = serde_json::to_vec(&serde_json::json!({"argv": argv, "cwd": cwd, "env": env}))?;
+    let req = serde_json::to_vec(
+        &serde_json::json!({"argv": argv, "cwd": cwd, "env": env, "version": crate::store_version::Version::binary()}),
+    )?;
     let dir = std::fs::File::open(&cwd)?;
     let mut data = (req.len() as u32).to_be_bytes().to_vec();
     data.extend_from_slice(&req);
@@ -96,6 +99,39 @@ pub fn forward(argv: &[String]) -> Result<i32> {
     let mut code = [0u8; 4];
     (&sock).read_exact(&mut code).context("the layr service closed the connection")?;
     Ok(i32::from_be_bytes(code))
+}
+
+/// Exchange versions on the same connection before a client sends a command or descriptors.
+fn negotiate(sock: &UnixStream) -> Result<()> {
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let request = br#"{"hello":true}"#;
+    let mut packet = (request.len() as u32).to_be_bytes().to_vec();
+    packet.extend_from_slice(request);
+    (&*sock).write_all(&packet)?;
+    let mut kind = [0];
+    (&*sock).read_exact(&mut kind).context("the daemon did not return its store format")?;
+    if kind[0] == b'B' {
+        bail!("the layr service is busy (too many running requests); try again");
+    }
+    if kind[0] != b'V' {
+        bail!(
+            "incompatible daemon: unknown store format (unguarded layr); this binary uses {}. Upgrade the daemon",
+            crate::store_version::Version::binary().description()
+        );
+    }
+    let mut length = [0; 4];
+    (&*sock).read_exact(&mut length)?;
+    let size = u32::from_be_bytes(length) as usize;
+    if size > 4096 {
+        bail!("invalid daemon version response");
+    }
+    let mut bytes = vec![0; size];
+    (&*sock).read_exact(&mut bytes)?;
+    let daemon = serde_json::from_slice(&bytes).context("invalid daemon version")?;
+    crate::store_version::Version::binary().require_compatible(&daemon, "daemon")?;
+    // Commands can take longer than negotiation.
+    sock.set_read_timeout(None)?;
+    Ok(())
 }
 
 /// Why a client could not connect, and what to do. The service opens its socket to every local
@@ -139,34 +175,51 @@ fn limit(var: &str, default: usize) -> usize {
     std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+fn read_request(sock: &UnixStream) -> Result<(serde_json::Value, Vec<OwnedFd>)> {
+    let mut first = vec![0u8; 65536];
+    let (n, fds) = recv_with_fds(sock, &mut first)?;
+    if n < 4 {
+        bail!("bad request");
+    }
+    let len = u32::from_be_bytes([first[0], first[1], first[2], first[3]]) as usize;
+    if len > MAX_REQ || (fds.is_empty() && len > 32768) {
+        bail!("request too large");
+    }
+    let mut req = first[4..n].to_vec();
+    if req.len() > len {
+        bail!("request exceeds its declared size");
+    }
+    while req.len() < len {
+        let mut more = vec![0u8; len - req.len()];
+        let k = (&*sock).read(&mut more)?;
+        if k == 0 {
+            bail!("short request");
+        }
+        req.extend_from_slice(&more[..k]);
+    }
+    Ok((serde_json::from_slice(&req)?, fds))
+}
+
 /// Child process: serve one request, then exit.
 fn handle(sock: UnixStream, root: &Path, registry_uids: &[u32]) -> i32 {
     let res = (|| -> Result<i32> {
         let (uid, _gid, _pid) = peer_uid(&sock)?;
         // A client that does not send its request in time does not hold a process.
         sock.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-        let mut first = vec![0u8; 65536];
-        let (n, fds) = recv_with_fds(&sock, &mut first)?;
-        if n < 4 {
-            bail!("bad request");
-        }
-        let len = u32::from_be_bytes([first[0], first[1], first[2], first[3]]) as usize;
-        if len > MAX_REQ || (fds.is_empty() && len > 32768) {
-            bail!("request too large");
-        }
-        let mut req = first[4..n].to_vec();
-        if req.len() > len {
-            bail!("request exceeds its declared size");
-        }
-        while req.len() < len {
-            let mut more = vec![0u8; len - req.len()];
-            let k = (&sock).read(&mut more)?;
-            if k == 0 {
-                bail!("short request");
+        let (v, fds) = read_request(&sock)?;
+        let (v, fds) = if v.get("hello") == Some(&serde_json::Value::Bool(true)) {
+            if !fds.is_empty() {
+                bail!("the version request must not contain descriptors");
             }
-            req.extend_from_slice(&more[..k]);
-        }
-        let v: serde_json::Value = serde_json::from_slice(&req)?;
+            let bytes = serde_json::to_vec(&crate::store_version::Version::binary())?;
+            let mut packet = vec![b'V'];
+            packet.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            packet.extend_from_slice(&bytes);
+            (&sock).write_all(&packet)?;
+            read_request(&sock)?
+        } else {
+            (v, fds)
+        };
         if let Some(query) = v.get("registry") {
             if !fds.is_empty() {
                 bail!("registry request must not contain descriptors");
@@ -185,6 +238,13 @@ fn handle(sock: UnixStream, root: &Path, registry_uids: &[u32]) -> i32 {
         rustix::stdio::dup2_stdin(&fds[0])?;
         rustix::stdio::dup2_stdout(&fds[1])?;
         rustix::stdio::dup2_stderr(&fds[2])?;
+        let client: crate::store_version::Version = serde_json::from_value(v["version"].clone()).with_context(|| {
+            format!(
+                "incompatible client: unknown store format (unguarded layr); daemon uses {}. Upgrade the client",
+                crate::store_version::Version::binary().description()
+            )
+        })?;
+        crate::store_version::Version::binary().require_compatible(&client, "client")?;
         rustix::process::fchdir(&fds[3]).context("cannot enter the working folder")?;
         drop(fds);
         let cwd = std::env::current_dir()?;
@@ -345,7 +405,7 @@ pub fn daemon(args: &[String]) -> Result<i32> {
             }
         }
     }
-    Store::open(&root)?;
+    let _store_guard = Store::open(&root)?;
     if let Some(d) = sock.parent() {
         std::fs::create_dir_all(d)?;
         use std::os::unix::fs::PermissionsExt;
@@ -496,5 +556,66 @@ mod connect_tests {
         // No socket or no listener: the service is not running here.
         assert!(msg(rustix::io::Errno::NOENT).contains("Start it as root"));
         assert!(msg(rustix::io::Errno::CONNREFUSED).contains("Start it as root"));
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn negotiation_checks_the_daemon_before_a_command() -> Result<()> {
+        for format in [crate::store_version::FORMAT, crate::store_version::FORMAT + 1] {
+            let (client, server) = UnixStream::pair()?;
+            let thread = std::thread::spawn(move || -> Result<()> {
+                let (hello, fds) = read_request(&server)?;
+                assert_eq!(hello, serde_json::json!({"hello": true}));
+                assert!(fds.is_empty());
+                let mut version = crate::store_version::Version::binary();
+                version.format = format;
+                version.version = "other-package".into();
+                version.build = "other-build".into();
+                let bytes = serde_json::to_vec(&version)?;
+                (&server).write_all(&[b'V'])?;
+                (&server).write_all(&(bytes.len() as u32).to_be_bytes())?;
+                (&server).write_all(&bytes)?;
+                let mut next = [0];
+                assert_eq!((&server).read(&mut next)?, 0, "negotiation sends no command");
+                Ok(())
+            });
+            let result = negotiate(&client);
+            if format == crate::store_version::FORMAT {
+                result?;
+            } else {
+                let error = result.unwrap_err().to_string();
+                for text in ["format 2", "format 1", "other-package", "other-build"] {
+                    assert!(error.contains(text), "{error}");
+                }
+            }
+            drop(client);
+            thread.join().unwrap()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn negotiation_refuses_old_and_busy_daemons_without_a_command() -> Result<()> {
+        for answer in [b'R', b'B'] {
+            let (client, server) = UnixStream::pair()?;
+            let thread = std::thread::spawn(move || -> Result<()> {
+                let (hello, fds) = read_request(&server)?;
+                assert_eq!(hello, serde_json::json!({"hello": true}));
+                assert!(fds.is_empty());
+                (&server).write_all(&[answer])?;
+                let mut next = [0];
+                assert_eq!((&server).read(&mut next)?, 0);
+                Ok(())
+            });
+            let error = negotiate(&client).unwrap_err().to_string();
+            assert!(error.contains(if answer == b'B' { "busy" } else { "unguarded layr" }), "{error}");
+            drop(client);
+            thread.join().unwrap()?;
+        }
+        Ok(())
     }
 }

@@ -418,7 +418,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
                     // Revert only what the operation changed; later work stays.
                     (Some(before), Some(after)) if repo.p.has_state(after) => {
                         let cur = repo.scan(&l2)?;
-                        let later: BTreeSet<String> = changes::file_changes(&repo.state_root(after)?, &cur.path)?
+                        let later: BTreeSet<String> = changes::file_changes(&repo.state_src(after)?, &cur.path)?
                             .into_iter()
                             .flat_map(|c| [Some(c.path.clone()), c.old_path.clone()])
                             .flatten()
@@ -1037,6 +1037,11 @@ pub fn gc(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let h = here(ctx)?;
     h.repo.require(ctx, "gc")?;
     let v = run_gc(ctx, &h.repo, a.has("-n"))?;
+    // Saved scans of removed or changed trees go too.
+    #[cfg(target_os = "macos")]
+    if !a.has("-n") {
+        crate::storage::prune_saved_scans(&h.repo.p.dir)?;
+    }
     if !a.has("-q") {
         let verb = if a.has("-n") { "would delete" } else { "deleted" };
         outln!(ctx, "{verb} {} state(s)", v.len());
@@ -1249,12 +1254,34 @@ fn copy_folder(
     })?;
     // On a store volume that ignores case, README and Readme would become one file.
     fsutil::refuse_case_collisions(dst, entries.iter().map(|(rel, _)| rel.as_str()))?;
+    // Names of one file stay names of one file: the first is copied, the others link to it.
+    let mut first: std::collections::HashMap<(u64, u64), String> = Default::default();
     for (rel, m) in &entries {
         if m.is_dir() {
             fsutil::make_parents(dst, &format!("{rel}/x"), None)?;
             continue;
         }
-        crate::privs::as_caller_fs(ctx, || fsutil::copy_entry(src, &rel, dst, &rel, None))?;
+        let link = if m.is_file() {
+            use std::os::unix::fs::MetadataExt;
+            let lm = crate::privs::as_caller_fs(ctx, || Ok(std::fs::symlink_metadata(fsutil::safe_join(src, &rel)?)?))?;
+            (lm.nlink() > 1).then(|| (lm.dev(), lm.ino()))
+        } else {
+            None
+        };
+        match link.and_then(|k| first.get(&k).map(|f| (k, f.clone()))) {
+            Some((_, f)) => {
+                fsutil::make_parents(dst, &rel, None)?;
+                crate::privs::as_caller_fs(ctx, || {
+                    Ok(std::fs::hard_link(fsutil::safe_join(dst, &f)?, fsutil::safe_join(dst, &rel)?)?)
+                })?;
+            }
+            None => {
+                crate::privs::as_caller_fs(ctx, || fsutil::copy_entry(src, &rel, dst, &rel, None))?;
+                if let Some(k) = link {
+                    first.insert(k, rel.clone());
+                }
+            }
+        }
         n += 1;
     }
     // Set directory modes after their children, so a restrictive mode cannot block the copy.
@@ -1507,10 +1534,13 @@ pub fn projects(ctx: &Ctx, _args: &[String]) -> Result<i32> {
 }
 
 pub fn config(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec = Spec::new().flag("-l|--list").value("--get").value("--unset").flag("--json");
+    let spec = Spec::new().flag("-l|--list").value("--get").value("--unset").flag("--json").flag("--local");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     let repo = &h.repo;
+    if a.has("--local") {
+        return super::checks::local_config(ctx, repo, &a);
+    }
     if a.has("-l") || (a.pos.is_empty() && !a.has("--get") && !a.has("--unset")) {
         for (k, v) in repo.p.db.config_all()? {
             outln!(ctx, "{k}={v}");
@@ -1541,6 +1571,9 @@ pub fn config(ctx: &Ctx, args: &[String]) -> Result<i32> {
         };
     }
     let key = a.get("--unset").unwrap_or_else(|| a.pos.first().map(|s| s.as_str()).unwrap_or(""));
+    if matches!(key, "checks.runner" | "checks.privileged-runner") {
+        return Err(exit(128, format!("{key} is machine-local; use config --local")));
+    }
     repo.require(ctx, if policy_key(key) { "access" } else { "config" })?;
     if (key == "admin" || key == "lead") && !ctx.caller.is_root() {
         return Err(exit(1, format!("permission denied: only root changes '{key}'")));
@@ -1554,6 +1587,7 @@ pub fn config(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let command = ["check.", "derive.command.", "merge.driver.", "merge.verify."].iter().any(|prefix| k.starts_with(prefix));
     let val =
         if command { serde_json::Value::String(v) } else { serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v)) };
+    super::checks::validate_config(k, &val)?;
     if k == "queue.probes" && !val.is_null() && !val.is_boolean() {
         return Err(exit(128, "queue.probes must be true or false"));
     }
@@ -1575,7 +1609,7 @@ const POLICY_KEYS: &[&str] = &["access", "grants", "deny", "protect", "members",
 
 /// A named check's command belongs to the protection rules that name it (`check.<name>`).
 fn policy_key(key: &str) -> bool {
-    POLICY_KEYS.contains(&key) || key.starts_with("check.") || key == "registry.tokens"
+    POLICY_KEYS.contains(&key) || key.starts_with("check.") || key.starts_with("checks.") || key == "registry.tokens"
 }
 
 /// `layr access`: roles and deny rules (docs/design.md, section 3).
@@ -1595,6 +1629,20 @@ pub fn access(ctx: &Ctx, args: &[String]) -> Result<i32> {
     };
     let pol = repo.policy();
     match sub {
+        "person-key" if rest.len() == 2 => {
+            repo.require(ctx, "access")?;
+            let login = &rest[0];
+            if !layr_store::person::login_name(login) {
+                bail!("invalid person login");
+            }
+            layr_store::person::verifying_key(&rest[1])?;
+            let _lock = repo.p.lock()?;
+            let mut pins = repo.p.config_value("person.keys")?.unwrap_or_else(|| serde_json::json!({}));
+            pins[login] = serde_json::json!(rest[1]);
+            set_config(ctx, repo, "person.keys", pins)?;
+            outln!(ctx, "pinned person {login}");
+            Ok(0)
+        }
         "list" => {
             for (k, r) in &pol.access {
                 outln!(ctx, "{}\t{}", show_principal(k), r.name());
@@ -1964,8 +2012,8 @@ pub fn debug(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let h = here(ctx)?;
     match args.first().map(|s| s.as_str()) {
         Some("changes") if args.len() >= 3 => {
-            let a = h.repo.state_root(&revs::resolve(&h.repo, h.line.as_ref(), &args[1])?)?;
-            let b = h.repo.state_root(&revs::resolve(&h.repo, h.line.as_ref(), &args[2])?)?;
+            let a = h.repo.state_src(&revs::resolve(&h.repo, h.line.as_ref(), &args[1])?)?;
+            let b = h.repo.state_src(&revs::resolve(&h.repo, h.line.as_ref(), &args[2])?)?;
             for c in changes::candidates(&a, &b)? {
                 let k = |m: &Option<fsutil::Meta>| m.as_ref().map(|x| format!("{:?}", x.ftype)).unwrap_or("-".into());
                 outln!(

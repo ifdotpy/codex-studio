@@ -14,9 +14,174 @@ pub enum Backend {
     S3(super::s3::S3),
     Gateway(super::gateway::Gateway),
     Prefix(Box<Backend>, String),
+    Epoch(Box<EpochBackend>),
 }
 
+#[derive(Clone)]
+pub struct EpochBackend {
+    pub root: Backend,
+    pub current: Backend,
+    pub history: Vec<(Backend, String)>,
+}
+fn epoch_key(key: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(id) = key.strip_prefix("requests/claims/") {
+        format!("claims/{id}").into()
+    } else {
+        key.into()
+    }
+}
+fn epoch_object(key: &str) -> bool {
+    key == "store.json"
+        || key == "public.json"
+        || ["records/", "states/", "files/", "slots/", "history/", "index/", "requests/", "claims/"]
+            .iter()
+            .any(|p| key.starts_with(p))
+}
 impl Backend {
+    pub fn set_epoch(&self, epoch: Option<&str>) -> Result<()> {
+        match self {
+            Self::Gateway(g) => g.set_epoch(epoch),
+            Self::Prefix(base, _) => base.set_epoch(epoch),
+            Self::Epoch(e) => {
+                e.root.set_epoch(epoch)?;
+                e.current.set_epoch(epoch)?;
+                for (backend, _) in &e.history {
+                    backend.set_epoch(epoch)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    pub fn prove_reader(&self) -> Result<()> {
+        match self {
+            Self::Gateway(g) => g.prove_reader(),
+            Self::Prefix(base, _) => base.prove_reader(),
+            Self::Epoch(epoch) => epoch.current.prove_reader(),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn root(&self) -> &Backend {
+        if let Self::Epoch(epoch) = self {
+            &epoch.root
+        } else {
+            self
+        }
+    }
+    fn namespace_epoch(&self) -> &str {
+        if let Self::Prefix(_, scope) = self {
+            if let Some((epoch, _)) = scope.strip_prefix("project/epochs/").and_then(|s| s.split_once('/')) {
+                return epoch;
+            }
+        }
+        "root"
+    }
+    /// Return the object's actual namespace and its key, binding unsigned outer routing
+    /// fields to authenticated epoch discovery before the request parser runs.
+    pub fn request_object(&self, key: &str, identity: &str) -> Result<(Vec<u8>, String, String)> {
+        if let Self::Epoch(epoch) = self {
+            if let Some(bytes) = epoch.current.get(key)? {
+                return Ok((bytes, epoch.current.namespace_epoch().into(), identity.into()));
+            }
+            for (backend, old_identity) in &epoch.history {
+                if let Some(bytes) = backend.get(key)? {
+                    return Ok((bytes, backend.namespace_epoch().into(), old_identity.clone()));
+                }
+            }
+            bail!("request disappeared");
+        }
+        Ok((self.get(key)?.context("request disappeared")?, self.namespace_epoch().into(), identity.into()))
+    }
+    pub fn decrypted(&self, key: &str, identity: &str) -> Result<Vec<u8>> {
+        if let Self::Epoch(epoch) = self {
+            if key.starts_with("states/") && epoch.current.get(key)?.is_none() {
+                for (backend, old_identity) in &epoch.history {
+                    if let Some(bytes) = backend.get(key)? {
+                        return super::keys::decrypt(old_identity, &bytes);
+                    }
+                }
+            }
+        }
+        let bytes = self.get(key)?.with_context(|| format!("missing remote object {key}"))?;
+        super::keys::decrypt(identity, &bytes)
+    }
+
+    /// Stream a release object and select the authenticated identity of its epoch.
+    pub fn release_stream(&self, key: &str, identity: &str) -> Result<(Box<dyn Read>, String)> {
+        if !super::format::release_file(key) {
+            bail!("invalid release object");
+        }
+        if let Self::Epoch(epoch) = self {
+            if let Some(stream) = epoch.current.get_stream(key)? {
+                return Ok((stream, identity.into()));
+            }
+            for (backend, old_identity) in &epoch.history {
+                if let Some(stream) = backend.get_stream(key)? {
+                    return Ok((stream, old_identity.clone()));
+                }
+            }
+            bail!("missing release object {key}");
+        }
+        Ok((self.get_stream(key)?.with_context(|| format!("missing release object {key}"))?, identity.into()))
+    }
+
+    fn get_stream(&self, key: &str) -> Result<Option<Box<dyn Read>>> {
+        check_key(key)?;
+        match self {
+            Self::Epoch(_) => bail!("select an epoch before streaming"),
+            Self::Prefix(base, prefix) => base.get_stream(&format!("{prefix}{key}")),
+            Self::S3(s) => Ok(s.get_stream(key)?.map(|r| Box::new(r) as Box<dyn Read>)),
+            Self::Gateway(g) => Ok(g.release_stream(key)?.map(|r| Box::new(r) as Box<dyn Read>)),
+            Self::File(root, uid, gid) => crate::privs::as_user_fs(*uid, *gid, || {
+                let path = crate::fsutil::safe_join(root, key)?;
+                match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
+                    Ok(file) => {
+                        if !file.metadata()?.is_file() {
+                            bail!("remote object is not a file");
+                        }
+                        Ok(Some(Box::new(file) as Box<dyn Read>))
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(e.into()),
+                }
+            }),
+        }
+    }
+
+    pub fn put_file_new(&self, key: &str, mut source: fs::File) -> Result<bool> {
+        check_key(key)?;
+        match self {
+            Self::Epoch(epoch) => epoch.current.put_file_new(key, source),
+            Self::Prefix(base, prefix) => base.put_file_new(&format!("{prefix}{key}"), source),
+            Self::S3(s) => s.put_file_new(key, source),
+            Self::Gateway(g) => g.put_file_new(key, source),
+            Self::File(root, uid, gid) => crate::privs::as_user_fs(*uid, *gid, || {
+                fs::create_dir_all(root)?;
+                let path = crate::fsutil::safe_join(root, key)?;
+                let parent = path.parent().context("object parent")?;
+                fs::create_dir_all(parent)?;
+                crate::fsutil::safe_join(root, key)?;
+                let temporary = parent.join(format!(".put-{}", crate::ids::new_id()));
+                let result = (|| {
+                    let mut out = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
+                    std::io::copy(&mut source, &mut out)?;
+                    out.sync_all()?;
+                    match fs::hard_link(&temporary, &path) {
+                        Ok(()) => {
+                            fs::File::open(parent)?.sync_all()?;
+                            Ok(true)
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                        Err(e) => Err(e.into()),
+                    }
+                })();
+                let _ = fs::remove_file(temporary);
+                result
+            }),
+        }
+    }
+
     pub fn scoped(&self, prefix: &str) -> Result<Self> {
         check_key(prefix)?;
         Ok(Self::Prefix(Box::new(self.clone()), format!("{prefix}/")))
@@ -63,13 +228,21 @@ impl Backend {
                 *s3 = super::s3::S3::with_env(bucket, prefix, env)?;
             }
             Self::Gateway(gateway) => gateway.connect_reader(env)?,
-            Self::File(..) | Self::Prefix(..) => {}
+            Self::File(..) | Self::Prefix(..) | Self::Epoch(..) => {}
         }
         Ok(backend)
     }
 
     pub fn unlock_reader(&self, identity: &str) -> Result<()> {
         match self {
+            Self::Epoch(epoch) => {
+                epoch.root.unlock_reader(identity)?;
+                epoch.current.unlock_reader(identity)?;
+                for (backend, _) in &epoch.history {
+                    backend.unlock_reader(identity)?;
+                }
+                Ok(())
+            }
             Self::Prefix(base, _) => base.unlock_reader(identity),
             Self::Gateway(gateway) => gateway.set_identity(identity),
             Self::File(..) | Self::S3(_) => Ok(()),
@@ -79,14 +252,42 @@ impl Backend {
     pub fn can_read(&self) -> bool {
         match self {
             Self::Gateway(gateway) => gateway.has_read_identity(),
+            Self::Epoch(epoch) => epoch.root.can_read(),
             Self::Prefix(base, _) => base.can_read(),
             _ => true,
+        }
+    }
+
+    pub(super) fn public_manifest(&self) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Gateway(gateway) => gateway.public_get("public.json"),
+            _ => self.get("public.json"),
         }
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         check_key(key)?;
         match self {
+            Self::Epoch(epoch) => {
+                if !epoch_object(key) {
+                    return epoch.root.get(key);
+                }
+                let data = epoch.current.get(&epoch_key(key))?;
+                if data.is_some()
+                    || !(key.starts_with("states/")
+                        || key.starts_with("files/")
+                        || key.starts_with("requests/")
+                        || key.starts_with("claims/"))
+                {
+                    return Ok(data);
+                }
+                for (backend, _) in &epoch.history {
+                    if let Some(bytes) = backend.get(key)? {
+                        return Ok(Some(bytes));
+                    }
+                }
+                Ok(None)
+            }
             Self::Prefix(base, prefix) => base.get(&format!("{prefix}{key}")),
             Self::S3(s) => s.get(key),
             Self::Gateway(g) => g.get(key),
@@ -111,6 +312,13 @@ impl Backend {
     pub fn put_new(&self, key: &str, body: Vec<u8>) -> Result<bool> {
         check_key(key)?;
         match self {
+            Self::Epoch(epoch) => {
+                if epoch_object(key) {
+                    epoch.current.put_new(&epoch_key(key), body)
+                } else {
+                    epoch.root.put_new(key, body)
+                }
+            }
             Self::Prefix(base, prefix) => base.put_new(&format!("{prefix}{key}"), body),
             Self::S3(s) => s.put_new(key, body),
             Self::Gateway(g) => g.put_new(key, body),
@@ -145,6 +353,27 @@ impl Backend {
             check_key(prefix.trim_end_matches('/'))?;
         }
         match self {
+            Self::Epoch(epoch) => {
+                if !epoch_object(prefix) {
+                    return epoch.root.list(prefix);
+                }
+                let mut objects: std::collections::BTreeMap<String, Object> = std::collections::BTreeMap::new();
+                if prefix.starts_with("states/")
+                    || prefix.starts_with("files/")
+                    || prefix.starts_with("requests/")
+                    || prefix.starts_with("claims/")
+                {
+                    for (backend, _) in epoch.history.iter().rev() {
+                        for object in backend.list(prefix)? {
+                            objects.insert(object.key.clone(), object);
+                        }
+                    }
+                }
+                for object in epoch.current.list(prefix)? {
+                    objects.insert(object.key.clone(), object);
+                }
+                Ok(objects.into_values().collect())
+            }
             Self::Prefix(base, scope) => base
                 .list(&format!("{scope}{prefix}"))?
                 .into_iter()
@@ -158,7 +387,16 @@ impl Backend {
             Self::File(root, uid, gid) => crate::privs::as_user_fs(*uid, *gid, || {
                 let mut out = Vec::new();
                 if root.exists() {
-                    walk(root, root, prefix, &mut out)?;
+                    // A state prefix must not enumerate every sibling state directory.
+                    let directory = prefix.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+                    let start = if directory.is_empty() { root.clone() } else { crate::fsutil::safe_join(root, directory)? };
+                    match fs::symlink_metadata(&start) {
+                        Ok(meta) if meta.file_type().is_symlink() => bail!("symbolic link in remote store: {directory}"),
+                        Ok(meta) if meta.is_dir() => walk(root, &start, prefix, &mut out)?,
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
                 }
                 out.sort_by(|a, b| a.key.cmp(&b.key));
                 Ok(out)
@@ -169,6 +407,19 @@ impl Backend {
     pub fn delete(&self, key: &str) -> Result<()> {
         check_key(key)?;
         match self {
+            Self::Epoch(epoch) => {
+                if key.starts_with("files/") {
+                    epoch.current.delete(key)?;
+                    for (backend, _) in &epoch.history {
+                        backend.delete(key)?;
+                    }
+                    Ok(())
+                } else if epoch_object(key) {
+                    epoch.current.delete(&epoch_key(key))
+                } else {
+                    epoch.root.delete(key)
+                }
+            }
             Self::Prefix(base, prefix) => base.delete(&format!("{prefix}{key}")),
             Self::S3(s) => s.delete(key),
             Self::Gateway(g) => g.delete(key),
@@ -185,22 +436,33 @@ impl Backend {
 }
 
 fn walk(root: &Path, dir: &Path, prefix: &str, out: &mut Vec<Object>) -> Result<()> {
-    for e in fs::read_dir(dir)? {
-        let e = e?;
-        let path = e.path();
-        let name = path.strip_prefix(root)?.to_str().context("non-UTF-8 remote object")?.to_string();
-        let m = fs::symlink_metadata(&path)?;
-        if m.file_type().is_symlink() {
-            bail!("symbolic link in remote store: {name}");
+    for entry in fs::read_dir(dir)? {
+        walk_entry(root, entry?, prefix, out)?;
+    }
+    Ok(())
+}
+
+fn walk_entry(root: &Path, entry: fs::DirEntry, prefix: &str, out: &mut Vec<Object>) -> Result<()> {
+    let path = entry.path();
+    let name = path.strip_prefix(root)?.to_str().context("non-UTF-8 remote object")?.to_string();
+    let temporary = entry.file_name().to_string_lossy().starts_with(".put-");
+    let m = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        // Publication unlinks its internal temporary file after creating the final
+        // hard link. A listing may have already read that directory entry.
+        Err(error) if temporary && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if m.file_type().is_symlink() {
+        bail!("symbolic link in remote store: {name}");
+    }
+    if m.is_dir() {
+        if prefix.starts_with(&format!("{name}/")) || name.starts_with(prefix) {
+            walk(root, &path, prefix, out)?;
         }
-        if m.is_dir() {
-            if prefix.starts_with(&format!("{name}/")) || name.starts_with(prefix) {
-                walk(root, &path, prefix, out)?;
-            }
-        } else if name.starts_with(prefix) && !e.file_name().to_string_lossy().starts_with(".put-") {
-            let modified = m.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
-            out.push(Object { key: name, modified });
-        }
+    } else if name.starts_with(prefix) && !temporary {
+        let modified = m.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        out.push(Object { key: name, modified });
     }
     Ok(())
 }
@@ -283,6 +545,49 @@ mod tests {
     }
 
     #[test]
+    fn listing_tolerates_only_a_vanished_publication_temporary() {
+        let root = std::env::temp_dir().join(crate::ids::new_id());
+        fs::create_dir(&root).unwrap();
+        let mut objects = Vec::new();
+        for (name, tolerated) in [(".put-published", true), ("published-object", false)] {
+            let path = root.join(name);
+            fs::write(&path, b"publication bytes").unwrap();
+            let entry = fs::read_dir(&root).unwrap().next().unwrap().unwrap();
+            // Force the interval between read_dir and stat: the uploader removes
+            // its temporary name once the public hard link exists.
+            fs::remove_file(&path).unwrap();
+            assert_eq!(walk_entry(&root, entry, "", &mut objects).is_ok(), tolerated);
+        }
+        for name in ["public-link", ".put-link"] {
+            let path = root.join(name);
+            std::os::unix::fs::symlink("missing-target", &path).unwrap();
+            assert!(Backend::file(root.clone()).list("").is_err());
+            fs::remove_file(path).unwrap();
+        }
+        assert!(objects.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_listing_visits_only_the_requested_directory_and_refuses_its_links() {
+        let root = std::env::temp_dir().join(crate::ids::new_id());
+        let backend = Backend::file(root.clone());
+        backend.put_new("states/one/a.age", b"one".to_vec()).unwrap();
+        backend.put_new("states/two/b.age", b"two".to_vec()).unwrap();
+        // This sibling must not be inspected for an exact state-directory prefix.
+        std::os::unix::fs::symlink("/missing", root.join("states/two/link")).unwrap();
+        let files = backend.list("states/one/").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].key, "states/one/a.age");
+        assert_eq!(backend.list("states/one/a").unwrap().len(), 1);
+        assert!(backend.list("states/missing/").unwrap().is_empty());
+        assert!(backend.list("states/two/").is_err());
+        std::os::unix::fs::symlink("one", root.join("states/link")).unwrap();
+        assert!(backend.list("states/link/").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn publication_is_exclusive_and_never_changes_bytes() {
         let root = std::env::temp_dir().join(crate::ids::new_id());
         let s = Backend::file(root.clone());
@@ -292,5 +597,37 @@ mod tests {
         assert_eq!(s.list("states/").unwrap().len(), 1);
         assert!(s.put_new("../bad", vec![]).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+    #[test]
+    fn historical_states_use_sealed_history_keys_but_slots_never_fall_back() {
+        let path = std::env::temp_dir().join(crate::ids::new_id());
+        let root = Backend::file(path.clone());
+        let current = root.scoped("project/epochs/new").unwrap();
+        let old = super::super::keys::generate_identity();
+        let new = super::super::keys::generate_identity();
+        root.put_new(
+            "states/old",
+            super::super::keys::encrypt(&super::super::keys::recipient_of(&old).unwrap(), b"old bytes").unwrap(),
+        )
+        .unwrap();
+        root.put_new("slots/removed.age", b"old slot".to_vec()).unwrap();
+        let backend = Backend::Epoch(Box::new(EpochBackend {
+            root: root.clone(),
+            current: current.clone(),
+            history: vec![(root.clone(), old)],
+        }));
+        assert_eq!(backend.decrypted("states/old", &new).unwrap(), b"old bytes");
+        assert!(backend.get("slots/removed.age").unwrap().is_none());
+        backend.put_new("requests/one.json", b"sealed request".to_vec()).unwrap();
+        backend.put_new("requests/claims/one.json", b"claim".to_vec()).unwrap();
+        assert_eq!(current.get("requests/one.json").unwrap().unwrap(), b"sealed request");
+        assert_eq!(current.get("claims/one.json").unwrap().unwrap(), b"claim");
+        assert!(root.get("requests/one.json").unwrap().is_none());
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

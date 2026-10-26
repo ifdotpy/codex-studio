@@ -12,7 +12,7 @@ import tarfile
 
 # The paths that each vendored source takes from its repository (docs/vm-layr.md, docs/vault.md).
 SOURCES = {
-    "layr": ("src", "crates", "Cargo.toml", "Cargo.lock", "LICENSE"),
+    "layr": ("src", "crates", "build.rs", "Cargo.toml", "Cargo.lock", "LICENSE"),
     "layr-desk": ("Cargo.toml", "Cargo.lock", "crates/desk-core", "crates/layr-desk", "LICENSE"),
 }
 

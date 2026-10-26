@@ -381,6 +381,12 @@ mod tests {
             pin: None,
             aws_profile: None,
             layer: None,
+            epoch: None,
+            epoch_public: false,
+            publishing_epoch: false,
+            force_public: false,
+            public_clone: false,
+            public_reader: std::sync::atomic::AtomicBool::new(false),
         };
         (store, identity, root)
     }

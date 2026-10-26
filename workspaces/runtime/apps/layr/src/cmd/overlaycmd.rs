@@ -34,6 +34,7 @@ pub fn overlay(ctx: &Ctx, args: &[String]) -> Result<i32> {
         "show-to-project" => show_to_project(ctx, &rest),
         "readers" => readers(ctx, &rest),
         "managers" => managers(ctx, &rest),
+        "mode" => access_mode(ctx, &rest),
         "use" => use_cmd(ctx, &rest),
         "move" => move_cmd(ctx, &rest),
         "show" if rest.iter().take_while(|s| s.as_str() != "--").any(|s| s == "--json") => show_json(ctx, &rest),
@@ -244,6 +245,52 @@ fn readers(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+fn access_mode(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    let a = parse(&Spec::new().flag("--json"), args)?;
+    if a.pos.len() != 2 {
+        return Err(exit(128, "usage: layr overlay mode <name> private|service|public"));
+    }
+    let h = here(ctx)?;
+    let name = &a.pos[0];
+    let info = visible_info(ctx, &h.repo, name)?;
+    let mode = layr_store::epochs::Mode::parse(&a.pos[1])?;
+    let parent = crate::store_remote::epochs::project_mode(&h.repo)?;
+    if mode > parent {
+        return Err(exit(1, format!("overlay mode {} is more open than project mode {}", mode.name(), parent.name())));
+    }
+    if info.hidden && mode != layr_store::epochs::Mode::Private {
+        return Err(exit(1, "hidden overlays are always private"));
+    }
+    let orepo = h.repo.overlay_repo(name)?;
+    if !orepo.is_admin(ctx) {
+        return Err(exit(1, "only the overlay owner can set its access mode"));
+    }
+    crate::overlay_managers::of(&h.repo, name)?.require(&ctx.store.machine.id)?;
+    if mode == layr_store::epochs::Mode::Service {
+        let service = h.repo.p.config_value("service.recipient")?.and_then(|v| v.as_str().map(str::to_owned));
+        if service.as_ref().is_none_or(|s| !layr_store::keys::valid_recipient(s)) {
+            return Err(exit(1, "service overlay requires layr config service.recipient <age recipient>"));
+        }
+    }
+    let _parent = h.repo.p.lock()?;
+    let _lock = orepo.p.lock()?;
+    let old = crate::store_remote::epochs::overlay_mode(&orepo)?;
+    if old != mode {
+        let mut record = Record::new("overlay.mode");
+        record.data = serde_json::json!({"mode":mode,"config":{"overlay.access-mode":mode}});
+        if mode < old {
+            record.data["config"]["overlay.revocation"] = serde_json::json!(ids::new_id());
+        }
+        orepo.commit_record(ctx, record)?;
+    }
+    if a.has("--json") {
+        outln!(ctx, "{}", serde_json::json!({"name":name,"access_mode":mode}));
+    } else {
+        outln!(ctx, "overlay {name}: {} (takes effect on the next push)", mode.name());
+    }
+    Ok(0)
+}
+
 fn managers(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let a = parse(&Spec::new(), args)?;
     let h = here(ctx)?;
@@ -374,7 +421,7 @@ fn show_json(ctx: &Ctx, args: &[String]) -> Result<i32> {
     };
     let state = overlay_line(ctx, &h.repo, h.line.as_ref(), &info, name, &orepo)?.map(|l| l.head).unwrap_or(info.root);
     let value = serde_json::json!({
-        "name":name,"hidden":info.hidden,"readers":readers,
+        "name":name,"hidden":info.hidden,"readers":readers,"access_mode":crate::store_remote::epochs::overlay_mode(&orepo)?,
         "managers":crate::overlay_managers::of(&h.repo, name)?.machines,
         "epochs":layr_model::overlays::epochs(&records),
         "patterns":setting("patterns")?.unwrap_or_else(|| serde_json::json!([])),

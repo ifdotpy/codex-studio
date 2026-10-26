@@ -1094,7 +1094,12 @@ impl<'a> Repo<'a> {
         if let Some(s) = &stage {
             roots.push(s.as_path());
         }
-        let st = match crate::storage::stable_read(&roots, || self.status_of(line, &work, &index))? {
+        let read = || crate::storage::stable_read(&roots, || self.status_of(line, &work, &index));
+        let st = match match &now {
+            // The scan for the saved status is the first scan of the validated read too.
+            Some(now) => crate::storage::with_known_scan(&work, now, read)?,
+            None => read()?,
+        } {
             Some(st) => st,
             None => self.status(line)?.0,
         };

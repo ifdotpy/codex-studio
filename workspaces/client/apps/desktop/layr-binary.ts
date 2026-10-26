@@ -69,6 +69,19 @@ export async function bundleLayrBinary({
   if (sourceVersion !== version)
     throw new Error(`The host source must contain Layr ${version}.`);
   const target = targetDirectory;
+  const sourceManifest: unknown = JSON.parse(
+    await readFile(path.join(path.dirname(manifest), "manifest.json"), "utf8"),
+  );
+  if (
+    !sourceManifest ||
+    typeof sourceManifest !== "object" ||
+    !("revision" in sourceManifest) ||
+    typeof sourceManifest.revision !== "string" ||
+    !/^[a-f0-9]{40}$/.test(sourceManifest.revision)
+  )
+    throw new Error(
+      "The Layr source manifest must name a full upstream revision.",
+    );
   run(
     "cargo",
     [
@@ -85,7 +98,11 @@ export async function bundleLayrBinary({
     {
       cwd: repository,
       stdio: "inherit",
-      env: { ...process.env, CARGO_INCREMENTAL: "0" },
+      env: {
+        ...process.env,
+        CARGO_INCREMENTAL: "0",
+        LAYR_BUILD_ID: sourceManifest.revision,
+      },
     },
   );
   const binary = path.join(workspace, "bin/layr");

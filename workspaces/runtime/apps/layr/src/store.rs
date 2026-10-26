@@ -39,6 +39,7 @@ pub struct Machine {
 pub struct Store {
     pub root: PathBuf,
     pub machine: Machine,
+    _version_guard: Option<crate::store_version::Guard>,
 }
 
 pub fn default_root() -> PathBuf {
@@ -76,6 +77,7 @@ impl Store {
         // Resolve aliases once at the store boundary. Paths inside a line still refuse links.
         let canonical_root = root.canonicalize().context("resolve store root")?;
         let root = canonical_root.as_path();
+        let version_guard = crate::store_version::Guard::open(root)?;
         #[cfg(not(feature = "overlayfs"))]
         if root.join(".layr-overlayfs").exists() {
             bail!("this store requires a layr build with the overlayfs feature");
@@ -97,7 +99,8 @@ impl Store {
         let arr: [u8; 32] = kb.try_into().map_err(|_| anyhow!("bad machine key"))?;
         let key = SigningKey::from_bytes(&arr);
         mkdir_mode(&root.join("projects"), 0o755)?;
-        Ok(Store { root: root.to_path_buf(), machine: Machine { id, name, key } })
+        version_guard.ready(root)?;
+        Ok(Store { root: root.to_path_buf(), machine: Machine { id, name, key }, _version_guard: Some(version_guard) })
     }
 
     pub fn projects_dir(&self) -> PathBuf {
@@ -454,7 +457,9 @@ impl<'a> Project<'a> {
             rec.actor = actor.clone();
             if let Some(a) = rec.data.get_mut("attestation").and_then(|v| v.as_object_mut()) {
                 a.insert("attestation_id".into(), serde_json::json!(rec.id));
-                a.insert("signer".into(), serde_json::json!(m.id));
+                if a.get("signer").and_then(|v| v.as_str()).is_none_or(|s| !s.starts_with("person:")) {
+                    a.insert("signer".into(), serde_json::json!(m.id));
+                }
                 a.insert("time".into(), serde_json::json!(rec.time));
             }
             crate::model::validate(&rec)?;
@@ -694,7 +699,11 @@ mod tests {
     #[test]
     fn an_overlay_lives_in_the_private_folder_of_its_project() {
         let key = SigningKey::from_bytes(&[7u8; 32]);
-        let store = Store { root: PathBuf::from("/s"), machine: Machine { id: String::new(), name: String::new(), key } };
+        let store = Store {
+            root: PathBuf::from("/s"),
+            machine: Machine { id: String::new(), name: String::new(), key },
+            _version_guard: None,
+        };
         assert_eq!(store.project_dir("sap").unwrap(), PathBuf::from("/s/projects/sap"));
         assert_eq!(store.project_dir("sap%keys").unwrap(), PathBuf::from("/s/projects/sap/meta/overlays/keys"));
         for bad in ["sap%", "%keys", "sap%keys%x", "sap%../x", "../sap%keys", "sap/x"] {

@@ -106,13 +106,16 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
         json!({"id":"warm-worker","isLead":false,"role":"implementer","autoWake":true});
     configure_child(&mut worker, &lead, &lead);
     let ready = runtime::prepare_files(&state, &worker).expect("real worker preparation");
-    let worker = PathBuf::from(ready["cwd"].as_str().expect("worker cwd"));
+    for (key, value) in ready.as_object().expect("worker ready") {
+        worker[key] = value.clone();
+    }
+    let worker_cwd = PathBuf::from(ready["cwd"].as_str().expect("worker cwd"));
     assert_eq!(
-        fs::read_to_string(worker.join("target/studio-test-results/warm-proof.json"))
+        fs::read_to_string(worker_cwd.join("target/studio-test-results/warm-proof.json"))
             .expect("saved test-result cache"),
         "{\"saved\":true}\n"
     );
-    let (warm, artifacts) = cargo_build(&worker);
+    let (warm, artifacts) = cargo_build(&worker_cwd);
     let dependencies: Vec<_> = artifacts
         .iter()
         .filter(|artifact| artifact["target"]["name"] == "memchr")
@@ -145,4 +148,39 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
             .count(),
         artifacts.len()
     );
+    let next_root = fixture_root.join("next-store");
+    fs::create_dir(&next_root).expect("next store");
+    settings::configure(&state, Some(&next_root)).expect("switch destination");
+    save(&state, &worker, "save-after-root-switch").expect("old chat keeps its root");
+    assert!(!next_root.join("projects").exists());
+    assert_eq!(
+        thread_environment_for_record(&state, &worker).expect("bound environment")["LAYR_ROOT"],
+        json!(root)
+    );
+    fs::write(
+        root.join("store-version.json"),
+        json!({"format":999,"version":"9.9.9","build":"future-build"}).to_string(),
+    )
+    .expect("incompatible fixture marker");
+    let error = runtime::prepare_files(&state, &lead)
+        .expect_err("incompatible store must refuse")
+        .to_string();
+    assert!(
+        error.contains("9.9.9")
+            && error.contains(LAYR_VERSION)
+            && error.contains(root.to_str().expect("root")),
+        "{error}"
+    );
+    #[cfg(target_os = "macos")]
+    crate::bounded_child::run(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("chflags"),
+        git_directory: None,
+        args: &["-RP", "nouchg", fixture_root.to_str().expect("fixture")],
+        environment: &[],
+        input: None,
+        stdout_limit: 4096,
+        stderr_limit: 4096,
+        timeout: Duration::from_secs(30),
+    })
+    .expect("unseal only the private fixture before removal");
 }

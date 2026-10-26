@@ -98,6 +98,9 @@ pub trait Src {
 }
 impl Src for Path {
     fn at(&self, rel: &str) -> Result<PathBuf> {
+        // Every read of a live folder passes here: a validated read checks these paths again.
+        #[cfg(target_os = "macos")]
+        crate::storage::note_read(self, [rel]);
         safe_join(self, rel)
     }
     fn folder(&self) -> Option<&Path> {
@@ -106,6 +109,8 @@ impl Src for Path {
 }
 impl Src for PathBuf {
     fn at(&self, rel: &str) -> Result<PathBuf> {
+        #[cfg(target_os = "macos")]
+        crate::storage::note_read(self, [rel]);
         safe_join(self, rel)
     }
     fn folder(&self) -> Option<&Path> {

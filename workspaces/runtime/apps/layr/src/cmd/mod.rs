@@ -5,6 +5,7 @@ pub mod attest;
 pub mod bisect;
 pub mod branch;
 pub mod change;
+pub mod checks;
 pub mod history;
 pub mod mergecmd;
 pub mod oci;
@@ -12,8 +13,10 @@ pub mod overlaycmd;
 pub mod probe;
 pub mod queue;
 pub mod refs;
+pub mod release;
 pub mod remote;
 pub mod replicate;
+pub mod requests;
 pub mod transfer;
 pub mod view;
 pub mod work;
@@ -180,7 +183,7 @@ pub fn matches(specs: &[String], path: &str) -> bool {
     })
 }
 
-const HELP: &str = "usage: layr <command> [<args>]
+pub const HELP: &str = "usage: layr <command> [<args>]\n   store-version [--json] [--upgrade]
 
 Work in a line:
    status, diff, add, rm, mv, restore, reset, save -m <message>, park, clean, apply
@@ -192,11 +195,12 @@ Lines and states:
    save [--note <text>] [--all-lines] [--running] [--force] [--caches]
    park [list/show/pop/apply/drop/clear]
    tag, merge, pick, invert, replay, undo, op, try, bisect run, adopt
-   ref set/list/log/delete, attest, attestations, change list/show/log/diff
+   ref set/list/log/delete, release attach/files/get, attest, attestations, change list/show/log/diff
    view [<rev or line>] [--json], view save [<line>], view show <id>
 Remotes:
    person keys, show, accept
    remote add, list, self, remove, trust, grant; sync, fetch, pull, push, clone
+   index write [<remote>] [--json]; push <remote> --index
    mount <remote> [--listen 127.0.0.1:8095]
 Git bridge:
    git remote, fetch, pull, push, clone, sync
@@ -260,6 +264,7 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "rev-parse" => history::rev_parse(ctx, &rest),
         "merge-base" => history::merge_base(ctx, &rest),
         "blame" => history::blame(ctx, &rest),
+        "index" => remote::index(ctx, &rest),
         "grep" => history::grep(ctx, &rest),
         "ls-files" => history::ls_files(ctx, &rest),
         "add" => work::add(ctx, &rest),
@@ -285,13 +290,18 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "access" => admin::access(ctx, &rest),
         "protect" => admin::protect(ctx, &rest),
         "approve" => admin::approve(ctx, &rest),
-        "approvals" | "checks" => Err(exit(1, "this command was removed; use 'layr attestations <rev> [--kind <kind>]'")),
+        "approvals" => Err(exit(1, "this command was removed; use 'layr attestations <rev> [--kind <kind>]'")),
+        "checks" => checks::checks(ctx, &rest),
         "ref" => refs::refs(ctx, &rest),
+        "release" => release::release(ctx, &rest),
         "queue" => queue::queue(ctx, &rest),
+        "request" => requests::request(ctx, &rest),
+        "requests" => requests::requests(ctx, &rest),
         "view" => view::view(ctx, &rest),
         "attest" => attest::attest(ctx, &rest),
         "attestations" => attest::attestations(ctx, &rest),
         "change" => change::change(ctx, &rest),
+        "comment" => change::comment(ctx, &rest),
         "probe" => probe::probe(ctx, &rest),
         "gc" => admin::gc(ctx, &rest),
         "fsck" => admin::fsck(ctx, &rest),

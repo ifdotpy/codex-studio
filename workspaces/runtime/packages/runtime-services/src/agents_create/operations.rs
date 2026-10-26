@@ -930,7 +930,20 @@ async fn create(
     }
     mode_fields(&mut record);
     if workspace == "layr-native" {
+        let state = context.store.state_dir().to_path_buf();
+        let root = studio_runtime_process::blocking_pool::spawn_blocking(
+            "agents-create/native-store",
+            move || crate::layr_native::settings::selected_store(&state),
+        )
+        .await
+        .map_err(|_| OperationError::Internal)?
+        .map_err(|_| {
+            OperationError::Invalid(
+                "Cannot read the native Layr store setting. Inspect native-layr paths.",
+            )
+        })?;
         crate::layr_native::configure_new_chat(&mut record, &cwd);
+        record["layrStoreRoot"] = json!(root);
     }
     if workspace == "layr" {
         set_vm_workspace_fields(&mut record, &cwd);
@@ -1052,6 +1065,9 @@ async fn create(
                 set_vm_workspace_fields(&mut reused, &cwd);
             } else if workspace_for_write == "layr-native" {
                 crate::layr_native::configure_new_chat(&mut reused, &cwd);
+                if reused["layrStoreRoot"].is_null() {
+                    reused["layrStoreRoot"] = record["layrStoreRoot"].clone();
+                }
             }
             ensure_project(tx, &reused)?;
             save_agent(tx, &reused, &validate)?;

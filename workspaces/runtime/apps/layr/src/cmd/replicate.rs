@@ -423,7 +423,13 @@ fn send_states<R: Read, W: Write>(
             Vec::new()
         };
         w.json(&json!({"op": "state", "id": id, "parent": parent, "clones": clones}))?;
-        let pp = parent.as_ref().map(|p| repo.p.state_path(p));
+        // The receiver finds the parent by the subvolume of its record: send against a parent
+        // tree only when that tree is the one the record names.
+        // A thin parent gets a view (`state_root`), as the child does.
+        let pp = parent.as_ref().and_then(|p| repo.state_root(p).ok()).filter(|path| {
+            let subvol = parent.as_ref().and_then(|p| repo.p.db.state(p).ok().flatten()).map(|s| s.subvol);
+            btrfs::send_clone_identity(path).ok().is_some_and(|(uuid, _)| Some(uuid) == subvol)
+        });
         let sources: Vec<_> = clones.iter().map(|id| repo.p.state_path(id)).collect();
         let child = btrfs::send_optimized(pp.as_deref(), &repo.state_root(id)?, &sources, features.compressed)?
             .stdout(Stdio::piped())
@@ -472,8 +478,14 @@ fn receive_one<R: Read, W: Write>(
             return None;
         }
         let id = p.db.state_by_subvol(u).ok().flatten()?;
-        let path = p.state_path(&id);
-        path.exists().then_some(path)
+        // A thin state of this machine has no complete tree until a view is made.
+        #[cfg(target_os = "macos")]
+        return crate::thin::complete_tree(p, &id).ok();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let path = p.state_path(&id);
+            path.exists().then_some(path)
+        }
     };
     let mut frames = Frames { w, buf: Vec::new(), pos: 0, done: false };
     let res = crate::recv::receive(&mut frames, &p.states_dir(), &crate::recv::Expect { name, uuid, parent: &parent, clones });

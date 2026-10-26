@@ -54,6 +54,7 @@ mod storage;
 mod storage;
 mod store;
 mod store_remote;
+mod store_version;
 mod stream;
 #[allow(unsafe_code)]
 mod sys;
@@ -82,10 +83,13 @@ fn main() {
     #[cfg(any(target_os = "macos", feature = "overlayfs"))]
     if argv.first().map(String::as_str) == Some("__apfs-send") {
         let result = (|| -> anyhow::Result<()> {
-            if argv.len() != 2 {
-                anyhow::bail!("invalid internal send arguments");
-            }
-            crate::apfs_stream::send(std::path::Path::new(&argv[1]), &mut std::io::stdout().lock())
+            // `__apfs-send <child> [<parent> <parent subvolume UUID>]`
+            let parent = match argv.len() {
+                2 => None,
+                4 => Some((std::path::Path::new(&argv[2]), argv[3].as_str())),
+                _ => anyhow::bail!("invalid internal send arguments"),
+            };
+            crate::apfs_stream::send(std::path::Path::new(&argv[1]), parent, &mut std::io::stdout().lock())
         })();
         if let Err(e) = result {
             eprintln!("fatal: {e:#}");
@@ -123,6 +127,24 @@ fn main() {
             }
             _ => break,
         }
+    }
+    match argv.first().map(String::as_str) {
+        Some("--version" | "version") => {
+            println!("layr version {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        None | Some("--help" | "-h" | "help") => {
+            print!("{}", cmd::HELP);
+            return;
+        }
+        Some("store-version") => match store_version::run(&store::default_root(), &argv[1..]) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("layr store-version: {error:#}");
+                std::process::exit(128);
+            }
+        },
+        _ => {}
     }
     if argv.first().map(String::as_str) == Some("person") {
         match person::run(&argv[1..]) {

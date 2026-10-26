@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, HashMap};
 
 #[derive(Default, Clone)]
 pub struct Access {
+    pub public: bool,
     pub machine: Option<(String, SigningKey)>,
     pub paper: Option<String>,
     pub identity: Option<String>,
@@ -46,6 +47,7 @@ pub struct Browse {
     keys: BTreeMap<String, ed25519_dalek::VerifyingKey>,
     pub lines: Vec<Line>,
     pub pin: StorePin,
+    pub public_reader: bool,
     layers: Vec<LayerReader>,
 }
 
@@ -81,24 +83,70 @@ impl Browse {
             StorePin { project: descriptor.project.clone(), recipient: descriptor.recipient.clone(), paper_recipient: None };
         drop(stage);
         let stage = crate::trace::span("disk slot");
-        let identity = if let Some(identity) = &access.identity {
-            identity.clone()
-        } else if let Some((machine, key)) = &access.machine {
-            if let Some(slot) = backend.get(&format!("slots/machine-{machine}.age"))? {
-                keys::open_machine_slot(&slot, key)?
+        let own = (|| -> Result<String> {
+            let identity = if let Some(identity) = &access.identity {
+                identity.clone()
+            } else if let Some((machine, key)) = &access.machine {
+                if let Some(slot) = backend.get(&format!("slots/machine-{machine}.age"))? {
+                    keys::open_machine_slot(&slot, key)?
+                } else {
+                    if let Some(person) = &person {
+                        person.open(&backend, &descriptor)?
+                    } else {
+                        paper_identity(&backend, access.paper.as_deref())?
+                    }
+                }
             } else {
                 if let Some(person) = &person {
                     person.open(&backend, &descriptor)?
                 } else {
                     paper_identity(&backend, access.paper.as_deref())?
                 }
+            };
+            Ok(identity)
+        })();
+        let resolved = super::epochs::resolve(&backend, &descriptor, |scoped, next| {
+            let own = || -> Result<String> {
+                if let Some((machine, key)) = &access.machine {
+                    if let Some(slot) = scoped.get(&format!("slots/machine-{machine}.age"))? {
+                        return keys::open_machine_slot(&slot, key);
+                    }
+                }
+                if let Some(person) = &person {
+                    let name = layr_store::person::slot_name(&person.login, &keys::recipient_of(&person.identity)?)?;
+                    return keys::open_slot(&scoped.get(&format!("slots/{name}"))?.context("no person slot")?, &person.identity);
+                }
+                if let Some(identity) = &access.identity {
+                    if keys::recipient_of(identity)? == next.recipient {
+                        return Ok(identity.clone());
+                    }
+                }
+                paper_identity(scoped, access.paper.as_deref())
+            };
+            if !access.public {
+                if let Ok(identity) = own() {
+                    return Ok((identity, false));
+                }
             }
+            Ok((super::public::identity(scoped, next)?.context("the store is not public")?, true))
+        })?;
+        let root_descriptor = descriptor.clone();
+        let (backend, descriptor, identity, public_reader) = if let Some((backend, current, public)) = resolved {
+            let descriptor = Descriptor { format: 2, project: current.key.project, recipient: current.key.recipient };
+            (backend, descriptor, current.identity, public)
         } else {
-            if let Some(person) = &person {
-                person.open(&backend, &descriptor)?
+            let (identity, public_reader) = if access.public {
+                (super::public::identity(&backend, &descriptor)?.context("the store is not public")?, true)
             } else {
-                paper_identity(&backend, access.paper.as_deref())?
-            }
+                match own {
+                    Ok(identity) => (identity, false),
+                    Err(error) => match super::public::identity(&backend, &descriptor)? {
+                        Some(identity) => (identity, true),
+                        None => return Err(error),
+                    },
+                }
+            };
+            (backend, descriptor, identity, public_reader)
         };
         if keys::recipient_of(&identity)? != descriptor.recipient {
             bail!("the disk key does not match the store recipient");
@@ -125,20 +173,24 @@ impl Browse {
         let mut layer_names = BTreeMap::new();
         let mut authorities = crate::overlay_managers::from_lines(&descriptor.project, &records.lines, &records.keys)?;
         let (mut published, refused) =
-            super::overlays::published(&backend, &descriptor.project, &descriptor.recipient, &records.keys, &authorities)?;
+            super::overlays::published(&backend, &descriptor.project, &root_descriptor.recipient, &records.keys, &authorities)?;
         for reason in refused {
             eprintln!("layr mount: {reason}");
         }
-        let hidden = super::overlays::discover_hidden(
-            &backend,
-            &descriptor.project,
-            &descriptor.recipient,
-            &records.keys,
-            access.machine.as_ref().map(|(id, key)| (id.as_str(), key)),
-            person.as_ref(),
-            access.paper.as_deref(),
-            &access.layers.lock().map_err(|_| anyhow::anyhow!("overlay key cache lock failed"))?.clone(),
-        )?;
+        let hidden = if public_reader {
+            BTreeMap::new()
+        } else {
+            super::overlays::discover_hidden(
+                &backend,
+                &descriptor.project,
+                &root_descriptor.recipient,
+                &records.keys,
+                access.machine.as_ref().map(|(id, key)| (id.as_str(), key)),
+                person.as_ref(),
+                access.paper.as_deref(),
+                &access.layers.lock().map_err(|_| anyhow::anyhow!("overlay key cache lock failed"))?.clone(),
+            )?
+        };
         let mut identities = BTreeMap::new();
         for (name, (key, identity, authority)) in hidden {
             if published.contains_key(&name) {
@@ -147,6 +199,9 @@ impl Browse {
             identities.insert(name.clone(), identity);
             authorities.insert(name.clone(), authority);
             published.insert(name, key);
+        }
+        if public_reader {
+            published.retain(|_, p| !p.key.hidden && p.key.access_mode == layr_store::epochs::Mode::Public);
         }
         let mut hidden_stacks: Vec<(String, usize, crate::db::Db)> = Vec::new();
         for (name, published) in published {
@@ -246,7 +301,7 @@ impl Browse {
         }
         drop(decoder);
         drop(stage);
-        Ok(Self { backend, identity, keys: records.keys, lines, pin, layers })
+        Ok(Self { backend, identity, keys: records.keys, lines, pin, layers, public_reader })
     }
 
     pub fn identity(&self) -> &str {
@@ -254,7 +309,7 @@ impl Browse {
     }
 
     pub fn read(&mut self, entry: &Entry) -> Result<Vec<u8>> {
-        let descriptor: Descriptor = serde_json::from_slice(&self.backend.get("store.json")?.context("store.json is missing")?)?;
+        let descriptor: Descriptor = serde_json::from_slice(&self.backend.root().get("store.json")?.context("store.json is missing")?)?;
         if descriptor.format != 2 {
             bail!("unsupported store format {}", descriptor.format);
         }

@@ -39,6 +39,7 @@ pub struct Disk {
     cache: Cache,
     snapshot: RwLock<Arc<Snapshot>>,
     keychain: std::sync::atomic::AtomicBool,
+    public_reader: bool,
 }
 
 pub fn line_folder(name: &str) -> String {
@@ -109,12 +110,13 @@ fn resolve(path: &str, entry: &Entry, files: &BTreeMap<String, Entry>, reader: &
 }
 
 impl Disk {
-    fn load(url: &str, env: &HashMap<String, String>, access: &Access) -> Result<(Snapshot, String, StorePin)> {
+    fn load(url: &str, env: &HashMap<String, String>, access: &Access) -> Result<(Snapshot, String, StorePin, bool)> {
         let span = crate::trace::span("disk store read");
         let mut reader = Browse::open(url, env, access)?;
         drop(span);
         let identity = reader.identity().to_owned();
         let pin = reader.pin.clone();
+        let public_reader = reader.public_reader;
         let lines = std::mem::take(&mut reader.lines);
         let reader = Arc::new(Mutex::new(reader));
         let mut nodes = BTreeMap::new();
@@ -139,7 +141,7 @@ impl Disk {
                 );
             }
         }
-        Ok((Snapshot { folders: folders(&nodes), nodes }, identity, pin))
+        Ok((Snapshot { folders: folders(&nodes), nodes }, identity, pin, public_reader))
     }
 
     pub fn open(
@@ -149,10 +151,11 @@ impl Disk {
         cache: PathBuf,
         limit: u64,
     ) -> Result<(Arc<Self>, String)> {
-        let (snapshot, identity, pin) = Self::load(&url, &env, &access)?;
+        let (snapshot, identity, pin, public_reader) = Self::load(&url, &env, &access)?;
         access.pin = Some(pin);
         access.paper = None;
         access.identity = Some(identity.clone());
+        access.public = public_reader;
         let disk = Arc::new(Self {
             url,
             env,
@@ -160,12 +163,13 @@ impl Disk {
             cache: Cache::open(cache, limit)?,
             snapshot: RwLock::new(Arc::new(snapshot)),
             keychain: std::sync::atomic::AtomicBool::new(false),
+            public_reader,
         });
         Ok((disk, identity))
     }
 
     fn refresh(&self) -> Result<()> {
-        let (snapshot, _, _) = Self::load(&self.url, &self.env, &self.access)?;
+        let (snapshot, _, _, _) = Self::load(&self.url, &self.env, &self.access)?;
         *self.snapshot.write().unwrap() = Arc::new(snapshot);
         Ok(())
     }
@@ -565,9 +569,11 @@ pub fn run(args: &[String]) -> Result<i32> {
         eprintln!("pinned store recipient {} project {}", pin.recipient, pin.project);
     }
     let span = crate::trace::span("disk Keychain save");
-    keystore::set(&account, &identity)?;
+    if !disk.public_reader {
+        keystore::set(&account, &identity)?;
+    }
     drop(span);
-    disk.keychain.store(cfg!(target_os = "macos"), std::sync::atomic::Ordering::SeqCst);
+    disk.keychain.store(cfg!(target_os = "macos") && !disk.public_reader, std::sync::atomic::Ordering::SeqCst);
     if a.has("--unlock") {
         println!("unlocked {url}");
         return Ok(0);

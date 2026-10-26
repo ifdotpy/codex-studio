@@ -130,6 +130,43 @@ impl Policy {
     }
 
     /// The highest role of the user, its groups and everyone. Root is admin.
+    /// Person principals have their own policy identity and never inherit root's role.
+    pub fn person_role(&self, login: &str) -> Role {
+        [format!("person:{login}"), "*".into()]
+            .iter()
+            .flat_map(|k| [self.access.get(k).copied(), self.grants.get(k).map(|g| g.0)])
+            .flatten()
+            .max()
+            .unwrap_or(Role::None)
+    }
+
+    pub fn person_denied(&self, login: &str, action: &str) -> bool {
+        [format!("person:{login}"), "*".into()]
+            .iter()
+            .any(|k| self.deny.get(k).is_some_and(|v| v.iter().any(|a| a == action || a == "*")))
+    }
+
+    pub fn check_person(&self, login: &str, action: &str) -> Result<(), String> {
+        if self.person_denied(login, action) {
+            return Err(format!("a deny rule takes '{action}' away from person {login}"));
+        }
+        let need = action_role(action).unwrap_or(Role::Admin);
+        let have = self.person_role(login);
+        if have < need {
+            return Err(format!("'{action}' needs the role {}; person {login} is {}", need.name(), have.name()));
+        }
+        Ok(())
+    }
+
+    pub fn person_may_approve(&self, rule: &Rule, login: &str) -> bool {
+        !self.person_denied(login, "approve")
+            && if rule.approvers.is_empty() {
+                self.person_role(login) >= Role::Maintainer
+            } else {
+                rule.approvers.iter().all(|p| p == "*" || p == &format!("person:{login}"))
+            }
+    }
+
     pub fn role(&self, who: &Who) -> Role {
         if who.uid == 0 {
             return Role::Admin;
@@ -219,6 +256,9 @@ impl Policy {
 /// A principal as typed by a person: `alice`, `uid:1001`, `@devs`, `group:devs`, `gid:2000`
 /// or `*`. Returns the stored form (`user:<uid>`, `group:<gid>`, `*`).
 pub fn parse_principal(s: &str) -> Option<String> {
+    if let Some(login) = s.strip_prefix("person:") {
+        return layr_store::person::login_name(login).then(|| s.to_owned());
+    }
     if s == "*" {
         return Some("*".into());
     }
@@ -276,6 +316,23 @@ mod tests {
 
     fn who(uid: u32, groups: &[u32]) -> Who {
         Who { uid, groups: groups.to_vec() }
+    }
+
+    #[test]
+    fn person_policy_never_inherits_executor_root() {
+        let mut p = Policy::default();
+        let login = "reviewer@example.com";
+        assert_eq!(p.person_role(login), Role::None);
+        p.access.insert(format!("person:{login}"), Role::Maintainer);
+        assert!(p.check_person(login, "merge").is_ok());
+        assert!(p.check_person(login, "access").is_err());
+        let rule = RuleSpec { approvers: vec![format!("person:{login}")], ..Default::default() }.rule();
+        assert!(p.person_may_approve(&rule, login));
+        assert!(!p.person_may_approve(&rule, "other@example.com"));
+        p.deny.insert(format!("person:{login}"), vec!["merge".into()]);
+        assert!(p.check_person(login, "merge").is_err());
+        assert_eq!(parse_principal("person:../bad@example.com"), None);
+        assert_eq!(parse_principal(&format!("person:{login}")), Some(format!("person:{login}")));
     }
 
     #[test]
@@ -368,5 +425,23 @@ pub fn approval_count(
         |id| repo.p.db.state(id),
         |uid| policy.may_approve(rule, &Who::of(uid, crate::ctx::Caller::from_uid(uid).gid)),
     )?
-    .len())
+    .len()
+        + person_approval_count(repo, policy, rule, base, subject, layr_model::protection::ApprovalMode::Ref)?)
+}
+
+pub fn person_approval_count(
+    repo: &crate::repo::Repo,
+    policy: &Policy,
+    rule: &Rule,
+    base: Option<&str>,
+    subject: &str,
+    mode: layr_model::protection::ApprovalMode,
+) -> anyhow::Result<usize> {
+    let shared = layr_model::policy::Policy {
+        access: policy.access.clone(),
+        grants: policy.grants.clone(),
+        deny: policy.deny.clone(),
+        protect: policy.protect.clone(),
+    };
+    Ok(repo.read_model()?.allowed_person_approvals(subject, base, mode, &shared, rule).len())
 }

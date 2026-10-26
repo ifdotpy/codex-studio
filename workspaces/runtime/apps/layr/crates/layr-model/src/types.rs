@@ -249,3 +249,20 @@ pub struct Line {
     pub owner: u32,
     pub machine: String,
 }
+
+/// Discussion attached to an immutable version of a logical change.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Comment {
+    pub id: String,
+    pub change_id: String,
+    /// Full state id, not a mutable revision or ordinal.
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+}

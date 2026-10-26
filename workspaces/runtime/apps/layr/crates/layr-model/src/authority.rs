@@ -70,6 +70,8 @@ pub fn protected(record: &Record) -> bool {
     record.op == "overlay.show-to-project"
         || record.op == "overlay.key"
         || record.op == "overlay.readers"
+        || record.op == "overlay.mode"
+        || record.data["config"].get("overlay.access-mode").is_some()
         || record.data["config"].get("access").is_some()
         || record.data["config"].get("deny").is_some()
         || record.data["config"].get("overlay.revocation").is_some()

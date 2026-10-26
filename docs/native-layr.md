@@ -225,7 +225,7 @@ Attribute copies use descriptors or no-follow link calls on APFS and btrfs.
 Full-tree snapshots preserve empty directories, directory modes, and file mode changes in each imported head.
 The source repository root mode also applies to each staged repository root.
 
-Known Layr 0.2.3 limits:
+Known Layr 0.4.0 limits:
 
 - `caller_git` calls `command_as`, which clears `GIT_NO_LAZY_FETCH` and `GIT_OPTIONAL_LOCKS`.
   Studio refuses source object links and alternates that could reconnect a staged repository to the original object store.
@@ -235,7 +235,8 @@ Known Layr 0.2.3 limits:
   A directory attribute change alone can be absent from the saved head.
   A successful metadata fixture does not establish support for this case.
 
-Layr 0.2.3 keeps private directories writable until metadata updates finish.
+The bundled Layr 0.4.0 includes Studio's earlier fixes for private directory metadata and warm cache copies.
+It keeps private directories writable until metadata updates finish.
 The final state and line retain source directory and file modes, including `0555` and `0444`.
 The source modes stay unchanged.
 Metadata errors name the affected path and operation.
@@ -476,7 +477,7 @@ Run the focused Rust tests:
 cargo test -j 4 -p studio-runtime-services --lib layr_native
 ```
 
-Run the real host lifecycle check with a Studio-built Layr 0.2.3 binary:
+Run the real host lifecycle check with a Studio-built Layr 0.4.0 binary:
 
 ```sh
 STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/studio-state/layr-native/bin/layr \
@@ -493,7 +494,7 @@ On Linux, run this isolated check as root on btrfs.
 Check the managed Layr entry with a real Git repository and a local bare remote:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.3 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.4.0 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_layr_ \
   -- --ignored --test-threads=1
@@ -505,7 +506,21 @@ They also verify that the managed Git entry still refuses agent writes.
 Check the proxy with real Layr, Git, Cargo, and pnpm callers:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.3 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.4.0 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_git_proxy_ -- --ignored
 ```
+
+Measure the real preparation caller against a small existing-store fixture:
+
+```sh
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.4.0 \
+  CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
+  layr_native::warm_store_tests::real_native_preparation_reuses_an_existing_projects_saved_rust_cache \
+  -- --ignored --nocapture
+```
+
+The fixture saves a Rust dependency cache and a `target/studio-test-results` witness in project `studio`.
+The real lead and worker preparation callers reuse that project.
+The check requires fresh dependency artifacts in the worker and prints both build times.
+It uses private state and does not change the developer store.

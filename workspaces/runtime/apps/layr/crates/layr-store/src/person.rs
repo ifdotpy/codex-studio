@@ -19,6 +19,8 @@ pub struct Record {
     pub format: u32,
     pub recipient: String,
     pub created: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
 }
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -27,6 +29,40 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+
+/// A person's signing identity, encrypted with the existing age key helpers.
+/// The secret seed is only returned in memory; persist `sealed`, never the seed.
+pub struct SigningKeys {
+    pub public_key: String,
+    pub sealed: Vec<u8>,
+}
+
+#[cfg(feature = "native")]
+pub fn make_signing_keys(recipient: &str) -> Result<SigningKeys> {
+    let key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    Ok(SigningKeys {
+        public_key: hex::encode(key.verifying_key().to_bytes()),
+        sealed: keys::encrypt(recipient, &key.to_bytes())?,
+    })
+}
+
+/// Open a signing identity in memory, checking it against the public person record.
+pub fn open_signing_key(identity: &str, sealed: &[u8], public_key: &str) -> Result<ed25519_dalek::SigningKey> {
+    let bytes: [u8; 32] = keys::decrypt(identity, sealed)?.try_into().map_err(|_| anyhow!("invalid person signing identity"))?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&bytes);
+    if hex::encode(key.verifying_key().to_bytes()) != public_key {
+        bail!("person signing identity differs from its public key");
+    }
+    Ok(key)
+}
+
+pub fn verifying_key(public_key: &str) -> Result<ed25519_dalek::VerifyingKey> {
+    let bytes: [u8; 32] = hex::decode(public_key)
+        .map_err(|_| anyhow!("invalid person public signing key"))?
+        .try_into()
+        .map_err(|_| anyhow!("invalid person public signing key"))?;
+    Ok(ed25519_dalek::VerifyingKey::from_bytes(&bytes)?)
+}
 
 /// The first line of the index plaintext, and the input of its MAC key.
 pub const INDEX_HEADER: &str = "layr-desk person index v1";
@@ -251,6 +287,20 @@ mod tests {
             writer: Some(STANDARD.encode([5u8; 32])),
             signed_from: Some(4),
         }
+    }
+
+    #[test]
+    fn signing_identity_is_sealed_to_one_person_and_bound_to_its_public_key() {
+        let identity = keys::generate_identity();
+        let recipient = keys::recipient_of(&identity).unwrap();
+        let signing = make_signing_keys(&recipient).unwrap();
+        let key = open_signing_key(&identity, &signing.sealed, &signing.public_key).unwrap();
+        assert!(!signing.sealed.windows(32).any(|part| part == key.to_bytes()));
+        assert!(open_signing_key(&keys::generate_identity(), &signing.sealed, &signing.public_key).is_err());
+        assert!(open_signing_key(&identity, &signing.sealed, &"00".repeat(32)).is_err());
+        let public = verifying_key(&signing.public_key).unwrap();
+        keys::verify_bytes(b"request", &keys::sign_bytes(b"request", &key), &public).unwrap();
+        assert!(verifying_key("invalid").is_err());
     }
 
     #[test]

@@ -201,12 +201,12 @@ fn check_exit(repo: &Repo, subject: &str, argv: &[String]) -> Result<Option<i64>
     repo.p.db.check_exit(subject, argv, None)
 }
 
-fn active_checks(repo: &Repo, input: &Input) -> Result<BTreeMap<String, (crate::model::Attestation, Record)>> {
+pub(crate) fn active_checks(repo: &Repo, subject: &Subject) -> Result<BTreeMap<String, (crate::model::Attestation, Record)>> {
     let mut active = BTreeMap::new();
     // Attestation order and signer/actor checks match Core's revocation rule.
-    for a in repo.p.db.attestations(&input.subject.id, None)? {
+    for a in repo.p.db.attestations(&subject.id, None)? {
         let Some(rec) = repo.p.db.record(&a.attestation_id)? else { continue };
-        if a.kind == "check" && a.subject == input.subject {
+        if a.kind == "check" && &a.subject == subject {
             active.insert(a.attestation_id.clone(), (a, rec));
         } else if a.kind == "revoke" {
             for id in rec.data["revokes"].as_array().into_iter().flatten().filter_map(Value::as_str) {
@@ -255,7 +255,7 @@ fn comparison_definitions(repo: &Repo, input: &Input) -> Result<BTreeMap<String,
         return definitions(repo, input);
     }
     let mut definitions = BTreeMap::new();
-    for (_, record) in active_checks(repo, input)?.into_values() {
+    for (_, record) in active_checks(repo, &input.subject)?.into_values() {
         let check = &record.data["check"];
         if let Ok(manifest) = serde_json::from_value::<BTreeMap<String, Probe>>(check["probes"].clone()) {
             for (name, probe) in manifest {
@@ -277,7 +277,7 @@ fn stored(repo: &Repo, input: &Input, name: &str, probe: &Probe) -> Result<Optio
     if check_exit(repo, &input.subject.id, &probe.run)?.is_none() {
         return Ok(None);
     }
-    let active = active_checks(repo, input)?;
+    let active = active_checks(repo, &input.subject)?;
     let root = repo.p.db.ref_value(&reference(name, &input.subject.id), crate::ids::now_ms())?;
     let mut latest = None;
     for (_, rec) in active.values() {
@@ -887,7 +887,7 @@ fn view_results(repo: &Repo, shared: &str) -> Result<Vec<String>> {
             continue;
         };
         let input = Input { subject: Subject { kind: "view".into(), id: id.into() }, state: shared.into(), layers };
-        for (_, check) in active_checks(repo, &input)?.into_values() {
+        for (_, check) in active_checks(repo, &input.subject)?.into_values() {
             let Some(name) = check.data["check"]["probe"].as_str() else { continue };
             let Ok(probe) = serde_json::from_value::<Probe>(check.data["check"]["definition"].clone()) else { continue };
             if probe.validate(name).is_ok() && stored(repo, &input, name, &probe)?.is_some() {
