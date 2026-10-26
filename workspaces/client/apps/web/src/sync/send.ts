@@ -13,6 +13,7 @@ import {
   refreshSession,
 } from "../api";
 
+import type { RxDocument } from "rxdb";
 import type { PostBody, PostResult } from "../api";
 
 import { syncDatabase, type SyncDocument } from "./client";
@@ -71,10 +72,10 @@ type Intention = {
     | "failed";
   attempted?: boolean;
   error?: string | undefined;
-  receipt?: StoredMessageReceipt;
+  receipt?: StoredMessageReceipt | undefined;
   created: number;
   displayPending?: boolean;
-  attachments?: Attachment[];
+  attachments?: Attachment[] | undefined;
   displayText?: string;
 };
 
@@ -94,19 +95,27 @@ type SendResult =
       error?: string | undefined;
     };
 
-const queuedDocuments = (docs: any[]) =>
+// Outbox payloads are written by this renderer; the local intention owns their shape.
+function readIntention(payload: string): Intention {
+  return JSON.parse(payload);
+}
+
+const queuedDocuments = (docs: RxDocument<SyncDocument>[]) =>
   docs
-    .filter((doc) => JSON.parse(doc.getLatest().payload).status === "queued")
+    .filter((doc) => readIntention(doc.getLatest().payload).status === "queued")
     .sort(
       (a, b) =>
-        JSON.parse(a.payload).created - JSON.parse(b.payload).created ||
+        readIntention(a.payload).created - readIntention(b.payload).created ||
         a.id.localeCompare(b.id),
     );
 
-const updateIntention = (doc: any, change: Partial<Intention>) =>
-  doc.incrementalModify((record: any) => ({
+const updateIntention = (
+  doc: RxDocument<SyncDocument>,
+  change: Partial<Intention>,
+) =>
+  doc.incrementalModify((record) => ({
     ...record,
-    payload: JSON.stringify({ ...JSON.parse(record.payload), ...change }),
+    payload: JSON.stringify({ ...readIntention(record.payload), ...change }),
   }));
 
 export const intentionResult = (value: Intention): SendResult =>
@@ -162,8 +171,8 @@ export function createOutbox(options: {
 
   const sendingRooms = new Set<string>();
 
-  async function deliver(doc: any): Promise<SendResult> {
-    let value: Intention = JSON.parse(doc.getLatest().payload);
+  async function deliver(doc: RxDocument<SyncDocument>): Promise<SendResult> {
+    let value: Intention = readIntention(doc.getLatest().payload);
     if (value.status !== "queued" || !navigator.onLine)
       return intentionResult(value);
     try {
@@ -179,8 +188,8 @@ export function createOutbox(options: {
         );
       // Claim the current content before HTTP. Cancellation uses the same atomic
       // update and can succeed only before this request starts.
-      const claimed = await doc.incrementalModify((record: any) => {
-        const current: Intention = JSON.parse(record.payload);
+      const claimed = await doc.incrementalModify((record) => {
+        const current: Intention = readIntention(record.payload);
         if (
           current.status === "queued" &&
           localStorage.getItem(removalFence(workspaceId, doc.id)) === "1"
@@ -204,7 +213,7 @@ export function createOutbox(options: {
             }
           : record;
       });
-      value = JSON.parse(claimed.payload);
+      value = readIntention(claimed.payload);
       if (value.status !== "queued") return intentionResult(value);
       const result = await syncPost("/api/messages", value.body, {
         workspaceId,
@@ -220,8 +229,8 @@ export function createOutbox(options: {
               : "The message was not sent."),
           400,
         );
-      const current = await doc.incrementalModify((record: any) => {
-        const stored: Intention = JSON.parse(record.payload);
+      const current = await doc.incrementalModify((record) => {
+        const stored: Intention = readIntention(record.payload);
         // Preserve confirmed delivery against an older queue receipt. A matching
         // later reply can still resolve queue acceptance or an uncertain outcome.
         const confirmed = (receipt: StoredMessageReceipt | undefined) =>
@@ -245,18 +254,18 @@ export function createOutbox(options: {
           }),
         };
       });
-      return intentionResult(JSON.parse(current.payload));
+      return intentionResult(readIntention(current.payload));
     } catch (error) {
       if (error instanceof ApiSchemaMismatchError) {
-        const current = await doc.incrementalModify((record: any) => {
-          const stored: Intention = JSON.parse(record.payload);
+        const current = await doc.incrementalModify((record) => {
+          const stored: Intention = readIntention(record.payload);
           if (stored.status !== "queued") return record;
           return {
             ...record,
             payload: JSON.stringify(retainQueuedSchemaMismatch(stored, error)),
           };
         });
-        return intentionResult(JSON.parse(current.payload));
+        return intentionResult(readIntention(current.payload));
       }
       // A lost response is retried only at the existing idempotent message endpoint.
       if (
@@ -265,18 +274,18 @@ export function createOutbox(options: {
         error.status === 408 ||
         error.status === 429
       ) {
-        const current = await doc.incrementalModify((record: any) => {
-          const stored: Intention = JSON.parse(record.payload);
+        const current = await doc.incrementalModify((record) => {
+          const stored: Intention = readIntention(record.payload);
           if (!["queued", "paused"].includes(stored.status)) return record;
           return {
             ...record,
             payload: JSON.stringify({ ...stored, error: errorText(error) }),
           };
         });
-        return intentionResult(JSON.parse(current.payload));
+        return intentionResult(readIntention(current.payload));
       }
-      const current = await doc.incrementalModify((record: any) => {
-        const stored: Intention = JSON.parse(record.payload);
+      const current = await doc.incrementalModify((record) => {
+        const stored: Intention = readIntention(record.payload);
         if (!["queued", "paused"].includes(stored.status)) return record;
         return {
           ...record,
@@ -287,24 +296,25 @@ export function createOutbox(options: {
           }),
         };
       });
-      const stored: Intention = JSON.parse(current.payload);
+      const stored: Intention = readIntention(current.payload);
       if (stored.status !== "failed") return intentionResult(stored);
       throw error;
     }
   }
 
-  function once(doc: any): Promise<SendResult> {
+  function once(doc: RxDocument<SyncDocument>): Promise<SendResult> {
     let task = active.get(doc.id);
     if (!task) {
       task = (async () => {
         const { db, workspaceId } = await syncDatabase();
-        const value: Intention = JSON.parse(doc.getLatest().payload);
+        const value: Intention = readIntention(doc.getLatest().payload);
         if (value.status !== "queued" || !navigator.onLine)
           return intentionResult(value);
         const room = `${workspaceId}:${JSON.stringify(value.body.room)}`;
         if (sendingRooms.has(room)) return intentionResult(value);
         const first = queuedDocuments(await db.outbox.find().exec()).find(
-          (queued) => JSON.parse(queued.payload).body.room === value.body.room,
+          (queued) =>
+            readIntention(queued.payload).body.room === value.body.room,
         );
         if (first && first.id !== doc.id) return intentionResult(value);
         // Serialize each chat on this device, including browsers without Web Locks.
@@ -351,7 +361,7 @@ export function createOutbox(options: {
         if (!doc) throw error;
       }
     }
-    const old: Intention = JSON.parse(doc.payload);
+    const old: Intention = readIntention(doc.payload);
     if (JSON.stringify(old.body) !== JSON.stringify(body))
       throw new Error("Message identity already has different content");
     if (old.status === "failed")
@@ -385,9 +395,9 @@ export function createOutbox(options: {
       const doc = await current.db.outbox.findOne(receipt.id).exec();
       if (signal?.aborted) return;
       if (!doc) continue;
-      await doc.incrementalModify((record: any) => {
+      await doc.incrementalModify((record) => {
         if (signal?.aborted) return record;
-        const value = JSON.parse(record.payload);
+        const value = readIntention(record.payload);
         if (value.body.room !== room) return record;
         const next = receiptOutgoing(value, receipt);
         const payload = JSON.stringify(
@@ -433,7 +443,7 @@ export function createOutbox(options: {
     await verifyWorkspace();
     const rooms = new Map<string, string[]>();
     for (const doc of await db.outbox.find().exec()) {
-      const value: Intention = JSON.parse(doc.getLatest().payload);
+      const value: Intention = readIntention(doc.getLatest().payload);
       if (
         value.displayPending === false ||
         !["accepted", "uncertain"].includes(value.status)
@@ -471,7 +481,7 @@ export function createOutbox(options: {
       deletedRooms.add(room);
       controller.abort();
     };
-    const projectionSubscription = db.projections.$.subscribe((event: any) =>
+    const projectionSubscription = db.projections.$.subscribe((event) =>
       markDeleted(event.documentData),
     );
     let nextRoom = 0;
@@ -532,8 +542,8 @@ export function createOutbox(options: {
     const { db, workspaceId } = await syncDatabase();
     const doc = await db.outbox.findOne(id).exec();
     if (!doc) throw new Error("This message is no longer on this device.");
-    const updated = await doc.incrementalModify((record: any) => {
-      const current: Intention = JSON.parse(record.payload);
+    const updated = await doc.incrementalModify((record) => {
+      const current: Intention = readIntention(record.payload);
       if (!["queued", "paused"].includes(current.status))
         throw new Error("This message already left the device queue.");
       const next = { ...current };
@@ -563,8 +573,8 @@ export function createOutbox(options: {
     localStorage.setItem(removalFence(workspaceId, id), "1");
     const doc = await db.outbox.findOne(id).exec();
     if (!doc) return false;
-    const updated = await doc.incrementalModify((record: any) => {
-      const current: Intention = JSON.parse(record.payload);
+    const updated = await doc.incrementalModify((record) => {
+      const current: Intention = readIntention(record.payload);
       if (!["queued", "paused"].includes(current.status)) return record;
       // A claimed request can still finish. Keep its identity and receipt.
       const cancelled = current.attempted === false;
@@ -577,7 +587,7 @@ export function createOutbox(options: {
         }),
       };
     });
-    return JSON.parse(updated.payload).status === "cancelled";
+    return readIntention(updated.payload).status === "cancelled";
   }
 
   function useOutbox() {
@@ -623,7 +633,7 @@ export function createOutbox(options: {
           const rooms = [
             ...new Set<string>(
               queuedDocuments(await db.outbox.find().exec()).map(
-                (doc) => JSON.parse(doc.payload).body.room,
+                (doc) => readIntention(doc.payload).body.room,
               ),
             ),
           ];
@@ -635,7 +645,7 @@ export function createOutbox(options: {
                 // Re-read after acceptance so a message saved during HTTP does
                 // not wait for the polling timer. Preserve order within each chat.
                 const doc = queuedDocuments(await db.outbox.find().exec()).find(
-                  (queued) => JSON.parse(queued.payload).body.room === room,
+                  (queued) => readIntention(queued.payload).body.room === room,
                 );
                 if (!doc) break;
                 const result = await once(doc).catch((e) => {
@@ -685,7 +695,7 @@ export function createOutbox(options: {
             recoveringReceipts = false;
           });
       };
-      const handleOutboxDocuments = (docs: any[]) => {
+      const handleOutboxDocuments = (docs: RxDocument<SyncDocument>[]) => {
         const nextQueued = JSON.stringify(
           queuedDocuments(docs).map((doc) => doc.id),
         );
@@ -697,7 +707,7 @@ export function createOutbox(options: {
         }
         setEntries(
           docs
-            .map((doc) => ({ id: doc.id, ...JSON.parse(doc.payload) }))
+            .map((doc) => ({ id: doc.id, ...readIntention(doc.payload) }))
             .sort((a, b) => a.created - b.created),
         );
         return queuedChanged;
@@ -709,9 +719,9 @@ export function createOutbox(options: {
           const { db, workspaceId } = await syncDatabase();
           if (stop) return;
           let subscriptionReady = false;
-          let bufferedDocs: any[] | undefined;
+          let bufferedDocs: RxDocument<SyncDocument>[] | undefined;
           const sub = db.outbox.find().$.subscribe(
-            (docs: any[]) => {
+            (docs: RxDocument<SyncDocument>[]) => {
               if (!subscriptionReady) bufferedDocs = docs;
               else handleOutboxDocuments(docs);
             },
@@ -779,12 +789,15 @@ export function createOutbox(options: {
           // once, then apply their persisted stream changes without another GET.
           const outbox = bufferedDocs ?? (await db.outbox.find().exec());
           const ids = outbox
-            .filter((doc: any) =>
+            .filter((doc: RxDocument<SyncDocument>) =>
               ["accepted", "uncertain"].includes(
-                JSON.parse(doc.getLatest().payload).status,
+                readIntention(doc.getLatest().payload).status,
               ),
             )
-            .map((doc: any) => `entity:messageReceipt:${doc.id}`);
+            .map(
+              (doc: RxDocument<SyncDocument>) =>
+                `entity:messageReceipt:${doc.id}`,
+            );
           if (ids.length) {
             const receipts =
               await db.projections.storageInstance.findDocumentsById(ids, true);

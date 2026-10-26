@@ -1072,7 +1072,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function receiveResourceProgress(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid resource progress frame");
-    const candidate = value as unknown as Record<string, unknown>;
+    const candidate = value as Record<string, unknown>;
     const resource = candidate.resource as ResourceRef | undefined;
     if (
       !resource ||
