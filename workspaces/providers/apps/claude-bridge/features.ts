@@ -1,25 +1,75 @@
+import type {
+  SDKControlGetUsageResponse,
+  SDKRateLimitInfo,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { components } from "../../../client/apps/web/src/generated/api.ts";
+type NativeLimits = NonNullable<SDKControlGetUsageResponse["rate_limits"]>;
+type NativeWindow = Partial<NonNullable<NativeLimits["five_hour"]>>;
+type UsageResponse = Partial<
+  Omit<SDKControlGetUsageResponse, "rate_limits">
+> & {
+  rate_limits?:
+    | {
+        [K in keyof NativeLimits]?: K extends "model_scoped"
+          ? (NativeWindow &
+              Pick<
+                NonNullable<NativeLimits["model_scoped"]>[number],
+                "display_name"
+              >)[]
+          : K extends "extra_usage"
+            ? Partial<NonNullable<NativeLimits[K]>> | null
+            : NativeWindow | null;
+      }
+    | null;
+};
+export type RateLimitInfo = Omit<
+  Partial<SDKRateLimitInfo>,
+  "rateLimitType" | "utilization"
+> & {
+  rateLimitType?: string | undefined;
+  utilization?: number | null;
+};
+type LimitBucket = {
+  [K in "limitId" | "limitName" | "primary" | "secondary"]?:
+    | components["schemas"]["RateLimitBucketDto"][K]
+    | undefined;
+} & { claudeRateLimit?: RateLimitInfo };
+type Limits = {
+  rateLimits?: LimitBucket;
+  rateLimitsByLimitId?: Record<string, LimitBucket>;
+  claudeRateLimit?: RateLimitInfo;
+  subscriptionType?: string | null | undefined;
+  extraUsage?: unknown;
+};
+export type QueuedInput = SDKUserMessage & { studioInputBatch?: QueuedInput[] };
 import usagePolicyJson from "./usage-policy.mjs";
-const usagePolicy = JSON.parse(usagePolicyJson);
+const usagePolicy: {
+  modelBuckets: Record<string, string>;
+  allowedOverageStatuses: string[];
+} = JSON.parse(usagePolicyJson);
 
 // Native Claude values normalized to Studio's existing public protocol.
-export function usageLimits(response) {
+export function usageLimits(response: UsageResponse) {
   if (!response.rate_limits_available || !response.rate_limits)
     throw new Error(
       "Claude did not return subscription limits for this account",
     );
   const raw = response.rate_limits;
-  const window = (value, minutes) =>
+  const window = (value: NativeWindow | null | undefined, minutes: number) =>
     value && {
-      usedPercent: Number.isFinite(value.utilization)
-        ? Math.max(0, Math.min(100, value.utilization))
-        : null,
+      usedPercent:
+        typeof value.utilization === "number" &&
+        Number.isFinite(value.utilization)
+          ? Math.max(0, Math.min(100, value.utilization))
+          : null,
       resetsAt:
         value.resets_at && Number.isFinite(Date.parse(value.resets_at))
           ? Date.parse(value.resets_at) / 1000
           : null,
       windowDurationMins: minutes,
     };
-  const buckets = {
+  const buckets: Record<string, LimitBucket> & { claude: LimitBucket } = {
     claude: {
       limitId: "claude",
       limitName: "Claude",
@@ -32,7 +82,7 @@ export function usageLimits(response) {
     ["seven_day_opus", "Opus"],
     ["seven_day_sonnet", "Sonnet"],
     ["seven_day_oauth_apps", "OAuth apps"],
-  ])
+  ] as const)
     if (raw[field] && !scoped.some((row) => row.display_name === label))
       scoped.push({ ...raw[field], display_name: label });
   for (const row of scoped) {
@@ -54,8 +104,11 @@ export function usageLimits(response) {
     extraUsage: raw.extra_usage || null,
   };
 }
-export function limitEvent(current, info) {
-  const result = structuredClone(
+export function limitEvent(
+  current: Limits | null | undefined,
+  info: RateLimitInfo,
+) {
+  const result: Limits = structuredClone(
     current || {
       rateLimitsByLimitId: {
         claude: { limitId: "claude", limitName: "Claude" },
@@ -66,20 +119,24 @@ export function limitEvent(current, info) {
   const main = (all.claude ||= { limitId: "claude", limitName: "Claude" });
   const type = info.rateLimitType;
   let bucket = main,
-    key = type === "five_hour" ? "primary" : "secondary";
+    key: "primary" | "secondary" =
+      type === "five_hour" ? "primary" : "secondary";
   if (type === "seven_day_overage_included") {
     const names = Object.keys(all).filter(
       (id) =>
         id !== "claude" &&
         !["claude-opus", "claude-sonnet", "claude-oauth-apps"].includes(id),
     );
-    const id = names.length === 1 ? names[0] : "claude-unknown-limit";
+    const id =
+      names.length === 1
+        ? (names[0] ?? "claude-unknown-limit")
+        : "claude-unknown-limit";
     bucket = all[id] ||= { limitId: id, limitName: "Claude · Unknown limit" };
-  } else if (["seven_day_opus", "seven_day_sonnet"].includes(type)) {
-    const name = type.slice(10),
-      id = usagePolicy.modelBuckets[name];
+  } else if (["seven_day_opus", "seven_day_sonnet"].includes(type ?? "")) {
+    const name = (type ?? "").slice(10),
+      id = usagePolicy.modelBuckets[name] ?? "";
     bucket = all[id] ||= { limitId: id, limitName: "Claude · " + name };
-  } else if (!["five_hour", "seven_day"].includes(type)) {
+  } else if (!["five_hour", "seven_day"].includes(type ?? "")) {
     if (!info.status && !info.overageStatus) return null;
     const id = type === "overage" ? "claude-overage" : "claude-unknown-limit";
     bucket = all[id] ||= {
@@ -93,14 +150,27 @@ export function limitEvent(current, info) {
     typeof info.overageStatus === "string" ||
     typeof info.isUsingOverage === "boolean" ||
     typeof info.overageInUse === "boolean";
-  if (!Number.isFinite(info.utilization) && !hasStatus) return null;
+  if (
+    !(
+      typeof info.utilization === "number" && Number.isFinite(info.utilization)
+    ) &&
+    !hasStatus
+  )
+    return null;
   bucket[key] = {
     ...bucket[key],
     ...(Number.isFinite(info.utilization)
-      ? { usedPercent: Math.max(0, Math.min(100, info.utilization * 100)) }
+      ? {
+          usedPercent: Math.max(
+            0,
+            Math.min(100, (info.utilization ?? NaN) * 100),
+          ),
+        }
       : {}),
     windowDurationMins: type === "five_hour" ? 300 : 10080,
-    ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
+    ...(typeof info.resetsAt === "number" && Number.isFinite(info.resetsAt)
+      ? { resetsAt: info.resetsAt }
+      : {}),
   };
   // Replace permission on each event; a later rejection revokes it.
   bucket.claudeRateLimit = structuredClone(info);
@@ -108,17 +178,20 @@ export function limitEvent(current, info) {
   result.rateLimits = main;
   return result;
 }
-export function nativeItem(block, cwd) {
+export function nativeItem(
+  block: { id: string; name: string; input: Record<string, unknown> },
+  cwd: string,
+) {
   const base = {
     id: block.id,
-    status: "inProgress",
+    status: "inProgress" as const,
     tool: block.name,
     arguments: block.input,
   };
   if (block.name === "Bash")
     return {
       ...base,
-      type: "commandExecution",
+      type: "commandExecution" as const,
       command: block.input.command,
       cwd,
       aggregatedOutput: "",
@@ -126,7 +199,7 @@ export function nativeItem(block, cwd) {
   if (["Edit", "Write", "NotebookEdit"].includes(block.name))
     return {
       ...base,
-      type: "fileChange",
+      type: "fileChange" as const,
       changes: [
         {
           path: block.input.file_path || block.input.notebook_path,
@@ -140,22 +213,28 @@ export function nativeItem(block, cwd) {
         },
       ],
     };
-  return { ...base, type: "mcpToolCall", server: "claude" };
+  return { ...base, type: "mcpToolCall" as const, server: "claude" };
 }
-export class InputQueue {
-  values = [];
-  nonQueryIds = new Set();
-  pending = [];
+export class InputQueue<
+  T extends { uuid?: string; shouldQuery?: boolean } | string = QueuedInput,
+> {
+  values: (T & { studioInputBatch?: T[] })[] = [];
+  nonQueryIds = new Set<string | undefined>();
+  pending: T[] = [];
   // Stop removes every SDK message that has not crossed the iterator boundary.
   withdraw() {
     const messages = this.pending.splice(0);
     for (const value of this.values.splice(0))
-      messages.push(...(value.studioInputBatch || [value]));
+      messages.push(
+        ...(typeof value === "object"
+          ? value.studioInputBatch || [value]
+          : [value]),
+      );
     return messages;
   }
-  wake = null;
+  wake: (() => void) | null = null;
   closed = false;
-  push(value) {
+  push(value: T & { studioInputBatch?: T[] }) {
     if (this.closed) throw new Error("Claude input closed");
     this.values.push(value);
     this.wake?.();
@@ -169,14 +248,17 @@ export class InputQueue {
   async *[Symbol.asyncIterator]() {
     while (!this.closed) {
       if (!this.values.length)
-        await new Promise((resolve) => (this.wake = resolve));
+        await new Promise<void>((resolve) => (this.wake = resolve));
       if (this.closed) break;
       if (this.values.length) {
         const value = this.values.shift();
+        if (value === undefined) continue;
         this.pending = [...(value.studioInputBatch || [value])];
         while (this.pending.length && !this.closed) {
           const message = this.pending.shift();
-          if (message.shouldQuery === false) this.nonQueryIds.add(message.uuid);
+          if (message === undefined) continue;
+          if (typeof message === "object" && message.shouldQuery === false)
+            this.nonQueryIds.add(message.uuid);
           yield message;
         }
       }
@@ -185,17 +267,20 @@ export class InputQueue {
 }
 
 // This is permission from a native rate-limit event, not the billing preference.
-export function overageAllowed(info) {
+export function overageAllowed(info: RateLimitInfo) {
   if (info.overageStatus === "rejected") return false;
   return (
-    usagePolicy.allowedOverageStatuses.includes(info.overageStatus) ||
+    usagePolicy.allowedOverageStatuses.includes(info.overageStatus ?? "") ||
     info.isUsingOverage === true ||
     info.overageInUse === true
   );
 }
 
 // Keep API failure classification at both assistant and terminal boundaries.
-export function claudeErrorInfo(error, text) {
+export function claudeErrorInfo(
+  error: string | null | undefined,
+  text: string | null | undefined,
+) {
   if (error === "rate_limit") return "rateLimitExceeded";
   if (error === "overloaded") return "serverOverloaded";
   if (error === "server_error") return "internalServerError";
@@ -217,7 +302,7 @@ export function claudeErrorInfo(error, text) {
   return null;
 }
 
-export function providerNotice(message) {
+export function providerNotice(message: Record<string, unknown>) {
   if (message.subtype === "api_retry") {
     const status =
       message.error_status == null
@@ -225,7 +310,11 @@ export function providerNotice(message) {
         : "HTTP " + message.error_status;
     return `Claude API retry ${message.attempt} of ${message.max_retries}. Delay: ${message.retry_delay_ms} ms. Status: ${status}.`;
   }
-  if (["model_fallback", "model_consent_fallback"].includes(message.subtype)) {
+  if (
+    ["model_fallback", "model_consent_fallback"].includes(
+      String(message.subtype),
+    )
+  ) {
     const original =
       message.original_model || message.originalModel || "unknown";
     const fallback =
@@ -235,7 +324,7 @@ export function providerNotice(message) {
   return null;
 }
 
-export function modelFamily(model) {
+export function modelFamily(model: unknown) {
   if (typeof model !== "string") return null;
   return (
     Object.keys(usagePolicy.modelBuckets).find(
@@ -246,7 +335,10 @@ export function modelFamily(model) {
     ) || null
   );
 }
-export function limitApplies(info, model) {
+export function limitApplies(
+  info: Pick<RateLimitInfo, "rateLimitType">,
+  model: unknown,
+) {
   const family = modelFamily(model);
   const scoped = Object.keys(usagePolicy.modelBuckets).find(
     (name) => info.rateLimitType === "seven_day_" + name,
