@@ -1,3 +1,6 @@
+import assert from "node:assert/strict";
+import type { components } from "../../src/generated/api.ts";
+import { fixtureOrigin } from "./browser-fixture.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +13,10 @@ test("bounded entities render initial and live changes with zero resource GETs",
 }) => {
   const state = await mkdtemp(join(tmpdir(), "studio-queue-entities-"));
   const backend = await fixture("Queue", false, { entityFrames: true });
-  const queue = (text, revision) => ({
+  const queue = (
+    text: string,
+    revision: string,
+  ): components["schemas"]["QueueView"] => ({
     items: [
       {
         id: "queued",
@@ -95,7 +101,7 @@ test("bounded entities render initial and live changes with zero resource GETs",
     cacheDir: join(state, "vite"),
     server: { host: "127.0.0.1", port: 0, proxy: { "/api": backend.origin } },
   });
-  const reads = [];
+  const reads: string[] = [];
   page.on("request", (request) => {
     if (
       request.method() === "GET" &&
@@ -112,7 +118,7 @@ test("bounded entities render initial and live changes with zero resource GETs",
   });
   try {
     await vite.listen();
-    await page.goto(`http://127.0.0.1:${vite.httpServer.address().port}`);
+    await page.goto(fixtureOrigin(vite));
     await expect(
       page.getByText("Initial stream queue", { exact: true }),
     ).toBeVisible({ timeout: 20_000 });
@@ -125,6 +131,11 @@ test("bounded entities render initial and live changes with zero resource GETs",
       type: "resource-GETs-before-update",
       description: String(reads.length),
     });
+    assert.ok(backend.snapshot.runtime.queuesByAgent);
+    assert.ok(backend.snapshot.runtime.accountsSummary?.accounts[0]);
+    assert.ok(backend.snapshot.runtime.accountCostsByAccount.default);
+    assert.ok(backend.snapshot.runtime.sessionCostsByAgent.overlap);
+    assert.ok(backend.snapshot.runtime.terminals[0]);
     backend.snapshot.runtime.queuesByAgent.overlap = queue(
       "Updated stream queue",
       "second",
@@ -152,12 +163,17 @@ test("bounded entities render initial and live changes with zero resource GETs",
           database.name.endsWith("--projections"),
       )?.name;
       if (!name) throw new Error("The renderer projection cache is missing");
-      const db = await new Promise((resolve, reject) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open(name);
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
-      const rows = await new Promise((resolve, reject) => {
+      const rows = await new Promise<
+        (Omit<
+          import("../../src/sync/entityProjection.ts").EntityRow,
+          "_deleted"
+        > & { _deleted: string })[]
+      >((resolve, reject) => {
         const request = db
           .transaction("docs", "readonly")
           .objectStore("docs")
@@ -178,11 +194,11 @@ test("bounded entities render initial and live changes with zero resource GETs",
     expect(projection.accountCostsByAccount).toEqual({
       default: backend.snapshot.runtime.accountCostsByAccount.default,
     });
-    expect(projection.accountsSummary.accounts[0].label).toBe(
+    expect(projection.accountsSummary?.accounts[0]?.label).toBe(
       "Updated account",
     );
-    expect(projection.sessionCostsByAgent.overlap.totalUSD).toBe(0.75);
-    expect(projection.terminals[0].title).toBe("Updated shell");
+    expect(projection.sessionCostsByAgent?.overlap?.totalUSD).toBe(0.75);
+    expect(projection.terminals?.[0]?.title).toBe("Updated shell");
     await page.waitForTimeout(1100);
     expect(reads).toHaveLength(0);
     test.info().annotations.push({

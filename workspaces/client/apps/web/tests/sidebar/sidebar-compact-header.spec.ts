@@ -1,8 +1,10 @@
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import assert from "node:assert/strict";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
-for (const width of [1440, 390, 320]) {
-  for (const colorScheme of ["light", "dark"]) {
+for (const width of [1440, 390, 320] as const) {
+  for (const colorScheme of ["light", "dark"] as const) {
     test(`compact sidebar header ${width} ${colorScheme}`, async ({
       page,
     }, testInfo) => {
@@ -56,9 +58,10 @@ for (const width of [1440, 390, 320]) {
           newChat,
           newShared,
           addProject,
-        ]) {
+        ] as const) {
           await expect(control).toBeInViewport({ ratio: 1 });
           const bounds = await control.boundingBox();
+          assert.ok(bounds);
           if (width < 760) {
             const target = await control.evaluate(
               () =>
@@ -69,8 +72,12 @@ for (const width of [1440, 390, 320]) {
                 ) *
                 parseFloat(getComputedStyle(document.documentElement).fontSize),
             );
-            expect(bounds.width).toBeGreaterThanOrEqual(target);
-            expect(bounds.height).toBeGreaterThanOrEqual(target);
+            expect(requiredFixtureValue(bounds).width).toBeGreaterThanOrEqual(
+              target,
+            );
+            expect(requiredFixtureValue(bounds).height).toBeGreaterThanOrEqual(
+              target,
+            );
           }
         }
         await search.focus();
@@ -107,14 +114,14 @@ for (const width of [1440, 390, 320]) {
         for (const [button, title] of [
           [newChat, "New chat"],
           [newShared, "New shared chat"],
-        ]) {
+        ] as const) {
           if (width < 760) {
             await page
               .getByRole("button", { name: "Back to chats", exact: true })
               .click();
             await expect(sidebar).toBeInViewport({ ratio: 1 });
           }
-          await button.click();
+          await requiredFixtureValue(button).click();
           const dialog = page.getByRole("dialog", { name: title, exact: true });
           await expect(dialog).toBeVisible();
           await dialog

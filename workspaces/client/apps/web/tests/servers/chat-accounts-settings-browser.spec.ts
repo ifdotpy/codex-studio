@@ -1,28 +1,7 @@
+import { fixturePostBody } from "./browser-fixture.ts";
+import { remoteNetwork } from "./browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
-
-async function remoteNetwork(context, remote) {
-  await context.addInitScript(
-    ({ origin, destination }) => {
-      const nativeFetch = window.fetch.bind(window);
-      window.fetch = async (input, init) => {
-        const request = new Request(input, init);
-        const url = new URL(request.url);
-        if (url.origin !== origin) return nativeFetch(request);
-        const body = await request.clone().arrayBuffer();
-        return nativeFetch(destination + url.pathname + url.search, {
-          method: request.method,
-          headers: request.headers,
-          ...(body.byteLength ? { body } : {}),
-          signal: request.signal,
-          redirect: "error",
-          credentials: "omit",
-        });
-      };
-    },
-    { origin: remote.invitation.origin, destination: remote.origin },
-  );
-}
 
 test("Accounts includes a backend-paired server before this UI has credentials", async ({
   page,
@@ -110,7 +89,8 @@ test("Accounts includes a backend-paired server before this UI has credentials",
       return (
         new URL(response.url()).pathname === "/api/accounts/login/cancel" &&
         request.method() === "POST" &&
-        request.postDataJSON().login_id === loginId
+        fixturePostBody<"/api/accounts/claude/login">(request.postDataJSON())
+          .login_id === loginId
       );
     });
     await signIn.getByRole("button", { name: "Cancel sign-in" }).click();

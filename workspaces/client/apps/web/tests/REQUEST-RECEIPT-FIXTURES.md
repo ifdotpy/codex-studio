@@ -20,13 +20,13 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `queue/queue-mutation-deadline-browser.spec.ts`
 - `radio/radio-create-browser.spec.ts`
 - `servers/multi-server-fixture.ts`
-- `servers/project-locations-ui.spec.mjs`
+- `servers/project-locations-ui.spec.ts`
 - `settings/claude-settings-auth-ui.spec.ts`
 - `settings/execution-settings-canonical-browser.spec.ts`
 - `settings/settings-ux-ui.spec.mjs`
 - `settings/unified-agent-picker-browser.spec.ts`
 - `shell/shell-ux-ui.spec.mjs`
-- `sidebar/sidebar-parity-fixture.mjs`
+- `sidebar/sidebar-parity-fixture.ts`
 - `teams/peer-teams-browser.spec.ts`
 - `teams/subagent-concurrency-ui.spec.ts`
 - `terminal/terminal-dock-ui.spec.ts`

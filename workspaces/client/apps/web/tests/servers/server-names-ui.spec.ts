@@ -1,13 +1,7 @@
+import type { StudioServer } from "../../src/servers/registry.ts";
+import { settings } from "./browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
-
-async function settings(page) {
-  await page
-    .getByRole("button", { name: "Studio settings", exact: true })
-    .click();
-  await page.getByRole("tab", { name: "Servers", exact: true }).click();
-  return page.getByRole("dialog", { name: "Studio settings", exact: true });
-}
 
 test("server cards rename all four names and retain aliases after reload", async ({
   page,
@@ -60,7 +54,7 @@ test("server cards rename all four names and retain aliases after reload", async
       .evaluateAll((rows) =>
         rows.map((row) => ({
           strip: row.getBoundingClientRect().width,
-          list: row.parentElement.getBoundingClientRect().width,
+          list: row.parentElement?.getBoundingClientRect().width ?? 0,
         })),
       );
     expect(stripWidths).toHaveLength(4);
@@ -68,7 +62,13 @@ test("server cards rename all four names and retain aliases after reload", async
       expect(strip).toBeGreaterThanOrEqual(list * 0.95);
     const aliases = await dialog
       .getByRole("textbox", { name: "Server alias", exact: true })
-      .evaluateAll((inputs) => inputs.map((input) => input.value));
+      .evaluateAll((inputs) =>
+        inputs.map((input) => {
+          if (!(input instanceof HTMLInputElement))
+            throw new Error("Expected an input");
+          return input.value;
+        }),
+      );
     const names = {
       local: "Lumina Mac",
       mbp: "Igor MBP",
@@ -89,7 +89,13 @@ test("server cards rename all four names and retain aliases after reload", async
     expect(
       await dialog
         .getByRole("textbox", { name: "Server alias", exact: true })
-        .evaluateAll((inputs) => inputs.map((input) => input.value))
+        .evaluateAll((inputs) =>
+          inputs.map((input) => {
+            if (!(input instanceof HTMLInputElement))
+              throw new Error("Expected an input");
+            return input.value;
+          }),
+        )
         .then((values) => values.sort()),
     ).toEqual(aliases.sort());
     expect(
@@ -112,7 +118,11 @@ test("server cards rename all four names and retain aliases after reload", async
       await expect(dialog).toContainText(name);
     expect(
       await page.evaluate(() =>
-        JSON.parse(localStorage.getItem("studio-paired-servers-v1"))
+        (
+          JSON.parse(
+            localStorage.getItem("studio-paired-servers-v1") ?? "[]",
+          ) as StudioServer[]
+        )
           .map((row) => row.label)
           .sort(),
       ),
@@ -172,10 +182,15 @@ test("a UI-only client renames through its signed credential and retries the sam
               credentials: "omit",
             },
           );
+          const body: unknown =
+            request.method === "POST" && url.pathname === "/api/multi-server"
+              ? JSON.parse(new TextDecoder().decode(bytes))
+              : null;
           if (
-            request.method === "POST" &&
-            url.pathname === "/api/multi-server" &&
-            JSON.parse(new TextDecoder().decode(bytes)).action === "name" &&
+            body &&
+            typeof body === "object" &&
+            "action" in body &&
+            body.action === "name" &&
             !sessionStorage.getItem("name-response-lost")
           ) {
             sessionStorage.setItem("name-response-lost", "1");
@@ -225,7 +240,7 @@ test("a UI-only client renames through its signed credential and retries the sam
     );
     expect(requests).toHaveLength(2);
     expect(requests[0]).toEqual(requests[1]);
-    expect(requests[0].serverId).toBe("local");
+    expect(requests[0]?.serverId).toBe("local");
     expect(
       local.accessRequests.filter((body) => body.action === "name"),
     ).toHaveLength(0);
