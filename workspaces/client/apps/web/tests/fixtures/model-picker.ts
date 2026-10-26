@@ -18,8 +18,7 @@ export async function modelOptions(picker: Locator) {
   return (await listFor(picker)).evaluateAll((nodes) =>
     nodes.map(
       (node) =>
-        node.getAttribute("data-value") ??
-        (node instanceof HTMLOptionElement ? node.value : undefined),
+        node.getAttribute("data-value") ?? (node as HTMLOptionElement).value,
     ),
   );
 }
