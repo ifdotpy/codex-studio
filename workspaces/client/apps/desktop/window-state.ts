@@ -8,9 +8,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { atomicJSON } from "./recovery.ts";
 
-function rectangle(value: Rectangle | undefined): value is Rectangle {
+function rectangle(value: Rectangle | undefined) {
   return (
-    !!value &&
+    value &&
     ["x", "y", "width", "height"].every((key) =>
       Number.isSafeInteger(value[key as keyof Rectangle]),
     ) &&

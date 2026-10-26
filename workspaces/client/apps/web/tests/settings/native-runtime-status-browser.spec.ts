@@ -8,6 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "../playwright.ts";
 
+type PartialFixture<T> = T extends object
+  ? { [K in keyof T]?: PartialFixture<T[K]> }
+  : T;
+
 test("Native runtime status", async ({ context }) => {
   test.setTimeout(45_000);
 
@@ -50,7 +54,6 @@ test("Native runtime status", async ({ context }) => {
     selected: {
       version: "0.116.0",
       sourcePath: "/private/very/long/path/codex",
-      path: "/private/very/long/path/codex",
       sha256: "fixture",
     },
     candidates: [
@@ -70,18 +73,15 @@ test("Native runtime status", async ({ context }) => {
       default: {
         status: "current",
         version: "0.116.0",
-        targetVersion: "0.116.0",
-        updatedAt: 0,
       },
       work: {
         status: "waiting",
-        updatedAt: 0,
         version: "0.115.0",
         targetVersion: "0.116.0",
         reason: "Waiting for active turns to finish",
       },
     },
-  } satisfies components["schemas"]["NativeRuntimeStatus"];
+  } satisfies PartialFixture<components["schemas"]["NativeRuntimeStatus"]>;
   try {
     await server.listen();
     const page = await context.newPage();
@@ -92,8 +92,9 @@ test("Native runtime status", async ({ context }) => {
       console.error(error);
     });
     let reads = 0;
-    const providerWarning: components["schemas"]["ProviderVersionWarning"] = {
-      at: 0,
+    const providerWarning: PartialFixture<
+      components["schemas"]["ProviderVersionWarning"]
+    > = {
       id: "provider-version:default",
       accountKey: "default",
       provider: "codex",
@@ -102,9 +103,9 @@ test("Native runtime status", async ({ context }) => {
       message:
         "Codex CLI 0.153.3 is older than this repository's lowest recorded tested version (0.153.4). It may work poorly or fail. You can continue at your own risk.",
     };
-    const currentProviderStatus: components["schemas"]["ProviderVersion"] = {
-      at: 0,
-      error: null,
+    const currentProviderStatus: PartialFixture<
+      components["schemas"]["ProviderVersion"]
+    > = {
       id: "provider-version:default",
       accountKey: "default",
       provider: "codex",
@@ -115,7 +116,7 @@ test("Native runtime status", async ({ context }) => {
       baseline: "0.153.4",
       message: providerWarning.message,
     };
-    let body: Partial<
+    let body: PartialFixture<
       Pick<
         components["schemas"]["DesktopResponse"],
         "nativeRuntime" | "providerVersions"
@@ -143,11 +144,11 @@ test("Native runtime status", async ({ context }) => {
       return route.fulfill({ json: { accounts: [], data: null } });
     });
     await page.goto(fixtureUrl(server, "check"));
-    await page.waitForFunction(() => window.nativeRuntimeFixture?.ready);
+    await page.waitForFunction(() => !!window.setRuntimeOpen);
     await page.clock.install();
     await page.clock.runFor(12000);
     assert.equal(reads, 0, "Closed panel must not read diagnostics");
-    await page.evaluate(() => window.nativeRuntimeFixture.setRuntimeOpen(true));
+    await page.evaluate(() => window.setRuntimeOpen!(true));
     await page.getByText("Version details", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Codex runtime" });
     const providerPanel = page.getByRole("region", {
@@ -199,9 +200,7 @@ test("Native runtime status", async ({ context }) => {
       0,
     );
     await page.keyboard.press("Escape");
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setWarningAccount("claude"),
-    );
+    await page.evaluate(() => window.setWarningAccount!("claude"));
     await page.getByRole("button", { name: "Warnings", exact: true }).click();
     await warningsDialog
       .locator("p")
@@ -220,14 +219,12 @@ test("Native runtime status", async ({ context }) => {
       nativeRuntime: {
         ...initial,
         accounts: {
-          work: { status: "updating", targetVersion: "0.116.0", updatedAt: 0 },
+          work: { status: "updating", targetVersion: "0.116.0" },
         },
       },
     };
     const readsBeforeRefresh = reads;
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-accounts")
@@ -241,16 +238,12 @@ test("Native runtime status", async ({ context }) => {
         accounts: {
           work: {
             status: "failed",
-            targetVersion: "0.116.0",
-            updatedAt: 0,
             reason: "Handshake failed",
           },
         },
       },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -267,11 +260,9 @@ test("Native runtime status", async ({ context }) => {
         candidates: [],
         accounts: {},
       },
-      providerVersions: { checkedAt: 1790092590, providers: [], warnings: [] },
+      providerVersions: { checkedAt: 1790092590, providers: [] },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -279,20 +270,19 @@ test("Native runtime status", async ({ context }) => {
     );
     assert.equal(await panel.locator("time").count(), 0);
 
-    const claudeOnly: components["schemas"]["ProviderVersion"] = {
-      at: 0,
-      error: null,
-      id: "provider-version:claude",
-      accountKey: "claude",
-      provider: "claude",
-      status: "unknown",
-      runningVersion: null,
-      installedVersion: "Claude Code 2.1.277",
-      configuredVersion: "Claude Code 2.2.0",
-      baseline: "2.1.278",
-      message:
-        "The exact version already running in Claude sessions is unknown.",
-    };
+    const claudeOnly: PartialFixture<components["schemas"]["ProviderVersion"]> =
+      {
+        id: "provider-version:claude",
+        accountKey: "claude",
+        provider: "claude",
+        status: "unknown",
+        runningVersion: null,
+        installedVersion: "Claude Code 2.1.277",
+        configuredVersion: "Claude Code 2.2.0",
+        baseline: "2.1.278",
+        message:
+          "The exact version already running in Claude sessions is unknown.",
+      };
     body = {
       providerVersions: {
         checkedAt: 1790092600,
@@ -300,9 +290,7 @@ test("Native runtime status", async ({ context }) => {
         warnings: [],
       },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await panel.waitFor({ state: "detached" });
     await providerPanel.waitFor();
     assert.match(
@@ -313,19 +301,15 @@ test("Native runtime status", async ({ context }) => {
     assert.match(await providerPanel.innerText(), /Claude Code 2\.1\.277/);
     assert.match(await providerPanel.innerText(), /Running version unknown/);
     body = {
-      providerVersions: { checkedAt: 1790092610, providers: [], warnings: [] },
+      providerVersions: { checkedAt: 1790092610, providers: [] },
     };
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.emitRuntimeChange("desktop"),
-    );
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".provider-version-status")
         ?.textContent.includes("No connected provider CLIs were found"),
     );
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setRuntimeOpen(false),
-    );
+    await page.evaluate(() => window.setRuntimeOpen!(false));
     const beforeClose = reads;
     await page.clock.runFor(30000);
     assert.equal(reads, beforeClose, "Close must stop polling");
@@ -337,32 +321,24 @@ test("Native runtime status", async ({ context }) => {
         const request = new Request(input, init);
         if (new URL(request.url).pathname === "/api/desktop") {
           window.fetch = original;
-          window.nativeRuntimeFixture.delayedRuntimeSignal = request.signal;
+          window.delayedRuntimeSignal = request.signal;
           return new Promise<Response>((resolve) => {
-            window.nativeRuntimeFixture.finishOldRuntimeRead = resolve;
+            window.finishOldRuntimeRead = resolve;
           });
         }
         return original(input, init);
       };
-      window.nativeRuntimeFixture.setRuntimeOpen(true);
+      window.setRuntimeOpen!(true);
     });
-    await page.waitForFunction(
-      () => !!window.nativeRuntimeFixture.finishOldRuntimeRead,
-    );
-    await page.evaluate(() =>
-      window.nativeRuntimeFixture.setRuntimeOpen(false),
-    );
-    await page.waitForFunction(
-      () => window.nativeRuntimeFixture.delayedRuntimeSignal.aborted,
-    );
+    await page.waitForFunction(() => !!window.finishOldRuntimeRead);
+    await page.evaluate(() => window.setRuntimeOpen!(false));
+    await page.waitForFunction(() => window.delayedRuntimeSignal!.aborted);
     body = { nativeRuntime: initial };
-    await page.evaluate(() => window.nativeRuntimeFixture.setRuntimeOpen(true));
+    await page.evaluate(() => window.setRuntimeOpen!(true));
     await page.getByText("Version details", { exact: true }).click();
     await panel.waitFor();
     await page.evaluate(() =>
-      window.nativeRuntimeFixture.required(
-        window.nativeRuntimeFixture.finishOldRuntimeRead,
-      )(
+      window.finishOldRuntimeRead!(
         new Response(JSON.stringify({ nativeRuntime: null }), {
           headers: { "Content-Type": "application/json" },
         }),
