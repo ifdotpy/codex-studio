@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
@@ -381,7 +380,6 @@ describe("entity pull dispatch gate", () => {
       ],
     };
     await client.persistResourceEntityChanges(event, () => true);
-    assert.ok(event.resourceVersions?.[0] != null);
     expect(stringify).not.toHaveBeenCalledWith(
       event.resourceVersions?.[0].entityChanges,
     );

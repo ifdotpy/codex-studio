@@ -1,5 +1,4 @@
 import type { Agent } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
@@ -23,4 +22,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

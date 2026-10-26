@@ -1,4 +1,3 @@
-import { assert } from "vitest";
 import { afterEach, expect, it, vi } from "vitest";
 
 async function setup(remote = false) {
@@ -31,9 +30,7 @@ it("preserves picker cancellation and exact attachment bytes", async () => {
   const { api, invoke } = await setup();
   expect(await api.pickDirectory()).toBeNull();
   const files = await api.pickFiles();
-  assert(files[0] !== undefined);
   expect(files[0].name).toBe("binary.bin");
-  assert(files[0] !== undefined);
   expect([...new Uint8Array(await files[0].arrayBuffer())]).toEqual([
     0, 0, 255,
   ]);
@@ -58,7 +55,6 @@ it("does not repeat a rejected native dialog request", async () => {
 it("reveals a local path through native IPC and refuses a remote view", async () => {
   const local = await setup();
   await local.api.revealPath("/tmp/folder");
-  assert(local.invoke.mock.calls[0] !== undefined);
   expect(local.invoke.mock.calls[0][1].request).toMatchObject({
     method: "desktop.revealPath",
     params: { value: "/tmp/folder" },
@@ -74,7 +70,6 @@ it("opens vault keys locally and rejects a remote view before IPC", async () => 
   const local = await setup();
   expect(local.api.canShowVaultKeys()).toBe(true);
   await local.api.showVaultKeys("project_1");
-  assert(local.invoke.mock.calls[0] !== undefined);
   expect(local.invoke.mock.calls[0][1].request).toMatchObject({
     method: "desktop.showVaultKeys",
     params: { value: "project_1" },

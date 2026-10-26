@@ -32,7 +32,11 @@ export type Audit = {
 };
 export type Counters = Record<string, number | null>;
 type PendingInput = Pick<RetainedInputRows[number], "id" | "agent" | "status">;
-type JsonObject = Record<string, components["schemas"]["JsonValue"]>;
+// The historical audit reads these JSON tool-result extension fields. This
+// boundary preserves its existing property access and malformed-JSON catch.
+type JsonObject = Record<string, components["schemas"]["JsonValue"]> & {
+  contentItems?: { text?: components["schemas"]["JsonValue"] }[];
+};
 import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.ts";
 import { readRetainedInputRows } from "./verify-rust-chat-scale.ts";
 
@@ -102,9 +106,7 @@ export function pointer(value: unknown, path: string): number | null {
     if (current === null || typeof current !== "object") return null;
     current = (current as Record<string, unknown>)[key];
   }
-  return typeof current === "number" && Number.isFinite(current)
-    ? current
-    : null;
+  return Number.isFinite(current) ? (current as number) : null;
 }
 
 export function diagnosticsCounters(diagnostics: unknown) {
@@ -123,7 +125,7 @@ export function pendingTeamInputs(events: PendingInput[], agentIds: string[]) {
     .filter(
       (event) =>
         owned.has(event.agent) &&
-        RETAINED_INPUT_STATUSES.includes(event.status ?? ""),
+        RETAINED_INPUT_STATUSES.includes(event.status),
     )
     .map(({ id, agent, status }) => ({ id, agent, status }));
 }
@@ -195,10 +197,7 @@ export function auditTeamDiagnostics({
 
 function parseJson(text: string | null | undefined): JsonObject | null {
   try {
-    const value: unknown = JSON.parse(text ?? "");
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-      ? (value as JsonObject)
-      : null;
+    return JSON.parse(text!) as JsonObject | null;
   } catch {
     return null;
   }
@@ -216,12 +215,8 @@ export function toolCalls(items: AuditItem[]) {
         callId: body.id ?? item.id,
         tool: body.tool ?? body.type ?? item.title ?? null,
         status: item.toolStatus,
-        message: (Array.isArray(body.contentItems) ? body.contentItems : [])
-          .map((part) =>
-            part && typeof part === "object" && !Array.isArray(part)
-              ? (part.text ?? "")
-              : "",
-          )
+        message: (body.contentItems ?? [])
+          .map((part) => part.text ?? "")
           .join(" | ")
           .slice(0, 300),
         turnId: item.turnId ?? null,
@@ -233,7 +228,7 @@ function turnsOf(items: AuditItem[]) {
   return new Set(
     items
       .map((item) => item.turnId)
-      .filter((turn): turn is string => typeof turn === "string" && !!turn),
+      .filter((turn) => typeof turn === "string" && turn),
   );
 }
 
@@ -243,7 +238,7 @@ function badTurns(items: AuditItem[]) {
     AuditItem["turnStatus"]
   >();
   for (const item of items)
-    if (BAD_TURN_STATUSES.has(item.turnStatus ?? "") && item.turnId)
+    if (BAD_TURN_STATUSES.has(item.turnStatus!) && item.turnId)
       found.set(item.turnId, item.turnStatus);
   return [...found].map(([turnId, status]) => ({ turnId, status }));
 }
@@ -279,8 +274,11 @@ export function auditWorker(id: string, items: AuditItem[], leadId?: string) {
       boundary < 0 ? following : following.slice(0, boundary)
     ).find((next) => next.turnId)?.turnId;
     for (const input of item.inputs || []) {
-      const turn = input.turnId || item.turnId || nextTurn;
-      if (typeof turn === "string" && turn)
+      const turn = (input.turnId || item.turnId || nextTurn) as
+        | string
+        | null
+        | undefined;
+      if (turn)
         triggeringInputs.set(turn, [
           ...(triggeringInputs.get(turn) || []),
           input,
@@ -292,7 +290,7 @@ export function auditWorker(id: string, items: AuditItem[], leadId?: string) {
   );
   const leadTurns = new Set<string | null | undefined>();
   for (const turnId of [...turns].slice(1)) {
-    const inputs = triggeringInputs.get(turnId) || [];
+    const inputs = triggeringInputs.get(turnId!) || [];
     if (
       inputs.length &&
       inputs.every(
@@ -311,7 +309,7 @@ export function auditWorker(id: string, items: AuditItem[], leadId?: string) {
           agent: id,
           turnId,
           input: input.id,
-          text: parseJson(input.text)?.text ?? input.text,
+          text: parseJson(input.text)!.text ?? input.text,
         });
     }
   }
@@ -329,7 +327,7 @@ export function auditWorker(id: string, items: AuditItem[], leadId?: string) {
   if (!inputs.some((entry) => entry.kind === "user"))
     failures.push({ kind: "workerTaskNotDelivered", agent: id });
   for (const call of toolCalls(items)) {
-    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status ?? ""))
+    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status!))
       failures.push({ kind: "toolCallWithoutResult", agent: id, ...call });
     else if (call.status !== "completed")
       anomalies.push({ kind: "workerToolCallFailed", agent: id, ...call });
@@ -398,12 +396,12 @@ export function auditLead(
       agents: missing.slice(0, 20),
     });
   const unknown = [...delivered.keys()].filter(
-    (id) => !(typeof id === "string" && workerIds.includes(id)),
+    (id) => !workerIds.includes(id as string),
   );
   if (unknown.length)
     failures.push({ kind: "childResultFromUnknownAgent", agents: unknown });
   for (const call of toolCalls(items)) {
-    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status ?? ""))
+    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status!))
       failures.push({ kind: "toolCallWithoutResult", agent: "lead", ...call });
     else if (call.status !== "completed")
       anomalies.push({ kind: "leadToolCallFailed", ...call });
@@ -427,13 +425,11 @@ export function auditLead(
     anomalies.push({ kind: "leadRepeatedFinalReport", count: reports.length });
   let maxWaitMs = 0;
   for (const input of inputs)
-    if (
-      typeof input.at === "number" &&
-      typeof input.itemAt === "number" &&
-      Number.isFinite(input.at) &&
-      Number.isFinite(input.itemAt)
-    )
-      maxWaitMs = Math.max(maxWaitMs, (input.itemAt - input.at) * 1000);
+    if (Number.isFinite(input.at) && Number.isFinite(input.itemAt))
+      maxWaitMs = Math.max(
+        maxWaitMs,
+        ((input.itemAt! as number) - (input.at! as number)) * 1000,
+      );
   maxWaitMs = Math.round(maxWaitMs);
   if (maxWaitMs > LEAD_INPUT_WAIT_ANOMALY_MS)
     anomalies.push({ kind: "leadInputWaited", maxWaitMs });
@@ -463,11 +459,13 @@ export function auditToolRequests(
       stage: request.stage,
       outcome: request.outcome ?? null,
     };
-    if (UNRESOLVED_REQUEST_STAGES.has(request.stage ?? ""))
+    if (UNRESOLVED_REQUEST_STAGES.has(request.stage!))
       failures.push({ kind: "toolRequestWithoutResult", ...base });
-    else if (ABANDONED_REQUEST_STAGES.has(request.stage ?? ""))
+    else if (ABANDONED_REQUEST_STAGES.has(request.stage!))
       anomalies.push({ kind: "toolRequestAbandoned", ...base });
-    const call = byCall.get(request.callId ?? undefined);
+    const call = byCall.get(
+      request.callId as ReturnType<typeof toolCalls>[number]["callId"],
+    );
     if (
       call &&
       request.stage === "completed" &&
@@ -579,11 +577,7 @@ export function startOrderInversions(
     const key = row.accountKey ?? "unknown";
     byAccount.set(key, [
       ...(byAccount.get(key) ?? []),
-      {
-        ...row,
-        firstSeenAtMs: row.firstSeenAtMs,
-        startedAtMs: row.startedAtMs,
-      },
+      row as typeof row & { startedAtMs: number },
     ]);
   }
   const anomalies: AuditEntry[] = [];
@@ -640,14 +634,13 @@ export async function mapLimited<T, R>(
   limit: number,
   task: (value: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results: R[] = [];
-  const entries = values.entries();
+  const results: R[] = Array.from({ length: values.length });
+  let next = 0;
   const lane = async () => {
-    for (;;) {
-      const entry = entries.next();
-      if (entry.done) return;
-      const [index, value] = entry.value;
-      results[index] = await task(value, index);
+    while (next < values.length) {
+      const index = next;
+      next += 1;
+      results[index] = await task(values[index], index);
     }
   };
   // An early rejected lane must not let teardown delete the team while other

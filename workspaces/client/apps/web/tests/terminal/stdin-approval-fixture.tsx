@@ -1,5 +1,4 @@
 import type { Agent, Request } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -30,7 +29,7 @@ const request: Request = {
       "Send input to an existing terminal to continue the reviewed command.",
   },
 };
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   React.createElement(
     MantineProvider,
     null,
