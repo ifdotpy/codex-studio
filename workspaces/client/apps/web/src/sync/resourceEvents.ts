@@ -339,6 +339,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let retryCount = 0;
 
+  // Same local failure on consecutive streams. Cleared by a server heartbeat.
+  let repeatedFailure: { signature: string; count: number } | undefined;
+
   let preHandshakeFailures = 0;
 
   let preHandshakeResponseGeneration: number | undefined;
@@ -1213,6 +1216,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer) return;
     lastHeartbeatRevision = heartbeat.revision;
+    repeatedFailure = undefined;
     refreshHeartbeatTimeout();
     confirmConnectionActivity();
     if (owner) broadcast({ kind: "leader-heartbeat" });
@@ -1234,6 +1238,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   ) {
     if (error !== undefined)
       console.error("Sync stream frame could not be applied", error);
+    const signature = `${failure}:${error instanceof Error ? error.message : String(error)}`;
+    repeatedFailure =
+      repeatedFailure?.signature === signature
+        ? { signature, count: repeatedFailure.count + 1 }
+        : { signature, count: 1 };
+    // Frames applied before this failure reset the backoff. A repeat must
+    // slow down instead of reopening the same failing stream at the base delay.
+    retryCount = Math.max(retryCount, repeatedFailure.count - 1);
     reconnectNow(failure);
   }
 
@@ -1686,7 +1698,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       > = {
         protocol: String(SYNC_PROTOCOL_VERSION),
         resources: JSON.stringify(currentResources),
-        since: JSON.stringify(since.filter((entry) => entry.since)),
+        // A repeated identical failure gets a full baseline, not the same interval.
+        since: JSON.stringify(
+          (repeatedFailure?.count ?? 0) > 1
+            ? []
+            : since.filter((entry) => entry.since),
+        ),
         tokenRates: currentTokenRates,
         reconnect: reconnecting,
         [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,

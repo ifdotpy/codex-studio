@@ -606,6 +606,143 @@ it("applies split reconnect data beside passive hints without repeating its dura
   errors.mockRestore();
 });
 
+it("applies an open chat's reconnect order while its entity snapshots persist", async () => {
+  // Frame order of a live reconnect with one lead chat open (Duo device loop):
+  // chat entity snapshots, cursorless drafts and multi-server hints, then a
+  // staged state transfer. Earlier delivery discarded the pending snapshots.
+  const f = await fixture();
+  const agentId = "lead-chat";
+  const chat = [
+    { kind: "agentDetail", agentId },
+    { kind: "session-cost", agentId },
+    { kind: "transcript", agentId },
+    { kind: "drafts" },
+    { kind: "multi-server" },
+  ] as const;
+  const listeners = chat.map((resource) => {
+    const listener = vi.fn();
+    f.transport.watchResourceChanges(resource, listener);
+    return listener;
+  });
+  await vi.advanceTimersByTimeAsync(50);
+  f.source.emit("subscriptions", { gen: 1 });
+  for (const listener of listeners) listener.mockClear();
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  const writes: (() => void)[] = [];
+  f.persist.mockImplementation(
+    () => new Promise<void>((resolve) => writes.push(resolve)),
+  );
+  const common = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 5,
+    reason: "reconnect",
+  };
+  const cursor = { workspaceId: "workspace", seq: 5 };
+  const entities = { after: 0, through: 5, documents: [] };
+  const versions = [
+    { revision: 5, cursor, replyKind: "snapshot", entityChanges: entities },
+    { revision: 5, cursor, replyKind: "snapshot", entityChanges: entities },
+    {
+      revision: 4,
+      cursor: { workspaceId: "workspace", seq: 4 },
+      replyKind: "snapshot",
+      transcriptSnapshot: { items: [], truncated: false },
+    },
+    { revision: 3 },
+    { revision: 2, discoverySnapshot: { servers: [] } },
+  ];
+  chat.forEach((resource, index) =>
+    f.source.emit("resources", {
+      ...common,
+      resources: [resource],
+      resourceVersions: [{ resource, ...versions[index] }],
+    }),
+  );
+  const encoded = JSON.stringify(entities);
+  const transfer = {
+    ...common,
+    resource: { kind: "state" },
+    cursor,
+    replyKind: "snapshot",
+    transferId: "reconnect-state",
+    pageIndex: 0,
+    partCount: 2,
+  };
+  f.source.emit("entity-transfer", {
+    ...transfer,
+    partIndex: 0,
+    complete: false,
+    data: encoded.slice(0, 10),
+  });
+  f.source.emit("entity-transfer", {
+    ...transfer,
+    partIndex: 1,
+    complete: true,
+    data: encoded.slice(10),
+  });
+  for (let step = 0; step < 10; step++) {
+    writes.splice(0).forEach((finish) => finish());
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  expect(errors).not.toHaveBeenCalled();
+  expect(f.sources).toHaveLength(1);
+  expect(f.source.closed).toBe(false);
+  expect(f.staged).toHaveBeenCalledOnce();
+  for (const listener of listeners) expect(listener).toHaveBeenCalled();
+  expect(f.get).not.toHaveBeenCalled();
+  errors.mockRestore();
+});
+
+it("a repeated identical application failure backs off and reopens without cursors", async () => {
+  const f = await fixture();
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  f.readCursor.mockResolvedValue({ workspaceId: "workspace", seq: 1 });
+  f.persist.mockRejectedValue(new Error("Fixture storage rejects the write"));
+  const opened: number[] = [];
+  const sinceOf = (url: string) =>
+    JSON.parse(
+      new URL(url, "http://studio.test").searchParams.get("since")!,
+    ) as unknown[];
+  const fail = (source: Source, revision: number) =>
+    source.emit("resources", {
+      protocol: SYNC_PROTOCOL_VERSION,
+      workspaceId: "workspace",
+      epoch: "epoch",
+      revision,
+      reason: "reconnect",
+      resources: [{ kind: "state" }],
+      resourceVersions: [
+        {
+          revision,
+          cursor: { workspaceId: "workspace", seq: revision },
+          replyKind: "snapshot",
+          entityChanges: { after: 0, through: revision, documents: [] },
+        },
+      ],
+    });
+  fail(f.source, 2);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const count = f.sources.length;
+    while (f.sources.length === count) await vi.advanceTimersByTimeAsync(100);
+    opened.push(Date.now());
+    const replacement = f.sources.at(-1)!;
+    replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
+    fail(replacement, 3 + attempt);
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  // The first retry resumes from the durable cursor; the identical second
+  // failure requests a full baseline instead of the same failing interval.
+  expect(sinceOf(f.urls[1]!)).toHaveLength(1);
+  expect(sinceOf(f.urls[2]!)).toEqual([]);
+  const gaps = opened.slice(1).map((at, index) => at - opened[index]!);
+  for (const [index, gap] of gaps.entries())
+    if (index) expect(gap).toBeGreaterThan(gaps[index - 1]!);
+  errors.mockRestore();
+});
+
 it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {
   const f = await fixture();
   const resource = { kind: "auth-progress", requestId: "login-one" } as const;
