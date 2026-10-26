@@ -15,7 +15,7 @@ export function readDraft(payload: string): DraftVersion {
 export function readLocalDraft(payload: string): LocalDraftRecord {
   return JSON.parse(payload);
 }
-export function readOutbox(payload: string): OutboxEntry {
+export function readOutbox(payload: string): Omit<OutboxEntry, "id"> {
   return JSON.parse(payload);
 }
 

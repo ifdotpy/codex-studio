@@ -70,11 +70,9 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
         return route.fulfill({
           json: {
             path: "/project",
+            parent: null,
             directories: [],
-          } satisfies Pick<
-            components["schemas"]["DirectoriesResponse"],
-            "path" | "directories"
-          >,
+          } satisfies components["schemas"]["DirectoriesResponse"],
         });
       }
       if (path === "/api/complaint") {

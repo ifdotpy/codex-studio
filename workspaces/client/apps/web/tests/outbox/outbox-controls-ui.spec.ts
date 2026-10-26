@@ -3,10 +3,14 @@ import { requestBody } from "../messages/helpers.ts";
 import { readTranscript } from "../drafts/draft-fixture-helpers.ts";
 import type { Browser, BrowserContext, Route } from "playwright";
 import type { ViteDevServer } from "vite";
+import type { components } from "../../src/generated/api.ts";
+type TranscriptIdentity = Pick<
+  components["schemas"]["TranscriptInput"],
+  "id" | "clientMessageId"
+>;
 import type {
   PostBody,
   GetResult,
-  TranscriptWireItem,
   TranscriptPageData,
 } from "../../src/apiTypes.ts";
 declare global {
@@ -150,11 +154,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       transcript.items = markOutboxDelivered(transcript.items);
       await route.fulfill({ response, json: transcript });
     };
-    const isLostResponse = (
-      item: Pick<TranscriptWireItem, "clientMessageId"> & {
-        id?: string | null | undefined;
-      },
-    ) =>
+    const isLostResponse = (item: TranscriptIdentity) =>
       item.clientMessageId === "lost-response-pause" ||
       item.id === "lost-response-pause" ||
       (typeof item.id === "string" &&
@@ -288,11 +288,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         await fetch(`${target}/api/transcript?id=${body.room}`),
       );
       const key = `${body.room}:${body.id}`;
-      const matches = (
-        item: Pick<TranscriptWireItem, "clientMessageId"> & {
-          id?: string | null | undefined;
-        },
-      ) =>
+      const matches = (item: TranscriptIdentity) =>
         item.clientMessageId === body.id ||
         item.id === body.id ||
         item.id === key ||
