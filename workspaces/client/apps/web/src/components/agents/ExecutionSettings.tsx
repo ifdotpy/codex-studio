@@ -763,10 +763,7 @@ function ScopedExecutionSettings({
       !isDaybreakAlias(row.model) &&
       supportsDaybreakMode(row, false),
   );
-  const reviewInfo = modelForValue(
-    reviewModels,
-    reviewCurrent.model || agent.model,
-  );
+  const reviewInfo = modelForValue(reviewModels, reviewCurrent.model);
   const reviewFast = reviewCurrent.fast_mode ?? !!agent.fastMode;
   const reviewOptions: ModelOption[] = [
     {
@@ -1456,7 +1453,14 @@ function ScopedExecutionSettings({
         }}
         effortDisabled={role !== "review" && !modeSupported}
         disabled={disabled || catalog.loading || !!catalog.error}
-        fastAvailable={!inheritedUnavailable && !!fastTier(pickerInfo)}
+        fastAvailable={
+          !inheritedUnavailable &&
+          !!fastTier(
+            role === "review"
+              ? modelForValue(reviewModels, reviewCurrent.model || agent.model)
+              : info,
+          )
+        }
         fast={role === "review" ? reviewFast : current.fast_mode}
         onFast={() => {
           if (role === "review") void changeReview({ fast_mode: !reviewFast });

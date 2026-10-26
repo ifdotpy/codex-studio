@@ -160,6 +160,7 @@ const initial: Agent = {
 function render(
   agent?: Agent,
   permissions?: false,
+  onDraftChange?: ComponentProps<typeof ExecutionSettings>["onDraftChange"],
 ): {
   controls: ReturnType<typeof invoke>;
   model: ReactNode;
@@ -177,7 +178,11 @@ function render(
   picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
   triggerAgent: Agent;
 };
-function render(agent = initial, permissions = false) {
+function render(
+  agent = initial,
+  permissions = false,
+  onDraftChange?: ComponentProps<typeof ExecutionSettings>["onDraftChange"],
+) {
   const controller = invoke(
     createElement(permissions ? ExecutionPermissions : ExecutionSettings, {
       agent,
@@ -185,13 +190,17 @@ function render(agent = initial, permissions = false) {
         models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
           model,
           serviceTiers: [{ id: "priority" }],
-          supportedReasoningEfforts: [],
+          supportedReasoningEfforts: [
+            { reasoningEffort: "medium" },
+            { reasoningEffort: "high" },
+          ],
         })),
         loading: false,
         error: "",
         retry: vi.fn(),
       },
       refresh: h.refresh,
+      onDraftChange,
       renderTrigger: (trigger) =>
         createElement(ExecutionSummaryTrigger, {
           agent: trigger.agent,
@@ -332,6 +341,37 @@ test("review settings use their canonical response without a refresh", async () 
   await new Promise<void>(queueMicrotask);
   expect(h.refresh).not.toHaveBeenCalled();
 });
+
+for (const draft of [false, true]) {
+  test(`inherited review reasoning stays hidden while Fast remains editable in ${draft ? "new chat drafts" : "saved settings"}`, async () => {
+    const agent: Agent = {
+      ...initial,
+      fastMode: true,
+      reviewDefaults: { model: null, effort: null },
+    };
+    const onDraftChange = draft ? vi.fn() : undefined;
+    h.post.mockResolvedValue({
+      ...agent,
+      reviewDefaults: { model: null, effort: null, fastMode: false },
+    });
+    render(agent, false, onDraftChange).picker.onRole("review");
+    const picker = render(agent, false, onDraftChange).picker;
+    expect(picker.efforts).toEqual([]);
+    expect(picker.fastAvailable).toBe(true);
+    picker.onFast();
+    if (onDraftChange) {
+      expect(onDraftChange).toHaveBeenCalledWith({
+        review_defaults: { model: null, effort: null, fast_mode: false },
+      });
+      expect(h.post).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+      expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+        review_defaults: { model: null, effort: null, fast_mode: false },
+      });
+    }
+  });
+}
 
 for (const role of ["orchestrator", "worker", "review"] as const) {
   test(`${role} saves explicit Fast false and retains the canonical response before SSE`, async () => {

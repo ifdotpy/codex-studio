@@ -475,6 +475,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       name: "Fast mode",
       exact: true,
     });
+    await expect(
+      reviewDialog.getByLabel("Default review reasoning", { exact: true }),
+    ).toHaveCount(0);
     await expect(reviewFastMode).toBeChecked();
     for (const enabled of [false, true, false]) {
       const saved = settingsResponse(
