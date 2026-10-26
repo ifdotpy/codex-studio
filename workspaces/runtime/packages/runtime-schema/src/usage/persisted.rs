@@ -1,14 +1,13 @@
 //! Compatibility boundary for analytics rows written before the typed usage contract.
-use super::{
-    UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope, UsageTokens,
-};
+use super::{UsageEvidence, UsageObservation, UsageParseError, UsageScope, UsageTokens};
+use crate::provider_kind::ProviderKind;
 use serde::Deserialize;
 use serde_json::Value;
 
 /// Compatibility reader for pre-contract analytics rows only. Typed rows use the ledger.
 /// Sparse Claude rows retain their known total for the legacy totals-only budget path.
 pub fn analytics_usage_notification(
-    provider: UsageProvider,
+    provider: ProviderKind,
     row: &Value,
 ) -> Result<Value, UsageParseError> {
     if row.get("studioUsage").is_some() {
@@ -25,12 +24,14 @@ pub fn analytics_usage_notification(
             }
             Ok(notification)
         }
-        Err(_) if provider == UsageProvider::Claude && row.get("studioUsage").is_none() => Ok(
-            serde_json::json!({"threadId":row["threadId"],"turnId":row["turnId"],"responseId":row["responseId"],
+        Err(error) => match provider {
+            ProviderKind::Codex => Err(error),
+            ProviderKind::Claude => Ok(
+                serde_json::json!({"threadId":row["threadId"],"turnId":row["turnId"],"responseId":row["responseId"],
                 "rawTokenUsageRecord":row["rawTokenUsageRecord"],"requestUsage":row["requestUsage"],
                 "usageSource":row["usageSource"],"tokenUsage":{"total":row["total"],"last":row["last"]}}),
-        ),
-        Err(error) => Err(error),
+            ),
+        },
     }
 }
 
@@ -80,7 +81,7 @@ pub fn validate_legacy_analytics_cost_fields(row: &Value) -> Result<(), UsagePar
 /// Decode priceable analytics evidence without inventing unknown legacy token categories.
 /// Sparse legacy rows remain readable, but have no complete token tuple for pricing.
 pub fn parse_analytics_cost_usage_row(
-    provider: UsageProvider,
+    provider: ProviderKind,
     row: &Value,
 ) -> Result<Option<UsageObservation>, UsageParseError> {
     validate_legacy_analytics_cost_fields(row)?;
@@ -115,7 +116,7 @@ fn legacy_response_tokens(row: &Value) -> &Value {
 /// Decode canonical observations first, retaining legacy rows without rewriting them.
 /// Legacy response evidence remains provisional until native journal recovery replaces it.
 pub fn parse_analytics_usage_row(
-    provider: UsageProvider,
+    provider: ProviderKind,
     row: &Value,
 ) -> Result<UsageObservation, UsageParseError> {
     if let Some(value) = row.get("studioUsage") {
@@ -134,9 +135,9 @@ pub fn parse_analytics_usage_row(
     let input_uncached = row.get("inputTokensAreUncached").and_then(Value::as_bool) == Some(true)
         || row.get("usageSource").and_then(Value::as_str) == Some("claudeResponse");
     let token_provider = if input_uncached {
-        UsageProvider::Claude
+        ProviderKind::Claude
     } else {
-        UsageProvider::Codex
+        ProviderKind::Codex
     };
     if let Some(response_id) = legacy_response_id(row) {
         let response_id = response_id.to_owned();
@@ -152,10 +153,9 @@ pub fn parse_analytics_usage_row(
         });
     }
     Ok(UsageObservation::Cumulative {
-        scope: if provider == UsageProvider::Claude {
-            UsageScope::ClaudeQuery
-        } else {
-            UsageScope::CodexThread
+        scope: match provider {
+            ProviderKind::Codex => UsageScope::CodexThread,
+            ProviderKind::Claude => UsageScope::ClaudeQuery,
         },
         turn_id,
         total: tokens(&row["total"], token_provider)?,
@@ -195,7 +195,7 @@ fn legacy_count(value: &Value, key: &str) -> Result<u64, UsageParseError> {
     }
     Err(UsageParseError(format!("invalid legacy analytics {key}")))
 }
-fn tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, UsageParseError> {
+fn tokens(value: &Value, provider: ProviderKind) -> Result<UsageTokens, UsageParseError> {
     let count = |key: &str, required: bool| match value.get(key).filter(|v| !v.is_null()) {
         Some(v) => legacy_count(v, key),
         None if !required => Ok(0),
@@ -204,13 +204,13 @@ fn tokens(value: &Value, provider: UsageProvider) -> Result<UsageTokens, UsagePa
     let input = count("inputTokens", true)?;
     let read = count("cachedInputTokens", false)?;
     let write = count("cacheWriteInputTokens", false)?;
-    let (uncached_input, cache_read_input, cache_write_input) = if provider == UsageProvider::Codex
-    {
-        let read = read.min(input);
-        let write = write.min(input - read);
-        (input - read - write, read, write)
-    } else {
-        (input, read, write)
+    let (uncached_input, cache_read_input, cache_write_input) = match provider {
+        ProviderKind::Codex => {
+            let read = read.min(input);
+            let write = write.min(input - read);
+            (input - read - write, read, write)
+        }
+        ProviderKind::Claude => (input, read, write),
     };
     Ok(UsageTokens {
         uncached_input,
@@ -237,7 +237,7 @@ mod tests {
             "last":{"inputTokens":10,"outputTokens":2},"total":{"inputTokens":100,"outputTokens":20}});
         assert!(
             matches!(
-                parse_analytics_usage_row(UsageProvider::Codex, &row).expect("legacy notice"),
+                parse_analytics_usage_row(ProviderKind::Codex, &row).expect("legacy notice"),
                 UsageObservation::Cumulative {
                     scope: UsageScope::CodexThread,
                     ..
@@ -253,7 +253,7 @@ mod tests {
             "total":{"inputTokens":10,"cachedInputTokens":2,"outputTokens":3,"totalTokens":13,"legacyExtension":1},
             "last":{"inputTokens":5,"outputTokens":1,"totalTokens":6}});
         let notification =
-            analytics_usage_notification(UsageProvider::Codex, &row).expect("legacy notification");
+            analytics_usage_notification(ProviderKind::Codex, &row).expect("legacy notification");
         assert_eq!(notification["studioUsage"]["kind"], "cumulative");
         assert_eq!(
             notification["tokenUsage"]["total"], row["total"],
@@ -296,7 +296,7 @@ mod tests {
                 "delta":{"inputTokens":10.0,"cachedInputTokens":2,"cacheWriteInputTokens":1,"outputTokens":3.0}});
             let UsageObservation::Response {
                 tokens, evidence, ..
-            } = parse_analytics_usage_row(UsageProvider::Codex, &row).expect("legacy row")
+            } = parse_analytics_usage_row(ProviderKind::Codex, &row).expect("legacy row")
             else {
                 panic!("response")
             };
@@ -306,7 +306,7 @@ mod tests {
         }
         let row = json!({"total":{"inputTokens":10,"outputTokens":2},"last":{}});
         assert!(matches!(
-            parse_analytics_usage_row(UsageProvider::Claude, &row).expect("old cumulative"),
+            parse_analytics_usage_row(ProviderKind::Claude, &row).expect("old cumulative"),
             UsageObservation::Cumulative {
                 scope: UsageScope::ClaudeQuery,
                 ..
@@ -330,14 +330,14 @@ mod tests {
                             .remove(field);
                     }
                     assert!(
-                        parse_analytics_cost_usage_row(UsageProvider::Codex, &row)
+                        parse_analytics_cost_usage_row(ProviderKind::Codex, &row)
                             .expect("legacy row")
                             .is_none(),
                         "unknown {source}.{field} is not a zero count"
                     );
                     row[source][field] = json!(0);
                     assert!(matches!(
-                        parse_analytics_cost_usage_row(UsageProvider::Codex, &row)
+                        parse_analytics_cost_usage_row(ProviderKind::Codex, &row)
                             .expect("complete legacy row"),
                         Some(UsageObservation::Response { .. })
                     ));
@@ -350,13 +350,13 @@ mod tests {
     fn canonical_rows_remain_strict_and_take_precedence() {
         let mut row = json!({"last":{},"studioUsage":{"kind":"response","responseId":"r","model":"m","evidence":"live","tokens":{"uncachedInput":1,"cacheReadInput":2,"cacheWriteInput":3,"output":4}}});
         assert!(matches!(
-            parse_analytics_usage_row(UsageProvider::Codex, &row).expect("canonical"),
+            parse_analytics_usage_row(ProviderKind::Codex, &row).expect("canonical"),
             UsageObservation::Response {
                 evidence: UsageEvidence::Live,
                 ..
             }
         ));
         row["studioUsage"]["tokens"]["extra"] = json!(1);
-        assert!(parse_analytics_usage_row(UsageProvider::Codex, &row).is_err());
+        assert!(parse_analytics_usage_row(ProviderKind::Codex, &row).is_err());
     }
 }

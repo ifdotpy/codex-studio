@@ -1,5 +1,6 @@
 //! Identity and correction policy shared by durable budget and analytics receipts.
-use super::{UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope};
+use super::{UsageEvidence, UsageObservation, UsageParseError, UsageScope};
+use crate::provider_kind::ProviderKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -268,7 +269,7 @@ impl UsageLedgerRow {
     }
 
     /// Read typed persisted rows directly; legacy decoding stays at its supported boundary.
-    pub fn from_analytics(provider: UsageProvider, row: &Value) -> Result<Self, UsageParseError> {
+    pub fn from_analytics(provider: ProviderKind, row: &Value) -> Result<Self, UsageParseError> {
         let agent = row["agentId"].as_str().unwrap_or_default();
         if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
             let ledger = Self::deserialize(row)?;
