@@ -158,6 +158,20 @@ describe("Duo pane path", () => {
       expect(result.panes.conversation?.height).toBe(635);
     },
   );
+  it("puts the paired portrait sidebar header in the top band but keeps the closed sidebar below it", () => {
+    for (const status of ["open", "closed"] as const) {
+      const result = deriveWorkspaceLayout({
+        ...base,
+        viewport: { x: 0, y: 0, width: 669, height: 951 },
+        host: { x: 0, y: 0, width: 669, height: 917 },
+        safeInsets: { top: 0, right: 0, bottom: 34, left: 0 },
+        overlayInsetTop: 82,
+        panePath: { ...state, sidebarOverride: true, hinge: { status } },
+      }).panePath!;
+      expect(result.panes.sidebar?.y).toBe(status === "open" ? 0 : 82);
+      expect(result.panes.sidebar!.y + result.panes.sidebar!.height).toBe(951);
+    }
+  });
   it("keeps native navigation headers below the top strip and paints through Home", () => {
     const result = deriveWorkspaceLayout({
       ...base,

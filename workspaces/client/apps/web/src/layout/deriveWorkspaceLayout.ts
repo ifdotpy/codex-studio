@@ -203,7 +203,9 @@ function derivePanePath(
     if (pane) {
       const topInset = Math.max(
         0,
-        finiteNonnegative(input.overlayInsetTop ?? 0) - pane.y,
+        (name === "sidebar" && pair && portrait
+          ? 0
+          : finiteNonnegative(input.overlayInsetTop ?? 0)) - pane.y,
       );
       pane.y += topInset;
       pane.height = Math.max(0, pane.height + bottomInset - topInset);

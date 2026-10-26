@@ -17,6 +17,8 @@ When the Duo profile, top strip and top rail are present, the band spans
 the viewport. Its height is the greater of the title height contract and
 the native top inset. The transcript reserves that same height.
 The first rail button bounds the title text. The rail stays above the band.
+The title and metadata hide when the available text width is below
+`duo.titleMinWidth` (CSS pixels). Metadata stays on one line with ellipsis.
 
 `duo-title-bar.spec.ts` builds a stand-in for the shell DOM until PR #528
 merges. It verifies the consumer contract, not native shell publication.
@@ -48,7 +50,9 @@ that sidebar rectangle and forwards toggle and close actions to the screen.
 It does not derive another layout or copy the active screen state.
 
 `useWorkspaceLayout` reads `--viewport-overlay-inset-top` in CSS pixels.
-The layout owner applies that clearance to navigation panes only, so their
-headers start below the native top rail. The conversation keeps its title
+The layout owner applies that clearance to navigation panes so their
+headers start below the native top rail. A paired portrait sidebar starts
+at the viewport top; its header uses the band area left of the rail.
+A closed sidebar and all side panels keep the native top clearance. The conversation keeps its title
 band at the viewport top. A previous desktop collapse preference does not
 hide a sidebar selected by the pane path.

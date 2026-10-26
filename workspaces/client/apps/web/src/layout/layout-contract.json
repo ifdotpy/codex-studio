@@ -863,6 +863,12 @@
       "kind": "dimension",
       "purpose": "Duo rail title and project bar height over the transcript"
     },
+    "duo.titleMinWidth": {
+      "value": 140,
+      "unit": "px",
+      "kind": "condition",
+      "purpose": "Minimum available Duo title text width before the title and metadata hide"
+    },
     "duo.titleInset": {
       "value": 12,
       "unit": "px",

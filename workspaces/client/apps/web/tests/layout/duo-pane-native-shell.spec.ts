@@ -66,7 +66,9 @@ for (const size of [
               width: "529px",
               height: "82px",
               flexDirection: "row",
-              justifyContent: "flex-end",
+              // Match the native first button at x365 with this two-button fixture.
+              justifyContent: "flex-start",
+              paddingLeft: "365px",
               alignItems: "flex-end",
               paddingBottom: "10px",
               gap: "8px",
@@ -82,8 +84,27 @@ for (const size of [
       await expect(sidebar).toBeVisible();
       await expect(opener).toHaveAttribute("aria-expanded", "true");
       const side = (await sidebar.boundingBox())!;
-      expect(side.y).toBe(top);
+      expect.soft(side.y).toBe(size.name === "portrait" ? 0 : top);
       expect(side.y + side.height).toBe(size.height);
+      if (size.name === "portrait") {
+        const header = sidebar.locator(".sidebar-header");
+        const headerBox = (await header.boundingBox())!;
+        expect.soft(headerBox.y).toBeLessThan(top);
+        expect.soft(headerBox.y + headerBox.height).toBeLessThanOrEqual(top);
+        expect((await opener.boundingBox())!.x).toBe(365);
+        const title = page.locator(".duo-transcript-bar .conversation-heading");
+        await expect.soft(title).toBeHidden();
+        await page.screenshot({
+          path: test.info().outputPath("portrait-sidebar-title-hidden.png"),
+        });
+        await opener.click();
+        await expect(title).toBeVisible();
+        const meta = title.locator(".conversation-meta");
+        await expect.soft(meta).toHaveCSS("white-space", "nowrap");
+        await expect.soft(meta).toHaveCSS("text-overflow", "ellipsis");
+        await opener.click();
+        await expect.soft(title).toBeHidden();
+      }
       await page.screenshot({
         path: test.info().outputPath(`${size.name}-native-sidebar.png`),
       });

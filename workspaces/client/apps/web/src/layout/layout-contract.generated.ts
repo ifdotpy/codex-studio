@@ -946,6 +946,13 @@ export const layoutTokens = {
     kind: "dimension",
     purpose: "Duo rail title and project bar height over the transcript",
   },
+  "duo.titleMinWidth": {
+    value: 140,
+    unit: "px",
+    kind: "condition",
+    purpose:
+      "Minimum available Duo title text width before the title and metadata hide",
+  },
   "duo.titleInset": {
     value: 12,
     unit: "px",
@@ -1296,6 +1303,7 @@ export const layoutValues = {
     columnGutter: 20,
     latestGap: 36,
     titleHeight: 64,
+    titleMinWidth: 140,
     titleInset: 12,
     titleOpacity: 0.82,
     titleBlur: 12,
