@@ -1,3 +1,4 @@
+import { parsedRecord } from "./test-support.ts";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -7,7 +8,7 @@ import path from "node:path";
 import { setBundleDisplayName } from "./bundle-name.ts";
 
 const read = (file: string) =>
-  JSON.parse(
+  parsedRecord(
     execFileSync("plutil", ["-convert", "json", "-o", "-", file], {
       encoding: "utf8",
     }),

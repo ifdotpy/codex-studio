@@ -19,8 +19,16 @@ export function record(value: unknown): Record<string, unknown> {
 export type RawNativeAction = (
   event: unknown,
   request: unknown,
-) => Promise<unknown>;
+) => ReturnType<typeof import("./main.ts").nativeAction>;
 
 export function nodeFixture(name: string) {
   return `#!${process.execPath}\n${stripTypeScriptTypes(readFileSync(new URL(`./fixtures/${name}.mts`, import.meta.url), "utf8"))}`;
+}
+export function parsedRecord(source: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(source);
+  return record(value);
+}
+export function array(value: unknown): unknown[] {
+  assert(Array.isArray(value));
+  return value;
 }

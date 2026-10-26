@@ -1,3 +1,4 @@
+import { parsedRecord } from "./test-support.ts";
 import { present } from "./test-support.ts";
 import type { PairReceipt, Invitation } from "./server-credentials.ts";
 import { expect, test, vi } from "vitest";
@@ -50,7 +51,7 @@ function fixture() {
       expect(new Headers(init.headers).get("X-Canvas-Token")).toBe(
         "local-secret",
       );
-      expect(JSON.parse(String(init.body))).toEqual({
+      expect(parsedRecord(String(init.body))).toEqual({
         action: "ui_invite",
         serverId: "remote",
         requestId: "invite-id",

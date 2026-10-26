@@ -1,3 +1,4 @@
+import type { RawNativeAction } from "./test-support.ts";
 import { present, record } from "./test-support.ts";
 import type { DesktopBridge } from "./api.ts";
 import type { Session } from "electron";
@@ -104,6 +105,9 @@ test("main and preload require a trusted local microphone gesture", async () => 
   const started = new Promise<void>((resolve) => {
     ready = resolve;
   });
+  const module: { exports: { nativeAction?: RawNativeAction } } = {
+    exports: {},
+  };
   const context = vm.createContext({
     require: (name: string) =>
       name === "electron"
@@ -144,7 +148,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
                       }),
                     }
                   : mainDependency(name),
-    module: { exports: {} },
+    module,
     process: { argv: [], env: {}, platform: "darwin" },
     console: { log: ready, error: console.error },
     __dirname: "/tmp",
@@ -155,6 +159,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
   });
   vm.runInContext("(function(){" + mainTestSource() + "})()", context);
   await started;
+  const nativeAction = present(module.exports.nativeAction);
   const window = present(windows.at(-1));
   const event = {
     sender: window.webContents,
@@ -182,14 +187,14 @@ test("main and preload require a trusted local microphone gesture", async () => 
     );
   assert.equal(await allow(request), false);
   await assert.rejects(
-    context.module.exports.nativeAction(
+    nativeAction(
       { ...event, senderFrame: { url: origin + "/" } },
       { method: "requestMicrophone" },
     ),
     /Invalid server frame owner/,
   );
   assert.equal(asked, 0);
-  await context.module.exports.nativeAction(event, {
+  await nativeAction(event, {
     method: "requestMicrophone",
   });
   assert.equal(asked, 1);
@@ -215,7 +220,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
     false,
   );
   await assert.rejects(
-    context.module.exports.nativeAction(event, {
+    nativeAction(event, {
       method: "transcribeAudio",
       value: { permit: "invented" },
     }),

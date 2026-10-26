@@ -1,3 +1,4 @@
+import { parsedRecord } from "./test-support.ts";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { EventEmitter } from "node:events";
@@ -81,7 +82,7 @@ test("close flushes bounds synchronously; fullscreen is not restored; hidden mod
     win.emit("resize");
     bounds = { x: 90, y: 70, width: 1000, height: 700 };
     app.emit("before-quit");
-    const saved = JSON.parse(
+    const saved = parsedRecord(
       readFileSync(path.join(profile, "window-state.json"), "utf8"),
     );
     assert.deepEqual(saved.bounds, bounds);

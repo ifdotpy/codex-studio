@@ -1,3 +1,4 @@
+import type { RawNativeAction } from "./test-support.ts";
 import { present, record } from "./test-support.ts";
 import type { DesktopBridge } from "./api.ts";
 import type { SaveDialogOptions, SaveDialogReturnValue } from "electron";
@@ -52,7 +53,21 @@ test("main and preload enforce safe native file action boundaries", async () => 
     },
   };
   const source = mainTestSource();
-  const context = vm.createContext({
+  const sandbox: {
+    actions?: {
+      setup: (window: typeof win, connection: { origin: string }) => void;
+      nativeAction: RawNativeAction;
+      nativeDownload: (
+        event: Pick<Electron.Event, "preventDefault">,
+        item: Pick<
+          Electron.DownloadItem,
+          "getURL" | "getFilename" | "setSaveDialogOptions"
+        > &
+          Pick<NodeJS.EventEmitter, "once">,
+        sender: unknown,
+      ) => void;
+    };
+  } & Record<string, unknown> = {
     require: (name: string) =>
       name === "electron"
         ? {
@@ -92,7 +107,8 @@ test("main and preload enforce safe native file action boundaries", async () => 
       if (fetchGate) await fetchGate;
       return { ok: !metadata.error, json: async () => metadata };
     },
-  });
+  };
+  const context = vm.createContext(sandbox);
   vm.runInContext(
     "(function(){\n" +
       source.slice(0, source.indexOf("async function start()")) +
@@ -101,13 +117,14 @@ test("main and preload enforce safe native file action boundaries", async () => 
   })()`,
     context,
   );
-  context.actions.setup(win, { origin });
+  const actions = present(sandbox.actions);
+  actions.setup(win, { origin });
   const event = { sender: contents, senderFrame: mainFrame };
   const invoke = (
     method: string,
     value?: unknown,
     caller: { sender: unknown; senderFrame: unknown } = event,
-  ) => context.actions.nativeAction(caller, { method, value });
+  ) => actions.nativeAction(caller, { method, value });
   const data = new TextEncoder().encode("saved content").buffer;
   try {
     await assert.rejects(
@@ -249,17 +266,16 @@ test("main and preload enforce safe native file action boundaries", async () => 
     fetchGate = null;
 
     function download(url: string, sender: unknown = contents) {
-      const item = new EventEmitter();
       let prevented = false,
         options: SaveDialogOptions | undefined;
-      Object.assign(item, {
+      const item = Object.assign(new EventEmitter(), {
         getURL: () => url,
         getFilename: () => "export.csv",
         setSaveDialogOptions: (value: SaveDialogOptions) => {
           options = value;
         },
       });
-      context.actions.nativeDownload(
+      actions.nativeDownload(
         {
           preventDefault: () => {
             prevented = true;

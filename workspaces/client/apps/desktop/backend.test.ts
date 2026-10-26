@@ -1,3 +1,4 @@
+import { parsedRecord } from "./test-support.ts";
 import { desktopProtocolVersion, backendBuildHexLength } from "./backend.ts";
 import {
   restartKeys,
@@ -310,7 +311,7 @@ test.each([true, false])(
       );
       assert.equal(env.CODEX_HOME, "/foreign-command-executor");
       if (hasSavedEnvironment)
-        assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), saved);
+        assert.deepEqual(parsedRecord(readFileSync(config, "utf8")), saved);
     } finally {
       try {
         const pid = Number(

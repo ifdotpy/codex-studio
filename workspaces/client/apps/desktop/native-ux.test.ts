@@ -1,8 +1,9 @@
+import { parsedRecord } from "./test-support.ts";
 import { nodeFixture } from "./test-support.ts";
 import { present, record } from "./test-support.ts";
 import type { RawNativeAction } from "./test-support.ts";
 import type { DesktopBridge } from "./api.ts";
-import type { NativeFrame } from "./main.ts";
+import type { NativeFrame, NativeEvent } from "./main.ts";
 import type { NotificationConstructorOptions } from "electron";
 import { transcribe } from "./speech.ts";
 import type { SpeechProgress } from "./speech.ts";
@@ -191,7 +192,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
     const event = {
       sender: window.webContents,
       senderFrame: window.webContents.mainFrame,
-    };
+    } satisfies NativeEvent;
     return {
       invoke: (method: string, value?: unknown) =>
         action(event, { method, value }),
@@ -453,7 +454,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       "ordinary alerts are silent",
     );
     f.notification().emit("click");
-    assert.deepEqual(JSON.parse(JSON.stringify(f.events.slice(1))), [
+    assert.deepEqual(parsedRecord(JSON.stringify(f.events.slice(1))), [
       ["show"],
       ["focus"],
       ["codex-desktop-navigate", target],

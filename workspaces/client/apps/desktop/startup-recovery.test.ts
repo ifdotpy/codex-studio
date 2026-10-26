@@ -1,3 +1,4 @@
+import { parsedRecord } from "./test-support.ts";
 import { present } from "./test-support.ts";
 import type { BackendIdentity } from "./backend.ts";
 import type { RecoveryOptions } from "./recovery.ts";
@@ -95,7 +96,7 @@ test("startup uses the verified backend environment before configuring recovery"
       state: "/canonical-state",
     });
     assert.deepEqual(
-      JSON.parse(
+      parsedRecord(
         JSON.stringify(present(configured).restartEnvironment ?? null),
       ),
       expectedEnvironment,

@@ -1,3 +1,4 @@
+import { parsedRecord } from "./test-support.ts";
 import assert from "node:assert/strict";
 import { present } from "./test-support.ts";
 import type { SafeStorage } from "electron";
@@ -21,7 +22,7 @@ const safeStorage = {
   "isEncryptionAvailable" | "encryptString" | "decryptString"
 >;
 test("canonical request matches the frozen Rust signing contract", async () => {
-  const vector = JSON.parse(
+  const vector = parsedRecord(
     await readFile(
       new URL(
         "../../../runtime/packages/runtime-services/tests/multi_server/signature.json",
@@ -70,7 +71,11 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
   const fetchRequest: CredentialFetch = async (request) => {
     const text = await request.clone().text();
     calls.push({ headers: Object.fromEntries(request.headers), text });
-    if (request.url.endsWith("/pair")) ownKey = JSON.parse(text).publicKey;
+    if (request.url.endsWith("/pair")) {
+      const key = parsedRecord(text).publicKey;
+      assert(typeof key === "string");
+      ownKey = key;
+    }
     const headers = request.headers;
     expect(headers.get("x-canvas-token")).toBeNull();
     expect(request.redirect).toBe("error");
@@ -99,7 +104,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
       return new Response(
         JSON.stringify({
           ...invitation,
-          clientId: JSON.parse(text).clientId,
+          clientId: parsedRecord(text).clientId,
           paired: true,
         }),
       );

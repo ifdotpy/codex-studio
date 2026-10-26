@@ -1,7 +1,7 @@
 import { stripTypeScriptTypes } from "node:module";
 import type { WebContents } from "electron";
 import type { BackendIdentity } from "./backend.ts";
-import { present } from "./test-support.ts";
+import { present, parsedRecord } from "./test-support.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -38,16 +38,12 @@ app.once("browser-window-created", (_event, win) => {
         "renderer-recovery.jsonl",
       );
       // The recovery process writes this journal; parse the fields checked below.
-      const records = (): {
-        event: string;
-        failures: number;
-        exitCode: number;
-      }[] =>
+      const records = () =>
         fs
           .readFileSync(filename, "utf8")
           .trim()
           .split("\n")
-          .map((line) => JSON.parse(line));
+          .map((line) => parsedRecord(line));
       for (let attempt = 0; attempt < 4; attempt++) {
         await loaded(contents, () => contents.forcefullyCrashRenderer());
         assert.equal(win.isVisible(), false);

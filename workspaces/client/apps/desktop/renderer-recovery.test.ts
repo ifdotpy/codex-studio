@@ -1,3 +1,4 @@
+import { parsedRecord } from "./test-support.ts";
 import { present } from "./test-support.ts";
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
@@ -69,9 +70,10 @@ test("an unexpected clean renderer exit reaches fallback; window close suppresse
     )
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line));
+      .map((line) => parsedRecord(line));
     assert.equal(
-      records.find((record) => record.event === "renderer-crash").reason,
+      present(records.find((record) => record.event === "renderer-crash"))
+        .reason,
       "clean-exit",
     );
     f.win.emit("close");
@@ -153,9 +155,9 @@ test("only a continuously healthy renderer resets the automatic retry budget", a
     )
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line));
+      .map((line) => parsedRecord(line));
     assert.equal(
-      records.find((record) => record.event === "renderer-healthy")
+      present(records.find((record) => record.event === "renderer-healthy"))
         .previousFailures,
       1,
     );

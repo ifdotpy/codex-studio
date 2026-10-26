@@ -40,7 +40,7 @@ export function mainTestSource() {
   )
     .replace(
       /import\s+\*\s+as\s+(\w+)\s+from\s+"([^"]+)";/g,
-      (_match, name: string, specifier: string) =>
+      (_match: string, name: string, specifier: string) =>
         `const ${name} = require(${JSON.stringify(specifier)});`,
     )
     .replace(

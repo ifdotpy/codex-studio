@@ -1,3 +1,5 @@
+import { parsedRecord } from "./test-support.ts";
+import type { HealthResult } from "../web/src/generated/rustOwned.ts";
 import { present, record, portOf } from "./test-support.ts";
 import type { RecoveryRun } from "./recovery.ts";
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
@@ -40,24 +42,15 @@ import {
   trackDesktopRecovery,
 } from "./recovery.ts";
 
-function status(state: string) {
-  const health = record(
-    JSON.parse(
-      execFileSync(
-        python,
-        ["-B", recoveryScript, "--supervisor-health", "--state", state],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-      ),
+// The fixture asks the Rust health producer; its generated schema owns the result.
+function status(state: string): HealthResult {
+  return JSON.parse(
+    execFileSync(
+      python,
+      ["-B", recoveryScript, "--supervisor-health", "--state", state],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ),
   );
-  assert(Array.isArray(health.handles));
-  const handles: unknown[] = health.handles;
-  return {
-    ...health,
-    handles,
-    protocol: health.protocol,
-    recovery: health.recovery,
-  };
 }
 
 // Observe first, then inspect; passing paths advance only on fixture events.
@@ -159,7 +152,7 @@ test.skipIf(!supervisorBinary)(
         () => existsSync(path.join(state, "supervisor.sock")) && status(state),
         "owner did not start",
       );
-      const ownerPid = JSON.parse(
+      const ownerPid = parsedRecord(
         readFileSync(path.join(state, "supervisor.lock"), "utf8"),
       ).pid;
 
@@ -215,7 +208,7 @@ test.skipIf(!supervisorBinary)(
       const opened = record(await nextMessage());
       assert.equal(opened.requestId, 1);
       assert.equal(opened.error, undefined);
-      const activeChildPid = record(present(status(state).handles[0])).pid;
+      const activeChildPid = present(status(state).handles[0]).pid;
       assert(typeof activeChildPid === "number");
       childPid = activeChildPid;
       assert.equal(initialHealth.handles.length, 0);
@@ -351,21 +344,23 @@ test.skipIf(!supervisorBinary)(
       desktop.closeExplicitly();
       app.emit("before-quit");
       assert.equal(
-        JSON.parse(readFileSync(desktop.filename, "utf8")).desiredOpen,
+        parsedRecord(readFileSync(desktop.filename, "utf8")).desiredOpen,
         false,
       );
       const afterQuit = status(state);
       assert.equal(
-        JSON.parse(readFileSync(path.join(state, "supervisor.lock"), "utf8"))
+        parsedRecord(readFileSync(path.join(state, "supervisor.lock"), "utf8"))
           .pid,
         ownerPid,
       );
-      assert.equal(record(present(afterQuit.handles[0])).pid, childPid);
-      assert.equal(record(afterQuit.recovery).blocked, null);
+      assert.equal(present(afterQuit.handles[0]).pid, childPid);
+      assert.equal(afterQuit.recovery.blocked, null);
     } finally {
       if (recoveryProcess && present(recoveryProcess).exitCode === null) {
         recoveryProcess.kill("SIGTERM");
-        await new Promise((resolve) => recoveryProcess.once("exit", resolve));
+        await new Promise((resolve) =>
+          present(recoveryProcess).once("exit", resolve),
+        );
       }
       if (backendServer)
         await new Promise((resolve) => present(backendServer).close(resolve));
