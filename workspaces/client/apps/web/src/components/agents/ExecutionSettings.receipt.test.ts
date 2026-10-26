@@ -1,3 +1,7 @@
+import type { ComponentHookCell } from "../componentTestFixtures";
+import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
+import assert from "node:assert/strict";
+import { required } from "../componentTestFixtures";
 import {
   createElement,
   isValidElement,
@@ -8,7 +12,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Agent } from "../../types";
 
 const h = vi.hoisted(() => ({
-  cells: new Map<string, any[]>(),
+  cells: new Map<string, ComponentHookCell[]>(),
   scope: "",
   scoped: "",
   cursor: 0,
@@ -25,10 +29,12 @@ vi.mock("react", async (load) => ({
       value: typeof initial === "function" ? initial() : initial,
     };
     return [
-      cells[index].value,
+      required(cells[index]).value,
       (value: unknown) => {
-        cells[index].value =
-          typeof value === "function" ? value(cells[index].value) : value;
+        required(cells[index]).value =
+          typeof value === "function"
+            ? value(required(cells[index]).value)
+            : value;
       },
     ];
   },
@@ -40,11 +46,11 @@ vi.mock("react", async (load) => ({
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
-    if (!previous || deps.some((value, i) => value !== previous.deps[i]))
+    if (!previous || deps.some((value, i) => value !== previous.deps?.[i]))
       cells[index] = { deps, value: compute() };
-    return cells[index].value;
+    return required(cells[index]).value;
   },
-  useEffect: (effect: () => unknown, deps: unknown[]) => {
+  useEffect: (effect: EffectCallback, deps: unknown[]) => {
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
@@ -54,10 +60,10 @@ vi.mock("react", async (load) => ({
       deps.some((value, i) => value !== previous.deps?.[i])
     ) {
       previous?.cleanup?.();
-      const cell = { deps, cleanup: undefined as unknown };
+      const cell: ComponentHookCell = { deps };
       cells[index] = cell;
       h.effects.push(() => {
-        cell.cleanup = effect();
+        cell.cleanup = effect() || undefined;
       });
     }
   },
@@ -90,20 +96,26 @@ vi.mock("./WorkerModelPicker", async (load) => ({
     retry: vi.fn(),
   }),
 }));
+import { AgentSetupPicker } from "./AgentSetupPicker";
 import { ExecutionSettings } from "./ExecutionSettings";
 import { ExecutionSummaryTrigger } from "./ExecutionSummaryTrigger";
 
-function children(node: ReactNode): ReactElement<any>[] {
+function children(
+  node: ReactNode,
+): ReactElement<PropsWithChildren<Record<string, unknown>>>[] {
   if (Array.isArray(node)) return node.flatMap(children);
   if (!isValidElement<{ children?: ReactNode }>(node)) return [];
   return [node, ...children(node.props.children)];
 }
-function invoke(element: ReactElement<any>) {
-  const component = element.type as (props: any) => ReactElement<any>;
+function invoke(element: ReactElement<unknown>) {
+  const component: unknown = element.type;
+  assert.ok(typeof component === "function");
   h.scope = component.name + (element.key || "");
   h.cursor = 0;
   if (!h.cells.has(h.scope)) h.cells.set(h.scope, []);
-  return component(element.props);
+  const result: unknown = component(element.props);
+  assert.ok(isValidElement<PropsWithChildren<Record<string, unknown>>>(result));
+  return result;
 }
 const initial: Agent = {
   id: "lead",
@@ -154,6 +166,15 @@ function render(agent = initial) {
     (node) =>
       typeof node.type === "function" && node.type.name === "AgentSetupPicker",
   )!;
+  assert.ok(
+    isValidElement<ComponentProps<typeof ExecutionSummaryTrigger>>(
+      menu.props.trigger,
+    ),
+  );
+  assert.ok(
+    isValidElement<ComponentProps<typeof AgentSetupPicker>>(picker) &&
+      picker.type === AgentSetupPicker,
+  );
   const trigger = invoke(menu.props.trigger);
   const model = children(trigger).find(
     (node) => node.props.className === "execution-model",
@@ -213,7 +234,9 @@ test("queued settings and account changes keep their canonical scope", async () 
   h.post.mockResolvedValue(queued);
   render(active).picker.onModel("gpt-6-luna");
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
-  expect(h.post.mock.calls[0][1]).toMatchObject({ next_turn: true });
+  expect(required(required(h.post.mock.calls[0])[1])).toMatchObject({
+    next_turn: true,
+  });
   expect(render(active).model).toBe("Luna 6");
   expect(render(queued).label).toContain("Lead Luna 6 High");
   expect(render({ ...initial, accountKey: "other" }).model).toBe("Astra 6");
@@ -348,9 +371,9 @@ test("an older same-domain request cannot replace the latest acknowledgment", as
   render().picker.onRole("orchestrator");
   render().picker.onModel("gpt-6-astra");
   expect(finish).toHaveLength(2);
-  finish[1]({ ...initial, model: "gpt-6-astra" });
+  required(finish[1])({ ...initial, model: "gpt-6-astra" });
   await Promise.resolve();
-  finish[0]({ ...initial, model: "gpt-6-luna" });
+  required(finish[0])({ ...initial, model: "gpt-6-luna" });
   await Promise.resolve();
   expect(render().model).toBe("Astra 6");
 });
