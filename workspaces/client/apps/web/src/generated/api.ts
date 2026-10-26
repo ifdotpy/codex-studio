@@ -22696,11 +22696,7 @@ export interface components {
        */
       at: number;
       detail: string;
-      /** @description Absent only on retained client fixtures from before structured diagnostics. */
-      diagnostics?:
-        | components["schemas"]["StudioErrorDiagnostics"]
-        | null
-        | undefined;
+      diagnostics: components["schemas"]["StudioErrorDiagnostics"];
       eventId?: string | null | undefined;
       id: string;
       kind: components["schemas"]["StudioErrorKind"];

@@ -1659,6 +1659,11 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
   const item = {
     id: "agent:worker:turn-1",
     kind: "turn_disconnected",
+    diagnostics: {
+      context: { source: "agent", turnId: "turn-1", epoch: 0 },
+      certainty: "unknown",
+      causes: [],
+    },
     reason: "The provider connection ended during the turn.",
     action: "resume",
     agentId: "worker",

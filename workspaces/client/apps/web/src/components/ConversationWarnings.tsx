@@ -173,7 +173,7 @@ export default function ConversationWarnings({
               onDelete={() => void errors.remove()}
               onAction={(item) => {
                 if (item.action === "resume") void errors.resume(item);
-                else {
+                else if (item.action === "check") {
                   setOpenScope(null);
                   openAgent(item.agentId);
                 }

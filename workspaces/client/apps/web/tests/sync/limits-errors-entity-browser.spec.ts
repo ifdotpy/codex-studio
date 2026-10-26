@@ -236,6 +236,11 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
     const item = {
       id: "agent:lead:turn",
       kind: "turn_disconnected",
+      diagnostics: {
+        context: { source: "agent", turnId: null, epoch: 0 },
+        certainty: "unknown",
+        causes: [],
+      },
       action: "resume",
       agentId: "lead",
       agentName: "Entity limits",

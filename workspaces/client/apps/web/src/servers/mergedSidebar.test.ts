@@ -200,6 +200,11 @@ describe("complete multi-server sidebar projection", () => {
       {
         id: "event:local",
         kind: "input_uncertain",
+        diagnostics: {
+          context: { source: "input", turnId: null, epoch: 0 },
+          certainty: "unknown",
+          causes: [],
+        },
         action: "resume",
         agentId: "same",
         agentName: "Local",

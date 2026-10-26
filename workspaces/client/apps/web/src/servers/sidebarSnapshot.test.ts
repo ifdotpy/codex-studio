@@ -322,6 +322,11 @@ describe("server sidebar projection", () => {
     const item: Snapshot["runtime"]["studioErrors"][number] = {
       id: "agent:worker:turn",
       kind: "turn_disconnected",
+      diagnostics: {
+        context: { source: "agent", turnId: "turn", epoch: 0 },
+        certainty: "unknown",
+        causes: [],
+      },
       action: "resume",
       agentId: "worker",
       agentName: "Worker",

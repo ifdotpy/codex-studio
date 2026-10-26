@@ -4,6 +4,80 @@ import { mkdir } from "node:fs/promises";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
+test("streamed server errors expose full safe diagnostics at phone width", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  const server = await fixture("Local", false, { entityFrames: true });
+  const reads: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "GET" &&
+      new URL(request.url()).pathname === "/api/studio-errors"
+    )
+      reads.push(request.url());
+  });
+  try {
+    await page.goto(server.origin);
+    await page.getByRole("button", { name: "Warnings", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Warnings", exact: true });
+    await dialog.getByRole("tab", { name: /App errors/ }).click();
+    await expect(
+      dialog.getByText("No agent work ended because of a Studio error."),
+    ).toBeVisible();
+    const requestId = `exact-original-request-${"r".repeat(96)}`;
+    const incident: components["schemas"]["StudioError"] = {
+      id: "http:streamed-read",
+      kind: "http_failure",
+      action: "details",
+      reason: "The server could not complete this request.",
+      detail: "store_data",
+      subject: "GET /api/monitor/log",
+      at: 1792700000,
+      diagnostics: {
+        context: {
+          source: "http",
+          route: "GET /api/monitor/log",
+          requestId,
+          status: 503,
+          class: "store_data",
+        },
+        certainty: "read_only",
+        causes: [
+          {
+            kind: "stored_record",
+            object: "monitors",
+            id: "lost-watch",
+            pointer: "/log",
+          },
+        ],
+      },
+    };
+    server.snapshot.runtime.studioErrors = [incident];
+    server.publishState();
+    const row = dialog.locator(".studio-error-row");
+    await expect(row).toHaveCount(1);
+    await row.locator("summary").click();
+    await expect(row.locator("pre")).toBeVisible();
+    await expect(row.locator("pre")).toContainText(requestId);
+    await expect(row.locator("pre")).toContainText('"pointer": "/log"');
+    await expect(
+      row.getByRole("button", { name: "Resume", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      row.getByRole("button", { name: "Open", exact: true }),
+    ).toHaveCount(0);
+    expect(
+      await row.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    expect(reads).toEqual([]);
+  } finally {
+    await server.close();
+  }
+});
+
 /** The renderer wrote this fixture request through its generated API client. */
 function fixtureDismissBody(
   body: unknown,
@@ -24,6 +98,11 @@ for (const width of [1440, 390, 320]) {
       ].map((id) => ({
         id: `monitor:${id}`,
         kind: "monitor_outcome_lost",
+        diagnostics: {
+          context: { source: "monitor", requestId: id, turnId: null, epoch: 0 },
+          certainty: "unknown",
+          causes: [],
+        },
         reason: "Studio lost the command result.",
         action: "check",
         agentId: "overlap",

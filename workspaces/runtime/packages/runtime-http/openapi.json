@@ -49263,15 +49263,7 @@
             "type": "string"
           },
           "diagnostics": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/StudioErrorDiagnostics"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Absent only on retained client fixtures from before structured diagnostics."
+            "$ref": "#/components/schemas/StudioErrorDiagnostics"
           },
           "eventId": {
             "type": [
@@ -49304,7 +49296,8 @@
           "reason",
           "detail",
           "subject",
-          "at"
+          "at",
+          "diagnostics"
         ],
         "type": "object"
       },

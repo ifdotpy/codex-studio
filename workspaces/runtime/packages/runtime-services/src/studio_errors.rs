@@ -16,6 +16,8 @@ use studio_runtime_schema::shared_values::{
     MONITOR_OWNER_STOPPED_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR, PROVIDER_RESUME_UNKNOWN_ERROR,
     PROVIDER_START_NOT_SENT_ERROR, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
+pub use studio_runtime_schema::studio_errors::Kind;
+use studio_runtime_schema::studio_errors::{Context, Diagnostics, StudioError, Target};
 use studio_runtime_store::{EventWriteRepository, StoreError, StudioErrorSources, Transaction};
 
 /// Oldest work the list reads. Unit: seconds.
@@ -29,72 +31,40 @@ pub const MAX_ROWS: usize = 200;
 const DISMISSED_PREFIX: &str = "studio-errors:dismissed:";
 const DISMISSED_SIGNATURE: &str = "studio-error-dismissal";
 
-/// Why a row is on the list; each kind has one reason text and one action.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Kind {
-    /// A command whose result Studio lost; it may have run.
-    MonitorOutcomeLost,
-    /// A command that Studio did not run, or whose end Studio did not record.
-    MonitorNotRecorded,
-    /// Input that the provider proved it never received.
-    InputNotSent,
-    /// Busy-turn input that the agent did not confirm before its turn ended.
-    InputUnconfirmed,
-    /// Input whose delivery Studio could not prove either way.
-    InputUncertain,
-    /// Input that waits because of a Studio error.
-    InputStuck,
-    /// A turn that ended with its provider connection.
-    TurnDisconnected,
-    /// Studio could not prepare the agent's workspace.
-    WorkspaceFailed,
-}
+/// Diagnostic receipts are separate from operation receipts and dismissal keys.
+const INCIDENT_PREFIX: &str = "studio-errors:incident:";
+const INCIDENT_SIGNATURE: &str = "studio-error-incident-v1";
 
-impl Kind {
-    pub fn code(self) -> &'static str {
-        match self {
-            Self::MonitorOutcomeLost => "monitor_outcome_lost",
-            Self::MonitorNotRecorded => "monitor_not_recorded",
-            Self::InputNotSent => "input_not_sent",
-            Self::InputUnconfirmed => "input_unconfirmed",
-            Self::InputUncertain => "input_uncertain",
-            Self::InputStuck => "input_stuck",
-            Self::TurnDisconnected => "turn_disconnected",
-            Self::WorkspaceFailed => "workspace_failed",
-        }
+/// Record once by diagnostic identity. This receipt is never an operation result or retry authority.
+pub async fn record_incident(
+    store: &studio_runtime_store::RuntimeStore,
+    incident: StudioError,
+) -> Result<(), StoreError> {
+    if !matches!(incident.kind, Kind::HttpFailure | Kind::RecoveryFailed)
+        || !matches!(incident.target, Target::Details)
+    {
+        return Err(StoreError::InvalidStoredRecord {
+            object: "studio-errors",
+            id: incident.id,
+        });
     }
-
-    pub fn reason(self) -> &'static str {
-        match self {
-            Self::MonitorOutcomeLost => {
-                "Studio lost the result of this command. The command may have run. Studio does not run it again."
+    let key = format!("{INCIDENT_PREFIX}{}", incident.id);
+    let encoded = serde_json::to_string(&incident)?;
+    store
+        .transaction(move |tx| {
+            match EventWriteRepository::receipt(tx, &key)? {
+                Some(receipt) if receipt.signature != INCIDENT_SIGNATURE => {
+                    return Err(StoreError::InvalidStoredRecord {
+                        object: "studio-errors",
+                        id: key,
+                    });
+                }
+                Some(_) => {}
+                None => EventWriteRepository::put_receipt(tx, &key, INCIDENT_SIGNATURE, &encoded)?,
             }
-            Self::MonitorNotRecorded => {
-                "Studio did not run this command, or did not record its end."
-            }
-            Self::InputNotSent => "Studio did not send this message to the provider.",
-            Self::InputUnconfirmed => {
-                "The agent did not confirm this message. It may have read it. Studio does not send it again."
-            }
-            Self::InputUncertain => "Studio does not know if the provider received this message.",
-            Self::InputStuck => "This message waits because of a Studio error.",
-            Self::TurnDisconnected => "The provider connection ended during the turn.",
-            Self::WorkspaceFailed => "Studio could not prepare the workspace of this agent.",
-        }
-    }
-
-    /// The safe action: `resume` only where connection recovery decides from
-    /// native history; `check` where only the owner can decide.
-    pub fn action(self) -> &'static str {
-        match self {
-            Self::InputUncertain | Self::InputStuck | Self::TurnDisconnected => "resume",
-            Self::MonitorOutcomeLost
-            | Self::MonitorNotRecorded
-            | Self::InputNotSent
-            | Self::InputUnconfirmed
-            | Self::WorkspaceFailed => "check",
-        }
-    }
+            Ok(())
+        })
+        .await
 }
 
 /// The kind of an agent's current error, when Studio caused it.
@@ -156,7 +126,7 @@ struct Agent {
 
 /// The current rows, newest first, without dismissed ones.
 pub fn list(tx: &Transaction<'_>, now: f64) -> Result<Value, StoreError> {
-    Ok(build(tx, now)?.0)
+    Ok(json!({"items": build(tx, now)?.0}))
 }
 
 /// What a full list build saw beyond its rows: the owners that hide rows
@@ -167,7 +137,7 @@ struct Baseline {
 }
 
 /// The list and its baseline.
-fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError> {
+fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline), StoreError> {
     let since = now - WINDOW_SECONDS;
     let dismissed = dismissed(tx)?;
     let mut hidden_owners = BTreeSet::new();
@@ -194,8 +164,8 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
         Ok(owner)
     };
     let mut rows = Vec::new();
-    let push = |rows: &mut Vec<Value>, row: Value| {
-        if row["id"].as_str().is_some_and(|id| !dismissed.contains(id)) {
+    let push = |rows: &mut Vec<StudioError>, row: StudioError| {
+        if !dismissed.contains(&row.id) {
             rows.push(row);
         }
     };
@@ -216,23 +186,35 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
         };
         push(
             &mut rows,
-            json!({
-                "id":format!("monitor:{id}"),
-                "kind":kind.code(),
-                "reason":kind.reason(),
-                "action":kind.action(),
-                "agentId":agent_id,
-                "agentName":owner.name,
-                "monitorId":id,
-                "detail":record["error"].as_str().unwrap_or_default(),
-                "subject":record["command"].as_str().unwrap_or_default(),
-                "at":record["finished"].as_f64().or_else(|| record["created"].as_f64()).unwrap_or(0.0),
-            }),
+            StudioError {
+                id: format!("monitor:{id}"),
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(agent_id.into(), owner.name),
+                monitor_id: Some(id),
+                event_id: None,
+                // Commands and arbitrary source errors may contain credentials. Diagnostic facts replace them.
+                detail: kind.reason().into(),
+                subject: String::new(),
+                at: record["finished"]
+                    .as_f64()
+                    .or_else(|| record["created"].as_f64())
+                    .unwrap_or(0.0),
+                diagnostics: Diagnostics {
+                    context: Context::Monitor {
+                        request_id: record["requestId"].as_str().map(str::to_owned),
+                        turn_id: record["turnId"].as_str().map(str::to_owned),
+                        epoch: record["epoch"].as_i64(),
+                    },
+                    certainty: kind.certainty(),
+                    causes: Vec::new(),
+                },
+            },
         );
     }
 
     let mut events = tx.prepare_cached(
-        "SELECT id,agent,status,COALESCE(error,''),created,text FROM runtime_events WHERE created>=?1 AND status IN ('failed','uncertain','pending')",
+        "SELECT id,agent,status,COALESCE(error,''),created,epoch,turn_id FROM runtime_events WHERE created>=?1 AND status IN ('failed','uncertain','pending')",
     )?;
     let found = events
         .query_map([since], |row| {
@@ -242,12 +224,13 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, f64>(4)?,
-                row.get::<_, String>(5)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(events);
-    for (id, agent_id, status, error, created, text) in found {
+    for (id, agent_id, status, error, created, epoch, turn_id) in found {
         let Some(kind) = event_kind(&status, &error, now - created) else {
             continue;
         };
@@ -257,23 +240,27 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
         };
         push(
             &mut rows,
-            json!({
-                "id":format!("event:{id}"),
-                "kind":kind.code(),
-                "reason":kind.reason(),
-                "action":kind.action(),
-                "agentId":agent_id,
-                "agentName":owner.name,
-                "eventId":id,
-                "detail":error,
-                "subject":text.chars().take(200).collect::<String>(),
-                "at":created,
-            }),
+            StudioError {
+                id: format!("event:{id}"),
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(agent_id, owner.name),
+                event_id: Some(id),
+                monitor_id: None,
+                detail: kind.reason().into(),
+                subject: String::new(),
+                at: created,
+                diagnostics: Diagnostics {
+                    context: Context::Input { turn_id, epoch },
+                    certainty: kind.certainty(),
+                    causes: Vec::new(),
+                },
+            },
         );
     }
 
     let mut agents = tx.prepare_cached(
-        "SELECT id,status,COALESCE(json_extract(record,'$.error'),''),COALESCE(json_extract(record,'$.name'),'Agent'),COALESCE(json_extract(record,'$.turnId'),json_extract(record,'$.lastCompletedTurn'),''),COALESCE(json_extract(record,'$.activity.at'),json_extract(record,'$.created'),0) FROM runtime_agents WHERE deleted_at IS NULL AND status IN ('failed','interrupted','paused') AND json_type(record,'$.error')='text'",
+        "SELECT id,status,COALESCE(json_extract(record,'$.error'),''),COALESCE(json_extract(record,'$.name'),'Agent'),COALESCE(json_extract(record,'$.turnId'),json_extract(record,'$.lastCompletedTurn'),''),COALESCE(json_extract(record,'$.activity.at'),json_extract(record,'$.created'),0),json_extract(record,'$.epoch') FROM runtime_agents WHERE deleted_at IS NULL AND status IN ('failed','interrupted','paused') AND json_type(record,'$.error')='text'",
     )?;
     let found = agents
         .query_map([], |row| {
@@ -284,43 +271,77 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Value, Baseline), StoreError
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, f64>(5)?,
+                row.get::<_, Option<i64>>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(agents);
-    for (id, status, error, name, turn, at) in found {
+    for (id, status, error, name, turn, at, epoch) in found {
         let Some(kind) = agent_kind(&status, &error) else {
             continue;
         };
         push(
             &mut rows,
-            json!({
-                "id":format!("agent:{id}:{turn}"),
-                "kind":kind.code(),
-                "reason":kind.reason(),
-                "action":kind.action(),
-                "agentId":id,
-                "agentName":name,
-                "detail":error,
-                "subject":"",
-                "at":at,
-            }),
+            StudioError {
+                id: format!("agent:{id}:{turn}"),
+                kind,
+                reason: kind.reason().into(),
+                target: kind.target(id, name),
+                monitor_id: None,
+                event_id: None,
+                detail: kind.reason().into(),
+                subject: String::new(),
+                at,
+                diagnostics: Diagnostics {
+                    context: Context::Agent {
+                        turn_id: (!turn.is_empty()).then_some(turn),
+                        epoch,
+                    },
+                    certainty: kind.certainty(),
+                    causes: Vec::new(),
+                },
+            },
         );
     }
 
-    rows.sort_by(|a, b| {
-        b["at"]
-            .as_f64()
-            .unwrap_or(0.0)
-            .total_cmp(&a["at"].as_f64().unwrap_or(0.0))
-            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
-    });
+    let mut incidents = tx.prepare_cached(
+        "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND signature=?3",
+    )?;
+    for record in incidents.query_map(
+        rusqlite::params![
+            INCIDENT_PREFIX,
+            format!("{INCIDENT_PREFIX}~"),
+            INCIDENT_SIGNATURE
+        ],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )? {
+        let (key, encoded) = record?;
+        let incident: StudioError =
+            serde_json::from_str(&encoded).map_err(|_| StoreError::InvalidStoredRecord {
+                object: "studio-errors",
+                id: key.clone(),
+            })?;
+        if key != format!("{INCIDENT_PREFIX}{}", incident.id)
+            || !matches!(incident.kind, Kind::HttpFailure | Kind::RecoveryFailed)
+            || !matches!(incident.target, Target::Details)
+        {
+            return Err(StoreError::InvalidStoredRecord {
+                object: "studio-errors",
+                id: key,
+            });
+        }
+        if incident.at >= since {
+            push(&mut rows, incident);
+        }
+    }
+
+    rows.sort_by(|a, b| b.at.total_cmp(&a.at).then_with(|| a.id.cmp(&b.id)));
     rows.truncate(MAX_ROWS);
     let baseline = Baseline {
         hidden_owners,
         dismissed: dismissed.len(),
     };
-    Ok((json!({"items":rows}), baseline))
+    Ok((rows, baseline))
 }
 
 /// Server-owned refresh cadence for time-derived membership (stuck input and
@@ -372,25 +393,18 @@ pub fn publish(tx: &Transaction<'_>) -> Result<(), StoreError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .as_secs_f64();
-    let (value, baseline) = build(tx, now)?;
-    let items = value
-        .get("items")
-        .and_then(Value::as_array)
-        .ok_or_else(|| StoreError::SchemaMismatch("Studio error rows are invalid".into()))?;
+    let (items, baseline) = build(tx, now)?;
     let mut current = std::collections::BTreeSet::new();
-    for item in items {
-        let id = item
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| StoreError::SchemaMismatch("Studio error id is missing".into()))?;
+    for item in &items {
+        let id = &item.id;
         studio_runtime_store::SyncDocumentsRepository::put_entity(
             tx,
             "studioError",
             id,
-            item.clone(),
+            serde_json::to_value(item)?,
             false,
         )?;
-        current.insert(id.to_owned());
+        current.insert(id.clone());
     }
     let mut statement = tx.prepare_cached(
         "SELECT id FROM sync_entities WHERE collection='studioError' AND deleted=0",
@@ -459,12 +473,12 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
     if sources
         .receipts
         .iter()
-        .any(|id| id.starts_with(DISMISSED_PREFIX))
+        .any(|id| id.starts_with(DISMISSED_PREFIX) || id.starts_with(INCIDENT_PREFIX))
         || (sources.receipts_removed && dismissed(tx)?.len() != dismissed_count)
     {
         return Ok(true);
     }
-    if sources.rows_removed && published_source_missing(tx)? {
+    if (sources.rows_removed || sources.receipts_removed) && published_source_missing(tx)? {
         return Ok(true);
     }
     for id in &sources.monitors {
@@ -583,7 +597,8 @@ fn published_source_missing(tx: &Transaction<'_>) -> Result<bool, StoreError> {
             "SELECT EXISTS(SELECT 1 FROM sync_entities e WHERE e.collection='studioError' AND e.deleted=0 AND (\
              (e.id LIKE 'monitor:%' AND NOT EXISTS(SELECT 1 FROM runtime_monitors m WHERE m.id=substr(e.id,9))) OR \
              (e.id LIKE 'event:%' AND NOT EXISTS(SELECT 1 FROM runtime_events v WHERE v.id=substr(e.id,7))) OR \
-             NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.agentId'))))",
+             (e.id LIKE 'http:%' AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id='studio-errors:incident:'||e.id)) OR \
+             (json_extract(e.payload,'$.value.action')!='details' AND NOT EXISTS(SELECT 1 FROM runtime_agents a WHERE a.id=json_extract(e.payload,'$.value.agentId')))))",
         )?
         .query_row([], |row| row.get(0))?)
 }
@@ -733,7 +748,13 @@ mod tests {
             Kind::InputStuck,
             Kind::TurnDisconnected,
         ] {
-            assert_eq!(kind.action(), "resume", "{kind:?}");
+            assert!(
+                matches!(
+                    kind.target("agent".into(), "Agent".into()),
+                    Target::Resume { .. }
+                ),
+                "{kind:?}"
+            );
         }
         for kind in [
             Kind::MonitorOutcomeLost,
@@ -742,7 +763,13 @@ mod tests {
             Kind::InputUnconfirmed,
             Kind::WorkspaceFailed,
         ] {
-            assert_eq!(kind.action(), "check", "{kind:?}");
+            assert!(
+                matches!(
+                    kind.target("agent".into(), "Agent".into()),
+                    Target::Check { .. }
+                ),
+                "{kind:?}"
+            );
         }
     }
 
@@ -829,7 +856,7 @@ mod tests {
                     if let Some(kind) = monitor_kind(&record) {
                         assert!(selected.contains(&id), "SQL selection drops {id}");
                         if record["agent"] == "owner" {
-                            expected.insert(format!("monitor:{id}"), (kind.code(), "Fixture worker"));
+                            expected.insert(format!("monitor:{id}"), (serde_json::to_value(kind)?.as_str().expect("kind string").to_owned(), "Fixture worker"));
                         }
                     }
                 }
@@ -852,8 +879,7 @@ mod tests {
                     .filter(|row| row["monitorId"].is_string())
                     .map(|row| {
                         let id = row["id"].as_str().expect("id").to_owned();
-                        let monitor = row["monitorId"].as_str().expect("monitor id").to_owned();
-                        assert_eq!(row["subject"], format!("run {monitor}"));
+                        assert_eq!(row["subject"], "", "command bodies stay out of diagnostic exports");
                         assert_eq!(row["at"], now - 1.0);
                         (id, (row["kind"].as_str().expect("kind"), row["agentName"].as_str().expect("name")))
                     })

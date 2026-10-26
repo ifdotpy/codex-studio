@@ -295,9 +295,7 @@ pub struct StudioError {
     pub monitor_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<String>,
-    /// Absent only on retained client fixtures from before structured diagnostics.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub diagnostics: Option<Diagnostics>,
+    pub diagnostics: Diagnostics,
 }
 
 /// Derive all referenced components from this owner, including flattened action variants.
@@ -329,7 +327,7 @@ mod tests {
 
     #[test]
     fn incident_actions_require_real_agent_destinations_and_keep_unknown_outcomes() {
-        let mut row = json!({"id":"http:request", "kind":"http_failure", "reason":"Request failed", "action":"details", "detail":"store_data", "subject":"GET /api/monitor/log", "at":1});
+        let mut row = json!({"id":"http:request", "kind":"http_failure", "reason":"Request failed", "action":"details", "detail":"store_data", "subject":"GET /api/monitor/log", "at":1,"diagnostics":{"context":{"source":"http","route":"GET /api/monitor/log","requestId":null,"status":503,"class":"store_data"},"certainty":"read_only","causes":[]}});
         let server: StudioError =
             serde_json::from_value(row.clone()).expect("server incident has no fake agent");
         assert!(matches!(server.target, Target::Details));
