@@ -1,3 +1,4 @@
+import { unusedFileControls } from "./testing/control-fixture.ts";
 import type { ControlDependencies } from "./controls.ts";
 import assert from "node:assert/strict";
 import type { Session, Turn, Item } from "./session-state.ts";
@@ -19,14 +20,6 @@ import { startBridge } from "./testing/bridge-harness.ts";
 import { fixtureSessionApi } from "./testing/history-fixture.ts";
 import { createSessionStore } from "./session-store.ts";
 
-const unusedFileControls = {
-  rewindFiles: async () => assert.fail("Unexpected file rewind"),
-  prepareFileRestore: async () => assert.fail("Unexpected file restore"),
-  verifyFileRestore: async () => assert.fail("Unexpected file verification"),
-} satisfies Pick<
-  ControlDependencies,
-  "rewindFiles" | "prepareFileRestore" | "verifyFileRestore"
->;
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const inputId = "22222222-2222-4222-8222-222222222222";
 const replyId = "33333333-3333-4333-8333-333333333333";
