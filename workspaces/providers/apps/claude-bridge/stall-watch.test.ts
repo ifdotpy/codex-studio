@@ -1,6 +1,11 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { watchStalls, type WatchedQuery } from "./stall-watch.ts";
 
+// The watchdog fixtures leave unrelated session and turn fields absent.
+function partialFixture<T>(value: Partial<T>): T {
+  return value as T;
+}
+
 afterEach(() => vi.useRealTimers());
 
 test("the watchdog stays idle and fires the nearest deadline once", () => {
@@ -24,8 +29,8 @@ test("the watchdog stays idle and fires the nearest deadline once", () => {
   vi.advanceTimersByTime(10000);
   expect(vi.getTimerCount()).toBe(0);
   const active: WatchedQuery = {
-    turn: {} as import("./session-state.ts").Turn,
-    session: {} as import("./session-state.ts").Session,
+    turn: partialFixture<NonNullable<WatchedQuery["turn"]>>({}),
+    session: partialFixture<WatchedQuery["session"]>({}),
     lastEventAt: Date.now(),
     toolClocks: new Map([
       ["later", { startedAt: Date.now(), timeoutMs: 500 }],
@@ -50,8 +55,8 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
   vi.setSystemTime(0);
   const clock = { startedAt: 0, timeoutMs: null };
   const active: WatchedQuery = {
-    turn: {} as import("./session-state.ts").Turn,
-    session: {} as import("./session-state.ts").Session,
+    turn: partialFixture<NonNullable<WatchedQuery["turn"]>>({}),
+    session: partialFixture<WatchedQuery["session"]>({}),
     lastEventAt: 0,
     toolClocks: new Map([["tool", clock]]),
   };
@@ -90,7 +95,7 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
   active.turn = null;
   arm();
   expect(vi.getTimerCount()).toBe(0);
-  active.turn = {} as import("./session-state.ts").Turn;
+  active.turn = partialFixture<NonNullable<WatchedQuery["turn"]>>({});
   arm();
   queries.clear();
   arm();
@@ -101,8 +106,8 @@ test("one timer follows the nearest query and preserves an unchanged deadline", 
   vi.useFakeTimers();
   vi.setSystemTime(0);
   const makeActive = (timeoutMs: number): WatchedQuery => ({
-    turn: {} as import("./session-state.ts").Turn,
-    session: {} as import("./session-state.ts").Session,
+    turn: partialFixture<NonNullable<WatchedQuery["turn"]>>({}),
+    session: partialFixture<WatchedQuery["session"]>({}),
     lastEventAt: 0,
     toolClocks: new Map([["tool", { startedAt: 0, timeoutMs }]]),
   });

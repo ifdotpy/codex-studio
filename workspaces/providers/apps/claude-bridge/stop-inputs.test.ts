@@ -49,11 +49,12 @@ test("Stop requires cancellation of every native part of a Studio input", async 
 test("Stop withdraws the unyielded batch tail before background task control", async () => {
   const { item, session, active } = fixture(["prefix", "native"]);
   let withdrew = false;
+  // @ts-expect-error The upstream fixture returns the descriptive "native" ID instead of a UUID.
   active.input.withdraw = () => {
     withdrew = true;
     return [
       {
-        uuid: "native" as import("./input-messages.ts").StudioInputMessage["uuid"],
+        uuid: "native",
         studioInputIdentity: item.id,
       },
     ];

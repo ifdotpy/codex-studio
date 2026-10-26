@@ -19,6 +19,16 @@ import { startBridge } from "./testing/bridge-harness.ts";
 import { fixtureSessionApi } from "./testing/history-fixture.ts";
 import { createSessionStore } from "./session-store.ts";
 
+// These control fixtures exercise history operations without file restoration.
+function historyControls(
+  deps: Pick<
+    ControlDependencies,
+    "persist" | "forkSession" | "getSessionMessages"
+  >,
+): ControlDependencies {
+  return deps as ControlDependencies;
+}
+
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const inputId = "22222222-2222-4222-8222-222222222222";
 const replyId = "33333333-3333-4333-8333-333333333333";
@@ -116,7 +126,7 @@ test("fork stops before the next composite prefix and remaps retained parts", as
             .slice(0, 2)
             .map((row, i) => ({ ...row, uuid: `fork${i}` })),
     ),
-  } as Partial<ControlDependencies> as ControlDependencies;
+  };
   const target = await forkAtTurn(source, { lastTurnId: "u1" }, deps);
   expect(fork).toHaveBeenCalledWith("source", {
     dir: "/project",
@@ -353,16 +363,20 @@ test("rollback remaps every retained composite part and preserves checkpoint ide
     turns: sourceTurns,
   };
   const fork = vi.fn(async () => ({ sessionId: "target" }));
-  await rollbackSession(session, { requestId: "rollback", turnId: "final2" }, {
-    persist: vi.fn<ControlDependencies["persist"]>(),
-    forkSession: fork,
-    getSessionMessages: async (id: string) =>
-      id === "native"
-        ? sourceMessages
-        : sourceMessages
-            .slice(0, 3)
-            .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-  } as Partial<ControlDependencies> as ControlDependencies);
+  await rollbackSession(
+    session,
+    { requestId: "rollback", turnId: "final2" },
+    historyControls({
+      persist: vi.fn<ControlDependencies["persist"]>(),
+      forkSession: fork,
+      getSessionMessages: async (id: string) =>
+        id === "native"
+          ? sourceMessages
+          : sourceMessages
+              .slice(0, 3)
+              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+    }),
+  );
   expect(fork).toHaveBeenCalledWith("native", {
     dir: "/project",
     upToMessageId: "a1",
@@ -488,7 +502,7 @@ test.each(["not_applied", "cancelled"])(
     await rollbackSession(
       session,
       { requestId: "rollback", turnId: "final2" },
-      {
+      historyControls({
         persist: vi.fn<ControlDependencies["persist"]>(),
         forkSession,
         getSessionMessages: async (id: string) =>
@@ -497,7 +511,7 @@ test.each(["not_applied", "cancelled"])(
             : messages()
                 .slice(0, 2)
                 .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-      } as Partial<ControlDependencies> as ControlDependencies,
+      }),
     );
     expect(forkSession).toHaveBeenCalledTimes(1);
     expect(session.controlRequests!.rollback.status).toBe("completed");
@@ -519,16 +533,20 @@ test("fork accepts the authoritative boundary of a legacy remapped turn", async 
       },
     ],
   };
-  const target = await forkAtTurn(source, {}, {
-    persist: vi.fn<ControlDependencies["persist"]>(),
-    forkSession: async () => ({ sessionId: "target" }),
-    getSessionMessages: async (id: string) =>
-      id === "source"
-        ? messages().slice(0, 2)
-        : messages()
-            .slice(0, 2)
-            .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-  } as Partial<ControlDependencies> as ControlDependencies);
+  const target = await forkAtTurn(
+    source,
+    {},
+    {
+      persist: vi.fn<ControlDependencies["persist"]>(),
+      forkSession: async () => ({ sessionId: "target" }),
+      getSessionMessages: async (id: string) =>
+        id === "source"
+          ? messages().slice(0, 2)
+          : messages()
+              .slice(0, 2)
+              .map((row, i) => ({ ...row, uuid: `fork${i}` })),
+    },
+  );
   expect(target.turns[0].nativeMessageId).toBe("fork0");
   expect(target.turns[0].items[0].nativeId).toBe("fork0");
 });
@@ -585,14 +603,18 @@ test("a legacy delivered steer without provenance fails before native fork submi
   ];
   const forkSession = vi.fn(async () => ({ sessionId: "target" }));
   await expect(
-    forkAtTurn(source, {}, {
-      persist: vi.fn(),
-      forkSession,
-      getSessionMessages: async (id) =>
-        id === "legacy-fork"
-          ? rows
-          : rows.map((row, i) => ({ ...row, uuid: `fork${i}` })),
-    } as Partial<ControlDependencies> as ControlDependencies),
+    forkAtTurn(
+      source,
+      {},
+      {
+        persist: vi.fn(),
+        forkSession,
+        getSessionMessages: async (id) =>
+          id === "legacy-fork"
+            ? rows
+            : rows.map((row, i) => ({ ...row, uuid: `fork${i}` })),
+      },
+    ),
   ).rejects.toThrow(/mapping.*unavailable|boundary/i);
   expect(forkSession).not.toHaveBeenCalled();
 });
@@ -733,14 +755,14 @@ test.each(
           : messages()
               .slice(0, 2)
               .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-    } as Partial<ControlDependencies> as ControlDependencies;
+    };
     await expect(
       operation === "fork"
         ? forkAtTurn(source, { lastTurnId: "u1" }, deps)
         : rollbackSession(
             source,
             { requestId: "rollback", turnId: "final2" },
-            deps,
+            historyControls(deps),
           ),
     ).rejects.toThrow(/mapping.*unavailable/);
     expect(forkSession).not.toHaveBeenCalled();
