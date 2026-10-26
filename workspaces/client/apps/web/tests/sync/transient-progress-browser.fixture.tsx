@@ -14,7 +14,8 @@ import type {
 } from "../../src/sync/subscriptions/contracts.ts";
 import { fixtureElement } from "./browser-helpers.ts";
 
-const reads = (window.reads = { facts: 0, auth: 0, jobs: 0 });
+const reads = { facts: 0, auth: 0, jobs: 0 };
+window.reads = reads;
 const selectors: ResourceRef[] = (window.selectors = []);
 const listeners = new Map<string, (version?: ResourceVersion) => void>();
 const resources = {
@@ -102,7 +103,7 @@ const account = {
   status: "signedOut",
 } as React.ComponentProps<typeof ClaudeSignIn>["account"];
 // The spec supplies the correlated resource/value pair at this fixture boundary.
-const progress = (window.progress = (
+const progress = (
   resource: ResourceProgress["resource"],
   value: ResourceProgress["value"],
 ) =>
@@ -110,7 +111,8 @@ const progress = (window.progress = (
     epoch: "fixture",
     revision: 1,
     progress: { resource, value } as ResourceProgress,
-  }));
+  });
+window.progress = progress;
 createRoot(fixtureElement("root")).render(
   <MantineProvider>
     <ServerServicesProvider services={services as ServerServices}>
@@ -130,7 +132,7 @@ createRoot(fixtureElement("root")).render(
           scope="fixture"
           onClose={() => {}}
           onReady={() => {
-            window.transientProgressFixture.ready = true;
+            window.ready = true;
           }}
         />
       )}
