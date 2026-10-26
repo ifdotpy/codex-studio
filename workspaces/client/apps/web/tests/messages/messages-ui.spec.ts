@@ -2,7 +2,7 @@ import { responseJson } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
 import { required } from "./helpers.ts";
 import type { ComplaintBody } from "./helpers.ts";
-import { assert } from "../messages/assert.ts";
+import { assert } from "../chat/assertions.ts";
 import {
   test,
   spawnFixture as spawn,

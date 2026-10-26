@@ -1,4 +1,4 @@
-import { assert } from "../messages/assert.ts";
+import { assert } from "../chat/assertions.ts";
 import { requestBody, required } from "../messages/helpers.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import type { Page, Route } from "@playwright/test";

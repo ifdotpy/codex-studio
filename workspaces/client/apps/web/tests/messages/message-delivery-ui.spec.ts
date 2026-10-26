@@ -215,29 +215,33 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await page.addInitScript(
         ({ workspaceId, schemaHandshake }) => {
           window.messageDeliveryStreams = [];
+          const DeliveryEventSource = class extends EventTarget {
+            url: string;
+            constructor(url: string | URL) {
+              super();
+              this.url = String(url);
+              window.messageDeliveryStreams.push(this);
+              queueMicrotask(() => {
+                this.dispatchEvent(
+                  new MessageEvent("api-schema", {
+                    data: JSON.stringify(schemaHandshake),
+                  }),
+                );
+                window.messagePublishDelivery("initial", 0);
+              });
+            }
+            close() {
+              window.messageDeliveryStreams =
+                window.messageDeliveryStreams.filter(
+                  (stream) => stream !== this,
+                );
+            }
+          } satisfies new (
+            ...args: ConstructorParameters<typeof EventSource>
+          ) => Pick<EventSource, "url" | "close"> &
+            Pick<EventTarget, "addEventListener">;
           Object.defineProperty(window, "EventSource", {
-            value: class extends EventTarget {
-              url: string;
-              constructor(url: string | URL) {
-                super();
-                this.url = String(url);
-                window.messageDeliveryStreams.push(this);
-                queueMicrotask(() => {
-                  this.dispatchEvent(
-                    new MessageEvent("api-schema", {
-                      data: JSON.stringify(schemaHandshake),
-                    }),
-                  );
-                  window.messagePublishDelivery("initial", 0);
-                });
-              }
-              close() {
-                window.messageDeliveryStreams =
-                  window.messageDeliveryStreams.filter(
-                    (stream) => stream !== this,
-                  );
-              }
-            },
+            value: DeliveryEventSource,
           });
           let generation = Date.now();
           window.messagePublishDelivery = (_id, _revision) => {
@@ -1092,7 +1096,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
 
 declare global {
   interface Window {
-    messageDeliveryStreams: Array<EventTarget & { url: string }>;
+    messageDeliveryStreams: Array<Pick<EventSource, "url" | "dispatchEvent">>;
     messagePublishDelivery: (id: string, revision: number) => void;
   }
 }

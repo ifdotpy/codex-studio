@@ -3,7 +3,7 @@ import type { ViteDevServer } from "vite";
 import type { Server } from "node:http";
 import type { BrowserContext } from "@playwright/test";
 import { required } from "./helpers.ts";
-import { assert } from "../messages/assert.ts";
+import { assert } from "../chat/assertions.ts";
 // Actual queue component, isolated browser storage, no backend or model service.
 
 import {
