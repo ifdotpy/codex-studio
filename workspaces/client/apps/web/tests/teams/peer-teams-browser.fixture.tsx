@@ -1,11 +1,10 @@
 import type { Agent, Snapshot } from "../../src/types.ts";
-import type { Dispatch, SetStateAction } from "react";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import { required } from "./helpers.ts";
 declare global {
   interface Window {
     peerTeamsFixture: {
-      set: Dispatch<SetStateAction<Snapshot>>;
+      set: (serialized: string) => void;
       data: Snapshot;
       failRefresh: boolean;
     };
@@ -74,11 +73,15 @@ const initial: Snapshot = {
 function Fixture() {
   const [data, setData] = useState(initial);
   const [opened, open] = useState("a");
-  window.peerTeamsFixture = { set: setData, data, failRefresh: false };
+  window.peerTeamsFixture = {
+    set: (serialized) => setData(parseSnapshot(serialized)),
+    data,
+    failRefresh: false,
+  };
   const refresh = async () => {
     if (window.peerTeamsFixture.failRefresh) throw Error("Refresh failed");
     const r = await fetch("/snapshot");
-    setData(await r.json());
+    setData(parseSnapshot(await r.text()));
   };
   return (
     <MantineProvider theme={theme} defaultColorScheme="dark">
@@ -113,3 +116,8 @@ function Fixture() {
   );
 }
 createRoot(required(document.getElementById("root"))).render(<Fixture />);
+
+/** The browser and spec serialize their own complete fixture snapshot. */
+function parseSnapshot(serialized: string): Snapshot {
+  return JSON.parse(serialized);
+}

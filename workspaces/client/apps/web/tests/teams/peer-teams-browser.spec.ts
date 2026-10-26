@@ -204,11 +204,10 @@ test("Peer teams browser", async ({
       { id: "t1", name: "First team", projectPath: "/p", members: ["a", "b"] },
       { id: "t2", name: "Second team", projectPath: "/p", members: ["c", "e"] },
     ];
-    await page.evaluate((serialized) => {
-      // The fixture serializes its own snapshot across the browser boundary.
-      const snapshot: Snapshot = JSON.parse(serialized);
-      window.peerTeamsFixture.set(snapshot);
-    }, JSON.stringify(state));
+    await page.evaluate(
+      (serialized) => window.peerTeamsFixture.set(serialized),
+      JSON.stringify(state),
+    );
     const second = page.locator('[data-peer-team="t2"]');
     const teamTarget = second.locator(".peer-team-toggle");
     const projectTarget = project.locator(
@@ -293,11 +292,10 @@ test("Peer teams browser", async ({
         updated: 1,
       },
     ];
-    await page.evaluate((serialized) => {
-      // The fixture serializes its own snapshot across the browser boundary.
-      const snapshot: Snapshot = JSON.parse(serialized);
-      window.peerTeamsFixture.set(snapshot);
-    }, JSON.stringify(state));
+    await page.evaluate(
+      (serialized) => window.peerTeamsFixture.set(serialized),
+      JSON.stringify(state),
+    );
     await page.locator('[data-room="peer"]').waitFor();
     assert.equal(await page.locator('[data-room="other"]').count(), 0);
     assert.equal(await page.locator('[data-room="unmarked"]').count(), 0);

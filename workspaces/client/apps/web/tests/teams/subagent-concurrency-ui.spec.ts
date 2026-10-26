@@ -1,3 +1,4 @@
+import { installConcurrencyStorageFixture } from "./subagent-concurrency.fixture.ts";
 declare global {
   interface Window {
     limitStorageSetItem: Storage["setItem"];
@@ -105,6 +106,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       viewport: { width: 1280, height: 900 },
       serviceWorkers: "block",
     });
+    await page.addInitScript(installConcurrencyStorageFixture);
     page.setDefaultTimeout(15000);
     const errors: string[] = [],
       writes: components["schemas"]["ConversationRequest"][] = [],
@@ -305,16 +307,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     };
     await page.evaluate(
       ({ leadId, legacy }) => {
-        const key = Object.keys(localStorage).find(
-          (key) =>
-            key.startsWith("studio-agent-mode:") &&
-            JSON.parse(key.slice("studio-agent-mode:".length))[2] === leadId,
-        );
-        if (!key) throw Error("No scoped setting record");
-        if (!key) throw Error("Missing stored setting");
-        if (!key) throw Error("Missing stored setting");
-        if (!key) throw Error("Missing stored setting");
-        if (!key) throw Error("Missing stored setting");
+        const key = window.concurrencyStorageFixture(leadId);
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -370,12 +363,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     };
     await page.evaluate(
       ({ leadId, noOp }) => {
-        const key = Object.keys(localStorage).find(
-          (key) =>
-            key.startsWith("studio-agent-mode:") &&
-            JSON.parse(key.slice("studio-agent-mode:".length))[2] === leadId,
-        );
-        if (!key) throw Error("Missing stored setting");
+        const key = window.concurrencyStorageFixture(leadId);
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -478,6 +466,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         viewport: { width: 1280, height: 900 },
         serviceWorkers: "block",
       });
+      await rollingPage.addInitScript(installConcurrencyStorageFixture);
       let oldProjectionResponses = 0;
       let oldLeadProjectionResponses = 0;
       const projectionRequests: string[] = [];
@@ -577,13 +566,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       assert.equal(rollingWrites.length, 0);
       assert.equal(
         await rollingPage.evaluate((leadId) => {
-          const key = Object.keys(localStorage).find(
-            (entry) =>
-              entry.startsWith("studio-agent-mode:") &&
-              JSON.parse(entry.slice("studio-agent-mode:".length))[2] ===
-                leadId,
-          );
-          if (!key) throw Error("Missing stored setting");
+          const key = window.concurrencyStorageFixture(leadId);
           return localStorage.getItem(key);
         }, lead.id),
         saved,
@@ -595,6 +578,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         viewport: { width: 1280, height: 900 },
         serviceWorkers: "block",
       });
+      await upgradedPage.addInitScript(installConcurrencyStorageFixture);
       await upgradedPage.addInitScript(
         ({ stateDir, workspaceId, leadId, saved }) => {
           const scope = JSON.stringify([stateDir, workspaceId, leadId]);
@@ -614,7 +598,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       const upgradedWrites: components["schemas"]["ConversationRequest"][] = [];
       type UpgradeResponse = {
         status: number;
-        body: components["schemas"]["JsonValue"];
+        body: import("../../src/apiTypes.ts").PostResult<"/api/conversation">;
       };
       let resolveUpgradeResponse:
         | ((value: UpgradeResponse) => void)
@@ -629,7 +613,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           const response = await route.fetch();
           const result = {
             status: response.status(),
-            body: await response.json(),
+            body: await fixturePostResult(response, "/api/conversation"),
           };
           required(resolveUpgradeResponse)(result);
           await route.fulfill({ response });
@@ -675,12 +659,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
 
     // An unreadable browser record stays visible and can be discarded without a command.
     await page.evaluate((id) => {
-      const key = Object.keys(localStorage).find(
-        (key) =>
-          key.startsWith("studio-agent-mode:") &&
-          JSON.parse(key.slice("studio-agent-mode:".length))[2] === id,
-      );
-      if (!key) throw Error("Missing stored setting");
+      const key = window.concurrencyStorageFixture(id);
       localStorage.setItem(key, "{bad json");
     }, lead.id);
     await page.reload();
