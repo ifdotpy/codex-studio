@@ -1,4 +1,4 @@
-import type { ResourceChangeEvent } from "../playwright.ts";
+import type { FixtureResourceFrame } from "./browser-helpers.ts";
 
 // The removed persister probe is kept as a test-owned observation surface.
 export type PersisterCompletion = {
@@ -12,7 +12,7 @@ declare global {
     __entityFrames: Array<{
       at: number;
       streamIndex: number;
-      event: ResourceChangeEvent;
+      event: FixtureResourceFrame;
     }>;
     __entityStreamUrls: string[];
     __entityStreamAttempts: Array<{

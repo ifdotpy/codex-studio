@@ -15,3 +15,21 @@ export type FixtureSnapshot = ReturnType<
       })
     | null;
 };
+
+/** Probes inspect legacy payloads from the fixture's resource event document. */
+export type FixtureResourceFrame = Omit<
+  import("../playwright.ts").ResourceChangeEvent,
+  "resourceVersions"
+> & {
+  resourceVersions: (Omit<
+    import("../playwright.ts").ResourceChangeEvent["resourceVersions"][number],
+    "entityChanges"
+  > & {
+    entityChanges?: Omit<
+      import("../../src/generated/api.ts").components["schemas"]["EntityChangeBatch"],
+      "documents"
+    > & {
+      documents: import("./entity-fixture-protocol.ts").FixtureEntity[];
+    };
+  })[];
+};

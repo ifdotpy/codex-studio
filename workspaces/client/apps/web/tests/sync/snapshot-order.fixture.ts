@@ -1,20 +1,4 @@
-import type { ResourceChangeEvent } from "../playwright.ts";
-import type { components } from "../../src/generated/api.ts";
-
-/** The probe observes legacy serialized entity payloads owned by this fixture. */
-type FixtureResourceFrame = Omit<ResourceChangeEvent, "resourceVersions"> & {
-  resourceVersions: (Omit<
-    ResourceChangeEvent["resourceVersions"][number],
-    "entityChanges"
-  > & {
-    entityChanges?: Omit<
-      components["schemas"]["EntityChangeBatch"],
-      "documents"
-    > & {
-      documents: components["schemas"]["SyncDocument"][];
-    };
-  })[];
-};
+import type { FixtureResourceFrame } from "./browser-helpers.ts";
 
 type Bounds = { y: number; width: number; height: number; className: string };
 type GeometryFrame = {
