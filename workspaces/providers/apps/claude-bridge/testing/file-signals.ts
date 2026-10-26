@@ -3,6 +3,8 @@ import path from "node:path";
 
 // Maximum wait for a scripted bridge fixture signal, in milliseconds.
 export const HANG_GUARD_MS = 10_000;
+// Interval for re-checking the file, in milliseconds, because fs.watch can miss events.
+export const RECHECK_MS = 100;
 
 // Observe before inspecting so creation, rename and append cannot fall between
 // the condition check and subscription. The timeout is only a failure guard.
@@ -30,8 +32,10 @@ export function waitForFile(
           HANG_GUARD_MS,
         );
     const watcher = watch(path.dirname(file), check);
+    const recheck = setInterval(check, RECHECK_MS);
     const cleanup = () => {
       watcher.close();
+      clearInterval(recheck);
       clearTimeout(deadline);
       signal.removeEventListener("abort", abort);
       process.off("message", notified);
