@@ -64,7 +64,7 @@ fn default_local_server_port_copies_match_service_layout_owner() {
         "diagnostics DEFAULT_PORT must match runtime-server/service-layout.json (default local server TCP port)"
     );
     assert!(
-        desktop.contains(&format!("port = {}, env = process.env", owner.port)),
+        desktop.contains(&format!("  port = {},", owner.port)),
         "desktop ensureBackend default port must match runtime-server/service-layout.json (default local server TCP port)"
     );
 }

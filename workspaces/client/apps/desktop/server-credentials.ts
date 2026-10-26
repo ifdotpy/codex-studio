@@ -368,7 +368,7 @@ function createServerCredentials({
         body,
         requestId,
       }: ServerRequest,
-      signal: AbortSignal,
+      signal?: AbortSignal,
     ) {
       const credential = (await read()).servers[serverId];
       if (!credential || credential.clientId !== credentialId)
@@ -389,7 +389,7 @@ function createServerCredentials({
           method,
           headers,
           ...(body?.byteLength ? { body } : {}),
-          signal,
+          ...(signal ? { signal } : {}),
         }),
         requestId,
       );

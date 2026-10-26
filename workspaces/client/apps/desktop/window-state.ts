@@ -1,4 +1,4 @@
-import type { Rectangle, Display, BrowserWindow, App } from "electron";
+import type { Rectangle, Display, BrowserWindow } from "electron";
 export type SavedWindowState = {
   version?: number;
   bounds?: Rectangle;
@@ -102,10 +102,10 @@ function trackWindowState(
     | "isFullScreen"
     | "isMaximized"
     | "getNormalBounds"
-    | "on"
     | "maximize"
-  >,
-  app: Pick<App, "on" | "removeListener">,
+  > &
+    Pick<NodeJS.EventEmitter, "on">,
+  app: Pick<NodeJS.EventEmitter, "on" | "removeListener">,
   profile: string,
   initial: ReturnType<typeof windowState>,
   { hidden = false } = {},
