@@ -132,7 +132,10 @@ The estimate charges only the part of that temporary allowance above the final l
 For a nested repository, each line also retains the other project folders from main.
 Their entries receive the same metadata allowance and appear as `inheritedEntries` and `inheritedMetadataBytes`.
 The report separates the actual main counts as `mainSize` and the original source counts as `sourceSize`.
-If native main exists, its actual tree determines each line clone cost.
+If native main exists, its saved main state determines each line clone cost.
+APFS thin layers are counted conservatively, including their base entries, without creating a complete tree.
+The estimate also includes the largest local saved cache tree for each cache path.
+It counts this tree even when the main working cache is empty or absent.
 Same-volume clones add no payload bytes to this estimate.
 The estimate follows the required host Layr version.
 Layr 0.2.1 requires a full HEAD allowance and an allowance for copies into existing HEAD files.
@@ -146,9 +149,22 @@ Keep the source quiet during import. Studio checks its identities before and aft
 Source Git reads set `GIT_NO_LAZY_FETCH=1` and `GIT_OPTIONAL_LOCKS=0`.
 Missing partial-clone objects cause an unknown-size refusal, without fetching into the source.
 Clears use directory descriptors and refuse symlink ancestors. They unlink links without visiting their targets.
-A copied submodule config link becomes a regular private file before any edit.
+Submodule config bytes are read through a validated descriptor and edited in a private temporary file.
+Studio writes the result through the destination directory descriptor. A replacement link cannot redirect the edit.
 Attribute copies use descriptors or no-follow link calls on APFS and btrfs.
 Full-tree snapshots preserve empty directories, directory modes, and file mode changes in each imported head.
+The source repository root mode also applies to each staged repository root.
+
+Known Layr 0.2.2 limits, pending upstream fixes for 0.2.3:
+
+- `caller_git` calls `command_as`, which clears `GIT_NO_LAZY_FETCH` and `GIT_OPTIONAL_LOCKS`.
+  Studio refuses source object links and alternates that could reconnect a staged repository to the original object store.
+- Layr `copy_entry` does not preserve symlink attributes or Linux file attributes.
+  Studio preserves them in staging, but the final Layr import can lose them.
+- The APFS thin snapshot comparison ignores attributes and change time (`ctime`).
+  A directory attribute change alone can be absent from the saved head.
+  A successful metadata fixture does not establish support for this case.
+
 Capacity checks run before the pending receipt. A shortage can retry with the same request after capacity increases.
 
 Later chats use the existing main line.

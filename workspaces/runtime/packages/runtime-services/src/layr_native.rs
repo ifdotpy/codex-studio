@@ -88,6 +88,7 @@ mod capability;
 mod git_guard;
 pub mod install;
 pub use capability::{NativeLayrCapability, capability};
+mod private_tree;
 mod runtime;
 pub use runtime::{
     NativeLayrError, agent_value, evidence, main_path, merge, operation, prepare, project_id,

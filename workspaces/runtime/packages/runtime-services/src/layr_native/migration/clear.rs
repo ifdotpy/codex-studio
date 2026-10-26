@@ -6,78 +6,29 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn directory_flags() -> rustix::fs::OFlags {
-    use rustix::fs::OFlags;
-    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
-}
+use super::super::private_tree::{Directory, flags as directory_flags};
 
-/// Open each ancestor without following links, including the destination itself.
-fn open_directory(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
-    use rustix::fs::{Mode, open, openat};
-    let path = if cfg!(target_os = "macos") {
-        ["/var", "/tmp"]
-            .iter()
-            .find_map(|prefix| {
-                path.strip_prefix(prefix).ok().map(|suffix| {
-                    Path::new("/private")
-                        .join(prefix.trim_start_matches('/'))
-                        .join(suffix)
-                })
-            })
-            .unwrap_or_else(|| path.to_owned())
-    } else {
-        path.to_owned()
-    };
-    if !path.is_absolute() {
-        return Err(std::io::Error::other("Private line path must be absolute"));
-    }
-    let mut parent = open("/", directory_flags(), Mode::empty())?;
-    for part in path.components() {
-        match part {
-            std::path::Component::RootDir => {}
-            std::path::Component::Normal(name) => {
-                parent = openat(&parent, name, directory_flags(), Mode::empty())?
-            }
-            _ => {
-                return Err(std::io::Error::other(
-                    "Private line path contains a parent traversal",
-                ));
-            }
-        }
-    }
-    Ok(parent)
-}
-
-pub(super) fn validate_destination(line: &Path, destination: &Path) -> std::io::Result<()> {
-    use rustix::fs::{Mode, openat};
-    let relative = destination
-        .strip_prefix(line)
-        .map_err(std::io::Error::other)?;
-    let mut parent = open_directory(line)?;
-    for part in relative.components() {
-        let std::path::Component::Normal(name) = part else {
-            return Err(std::io::Error::other(
-                "Destination escapes the private line",
-            ));
-        };
-        match openat(&parent, name, directory_flags(), Mode::empty()) {
-            Ok(fd) => parent = fd,
-            Err(rustix::io::Errno::NOENT) => return Ok(()),
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 pub(super) fn clear_import_destination(
     destination: &Path,
     cache_roots: &BTreeSet<PathBuf>,
 ) -> std::io::Result<()> {
-    match open_directory(destination) {
-        Ok(fd) => clear_directory(&fd, destination, cache_roots),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
+    let fd = Directory::open(destination)?;
+    let relative = cache_roots
+        .iter()
+        .map(|p| {
+            p.strip_prefix(destination)
+                .map(Path::to_owned)
+                .map_err(std::io::Error::other)
+        })
+        .collect::<std::io::Result<_>>()?;
+    clear_at(&fd, &relative)
+}
+pub(super) fn clear_at(
+    destination: &Directory,
+    cache_roots: &BTreeSet<PathBuf>,
+) -> std::io::Result<()> {
+    clear_directory(&destination.0, Path::new(""), cache_roots)
 }
 
 fn clear_directory(
@@ -162,15 +113,17 @@ mod tests {
 
 /// Drop only an inherited working copy. The parent's saved cache remains intact.
 #[cfg(target_os = "macos")]
-pub(super) fn discard_inherited_cache(path: &Path) -> std::io::Result<()> {
-    clear_import_destination(path, &BTreeSet::new())?;
-    fs::remove_dir(path)
+pub(super) fn discard_inherited_cache(line: &Directory, relative: &Path) -> std::io::Result<()> {
+    let cache = line.child(relative, false)?;
+    clear_at(&cache, &BTreeSet::new())?;
+    let (parent, name) = line.parent(relative, false)?;
+    rustix::fs::unlinkat(&parent.0, name, rustix::fs::AtFlags::REMOVEDIR)?;
+    Ok(())
 }
-
 #[cfg(not(target_os = "macos"))]
-pub(super) fn discard_inherited_cache(path: &Path) -> std::io::Result<()> {
+pub(super) fn discard_inherited_cache(_line: &Directory, relative: &Path) -> std::io::Result<()> {
     Err(std::io::Error::other(format!(
         "Cannot convert inherited cache {} to a versioned folder on btrfs; layr cache materialize is needed",
-        path.display()
+        relative.display()
     )))
 }

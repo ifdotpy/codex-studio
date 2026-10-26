@@ -118,6 +118,31 @@ fn validate_git_directory(
                 common.display()
             )));
         }
+        internal(project, &git.join(value))?;
+        if Path::new(value).is_absolute() || fs::symlink_metadata(&common)?.file_type().is_symlink()
+        {
+            return Err(NativeLayrError::Refused(format!(
+                "Git commondir requires private materialization before Layr init: {}",
+                common.display()
+            )));
+        }
+        let mut lexical = git.clone();
+        for part in Path::new(value).components() {
+            match part {
+                std::path::Component::Normal(name) => lexical.push(name),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    lexical.pop();
+                }
+                _ => return Err(NativeLayrError::Refused("Invalid Git commondir".into())),
+            }
+            if !lexical.starts_with(project) {
+                return Err(NativeLayrError::Refused(format!(
+                    "Git commondir escapes the copied project: {}",
+                    common.display()
+                )));
+            }
+        }
         validate_git_directory(project, &git.join(value), seen, objects_seen)?;
     } else {
         validate_objects(project, &git.join("objects"), objects_seen)?;
@@ -147,6 +172,12 @@ fn validate_git_directory(
 }
 
 fn validate_objects(project: &Path, objects: &Path, seen: &mut BTreeSet<PathBuf>) -> Result<()> {
+    if fs::symlink_metadata(objects)?.file_type().is_symlink() {
+        return Err(NativeLayrError::Refused(format!(
+            "Git object link requires private materialization before Layr init: {}",
+            objects.display()
+        )));
+    }
     let objects = internal(project, objects)?;
     if !seen.insert(objects.clone()) {
         return Ok(());
@@ -157,7 +188,12 @@ fn validate_objects(project: &Path, objects: &Path, seen: &mut BTreeSet<PathBuf>
             .lines()
             .filter(|line| !line.is_empty())
         {
-            validate_objects(project, &objects.join(alternate), seen)?;
+            internal(project, &objects.join(alternate))?;
+            return Err(NativeLayrError::Refused(format!(
+                "Git alternates require private materialization before Layr init: {} -> {}",
+                alternates.display(),
+                objects.join(alternate).display()
+            )));
         }
     }
     let mut pending = vec![objects];
@@ -171,9 +207,10 @@ fn validate_objects(project: &Path, objects: &Path, seen: &mut BTreeSet<PathBuf>
             let entry = entry?;
             let kind = entry.file_type()?;
             let path = if kind.is_symlink() {
-                let target = internal(project, &entry.path())?;
-                seen.insert(target.clone());
-                target
+                return Err(NativeLayrError::Refused(format!(
+                    "Git object link requires private materialization before Layr init: {}",
+                    entry.path().display()
+                )));
             } else {
                 entry.path()
             };

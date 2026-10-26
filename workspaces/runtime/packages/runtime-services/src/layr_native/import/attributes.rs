@@ -35,17 +35,17 @@ fn copy_descriptors(source: &File, destination: &File) -> std::io::Result<bool> 
 pub(super) fn copy(
     source: &Path,
     relative: &Path,
-    destination: &Path,
+    destination: &Directory,
     target: &Path,
     symlink: bool,
 ) -> std::io::Result<bool> {
     let (source_parent, source_name) = open_parent(source, relative)?;
-    let (destination_parent, destination_name) = open_parent(destination, target)?;
+    let (destination_parent, destination_name) = destination.parent(target, false)?;
     if !symlink {
         let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
         let source = File::from(openat(&source_parent, &source_name, flags, Mode::empty())?);
         let destination = File::from(openat(
-            &destination_parent,
+            &destination_parent.0,
             &destination_name,
             flags,
             Mode::empty(),
@@ -57,7 +57,7 @@ pub(super) fn copy(
         let flags = OFlags::RDONLY | OFlags::SYMLINK | OFlags::NONBLOCK | OFlags::CLOEXEC;
         let source = File::from(openat(&source_parent, &source_name, flags, Mode::empty())?);
         let destination = File::from(openat(
-            &destination_parent,
+            &destination_parent.0,
             &destination_name,
             flags,
             Mode::empty(),
@@ -75,9 +75,11 @@ pub(super) fn copy(
         use std::os::fd::AsRawFd;
         let source =
             PathBuf::from(format!("/proc/self/fd/{}", source_parent.as_raw_fd())).join(source_name);
-        let destination =
-            PathBuf::from(format!("/proc/self/fd/{}", destination_parent.as_raw_fd()))
-                .join(destination_name);
+        let destination = PathBuf::from(format!(
+            "/proc/self/fd/{}",
+            destination_parent.0.as_raw_fd()
+        ))
+        .join(destination_name);
         let count = llistxattr(&source, &mut [] as &mut [u8])?;
         let mut names = vec![0; count];
         let count = llistxattr(&source, names.as_mut_slice())?;

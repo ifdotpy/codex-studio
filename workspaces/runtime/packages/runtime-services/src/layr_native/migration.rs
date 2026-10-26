@@ -169,7 +169,11 @@ pub fn migrate_with_options(
         super::import::Plan::new_with_git_policy(&project, false, &target, options.without_git)?;
     let existing_path = main_path(state_dir, &project_id);
     let existing_main = if existing_path.exists() {
-        Some(super::import::Plan::existing_main(&existing_path, &target)?)
+        Some(super::import::Plan::saved_main(
+            state_dir,
+            &existing_path,
+            &target,
+        )?)
     } else {
         None
     };
@@ -436,7 +440,7 @@ pub fn migrate_with_options(
         if options.without_git {
             input["withoutGit"] = json!(true);
         }
-        let actual_main = super::import::Plan::existing_main(&main, &target)?;
+        let actual_main = super::import::Plan::saved_main(state_dir, &main, &target)?;
         let allocation = plan.migration_size(&actual_main, &relative);
         let imported_head = line["headCommit"].clone();
         let selection = options.worktrees.as_str();
@@ -454,42 +458,54 @@ pub fn migrate_with_options(
                     .parent()
                     .ok_or_else(|| NativeLayrError::Refused("Missing lines directory".into()))?
                     .join(&name);
-                let destination = cwd.join(&relative);
-                validate_destination(&cwd, &destination)?;
-                // Replace only the repository subtree. Retain Layr's generated Git bridge.
-                let git_marker = destination.join(".git");
-                let saved_git = if git_marker.exists() {
+                let line_directory = super::private_tree::Directory::open(&cwd)?;
+                let destination = line_directory.child(&relative, true)?;
+                let root_mode = destination.mode()?;
+                // Move only the entry itself through the pinned destination parent.
+                let saved_git = if destination.exists(std::ffi::OsStr::new(".git"))? {
                     Some(tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?)
                 } else {
                     None
                 };
-                if let Some(saved) = &saved_git {
-                    fs::rename(&git_marker, saved.path().join("git"))?;
+                let saved_directory = saved_git
+                    .as_ref()
+                    .map(|saved| super::private_tree::Directory::open(saved.path()))
+                    .transpose()?;
+                if let Some(saved) = &saved_directory {
+                    destination.rename(Path::new(".git"), saved, Path::new("git"))?;
                 }
                 let mut cache_roots: BTreeSet<PathBuf> = run(state_dir, &cwd, &["cache", "list"])?
                     .lines()
                     .filter_map(|line| line.split_once('\t'))
                     .filter(|(_, kind)| *kind == "cache")
-                    .map(|(path, _)| cwd.join(path))
+                    .map(|(path, _)| PathBuf::from(path))
                     .collect();
                 let versioned_roots: Vec<_> = cache_roots
                     .iter()
                     .filter(|cache| {
                         cache
-                            .strip_prefix(&destination)
+                            .strip_prefix(&relative)
                             .is_ok_and(|local| plan.has_versioned_files_under(local))
                     })
                     .cloned()
                     .collect();
                 for cache in versioned_roots {
-                    discard_inherited_cache(&cache)?;
+                    discard_inherited_cache(&line_directory, &cache)?;
                     cache_roots.remove(&cache);
                 }
-                clear_import_destination(&destination, &cache_roots)?;
-                fs::create_dir_all(&destination)?;
-                plan.stage(&destination)?;
-                if let Some(saved) = &saved_git {
-                    fs::rename(saved.path().join("git"), &git_marker)?;
+                let cache_roots = cache_roots
+                    .iter()
+                    .filter_map(|cache| cache.strip_prefix(&relative).ok().map(Path::to_owned))
+                    .collect();
+                clear_at(&destination, &cache_roots)?;
+                // Reuse the pinned subtree even if its pathname was replaced after opening it.
+                plan.stage_open(&destination, &line_directory, &relative)?;
+                if let Some(saved) = &saved_directory {
+                    saved.rename(Path::new("git"), &destination, Path::new(".git"))?;
+                }
+                // A top-level line is a private container, distinct from a nested repository root.
+                if relative.as_os_str().is_empty() {
+                    destination.set_mode(root_mode)?;
                 }
                 super::git_guard::install_hook(state_dir, &cwd)?;
                 runtime::save_imported_tree(state_dir, &cwd, "Import Git worktree")?;
@@ -509,7 +525,7 @@ pub fn migrate_with_options(
 }
 
 mod clear;
-use clear::{clear_import_destination, discard_inherited_cache, validate_destination};
+use clear::{clear_at, discard_inherited_cache};
 
 #[cfg(test)]
 mod tests {
@@ -629,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn review_existing_main_controls_line_clone_space() {
+    fn review_existing_tree_counts_directory_entries() {
         let fixture = tempfile::tempdir().unwrap();
         let project = fixture.path().join("project");
         cache_policy_fixture(&project);
@@ -640,10 +656,50 @@ mod tests {
         for i in 0..200 {
             fs::write(main.join("extra").join(format!("file-{i}")), "bytes").unwrap();
         }
+        let plan = super::super::import::Plan::existing_main(&main, &state).unwrap();
+        assert_eq!(plan.size.entries, 202);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn review2_saved_main_controls_line_clone_space() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let project = fixture.path().join("project");
+        cache_policy_fixture(&project);
+        let state = fixture.path().join("state");
+        let initial = migrate(&state, &project, true).unwrap();
+        let id = initial["projectId"].as_str().unwrap();
+        let main = main_path(&state, id);
+        fs::create_dir_all(&main).unwrap();
+        let saved = super::super::store_path(&state)
+            .join("projects")
+            .join(id)
+            .join("states")
+            .join("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        fs::create_dir_all(saved.join("removed-from-working")).unwrap();
+        for i in 0..200 {
+            fs::write(
+                saved.join("removed-from-working").join(format!("file-{i}")),
+                "bytes",
+            )
+            .unwrap();
+        }
+        let binary = binary_path(&state);
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' '[{{\"name\":\"main\",\"head\":\"{}\"}}]'\n",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         let report = migrate(&state, &project, true).unwrap();
         assert_eq!(
             report["lines"][0]["lineNewEntries"], 202,
-            "An existing main tree has 202 entries"
+            "The saved main has 202 entries"
         );
     }
 
@@ -890,8 +946,6 @@ mod tests {
         let fixture = tempfile::tempdir().expect("fixture");
         let project = fixture.path().join("project");
         let (first, second) = shared_project_worktrees(&project);
-        // A shared clone keeps its alternate object store in the same project.
-        git(&project, &["clone", "--shared", "one", "shared"]).expect("internal alternate");
         let state = fixture.path().join("absent-state");
         let report = migrate(&state, &project, true).expect("shared project report");
         assert_eq!(report["admissible"], true, "{}", report["refusals"]);
@@ -929,6 +983,15 @@ mod tests {
         assert_eq!(
             fs::read_to_string(second.join("dirty")).expect("second edit"),
             "second work"
+        );
+        // Shared worktrees stay admitted. Source alternates need private materialization.
+        git(&project, &["clone", "--shared", "one", "shared"]).expect("internal alternate");
+        let internal_refusal = migrate(&state, &project, true).expect("internal alternate report");
+        assert_eq!(internal_refusal["admissible"], false);
+        assert!(
+            internal_refusal["refusals"]
+                .to_string()
+                .contains("private materialization")
         );
         fs::write(
             project.join("shared/.git/objects/info/alternates"),

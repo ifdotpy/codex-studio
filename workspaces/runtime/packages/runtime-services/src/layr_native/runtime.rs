@@ -312,6 +312,10 @@ pub(super) fn prepare_files_with_git_policy(
             || {
                 let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
                 plan.stage(staging.path())?;
+                // Layr 0.2.2 clears the no-fetch environment. Its Git input must be private.
+                if staging.path().join(".git").is_dir() {
+                    super::import::validate_private_git(staging.path())?;
+                }
                 run(
                     state_dir,
                     state_dir,

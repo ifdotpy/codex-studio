@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn internal_alternate_objects_receive_the_git_fetch_space_allowance() {
+    fn internal_alternate_objects_refuse_until_private_materialization() {
         let source = tempfile::tempdir().expect("project");
         let reference = source.path().join("reference");
         fs::create_dir(&reference).expect("object source");
@@ -158,11 +158,11 @@ mod tests {
             source.path().parent().expect("parent"),
         )
         .expect("plan");
-        plan.admit().expect("internal store admitted");
+        assert!(plan.admit().is_err());
         assert!(
-            plan.size.git_transfer_bytes >= 400_000,
-            "{}",
-            plan.size.git_transfer_bytes
+            plan.refusals
+                .iter()
+                .any(|reason| reason.contains("private materialization"))
         );
     }
 

@@ -157,3 +157,86 @@ fn review_source_git_never_lazy_fetches_missing_blobs() {
     assert_eq!(after, before, "Size reads must not fetch source objects");
     assert!(plan.admit().is_err(), "Missing blob size must be unknown");
 }
+
+#[test]
+fn review2_stage_rejects_nested_destination_link() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("input");
+    let destination = root.path().join("stage");
+    let original = root.path().join("original");
+    fs::create_dir_all(source.join("dir")).unwrap();
+    fs::create_dir(&destination).unwrap();
+    fs::create_dir(&original).unwrap();
+    fs::write(source.join("dir/new"), "new").unwrap();
+    std::os::unix::fs::symlink(&original, destination.join("dir")).unwrap();
+    let plan = Plan::new(&source, false, &destination).unwrap();
+    let _ = plan.stage(&destination);
+    assert!(
+        !original.join("new").exists(),
+        "Staging must never follow a replaced destination"
+    );
+}
+#[test]
+fn review2_config_swap_never_edits_source() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let destination = root.path().join("stage");
+    fs::create_dir_all(source.join("metadata")).unwrap();
+    fs::create_dir(source.join("module")).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let original = b"[core]\n\tbare = false\n";
+    fs::write(source.join("metadata/config"), original).unwrap();
+    let mut plan = Plan::new(&source, false, &destination).unwrap();
+    plan.repositories.push(Repository {
+        relative: PathBuf::from("module"),
+        kind: "submodule",
+        included: true,
+        cache: false,
+        git_directory: Some(fs::canonicalize(&source).unwrap().join("metadata")),
+    });
+    let copied = destination.join("metadata/config");
+    let original_path = source.join("metadata/config");
+    REVIEW_CONFIG_SWAP.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            fs::rename(&copied, copied.with_extension("old")).unwrap();
+            std::os::unix::fs::symlink(original_path, copied).unwrap();
+        }))
+    });
+    let _ = plan.stage(&destination);
+    assert_eq!(fs::read(source.join("metadata/config")).unwrap(), original);
+}
+#[test]
+fn review2_refuses_source_object_links() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    fs::create_dir(&source).unwrap();
+    git(&source, &["init", "-q"]);
+    fs::write(source.join("code"), "base").unwrap();
+    commit(&source);
+    let objects = source.join("object-store");
+    fs::rename(source.join(".git/objects"), &objects).unwrap();
+    std::os::unix::fs::symlink(
+        fs::canonicalize(&objects).unwrap(),
+        source.join(".git/objects"),
+    )
+    .unwrap();
+    let plan = Plan::new(&source, false, root.path()).unwrap();
+    assert!(
+        plan.admit().is_err(),
+        "Layr init must not retain a path into the source object store"
+    );
+}
+#[test]
+fn review2_stages_linked_repository_root_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let destination = root.path().join("stage");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&destination).unwrap();
+    fs::write(source.join("code"), "base").unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o750)).unwrap();
+    fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
+    let plan = Plan::new(&source, true, &destination).unwrap();
+    plan.stage(&destination).unwrap();
+    assert_eq!(fs::metadata(&destination).unwrap().mode() & 0o7777, 0o750);
+}

@@ -1,5 +1,5 @@
 //! Select and admit the complete tree before writing imported entries.
-use super::NativeLayrError;
+use super::{NativeLayrError, private_tree::Directory};
 use crate::vm_preparation::vm_archive_identity;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::{
@@ -112,7 +112,6 @@ impl Size {
 pub(super) struct Plan {
     source: PathBuf,
     project_root: PathBuf,
-    repository_relative: PathBuf,
     entries: Vec<Entry>,
     pub caches: Vec<PathBuf>,
     pub repositories: Vec<Repository>,
@@ -170,8 +169,6 @@ impl Plan {
             ));
         }
         let project_root = fs::canonicalize(project.map_or(source.as_path(), |(root, _)| root))?;
-        let repository_relative =
-            project.map_or_else(PathBuf::new, |(_, relative)| relative.to_owned());
         let mut tree = Selection {
             project_root: project_root.clone(),
             without_git,
@@ -252,7 +249,10 @@ impl Plan {
         let mut volumes = BTreeMap::new();
         let mut size = Size::default();
         let git_objects = if git_backed {
-            metadata::object_paths(&project_root, &source)?
+            metadata::object_paths(&project_root, &source).unwrap_or_else(|error| {
+                tree.refusals.push(error.to_string());
+                BTreeSet::new()
+            })
         } else {
             BTreeSet::new()
         };
@@ -316,7 +316,6 @@ impl Plan {
         Ok(Self {
             source,
             project_root,
-            repository_relative,
             entries,
             size,
             destination_volume,
@@ -371,7 +370,6 @@ impl Plan {
         Ok(Self {
             project_root: source.clone(),
             source,
-            repository_relative: PathBuf::new(),
             entries,
             caches: Vec::new(),
             repositories: Vec::new(),
@@ -384,6 +382,74 @@ impl Plan {
             size,
             destination_volume: volume_id(existing_ancestor(destination)?)?,
         })
+    }
+
+    pub fn saved_main(state: &Path, main: &Path, destination: &Path) -> Result<Self> {
+        let lines: serde_json::Value =
+            serde_json::from_str(&super::run(state, main, &["line", "list", "--json"])?)
+                .map_err(|e| NativeLayrError::Refused(e.to_string()))?;
+        let head = lines
+            .as_array()
+            .and_then(|lines| lines.iter().find(|line| line["name"] == "main"))
+            .and_then(|line| line["head"].as_str())
+            .ok_or_else(|| NativeLayrError::Refused("Missing saved main state".into()))?;
+        let project = main
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| NativeLayrError::Refused("Missing private project directory".into()))?;
+        let mut head = head.to_owned();
+        let mut seen = BTreeSet::new();
+        let mut layers = Vec::new();
+        loop {
+            if head.len() != 36
+                || uuid::Uuid::parse_str(&head).is_err()
+                || !seen.insert(head.clone())
+            {
+                return Err(NativeLayrError::Refused(
+                    "Invalid or cyclic saved main state".into(),
+                ));
+            }
+            let full = project.join("states").join(&head);
+            if full.exists() {
+                layers.push(Self::existing_main(&full, destination)?);
+                break;
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let delta = project.join("deltas").join(&head);
+                let layer = Self::existing_main(&delta, destination)?;
+                let count =
+                    rustix::fs::lgetxattr(&delta, "com.layr.subvolume", &mut [] as &mut [u8])
+                        .map_err(std::io::Error::from)?;
+                let mut bytes = vec![0; count];
+                rustix::fs::lgetxattr(&delta, "com.layr.subvolume", bytes.as_mut_slice())
+                    .map_err(std::io::Error::from)?;
+                let marker: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|e| NativeLayrError::Refused(e.to_string()))?;
+                head = marker["base"]
+                    .as_str()
+                    .ok_or_else(|| NativeLayrError::Refused("Saved main layer has no base".into()))?
+                    .to_owned();
+                layers.push(layer);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                return Err(NativeLayrError::Refused(
+                    "Saved main state is unavailable".into(),
+                ));
+            }
+        }
+        // Summing layers also charges removed and replaced entries. It is a read-only upper bound.
+        let mut result = layers
+            .pop()
+            .ok_or_else(|| NativeLayrError::Refused("Missing saved main tree".into()))?;
+        for layer in layers {
+            result.size.include(layer.size);
+            result.entries.extend(layer.entries);
+        }
+        saved_caches::include(&mut result, project, destination)?;
+        result.entries.sort_by(|a, b| a.relative.cmp(&b.relative));
+        Ok(result)
     }
 
     pub fn line_new_metadata_bytes(&self) -> u64 {
@@ -434,68 +500,89 @@ impl Plan {
     }
 
     pub fn stage(&self, destination: &Path) -> Result<()> {
-        self.stage_entries(destination, false)?;
-        self.write_ignores(destination)?;
-        self.rewrite_submodules(destination, false)
+        let root = Directory::open(destination)?;
+        self.stage_at(&root, Path::new(""))
     }
 
-    fn stage_entries(&self, destination: &Path, caches: bool) -> Result<()> {
+    pub fn stage_at(&self, project: &Directory, relative: &Path) -> Result<()> {
+        let destination = project.child(relative, true)?;
+        self.stage_open(&destination, project, relative)
+    }
+
+    pub fn stage_open(
+        &self,
+        destination: &Directory,
+        project: &Directory,
+        relative: &Path,
+    ) -> Result<()> {
+        self.stage_entries(destination, false)?;
+        self.write_ignores(destination)?;
+        self.rewrite_submodules(destination, project, relative, false)?;
+        self.directory_modes(destination, false)
+    }
+
+    fn stage_entries(&self, destination: &Directory, caches: bool) -> Result<()> {
+        use rustix::fs::{Mode, OFlags, openat, symlinkat};
         self.admit()?;
         self.verify_source()?;
-        if volume_id(destination)? != self.destination_volume {
+        if volume_id_fd(&destination.0)? != self.destination_volume {
             return Err(NativeLayrError::Refused(
                 "The staging volume changed after the space preflight".into(),
             ));
         }
         for entry in &self.entries {
-            if entry.cache != caches {
+            if entry.cache != caches || entry.relative.as_os_str().is_empty() {
                 continue;
             }
             for relative in stage_destinations(&entry.relative, caches, self.git_backed) {
-                let target = destination.join(&relative);
                 let meta = &entry.metadata;
-                if entry.relative.as_os_str().is_empty() {
+                if meta.is_dir() {
+                    destination.child(&relative, true)?;
                     continue;
                 }
-                if meta.is_dir() {
-                    fs::create_dir_all(&target)?;
-                } else if meta.file_type().is_symlink() {
-                    std::os::unix::fs::symlink(
+                let (parent, name) = destination.parent(&relative, true)?;
+                if meta.file_type().is_symlink() {
+                    symlinkat(
                         fs::read_link(self.source.join(&entry.relative))?,
-                        &target,
-                    )?;
+                        &parent.0,
+                        &name,
+                    )
+                    .map_err(std::io::Error::from)?;
                 } else {
                     let source = open_source(&self.source, &entry.relative)?;
                     if vm_archive_identity(&source.metadata()?) != vm_archive_identity(meta) {
                         return Err(source_changed());
                     }
                     if entry.cloneable {
-                        clone_file(&source, &target).map_err(|error| NativeLayrError::Refused(format!(
-                        "Cannot clone {}: {error}. Native import does not fall back to an unbudgeted byte copy.", self.source.join(&entry.relative).display()
-                    )))?;
+                        clone_file(&source,&parent.0,&name).map_err(|error|NativeLayrError::Refused(format!("Cannot clone {}: {error}. Native import does not fall back to an unbudgeted byte copy.",self.source.join(&entry.relative).display())))?;
                     } else {
-                        let mut copy = fs::OpenOptions::new()
-                            .create_new(true)
-                            .write(true)
-                            .open(&target)?;
+                        let mut copy = File::from(
+                            openat(
+                                &parent.0,
+                                &name,
+                                OFlags::CREATE
+                                    | OFlags::EXCL
+                                    | OFlags::WRONLY
+                                    | OFlags::NOFOLLOW
+                                    | OFlags::CLOEXEC,
+                                Mode::from_raw_mode(0o600),
+                            )
+                            .map_err(std::io::Error::from)?,
+                        );
                         std::io::copy(&mut &source, &mut copy)?;
                     }
-                    fs::set_permissions(&target, fs::Permissions::from_mode(meta.mode() & 0o7777))?;
-                    File::open(&target)?
-                        .set_times(fs::FileTimes::new().set_modified(meta.modified()?))?;
+                    let file = File::from(
+                        openat(
+                            &parent.0,
+                            &name,
+                            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                            Mode::empty(),
+                        )
+                        .map_err(std::io::Error::from)?,
+                    );
+                    file.set_permissions(fs::Permissions::from_mode(meta.mode() & 0o7777))?;
+                    file.set_times(fs::FileTimes::new().set_modified(meta.modified()?))?;
                 }
-            }
-        }
-        // Set folder permissions last, so read-only folders can receive children.
-        // Retain the private destination root instead of copying the source root mode.
-        for entry in self.entries.iter().rev().filter(|e| {
-            e.metadata.is_dir() && e.cache == caches && !e.relative.as_os_str().is_empty()
-        }) {
-            for relative in stage_destinations(&entry.relative, caches, self.git_backed) {
-                fs::set_permissions(
-                    destination.join(relative),
-                    fs::Permissions::from_mode(entry.metadata.mode() & 0o7777),
-                )?;
             }
         }
         for entry in self
@@ -516,15 +603,32 @@ impl Plan {
         self.verify_source()
     }
 
+    fn directory_modes(&self, destination: &Directory, caches: bool) -> Result<()> {
+        for entry in self
+            .entries
+            .iter()
+            .rev()
+            .filter(|entry| entry.cache == caches && entry.metadata.is_dir())
+        {
+            for relative in stage_destinations(&entry.relative, caches, self.git_backed) {
+                destination
+                    .child(&relative, false)?
+                    .set_mode(entry.metadata.mode() & 0o7777)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Restore directory attributes after Layr's folder import creates its own directories.
     pub fn restore_directory_attributes(&self, destination: &Path) -> Result<bool> {
+        let destination = Directory::open(destination)?;
         let mut changed = false;
         for entry in self.entries.iter().filter(|entry| {
             entry.metadata.is_dir() && !entry.cache && !entry.relative.as_os_str().is_empty()
         }) {
             for target in stage_destinations(&entry.relative, false, false) {
                 changed |=
-                    attributes::copy(&self.source, &entry.relative, destination, &target, false)?;
+                    attributes::copy(&self.source, &entry.relative, &destination, &target, false)?;
             }
         }
         self.verify_source()?;
@@ -597,23 +701,16 @@ fn open_source(root: &Path, relative: &Path) -> std::io::Result<File> {
 #[cfg(target_os = "macos")]
 #[allow(
     unsafe_code,
-    reason = "isolates APFS descriptor clone and read-only volume policy APIs"
+    reason = "APFS clone between pinned file and parent directory descriptors"
 )]
-fn clone_file(source: &File, destination: &Path) -> std::io::Result<()> {
+fn clone_file(
+    source: &File,
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
     use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
-    let parent = File::open(
-        destination
-            .parent()
-            .ok_or_else(|| std::io::Error::other("Missing clone parent"))?,
-    )?;
-    let name = std::ffi::CString::new(
-        destination
-            .file_name()
-            .ok_or_else(|| std::io::Error::other("Missing clone name"))?
-            .as_bytes(),
-    )?;
-    // SAFETY: both descriptors and the NUL-terminated basename remain live for this call.
-    // CLONE_NOOWNERCOPY keeps ownership with the Studio user.
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // SAFETY: both descriptors and the NUL-terminated leaf remain live during this call.
     if unsafe {
         libc::fclonefileat(
             source.as_raw_fd(),
@@ -627,23 +724,32 @@ fn clone_file(source: &File, destination: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
-
 #[cfg(target_os = "linux")]
-fn clone_file(source: &File, destination: &Path) -> std::io::Result<()> {
-    let copy = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(destination)?;
+fn clone_file(
+    source: &File,
+    parent: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let copy = File::from(openat(
+        parent,
+        name,
+        OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )?);
     rustix::fs::ioctl_ficlone(&copy, source)?;
     Ok(())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn clone_file(_source: &File, _destination: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Native Layr requires APFS or btrfs",
-    ))
+fn volume_id_fd(fd: &std::os::fd::OwnedFd) -> std::io::Result<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(rustix::fs::fstat(fd)?.st_dev as u64)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(rustix::fs::fstatvfs(fd)?.f_fsid as u64)
+    }
 }
 
 pub(super) fn existing_ancestor(path: &Path) -> std::io::Result<&Path> {
@@ -1000,29 +1106,22 @@ fn escape_pattern(name: &str) -> String {
         .collect()
 }
 impl Plan {
-    fn write_ignores(&self, destination: &Path) -> Result<()> {
+    fn write_ignores(&self, destination: &Directory) -> Result<()> {
+        use rustix::fs::{Mode, OFlags};
         use std::io::Write;
         for directory in &self.ignore_directories {
-            let file = destination.join(directory).join(".layrignore");
-            if fs::symlink_metadata(&file).is_ok_and(|m| !m.is_file() || m.file_type().is_symlink())
-            {
-                return Err(NativeLayrError::Refused(format!(
-                    "Cannot override ignore rules through a link: {}",
-                    file.display()
-                )));
+            let parent = destination.child(directory, false)?;
+            if parent.exists(std::ffi::OsStr::new(".layrignore"))? {
+                parent
+                    .file(Path::new(".layrignore"), OFlags::RDONLY, Mode::empty())?
+                    .set_permissions(fs::Permissions::from_mode(0o600))?;
             }
-            if file.exists() {
-                fs::set_permissions(&file, fs::Permissions::from_mode(0o644))?;
-            }
-            let parent = file
-                .parent()
-                .ok_or_else(|| NativeLayrError::Refused("Missing ignore parent".into()))?;
-            let parent_mode = fs::metadata(parent)?.permissions().mode();
-            fs::set_permissions(parent, fs::Permissions::from_mode(parent_mode | 0o700))?;
-            let mut output = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file)?;
+            let file = parent.file(
+                Path::new(".layrignore"),
+                OFlags::CREATE | OFlags::APPEND | OFlags::WRONLY,
+                Mode::from_raw_mode(0o600),
+            )?;
+            let mut output = file;
             writeln!(
                 output,
                 "\n# Studio native import: version data; retain build caches.\n!*"
@@ -1036,12 +1135,19 @@ impl Plan {
                     writeln!(output, "/{}/", escape_pattern(name))?;
                 }
             }
-            fs::set_permissions(parent, fs::Permissions::from_mode(parent_mode))?;
         }
         Ok(())
     }
 
-    fn rewrite_submodules(&self, destination: &Path, caches: bool) -> Result<()> {
+    fn rewrite_submodules(
+        &self,
+        destination: &Directory,
+        project: &Directory,
+        repository: &Path,
+        caches: bool,
+    ) -> Result<()> {
+        use rustix::fs::{Mode, OFlags, openat};
+        use std::io::Read;
         for repo in &self.repositories {
             if repo.kind != "submodule" || repo.cache != caches {
                 continue;
@@ -1049,96 +1155,64 @@ impl Plan {
             let Some(git_dir) = &repo.git_directory else {
                 continue;
             };
-            let (relative, base) = if let Ok(relative) = git_dir.strip_prefix(&self.source) {
-                (relative, destination.to_owned())
+            let (relative, base, module) = if let Ok(relative) = git_dir.strip_prefix(&self.source)
+            {
+                (relative, destination, repo.relative.clone())
             } else {
-                let relative = git_dir
-                    .strip_prefix(&self.project_root)
-                    .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
-                let base = destination
-                    .ancestors()
-                    .nth(self.repository_relative.components().count())
-                    .ok_or_else(|| NativeLayrError::Refused("Missing project destination".into()))?
-                    .to_owned();
-                (relative, base)
+                (
+                    git_dir
+                        .strip_prefix(&self.project_root)
+                        .map_err(|e| NativeLayrError::Refused(e.to_string()))?,
+                    project,
+                    repository.join(&repo.relative),
+                )
             };
-            let mapped = if let Ok(suffix) = relative.strip_prefix(".git") {
-                Path::new(GIT_BACKUP).join(suffix)
-            } else {
-                relative.to_owned()
-            };
-            let module = destination.join(&repo.relative);
-            let metadata = base.join(&mapped);
-            let git_pointer = relative_path(&module, &metadata);
-            let marker = module.join(".git");
-            let marker_relative = marker
-                .strip_prefix(&base)
-                .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
-            let (parent, name) = open_parent(&base, marker_relative)?;
-            use std::io::Write;
-            let mut marker = File::from(
-                rustix::fs::openat(
-                    &parent,
-                    name,
-                    rustix::fs::OFlags::WRONLY
-                        | rustix::fs::OFlags::CREATE
-                        | rustix::fs::OFlags::TRUNC
-                        | rustix::fs::OFlags::NOFOLLOW
-                        | rustix::fs::OFlags::CLOEXEC,
-                    rustix::fs::Mode::from_raw_mode(0o600),
+            let mapped = relative.strip_prefix(".git").map_or_else(
+                |_| relative.to_owned(),
+                |tail| Path::new(GIT_BACKUP).join(tail),
+            );
+            let pointer = relative_path(&module, &mapped);
+            base.replace_file(
+                &module.join(".git"),
+                format!("gitdir: {}\n", pointer.display()).as_bytes(),
+                0o600,
+            )?;
+            let config = mapped.join("config");
+            let (parent, name) = base.parent(&config, false)?;
+            // Only this read may follow the copied config link. Its bytes enter a new private file.
+            let mut input = File::from(
+                openat(
+                    &parent.0,
+                    &name,
+                    OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
                 )
                 .map_err(std::io::Error::from)?,
             );
-            marker.write_all(format!("gitdir: {}\n", git_pointer.display()).as_bytes())?;
-            let worktree = relative_path(&metadata, &module);
-            let config = metadata.join("config");
-            let relative_config = config
-                .strip_prefix(&base)
-                .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
-            let (parent, name) = open_parent(&base, relative_config)?;
-            let copied = fs::symlink_metadata(&config)?;
-            if copied.file_type().is_symlink() {
-                let contents = fs::read(&config)?;
-                rustix::fs::unlinkat(&parent, &name, rustix::fs::AtFlags::empty())
-                    .map_err(std::io::Error::from)?;
-                let mut file = File::from(
-                    rustix::fs::openat(
-                        &parent,
-                        &name,
-                        rustix::fs::OFlags::WRONLY
-                            | rustix::fs::OFlags::CREATE
-                            | rustix::fs::OFlags::EXCL
-                            | rustix::fs::OFlags::NOFOLLOW
-                            | rustix::fs::OFlags::CLOEXEC,
-                        rustix::fs::Mode::from_raw_mode(0o600),
-                    )
-                    .map_err(std::io::Error::from)?,
-                );
-                file.write_all(&contents)?;
-            } else if !copied.is_file() {
+            if !input.metadata()?.is_file() {
                 return Err(NativeLayrError::Refused(
                     "Copied Git config is not a regular file".into(),
                 ));
             }
-            // The cloned module metadata and its config must stay inside the private tree.
-            let root = fs::canonicalize(&base)?;
-            if !fs::canonicalize(&config)?.starts_with(&root) {
-                return Err(NativeLayrError::Refused(
-                    "Copied Git config escapes the staging tree".into(),
-                ));
-            }
-            let _config = open_source(
-                &base,
-                config
-                    .strip_prefix(&base)
-                    .map_err(|error| NativeLayrError::Refused(error.to_string()))?,
-            )?;
+            let mut contents = Vec::new();
+            input.read_to_end(&mut contents)?;
+            let temp = tempfile::tempdir()?;
+            let config_temp = temp.path().join("config");
+            let private = Directory::open(temp.path())?;
+            private.replace_file(Path::new("config"), &contents, 0o600)?;
+            #[cfg(test)]
+            REVIEW_CONFIG_SWAP.with(|hook| {
+                if let Some(swap) = hook.borrow_mut().take() {
+                    swap();
+                }
+            });
+            let worktree = relative_path(&mapped, &module);
             let args = [
                 "config",
                 "--file",
-                config
-                    .to_str()
-                    .ok_or_else(|| NativeLayrError::Refused("Non-UTF-8 Git config path".into()))?,
+                config_temp.to_str().ok_or_else(|| {
+                    NativeLayrError::Refused("Non-UTF-8 temporary config path".into())
+                })?,
                 "core.worktree",
                 worktree
                     .to_str()
@@ -1146,7 +1220,7 @@ impl Plan {
             ];
             crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
                 program: std::ffi::OsStr::new("git"),
-                git_directory: Some(destination.as_os_str()),
+                git_directory: Some(temp.path().as_os_str()),
                 args: &args,
                 environment: &[("GIT_OPTIONAL_LOCKS", "0"), ("GIT_NO_LAZY_FETCH", "1")],
                 input: None,
@@ -1157,17 +1231,29 @@ impl Plan {
             .map_err(|error| {
                 NativeLayrError::Refused(format!("Cannot set cloned submodule worktree: {error:?}"))
             })?;
+            let mut output = Vec::new();
+            private
+                .file(Path::new("config"), OFlags::RDONLY, Mode::empty())?
+                .read_to_end(&mut output)?;
+            // The validated parent remains pinned even if its pathname or config leaf is replaced.
+            parent.replace_file(Path::new(&name), &output, 0o600)?;
         }
         Ok(())
     }
 
     pub fn warm_caches(&self, state: &Path, cwd: &Path, relative: &Path) -> Result<()> {
+        let project = Directory::open(cwd)?;
         for cache in &self.caches {
-            let name = relative.join(cache).to_string_lossy().into_owned();
-            super::run(state, cwd, &["cache", "add", &name])?;
+            super::run(
+                state,
+                cwd,
+                &["cache", "add", &relative.join(cache).to_string_lossy()],
+            )?;
         }
-        self.stage_entries(&cwd.join(relative), true)?;
-        self.rewrite_submodules(&cwd.join(relative), true)?;
+        let destination = project.child(relative, false)?;
+        self.stage_entries(&destination, true)?;
+        self.rewrite_submodules(&destination, &project, relative, true)?;
+        self.directory_modes(&destination, true)?;
         if !self.caches.is_empty() {
             super::run(state, cwd, &["save", "--caches"])?;
         }
@@ -1218,6 +1304,7 @@ pub(super) fn allocation_model() -> serde_json::Value {
 
 mod attributes;
 mod metadata;
+mod saved_caches;
 mod sizing;
 use sizing::git_allocation;
 #[cfg(test)]
@@ -1240,3 +1327,12 @@ fn child_relative_path(root: &Path, path: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod review_tests;
+
+#[cfg(test)]
+thread_local! { static REVIEW_CONFIG_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
+
+/// Validate the actual copied Git input before Layr can run a Git child with a cleared environment.
+pub(super) fn validate_private_git(staging: &Path) -> Result<()> {
+    let staging = fs::canonicalize(staging)?;
+    metadata::validate_repository(&staging, &staging)
+}

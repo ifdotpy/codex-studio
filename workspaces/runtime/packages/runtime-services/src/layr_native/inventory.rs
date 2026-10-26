@@ -12,6 +12,7 @@ pub(super) fn git(at: &Path, args: &[&str]) -> Result<Vec<u8>> {
         environment: &[
             ("GIT_OPTIONAL_LOCKS", "0"),
             ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_LITERAL_PATHSPECS", "1"),
             ("GIT_TERMINAL_PROMPT", "0"),
             ("LC_ALL", "C"),
         ],
@@ -205,9 +206,12 @@ fn hidden_index_changes(source: &Path) -> Result<u64> {
             let stage = git(source, &["ls-files", "--stage", "-z", "--", path])?;
             let record =
                 std::str::from_utf8(&stage).map_err(|e| NativeLayrError::Refused(e.to_string()))?;
-            let (index, _) = record
-                .split_once('\t')
-                .ok_or_else(|| NativeLayrError::Refused("Invalid index entry".into()))?;
+            let exact = record
+                .split('\0')
+                .filter_map(|record| record.split_once('\t'))
+                .find(|(_, name)| *name == path)
+                .ok_or_else(|| NativeLayrError::Refused("Missing exact index entry".into()))?;
+            let (index, _) = exact;
             let mut fields = index.split_whitespace();
             let mode = fields.next().unwrap_or_default();
             let oid = fields.next().unwrap_or_default();
@@ -279,5 +283,40 @@ mod review_tests {
             );
             std::fs::write(at.join(name), "base").unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod review2_tests {
+    use super::*;
+    #[test]
+    fn review2_hidden_index_paths_are_literal() {
+        let root = tempfile::tempdir().unwrap();
+        let at = root.path();
+        git(at, &["init", "-q"]).unwrap();
+        std::fs::write(at.join("a"), "edited").unwrap();
+        std::fs::write(at.join("a*"), "base").unwrap();
+        git(at, &["add", "."]).unwrap();
+        git(
+            at,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-qm",
+                "base",
+            ],
+        )
+        .unwrap();
+        git(at, &["update-index", "--assume-unchanged", "a*"]).unwrap();
+        std::fs::write(at.join("a*"), "edited").unwrap();
+        assert!(
+            hidden_index_changes(at).unwrap() > 0,
+            "A glob must not select another index record"
+        );
     }
 }
