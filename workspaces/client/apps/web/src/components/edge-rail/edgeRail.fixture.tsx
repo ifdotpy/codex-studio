@@ -29,6 +29,7 @@ function Fixture() {
         onClick: () => setLast("Toggle conversations"),
       },
       messages: { count: 3, onClick: () => setLast("Messages") },
+      team: { active: 1, total: 3, onClick: () => setLast("Team") },
       menu: (
         <Menu.Item onClick={() => setLast("Existing action")}>
           Existing action

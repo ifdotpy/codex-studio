@@ -4,7 +4,12 @@ import { createPortal } from "react-dom";
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import { useMergedRef } from "@mantine/hooks";
 import { layoutValues } from "../../layout/layout-contract.generated";
-import { MessageSquare, MoreHorizontal, PanelLeft } from "lucide-react";
+import {
+  MessageSquare,
+  MoreHorizontal,
+  TextAlignStart,
+  Users,
+} from "lucide-react";
 import type { EdgeRailGeometry } from "./edgeRailPolicy";
 import "./edge-rail.css";
 
@@ -19,6 +24,8 @@ export interface EdgeRailProps {
   geometry: EdgeRailGeometry | null;
   sidebar: RailAction & { label?: string };
   messages?: RailAction & { count: number };
+  /** The chat team; absent for chats without one. Counts are workers. */
+  team?: RailAction & { active: number; total: number };
   /** Existing Menu.Item children retain their handlers and permissions. */
   menu?: ReactNode;
   menuButtonRef?: Ref<HTMLButtonElement>;
@@ -28,6 +35,7 @@ export function EdgeRail({
   geometry,
   sidebar,
   messages,
+  team,
   menu,
   menuButtonRef,
 }: EdgeRailProps) {
@@ -112,9 +120,16 @@ export function EdgeRail({
     >
       {button(
         sidebar.label || "Toggle conversations",
-        <PanelLeft size={20} />,
+        <TextAlignStart size={20} />,
         sidebar,
       )}
+      {team &&
+        button(
+          `Team, ${team.active} of ${team.total} working`,
+          <Users size={20} />,
+          team,
+          `${team.active}/${team.total}`,
+        )}
       {messages &&
         messages.count > 0 &&
         button(

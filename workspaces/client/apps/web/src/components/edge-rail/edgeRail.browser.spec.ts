@@ -84,7 +84,11 @@ for (const capability of [
         path: test.info().outputPath("edge-rail-right.png"),
         animations: "disabled",
       });
-      for (const label of ["Toggle conversations", "Messages, 3 need you"]) {
+      for (const label of [
+        "Toggle conversations",
+        "Team, 1 of 3 working",
+        "Messages, 3 need you",
+      ]) {
         const button = rail.getByRole("button", { name: label, exact: true });
         const rect = (await button.boundingBox())!;
         expect(rect.width).toBeGreaterThanOrEqual(44);
@@ -92,7 +96,11 @@ for (const capability of [
         expect(rect.y + rect.height).toBeLessThanOrEqual(635);
         await button.click();
         await expect(page.locator("#last-action")).toHaveText(
-          label.startsWith("Messages") ? "Messages" : label,
+          label.startsWith("Messages")
+            ? "Messages"
+            : label.startsWith("Team")
+              ? "Team"
+              : label,
         );
       }
       // Buttons center on the system status column (edgeRail.statusColumnCenter).
@@ -100,7 +108,7 @@ for (const capability of [
         name: "Chat actions",
         exact: true,
       });
-      const actionsRect = await actions.boundingBox()!;
+      const actionsRect = (await actions.boundingBox())!;
       expect(actionsRect.x + actionsRect.width / 2).toBe(951 - 48);
       await actions.click();
       const item = page.getByRole("menuitem", { name: "Existing action" });
@@ -108,7 +116,7 @@ for (const capability of [
       expect((await item.boundingBox())!.x).toBeLessThan(867);
       // The menu opens at its button, keeps edgeRail.menuGap from the strip,
       // and ends above Home.
-      const menuRect = await page.getByRole("menu").boundingBox()!;
+      const menuRect = (await page.getByRole("menu").boundingBox())!;
       expect(Math.abs(menuRect.y - actionsRect.y)).toBeLessThanOrEqual(1);
       expect(menuRect.x + menuRect.width).toBeLessThanOrEqual(867 - 8);
       expect(menuRect.y + menuRect.height).toBeLessThanOrEqual(635);
@@ -126,7 +134,7 @@ for (const capability of [
       });
       await expect(rail).toHaveAttribute("data-side", "left");
       expect((await rail.boundingBox())!.x).toBe(0);
-      const leftActions = await actions.boundingBox()!;
+      const leftActions = (await actions.boundingBox())!;
       expect(leftActions.x + leftActions.width / 2).toBe(48);
       await actions.click();
       await expect(item).toBeVisible();
