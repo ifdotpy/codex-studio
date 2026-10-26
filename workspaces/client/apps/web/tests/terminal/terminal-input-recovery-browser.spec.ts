@@ -1,7 +1,7 @@
 import type { Route } from "@playwright/test";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import type { ResourceRef } from "../playwright.ts";
-import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 // Actual TerminalDock input callbacks and HTTP, with an isolated xterm fixture.
 import assert from "node:assert/strict";
@@ -177,7 +177,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         headers: apiSchemaHeaders(),
       });
     });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.evaluate(async () => {
       window.terminalInputRecoveryTerminals = [];
       window.terminalInputRecoveryNotices = [];
@@ -238,7 +238,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       await observed(text);
     };
     const reply = async (text: string, outcome = "success") => {
-      const route = required(held.get(text));
+      const route = held.get(text)!;
       assert.ok(route, `Expected held input ${text}`);
       const body = fixturePostBody(route, "/api/terminals/input");
       const response: PostResult<"/api/terminals/input"> =
@@ -249,7 +249,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
               error: "Late input outcome unknown",
             }
           : { ok: true, delivery: "sent" };
-      required(receipts.get(body.request_id)).reply = response;
+      receipts.get(body.request_id)!.reply = response;
       await route.fulfill(
         outcome === "error"
           ? {
@@ -418,7 +418,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     );
     await accepted("switch-fresh", true);
     assert.equal(
-      required(posts.find((post) => post.text === "switch-fresh")).id,
+      posts.find((post) => post.text === "switch-fresh")!.id,
       "shell-b",
     );
     await reply("switch-old");

@@ -1,4 +1,3 @@
-import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./ui-error-boundary-browser.fixture.tsx";
 import assert from "node:assert/strict";
@@ -41,7 +40,7 @@ test("ui-error-boundary-browser", async ({ page }) => {
     page.on("request", (request) => {
       if (request.method() !== "GET") writes.push(request.url());
     });
-    await page.goto(required(server.resolvedUrls?.local[0]));
+    await page.goto(server.resolvedUrls!.local[0]!);
     await page.getByText("Feature ready").waitFor();
     await page
       .getByRole("textbox", { name: "Draft" })

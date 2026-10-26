@@ -1,6 +1,5 @@
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
-import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./ux-request-recovery-browser.fixture.tsx";
 import {
@@ -36,7 +35,7 @@ test("Ux request recovery browser", async ({
         name: "request-recovery-fixture",
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
-            if (new URL(req.url || "/", "http://fixture").pathname !== "/")
+            if (new URL(req.url!, "http://fixture").pathname !== "/")
               return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
@@ -239,9 +238,7 @@ test("Ux request recovery browser", async ({
         });
       });
       try {
-        await page.goto(
-          `${required(server.resolvedUrls?.local[0])}?case=${mode}`,
-        );
+        await page.goto(`${server.resolvedUrls!.local[0]!}?case=${mode}`);
         if (mode === "picker") {
           const use = page.getByRole("button", {
             name: "Add project",
@@ -351,7 +348,7 @@ test("Ux request recovery browser", async ({
           const oldResponse = page.waitForResponse((response) =>
             response.url().endsWith("/api/accounts"),
           );
-          required(releaseOld)();
+          releaseOld!();
           await oldResponse;
           await page.evaluate(
             () =>
@@ -441,11 +438,8 @@ test("Ux request recovery browser", async ({
               () => window.uxRequestRecoveryBrowserSaves === 1,
             );
             assert.equal(writes.length, 2);
-            assert.equal(
-              required(writes[0]).folder_id,
-              required(writes[1]).folder_id,
-            );
-            assert.equal(required(writes[1]).name, "Different name");
+            assert.equal(writes[0]!.folder_id, writes[1]!.folder_id);
+            assert.equal(writes[1]!.name, "Different name");
             assert.deepEqual(errors, []);
             results.push({ mode, passed: true });
             continue;
@@ -487,10 +481,7 @@ test("Ux request recovery browser", async ({
         results.push({
           mode,
           passed: false,
-          error: String(error instanceof Error ? error.message : error).slice(
-            0,
-            400,
-          ),
+          error: String((error as Error).message).slice(0, 400),
         });
       } finally {
         releaseOld?.();

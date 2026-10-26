@@ -1,4 +1,3 @@
-import { required } from "./helpers.ts";
 import { waitForFixturePort } from "../playwright.ts";
 import {
   test,
@@ -25,9 +24,7 @@ for (const width of [1024, 390]) {
     const port = await waitForFixturePort(fixture);
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
-    const lead = required(
-      snapshot.threads.find((a) => a.name === "Release lead"),
-    );
+    const lead = snapshot.threads.find((a) => a.name === "Release lead")!;
     lead.overview = {
       result: "Lead report",
       resultTruncated: true,

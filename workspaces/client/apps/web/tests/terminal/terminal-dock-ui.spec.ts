@@ -1,4 +1,4 @@
-import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import {
   readTestState,
   entityPullFixtureForRequest,
@@ -82,7 +82,7 @@ test("Terminal dock", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-terminal-dock-"));
   const server = createServer(async (req, res) => {
     try {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const name = url.pathname;
       if (name === "/api/sync/identity") {
         res.setHeader("Content-Type", "application/json");
@@ -294,7 +294,7 @@ test("Terminal dock", async () => {
           id: body.id,
           agent: body.agent,
           title: "Terminal 251",
-          cwd: required(agent.cwd),
+          cwd: agent.cwd!,
           status: "running",
           created: Date.now() / 1000,
         };
@@ -371,15 +371,21 @@ test("Terminal dock", async () => {
       } else if (path === "/api/terminals/rename") {
         const body = fixturePostBody(route, "/api/terminals/rename");
         writes.push({ path, body });
-        Object.assign(required(shells.find((item) => item.id === body.id)), {
-          title: body.title,
-        });
+        Object.assign(
+          shells.find((item) => item.id === body.id)!,
+          {
+            title: body.title,
+          },
+        );
       } else if (path === "/api/terminals/close") {
         const body = fixturePostBody(route, "/api/terminals/close");
         writes.push({ path, body });
-        Object.assign(required(shells.find((item) => item.id === body.id)), {
-          status: "closed",
-        });
+        Object.assign(
+          shells.find((item) => item.id === body.id)!,
+          {
+            status: "closed",
+          },
+        );
         publishResourceChanges([
           { kind: "terminals" },
           { kind: "terminal", terminalId: body.id },
@@ -543,10 +549,7 @@ test("Terminal dock", async () => {
       .getByRole("button", { name: "Download saved output", exact: true })
       .click();
     const downloaded = await downloadResult;
-    assert.equal(
-      await readFile(required(await downloaded.path()), "utf8"),
-      archive,
-    );
+    assert.equal(await readFile((await downloaded.path())!, "utf8"), archive);
     assert.deepEqual(archiveReads, [0, 65536, 131072]);
     historyMode = "hold";
     await dock
@@ -558,7 +561,7 @@ test("Terminal dock", async () => {
     await dock
       .getByRole("button", { name: "Cancel download", exact: true })
       .click();
-    await required(heldHistory).fulfill({
+    await heldHistory!.fulfill({
       json: {
         text: "late",
         offset: 4,
@@ -584,7 +587,7 @@ test("Terminal dock", async () => {
       "A cancelled or invalid history never downloads a partial file",
     );
     historyMode = "ready";
-    const screen = required(await dock.locator(".xterm-screen").boundingBox());
+    const screen = (await dock.locator(".xterm-screen").boundingBox())!;
     await page.mouse.move(screen.x + 1, screen.y + 7);
     await page.mouse.down();
     await page.mouse.move(screen.x + 145, screen.y + 7, { steps: 8 });
@@ -623,10 +626,10 @@ test("Terminal dock", async () => {
     await dock
       .getByRole("button", { name: "Release logs", exact: true })
       .waitFor();
-    const before = required(await dock.boundingBox());
+    const before = (await dock.boundingBox())!;
     await dock.getByRole("separator").focus();
     await page.keyboard.press("ArrowUp");
-    const after = required(await dock.boundingBox());
+    const after = (await dock.boundingBox())!;
     assert.ok(after.height > before.height);
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
@@ -646,7 +649,7 @@ test("Terminal dock", async () => {
     );
     failOutput = true;
     publishResourceChanges([
-      { kind: "terminal", terminalId: required(created.body.id) },
+      { kind: "terminal", terminalId: created.body.id! },
     ]);
     await dock
       .getByText("Terminal connection interrupted", { exact: false })
@@ -694,7 +697,7 @@ test("Terminal dock", async () => {
     await dock.getByRole("button", { name: "Reconnect", exact: true }).click();
     truncateOutput = true;
     publishResourceChanges([
-      { kind: "terminal", terminalId: required(created.body.id) },
+      { kind: "terminal", terminalId: created.body.id! },
     ]);
     await dock
       .getByText(
@@ -802,10 +805,10 @@ test("Terminal dock", async () => {
     liveOrigin,
     liveToken,
     liveShell: string | undefined;
-  required(fixture.stderr).on("data", (data) => (fixtureLog += data));
+  fixture.stderr!.on("data", (data) => (fixtureLog += data));
   try {
     const port = await new Promise((resolve, reject) => {
-      required(fixture.stdout).once("data", (data) =>
+      fixture.stdout!.once("data", (data) =>
         resolve(Number(String(data).trim())),
       );
       fixture.once("exit", () => reject(new Error(fixtureLog)));
@@ -857,15 +860,13 @@ test("Terminal dock", async () => {
       await fetch(liveOrigin + "/api/terminals")
     ).json();
     assert.equal(sessions.items.length, 1);
-    liveShell = required(sessions.items[0]).id;
+    liveShell = sessions.items[0]!.id;
     const output: GetResult<"/api/terminals/output"> = await (
       await fetch(
-        `${liveOrigin}/api/terminals/output?id=${encodeURIComponent(required(liveShell))}&offset=0`,
+        `${liveOrigin}/api/terminals/output?id=${encodeURIComponent(liveShell!)}&offset=0`,
       )
     ).json();
-    assert.ok(
-      output.text.includes(`PTY_RESULT:${required(sessions.items[0]).cwd}`),
-    );
+    assert.ok(output.text.includes(`PTY_RESULT:${sessions.items[0]!.cwd}`));
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
       .click();
@@ -907,17 +908,17 @@ test("Terminal dock", async () => {
     );
     const after = await readTestState(liveOrigin);
     const ownerBefore = initial.threads.find(
-      (item) => item.id === required(sessions.items[0]).agent,
+      (item) => item.id === sessions.items[0]!.agent,
     );
     const ownerAfter = after.threads.find(
-      (item) => item.id === required(sessions.items[0]).agent,
+      (item) => item.id === sessions.items[0]!.agent,
     );
     assert.equal(
-      required(ownerBefore).turnId,
-      required(ownerAfter).turnId,
+      ownerBefore!.turnId,
+      ownerAfter!.turnId,
       "A user shell must not start an agent turn",
     );
-    assert.equal(required(ownerBefore).status, required(ownerAfter).status);
+    assert.equal(ownerBefore!.status, ownerAfter!.status);
     await page.screenshot({
       path: join(liveRoot, "terminal-live-desktop.png"),
     });

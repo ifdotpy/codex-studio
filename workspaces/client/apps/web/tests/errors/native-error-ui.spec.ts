@@ -1,4 +1,3 @@
-import { required } from "../teams/helpers.ts";
 import type { JsonInput, Agent } from "../../src/types.ts";
 import {
   apiSchemaHeaders,
@@ -58,7 +57,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       code: number | null;
       signal: NodeJS.Signals | null;
     } | null = null;
-  required(proc.stderr).on("data", (d) => (log += String(d)));
+  proc.stderr!.on("data", (d) => (log += String(d)));
   proc.once("exit", (code, signal) => {
     backendExit = { at: new Date().toISOString(), code, signal };
   });
@@ -84,9 +83,7 @@ test("native error ui", async ({ page: runnerPage }) => {
   };
   try {
     const port = await new Promise<number>((resolve, reject) => {
-      required(proc.stdout).once("data", (d) =>
-        resolve(Number(String(d).trim())),
-      );
+      proc.stdout!.once("data", (d) => resolve(Number(String(d).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
@@ -191,7 +188,7 @@ test("native error ui", async ({ page: runnerPage }) => {
         },
       }),
     );
-    required(proc.stdin).write(
+    proc.stdin!.write(
       JSON.stringify({
         method: "fixture/limits",
         params: {
@@ -209,20 +206,20 @@ test("native error ui", async ({ page: runnerPage }) => {
       .click();
     await page.locator("#message").fill("Exercise the live stream");
     await page.locator("#send").click();
-    let agent: Agent = required(
-      (await state()).runtime.agents.find((a) => a.name === "Other project"),
-    );
+    let agent: Agent = (await state()).runtime.agents.find(
+      (a) => a.name === "Other project",
+    )!;
     await poll(async () => {
-      agent = required(
-        (await state()).runtime.agents.find((a) => a.name === "Other project"),
-      );
+      agent = (await state()).runtime.agents.find(
+        (a) => a.name === "Other project",
+      )!;
       return agent.status === "running" && agent.turnId;
     }, "turn starts");
     const event = (
       method: string,
       params: Record<string, JsonInput | undefined>,
     ) =>
-      required(proc.stdin).write(
+      proc.stdin!.write(
         JSON.stringify({
           method,
           params: { threadId: agent.threadId, turnId: agent.turnId, ...params },
@@ -434,8 +431,7 @@ test("native error ui", async ({ page: runnerPage }) => {
     await hook.getByText("Hook failed: preToolUse", { exact: true }).click();
     await hook.getByText(/The hook cannot read its configuration/).waitFor();
     assert.equal(
-      required((await state()).runtime.agents.find((a) => a.id === agent.id))
-        .status,
+      (await state()).runtime.agents.find((a) => a.id === agent.id)!.status,
       "running",
     );
     event("hook/started", { run: { ...run, id: "hook-quiet" } });
@@ -504,7 +500,7 @@ test("native error ui", async ({ page: runnerPage }) => {
     await page.locator(".native-error summary").click();
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
     const box = await page.locator(".native-error pre").boundingBox();
-    assert.ok(required(box).height <= 181, "error details have bounded height");
+    assert.ok(box!.height <= 181, "error details have bounded height");
     await page.screenshot({ path: join(root, "native-error-mobile.png") });
     const start = async (text: string) => {
       await page.setViewportSize({ width: 1200, height: 900 });
@@ -512,9 +508,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       await page.locator("#send").click();
       const previous = agent.turnId;
       await poll(async () => {
-        agent = required(
-          (await state()).runtime.agents.find((a) => a.id === agent.id),
-        );
+        agent = (await state()).runtime.agents.find((a) => a.id === agent.id)!;
         return agent.inFlight && agent.turnId && agent.turnId !== previous;
       }, "new test turn starts");
     };
@@ -531,7 +525,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       .filter({ hasText: error.message })
       .getByText("Sign in again to this chat's account.", { exact: true })
       .waitFor();
-    required(proc.stdin).write(
+    proc.stdin!.write(
       JSON.stringify({
         method: "turn/completed",
         params: {
@@ -548,9 +542,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       }) + "\n",
     );
     await poll(async () => {
-      agent = required(
-        (await state()).runtime.agents.find((a) => a.id === agent.id),
-      );
+      agent = (await state()).runtime.agents.find((a) => a.id === agent.id)!;
       return agent.capacityRetry?.status === "scheduled";
     }, "capacity failure schedules retry");
     await page.locator(".native-error.warning").waitFor();
@@ -563,9 +555,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       .waitFor();
     await page.getByRole("button", { name: "Retry now", exact: true }).click();
     await poll(async () => {
-      agent = required(
-        (await state()).runtime.agents.find((a) => a.id === agent.id),
-      );
+      agent = (await state()).runtime.agents.find((a) => a.id === agent.id)!;
       return (
         agent.capacityRetry?.status === "starting" &&
         agent.capacityRetry?.acceptedTurnId
@@ -578,9 +568,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       turn: { id: agent.turnId, status: "interrupted", error: null },
     });
     await poll(async () => {
-      agent = required(
-        (await state()).runtime.agents.find((a) => a.id === agent.id),
-      );
+      agent = (await state()).runtime.agents.find((a) => a.id === agent.id)!;
       return !agent.inFlight && agent.capacityRetry?.status === "finished";
     }, "manual capacity retry finishes");
     await start("Check limit recovery");
@@ -676,7 +664,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       wrappedError,
     );
     await start("Check terminal precaution");
-    required(proc.stdin).write(
+    proc.stdin!.write(
       JSON.stringify({
         id: 992,
         method: "item/commandExecution/requestApproval",

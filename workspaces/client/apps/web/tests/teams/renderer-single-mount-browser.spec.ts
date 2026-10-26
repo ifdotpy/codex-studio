@@ -35,10 +35,10 @@ test("another entry URL keeps one Studio tree after lazy modules load", async ({
     await expect(page.locator("#team")).toHaveCount(1);
     await page.evaluate(async () => {
       window.studioOriginalSidebar = document.getElementById("sidebar");
-      const entry = document.querySelector('script[type="module"][src]');
-      if (!(entry instanceof HTMLScriptElement))
-        throw Error("Missing entry script");
-      const url = new URL(entry.src);
+      const entry = document.querySelector<HTMLScriptElement>(
+        'script[type="module"][src]',
+      );
+      const url = new URL(entry!.src);
       url.searchParams.set("duplicate-entry", "1");
       await import(url.href);
     });

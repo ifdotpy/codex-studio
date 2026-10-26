@@ -1,7 +1,6 @@
 import type { ServerResponse } from "node:http";
 import type { Route } from "@playwright/test";
 import type { JsonInput } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./structured-operational-errors-ui.fixture.tsx";
 import {
@@ -39,10 +38,9 @@ test("Structured operational errors ui", async ({
           server.middlewares.use("/api/sync/stream", (request, response) => {
             const resources: import("../playwright.ts").ResourceRef[] =
               JSON.parse(
-                new URL(
-                  request.url || "/",
-                  "http://127.0.0.1",
-                ).searchParams.get("resources") || "[]",
+                new URL(request.url!, "http://127.0.0.1").searchParams.get(
+                  "resources",
+                ) || "[]",
               );
             const event = {
               protocol: 4,
@@ -163,7 +161,7 @@ test("Structured operational errors ui", async ({
         json: { tasks: [], monitors: [], requests: [], id: "tool" },
       });
     });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.waitForFunction(
       () => !!window.structuredOperationalErrorsUiRenderCase,
     );
@@ -269,9 +267,9 @@ test("Structured operational errors ui", async ({
         break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    assert.deepEqual(JSON.parse(required(required(persisted[0]).error)), value);
-    assert.equal(required(persisted[0]).id, "recording");
-    assert.equal(required(persisted[0]).samples, 4);
+    assert.deepEqual(JSON.parse(persisted[0]!.error!), value);
+    assert.equal(persisted[0]!.id, "recording");
+    assert.equal(persisted[0]!.samples, 4);
     assert.equal(
       await page.evaluate(
         () => window.structuredOperationalErrorsUiTranscriptionCalls,

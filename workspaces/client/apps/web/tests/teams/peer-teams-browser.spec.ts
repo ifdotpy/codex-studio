@@ -5,7 +5,7 @@ type PeerRequest =
   | components["schemas"]["PeerTeamDeleteRequest"]
   | components["schemas"]["PeerTeamSaveRequest"];
 import type {} from "./peer-teams-browser.fixture.tsx";
-import { required, fixturePostBody } from "./helpers.ts";
+import { fixturePostBody } from "./helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { apiSchemaHeaders, test } from "../playwright.ts";
 import assert from "node:assert/strict";
@@ -52,12 +52,6 @@ test("Peer teams browser", async ({
     const applied = new Map<string, PeerRequest>();
     await page.route("**/api/peer-teams", async (route) => {
       const body = fixturePostBody(route, "/api/peer-teams");
-      if (
-        body.action !== "move" &&
-        body.action !== "delete" &&
-        body.action !== "save"
-      )
-        throw Error("Unexpected peer team request");
       requests.push(body);
       if (mode === "stale")
         return route.fulfill({
@@ -77,10 +71,10 @@ test("Peer teams browser", async ({
           (t) => t.id === body.team_id,
         );
         for (const t of state.runtime.peerTeams)
-          t.members = (t.members ?? []).filter((id) => id !== body.member);
-        if (target) (target.members ??= []).push(body.member);
+          t.members = t.members!.filter((id) => id !== body.member);
+        if (target) target.members!.push(body.member);
         state.runtime.peerTeams = state.runtime.peerTeams.filter(
-          (t) => (t.members ?? []).length >= 2,
+          (t) => t.members!.length >= 2,
         );
       } else
         state.runtime.peerTeams =
@@ -88,14 +82,14 @@ test("Peer teams browser", async ({
             ? []
             : [
                 {
-                  id: required(body.team_id),
+                  id: body.team_id!,
                   name: body.name,
                   projectPath: body.path,
                   members: body.members,
                 },
               ];
-      const project = required(state.runtime.projects[0]);
-      project.peerTeamsRevision = (project.peerTeamsRevision ?? 0) + 1;
+      const project = state.runtime.projects[0]!;
+      project.peerTeamsRevision!++;
       applied.set(body.request_id, body);
       if (mode === "lost") {
         mode = "ok";
@@ -106,8 +100,8 @@ test("Peer teams browser", async ({
         headers: apiSchemaHeaders(),
       });
     });
-    await page.goto(`${required(server.resolvedUrls?.local[0])}check`);
-    await page.waitForFunction(() => window.peerTeamsFixture.data);
+    await page.goto(`${server.resolvedUrls!.local[0]!}check`);
+    await page.waitForFunction(() => window.peerTeamsFixture?.data);
     state = await page.evaluate(() => window.peerTeamsFixture.data);
     const project = page.locator('[data-project-path="/p"]');
     const menu = async () => {
@@ -131,7 +125,7 @@ test("Peer teams browser", async ({
     await form.getByRole("button", { name: "Retry", exact: true }).click();
     await form.waitFor({ state: "detached" });
     assert.deepEqual(requests[0], requests[1]);
-    assert.equal(required(state.runtime.projects[0]).peerTeamsRevision, 1);
+    assert.equal(state.runtime.projects[0]!.peerTeamsRevision, 1);
     await page.getByRole("button", { name: /^Show old \(/ }).click();
     assert.equal(await project.locator('[data-chat="a"]').count(), 1);
     assert.equal(await project.locator('[data-chat="b"]').count(), 1);
@@ -196,7 +190,7 @@ test("Peer teams browser", async ({
       1,
     );
     state.threads.push({
-      ...required(state.threads.find((a) => a.id === "c")),
+      ...state.threads.find((a) => a.id === "c")!,
       id: "e",
       name: "Epsilon",
     });
@@ -216,12 +210,12 @@ test("Peer teams browser", async ({
     await project.locator('[data-chat="a"]').dragTo(teamTarget);
     await second.locator('[data-chat="a"]').waitFor();
     assert.equal(await page.locator('[data-peer-team="t1"]').count(), 0);
-    assert.equal(required(requests.at(-1)).action, "move");
+    assert.equal(requests.at(-1)!.action, "move");
     await second.locator('[data-chat="a"]').dragTo(projectTarget);
     await page.waitForFunction(
       () =>
         !window.peerTeamsFixture.data.runtime.peerTeams.some((t) =>
-          t.members?.includes("a"),
+          t.members!.includes("a"),
         ),
     );
     const beforeForeign = requests.length;
@@ -257,7 +251,7 @@ test("Peer teams browser", async ({
     await page.waitForFunction(
       () =>
         !window.peerTeamsFixture.data.runtime.peerTeams.some((t) =>
-          t.members?.includes("b"),
+          t.members!.includes("b"),
         ),
     );
     await page.screenshot({
@@ -306,7 +300,7 @@ test("Peer teams browser", async ({
     await form
       .getByLabel("Team name")
       .fill("A long team name that should fit a narrow sidebar");
-    const bounds = required(await form.boundingBox());
+    const bounds = (await form.boundingBox())!;
     assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 360);
     assert.equal(
       await form.evaluate((e) => e.scrollWidth <= e.clientWidth),

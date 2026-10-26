@@ -7,7 +7,6 @@ import type {
   GetResult,
 } from "../../src/apiTypes.ts";
 import type { TestAgent } from "../playwright.ts";
-import { required } from "../teams/helpers.ts";
 import {
   apiSchemaHeaders,
   readTestState,
@@ -56,7 +55,7 @@ test("workspace ui", async ({ page: testPage }) => {
   });
   let log = "";
   const page: Page = testPage;
-  required(proc.stderr).on("data", (d) => (log += d));
+  proc.stderr!.on("data", (d) => (log += d));
   const poll = async (fn: () => boolean | Promise<boolean>, label: string) => {
     for (let i = 0; i < 180; i++) {
       if (await fn()) return;
@@ -66,9 +65,7 @@ test("workspace ui", async ({ page: testPage }) => {
   };
   try {
     const port = await new Promise((resolve, reject) => {
-      required(proc.stdout).once("data", (d) =>
-        resolve(Number(String(d).trim())),
-      );
+      proc.stdout!.once("data", (d) => resolve(Number(String(d).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
@@ -77,9 +74,7 @@ test("workspace ui", async ({ page: testPage }) => {
       query = "",
     ): Promise<GetResult<Path>> => (await fetch(origin + path + query)).json();
     const initial = await readTestState(origin);
-    const lead = required(
-      initial.runtime.agents.find((a) => a.name === "Release lead"),
-    );
+    const lead = initial.runtime.agents.find((a) => a.name === "Release lead")!;
     const post = async <Path extends ApiPostPath>(
       path: Path,
       body: PostBody<Path>,
@@ -194,12 +189,12 @@ test("workspace ui", async ({ page: testPage }) => {
       );
       return !!planAgent?.threadId;
     }, "plan agent has a native thread");
-    required(proc.stdin).write(
+    proc.stdin!.write(
       JSON.stringify({
         method: "turn/plan/updated",
         params: {
-          threadId: required(planAgent).threadId,
-          turnId: required(planAgent).turnId,
+          threadId: planAgent!.threadId,
+          turnId: planAgent!.turnId,
           explanation: "Inspect the evidence before release.",
           plan: [
             { step: "Inspect evidence", status: "completed" },
@@ -340,14 +335,14 @@ test("workspace ui", async ({ page: testPage }) => {
       async () => (await get("/api/rules")).rules.length === 1,
       "low worker alert persisted",
     );
-    const lowWorkers = required((await get("/api/rules")).rules[0]);
+    const lowWorkers = (await get("/api/rules")).rules[0]!;
     assert.equal(lowWorkers.kind, "low_workers");
     assert.equal(lowWorkers.agent, lead.id);
     assert.equal(lowWorkers.minimumWorkers, 3);
     assert.equal(lowWorkers.durationMinutes, 2);
     assert.equal(lowWorkers.command, "");
-    assert.ok(required(lowWorkers.text).trim());
-    await page.setViewportSize(required(desktopViewport));
+    assert.ok(lowWorkers.text!.trim());
+    await page.setViewportSize(desktopViewport!);
     await page.waitForTimeout(500);
     if (!(await drawer.isVisible())) {
       await page
@@ -467,13 +462,11 @@ test("workspace ui", async ({ page: testPage }) => {
       0,
       "resource reservations are not available in the workspace",
     );
-    const changedLead = required(
-      (await readTestState(origin)).runtime.agents.find(
-        (agent) => agent.id === lead.id,
-      ),
-    );
+    const changedLead = (await readTestState(origin)).runtime.agents.find(
+      (agent) => agent.id === lead.id,
+    )!;
     assert.ok(changedLead.threadId, "fixture lead has a native thread");
-    required(proc.stdin).write(
+    proc.stdin!.write(
       JSON.stringify({
         method: "turn/diff/updated",
         params: {

@@ -1,4 +1,3 @@
-import { required } from "./helpers.ts";
 import {
   test,
   expect,
@@ -21,9 +20,7 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
   await mkdir(evidence, { recursive: true });
   const origin = readOnlyRust.origin;
   const snapshot = await readTestState(origin);
-  const lead = required(
-    snapshot.threads.find((agent) => agent.name === "Release lead"),
-  );
+  const lead = snapshot.threads.find((agent) => agent.name === "Release lead")!;
   // A static roster row opens the real Team layout without another provider.
   snapshot.threads.push({
     ...lead,
@@ -64,7 +61,7 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
         await page
           .getByRole("button", {
             name:
-              required(page.viewportSize()).width <= 760
+              page.viewportSize()!.width <= 760
                 ? "Back to chats"
                 : "Toggle conversations",
             exact: true,

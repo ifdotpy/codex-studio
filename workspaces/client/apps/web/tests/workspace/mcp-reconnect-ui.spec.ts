@@ -1,5 +1,5 @@
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
-import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import { test, expect } from "../playwright.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -107,7 +107,7 @@ for (const width of [320, 1200]) {
           json: { status: "completed", message: "Reconnect completed." },
         });
       });
-      await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+      await page.goto(server.resolvedUrls!.local[0]! + "check");
       const first = page.getByRole("region", {
         name: "MCP server server-with-a-long-name-for-small-window-layout-check",
         exact: true,
@@ -129,8 +129,8 @@ for (const width of [320, 1200]) {
       release();
       await expect(first).toContainText("Reconnect completed.");
       await expect(first).toContainText("Status: connected");
-      expect(required(calls[0]).session.thread).toBe("thread");
-      expect(required(calls[0]).name).toContain("server-with-a-long-name");
+      expect(calls[0]!.session.thread).toBe("thread");
+      expect(calls[0]!.name).toContain("server-with-a-long-name");
       mode = "lost";
       await first
         .getByRole("button", { name: "Reconnect", exact: true })
@@ -143,14 +143,14 @@ for (const width of [320, 1200]) {
         .getByRole("button", { name: "Check reconnect result", exact: true })
         .click();
       await expect(first).toContainText("Reconnect completed.");
-      expect(required(calls[2]).request_id).toBe(required(calls[1]).request_id);
+      expect(calls[2]!.request_id).toBe(calls[1]!.request_id);
       mode = "codex";
       await first
         .getByRole("button", { name: "Reconnect", exact: true })
         .click();
       await expect(first).toContainText("not supported for Codex");
       await first.scrollIntoViewIfNeeded();
-      const box = required(await first.boundingBox());
+      const box = (await first.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(width);
       expect(
@@ -172,10 +172,8 @@ for (const width of [320, 1200]) {
         .getByRole("button", { name: "Reconnect", exact: true })
         .click();
       await expect(first).toContainText("Reconnect completed.");
-      expect(required(calls.at(-1)).session.thread).toBe("new-thread");
-      expect(required(calls.at(-1)).request_id).not.toBe(
-        required(calls.at(-2)).request_id,
-      );
+      expect(calls.at(-1)!.session.thread).toBe("new-thread");
+      expect(calls.at(-1)!.request_id).not.toBe(calls.at(-2)!.request_id);
       expect(errors).toEqual([]);
     } finally {
       release();

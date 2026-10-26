@@ -1,4 +1,3 @@
-import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./file-viewers-browser.fixture.tsx";
 import assert from "node:assert/strict";
@@ -107,7 +106,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
         });
         return;
       }
-      const value = Object.entries(fixtures).find(([key]) => key === path)?.[1];
+      const value = fixtures[path!];
       if (!value) {
         await route.fulfill({
           status: 404,
@@ -117,9 +116,9 @@ test("file-viewers-browser", async ({ browser, page }) => {
       }
       await route.fulfill({
         json: {
-          name: required(path).split("/").at(-1),
+          name: path!.split("/").at(-1),
           mime: value[0],
-          base64: Buffer.from(required(value[1])).toString("base64"),
+          base64: Buffer.from(value[1]!).toString("base64"),
         },
       });
     });
@@ -128,7 +127,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
       externalRequests.push(route.request().url());
       await route.abort();
     });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.waitForFunction(() => window.fileViewersBrowserShow);
     const show = async (path: string) => {
       await page.evaluate((path) => window.fileViewersBrowserShow(path), path);
@@ -276,7 +275,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
       .click();
     assert.deepEqual(
       await page.evaluate(() => window.fileViewersBrowserSaved.bytes),
-      Array.from(Buffer.from(required(fixtures["/data.csv"][1]))),
+      Array.from(Buffer.from(fixtures["/data.csv"][1]!)),
     );
     await show("/data.tsv");
     assert.equal(await page.locator("td").nth(2).textContent(), "c\td");
@@ -307,30 +306,28 @@ test("file-viewers-browser", async ({ browser, page }) => {
       const image = new Image();
       const displayed =
         document.querySelector<HTMLImageElement>(".image-viewer img");
-      if (!displayed) throw new Error("Missing preview image");
-      image.src = displayed.src;
+
+      image.src = displayed!.src;
       await image.decode();
       const canvas = document.createElement("canvas");
       canvas.width = image.naturalWidth;
       canvas.height = image.naturalHeight;
       const context = canvas.getContext("2d");
-      if (!context) throw new Error("Missing canvas context");
-      context.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight);
+
+      context!.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight);
       return [50, 150, 220, 380, 420, 580, 620, 780].map((x) =>
-        Array.from(context.getImageData(x, 50, 1, 1).data),
+        Array.from(context!.getImageData(x, 50, 1, 1).data),
       );
     });
     assert.deepEqual(pixels[0], [255, 0, 0, 255], "SVG class style survives");
     assert.deepEqual(pixels[1], [0, 128, 0, 255], "SVG inline style survives");
     for (let i = 2; i < pixels.length; i += 2) {
       assert(
-        required(required(pixels[i])[0]) > 200 &&
-          required(required(pixels[i])[2]) < 55,
+        pixels[i]![0]! > 200 && pixels[i]![2]! < 55,
         "Quoted local gradient starts red",
       );
       assert(
-        required(required(pixels[i + 1])[2]) > 200 &&
-          required(required(pixels[i + 1])[0]) < 55,
+        pixels[i + 1]![2]! > 200 && pixels[i + 1]![0]! < 55,
         "Quoted local gradient ends blue",
       );
     }
@@ -380,15 +377,13 @@ test("file-viewers-browser", async ({ browser, page }) => {
     await show("/page.html");
     assert.equal(await page.locator("iframe").getAttribute("sandbox"), "");
     assert(
-      !((await page.locator("iframe").getAttribute("srcdoc")) || "").includes(
+      !(await page.locator("iframe").getAttribute("srcdoc"))!.includes(
         "<script>",
       ),
     );
     await show("/document.pdf");
     assert(
-      ((await page.locator("iframe").getAttribute("src")) || "").startsWith(
-        "blob:",
-      ),
+      (await page.locator("iframe").getAttribute("src"))!.startsWith("blob:"),
     );
     await show("/other.docx");
     await page
@@ -411,7 +406,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
       document.querySelector('[aria-label="Load file"]'),
     );
     await show("/data.json");
-    await required(delayed).fulfill({
+    await delayed!.fulfill({
       json: {
         name: "late.md",
         mime: "text/markdown",

@@ -10,8 +10,8 @@ declare global {
       refreshCount: number;
       refreshHold: boolean;
       refreshFailure: boolean;
-      refreshRelease: () => void;
-      setLead: (lead: Agent) => void;
+      refreshRelease?: () => void;
+      setLead?: (lead: Agent) => void;
     };
   }
 }
@@ -25,12 +25,6 @@ window.confirmedConcurrencyFixture = {
   refreshCount: 0,
   refreshHold: true,
   refreshFailure: false,
-  refreshRelease: () => {
-    throw Error("Refresh has not started");
-  },
-  setLead: () => {
-    throw Error("Fixture has not rendered");
-  },
 };
 function Fixture() {
   const [lead, setLead] = useState<Agent>(initialConfirmedLead);

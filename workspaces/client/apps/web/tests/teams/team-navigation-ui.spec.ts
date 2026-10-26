@@ -1,6 +1,5 @@
 import type { SyncPullResponse, AgentEntityDto } from "../playwright.ts";
 import {
-  required,
   fixtureGetResult,
   fixturePostResult,
   legacySyncEntities,
@@ -54,9 +53,9 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     const port = await waitForFixturePort(proc, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
-    const lead = required(
-      initial.threads.find((agent) => agent.name === "Release lead"),
-    );
+    const lead = initial.threads.find(
+      (agent) => agent.name === "Release lead",
+    )!;
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
     );
@@ -69,11 +68,9 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       "navigation workers must persist after result delivery; reviewers auto-archive",
     );
     const worker = (n: number) =>
-      required(
-        workers.find(
-          (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
-        ),
-      );
+      workers.find(
+        (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
+      )!;
     const longName =
       "Check approval and interrupted worker navigation across a large release team";
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
@@ -275,7 +272,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .sort(),
       JSON.stringify(
         (await groupIds("Working")).map(
-          (id) => required(workers.find((agent) => agent.id === id))?.name,
+          (id) => workers.find((agent) => agent.id === id)?.name,
         ),
       ),
     );
@@ -509,8 +506,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       expect(
         await page.locator(".workspace-header").evaluate((header) => {
           const titleElement = header.querySelector("#conversation-title");
-          if (!titleElement) throw Error("Missing title");
-          const title = titleElement.getBoundingClientRect();
+
+          const title = titleElement!.getBoundingClientRect();
           return [...header.querySelectorAll("button, summary")].every(
             (control) => {
               const rect = control.getBoundingClientRect();
@@ -534,8 +531,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         await page.locator("#back-lead").evaluate((n) => {
           const r = n.getBoundingClientRect();
           const headerElement = n.closest("header");
-          if (!headerElement) throw Error("Missing header");
-          const header = headerElement.getBoundingClientRect();
+
+          const header = headerElement!.getBoundingClientRect();
           return r.top >= header.top && r.bottom <= header.bottom;
         }),
         "Back to main agent remains inside the mobile header",

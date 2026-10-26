@@ -1,7 +1,6 @@
 import type { HistorySnapshot } from "./current-command-history-fixture.tsx";
 import type { Message } from "../../src/types.ts";
 import type { BrowserContext, TestInfo } from "@playwright/test";
-import { required } from "../teams/helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 // Completed command rows disappear. Current commands and source records remain.
 import assert from "node:assert/strict";
@@ -64,7 +63,7 @@ test("current command history ui", async ({ browser: _browser }) => {
         writes.push(route.request().url());
       await route.fulfill({ json: {} });
     });
-    await page.goto(required(server.resolvedUrls?.local[0]));
+    await page.goto(server.resolvedUrls!.local[0]!);
     await page.waitForFunction(
       () => typeof window.currentCommandHistoryApply === "function",
     );
@@ -151,7 +150,7 @@ test("current command history ui", async ({ browser: _browser }) => {
         .locator(`main[data-case="${label}"]`)
         .waitFor({ state: "attached" });
       assert.deepEqual(
-        JSON.parse(required(await page.locator("output").textContent())),
+        JSON.parse((await page.locator("output").textContent())!),
         rows,
         "Source history remains intact",
       );

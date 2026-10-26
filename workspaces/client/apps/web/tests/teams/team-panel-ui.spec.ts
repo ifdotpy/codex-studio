@@ -1,5 +1,5 @@
 import type { TestAgent } from "../playwright.ts";
-import { required, fixturePostBody } from "./helpers.ts";
+import { fixturePostBody } from "./helpers.ts";
 import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
@@ -52,14 +52,12 @@ test("Team panel ui", async ({
         },
       });
     });
-    const lead = required(
-      snapshot.threads.find((agent) => agent.name === "Release lead"),
-    );
-    const member = required(
-      snapshot.threads.find(
-        (agent) => agent.rootId === lead.id && !agent.isLead,
-      ),
-    );
+    const lead = snapshot.threads.find(
+      (agent) => agent.name === "Release lead",
+    )!;
+    const member = snapshot.threads.find(
+      (agent) => agent.rootId === lead.id && !agent.isLead,
+    )!;
     const rawError =
       "Command ['git', '-C', '/workspace/project', 'worktree', 'add', '-b', 'codex-agent/" +
       "12345678-".repeat(8) +
@@ -317,10 +315,7 @@ test("Team panel ui", async ({
       const card = panel
         .locator(".worker-entry")
         .filter({ has: page.locator(`[data-worker="${member.id}"]`) });
-      assert.ok(
-        required(await card.boundingBox()).height < 250,
-        "compact error card",
-      );
+      assert.ok((await card.boundingBox())!.height < 250, "compact error card");
       assert.equal(await card.locator("pre").isVisible(), false);
       await panel.screenshot({ path: join(evidence, `team-${width}.png`) });
       await card.locator(".worker-error-details > .disclosure-control").click();
@@ -371,12 +366,8 @@ test("Team panel scrolls past retained worktrees to the last worker", async ({
   const port = await waitForFixturePort(fixture, { diagnostics: () => log });
   const origin = `http://127.0.0.1:${port}`;
   const snapshot = await readTestState(origin);
-  const lead = required(
-    snapshot.threads.find((agent) => agent.name === "Release lead"),
-  );
-  const member = required(
-    snapshot.threads.find((agent) => agent.rootId === lead.id),
-  );
+  const lead = snapshot.threads.find((agent) => agent.name === "Release lead")!;
+  const member = snapshot.threads.find((agent) => agent.rootId === lead.id)!;
   const workers = Array.from({ length: 24 }, (_, index): TestAgent => ({
     ...member,
     id: `scroll-worker-${index}`,
@@ -417,7 +408,7 @@ test("Team panel scrolls past retained worktrees to the last worker", async ({
     await expect(panel.locator(".worker-entry")).toHaveCount(24);
     const lastWorker = panel.locator(".worker-entry").last();
     await expect(lastWorker).not.toBeInViewport();
-    const box = required(await panel.boundingBox());
+    const box = (await panel.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.wheel(0, 100_000);
     await expect

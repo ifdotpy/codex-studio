@@ -1,4 +1,3 @@
-import { required } from "../teams/helpers.ts";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -69,7 +68,7 @@ test("retained folders of live and deleted workers show at both widths", async (
       }),
     );
     await page.setViewportSize({ width: 320, height: 900 });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await expect(
       page.getByText("Worktree retained", { exact: true }),
     ).toHaveCount(1);

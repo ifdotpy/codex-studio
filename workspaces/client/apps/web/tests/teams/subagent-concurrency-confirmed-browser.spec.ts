@@ -4,7 +4,7 @@ import {
 } from "./concurrency-fixture-data.ts";
 import type { components } from "../../src/generated/api.ts";
 import type {} from "./subagent-concurrency-confirmed-browser.fixture.tsx";
-import { required, fixturePostBody } from "./helpers.ts";
+import { fixturePostBody } from "./helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -88,7 +88,7 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
   });
   try {
     await server.listen();
-    await page.goto(`${required(server.resolvedUrls?.local[0])}check`);
+    await page.goto(`${server.resolvedUrls!.local[0]!}check`);
     const control = page.locator(".agent-mode-control");
     const input = page.getByRole("textbox", {
       name: "Subagent parallelism",
@@ -97,7 +97,7 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
     await input.fill("64");
     await input.blur();
     await expect.poll(() => writes.length).toBe(1);
-    assert.equal(required(writes[0]).expected_mode_revision, 0);
+    assert.equal(writes[0]!.expected_mode_revision, 0);
     await expect(control).toHaveAttribute("data-concurrency", "32");
     await expect(input).toBeDisabled();
     assert.equal(
@@ -106,20 +106,20 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
       ),
       0,
     );
-    required(releaseReply)();
+    releaseReply!();
     await page.waitForFunction(
       () => !!window.confirmedConcurrencyFixture.refreshRelease,
     );
     await expect(control).toHaveAttribute("data-concurrency", "64");
     await expect(control).toHaveAttribute("data-agent-mode-revision", "1");
     await expect(input).toBeEnabled({ timeout: 1000 });
-    assert.equal(required(writes[0]).expected_account_key, "default");
+    assert.equal(writes[0]!.expected_account_key, "default");
     await expect(control.getByText("Applying…", { exact: true })).toHaveCount(
       0,
     );
     await page.evaluate(() => {
       window.confirmedConcurrencyFixture.refreshFailure = true;
-      window.confirmedConcurrencyFixture.refreshRelease();
+      window.confirmedConcurrencyFixture.refreshRelease!();
     });
     await expect(control.getByRole("alert")).toContainText(
       "Setting saved. Credentials unavailable",
@@ -136,24 +136,24 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
     await expect.poll(() => writes.length).toBe(2);
     await expect(control).toHaveAttribute("data-agent-mode", "multi");
     await expect(input).toBeDisabled();
-    required(releaseReply)();
+    releaseReply!();
     await expect(control).toHaveAttribute("data-agent-mode", "single");
     await expect(input).toBeEnabled();
-    assert.equal(required(writes[1]).expected_mode_revision, 1);
+    assert.equal(writes[1]!.expected_mode_revision, 1);
     // A newer snapshot remains authoritative when an older response arrives.
     reply = { ...initial, concurrency: 128, agentModeRevision: 3 };
     await input.fill("128");
     await input.blur();
     await expect.poll(() => writes.length).toBe(3);
     await page.evaluate(
-      (lead) => window.confirmedConcurrencyFixture.setLead(lead),
+      (lead) => window.confirmedConcurrencyFixture.setLead!(lead),
       {
         ...initial,
         concurrency: 8,
         agentModeRevision: 4,
       },
     );
-    required(releaseReply)();
+    releaseReply!();
     await expect(input).toBeEnabled();
     await expect(control).toHaveAttribute("data-concurrency", "8");
     await expect(control).toHaveAttribute("data-agent-mode-revision", "4");
