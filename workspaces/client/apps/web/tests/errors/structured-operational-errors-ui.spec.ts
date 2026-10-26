@@ -1,3 +1,9 @@
+import type { ServerResponse } from "node:http";
+import type { Route } from "@playwright/test";
+import type { JsonInput } from "../../src/types.ts";
+import { required } from "../teams/helpers.ts";
+import { createServer } from "vite";
+import type {} from "./structured-operational-errors-ui.fixture.tsx";
 import {
   apiSchemaHandshakeSse,
   apiSchemaHeaders,
@@ -7,7 +13,6 @@ import {
 } from "../playwright.ts";
 // Structured diagnostic fixtures through real React components. No live API writes.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,57 +24,10 @@ test("Structured operational errors ui", async ({
 }) => {
   test.setTimeout(180_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-operational-errors-"));
   const syncIdentity = syncIdentityFixture();
-  const syncStreams = new Set();
-  const harness = `
-  import React from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import Requests from '/src/components/questions/Requests.tsx';
-  import UserMessages from '/src/components/shell/messages/UserMessages.tsx';
-  import BackgroundTasks from '/src/components/shell/BackgroundTasks.tsx';
-  import CapacityRetry from '/src/components/CapacityRetry.tsx';
-  import SafetyBuffering from '/src/components/conversation/transcript/SafetyBuffering.tsx';
-  import {Dictation} from '/src/components/Dictation.tsx';
-  import {saveRecording,listRecordings} from '/src/dictation/storage.ts';
-  window.readRecordings=()=>listRecordings('lead');
-  const root=createRoot(document.getElementById('root'));
-  const agent={id:'lead',rootId:'lead',name:'Lead',epoch:0,accountKey:'default',turnId:'turn',inFlight:true};
-  const snapshot={stateDir:'fixture',token:'fixture',threads:[agent],chats:[],runtime:{agents:[agent],tasks:[],monitors:[],requests:[]}};
-  const noop=()=>{};
-  const refresh=async()=>{};
-  let renderId=0;
-  class Boundary extends React.Component {
-   state={error:''};
-   static getDerivedStateFromError(error){return {error:error.message};}
-   componentDidCatch(error){window.crashes.push(error.message);}
-   render(){return this.state.error?React.createElement('p',{'data-crash':true},this.state.error):this.props.children;}
-  }
-  window.renderCase=async(which,value)=>{
-   let component;
-   if(which==='request') {
-    const request={id:'approval',agent:'lead',method:'item/commandExecution/requestApproval',params:{reason:'Structured operation failed'}};
-    component=React.createElement(Requests,{requests:[request],allRequests:[request],scope:'fixture',agents:[agent],refresh,notify:noop});
-   }
-   if(which==='message') component=React.createElement(UserMessages,{data:{...snapshot,runtime:{...snapshot.runtime,complaints:[{id:'message',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'User check',created:1,version:1}]}},refresh,notify:noop});
-   if(which==='background') component=React.createElement(BackgroundTasks,{opened:true,close:noop,data:{...snapshot,runtime:{...snapshot.runtime,tasks:[{id:'tool',agent:'lead',kind:'command',name:'commandExecution',command:'fixture command',status:'running',created:1,error:value,stdinError:value}]}},leadId:'lead',openAgent:noop,refresh,notify:noop});
-   if(which==='capacity') component=React.createElement(CapacityRetry,{agentId:'lead',retry:{id:'retry',status:'scheduled',dueAt:Date.now()/1000+100,reason:value}});
-   if(which==='safety') component=React.createElement(SafetyBuffering,{agent:{...agent,nativeSafetyRetry:{epoch:0,accountKey:'default',turnId:'turn',stage:'failed',error:value}}});
-   if(which==='dictation') {
-    window.codexDesktop={};
-    await saveRecording({id:'recording',chatId:'lead',state:'ready',sampleRate:16000,samples:4,created:Date.now(),error:value});
-    component=React.createElement(Dictation,{chatId:'lead',onInsert:noop});
-   }
-   root.render(React.createElement(MantineProvider,null,React.createElement(Boundary,{key:++renderId},component)));
-  };
-  window.crashes=[];
-  `;
+  const syncStreams = new Set<ServerResponse>();
+
   const server = await createServer({
     configFile: false,
     root: join(root, "workspaces/client/apps/web"),
@@ -79,11 +37,13 @@ test("Structured operational errors ui", async ({
         name: "operational-errors-fixture",
         configureServer(server) {
           server.middlewares.use("/api/sync/stream", (request, response) => {
-            const resources = JSON.parse(
-              new URL(request.url, "http://127.0.0.1").searchParams.get(
-                "resources",
-              ) || "[]",
-            );
+            const resources: import("../playwright.ts").ResourceRef[] =
+              JSON.parse(
+                new URL(
+                  request.url || "/",
+                  "http://127.0.0.1",
+                ).searchParams.get("resources") || "[]",
+              );
             const event = {
               protocol: 4,
               workspaceId: syncIdentity.workspaceId,
@@ -110,12 +70,6 @@ test("Structured operational errors ui", async ({
             response.on("close", () => syncStreams.delete(response));
           });
         },
-        resolveId(id) {
-          if (id === "virtual:operational-errors") return "\0" + id;
-        },
-        load(id) {
-          if (id === "\0virtual:operational-errors") return harness;
-        },
       },
     ],
     server: { host: "127.0.0.1", port: 0, hmr: false },
@@ -124,9 +78,9 @@ test("Structured operational errors ui", async ({
   try {
     const page = runnerPage;
     await page.setViewportSize({ width: 390, height: 844 });
-    const writes = [],
-      errors = [],
-      consoleErrors = [];
+    const writes: unknown[] = [],
+      errors: string[] = [],
+      consoleErrors: string[] = [];
     page.on("console", (m) => {
       if (m.type() === "error") consoleErrors.push(m.text());
     });
@@ -134,12 +88,12 @@ test("Structured operational errors ui", async ({
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:operational-errors";</script>',
+        body: '<!doctype html><div id="root"></div><script type="module">import "/tests/errors/structured-operational-errors-ui.fixture.tsx";</script>',
       }),
     );
-    let messageFailure;
+    let messageFailure: JsonInput;
     await page.route("**/api/**", async (route) => {
-      const fulfill = (options) =>
+      const fulfill = (options: NonNullable<Parameters<Route["fulfill"]>[0]>) =>
         route.fulfill({
           ...options,
           headers: { ...apiSchemaHeaders(), ...options.headers },
@@ -209,8 +163,10 @@ test("Structured operational errors ui", async ({
         json: { tasks: [], monitors: [], requests: [], id: "tool" },
       });
     });
-    await page.goto(server.resolvedUrls.local[0] + "check");
-    await page.waitForFunction(() => !!window.renderCase);
+    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.waitForFunction(
+      () => !!window.structuredOperationalErrorsUiRenderCase,
+    );
     const value = {
       error: "Structured operation failed",
       code: "access_failed",
@@ -226,7 +182,8 @@ test("Structured operational errors ui", async ({
       "dictation",
     ]) {
       await page.evaluate(
-        ({ which, value }) => window.renderCase(which, value),
+        ({ which, value }) =>
+          window.structuredOperationalErrorsUiRenderCase(which, value),
         {
           which,
           value,
@@ -250,7 +207,9 @@ test("Structured operational errors ui", async ({
         console.error(
           which,
           await page.locator("body").innerText(),
-          await page.evaluate(() => window.crashes),
+          await page.evaluate(
+            () => window.structuredOperationalErrorsUiCrashes,
+          ),
         );
         throw error;
       }
@@ -263,7 +222,7 @@ test("Structured operational errors ui", async ({
         assert.match(await page.locator("body").innerText(), /"attempt": 7/);
       }
       assert.deepEqual(
-        await page.evaluate(() => window.crashes),
+        await page.evaluate(() => window.structuredOperationalErrorsUiCrashes),
         [],
         which + " retains the component",
       );
@@ -281,33 +240,44 @@ test("Structured operational errors ui", async ({
       );
     }
     await page.evaluate((value) => {
-      window.transcriptionCalls = 0;
+      window.structuredOperationalErrorsUiTranscriptionCalls = 0;
+      if (!window.codexDesktop)
+        throw new Error("Missing fixture desktop bridge");
       window.codexDesktop.prepareTranscription = async () => {
         throw value;
       };
       window.codexDesktop.transcribeAudio = async () => {
-        window.transcriptionCalls++;
-        return { text: "Must not run" };
+        window.structuredOperationalErrorsUiTranscriptionCalls++;
+        return { text: "Must not run", provider: "fixture", onDevice: false };
       };
     }, value);
     await page
       .getByRole("button", { name: "Retry transcription", exact: true })
       .click();
     const deadline = Date.now() + 5000;
-    let persisted;
+    let persisted: Awaited<
+      ReturnType<typeof import("../../src/dictation/storage.ts").listRecordings>
+    > = [];
     while (Date.now() < deadline) {
-      persisted = await page.evaluate(() => window.readRecordings());
+      persisted = await page.evaluate(() =>
+        window.structuredOperationalErrorsUiReadRecordings(),
+      );
       if (
         typeof persisted[0]?.error === "string" &&
-        persisted[0].error.includes("E_FIXTURE")
+        persisted[0]?.error?.includes("E_FIXTURE")
       )
         break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    assert.deepEqual(JSON.parse(persisted[0].error), value);
-    assert.equal(persisted[0].id, "recording");
-    assert.equal(persisted[0].samples, 4);
-    assert.equal(await page.evaluate(() => window.transcriptionCalls), 0);
+    assert.deepEqual(JSON.parse(required(required(persisted[0]).error)), value);
+    assert.equal(required(persisted[0]).id, "recording");
+    assert.equal(required(persisted[0]).samples, 4);
+    assert.equal(
+      await page.evaluate(
+        () => window.structuredOperationalErrorsUiTranscriptionCalls,
+      ),
+      0,
+    );
     await page
       .getByText("Structured operation failed", { exact: true })
       .first()
@@ -318,7 +288,8 @@ test("Structured operational errors ui", async ({
       '"quoted diagnostic"',
     ]) {
       await page.evaluate(
-        (value) => window.renderCase("dictation", value),
+        (value) =>
+          window.structuredOperationalErrorsUiRenderCase("dictation", value),
         legacy,
       );
       await page
@@ -326,7 +297,10 @@ test("Structured operational errors ui", async ({
         .click();
       await page.getByText(legacy, { exact: true }).first().waitFor();
     }
-    assert.deepEqual(await page.evaluate(() => window.crashes), []);
+    assert.deepEqual(
+      await page.evaluate(() => window.structuredOperationalErrorsUiCrashes),
+      [],
+    );
     assert.deepEqual(errors, []);
     console.log(
       "PASS: structured request/message/retry/safety/dictation diagnostics preserve render and manual actions",

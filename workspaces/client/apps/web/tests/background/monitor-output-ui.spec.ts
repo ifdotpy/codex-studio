@@ -1,6 +1,8 @@
+import { fixturePostBody, required } from "../teams/helpers.ts";
+import type { GetResult, PostBody } from "../../src/apiTypes.ts";
+import type {} from "./monitor-output-ui.fixture.tsx";
 // Hidden browser fixture for the real activity drawer. Native processes use HTTP fixtures.
-import { createRequire } from "node:module";
-const { test, expect } = createRequire(import.meta.url)("@playwright/test");
+import { test, expect } from "../playwright.ts";
 import { createServer } from "vite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,18 +13,7 @@ for (const width of [320, 1200]) {
   test(`monitor output controls at ${width}px`, async ({ page }, testInfo) => {
     const root = fileURLToPath(new URL("../../", import.meta.url));
     const temporary = await mkdtemp(join(tmpdir(), "studio-monitor-output-"));
-    const harness = `
-import React from 'react';
-import {createRoot} from 'react-dom/client';
-import {MantineProvider} from '@mantine/core';
-import '@mantine/core/styles.css';
-import '/src/style.css';
-import BackgroundTasks from '/src/components/shell/BackgroundTasks.tsx';
-const data={threads:[{id:'lead',rootId:'lead',name:'Lead',epoch:2,accountKey:'default'}],runtime:{tasks:[],monitors:[],requests:[]}};
-createRoot(document.getElementById('root')).render(React.createElement(MantineProvider,{defaultColorScheme:'dark'},React.createElement(BackgroundTasks,{
-opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'lead',requestId:'focus'},openAgent:()=>{},refresh:async()=>{},notify:message=>(window.notices??=[]).push(message)
-})));
-`;
+
     const server = await createServer({
       configFile: false,
       root,
@@ -30,19 +21,14 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
       plugins: [
         {
           name: "monitor-output-fixture",
-          resolveId(id) {
-            if (id === "virtual:monitor-output") return "\0" + id;
-          },
-          load(id) {
-            if (id === "\0virtual:monitor-output") return harness;
-          },
         },
       ],
       server: { host: "127.0.0.1", port: 0, hmr: false },
     });
     await server.listen();
-    const calls = [];
-    const errors = [];
+    const calls: { path: string; body: PostBody<"/api/monitor/restart"> }[] =
+      [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const common = {
       agent: "lead",
@@ -62,7 +48,7 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
         stop: true,
       },
     };
-    const monitor = {
+    const monitor: GetResult<"/api/processes">["processes"][number] = {
       ...common,
       id: "monitor",
       key: "monitor-key",
@@ -76,7 +62,7 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
         tokens: 0,
       },
     };
-    const background = {
+    const background: GetResult<"/api/processes">["processes"][number] = {
       ...common,
       id: "claude",
       key: "claude-key",
@@ -89,14 +75,17 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
     await page.route("**/fixture", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:monitor-output";</script>',
+        body: '<!doctype html><div id="root"></div><script type="module">import "/tests/background/monitor-output-ui.fixture.tsx";</script>',
       }),
     );
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
       if (request.method() === "POST") {
-        calls.push({ path: url.pathname, body: request.postDataJSON() });
+        calls.push({
+          path: url.pathname,
+          body: fixturePostBody(route, "/api/monitor/restart"),
+        });
         if (url.pathname === "/api/monitor/restart") {
           if (restartUnknown) {
             restartUnknown = false;
@@ -115,7 +104,9 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
       if (url.pathname === "/api/sync/identity")
         return route.fulfill({
           headers: {
-            "X-Studio-API-Schema": request.headers()["x-studio-api-schema"],
+            "X-Studio-API-Schema": required(
+              request.headers()["x-studio-api-schema"],
+            ),
           },
           json: {
             workspaceId: "1234567890abcdef1234567890abcdef",
@@ -151,7 +142,7 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
     });
     try {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto(server.resolvedUrls.local[0] + "fixture");
+      await page.goto(required(server.resolvedUrls?.local[0]) + "fixture");
       await expect(page.getByText("1250 matches suppressed")).toBeVisible();
       await expect(
         page.getByText("Output wakes paused", { exact: true }),
@@ -172,7 +163,7 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
         })
         .click();
       await expect(page.getByLabel("Command", { exact: true })).toHaveValue(
-        monitor.command,
+        required(monitor.command),
       );
       await expect(
         page.getByLabel("Output patterns, one per line"),
@@ -205,8 +196,10 @@ opened:true,close:()=>{},data,leadId:'lead',initialFocus:{id:'monitor',leadId:'l
       await page.getByRole("button", { name: "Check restart result" }).click();
       await expect.poll(() => calls.length).toBe(2);
       expect(calls[0]).toEqual(calls[1]);
-      expect(calls[0].body.outputPatterns).toEqual(["build complete"]);
-      expect(calls[0].path).toBe("/api/monitor/restart");
+      expect(required(calls[0]).body.outputPatterns).toEqual([
+        "build complete",
+      ]);
+      expect(required(calls[0]).path).toBe("/api/monitor/restart");
       if (width === 320)
         await page
           .getByRole("button", { name: "Activity", exact: true })
