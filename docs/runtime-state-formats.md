@@ -24,6 +24,10 @@ use their recorded account's provider when available, preserving the previous
 cost attribution. Explicit known providers stay unchanged; unknown names are not
 converted into another provider.
 
+The account registry moves from version `1` to version `2`. Only the migration
+accepts version `1`; version `2` requires explicit providers and is never repaired
+by applying the historical default again.
+
 Startup applies the conversion before strict readers and provider work. Database
 changes use their existing transactions; the account registry uses its existing
 atomic replacement. Reopening a converted state must not rewrite its records or
