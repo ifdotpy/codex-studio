@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { frameURL, serverFrameHost } from "./frameOrigin";
 const native = createRequire(import.meta.url)(
-  "../../../desktop/frame-owner.cjs",
+  "../../../desktop/frame-owner.ts",
 );
 it("uses distinct DNS-valid frame hosts for case-sensitive IDs, UUIDs and maximum length IDs", () => {
   const ids = [

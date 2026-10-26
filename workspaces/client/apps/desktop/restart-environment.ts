@@ -1,4 +1,4 @@
-// Owner of persisted launch-environment version and allowed keys; Rust parity is checked by backend.test.mjs.
+// Owner of persisted launch-environment version and allowed keys; Rust parity is checked by backend.test.ts.
 const restartEnvironmentVersion = 1;
 const restartKeys = [
   "CODEX_HOME",
@@ -17,7 +17,17 @@ const restartKeys = [
 const retiredRestartKeys = ["CODEX_AGENTS_PYTHON"];
 const environmentKeys = new Set([...restartKeys, "PATH"]);
 
-function savedLaunchEnvironment(env, saved, state) {
+export type SavedEnvironment = {
+  version?: unknown;
+  stateDir?: unknown;
+  environment?: unknown;
+  unsetEnvironment?: unknown;
+};
+function savedLaunchEnvironment(
+  env: NodeJS.ProcessEnv,
+  saved: SavedEnvironment,
+  state: string,
+) {
   const result = { ...env };
   // Old preference-only files do not describe a backend launch environment.
   if (saved.environment === undefined && saved.unsetEnvironment === undefined)
@@ -51,7 +61,7 @@ function savedLaunchEnvironment(env, saved, state) {
   return result;
 }
 
-module.exports = {
+export {
   restartKeys,
   retiredRestartKeys,
   restartEnvironmentVersion,

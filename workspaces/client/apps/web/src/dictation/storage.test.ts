@@ -8,7 +8,7 @@ import { test } from "vitest";
 
 test("speech WAV encoding and helper errors remain bounded and retryable", async () => {
   const { validateAudio, transcribe } = createRequire(import.meta.url)(
-    "../../../desktop/speech.cjs",
+    "../../../desktop/speech.ts",
   );
   const data = await wav(
     [new Int16Array([0, 32767, -32768])],
