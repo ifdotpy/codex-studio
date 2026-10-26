@@ -4,7 +4,7 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import VaultSetup from "../../src/components/sidebar/VaultSetup.tsx";
 import ClaudeSignIn from "../../src/components/ClaudeSignIn.tsx";
-import { createServerServices } from "../../src/servers/serverServices.ts";
+import type { ServerServices } from "../../src/servers/serverServices.ts";
 import { ServerServicesProvider } from "../../src/servers/ServerServicesContext.tsx";
 import type { ApiPostPath, PostBody, PostResult } from "../../src/apiTypes.ts";
 import type {
@@ -17,13 +17,7 @@ import { fixtureElement } from "./browser-helpers.ts";
 const reads = { facts: 0, auth: 0, jobs: 0 };
 const selectors: ResourceRef[] = [];
 const listeners = new Map<string, (version?: ResourceVersion) => void>();
-const defaults = createServerServices({
-  id: "local",
-  label: "Fixture",
-  origin: location.origin,
-});
 const resources = {
-  ...defaults.resources,
   watchResourceChanges(
     resource: ResourceRef,
     accept: (version?: ResourceVersion) => void,
@@ -36,20 +30,23 @@ const resources = {
     };
   },
   watchResourceConnection(
-    accept: Parameters<typeof defaults.resources.watchResourceConnection>[0],
+    accept: (
+      state: Parameters<
+        Parameters<ServerServices["resources"]["watchResourceConnection"]>[0]
+      >[0],
+    ) => void,
   ) {
-    accept("live", "open", {});
+    accept("live");
     return () => {};
   },
 };
-// The fixture writes this exact saved login before the real component reads it.
-defaults.api.save("claude-sign-in:fixture:claude-one", "login-one");
 const api = {
-  ...defaults.api,
   get: async () => {
     reads.auth++;
     throw new Error("unexpected auth read");
   },
+  saved: (key: string, fallback: unknown) =>
+    key === "claude-sign-in:fixture:claude-one" ? "login-one" : fallback,
   save: () => {},
   stableRequestId: () => "",
   clearStableRequestId: () => {},
@@ -75,26 +72,35 @@ const backend = {
     }
     reads.facts++;
     return fixtureReply<P>({
-      gatewayProfile: null,
       prefix: "project-one",
       keys: flow === "vault-job",
       site: "https://desk.example",
       region: "eu-west-1",
       profiles:
         flow === "vault-job" ? [{ name: "fixture", signedIn: true }] : [],
-    } satisfies PostResult<"/api/vault/setup/facts">);
+    });
   },
 };
+// This one-off fixture omits unused service adapters and API methods.
 const services = {
-  ...defaults,
+  owner: { id: "local", origin: location.origin },
   api,
   resources,
   fileDialogs: {
-    ...defaults.fileDialogs,
     showVaultKeys: async () => {},
     canShowVaultKeys: () => true,
   },
-};
+} as ServerServices;
+// These one-off fixtures omit the unused vault state and account home/source fields.
+const entry = { vault: { projectId: "p1" } } as React.ComponentProps<
+  typeof VaultSetup
+>["entry"];
+const account = {
+  id: "claude-one",
+  label: "Claude",
+  provider: "claude",
+  status: "signedOut",
+} as React.ComponentProps<typeof ClaudeSignIn>["account"];
 const progress = (progress: ResourceProgress) =>
   listeners.get(JSON.stringify(progress.resource))?.({
     epoch: "fixture",
@@ -107,7 +113,7 @@ createRoot(fixtureElement("root")).render(
     <ServerServicesProvider services={services}>
       {flow !== "auth" ? (
         <VaultSetup
-          entry={{ vault: { projectId: "p1", state: "ok" } }}
+          entry={entry}
           name="Project"
           backend={backend}
           onClose={() => {}}
@@ -117,14 +123,7 @@ createRoot(fixtureElement("root")).render(
         />
       ) : (
         <ClaudeSignIn
-          account={{
-            id: "claude-one",
-            label: "Claude",
-            provider: "claude",
-            status: "signedOut",
-            home: "",
-            source: "fixture",
-          }}
+          account={account}
           scope="fixture"
           onClose={() => {}}
           onReady={() => {
