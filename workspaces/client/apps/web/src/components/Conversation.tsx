@@ -282,6 +282,8 @@ export default function Conversation(p: {
   const planType =
     typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
   const mobileClient = useMediaQuery("(max-width: 760px)");
+  // Touch keyboards have no Shift + Enter habit: Enter adds a line there.
+  const coarsePointer = useMediaQuery("(pointer: coarse)");
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const compactHeaderTools = useCompactHeaderTools();
   const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
@@ -1971,7 +1973,7 @@ export default function Conversation(p: {
                     getDraft={p.getDraft}
                     setDraft={p.setDraft}
                     input={input}
-                    mobile={mobileClient}
+                    mobile={mobileClient || coarsePointer}
                     managed={!!managed}
                     canSend={canSend}
                     blocked={!!threadBlock}

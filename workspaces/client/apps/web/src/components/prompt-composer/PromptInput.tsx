@@ -50,12 +50,28 @@ const AutosizeInput = memo(function AutosizeInput({
   );
 });
 
+/** Touch keyboards add a line on Enter; Cmd or Ctrl + Enter sends everywhere. */
+export function enterSends(
+  event: {
+    key: string;
+    shiftKey: boolean;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    isComposing: boolean;
+  },
+  touch: boolean,
+) {
+  if (event.key !== "Enter" || event.isComposing) return false;
+  return event.metaKey || event.ctrlKey || (!touch && !event.shiftKey);
+}
+
 export default function PromptInput(p: {
   value: string;
   session: string;
   getDraft: DraftReader;
   setDraft: DraftWriter;
   input: RefObject<HTMLTextAreaElement | null>;
+  /** Phone layout or touch pointer: Enter adds a line, the button sends. */
   mobile: boolean;
   managed: boolean;
   canSend: boolean;
@@ -150,10 +166,16 @@ export default function PromptInput(p: {
       }
       if (p.onRecallKeyDown(event)) return;
       if (
-        !p.mobile &&
-        event.key === "Enter" &&
-        !event.shiftKey &&
-        !event.nativeEvent.isComposing
+        enterSends(
+          {
+            key: event.key,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+            isComposing: event.nativeEvent.isComposing,
+          },
+          p.mobile,
+        )
       ) {
         event.preventDefault();
         p.onSend();
@@ -223,6 +245,7 @@ export default function PromptInput(p: {
         onKeyDown={keyDown}
         id="message"
         ref={p.input}
+        enterKeyHint={p.mobile ? "enter" : undefined}
         aria-label="Message"
         aria-description={
           p.mobile
