@@ -1,13 +1,11 @@
 import { fixtureElement } from "./browser-helpers.ts";
 const mount1 = async () => {
-  window.entityFirstLoadRetryBrowserFixtureSnapshotMountedAt =
-    performance.now();
+  window.snapshotMountedAt = performance.now();
   const { useSnapshot } = await import("../../src/hooks.ts");
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const root = createRoot(fixtureElement("root"));
-  window.entityFirstLoadRetryBrowserFixtureUnmountSnapshot = () =>
-    root.unmount();
+  window.unmountSnapshot = () => root.unmount();
   root.render(
     React.createElement(function SnapshotHarness() {
       window.entityFirstLoadRetryBrowserFixtureSnapshot = useSnapshot();
@@ -33,8 +31,8 @@ declare global {
 
 declare global {
   interface Window {
-    entityFirstLoadRetryBrowserFixtureSnapshotMountedAt: number;
-    entityFirstLoadRetryBrowserFixtureUnmountSnapshot: () => void;
+    snapshotMountedAt: number;
+    unmountSnapshot: () => void;
     entityFirstLoadRetryBrowserFixtureSnapshot: ReturnType<
       typeof import("../../src/hooks.ts").useSnapshot
     >;

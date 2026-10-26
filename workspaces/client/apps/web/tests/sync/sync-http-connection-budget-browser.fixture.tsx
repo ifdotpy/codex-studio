@@ -10,10 +10,9 @@ import {
   prefetchTranscript,
 } from "../../src/sync/client.ts";
 import { durableSend } from "../../src/sync/send.ts";
-window.syncHttpConnectionBudgetBrowserFixturePrefetchTranscript =
-  prefetchTranscript;
-window.syncHttpConnectionBudgetBrowserFixtureDurableSend = durableSend;
-window.syncHttpConnectionBudgetBrowserFixtureMount = (selected) =>
+window.prefetchTranscript = prefetchTranscript;
+window.durableSend = durableSend;
+window.mount = (selected) =>
   createRoot(fixtureElement("app")).render(
     React.createElement(function Fixture() {
       window.syncHttpConnectionBudgetBrowserFixtureSnapshot = useSnapshot();
@@ -47,11 +46,11 @@ window.syncHttpConnectionBudgetBrowserFixtureMount = (selected) =>
 
 declare global {
   interface Window {
-    syncHttpConnectionBudgetBrowserFixturePrefetchTranscript: typeof import("../../src/sync/client.ts").prefetchTranscript;
-    syncHttpConnectionBudgetBrowserFixtureDurableSend: typeof import("../../src/sync/send.ts").durableSend;
+    prefetchTranscript: typeof import("../../src/sync/client.ts").prefetchTranscript;
+    durableSend: typeof import("../../src/sync/send.ts").durableSend;
     syncHttpConnectionBudgetBrowserFixtureSnapshot: import("./browser-helpers.ts").FixtureSnapshot;
-    syncHttpConnectionBudgetBrowserFixtureMount: (selected: string) => void;
-    syncHttpConnectionBudgetBrowserFixtureRefresh: Promise<unknown>;
-    syncHttpConnectionBudgetBrowserFixtureWarm: Promise<unknown>;
+    mount: (selected: string) => void;
+    refresh: Promise<unknown>;
+    warm: Promise<unknown>;
   }
 }
