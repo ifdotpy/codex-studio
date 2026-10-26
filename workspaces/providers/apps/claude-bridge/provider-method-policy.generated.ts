@@ -10,8 +10,11 @@ const rules = [
   ["claude/state", null],
   ["claude/fileBackups", null],
   ["thread/compact/start", null],
-];
-export function isThreadSerialized(method, params) {
+] as const;
+export function isThreadSerialized(
+  method: string,
+  params: Record<string, unknown>,
+) {
   return rules.some(
     ([name, parameter]) =>
       name === method && (parameter === null || params[parameter] === true),
