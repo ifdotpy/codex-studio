@@ -134,7 +134,7 @@ const TRANSCRIPT_PROJECTION_FORMAT = 3;
 /** Read persisted metadata written before the unused item revision map was removed. */
 const LEGACY_TRANSCRIPT_PROJECTION_FORMAT = 2;
 
-type TranscriptProjectionMeta = {
+export type TranscriptProjectionMeta = {
   format: typeof TRANSCRIPT_PROJECTION_FORMAT;
   epoch?: string | undefined;
   metadata: Omit<Partial<TranscriptPageData>, "items">;
@@ -154,7 +154,7 @@ type ProjectionState = {
 
 type StateProjectionPayload = Snapshot | null;
 
-type TranscriptProjectionPayload =
+export type TranscriptProjectionPayload =
   import("./transcriptCache").CachedTranscript["payload"];
 
 import { clearTranscript } from "./transcriptCache";
