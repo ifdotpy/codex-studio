@@ -1,10 +1,7 @@
 import type { Agent, BackgroundTask, Snapshot } from "../../src/types";
 
 /** A complete renderer snapshot for isolated component fixtures. */
-export function fixtureSnapshot(
-  agents: Agent[],
-  tasks: BackgroundTask[] = [],
-): Snapshot {
+export function fixtureSnapshot(agents: Agent[], tasks: BackgroundTask[] = []) {
   return {
     stateDir: "ux-chat-fixture",
     token: "fixture",
@@ -27,5 +24,5 @@ export function fixtureSnapshot(
       studioErrors: [],
       nativeNotices: [],
     },
-  };
+  } satisfies Snapshot;
 }
