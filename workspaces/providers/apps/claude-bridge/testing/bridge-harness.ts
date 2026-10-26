@@ -97,8 +97,7 @@ function parseBridgeMessage<M extends BridgeMethod>(
   return value as BridgeNote | BridgeResponse<BridgeResult<M>>;
 }
 
-// Maximum simulated wait and per-step advancement, both in milliseconds.
-const VIRTUAL_NOTIFICATION_BUDGET_MS = 10_000;
+// Virtual milliseconds per step, and the longest real wait between steps.
 const VIRTUAL_STEP_MS = 10;
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 import { HANG_GUARD_MS } from "./file-signals.ts";
@@ -241,17 +240,28 @@ export async function startBridge(
         ? methodOrPredicate
         : (entry: BridgeNote) =>
             hasMethod(entry, methodOrPredicate) && (!filter || filter(entry));
-    // Drive virtual time while disk and RPC work completes; no wall-clock polls.
-    for (
-      let elapsed = 0;
-      elapsed < VIRTUAL_NOTIFICATION_BUDGET_MS;
-      elapsed += VIRTUAL_STEP_MS
-    ) {
+    // Drive virtual time while real disk and RPC work completes. That work
+    // takes real time, so the deadline is real time, not a step count, and
+    // each step waits for a new bridge line or a short real interval.
+    const deadline = performance.now() + HANG_GUARD_MS;
+    for (;;) {
       const found = notes.find(predicate);
       if (found) return found;
+      if (performance.now() >= deadline)
+        throw new Error(
+          "notification missing after virtual deadline\n" + stderr,
+        );
       await bridge.advanceTime(VIRTUAL_STEP_MS);
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          notifications.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(done, VIRTUAL_STEP_MS);
+        notifications.add(done);
+      });
     }
-    throw new Error("notification missing after virtual deadline\n" + stderr);
   }
   function note<N extends BridgeNote>(
     predicate: (note: BridgeNote) => note is N,
