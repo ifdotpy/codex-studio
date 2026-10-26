@@ -290,3 +290,22 @@
     min-height: 44px;
   }
 }
+
+@media (any-pointer: coarse), (width < 761px) {
+  :root:not([data-studio-typography="original"])
+    #conversation
+    #composer
+    #message {
+    font-size: max(
+      var(--studio-touch-input-min-font-size),
+      var(--studio-main-font-size)
+    ) !important;
+  }
+
+  :root:not([data-studio-typography="original"]) #sidebar #chat-search {
+    font-size: max(
+      var(--studio-touch-input-min-font-size),
+      var(--studio-sidebar-font-size)
+    ) !important;
+  }
+}

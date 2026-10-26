@@ -319,7 +319,10 @@
     min-height: var(--studio-touch-target);
   }
   .account-name-form input {
-    font-size: var(--mantine-font-size-lg);
+    font-size: max(
+      var(--studio-touch-input-min-font-size),
+      var(--mantine-font-size-lg)
+    );
   }
 }
 

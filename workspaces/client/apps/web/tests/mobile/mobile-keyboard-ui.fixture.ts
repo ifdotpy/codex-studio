@@ -1,4 +1,31 @@
 export function installMobileKeyboardUi() {
+  let primary = true,
+    anyTouch = true;
+  const media = window.matchMedia.bind(window);
+  const pointers = new Map<string, MediaQueryList>();
+  window.matchMedia = (query) => {
+    if (query !== "(pointer: coarse)" && query !== "(any-pointer: coarse)")
+      return media(query);
+    let item = pointers.get(query);
+    if (!item) {
+      item = media(query);
+      Object.defineProperty(item, "matches", {
+        get: () => (query === "(pointer: coarse)" ? primary : anyTouch),
+      });
+      pointers.set(query, item);
+    }
+    return item;
+  };
+  Object.defineProperty(navigator, "maxTouchPoints", {
+    configurable: true,
+    get: () => (anyTouch ? 5 : 0),
+  });
+  const setTestPointer = (coarse: boolean, touch: boolean) => {
+    primary = coarse;
+    anyTouch = touch;
+    for (const item of pointers.values())
+      item.dispatchEvent(new Event("change"));
+  };
   const viewport = new EventTarget();
   Object.assign(viewport, {
     width: 390,
@@ -29,10 +56,11 @@ export function installMobileKeyboardUi() {
     configurable: true,
     get: () => retainedScroll,
   });
-  window.scrollTo = ((...args: Parameters<typeof window.scrollTo>) => {
+  window.scrollTo = (options?: ScrollToOptions | number, y?: number) => {
     retainedScroll = 0;
-    originalScroll(...args);
-  }) as typeof window.scrollTo;
+    if (typeof options === "number") originalScroll(options, y ?? 0);
+    else originalScroll(options);
+  };
   const retainTestScroll = (value: number) => {
     retainedScroll = value;
     window.dispatchEvent(new Event("scroll"));
@@ -48,30 +76,37 @@ export function installMobileKeyboardUi() {
     focusCalls.selection++;
     return setSelectionRange.apply(this, args);
   };
-  window.setTestViewport = setTestViewport;
-  window.retainTestScroll = retainTestScroll;
-  window.composerFocusCalls = focusCalls;
-  window.composerBlurCount = 0;
+  const harness = {
+    setTestViewport,
+    setTestPointer,
+    retainTestScroll,
+    composerFocusCalls: focusCalls,
+    composerBlurCount: 0,
+    composerTextarea: null as HTMLTextAreaElement | null,
+    composerScrollBefore: { page: 0, document: 0, transcript: 0 },
+    element(selector: string) {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement))
+        throw new Error("Missing fixture element: " + selector);
+      return element;
+    },
+    input() {
+      const element = document.querySelector("#message");
+      if (!(element instanceof HTMLTextAreaElement))
+        throw new Error("Missing fixture textarea");
+      return element;
+    },
+    scrollingElement() {
+      const element = document.scrollingElement;
+      if (!element) throw new Error("Missing scrolling element");
+      return element;
+    },
+  };
+  window.mobileKeyboardUi = harness;
+  return harness;
 }
 declare global {
   interface Window {
-    setTestViewport: (
-      patch: Partial<
-        Pick<
-          VisualViewport,
-          "width" | "height" | "offsetTop" | "offsetLeft" | "scale"
-        >
-      >,
-      type?: string,
-    ) => void;
-    retainTestScroll: (value: number) => void;
-    composerFocusCalls: { focus: number; selection: number };
-    composerBlurCount: number;
-    composerTextarea: HTMLTextAreaElement;
-    composerScrollBefore: {
-      page: number;
-      document: number;
-      transcript: number;
-    };
+    mobileKeyboardUi: ReturnType<typeof installMobileKeyboardUi>;
   }
 }

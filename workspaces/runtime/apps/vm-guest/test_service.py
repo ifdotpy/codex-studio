@@ -216,7 +216,11 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.servers.append(server)
         reader, writer = await asyncio.open_unix_connection(str(socket_path))
         marker = self.home / "proof"
-        params = self.command(f"open({str(marker)!r},'w').write('one')")
+        params = self.command(
+            f"import os,time; time.sleep(.2); marker={str(marker)!r}; temporary=marker+'.tmp'\n"
+            "with open(temporary, 'w') as output: output.write('one')\n"
+            "os.replace(temporary, marker)"
+        )
         completed = asyncio.Event()
         request = self.service.request
 
