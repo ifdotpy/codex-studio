@@ -36,7 +36,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.evaluate(() =>
-      window.browserDictationFixture.speech?.onresult?.({
+      window.browserDictationFixture.speech!.onresult!({
         results: [
           { isFinal: true, 0: { transcript: "Recognized text" } },
           { isFinal: false, 0: { transcript: "unfinished" } },

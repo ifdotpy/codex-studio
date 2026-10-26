@@ -9,8 +9,7 @@ declare global {
     };
   }
 }
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing radio fixture root");
+const rootElement = document.getElementById("root")!;
 import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import type { Snapshot } from "../../src/types.ts";
 import { radioSnapshot } from "./radio-fixture.ts";

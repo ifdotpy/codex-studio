@@ -4,8 +4,7 @@ declare global {
   }
 }
 window.nativeModelFixture = {};
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing model fixture root");
+const rootElement = document.getElementById("root")!;
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, Stack, Paper, Button } from "@mantine/core";
@@ -18,9 +17,9 @@ function Fixture() {
   return (
     <MantineProvider
       forceColorScheme={
-        new URLSearchParams(location.search).get("theme") === "dark"
-          ? "dark"
-          : "light"
+        (new URLSearchParams(location.search).get("theme") || "light") as
+          | "light"
+          | "dark"
       }
     >
       <Paper p="sm">

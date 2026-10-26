@@ -11,7 +11,6 @@ import {
   API_SCHEMA_HASH_HEADER,
 } from "../../src/generated/apiSchema.ts";
 import { fixtureRoot } from "../usage/usage-fixture.ts";
-import { desktopBridgeFixture } from "../desktop-bridge-fixture.ts";
 
 type Schemas = components["schemas"];
 type VoiceCallBody = Partial<Schemas["VoiceStartRequest"]>;
@@ -19,7 +18,10 @@ type VoiceHarness = {
   calls: [string, VoiceCallBody][];
   order: string[];
   stops: number;
-  records: Schemas["VoiceRecordResponse"][];
+  records: Pick<
+    Schemas["VoiceRecordResponse"],
+    "id" | "seq" | "kind" | "text"
+  >[];
   pending: boolean;
   voiceError: string;
   voiceTransport?: ResourceConnectionState;
@@ -30,8 +32,8 @@ type VoiceHarness = {
   failRecords?: boolean;
   sid?: string | undefined;
   answer?: RTCSessionDescriptionInit;
-  answers: number;
-  track: MediaStreamTrack;
+  answers?: number;
+  track: Pick<MediaStreamTrack, "enabled" | "stop">;
   emit: (event: { type: string; item?: { id: string } }) => void;
   resourceChange: () => Promise<Response>;
   render: (id: string) => void;
@@ -42,10 +44,39 @@ declare global {
     realtimeVoiceFixture: VoiceHarness;
   }
 }
-const audio = new AudioContext();
-const stream = audio.createMediaStreamDestination().stream;
-const track = stream.getAudioTracks()[0];
-if (!track) throw new Error("Voice fixture needs an audio track");
+type FixtureTrack = VoiceHarness["track"];
+type FixtureChannel = Pick<RTCDataChannel, "close" | "send"> & {
+  onmessage?: (event: Pick<MessageEvent, "data">) => void;
+};
+type FixturePeer = Pick<
+  RTCPeerConnection,
+  "addTrack" | "close" | "setLocalDescription" | "setRemoteDescription"
+> & {
+  createDataChannel(
+    ...args: Parameters<RTCPeerConnection["createDataChannel"]>
+  ): FixtureChannel;
+  createOffer(): Promise<Pick<RTCSessionDescriptionInit, "sdp">>;
+  connectionState?: RTCPeerConnectionState;
+  onconnectionstatechange?: () => void;
+};
+// The base fixture stores minimal DOM stubs on window; this single typed view
+// preserves those same objects without creating real audio or RTC resources.
+type FixtureWindow = Omit<Window, "RTCPeerConnection" | "codexDesktop"> & {
+  RTCPeerConnection: new () => FixturePeer;
+  codexDesktop: {
+    requestMicrophone: (
+      ...args: Parameters<
+        import("../../src/desktop.ts").DesktopBridge["requestMicrophone"]
+      >
+    ) => Promise<void>;
+  };
+  pc?: FixturePeer;
+  dc?: FixtureChannel;
+};
+function voiceWindow(value: unknown): FixtureWindow {
+  return value as FixtureWindow;
+}
+const fixtureWindow = voiceWindow(window);
 const nativeFetch = window.fetch.bind(window);
 const root = createRoot(fixtureRoot());
 const harness: VoiceHarness = (window.realtimeVoiceFixture = {
@@ -55,12 +86,9 @@ const harness: VoiceHarness = (window.realtimeVoiceFixture = {
   records: [],
   pending: false,
   voiceError: "",
-  answers: 0,
-  track,
+  track: undefined!,
   emit(event) {
-    channel?.dispatchEvent(
-      new MessageEvent("message", { data: JSON.stringify(event) }),
-    );
+    fixtureWindow.dc!.onmessage!({ data: JSON.stringify(event) });
   },
   resourceChange: () =>
     nativeFetch("/audit/resource-change", { method: "POST" }),
@@ -70,7 +98,10 @@ const harness: VoiceHarness = (window.realtimeVoiceFixture = {
         <RealtimeVoice agentId={id} notify={() => {}} />
       </MantineProvider>,
     ),
-  disconnect() {},
+  disconnect() {
+    fixtureWindow.pc!.connectionState = "disconnected";
+    fixtureWindow.pc!.onconnectionstatechange!();
+  },
 });
 watchVoiceTransport(
   (state) => {
@@ -78,85 +109,67 @@ watchVoiceTransport(
   },
   () => {},
 );
-window.codexDesktop = desktopBridgeFixture({
+fixtureWindow.codexDesktop = {
   requestMicrophone: async () => {
     harness.order.push("permission");
     if (harness.holdPermission)
       await new Promise<void>((resolve) => {
         harness.releasePermission = resolve;
       });
-    return true;
   },
-});
-let channel: RTCDataChannel | undefined;
-
-class FixturePeer extends RTCPeerConnection {
-  fixtureConnectionState: RTCPeerConnectionState = "new";
-  constructor(...args: ConstructorParameters<typeof RTCPeerConnection>) {
-    super(...args);
-    harness.disconnect = () => {
-      this.fixtureConnectionState = "disconnected";
-      this.dispatchEvent(new Event("connectionstatechange"));
-    };
+};
+fixtureWindow.RTCPeerConnection = class {
+  constructor() {
+    fixtureWindow.pc = this;
   }
-  override get connectionState() {
-    return this.fixtureConnectionState;
+  addTrack() {
+    return undefined!;
   }
-  override createDataChannel(label: string, options?: RTCDataChannelInit) {
-    const result = super.createDataChannel(label, options);
-    result.send = () => {
-      throw new Error("Native Core owns messages");
-    };
-    channel = result;
-    return result;
+  createDataChannel() {
+    return (fixtureWindow.dc = {
+      close() {},
+      send() {
+        throw Error("Native Core owns messages");
+      },
+    });
   }
-  override createOffer(
-    options?: RTCOfferOptions,
-  ): Promise<RTCSessionDescriptionInit>;
-  override createOffer(
-    success: RTCSessionDescriptionCallback,
-    failure: RTCPeerConnectionErrorCallback,
-    options?: RTCOfferOptions,
-  ): Promise<void>;
-  override async createOffer(
-    first?: RTCOfferOptions | RTCSessionDescriptionCallback,
-  ): Promise<RTCSessionDescriptionInit | void> {
-    const offer: RTCSessionDescriptionInit = {
-      type: "offer",
-      sdp: "v=0\\noffer",
-    };
-    if (typeof first === "function") {
-      first(offer);
-      return;
-    }
-    return offer;
+  async createOffer() {
+    return { sdp: "v=0\\noffer" };
   }
-  override async setLocalDescription(): Promise<void> {}
-  override async setRemoteDescription(
-    sdp: RTCSessionDescriptionInit,
-  ): Promise<void> {
-    harness.answers++;
+  async setLocalDescription() {}
+  async setRemoteDescription(sdp: RTCSessionDescriptionInit) {
+    harness.answers = (harness.answers || 0) + 1;
     harness.answer = sdp;
     harness.emit({ type: "session.started" });
   }
-}
-window.RTCPeerConnection = FixturePeer;
-// The fixture uses a real browser track and stream without microphone capture.
-track.stop = () => {
-  harness.stops++;
+  close() {}
 };
+const track = (harness.track = {
+  enabled: true,
+  stop() {
+    harness.stops++;
+  },
+});
 Object.defineProperty(navigator, "mediaDevices", {
   value: {
     getUserMedia: async () => {
       harness.order.push("capture");
-      return stream;
+      return {
+        getTracks: () => [track],
+        getAudioTracks: () => [track],
+      } satisfies {
+        [K in "getTracks" | "getAudioTracks"]: () => FixtureTrack[];
+      };
     },
-  } satisfies Pick<MediaDevices, "getUserMedia">,
+  },
 });
 
-function session(): Schemas["VoiceSessionResponse"] {
+function session(): Pick<
+  Schemas["VoiceSessionResponse"],
+  "session_id" | "state" | "sdp" | "error"
+> {
   return {
-    session_id: harness.sid ?? "",
+    session_id: harness.sid!,
     state: harness.voiceError
       ? "failed"
       : harness.pending
@@ -164,7 +177,6 @@ function session(): Schemas["VoiceSessionResponse"] {
         : "ready",
     sdp: harness.pending ? null : "answer",
     error: harness.voiceError,
-    ended: null,
   };
 }
 /** The renderer under test owns the voice JSON request bodies. */
@@ -173,16 +185,12 @@ function voiceBody(body: string): VoiceCallBody {
 }
 window.fetch = async (input, opts) => {
   const request = input instanceof Request ? input : null;
-  const path =
-    request?.url ?? (input instanceof URL ? input.href : String(input));
-  const body = request
-    ? await request.clone().text()
-    : typeof opts?.body === "string"
-      ? opts.body
-      : "";
-  const action =
-    new URL(path, location.origin).pathname.split("/").at(-1) ?? "";
-  const payload = voiceBody(body);
+  const path = request?.url || input;
+  const body = request ? await request.clone().text() : opts?.body;
+  const action = new URL(path as string | URL, location.origin).pathname
+    .split("/")
+    .at(-1)!;
+  const payload = voiceBody(body as string);
   harness.calls.push([action, payload]);
   let data: unknown = {};
   if (action === "identity")
@@ -195,8 +203,10 @@ window.fetch = async (input, opts) => {
     data = {
       configured: true,
       transport: "native",
-      auth: "chatgpt",
-    } satisfies Schemas["VoiceStatusResponse"];
+    } satisfies Pick<
+      Schemas["VoiceStatusResponse"],
+      "configured" | "transport"
+    >;
   }
   if (action === "records" && harness.failRecords)
     throw new Error("Connection unavailable");
@@ -204,23 +214,33 @@ window.fetch = async (input, opts) => {
     data = {
       records: harness.records,
       cursor: harness.records.length,
-      delivered: [],
       session: harness.sid ? session() : null,
-    } satisfies Schemas["VoiceRecordsResponse"];
+    } satisfies {
+      records: VoiceHarness["records"];
+      cursor: Schemas["VoiceRecordsResponse"]["cursor"];
+      session: ReturnType<typeof session> | null;
+    };
   if (action === "start") {
     harness.sid = payload.session_id;
     const stale = harness.holdStart
       ? ({
-          ...session(),
+          session_id: harness.sid!,
           state: "connecting",
           sdp: null,
-        } satisfies Schemas["VoiceSessionResponse"])
+        } satisfies Pick<
+          Schemas["VoiceSessionResponse"],
+          "session_id" | "state" | "sdp"
+        >)
       : null;
     if (harness.holdStart)
       await new Promise<void>((resolve) => {
         harness.releaseStart = resolve;
       });
-    data = stale ?? session();
+    data = stale || {
+      session_id: harness.sid,
+      state: harness.pending ? "connecting" : "ready",
+      sdp: harness.pending ? null : "answer",
+    };
   }
   if (action === "session") data = session();
   return new Response(JSON.stringify(data), {

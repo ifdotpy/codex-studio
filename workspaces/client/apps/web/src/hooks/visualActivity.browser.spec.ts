@@ -56,20 +56,20 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     window.visualActivityFixture.visualMetrics = { ticks: 0, observers: 0 };
     window.visualActivityFixture.activeVisualTimers = () => timers.size;
     timerWindow.setInterval = (
-      callback: TimerHandler,
+      callback: (...args: unknown[]) => void,
       delay?: number,
       ...args: unknown[]
     ) => {
       if (delay !== 1000) return interval(callback, delay, ...args);
       const id = interval(() => {
         window.visualActivityFixture.visualMetrics.ticks++;
-        if (typeof callback === "function") callback(...args);
+        callback(...args);
       }, delay);
       timers.set(id, true);
       return id;
     };
     timerWindow.clearInterval = (id) => {
-      if (id !== undefined) timers.delete(id);
+      timers.delete(id!);
       clear(id);
     };
     const Observer = window.IntersectionObserver;
@@ -226,7 +226,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     await expect
       .poll(async () => {
         const text = await page.locator("#far .reasoning-time").textContent();
-        return Number.parseInt(text ?? "") >= 4;
+        return Number.parseInt(text!) >= 4;
       })
       .toBe(true);
     await page.evaluate(() => window.visualActivityFixture.unmount());
@@ -248,7 +248,8 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     // Without an observer, keep visible-tab updates active after hide/resume.
     // There is no scroll observer to reactivate an offscreen row in this mode.
     await page.addInitScript(() => {
-      Reflect.deleteProperty(window, "IntersectionObserver");
+      delete (window as { IntersectionObserver?: typeof IntersectionObserver })
+        .IntersectionObserver;
     });
     await page.reload();
     await expect

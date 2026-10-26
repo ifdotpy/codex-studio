@@ -278,8 +278,8 @@ test("agent phase browser", async ({ page: runnerPage }) => {
       const box = await phase.boundingBox();
       const anchor = await page.locator("#anchor").boundingBox();
       await change("mixed");
-      assert.equal((await phase.boundingBox())?.height, box?.height);
-      assert.equal((await page.locator("#anchor").boundingBox())?.y, anchor?.y);
+      assert.equal((await phase.boundingBox())!.height, box!.height);
+      assert.equal((await page.locator("#anchor").boundingBox())!.y, anchor!.y);
       assert(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
@@ -298,15 +298,15 @@ test("agent phase browser", async ({ page: runnerPage }) => {
           .evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
       );
       assert.equal(
-        (await page.locator("#anchor").boundingBox())?.y,
-        anchor?.y,
+        (await page.locator("#anchor").boundingBox())!.y,
+        anchor!.y,
         "Open details cannot move the transcript",
       );
       await page.screenshot({ path: join(evidence, `waiting-${width}.png`) });
       await summary.click();
       await change("agent", 99);
-      assert.equal((await phase.boundingBox())?.height, box?.height);
-      assert.equal((await page.locator("#anchor").boundingBox())?.y, anchor?.y);
+      assert.equal((await phase.boundingBox())!.height, box!.height);
+      assert.equal((await page.locator("#anchor").boundingBox())!.y, anchor!.y);
     }
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.deepEqual(await animation(), ["none", "none", "none"]);

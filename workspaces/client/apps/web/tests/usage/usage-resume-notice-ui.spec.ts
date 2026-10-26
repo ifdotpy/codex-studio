@@ -24,18 +24,14 @@ test("Usage resume notice", async ({ context: testContext }) => {
       writes.push(body);
       await route.fulfill({
         json: {
-          id: body.resume_id ?? "",
-          accountKey: "work",
-          cause: body.id === "chat-auth" ? "auth" : "usage_limit",
-          epoch: 0,
-          failedAt: 0,
-          threadId: "thread-1",
-          turnId: "",
           status: "cancelled",
           dueAt: null,
           reason: "Automatic resume is off for this chat.",
           updatedAt: 2,
-        } satisfies PostResult<"/api/usage-resume">,
+        } satisfies Pick<
+          NonNullable<PostResult<"/api/usage-resume">>,
+          "status" | "dueAt" | "reason" | "updatedAt"
+        >,
       });
     });
     await page.goto(fixtureOrigin(server) + `?dueAt=${dueAt}`);
@@ -49,21 +45,15 @@ test("Usage resume notice", async ({ context: testContext }) => {
         .count(),
       1,
     );
-    assert.match(
-      (await notice.textContent()) ?? "",
-      /Automatic resume planned for/,
-    );
-    assert.match((await authNotice.textContent()) ?? "", /Next account check/);
+    assert.match((await notice.textContent())!, /Automatic resume planned for/);
+    assert.match((await authNotice.textContent())!, /Next account check/);
     await authNotice
       .getByRole("button", { name: "Turn off automatic resume" })
       .click();
     await authNotice
       .getByRole("button", { name: "Turn on automatic resume" })
       .waitFor();
-    assert.match(
-      (await authNotice.textContent()) ?? "",
-      /Automatic resume is off/,
-    );
+    assert.match((await authNotice.textContent())!, /Automatic resume is off/);
     assert.ok(
       (await notice
         .locator(`time[datetime="${new Date(dueAt * 1000).toISOString()}"]`)

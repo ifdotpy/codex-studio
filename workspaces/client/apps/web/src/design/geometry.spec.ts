@@ -17,7 +17,7 @@ test("Foundation content width and fleet geometry", async ({ page }) => {
     env: { ...process.env, FIXTURE_SEED: "report", FIXTURE_WORKER_COUNT: "2" },
   });
   let errors = "";
-  proc.stderr?.on("data", (chunk) => {
+  proc.stderr!.on("data", (chunk) => {
     errors += chunk;
   });
   const port = await waitForFixturePort(proc, { diagnostics: () => errors });
@@ -42,8 +42,8 @@ test("Foundation content width and fleet geometry", async ({ page }) => {
         const geometry = await page.evaluate(() => {
           const element = (selector: string) => {
             const node = document.querySelector(selector);
-            if (!node) throw new Error(`Missing geometry element: ${selector}`);
-            return node;
+
+            return node!;
           };
           const rect = (selector: string) =>
             element(selector).getBoundingClientRect().toJSON();

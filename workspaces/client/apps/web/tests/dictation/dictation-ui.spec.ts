@@ -167,7 +167,7 @@ test("Dictation ui", async ({
       () => document.querySelectorAll("audio").length === 0,
     );
     await page.evaluate(() =>
-      window.dictationFixture.finishTranscription?.({
+      window.dictationFixture.finishTranscription!({
         text: "Late response",
         provider: "fixture",
         onDevice: true,
@@ -204,7 +204,7 @@ test("Dictation ui", async ({
           { ...row, transcriptionAttempt: "old", transcript: "Old result" },
           "old",
         );
-        const result = (await store.listRecordings("first"))[0]?.transcript;
+        const result = (await store.listRecordings("first"))[0].transcript;
         await store.deleteRecording(row.id);
         return result;
       }),
@@ -248,7 +248,7 @@ test("Dictation ui", async ({
       () => !!window.dictationFixture.finishTranscription,
     );
     await page.evaluate(() =>
-      window.dictationFixture.speechProgress?.({
+      window.dictationFixture.speechProgress!({
         id: window.dictationFixture.attemptId,
         completed: 1,
         total: 3,

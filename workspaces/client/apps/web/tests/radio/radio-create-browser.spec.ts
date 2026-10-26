@@ -1,6 +1,6 @@
 import type { components } from "../../src/generated/api.ts";
-import { required } from "../../src/components/componentTestFixtures.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type { PostBody } from "../../src/api.ts";
 import type { Snapshot } from "../../src/types.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
 import { fixtureOrigin } from "../misc-fixture.ts";
@@ -137,22 +137,21 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.route("**/api/peer-teams", async (r) => {
       const body = fixturePostBody<"/api/peer-teams">(
         r.request().postDataJSON(),
-      );
-      if (!("radio_action" in body) || body.radio_action !== "create")
-        throw new Error("Expected shared creation request");
+      ) as Extract<PostBody<"/api/peer-teams">, { radio_action: "create" }>;
+
       requests.push(body);
-      if (!identities.has(body.request_id ?? ""))
+      if (!identities.has(body.request_id))
         identities.set(
-          body.request_id ?? "",
+          body.request_id,
           identities.size ? "radio:second" : "radio:direct",
         );
-      const roomId = identities.get(body.request_id ?? "");
-      if (!roomId) throw new Error("Missing shared chat identity");
+      const roomId = identities.get(body.request_id)!;
+
       assert.equal(body.radio_action, "create");
-      assert.equal(body.participants?.length, 2);
+      assert.equal(body.participants.length, 2);
       state = {
         ...state,
-        threads: (body.participants ?? []).map((p, i) => ({
+        threads: body.participants.map((p, i) => ({
           id: "agent" + i,
           name: "Internal " + i,
           cwd: "/p",
@@ -335,7 +334,7 @@ test("radio create browser", async ({ page: runnerPage }) => {
     );
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
-    const { request_id, ...body } = required(requests[0]);
+    const { request_id, ...body } = requests[0]!;
     assert.match(request_id, /^[0-9a-f-]{36}$/);
     assert.deepEqual(body, {
       action: "radio",
@@ -400,8 +399,8 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.keyboard.press("Escape");
     await create.click();
     await form.waitFor({ state: "detached" });
-    assert.equal(required(requests.at(-1)).path, "/p");
-    assert.deepEqual(required(requests.at(-1)).participants, [
+    assert.equal(requests.at(-1)!.path, "/p");
+    assert.deepEqual(requests.at(-1)!.participants, [
       { account_key: "extra0", model: "gpt-6-luna" },
       { account_key: "claude", model: "opus", effort: "high" },
     ]);

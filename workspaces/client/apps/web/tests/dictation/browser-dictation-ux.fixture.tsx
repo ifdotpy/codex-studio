@@ -55,6 +55,5 @@ function App() {
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing browser dictation root");
+const root = document.getElementById("root")!;
 createRoot(root).render(<App />);

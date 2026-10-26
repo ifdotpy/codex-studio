@@ -58,7 +58,7 @@ for (const width of [320, 1200]) {
         const item = page.getByRole("menuitem", { name: "Delete project…" });
         await expect(item).toBeVisible();
         if (width === 320)
-          expect((await item.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+          expect((await item.boundingBox())!.height).toBeGreaterThanOrEqual(44);
         await item.focus();
         await page.keyboard.press("Enter");
         const dialog = page.getByRole("dialog", {
@@ -84,10 +84,8 @@ for (const width of [320, 1200]) {
         await dialog
           .getByRole("button", { name: "Delete project", exact: true })
           .evaluate((button) => {
-            if (!(button instanceof HTMLButtonElement))
-              throw new Error("Missing deletion button");
-            button.click();
-            button.click();
+            (button as HTMLButtonElement).click();
+            (button as HTMLButtonElement).click();
           });
         const unknown = page.getByRole("dialog", {
           name: "Delete result unconfirmed",

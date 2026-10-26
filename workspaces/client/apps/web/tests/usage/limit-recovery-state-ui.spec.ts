@@ -54,7 +54,7 @@ test("Limit Recovery State Ui", async ({
         1,
       );
       assert.match(
-        (await page.locator("#history").textContent()) ?? "",
+        (await page.locator("#history").textContent())!,
         /Historical quota failure/,
       );
       assert.equal(

@@ -88,6 +88,5 @@ function Fixture() {
     </main>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing agent phase root");
+const root = document.getElementById("root")!;
 createRoot(root).render(<Fixture />);

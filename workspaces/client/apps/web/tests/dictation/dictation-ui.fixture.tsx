@@ -30,8 +30,7 @@ window.dictationFixture = {
   captureStopped: 0,
   failStop: false,
 };
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing dictation fixture root");
+const root = document.getElementById("root")!;
 import { desktopBridgeFixture } from "../desktop-bridge-fixture.ts";
 import type { DesktopBridge } from "../../src/desktop.ts";
 import React, { useState } from "react";

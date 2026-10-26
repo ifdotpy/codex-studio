@@ -44,8 +44,7 @@ function Fixture({ account, workers }: { account: string; workers: boolean }) {
   return <pre>{JSON.stringify(result)}</pre>;
 }
 harness.mount = (account = "default", workers = false) => {
-  const element = document.getElementById("app");
-  if (!element) throw new Error("Missing catalog root");
+  const element = document.getElementById("app")!;
   const root = (harness.root ??= createRoot(element));
   flushSync(() =>
     root.render(

@@ -60,9 +60,7 @@ for (const width of [320, 1200]) {
         .toMatchObject({ parent: "lead-id", profile_id: "profile-id" });
       expect(
         await page.evaluate(
-          () =>
-            window.workerLaunchFixture.submitted !== null &&
-            "permission_mode" in window.workerLaunchFixture.submitted,
+          () => "permission_mode" in window.workerLaunchFixture.submitted!,
         ),
       ).toBe(false);
       await selector.selectOption("acceptEdits");
@@ -113,9 +111,7 @@ for (const width of [320, 1200]) {
       await dialog.getByRole("button", { name: "Start subagent" }).click();
       expect(
         await page.evaluate(
-          () =>
-            window.workerLaunchFixture.submitted !== null &&
-            "permission_mode" in window.workerLaunchFixture.submitted,
+          () => "permission_mode" in window.workerLaunchFixture.submitted!,
         ),
       ).toBe(false);
       await page.screenshot({

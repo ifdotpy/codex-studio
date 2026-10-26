@@ -115,8 +115,7 @@ window.EventSource = class extends NativeEventSource {
 };
 window.usageAccountsFixture.reloadCalls = [];
 const scheme = new URLSearchParams(location.search).get("scheme");
-if (scheme !== null && scheme !== "light" && scheme !== "dark")
-  throw new Error("Invalid fixture color scheme");
+
 function Fixture() {
   const [multi] = useState(location.search.includes("multi"));
   const [teamReady, setTeamReady] = useState(false);

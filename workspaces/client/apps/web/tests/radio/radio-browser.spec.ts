@@ -1,4 +1,3 @@
-import { required } from "../../src/components/componentTestFixtures.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import type { PostBody } from "../../src/api.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
@@ -203,8 +202,8 @@ test("Radio browser", async ({
     await page.evaluate(() => {
       window.radioFixture.holdRefresh = false;
       const reject = window.radioFixture.rejectRefresh;
-      if (!reject) throw new Error("Missing held fixture refresh");
-      reject(Error("Refresh unavailable"));
+
+      reject!(Error("Refresh unavailable"));
     });
     await page.waitForFunction(() =>
       window.radioFixture.notifications?.includes("Refresh unavailable"),
@@ -234,9 +233,15 @@ test("Radio browser", async ({
     await page.evaluate(() => (window.radioFixture.failRefresh = false));
     assert.equal(await page.locator(".radio-retry").count(), 0);
     assert.equal(requests.length, posted);
-    const lastCommand1 = required(requests.at(-1));
-    assert.ok("rounds" in lastCommand1);
-    assert.equal(lastCommand1.rounds, 2);
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).rounds,
+      2,
+    );
     mode = "reject";
     await input.fill("Stale proposal");
     await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -259,15 +264,15 @@ test("Radio browser", async ({
     );
     await page.getByRole("button", { name: "Reply next" }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand2 = required(requests.at(-1));
+    const lastCommand2 = requests.at(-1)!;
     assert.ok("radio_action" in lastCommand2);
     assert.equal(lastCommand2.radio_action, "pass");
-    const lastCommand3 = required(requests.at(-1));
+    const lastCommand3 = requests.at(-1)!;
     assert.ok("target" in lastCommand3);
     assert.equal(lastCommand3.target, "b");
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand4 = required(requests.at(-1));
+    const lastCommand4 = requests.at(-1)!;
     assert.ok("radio_action" in lastCommand4);
     assert.equal(lastCommand4.radio_action, "stop");
     assert.equal(
@@ -276,7 +281,7 @@ test("Radio browser", async ({
     );
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand5 = required(requests.at(-1));
+    const lastCommand5 = requests.at(-1)!;
     assert.ok("radio_action" in lastCommand5);
     assert.equal(lastCommand5.radio_action, "send");
     await input.fill("New instruction");

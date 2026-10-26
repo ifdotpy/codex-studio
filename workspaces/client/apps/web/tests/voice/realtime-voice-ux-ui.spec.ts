@@ -138,12 +138,6 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
       window.realtimeVoiceFixture.records = [
         {
           id: "one",
-          agent: "chat-one",
-          created: 0,
-          item_id: "",
-          payload: "",
-          previous_item_id: "",
-          session: window.realtimeVoiceFixture.sid ?? "",
           seq: 1,
           kind: "user",
           text: "Native canonical transcript",
@@ -167,7 +161,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     await page
       .locator(".realtime-voice details summary")
       .evaluate((summary) => {
-        if (summary instanceof HTMLElement) summary.click();
+        (summary as HTMLElement).click();
       });
     await page.waitForFunction(() =>
       document.body.textContent?.includes("Native canonical transcript"),
@@ -307,7 +301,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     );
     await page.evaluate(() => {
       window.realtimeVoiceFixture.holdStart = false;
-      window.realtimeVoiceFixture.releaseStart?.();
+      window.realtimeVoiceFixture.releaseStart!();
     });
     await page.waitForFunction(
       () => window.realtimeVoiceFixture.answer?.sdp === "answer",
@@ -345,9 +339,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
       () => !!window.realtimeVoiceFixture.releasePermission,
     );
     await page.getByRole("button", { name: "End voice", exact: true }).click();
-    await page.evaluate(() =>
-      window.realtimeVoiceFixture.releasePermission?.(),
-    );
+    await page.evaluate(() => window.realtimeVoiceFixture.releasePermission!());
     assert.equal(
       await page.evaluate(() =>
         window.realtimeVoiceFixture.order.includes("capture"),
@@ -359,7 +351,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     await start();
     const sid = await page.evaluate(() => window.realtimeVoiceFixture.sid);
     await page.getByRole("button", { name: "End voice", exact: true }).click();
-    await page.evaluate(() => window.realtimeVoiceFixture.releaseStart?.());
+    await page.evaluate(() => window.realtimeVoiceFixture.releaseStart!());
     await page.waitForFunction(() =>
       window.realtimeVoiceFixture.calls.some((c) => c[0] === "end"),
     );
