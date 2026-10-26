@@ -310,10 +310,11 @@ html[data-server-view] .workspace {
 }
 
 /* Native shell, portrait top status strip: the edge rail's sidebar button
-   opens servers and chats, so the phone bar and its space are not shown. */
+   opens servers and chats, so the phone bar and its space are not shown.
+   The shell selector outranks the compact navigation rule that shows the bar. */
 html[data-viewport-top-strip] .multi-server-shell {
   padding-top: 0;
 }
-html[data-viewport-top-strip] .server-mobile-toggle {
+html[data-viewport-top-strip] .multi-server-shell .server-mobile-toggle {
   display: none;
 }
