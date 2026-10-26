@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { waitForFixturePort } from "../fixture-readiness.ts";
+import type { SyncPullResponse, entityPullFixture } from "../playwright.ts";
 import type {
-  SyncEntity,
-  SyncPullResponse,
-  SyncPullResetResponse,
-} from "../playwright.ts";
-import type { ApiGetPath, GetResult, PostBody } from "../../src/apiTypes.ts";
+  ApiGetPath,
+  GetResult,
+  JsonInputOf,
+  PostBody,
+} from "../../src/apiTypes.ts";
 
 /** This fixture's stdout protocol is emitted by our own Node child. */
 function parseFixtureReply(line: string) {
@@ -101,11 +102,7 @@ export async function fixtureGet<Path extends ApiGetPath>(
   return response.json();
 }
 
-export function pullPage(
-  value:
-    | Omit<SyncPullResponse, "workspaceId">
-    | Omit<SyncPullResetResponse, "workspaceId">,
-): Omit<SyncPullResponse, "workspaceId"> {
+export function pullPage(value: ReturnType<typeof entityPullFixture>) {
   assert.ok("documents" in value);
   return value;
 }
@@ -150,11 +147,14 @@ export function legacyMutationDocuments(value: unknown) {
   );
 }
 
-export function entityRows(
-  documents: SyncPullResponse["documents"],
-): SyncEntity[] {
+export function entityRows<
+  T extends JsonInputOf<SyncPullResponse>["documents"][number],
+>(documents: T[]) {
+  const isEntity = (
+    document: T,
+  ): document is Extract<T, { collection: string }> => "collection" in document;
   return documents.map((document) => {
-    assert.ok("collection" in document);
+    assert.ok(isEntity(document));
     return document;
   });
 }
