@@ -1,3 +1,4 @@
+import type { RetainedInputRows } from "./verify-rust-chat-scale.ts";
 import type { TranscriptWireItem } from "../src/apiTypes.ts";
 import type { components, AgentEntityDto } from "../src/generated/api.ts";
 import type { SpawnTimeline } from "./uiTeamScaleHelpers.ts";
@@ -30,9 +31,7 @@ export type Audit = {
   queueGauges?: ReturnType<typeof auditDiagnostics>["queueGauges"];
 };
 export type Counters = Record<string, number | null>;
-type PendingInput = {
-  [K in "id" | "agent" | "status"]: components["schemas"]["EventEntityDto"][K];
-};
+type PendingInput = Pick<RetainedInputRows[number], "id" | "agent" | "status">;
 type JsonObject = Record<string, components["schemas"]["JsonValue"]>;
 import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.ts";
 import { readRetainedInputRows } from "./verify-rust-chat-scale.ts";

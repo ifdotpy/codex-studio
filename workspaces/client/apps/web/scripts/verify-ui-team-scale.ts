@@ -389,10 +389,8 @@ async function resolveRole(
     "GET",
     `/api/models?account_key=${encodeURIComponent(accountKey)}`,
   );
-  const candidate: Schemas["ProviderModel"] = requireScaleModel(
-    catalog,
-    profile,
-  );
+  const candidate = requireScaleModel(catalog, profile);
+  assert.ok(typeof candidate.model === "string");
   const model = candidate.resolvedModel ?? candidate.model;
   assert.ok(typeof model === "string");
   return {

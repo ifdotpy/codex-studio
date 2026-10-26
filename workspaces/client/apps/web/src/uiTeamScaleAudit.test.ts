@@ -475,8 +475,10 @@ it("treats journalctl's empty status 1 as no matches, while preserving other fai
     { kind: "journalUnavailable", unit: "studio", error: "No journal access" },
   ]);
   expect(
-    auditJournalResult({ status: 2, stdout: "", stderr: "" }, "studio")
-      .anomalies[0].kind,
+    auditJournalResult(
+      { status: 2, stdout: "", stderr: "" },
+      "studio",
+    ).anomalies.at(0)?.kind,
   ).toBe("journalUnavailable");
 });
 

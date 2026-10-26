@@ -1,11 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import {
-  chromium,
-  type BrowserContext,
-  type Page,
-  type Request,
-} from "playwright";
+import type { BrowserContext, Page, Request } from "playwright";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -444,6 +439,7 @@ async function main() {
       initialCounters: numericCounters(initialProcess),
     };
 
+    const { chromium } = await import("playwright");
     const profileDir = resolve(evidenceDir, "profile");
     const deadlineMs = Math.min(
       OUTER_DEADLINE_MS,

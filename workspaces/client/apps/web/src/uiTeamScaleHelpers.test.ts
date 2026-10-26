@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import type { components, AgentEntityDto } from "./generated/api";
+import type { components, AgentEntityDto } from "./generated/api.ts";
 import type {
   DialogControl,
   FrameReceiver,
   ObservedAgent,
   EntitySubscriber,
   CriteriaMetrics,
+  RoleSettings,
 } from "../scripts/uiTeamScaleHelpers.ts";
 type Schemas = components["schemas"];
 import { describe, expect, it, vi } from "vitest";
@@ -177,10 +178,11 @@ describe("ui team scale helpers", () => {
 
   it("reports account distribution and provider retries without failing", () => {
     const tracker = createTeamTracker("lead", "TAG", 3);
-    const retrying = (at: number): AgentEntityDto["nativeStatus"] => ({
-      phase: "retrying",
-      at,
-    });
+    const retrying = (at: number) =>
+      ({
+        phase: "retrying",
+        at,
+      }) satisfies AgentEntityDto["nativeStatus"];
     tracker.observe({ id: "w1", rootId: "lead", accountKey: "b" }, 0);
     tracker.observe({ id: "w2", rootId: "lead", accountKey: "a" }, 0);
     tracker.observe({ id: "w3", rootId: "lead", accountKey: "a" }, 0);
@@ -325,6 +327,7 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
       getByRole: (kind, options) => locate(path, kind, options),
       locator: (selector) => ({
         click: async () => {
+          assert.ok(typeof selector === "string");
           const name = /^label\[for="([^"]+)"\]$/.exec(selector)?.[1];
           expect(name).toBeDefined();
           assert.ok(name);
@@ -386,13 +389,13 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
 }
 
 describe("current New chat setup", () => {
-  const codex = {
+  const codex: Omit<RoleSettings, "model"> = {
     profile: { provider: "codex", fastMode: false },
     accountKey: "default",
     uiModel: "gpt-6-luna",
     effort: "low",
   };
-  const claude = (model: string) => ({
+  const claude = (model: string): Omit<RoleSettings, "model"> => ({
     profile: { provider: "claude", fastMode: false },
     accountKey: "claude-local",
     uiModel: model,
@@ -844,7 +847,7 @@ it("reports the evidence-only queue baseline, end and delta in the summary", () 
 });
 
 it("validates the actual post-create lead and worker defaults through proven aliases", () => {
-  const lead = {
+  const lead: Parameters<typeof assertCreatedTeamProfiles>[1] = {
     model: "claude-sonnet-5-5",
     uiModelValues: ["sonnet", "claude-sonnet-5-5"],
     effort: "low",

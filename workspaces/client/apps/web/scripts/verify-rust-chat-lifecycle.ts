@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { chromium, type Page, type Request, type Response } from "playwright";
+import type { Page, Request, Response } from "playwright";
 import type {
   components,
   AgentEntityDto,
@@ -569,6 +569,7 @@ async function main() {
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   saveJournal(journalPath, journal);
 
+  const { chromium } = await import("playwright");
   const executablePath =
     options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
   const context = await chromium.launchPersistentContext(profileDir, {

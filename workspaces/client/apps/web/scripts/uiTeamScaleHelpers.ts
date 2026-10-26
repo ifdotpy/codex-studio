@@ -7,6 +7,7 @@ import type {
 } from "../src/generated/api.ts";
 import type { Locator } from "playwright";
 import type { Audit } from "./uiTeamScaleAudit.ts";
+import type { ScaleProfile } from "./scaleVerifierHelpers.ts";
 
 export type ObservedAgent = Omit<AgentEntityDto, "deletedAt"> & {
   deleted?: boolean;
@@ -46,7 +47,7 @@ export type TeamOptions = {
   evidenceDir?: string;
 };
 export type RoleSettings = {
-  profile: { provider: string; fastMode: boolean };
+  profile: Pick<ScaleProfile, "provider" | "fastMode">;
   accountKey: string;
   uiModel: string;
   uiModelValues?: string[];
@@ -521,7 +522,7 @@ async function chooseSegment(
 // same approved model; never select an account's unverified default.
 export function approvedModelUiValues(
   catalog: Pick<components["schemas"]["ModelCatalogResponse"], "data">,
-  candidate: components["schemas"]["ProviderModel"],
+  candidate: Partial<components["schemas"]["ProviderModel"]>,
 ) {
   const identity = candidate.resolvedModel ?? candidate.model;
   return [
