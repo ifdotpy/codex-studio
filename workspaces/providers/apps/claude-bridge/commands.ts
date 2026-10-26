@@ -1,3 +1,9 @@
+import type {
+  BridgeError,
+  BridgeRpcId,
+  BridgeSuccessResponse,
+  BridgeErrorResponse,
+} from "./bridge-protocol.ts";
 // Studio monitors use native command execution without a Codex model session.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -13,21 +19,50 @@ export const commandMethods = new Set([
   "command/exec/terminate",
 ]);
 
-type NativeFailure = { message: string; code?: number; data?: unknown };
+type NativeFailure = BridgeError;
 type CommandParams = {
   sandboxPolicy?: { type?: string };
   permissionProfile?: unknown;
   processId?: string;
   [key: string]: unknown;
 };
-type CommandReply = {
-  id?: string;
-  method?: string;
-  params?: unknown;
-  result?: unknown;
-  error?: NativeFailure;
-};
+type CommandReply = Partial<
+  BridgeSuccessResponse<unknown> & BridgeErrorResponse
+> & { method?: string; params?: unknown };
 
+function readCommandReply(line: string): CommandReply {
+  const value: unknown = JSON.parse(line);
+  if (!value || typeof value !== "object")
+    throw new Error("Invalid command executor envelope");
+  if (
+    "id" in value &&
+    value.id !== undefined &&
+    typeof value.id !== "string" &&
+    typeof value.id !== "number"
+  )
+    throw new Error("Invalid command executor identity");
+  if (
+    "method" in value &&
+    value.method !== undefined &&
+    typeof value.method !== "string"
+  )
+    throw new Error("Invalid command executor method");
+  if ("error" in value && value.error !== undefined) {
+    const error = value.error;
+    if (
+      !error ||
+      typeof error !== "object" ||
+      !("message" in error) ||
+      typeof error.message !== "string" ||
+      !("code" in error) ||
+      typeof error.code !== "number"
+    )
+      throw new Error("Invalid command executor error");
+  }
+  // The checked envelope uses the bridge's shared JSON-RPC owner. Native
+  // command results and output payloads intentionally remain opaque.
+  return value as CommandReply;
+}
 function nativeError(value: NativeFailure) {
   return Object.assign(new Error(value.message), value);
 }
@@ -58,7 +93,7 @@ export function createCommandTransport({
   const home = path.join(root, "command-executor");
   const reservations = path.join(home, "requests");
   const pending = new Map<
-    string,
+    BridgeRpcId,
     { resolve: (value: unknown) => void; reject: (error: unknown) => void }
   >();
   const active = new Set<string>();
@@ -206,7 +241,7 @@ export function createCommandTransport({
     lines.on("line", (line) => {
       let message: CommandReply;
       try {
-        message = JSON.parse(line);
+        message = readCommandReply(line);
       } catch {
         fail(new Error("Command executor sent invalid JSON; outcome unknown"));
         return;

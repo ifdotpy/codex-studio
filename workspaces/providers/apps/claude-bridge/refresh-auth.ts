@@ -5,9 +5,9 @@ import { createInterface } from "node:readline";
 
 let release = () => {};
 const held = new Promise<void>((resolve) => (release = resolve));
-// oxlint-disable-next-line require-yield
 async function* prompt(): AsyncGenerator<never> {
   await held;
+  yield* [];
 }
 const controller = new AbortController();
 let timer;

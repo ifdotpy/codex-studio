@@ -667,9 +667,9 @@ async function probe<T>(
   const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
   const { promise: hold, resolve: release } = Promise.withResolvers<void>();
   // Keep an idle async iterable open until the account probe completes.
-  // oxlint-disable-next-line require-yield
   async function* prompt(): AsyncGenerator<never> {
     await hold;
+    yield* [];
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), INITIALIZATION_TIMEOUT_MS);
@@ -1718,7 +1718,6 @@ async function startSession(
   const { promise: admitted, resolve: admit } = Promise.withResolvers<void>();
   let allowed = false;
   // Keep an idle async iterable open until the account probe completes.
-  // oxlint-disable-next-line require-yield
   async function* prompt() {
     await admitted;
     if (!allowed) return;
@@ -1735,18 +1734,14 @@ async function startSession(
       nativeInputAttempt(initial ?? undefined, initial?.items[0]),
     );
     const effort = s.moveProof ? s.moveProof.options.effort : p.effort;
+    const model = s.moveProof?.options.model || p.model || s.model;
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
         // Match Python's --no-session-persistence and --tools "" title flags.
         ...titleOptions,
-        ...((s.moveProof?.options.model || p.model || s.model) !== undefined
-          ? {
-              model:
-                s.moveProof?.options.model || p.model || s.model || "default",
-            }
-          : {}),
+        ...(model === undefined ? {} : { model }),
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
