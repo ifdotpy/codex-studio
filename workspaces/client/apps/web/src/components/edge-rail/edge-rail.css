@@ -104,3 +104,16 @@ html:has(.workspace[data-edge-rail="true"])
   background: var(--mantine-color-body);
   pointer-events: none;
 }
+
+/* On touch, the opened menu focuses its first item and WebKit keeps the last
+   touched row hovered: two rows looked selected. Only a pressed row or a
+   keyboard-focused row is highlighted there. */
+@media (hover: none), (pointer: coarse) {
+  .edge-rail-menu
+    .mantine-Menu-item:is(:hover, :focus, [data-menu-active]):not(
+      :focus-visible,
+      :active
+    ) {
+    background-color: transparent;
+  }
+}
