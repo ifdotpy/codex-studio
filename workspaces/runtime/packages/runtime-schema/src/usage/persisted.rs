@@ -134,11 +134,6 @@ pub fn parse_analytics_usage_row(
         .transpose()?;
     let input_uncached = row.get("inputTokensAreUncached").and_then(Value::as_bool) == Some(true)
         || row.get("usageSource").and_then(Value::as_str) == Some("claudeResponse");
-    let token_provider = if input_uncached {
-        ProviderKind::Claude
-    } else {
-        ProviderKind::Codex
-    };
     if let Some(response_id) = legacy_response_id(row) {
         let response_id = response_id.to_owned();
         let selected = legacy_response_tokens(row);
@@ -146,7 +141,7 @@ pub fn parse_analytics_usage_row(
             response_id,
             turn_id,
             model: text("model").unwrap_or_default(),
-            tokens: tokens(selected, token_provider)?,
+            tokens: tokens(selected, input_uncached)?,
             evidence: UsageEvidence::Legacy,
             parent_tool_use_id: text("parentToolUseId"),
             model_context_window,
@@ -158,11 +153,11 @@ pub fn parse_analytics_usage_row(
             ProviderKind::Claude => UsageScope::ClaudeQuery,
         },
         turn_id,
-        total: tokens(&row["total"], token_provider)?,
+        total: tokens(&row["total"], input_uncached)?,
         last: row
             .get("last")
             .filter(|v| known(v, "inputTokens") && known(v, "outputTokens"))
-            .map(|v| tokens(v, token_provider))
+            .map(|v| tokens(v, input_uncached))
             .transpose()?,
         model_context_window,
         models: None,
@@ -195,7 +190,7 @@ fn legacy_count(value: &Value, key: &str) -> Result<u64, UsageParseError> {
     }
     Err(UsageParseError(format!("invalid legacy analytics {key}")))
 }
-fn tokens(value: &Value, provider: ProviderKind) -> Result<UsageTokens, UsageParseError> {
+fn tokens(value: &Value, input_uncached: bool) -> Result<UsageTokens, UsageParseError> {
     let count = |key: &str, required: bool| match value.get(key).filter(|v| !v.is_null()) {
         Some(v) => legacy_count(v, key),
         None if !required => Ok(0),
@@ -204,13 +199,12 @@ fn tokens(value: &Value, provider: ProviderKind) -> Result<UsageTokens, UsagePar
     let input = count("inputTokens", true)?;
     let read = count("cachedInputTokens", false)?;
     let write = count("cacheWriteInputTokens", false)?;
-    let (uncached_input, cache_read_input, cache_write_input) = match provider {
-        ProviderKind::Codex => {
-            let read = read.min(input);
-            let write = write.min(input - read);
-            (input - read - write, read, write)
-        }
-        ProviderKind::Claude => (input, read, write),
+    let (uncached_input, cache_read_input, cache_write_input) = if input_uncached {
+        (input, read, write)
+    } else {
+        let read = read.min(input);
+        let write = write.min(input - read);
+        (input - read - write, read, write)
     };
     Ok(UsageTokens {
         uncached_input,
