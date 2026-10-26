@@ -25,6 +25,15 @@ pub enum WorkspaceMode {
     Shared,
 }
 
+impl std::fmt::Display for WorkspaceMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Value::String(value) = serde_json::to_value(self).map_err(|_| std::fmt::Error)? else {
+            return Err(std::fmt::Error);
+        };
+        formatter.write_str(&value)
+    }
+}
+
 const WORK_STATUS_FIELDS: &[&str] = &[
     "/components/schemas/WorkItem/properties/status",
     "/components/schemas/WorkEntityDto/properties/status/anyOf/0",
@@ -125,6 +134,10 @@ mod tests {
             let parsed: WorkspaceMode =
                 serde_json::from_value(value.clone()).expect("owner value parses");
             assert_eq!(json!(parsed), *value);
+            assert_eq!(
+                parsed.to_string(),
+                value.as_str().expect("mode has string representation")
+            );
         }
         assert!(serde_json::from_value::<WorkStatus>(json!("unknown")).is_err());
         assert!(serde_json::from_value::<WorkspaceMode>(json!(7)).is_err());
