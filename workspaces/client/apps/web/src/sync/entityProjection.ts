@@ -36,7 +36,7 @@ export type EntityRow = Omit<
   components["schemas"]["SyncDocument"],
   "_deleted"
 > & {
-  _deleted?: components["schemas"]["SyncDocument"]["_deleted"];
+  _deleted?: components["schemas"]["SyncDocument"]["_deleted"] | undefined;
   entity?: SyncEntityPayload;
   /** Local selection eviction; seq remains the last authoritative source version. */
   evicted?: boolean;

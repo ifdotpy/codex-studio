@@ -8,7 +8,9 @@ export const PROCESS_STOP_GRACE_MS = 500;
 export const GATE_COMMAND_TIMEOUT_MS = 1_800_000;
 
 // Tests inherit host tools, but agent session settings must come from their fixtures.
-export function scrubAgentEnvironment(environment) {
+export function scrubAgentEnvironment<T extends NodeJS.ProcessEnv>(
+  environment: T,
+): T {
   for (const key of Object.keys(environment))
     if (/^(CLAUDE|STUDIO_|AI_AGENT$)/.test(key)) delete environment[key];
   return environment;

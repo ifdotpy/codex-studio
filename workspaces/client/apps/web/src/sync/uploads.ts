@@ -32,7 +32,7 @@ export type UploadOptions = {
   storage: typeof localStorage;
   syncGet: (
     path: "/api/sync/identity",
-  ) => Promise<GetResult<"/api/sync/identity">>;
+  ) => Promise<Pick<GetResult<"/api/sync/identity">, "workspaceId">>;
   syncPost: typeof syncPost<"/api/assets">;
   refreshSession: typeof refreshSession;
   writeLocalDraft: typeof writeLocalDraft;
