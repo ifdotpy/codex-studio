@@ -2228,10 +2228,11 @@ mod limits_runtime_tests {
         let registry_path = root.path().join("accounts/registry.json");
         fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
         let registry = serde_json::to_vec(&json!({
-            "version":1,
+            "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey":"default",
             "accounts":{"default":{
-                "id":"default","home":home,"label":"Codex","source":"Codex CLI","accountId":"fixture-account","status":"signedOut"
+                "id":"default","home":home,"label":"Codex","source":"Codex CLI","accountId":"fixture-account","status":"signedOut",
+                "provider":studio_runtime_schema::ProviderKind::Codex
             }},
             "logins":{},"deleteReceipts":{}
         }))
