@@ -1,4 +1,4 @@
-import { settingsRequestId } from "../settingsRequestId";
+import { clearSettingsRequest, settingsRequestId } from "../settingsRequestId";
 import {
   isModelWhitelisted,
   useModelWhitelist,
@@ -1227,7 +1227,7 @@ function ScopedExecutionSettings({
         throw new Error(
           "The settings account changed. Check the current settings.",
         );
-      save(storageKey, null);
+      clearSettingsRequest({ saved, save }, storageKey, requestId);
       confirmed = true;
       if (!mounted.current) return;
       setPendingYolo({

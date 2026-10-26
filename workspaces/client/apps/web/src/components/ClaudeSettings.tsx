@@ -1,4 +1,4 @@
-import { settingsRequestId } from "./settingsRequestId";
+import { clearSettingsRequest, settingsRequestId } from "./settingsRequestId";
 import ClaudeFileBackups from "./ClaudeFileBackups";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
@@ -170,7 +170,7 @@ export function ClaudeSettings({
       JSON.stringify(body),
     );
     const result = await call({ ...body, request_id: requestId });
-    save(storageKey, null);
+    clearSettingsRequest({ saved, save }, storageKey, requestId);
     return result;
   };
   const load = async () => {

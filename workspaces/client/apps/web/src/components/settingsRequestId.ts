@@ -12,3 +12,13 @@ export function settingsRequestId(
   api.save(key, { value, request_id: requestId });
   return requestId;
 }
+
+export function clearSettingsRequest(
+  api: Pick<typeof import("../api"), "saved" | "save">,
+  key: string,
+  requestId: string,
+): void {
+  // A late response must not erase a newer unresolved intent.
+  if (api.saved<Intent | null>(key, null)?.request_id === requestId)
+    api.save(key, null);
+}

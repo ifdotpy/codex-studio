@@ -506,3 +506,51 @@ for (const [first, opposite] of [
     expect(mutations[3].request_id).not.toBe(mutations[2].request_id);
   });
 }
+
+test("a late Claude success preserves the newer unresolved permission request", async () => {
+  let persisted = "default";
+  let finish!: (value: unknown) => void;
+  const mutations: any[] = [];
+  h.post.mockImplementation((_path, body) => {
+    if (body.action === "settings") {
+      mutations.push(body);
+      persisted = body.settings.permissionMode;
+      return mutations.length === 1
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.reject(new Error("response lost"));
+    }
+    return Promise.resolve({
+      settings: { permissionMode: persisted },
+      turns: [],
+      tasks: [],
+    });
+  });
+  const element = createElement(ClaudeSettings, {
+    agent: { ...initial, provider: "claude" },
+  });
+  const control = () =>
+    children(invoke(element)).find(
+      (node) => node.props.label === "Permission mode",
+    )!;
+  const reopen = async () => {
+    for (const cell of h.cells.get("ClaudeSettings") || []) cell.cleanup?.();
+    h.cells.delete("ClaudeSettings");
+    invoke(element);
+    for (const effect of h.effects.splice(0)) effect();
+    await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+  };
+  await reopen();
+  control().props.onChange({ currentTarget: { value: "bypassPermissions" } });
+  await reopen();
+  control().props.onChange({ currentTarget: { value: "default" } });
+  await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+  const unresolvedId = mutations[1].request_id;
+  expect(unresolvedId).not.toBe(mutations[0].request_id);
+  finish({});
+  await Promise.resolve();
+  control().props.onChange({ currentTarget: { value: "default" } });
+  await vi.waitFor(() => expect(mutations).toHaveLength(3));
+  expect(mutations[2].request_id).toBe(unresolvedId);
+});
