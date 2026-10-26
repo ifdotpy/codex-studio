@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { executeRecipe, gateSteps } from "../facade.mjs";
-import { runLogged } from "../owned-process.mjs";
+import { executeRecipe, gateSteps } from "../facade.ts";
+import { runLogged } from "../owned-process.ts";
 import {
   chmodSync,
   mkdtempSync,
@@ -84,7 +84,7 @@ test("bridge config removes ambient agent settings before workers inherit them",
 });
 
 test("gate children discard ambient agent settings and keep explicit fixture settings", async () => {
-  const { execute } = await import("../facade.mjs");
+  const { execute } = await import("../facade.ts");
   const previous = process.env.STUDIO_CLAUDE_OPTIONS;
   process.env.STUDIO_CLAUDE_OPTIONS = "{";
   try {
@@ -319,7 +319,7 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
 test("archived CI partitions reuse prepared binaries without Cargo build options", () => {
   const root = mkdtempSync(path.join(tmpdir(), "studio-gate-archive-"));
   try {
-    const owner = "workspaces/tooling/apps/repository-checks/gate-config.mjs";
+    const owner = "workspaces/tooling/apps/repository-checks/gate-config.ts";
     mkdirSync(path.dirname(path.join(root, owner)), { recursive: true });
     writeFileSync(path.join(root, owner), readFileSync(owner));
     writeFileSync(path.join(root, "justfile"), readFileSync("justfile"));
@@ -384,7 +384,7 @@ test("native platform filter keeps every common clause identical", () => {
 });
 
 test("non-Cargo output may quote nextest installation guidance without failing the gate", async () => {
-  const { execute } = await import("../facade.mjs");
+  const { execute } = await import("../facade.ts");
   const output =
     "cargo-nextest 0.9.146 is required. Install it with: cargo install cargo-nextest --version 0.9.146 --locked\nTAP version 13\n# tests 1\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n";
   const result = await execute(

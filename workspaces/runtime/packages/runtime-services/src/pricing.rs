@@ -6,6 +6,7 @@ use std::sync::{Arc, LazyLock};
 
 use serde::Deserialize;
 use serde_json::Value;
+use studio_runtime_schema::pricing::{PricingArtifact, RawCatalog, RawModel, RawRates, RawTier};
 use thiserror::Error;
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -53,20 +54,6 @@ pub struct LoadedPricing {
     pub signature: Option<String>,
     /// Most recent catalog refresh attempt, in Unix epoch seconds.
     pub(crate) last_attempt_at: f64,
-}
-
-/// The artifact envelope; the catalog stays a document because its signature is the hash
-/// of its canonical JSON text.
-#[derive(serde::Deserialize)]
-struct PricingArtifact {
-    version: u64,
-    catalog: Value,
-    #[serde(default, rename = "lastAttemptAt")]
-    last_attempt_at: Option<f64>,
-    #[serde(default, rename = "fetchedAtEpoch")]
-    fetched_at_epoch: Option<f64>,
-    #[serde(default, rename = "fetchedAt")]
-    fetched_at: Option<String>,
 }
 
 static LOADED: LazyLock<crate::file_derived::FileDerived<LoadedPricing>> =
@@ -133,7 +120,7 @@ impl PricingCatalog {
             let source = source.ok_or(PricingError::InvalidCatalog)?.models;
             let parsed = source
                 .into_iter()
-                .filter_map(|(name, record)| Some((name, record.rates()?)))
+                .filter_map(|(name, record)| Some((name, model_rates(record)?)))
                 .collect::<Vec<_>>();
             if parsed.is_empty() {
                 return Err(PricingError::InvalidCatalog);
@@ -222,108 +209,44 @@ impl Price {
     }
 }
 
-/// The models.dev catalog members this module reads. The artifact is Studio's own
-/// download of a published schema, so a catalog of another shape is invalid.
-#[derive(Deserialize)]
-struct RawCatalog {
-    providers: RawProviders,
+fn model_rates(model: RawModel) -> Option<Rates> {
+    let cost = model.cost?;
+    let input = valid_amount(cost.input)?;
+    let output = valid_amount(cost.output)?;
+    let mut tiers = cost
+        .tiers
+        .into_iter()
+        .filter_map(tier_price)
+        .collect::<Vec<_>>();
+    tiers.sort_by(|left, right| left.size.total_cmp(&right.size));
+    let legacy_over = cost
+        .context_over_200k
+        .map(|over| rates_price(over, 200_000.0));
+    Some(Rates {
+        release_date: model.release_date,
+        input,
+        output,
+        cache_read: valid_amount(cost.cache_read),
+        cache_write: valid_amount(cost.cache_write),
+        tiers,
+        legacy_over,
+    })
 }
 
-#[derive(Deserialize)]
-struct RawProviders {
-    openai: Option<RawProvider>,
-    anthropic: Option<RawProvider>,
+fn tier_price(tier: RawTier) -> Option<PriceTier> {
+    let key = tier.tier?;
+    (key.kind.as_deref() == Some("context")).then_some(())?;
+    let size = valid_amount(key.size)?;
+    Some(rates_price(tier.rates, size))
 }
 
-#[derive(Deserialize)]
-struct RawProvider {
-    models: BTreeMap<String, RawModel>,
-}
-
-#[derive(Deserialize)]
-struct RawModel {
-    release_date: Option<String>,
-    cost: Option<RawCost>,
-}
-
-#[derive(Deserialize)]
-struct RawCost {
-    input: Option<f64>,
-    output: Option<f64>,
-    cache_read: Option<f64>,
-    cache_write: Option<f64>,
-    #[serde(default)]
-    tiers: Vec<RawTier>,
-    context_over_200k: Option<RawRates>,
-}
-
-/// The rates one tier (or the legacy over-200k block) overrides.
-#[derive(Deserialize)]
-struct RawRates {
-    input: Option<f64>,
-    output: Option<f64>,
-    cache_read: Option<f64>,
-    cache_write: Option<f64>,
-}
-
-#[derive(Deserialize)]
-struct RawTier {
-    tier: Option<RawTierKey>,
-    #[serde(flatten)]
-    rates: RawRates,
-}
-
-#[derive(Deserialize)]
-struct RawTierKey {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    size: Option<f64>,
-}
-
-impl RawModel {
-    fn rates(self) -> Option<Rates> {
-        let cost = self.cost?;
-        let input = valid_amount(cost.input)?;
-        let output = valid_amount(cost.output)?;
-        let mut tiers = cost
-            .tiers
-            .into_iter()
-            .filter_map(RawTier::price_tier)
-            .collect::<Vec<_>>();
-        tiers.sort_by(|left, right| left.size.total_cmp(&right.size));
-        let legacy_over = cost
-            .context_over_200k
-            .map(|over| over.price_tier(200_000.0));
-        Some(Rates {
-            release_date: self.release_date,
-            input,
-            output,
-            cache_read: valid_amount(cost.cache_read),
-            cache_write: valid_amount(cost.cache_write),
-            tiers,
-            legacy_over,
-        })
-    }
-}
-
-impl RawTier {
-    fn price_tier(self) -> Option<PriceTier> {
-        let key = self.tier?;
-        (key.kind.as_deref() == Some("context")).then_some(())?;
-        let size = valid_amount(key.size)?;
-        Some(self.rates.price_tier(size))
-    }
-}
-
-impl RawRates {
-    fn price_tier(self, size: f64) -> PriceTier {
-        PriceTier {
-            size,
-            input: valid_amount(self.input),
-            output: valid_amount(self.output),
-            cache_read: valid_amount(self.cache_read),
-            cache_write: valid_amount(self.cache_write),
-        }
+fn rates_price(rates: RawRates, size: f64) -> PriceTier {
+    PriceTier {
+        size,
+        input: valid_amount(rates.input),
+        output: valid_amount(rates.output),
+        cache_read: valid_amount(rates.cache_read),
+        cache_write: valid_amount(rates.cache_write),
     }
 }
 

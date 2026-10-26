@@ -71,7 +71,7 @@ function main() {
     (check !== undefined && check !== "lint" && check !== "format")
   ) {
     throw new Error(
-      "Usage: node workspaces/tooling/apps/repository-checks/check-code.mjs staged [lint|format]",
+      "Usage: node workspaces/tooling/apps/repository-checks/check-code.ts staged [lint|format]",
     );
   }
 

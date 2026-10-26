@@ -2,6 +2,7 @@
   "name": "codex-studio-tooling",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "contracts:generate": "cargo run --quiet --locked -p studio-runtime-schema --bin studio-contracts -- --write",
     "contracts:check": "cargo run --quiet --locked -p studio-runtime-schema --bin studio-contracts -- --check",
@@ -16,12 +17,12 @@
     "test:mutation": "pnpm --filter codex-agents-web run test:mutation",
     "lint:all": "oxlint --deny-warnings",
     "format:check:all": "oxfmt --check",
-    "lint:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged lint",
-    "format:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged format",
-    "check:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged",
-    "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs",
+    "lint:staged": "node workspaces/tooling/apps/repository-checks/check-code.ts staged lint",
+    "format:staged": "node workspaces/tooling/apps/repository-checks/check-code.ts staged format",
+    "check:staged": "node workspaces/tooling/apps/repository-checks/check-code.ts staged",
+    "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.ts",
     "check:tooling": "pnpm run test:tooling",
-    "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/gates.test.mjs workspaces/tooling/apps/repository-checks/tests/facade.test.mjs workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs"
+    "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/gates.test.ts workspaces/tooling/apps/repository-checks/tests/facade.test.ts workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.ts workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
