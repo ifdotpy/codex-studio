@@ -1,10 +1,9 @@
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 declare global {
   interface Window {
-    monitorOutputUiNotices: string[];
+    notices: string[];
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -15,7 +14,7 @@ import BackgroundTasks from "../../src/components/shell/BackgroundTasks.tsx";
 const data = fixtureSnapshot([
   { id: "lead", rootId: "lead", name: "Lead", epoch: 2, accountKey: "default" },
 ]);
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   React.createElement(
     MantineProvider,
     { defaultColorScheme: "dark" },
@@ -27,7 +26,7 @@ createRoot(required(document.getElementById("root"))).render(
       initialFocus: { id: "monitor", leadId: "lead", requestId: "focus" },
       openAgent: () => {},
       refresh: async () => {},
-      notify: (message) => (window.monitorOutputUiNotices ??= []).push(message),
+      notify: (message) => (window.notices ??= []).push(message),
     }),
   ),
 );

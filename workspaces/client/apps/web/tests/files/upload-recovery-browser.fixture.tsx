@@ -1,7 +1,7 @@
 import "./attachment-drafts.fixture.ts";
 type AttachmentState = ReturnType<typeof useAttachmentDrafts>;
 type FormState = ReturnType<typeof useFormDraft>;
-type RecoveryHarness = {
+export type RecoveryHarness = {
   attachments: AttachmentState[0];
   setAttachments: AttachmentState[1];
   scope: string;
@@ -16,15 +16,11 @@ type RecoveryHarness = {
 declare global {
   interface Window {
     uploadRecoveryBrowserFixture: RecoveryHarness;
-    uploadRecoveryBrowserWriter: Pick<
-      RecoveryHarness,
-      "attachments" | "setAttachments"
-    >;
-    uploadRecoveryBrowserScope: string;
-    uploadRecoveryBrowserNotices: string[];
-    uploadRecoveryBrowserRestoreTransactions: () => void;
-    uploadRecoveryBrowserCancelError: string;
-    uploadRecoveryBrowserReleaseFileRead: () => void;
+    scope: string;
+    notices: string[];
+    restoreTransactions: () => void;
+    cancelError: string;
+    releaseFileRead: () => void;
     uploadRecoveryBrowserMount: typeof mount;
     uploadRecoveryBrowserMountWriter: typeof mountWriter;
   }
@@ -44,12 +40,9 @@ import { queueUploads, pendingUploads } from "../../src/sync/uploads.ts";
 export function mount() {
   createRoot(document.body).render(
     React.createElement(function Harness() {
-      window.uploadRecoveryBrowserNotices ||= [];
-      const notify = (message: string) =>
-        window.uploadRecoveryBrowserNotices.push(message);
-      const [scope, setScope] = React.useState(
-        window.uploadRecoveryBrowserScope,
-      );
+      window.notices ||= [];
+      const notify = (message: string) => window.notices.push(message);
+      const [scope, setScope] = React.useState(window.scope);
       const [attachments, setAttachments] = useAttachmentDrafts(
         "codex-agent-attachments:fixture",
         notify,
@@ -60,7 +53,6 @@ export function mount() {
         notify,
       );
       const [rule, setRule] = useFormDraft("fixture-rule:" + scope, notify);
-      window.uploadRecoveryBrowserWriter = { attachments, setAttachments };
       window.uploadRecoveryBrowserFixture = {
         attachments,
         setAttachments,
@@ -101,7 +93,11 @@ export function mountWriter() {
         "codex-agent-attachments:fixture",
         () => {},
       );
-      window.uploadRecoveryBrowserWriter = { attachments, setAttachments };
+      // Base writer exposes only attachment state, omitting recovery/form members.
+      window.uploadRecoveryBrowserFixture = {
+        attachments,
+        setAttachments,
+      } as RecoveryHarness;
       return null;
     }),
   );

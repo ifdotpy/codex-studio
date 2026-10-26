@@ -1,5 +1,4 @@
 import { browserSignInUrl } from "./sign-in.fixture.ts";
-import { required } from "../messages/helpers.ts";
 import type { DesktopBridge } from "../../src/desktop.ts";
 import type {} from "./browser-open-approval-ui.fixture.tsx";
 import { createFixtureViteServer } from "../playwright.ts";
@@ -34,21 +33,29 @@ test("Browser Open Approval Ui", async ({ page }) => {
     page.setDefaultTimeout(5000);
     // The desktop bridge records what it would open; no real browser opens.
     await page.addInitScript(() => {
-      window.browserApprovalFixture = { opened: [], notes: [] };
-      Object.defineProperty(window, "codexDesktop", {
-        value: {
-          platform: "test",
-          openExternal: async (url) => {
-            window.browserApprovalFixture.opened.push(["external", url]);
-          },
-          openSignIn: async (url) => {
-            window.browserApprovalFixture.opened.push(["signIn", url]);
-          },
-        } satisfies Pick<
-          DesktopBridge,
-          "platform" | "openExternal" | "openSignIn"
-        >,
-      });
+      window.browserApprovalOpened = [];
+      // The bridge fixture omits unused native methods.
+      type FixtureBridge = Pick<DesktopBridge, "platform"> & {
+        [K in "openExternal" | "openSignIn"]: (
+          ...args: Parameters<NonNullable<DesktopBridge[K]>>
+        ) => Promise<unknown>;
+      };
+      const fixtureWindow = window as Omit<Window, "codexDesktop"> & {
+        codexDesktop: FixtureBridge;
+      };
+      fixtureWindow.codexDesktop = {
+        platform: "test",
+        openExternal: async (
+          url: Parameters<NonNullable<DesktopBridge["openExternal"]>>[0],
+        ) => {
+          return window.browserApprovalOpened.push(["external", url]);
+        },
+        openSignIn: async (
+          url: Parameters<NonNullable<DesktopBridge["openSignIn"]>>[0],
+        ) => {
+          return window.browserApprovalOpened.push(["signIn", url]);
+        },
+      };
     });
     const answers: PostBody<"/api/answer">[] = [];
     await page.route("**/api/**", async (route) => {
@@ -78,7 +85,7 @@ test("Browser Open Approval Ui", async ({ page }) => {
     );
     // The first load waits for the Vite dependency scan, which takes longer than the
     // 5 s action limit on a busy machine.
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check", {
+    await page.goto(server.resolvedUrls!.local[0]! + "check", {
       timeout: 30_000,
     });
     const approve = page.locator('[data-request="approve"]');
@@ -101,15 +108,13 @@ test("Browser Open Approval Ui", async ({ page }) => {
     await expect(device.getByText("No result to forward")).toBeVisible();
     await expect(device.getByText("Device code")).toBeVisible();
     await expect(device.getByText("ABCD", { exact: true })).toBeVisible();
-    expect(
-      await page.evaluate(() => window.browserApprovalFixture.opened),
-    ).toEqual([]);
+    expect(await page.evaluate(() => window.browserApprovalOpened)).toEqual([]);
 
     await approve
       .getByRole("button", { name: "Open in browser", exact: true })
       .click();
     await expect
-      .poll(() => page.evaluate(() => window.browserApprovalFixture.opened))
+      .poll(() => page.evaluate(() => window.browserApprovalOpened))
       .toEqual([["signIn", browserSignInUrl]]);
 
     const remote = page.locator('[data-request="remote"]');
@@ -117,7 +122,7 @@ test("Browser Open Approval Ui", async ({ page }) => {
       .getByRole("button", { name: "Open in browser", exact: true })
       .click();
     await expect
-      .poll(() => page.evaluate(() => window.browserApprovalFixture.notes))
+      .poll(() => page.evaluate(() => window.__notes))
       .toContain(REMOTE);
     await expect(remote.getByRole("alert")).toBeVisible();
 
@@ -131,9 +136,9 @@ test("Browser Open Approval Ui", async ({ page }) => {
       { decision: "accept", id: "remote" },
       { decision: "decline", id: "device" },
     ]);
-    expect(
-      await page.evaluate(() => window.browserApprovalFixture.opened),
-    ).toEqual([["signIn", browserSignInUrl]]);
+    expect(await page.evaluate(() => window.browserApprovalOpened)).toEqual([
+      ["signIn", browserSignInUrl],
+    ]);
   } finally {
     await server.close();
   }

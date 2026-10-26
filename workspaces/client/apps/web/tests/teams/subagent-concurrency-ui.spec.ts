@@ -1,3 +1,4 @@
+import type { GetResult } from "../../src/apiTypes.ts";
 import { installConcurrencyStorageFixture } from "./subagent-concurrency.fixture.ts";
 declare global {
   interface Window {
@@ -7,13 +8,11 @@ declare global {
 import type { Page, BrowserContext, TestInfo } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 import {
-  required,
   fixturePostBody,
   fixturePostResult,
   fixtureGetResult,
   legacySyncEntities,
 } from "./helpers.ts";
-import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   spawnFixture as spawn,
@@ -65,12 +64,25 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let log = "";
-  const browser = _browser;
-  server.stderr?.on("data", (chunk) => {
+  let browser: typeof _browser;
+  server.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await waitForFixturePort(server, { diagnostics: () => log });
+    const port = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(Error(log || "Fixture timeout")),
+        30000,
+      );
+      server.stdout!.once("data", (chunk) => {
+        clearTimeout(timer);
+        resolve(Number(String(chunk).trim()));
+      });
+      server.once("exit", () => {
+        clearTimeout(timer);
+        reject(Error(log || "Fixture exited"));
+      });
+    });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = async () => readTestState(origin);
     const initial = await snapshot();
@@ -80,18 +92,15 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         "/api/sync/identity",
       )
     ).workspaceId;
-    const lead = required(
-      initial.threads.find((agent) => agent.name === "Release lead"),
-    );
-    const other = required(
-      initial.threads.find((agent) => agent.name === "Other project"),
-    );
+    const lead = initial.threads.find(
+      (agent) => agent.name === "Release lead",
+    )!;
+    const other = initial.threads.find(
+      (agent) => agent.name === "Other project",
+    )!;
     assert(lead.agentModeSupported);
     assert(Number.isSafeInteger(lead.subagentConcurrencyVersion));
-    assert(
-      lead.subagentConcurrencyVersion != null &&
-        lead.subagentConcurrencyVersion >= 2,
-    );
+    assert(lead.subagentConcurrencyVersion! >= 2);
     const activeWorkers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && agent.status === "running",
     );
@@ -99,9 +108,8 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
 
     assert.equal(typeof lead.concurrency, "number");
     const currentLead = async () =>
-      required(
-        (await snapshot()).threads.find((agent) => agent.id === lead.id),
-      );
+      (await snapshot()).threads.find((agent) => agent.id === lead.id)!;
+    browser = _browser;
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
       serviceWorkers: "block",
@@ -230,17 +238,17 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await input.fill("64");
     await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(64);
-    assert.deepEqual(Object.keys(required(writes.at(-1))).sort(), [
+    assert.deepEqual(Object.keys(writes.at(-1)!).sort(), [
       "expected_account_key",
       "expected_mode_revision",
       "id",
       "request_id",
       "subagent_concurrency",
     ]);
-    assert.equal(required(writes.at(-1)).subagent_concurrency, 64);
-    assert.equal(required(writes.at(-1)).expected_mode_revision, 0);
+    assert.equal(writes.at(-1)!.subagent_concurrency, 64);
+    assert.equal(writes.at(-1)!.expected_mode_revision, 0);
     assert.equal(
-      required(writes.at(-1)).expected_account_key,
+      writes.at(-1)!.expected_account_key,
       lead.accountKey || "default",
     );
     assert.equal((await currentLead()).concurrency, 64);
@@ -253,12 +261,12 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await expect(control.getByRole("radio")).toHaveCount(0);
     let state = await snapshot();
     assert.equal(
-      required(state.threads.find((agent) => agent.id === lead.id)).concurrency,
+      state.threads.find((agent) => agent.id === lead.id)!.concurrency,
       0,
     );
     for (const worker of activeWorkers)
       assert.equal(
-        required(state.threads.find((agent) => agent.id === worker.id)).status,
+        state.threads.find((agent) => agent.id === worker.id)!.status,
         "running",
       );
 
@@ -282,7 +290,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       exact: true,
     });
     await retry.waitFor();
-    const lost = required(writes.at(-1));
+    const lost = writes.at(-1)!;
     assert.equal(lost.expected_mode_revision, 3);
     assert.equal((await currentLead()).agentModeRevision, 4);
     await page.reload();
@@ -290,7 +298,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await retry.waitFor();
     await retry.click();
     await retry.waitFor({ state: "detached" });
-    assert.deepEqual(required(writes.at(-1)), lost);
+    assert.deepEqual(writes.at(-1)!, lost);
     assert.equal((await currentLead()).agentModeRevision, 4);
     await waitConcurrency(128);
     assert.equal((await currentLead()).concurrency, 128);
@@ -308,8 +316,9 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await page.evaluate(
       ({ leadId, legacy }) => {
         const key = window.concurrencyStorageFixture(leadId);
+        if (!key) throw Error("No scoped setting record");
         localStorage.setItem(
-          key,
+          key!,
           JSON.stringify({
             confirmed: { mode: "multi", revision: 4 },
             pending: legacy,
@@ -326,7 +335,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: "Retry mode change", exact: true })
       .waitFor({ state: "detached" });
-    assert.deepEqual(required(writes.at(-1)), legacy);
+    assert.deepEqual(writes.at(-1)!, legacy);
     await waitConcurrency(0);
     assert.equal((await currentLead()).concurrency, 0);
     console.log("PASS exact migration retry for a saved legacy mode request");
@@ -365,7 +374,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       ({ leadId, noOp }) => {
         const key = window.concurrencyStorageFixture(leadId);
         localStorage.setItem(
-          key,
+          key!,
           JSON.stringify({
             confirmed: { concurrency: 9, revision: 7 },
             pending: noOp,
@@ -383,7 +392,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Retry limit change", exact: true })
       .waitFor({ state: "detached" });
     assert.equal((await currentLead()).agentModeRevision, 7);
-    assert.deepEqual(required(writes.at(-1)), noOp);
+    assert.deepEqual(writes.at(-1)!, noOp);
     await waitConcurrency(9);
     console.log("PASS same-revision no-op receipt is accepted");
 
@@ -402,9 +411,8 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await page.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(17);
     assert.equal(
-      required(
-        (await snapshot()).threads.find((agent) => agent.id === other.id),
-      ).concurrency,
+      (await snapshot()).threads.find((agent) => agent.id === other.id)!
+        .concurrency,
       17,
     );
     await closeSettings();
@@ -496,15 +504,20 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         if (url.searchParams.get("scope") !== "state:entities:v1")
           return route.continue();
         const response = await route.fetch();
-        const projection = await fixtureGetResult(response, "/api/sync/pull");
-        if (projection.reset) throw Error("Unexpected projection reset");
+        // This fixture response uses the entity-document envelope, never a reset.
+        const projection = (await fixtureGetResult(
+          response,
+          "/api/sync/pull",
+        )) as Extract<GetResult<"/api/sync/pull">, { documents: unknown }> & {
+          documents: Extract<
+            import("../playwright.ts").SyncPullResponse["documents"][number],
+            { payload: string }
+          >[];
+        };
+
         oldProjectionResponses += 1;
         for (const document of projection.documents) {
-          if (
-            !("payload" in document) ||
-            document.id !== `entity:agent:${lead.id}` ||
-            document._deleted
-          )
+          if (document.id !== `entity:agent:${lead.id}` || document._deleted)
             continue;
           oldLeadProjectionResponses += 1;
           // This payload was written by the fixture server using the generated legacy entity envelope.
@@ -567,7 +580,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       assert.equal(
         await rollingPage.evaluate((leadId) => {
           const key = window.concurrencyStorageFixture(leadId);
-          return localStorage.getItem(key);
+          return localStorage.getItem(key!);
         }, lead.id),
         saved,
       );
@@ -615,7 +628,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
             status: response.status(),
             body: await fixturePostResult(response, "/api/conversation"),
           };
-          required(resolveUpgradeResponse)(result);
+          resolveUpgradeResponse!(result);
           await route.fulfill({ response });
           return;
         }
@@ -660,7 +673,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     // An unreadable browser record stays visible and can be discarded without a command.
     await page.evaluate((id) => {
       const key = window.concurrencyStorageFixture(id);
-      localStorage.setItem(key, "{bad json");
+      localStorage.setItem(key!, "{bad json");
     }, lead.id);
     await page.reload();
     await openSettings(page);

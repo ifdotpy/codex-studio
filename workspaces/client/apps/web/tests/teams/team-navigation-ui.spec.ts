@@ -1,11 +1,9 @@
 import type { SyncPullResponse, AgentEntityDto } from "../playwright.ts";
 import {
-  required,
   fixtureGetResult,
   fixturePostResult,
   legacySyncEntities,
 } from "./helpers.ts";
-import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
   test,
@@ -47,16 +45,29 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       }),
     },
   });
-  const page = fixturePage;
+  let page!: import("@playwright/test").Page;
   let log = "";
-  proc.stderr?.on("data", (data) => (log += data));
+  proc.stderr!.on("data", (data) => (log += data));
   try {
-    const port = await waitForFixturePort(proc, { diagnostics: () => log });
+    const port = await new Promise<number>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(Error("Fixture timeout\n" + log)),
+        30000,
+      );
+      proc.stdout!.once("data", (data) => {
+        clearTimeout(timeout);
+        resolve(Number(String(data).trim()));
+      });
+      proc.once("exit", () => {
+        clearTimeout(timeout);
+        reject(Error(log));
+      });
+    });
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
-    const lead = required(
-      initial.threads.find((agent) => agent.name === "Release lead"),
-    );
+    const lead = initial.threads.find(
+      (agent) => agent.name === "Release lead",
+    )!;
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
     );
@@ -69,13 +80,12 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       "navigation workers must persist after result delivery; reviewers auto-archive",
     );
     const worker = (n: number) =>
-      required(
-        workers.find(
-          (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
-        ),
-      );
+      workers.find(
+        (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
+      )!;
     const longName =
       "Check approval and interrupted worker navigation across a large release team";
+    page = fixturePage;
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -86,21 +96,21 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       const desiredStatus = new Map<string, AgentEntityDto["status"]>(
         workers.map((agent, index) => [
           worker(index).id,
-          new Map<number, AgentEntityDto["status"]>([
-            [3, "failed"],
-            [4, "paused"],
-            [7, "failed"],
-          ]).get(index) ??
+          (
+            { 3: "failed", 4: "paused", 7: "failed" } as Record<
+              number,
+              AgentEntityDto["status"]
+            >
+          )[index] ??
             (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
         ]),
       );
-      for (const change of documents ?? []) {
-        if (
-          !("op" in change) ||
-          change.op !== "upsert" ||
-          change.collection !== "agent"
-        )
-          continue;
+      // The fixture mutation documents use the generated operation envelope.
+      const changes = documents as
+        | Extract<SyncPullResponse["documents"][number], { op: unknown }>[]
+        | undefined;
+      for (const change of changes ?? []) {
+        if (change.op !== "upsert" || change.collection !== "agent") continue;
         if (change.id === worker(2).id) {
           change.value.name = longName;
           change.value.status = "approval";
@@ -275,7 +285,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .sort(),
       JSON.stringify(
         (await groupIds("Working")).map(
-          (id) => required(workers.find((agent) => agent.id === id))?.name,
+          (id) => workers.find((agent) => agent.id === id)?.name,
         ),
       ),
     );
@@ -509,8 +519,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       expect(
         await page.locator(".workspace-header").evaluate((header) => {
           const titleElement = header.querySelector("#conversation-title");
-          if (!titleElement) throw Error("Missing title");
-          const title = titleElement.getBoundingClientRect();
+
+          const title = titleElement!.getBoundingClientRect();
           return [...header.querySelectorAll("button, summary")].every(
             (control) => {
               const rect = control.getBoundingClientRect();
@@ -534,8 +544,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         await page.locator("#back-lead").evaluate((n) => {
           const r = n.getBoundingClientRect();
           const headerElement = n.closest("header");
-          if (!headerElement) throw Error("Missing header");
-          const header = headerElement.getBoundingClientRect();
+
+          const header = headerElement!.getBoundingClientRect();
           return r.top >= header.top && r.bottom <= header.bottom;
         }),
         "Back to main agent remains inside the mobile header",

@@ -1,10 +1,10 @@
+#!/usr/bin/env node
 import type {
   LegacyPullFixture,
   LegacyIdentityFixture,
 } from "./prefetch-storage.fixture.ts";
 import {
   readProjectionStores,
-  projectionIsStored,
   completedTranscriptAgent,
 } from "./prefetch-storage.fixture.ts";
 import { fixtureOrigin } from "./browser.ts";
@@ -13,7 +13,11 @@ import type { ViteDevServer } from "vite";
 import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { Agent } from "../../src/types.ts";
-import { fixtureGetResult } from "./http.ts";
+import {
+  fixturePullResult,
+  type LegacySyncDocument,
+  fixtureGetResult,
+} from "./http.ts";
 import { initializeInstrumentation } from "./chat-prefetch-ui.fixture.ts";
 import type { GetResult, PostBody } from "../../src/apiTypes.ts";
 
@@ -25,20 +29,12 @@ function fixtureResources(
 }
 
 // This scenario deliberately inspects the legacy serialized entity envelope.
-function legacyEntityName(
-  document:
-    | components["schemas"]["SyncPullResponse"]["documents"][number]
-    | undefined,
-): unknown {
-  const payload: unknown = JSON.parse(
-    document && "payload" in document ? document.payload : "null",
-  );
-  if (!payload || typeof payload !== "object" || !("value" in payload))
-    return undefined;
-  const value = payload.value;
-  return value && typeof value === "object" && "name" in value
-    ? value.name
-    : undefined;
+function legacyEntityName(source: string): unknown {
+  return (
+    JSON.parse(source) as {
+      value?: { name?: unknown };
+    } | null
+  )?.value?.name;
 }
 import {
   test,
@@ -69,7 +65,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
   });
   let log = "",
     context: BrowserContext | undefined,
-    cleanupPage: Page | undefined,
+    page!: Page,
     server: ViteDevServer | undefined,
     heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   const streamConnections = new Set<{
@@ -77,7 +73,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     resources: components["schemas"]["ResourceRef"][];
     openedAt: number;
   }>();
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   const until = async (
@@ -94,7 +90,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
   };
   try {
     const port = await new Promise<number>((resolve, reject) => {
-      fixture.stdout?.once("data", (chunk) =>
+      fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));
@@ -106,34 +102,23 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       await fetch(origin + "/api/sync/identity"),
     );
     let workspaceId = identity.workspaceId;
-    const entityDocuments = new Map<
-      string,
-      components["schemas"]["SyncPullResponse"]["documents"][number]
-    >();
+    const entityDocuments = new Map<string, LegacySyncDocument>();
     let entityMaxSeq = 0;
     let entityCursor = 0;
     do {
-      const result = await fixtureGetResult(
-        "/api/sync/pull",
+      const result = await fixturePullResult(
         await fetch(
           `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityCursor}&limit=100`,
         ),
       );
-      if (!("documents" in result))
-        throw new Error("Unexpected reset in fixture pull");
       for (const document of result.documents || [])
         entityDocuments.set(document.id, document);
       entityMaxSeq = result.maxSeq || entityMaxSeq;
       entityCursor = result.checkpoint?.seq || entityCursor;
     } while (entityCursor < entityMaxSeq);
-    const a = original.threads.find((agent) => agent.name === "Other project");
-    const b = original.threads.find((agent) => agent.name === "Release lead");
-    assert.ok(a && b, "Expected both fixture chats");
-    assert.ok(
-      typeof a.name === "string" && typeof b.name === "string",
-      "Expected named fixture chats",
-    );
-    let currentBName: string = b.name;
+    const a = original.threads.find((agent) => agent.name === "Other project")!;
+    const b = original.threads.find((agent) => agent.name === "Release lead")!;
+    let currentBName = b.name!;
     const agents = [a, b].map((agent) => ({
       ...agent,
       status: "completed",
@@ -143,7 +128,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     const payload = (
       agent: Agent,
       tag: string,
-    ): import("../../src/types.ts").TranscriptPageData &
+    ): import("./prefetch-storage.fixture.ts").LegacyTranscriptPage &
       Partial<
         Pick<components["schemas"]["TranscriptStreamDelta"], "order">
       > => ({
@@ -260,7 +245,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       // after reload; the separate loading suite tests the production worker.
       serviceWorkers: "block",
     });
-    const page = (cleanupPage = await context.newPage());
+    page = await context.newPage();
     page.setDefaultTimeout(12000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -317,16 +302,19 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         assert.equal(url.searchParams.get("id"), a.id);
         const focused = !!url.searchParams.get("around");
         const older = payload(a, focused ? "A-focused" : "A-older");
-        older.items = older.items.map((item, index) => ({
-          ...item,
-          at: index - 100,
-        }));
+        older.items = older.items.map(
+          (item, index) =>
+            ({
+              ...item,
+              at: index - 100,
+            }) as typeof item,
+        );
         return route.fulfill({
           json: {
             ...older,
             nextCursor: null,
             nextAfterCursor: focused ? "focused-next" : null,
-          } satisfies import("../../src/types.ts").TranscriptPageData,
+          } satisfies import("./prefetch-storage.fixture.ts").LegacyTranscriptPage,
         });
       }
       if (url.pathname === "/api/transcript") {
@@ -358,7 +346,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           ids: documents.map((document) => document.id),
           renamedEntity: documents
             .filter((document) => document.id === `entity:agent:${b.id}`)
-            .map((document) => legacyEntityName(document)),
+            .map((document) => legacyEntityName(document.payload)),
           maxSeq: entityMaxSeq,
         });
         return route.fulfill({
@@ -446,8 +434,9 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       query.some(
         (item) =>
           item.kind === ref.kind &&
-          (!("agentId" in ref) ||
-            ("agentId" in item && item.agentId === ref.agentId)),
+          ((ref as { agentId?: string }).agentId === undefined ||
+            (item as { agentId?: string }).agentId ===
+              (ref as { agentId?: string }).agentId),
       );
     const emitResourceChange = async (
       resources: components["schemas"]["ResourceRef"][],
@@ -509,19 +498,13 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       currentBName = name;
       let after = entityMaxSeq;
       let maxSeq = entityMaxSeq;
-      const updatedDocuments = new Map<
-        string,
-        components["schemas"]["SyncPullResponse"]["documents"][number]
-      >();
+      const updatedDocuments = new Map<string, LegacySyncDocument>();
       do {
-        const result = await fixtureGetResult(
-          "/api/sync/pull",
+        const result = await fixturePullResult(
           await fetch(
             `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${after}&limit=100`,
           ),
         );
-        if (!("documents" in result))
-          throw new Error("Unexpected reset in fixture pull");
         for (const document of result.documents || [])
           updatedDocuments.set(document.id, document);
         maxSeq = result.maxSeq || maxSeq;
@@ -529,7 +512,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       } while (after < maxSeq);
       const updatedAgent = updatedDocuments.get(`entity:agent:${b.id}`);
       assert.equal(
-        legacyEntityName(updatedAgent),
+        legacyEntityName(updatedAgent?.payload || "null"),
         name,
         "The state fixture must expose the renamed entity before notifying subscribers",
       );
@@ -611,23 +594,22 @@ test("chat prefetch ui @performance", async ({ browser }) => {
               storedAgentName: legacyEntityName(
                 projection.stored
                   .flat()
-                  .find((row) => row.id === `entity:agent:${b.id}`),
+                  .find((row) => row.id === `entity:agent:${b.id}`)?.payload ||
+                  "null",
               ),
             },
           );
           throw new Error(
-            `${error instanceof Error ? error.message : String(error)}; state invalidation: ${JSON.stringify(
-              {
-                name,
-                updatedFixture: legacyEntityName(updatedAgent),
-                entityPulls: entityPulls.slice(-8),
-                emittedEntityEvents: emittedEntityEvents.slice(-4),
-                streamQueries: streamQueries.slice(-5),
-                identities,
-                diagnostic,
-                errors,
-              },
-            )}`,
+            `${(error as Error).message}; state invalidation: ${JSON.stringify({
+              name,
+              updatedFixture: legacyEntityName(updatedAgent?.payload || "null"),
+              entityPulls: entityPulls.slice(-8),
+              emittedEntityEvents: emittedEntityEvents.slice(-4),
+              streamQueries: streamQueries.slice(-5),
+              identities,
+              diagnostic,
+              errors,
+            })}`,
           );
         },
       );
@@ -645,8 +627,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       `Background requests wait for ${selectedBeforeForegroundRelease}: ${JSON.stringify(reads)}`,
     );
     assert.equal(streams.includes(b.id), false);
-    assert.ok(releaseA);
-    releaseA();
+    releaseA!();
     await marker("A-current").waitFor();
     await until(
       () => reads.some((read) => read.id === b.id && read.seq === 300),
@@ -671,7 +652,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
 
     await page.evaluate(async () => {
       const { watchResourceChanges } = await import("/src/sync/client.ts");
-      window.prefetchUiStopUnrelatedWatch = watchResourceChanges(
+      window.stopUnrelatedWatch = watchResourceChanges(
         { kind: "transcript", agentId: "unrelated-agent" },
         () => {},
       );
@@ -721,9 +702,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
 
     // A real shared SSE invalidation announces a newer B while the reader stays in A.
     values.set(b.id, { seq: 301, data: payload(b, "B-newest") });
-    const updatedB = agents.find((agent) => agent.id === b.id);
-    assert.ok(updatedB);
-    updatedB.updated = Date.now();
+    agents.find((agent) => agent.id === b.id)!.updated = Date.now();
     const backgroundUpdateAt = Date.now();
     await invalidate("Prefetch background update");
     await until(
@@ -798,7 +777,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       "Online and pageshow coalesce while the recovery transcript read is in flight",
     );
     const flushAckCount = await page.evaluate(
-      () => window.prefetchUiResourceFlushAcks.length,
+      () => window.__resourceFlushAcks.length,
     );
     const streamOpenCount = streamEvents.filter(
       (event) => event.kind === "open",
@@ -815,20 +794,20 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         () =>
           page.evaluate(
             ({ count, revision }) =>
-              window.prefetchUiResourceFlushAcks.length > count &&
-              window.prefetchUiResourceFlushAcks.at(-1) === revision,
+              window.__resourceFlushAcks.length > count &&
+              window.__resourceFlushAcks.at(-1) === revision,
             { count: flushAckCount, revision: notificationRevision },
           ),
         "The same-version reconnect baseline reaches the transcript watcher while its pull is held",
       );
     } catch (error) {
       const diagnostic = await page.evaluate(() => ({
-        acks: window.prefetchUiResourceFlushAcks,
-        flushes: window.prefetchUiResourceFlushObserved,
-        pending: window.prefetchUiPendingResourceFlushRevisions,
+        acks: window.__resourceFlushAcks,
+        flushes: window.__resourceFlushObserved,
+        pending: window.__pendingResourceFlushRevisions,
       }));
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; flush diagnostic: ${JSON.stringify({ diagnostic, notificationRevision, streamEvents: streamEvents.slice(-5), streamQueries: streamQueries.slice(-4) })}`,
+        `${(error as Error).message}; flush diagnostic: ${JSON.stringify({ diagnostic, notificationRevision, streamEvents: streamEvents.slice(-5), streamQueries: streamQueries.slice(-4) })}`,
       );
     }
     const releaseHeldRecovery = () => releaseRecoveryB?.();
@@ -872,7 +851,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     await until(
       () =>
         page.evaluate(
-          (revision) => window.prefetchUiResourceFlushAcks.includes(revision),
+          (revision) => window.__resourceFlushAcks.includes(revision),
           inFlightRevision,
         ),
       "The targeted watch callback must queue work for the newer revision while B's pull is held",
@@ -915,7 +894,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       (read) => read.id === b.id && read.seq === 305,
     ).length;
     const retryAckCount = await page.evaluate(
-      () => window.prefetchUiResourceFlushAcks.length,
+      () => window.__resourceFlushAcks.length,
     );
     const retryStreamOpenCount = streamEvents.filter(
       (event) => event.kind === "open",
@@ -932,8 +911,8 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       () =>
         page.evaluate(
           ({ count, revision }) =>
-            window.prefetchUiResourceFlushAcks.length > count &&
-            window.prefetchUiResourceFlushAcks.at(-1) === revision,
+            window.__resourceFlushAcks.length > count &&
+            window.__resourceFlushAcks.at(-1) === revision,
           { count: retryAckCount, revision: notificationRevision },
         ),
       "A same-version recovery callback arrives before the held history read fails",
@@ -953,11 +932,47 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     assert.equal(await selected(), a.name);
     await until(
       () =>
-        page.evaluate(projectionIsStored, {
-          databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
-          documentId: `transcript:${b.id}`,
-          sequence: 305,
-        }),
+        page.evaluate(
+          async ({
+            databaseName,
+            documentId,
+            sequence,
+          }: {
+            databaseName: string;
+            documentId: string;
+            sequence: number;
+          }) => {
+            const request = indexedDB.open(databaseName);
+            const db = await new Promise<IDBDatabase>((resolve, reject) => {
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+            const tx = db.transaction([...db.objectStoreNames], "readonly");
+            const matches = await Promise.all(
+              [...db.objectStoreNames].map(
+                (store) =>
+                  new Promise<boolean>((resolve) => {
+                    const query = tx.objectStore(store).getAll();
+                    query.onsuccess = () =>
+                      resolve(
+                        query.result.some(
+                          (row: components["schemas"]["SyncDocument"]) =>
+                            row.id === documentId && row.seq === sequence,
+                        ),
+                      );
+                    query.onerror = () => resolve(false);
+                  }),
+              ),
+            );
+            db.close();
+            return matches.some(Boolean);
+          },
+          {
+            databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
+            documentId: `transcript:${b.id}`,
+            sequence: 305,
+          },
+        ),
 
       "RxDB must persist B's refreshed projection before network interruption",
     );
@@ -978,11 +993,11 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     ) => {
       await page.evaluate(
         ({ id, title, tag, forbidden }) => {
-          window.prefetchUiSwitchFrames = [];
-          const capture = (window.prefetchUiCaptureSwitch =
-            (window.prefetchUiCaptureSwitch || 0) + 1);
+          window.switchFrames = [];
+          const capture = (window.captureSwitch =
+            (window.captureSwitch || 0) + 1);
           const frame = () => {
-            if (window.prefetchUiCaptureSwitch !== capture) return;
+            if (window.captureSwitch !== capture) return;
             if (
               document
                 .querySelector(`[data-chat="${CSS.escape(id)}"]`)
@@ -993,17 +1008,17 @@ test("chat prefetch ui @performance", async ({ browser }) => {
               ]
                 .filter((node) => node.getClientRects().length > 0)
                 .map((node) => node.getAttribute("data-message"));
-              window.prefetchUiSwitchFrames.push({
+              window.switchFrames.push({
                 time: performance.now(),
                 fresh: ids.includes(`${tag}-39`),
-                wrong: ids.some((value) => value?.startsWith(forbidden)),
+                wrong: ids.some((value) => value!.startsWith(forbidden)),
                 title: document
                   .querySelector("#conversation-title")
                   ?.textContent?.trim(),
                 titleMatches:
                   document
                     .querySelector("#conversation-title")
-                    ?.textContent?.trim() === title?.trim(),
+                    ?.textContent?.trim() === title!.trim(),
                 count: ids.length,
                 scrollTop: document.querySelector("#messages")?.scrollTop,
               });
@@ -1017,25 +1032,23 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       const chatButton = page.locator(`[data-chat="${id}"]`);
       await chatButton.click({ trial: true });
       await chatButton.evaluate((button) => {
-        window.prefetchUiSwitchStartedAt = null;
+        window.switchStartedAt = null;
         button.addEventListener(
           "pointerdown",
-          () => (window.prefetchUiSwitchStartedAt = performance.now()),
+          () => (window.switchStartedAt = performance.now()),
           { once: true, capture: true },
         );
       });
       await chatButton.click();
       await marker(tag).waitFor();
       const elapsed = await page.evaluate(
-        () => performance.now() - (window.prefetchUiSwitchStartedAt ?? NaN),
+        () => performance.now() - window.switchStartedAt!,
       );
       assert.ok(elapsed < 500, `Cached ${tag} switch took ${elapsed} ms`);
-      await page.waitForFunction(
-        () => window.prefetchUiSwitchFrames.length >= 3,
-      );
+      await page.waitForFunction(() => window.switchFrames.length >= 3);
       const frames = await page.evaluate(() => {
-        window.prefetchUiCaptureSwitch++;
-        return window.prefetchUiSwitchFrames;
+        window.captureSwitch++;
+        return window.switchFrames;
       });
       assert.ok(
         frames.every(
@@ -1050,7 +1063,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       if (expectedScroll !== null)
         assert.ok(
           frames.every(
-            (frame) => Math.abs((frame.scrollTop ?? NaN) - expectedScroll) < 2,
+            (frame) => Math.abs(frame.scrollTop! - expectedScroll) < 2,
           ),
           `The first cached frame must restore scroll ${expectedScroll}: ${JSON.stringify(frames)}`,
         );
@@ -1207,7 +1220,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         bodyText: document.body.innerText.slice(0, 500),
       }));
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; workspace switch diagnostic: ${JSON.stringify({ diagnostic, identities, errors, reads: reads.slice(-12) })}`,
+        `${(error as Error).message}; workspace switch diagnostic: ${JSON.stringify({ diagnostic, identities, errors, reads: reads.slice(-12) })}`,
       );
     }
     await page.locator(`[data-chat="${b.id}"]`).click();
@@ -1252,9 +1265,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       }),
     );
   } catch (error) {
-    await cleanupPage
-      ?.screenshot({ path: join(dir, "failure.png") })
-      .catch(() => {});
+    await page?.screenshot({ path: join(dir, "failure.png") }).catch(() => {});
     console.error("Evidence:", dir, log);
     throw error;
   } finally {
