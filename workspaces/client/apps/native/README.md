@@ -129,13 +129,18 @@ keyboard closes. Code: `src-tauri/src/ios_shell.rs`, `ios_viewport.js`,
 The shell owns three names. Their web owner is
 `apps/web/src/native/nativeViewport.ts`.
 
-| Name                                              | Kind                      | Meaning                                           |
-| ------------------------------------------------- | ------------------------- | ------------------------------------------------- |
-| `--native-safe-top`, `-right`, `-bottom`, `-left` | CSS lengths on `<html>`   | UIKit `safeAreaInsets` of the web view, in CSS px |
-| `studio-native-viewport`                          | `CustomEvent` on `window` | `detail` = `{ insets, keyboard }`                 |
-| `window.__studioNativeViewport`                   | object, `version: 1`      | current `state`, read when the page starts        |
+| Name                                              | Kind                      | Meaning                                                                  |
+| ------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------ |
+| `--native-safe-top`, `-right`, `-bottom`, `-left` | CSS lengths on `<html>`   | UIKit `safeAreaInsets` of the web view, in CSS px                        |
+| `studio-native-viewport`                          | `CustomEvent` on `window` | `detail` = `{ insets, keyboard, hinge }`                                 |
+| `window.__studioNativeViewport`                   | object, `version: 1`      | current `state`, read when the page starts                               |
+| `data-native-hinge`                               | attribute on `<html>`     | `closed`, `partial`, `open` or `unknown` (iOS 27.1 `UIHingeInteraction`) |
 
 - `insets`: `{ top, right, bottom, left }` in CSS px.
+- `hinge`: `{ status, angle }` from `UIHingeInteraction` (iOS 27.1 and later;
+  absent on older systems). `angle` is `UIHinge.angle` in radians (π when
+  fully open on the iPhone Duo); `degrees` is the same angle, also set as
+  `--native-hinge-angle` (for example `180deg`) on `<html>`.
 - `keyboard`: `{ overlap, duration, curve }`. `overlap` is the keyboard height
   over the web view bottom in CSS px (0 when it closes). `duration` is in ms.
   `curve` is the `UIViewAnimationCurve` value (7 for the keyboard).

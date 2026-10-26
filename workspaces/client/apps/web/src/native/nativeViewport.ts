@@ -19,10 +19,21 @@ export interface NativeKeyboard {
   curve: number;
 }
 
+/** UIHingeInteraction state (iOS 27.1); data-native-hinge on <html>. */
+export interface NativeHinge {
+  status: "closed" | "partial" | "open" | "unknown";
+  /** UIHinge.angle, in radians (pi when fully open); null without a hinge. */
+  angle: number | null;
+  /** The same angle in degrees; also --native-hinge-angle on <html>. */
+  degrees: number | null;
+}
+
 export interface NativeViewportState {
   /** UIKit safe area insets of the web view, in CSS px. */
   insets: { top: number; right: number; bottom: number; left: number } | null;
   keyboard: NativeKeyboard | null;
+  /** Absent before the first hinge update and on systems without the API. */
+  hinge?: NativeHinge | null;
 }
 
 type NativeViewportHost = { version: number; state: NativeViewportState };

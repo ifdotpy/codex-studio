@@ -46,6 +46,8 @@ struct Keyboard {
 thread_local! {
     // Main thread only: UIKit notifications and script messages arrive there.
     static KEYBOARD: Cell<Option<Keyboard>> = const { Cell::new(None) };
+    // Last UIHingeInteraction update: UIHingeStatus raw value and UIHinge.angle.
+    static HINGE: Cell<Option<(isize, f64)>> = const { Cell::new(None) };
     // Diagnostic only: the last UIKit end frame and its conversions.
     static KEYBOARD_FRAMES: std::cell::RefCell<serde_json::Value> = const { std::cell::RefCell::new(serde_json::Value::Null) };
 }
@@ -261,6 +263,9 @@ fn push(webview: &UIView, keyboard: Option<Keyboard>) {
             "curve": keyboard.curve,
         });
     }
+    if let Some((status, angle)) = HINGE.get() {
+        state["hinge"] = serde_json::json!({ "status": hinge_status(status), "angle": angle });
+    }
     let script = NSString::from_str(&format!(
         "window.__studioNativeViewport&&window.__studioNativeViewport.receive({state})"
     ));
@@ -297,6 +302,7 @@ fn diagnose(webview: &UIView, tag: &str) {
         "zoomScale": scroll.zoomScale(),
         "keyboard": KEYBOARD.get().map(|k| [k.overlap, k.duration, k.curve as f64]),
         "keyboardFrames": KEYBOARD_FRAMES.with_borrow(|v| v.clone()),
+        "hinge": HINGE.get().map(|(status, angle)| serde_json::json!({ "status": hinge_status(status), "raw": status, "angle": angle })),
         "statusBar": status_bar_frame(webview).map(|r| [r.origin.x, r.origin.y, r.size.width, r.size.height]),
         "windowBounds": [raw.window.0, raw.window.1],
         "interfaceOrientation": raw.orientation,
@@ -463,6 +469,7 @@ pub fn configure(window: &WebviewWindow) {
         }
         push(&webview, KEYBOARD.get());
         install_server_switch(mtm, &webview, &main_window);
+        install_hinge(&webview);
         if diagnostics() {
             let target = Weak::from(&*webview);
             let block = block2::RcBlock::new(move |_timer: NonNull<objc2_foundation::NSTimer>| {
@@ -560,4 +567,58 @@ fn install_server_switch(mtm: MainThreadMarker, webview: &UIView, window: &Webvi
     }
     // The recognizer keeps a weak target; keep it for the app lifetime.
     std::mem::forget(target);
+}
+
+/// UIHingeStatus raw value as the page API word.
+fn hinge_status(status: isize) -> &'static str {
+    match status {
+        1 => "closed",
+        2 => "partial",
+        3 => "open",
+        _ => "unknown",
+    }
+}
+
+/// iOS 27.1 UIHingeInteraction (looked up at run time, so older systems skip
+/// it): each hinge update goes to the page with the viewport state.
+fn install_hinge(webview: &UIView) {
+    let Some(class) = objc2::runtime::AnyClass::get(c"UIHingeInteraction") else {
+        eprintln!("studio-shell hinge: UIHingeInteraction unavailable");
+        return;
+    };
+    let target = Weak::from(webview);
+    let handler = block2::RcBlock::new(
+        move |_interaction: *mut AnyObject, update: *mut AnyObject| {
+            let Some(update) = (unsafe { update.as_ref() }) else {
+                return;
+            };
+            let hinge: *mut AnyObject = unsafe { msg_send![update, hinge] };
+            let value = unsafe { hinge.as_ref() }.map(|hinge| {
+                let status: isize = unsafe { msg_send![hinge, status] };
+                let angle: f64 = unsafe { msg_send![hinge, angle] };
+                (status, angle)
+            });
+            let value = value.unwrap_or((0, f64::NAN));
+            if HINGE.get().map(|(s, a)| (s, a.to_bits())) != Some((value.0, value.1.to_bits())) {
+                eprintln!("studio-shell hinge: status {} angle {}", value.0, value.1);
+            }
+            HINGE.set(Some(value));
+            if let Some(webview) = target.load() {
+                push(&webview, KEYBOARD.get());
+                diagnose(&webview, "hinge");
+            }
+        },
+    );
+    unsafe {
+        let interaction: Option<Retained<AnyObject>> =
+            msg_send![msg_send![class, alloc], initWithUpdateHandler: &*handler];
+        let Some(interaction) = interaction else {
+            return;
+        };
+        // The web view's host view carries the interaction.
+        let host = webview.superview().unwrap_or_else(|| {
+            Retained::retain(webview as *const UIView as *mut UIView).expect("web view")
+        });
+        let _: () = msg_send![&*host, addInteraction: &*interaction];
+    }
 }
