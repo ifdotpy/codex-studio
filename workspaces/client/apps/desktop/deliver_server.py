@@ -145,6 +145,22 @@ def publish_pending(state, pending):
         temporary.unlink(missing_ok=True)
 
 
+def abandoned_startup_intent(state, operation):
+    """The pointer of an earlier startup publication that never got a pending file, else None."""
+    pointer = state / desktop_delivery.STARTUP_INTENT_FILE
+    if not pointer.exists() and not pointer.is_symlink():
+        return None
+    intent = desktop_delivery.read_private_json(pointer)
+    if not isinstance(intent, dict) or not isinstance(intent.get('id'), str) or intent['id'] == operation:
+        return None
+    saved = desktop_delivery.read_delivery_record(desktop_delivery.journal_path(state, intent['id']))
+    receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
+    installed = receipt.get('id') == intent['id'] and receipt.get('outcome') == 'installed'
+    if saved is None or saved.get('phase') != PHASES['publishing'] or installed or updates.read_pending(state) is not None:
+        return None
+    return intent
+
+
 def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool, dry_run=False,
           starting_pid=None, recover_installed=None, state=None, port=None):
     source, installed, receipts = Path(source), Path(installed), Path(receipts)
@@ -206,14 +222,19 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
     owner_receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
     if owner_receipt.get('id') == operation and owner_receipt.get('outcome') in ('failed', 'obsolete'):
         raise DeliveryError('The recovery owner reports delivery ' + str(owner_receipt['outcome']))
+    replaced = abandoned_startup_intent(state, operation) if startup is not None else None
+    if replaced is not None:
+        predecessor = replaced
     record_path = receipts / CONTRACT['receiptFile']
     cached = read_delivery_record(record_path)
     durable_path = journal_path(state, operation)
     durable = read_delivery_record(durable_path)
-    for saved in (cached, durable):
+    # The abandoned publication is never resumed; the new request overwrites its receipt cache.
+    reusable = None if replaced is not None and cached is not None and cached.get('id') == replaced['id'] else cached
+    for saved in (reusable, durable):
         if saved is not None and (saved.get('request') != request or saved.get('id') != operation):
             raise DeliveryError('The saved delivery request names a different package or target')
-    previous = durable or cached
+    previous = durable or reusable
     if previous is not None and (previous.get('request') != request or previous.get('id') != operation):
         raise DeliveryError('The saved delivery request names a different package or target')
     if previous is not None and superseded_install(previous, installed):
@@ -299,7 +320,7 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
             # The legacy installer ignores this typed intent and keeps its existing swap path.
             # Only the replacement recovery owner can consume it after an installed receipt.
             recovery.verify_startup_backend(config, state, installed, startup, handles, swapped=False)
-            desktop_delivery.publish_startup_intent(state, record)
+            desktop_delivery.publish_startup_intent(state, record, predecessor=predecessor)
         if recovered is not None:
             recovery.verify_installed_admission(config, state, installed, recovered, handles)
             desktop_delivery.publish_startup_intent(state, record, predecessor=predecessor if pointer.exists() and desktop_delivery.read_private_json(pointer) == predecessor else None)

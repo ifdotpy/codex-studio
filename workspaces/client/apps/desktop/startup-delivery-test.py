@@ -267,6 +267,42 @@ class StartupDeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, 'Another local delivery is active'):
                 self.stage(source)
 
+    def next_package(self, source, commit):
+        target = self.root / commit[:8] / updates.APP_NAME
+        target.parent.mkdir()
+        shutil.copytree(source, target, symlinks=True)
+        updates.write_json(target / updates.BUILD_STAMP, {**self.new, 'builtAt': 2500.5, 'commit': commit,
+                                                          'commitTime': 2500, 'branch': 'fix/next'})
+        return target
+
+    def test_a_new_commit_replaces_an_abandoned_startup_publication(self):
+        source = self.prepare_uninstalled_delivery()
+        self.leftover_startup_publication(source)
+        abandoned = self.journal
+        next_source = self.next_package(source, 'e' * 40)
+        result = self.stage(next_source, commit='e' * 40)
+        self.assertEqual(result['phase'], 'submitted')
+        self.assertEqual(desktop_delivery.read_private_json(self.intent)['id'], result['id'])
+        self.assertEqual(updates.read_pending(self.state)['id'], result['id'])
+        self.assertTrue(abandoned.exists(), 'the abandoned record stays as evidence')
+
+    def test_a_new_commit_still_refuses_a_pending_file_or_an_active_delivery(self):
+        source = self.prepare_uninstalled_delivery()
+        self.leftover_startup_publication(source)
+        next_source = self.next_package(source, 'e' * 40)
+        pointer = self.intent.read_bytes()
+        foreign = {'id': str(uuid.uuid4()), 'app': str(source), 'build': self.new, 'from': 'local-delivery'}
+        delivery.publish_pending(self.state, foreign)
+        with self.assertRaises(delivery.DeliveryError):
+            self.stage(next_source, commit='e' * 40)
+        self.assertEqual(self.intent.read_bytes(), pointer)
+        (self.state / updates.PENDING_FILE).unlink()
+        with (self.state / 'delivery.lock').open('a+') as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(delivery.DeliveryError, 'Another local delivery is active'):
+                self.stage(next_source, commit='e' * 40)
+        self.assertEqual(self.intent.read_bytes(), pointer)
+
     def test_artifact_state_receipt_generation_and_lease_mismatches_hold(self):
         targets = [
             (delivery.server_path(self.installed), b'changed-new'),
@@ -498,11 +534,12 @@ class StartupDeliveryTests(unittest.TestCase):
         return subprocess.CompletedProcess(command, 0, output, '')
 
     def stage(self, source, **options):
+        commit = options.pop('commit', self.new['commit'])
         with patch.object(recovery, 'startup_backend_facts', return_value=self.facts), \
                 patch.object(recovery, 'startup_backend_birth', return_value=self.facts['birth']), \
                 patch.object(recovery, 'listener_pids', return_value=[11]), \
                 patch.object(recovery, 'supervisor_request', return_value=self.health):
-            return delivery.stage(source, self.new['commit'], self.installed, self.root / 'receipts',
+            return delivery.stage(source, commit, self.installed, self.root / 'receipts',
                                   observe=lambda: self.fail('startup staging must not fabricate or request HTTP identity'),
                                   run=self.fake_tool, starting_pid=11, state=self.state, **options)
 
