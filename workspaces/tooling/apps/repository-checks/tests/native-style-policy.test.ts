@@ -22,9 +22,10 @@ function canModify(setting: unknown, directive: string) {
 }
 
 test("the native host serves its configured inline style policy", async () => {
-  const config: typeof import("../../../../client/apps/native/src-tauri/tauri.conf.json") =
-    JSON.parse(await readFile(configUrl, "utf8"));
-  const { security } = config.app;
+  const {
+    security,
+  }: (typeof import("../../../../client/apps/native/src-tauri/tauri.conf.json"))["app"] =
+    JSON.parse(await readFile(configUrl, "utf8")).app;
   const directives = new Map<string | undefined, string[]>(
     security.csp
       .split(";")

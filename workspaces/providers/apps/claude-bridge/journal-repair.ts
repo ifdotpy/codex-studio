@@ -1,6 +1,5 @@
 import type { Session } from "./session-state.ts";
 import type { NativeHistoryOptions } from "./native-history.ts";
-import { object } from "./history-records.ts";
 import { readNativeHistory, nativeUuid } from "./native-history.ts";
 
 export interface JournalChange {
@@ -12,26 +11,24 @@ export interface JournalRecord {
   sequence: number;
   changes: JournalChange[];
 }
-export function validJournalRecord(record: unknown): record is JournalRecord {
+export function validJournalRecord(value: unknown): value is JournalRecord {
+  // The original checks below define the untrusted journal-record boundary.
+  const record = value as JournalRecord;
   return (
-    object(record) &&
-    typeof record.sequence === "number" &&
+    record &&
     Number.isSafeInteger(record.sequence) &&
     record.sequence > 0 &&
     Array.isArray(record.changes) &&
     record.changes.every(
-      (change: unknown) =>
-        object(change) &&
-        typeof change.op === "string" &&
+      (change) =>
+        change &&
         ["set", "delete", "append"].includes(change.op) &&
         Array.isArray(change.path) &&
         change.path.every(
           (key: unknown) =>
             (typeof key === "string" ||
-              (typeof key === "number" &&
-                Number.isSafeInteger(key) &&
-                key >= 0)) &&
-            !["__proto__", "prototype", "constructor"].includes(String(key)),
+              (Number.isSafeInteger(key) && (key as number) >= 0)) &&
+            !["__proto__", "prototype", "constructor"].includes(key as string),
         ) &&
         (change.op === "delete" || Object.hasOwn(change, "value")) &&
         (change.op !== "append" ||
@@ -47,15 +44,12 @@ function textContent(content: unknown) {
     !Array.isArray(content) ||
     content.some(
       (block: unknown) =>
-        !object(block) ||
-        block.type !== "text" ||
-        typeof block.text !== "string",
+        (block as { type?: unknown } | null)?.type !== "text" ||
+        typeof (block as { text?: unknown }).text !== "string",
     )
   )
     return null;
-  return content
-    .map((block: unknown) => (object(block) ? block.text : undefined))
-    .join("\n");
+  return content.map((block: { text: string }) => block.text).join("\n");
 }
 
 // Repair requires complete, exact native message coverage. Tool receipts,
@@ -117,11 +111,11 @@ export async function nativeConfirmsJournal(
         "file-history-snapshot",
         "queue-operation",
         "last-prompt",
-      ].some((type) => type === row.type)
+      ].includes(row.type as string)
     )
       continue;
     if (
-      !["user", "assistant"].some((type) => type === row.type) ||
+      !["user", "assistant"].includes(row.type as string) ||
       row.isSidechain !== false ||
       row.isMeta ||
       row.isApiErrorMessage ||
@@ -133,16 +127,12 @@ export async function nativeConfirmsJournal(
       return false;
     if (
       row.type === "assistant" &&
-      ![undefined, null, "end_turn", "stop_sequence"].some(
-        (reason) =>
-          reason ===
-          (object(row.message) ? row.message.stop_reason : undefined),
+      ![undefined, null, "end_turn", "stop_sequence"].includes(
+        (row.message as { stop_reason?: string | null })?.stop_reason,
       )
     )
       return false;
-    const text = textContent(
-      object(row.message) ? row.message.content : undefined,
-    );
+    const text = textContent((row.message as { content?: unknown })?.content);
     if (text === null) return false;
     messages.push({ type: row.type, uuid: row.uuid, text });
   }

@@ -63,10 +63,11 @@ export async function rewindSessionFiles(
   messageId: string,
   rewindOptions: Parameters<Query["rewindFiles"]>[1],
 ) {
-  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  // eslint-disable-next-line require-yield -- This control-only query intentionally sends no prompt.
   async function* prompt(): AsyncGenerator<SDKUserMessage> {
     await held;
-    yield* [];
   }
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), 20_000);

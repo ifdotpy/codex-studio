@@ -11,7 +11,7 @@ export async function exportServerCredentials({
   safeStorage,
 }: {
   profile: string;
-  destination?: unknown;
+  destination?: { executable: string; profile: string };
   safeStorage: Pick<SafeStorage, "isEncryptionAvailable" | "decryptString"> &
     Partial<Pick<SafeStorage, "getSelectedStorageBackend">>;
 }) {
@@ -22,19 +22,13 @@ export async function exportServerCredentials({
       "utf8",
     );
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw new Error("Could not read the saved server keys.");
   }
   if (
     !destination ||
-    typeof destination !== "object" ||
-    !("executable" in destination) ||
-    typeof destination.executable !== "string" ||
-    !("profile" in destination) ||
-    typeof destination.profile !== "string" ||
     !path.isAbsolute(destination.executable ?? "") ||
-    !path.isAbsolute(destination.profile)
+    !path.isAbsolute(destination.profile ?? "")
   )
     throw new Error(
       "Saved server keys require a native credential migration destination.",
@@ -53,14 +47,13 @@ export async function exportServerCredentials({
   } catch {
     throw new Error("Could not decrypt the saved server keys.");
   }
-  const { executable, profile: destinationProfile } = destination;
   try {
     if (bytes.length > 1024 * 1024)
       throw new Error("Saved server keys exceed the migration limit.");
     await new Promise<void>((resolve, reject) => {
       const child = spawn(
-        executable,
-        ["--import-server-credentials", destinationProfile],
+        destination.executable,
+        ["--import-server-credentials", destination.profile],
         { stdio: ["pipe", "ignore", "ignore"], timeout: 60000 },
       );
       // An early exit closes stdin; the process result determines success.

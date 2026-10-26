@@ -5,11 +5,11 @@ import os from "node:os";
 import { isDeepStrictEqual } from "node:util";
 import { execFileSync } from "node:child_process";
 
+import type { Session } from "../../../providers/apps/claude-bridge/session-state.ts";
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
 import type {
   PricingArtifact,
   RawCost,
-  RawProvider,
 } from "../../../client/apps/web/src/generated/pricing.ts";
 
 /** A sparse saved view permits explicit clearing as well as absent properties. */
@@ -49,6 +49,7 @@ export type Analytics = Omit<
 > & {
   timeline?: LegacyUsageRow[] | null | undefined;
   source?: string;
+  usageGeneration?: Schema["JsonValue"];
 };
 export type Cost = Omit<Optional<Schema["SessionCostResponse"]>, "rootId"> &
   Optional<Pick<Schema["AgentSummaryEntityDto"], "rootId">>;
@@ -171,10 +172,6 @@ export function readEvidence(file: string): Evidence {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 // Owner: runtime-services/src/pricing.rs; parity checked by installed-smoke tests.
 // Ratio of one-hour cache-write USD/million to the selected input USD/million.
 export const CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER = 2.0;
@@ -192,136 +189,113 @@ export const TOKEN_CATEGORIES = [
 
 /** Codex includes cache reads in input; Claude reports uncached input separately. */
 export function nativeTokens(
-  usage: unknown,
+  rawUsage: unknown,
   provider: Provider,
 ): Schema["UsageTokens"] {
-  if (!isRecord(usage)) throw new Error("Native usage is not an object");
-  const number = (value: unknown) => {
-    if (typeof value !== "number")
-      throw new Error("Native token count is not numeric");
-    return value;
-  };
-  const input = number(usage.input_tokens ?? usage.inputTokens ?? 0);
-  const cacheReadInput = number(
+  // Provider journal numeric fields are read through one erased indexed view.
+  const usage = rawUsage as Record<string, number & Record<string, number>>;
+  const input = usage.input_tokens ?? usage.inputTokens ?? 0;
+  const cacheReadInput =
     usage.cache_read_input_tokens ??
-      usage.cached_input_tokens ??
-      usage.cachedInputTokens ??
-      0,
-  );
+    usage.cached_input_tokens ??
+    usage.cachedInputTokens ??
+    0;
   return {
     uncachedInput:
       provider === "claude"
         ? input
         : input -
           cacheReadInput -
-          number(
-            usage.cache_write_input_tokens ?? usage.cacheWriteInputTokens ?? 0,
-          ),
+          (usage.cache_write_input_tokens ?? usage.cacheWriteInputTokens ?? 0),
     cacheReadInput,
-    cacheWriteInput: number(
+    cacheWriteInput:
       usage.cache_creation_input_tokens ??
-        usage.cache_write_input_tokens ??
-        usage.cacheWriteInputTokens ??
-        0,
-    ),
+      usage.cache_write_input_tokens ??
+      usage.cacheWriteInputTokens ??
+      0,
     ...(provider === "claude"
       ? {
           cacheWriteInput1h: Math.min(
-            number(
-              isRecord(usage.cache_creation)
-                ? (usage.cache_creation.ephemeral_1h_input_tokens ?? 0)
-                : 0,
-            ),
-            number(usage.cache_creation_input_tokens ?? 0),
+            usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
+            usage.cache_creation_input_tokens ?? 0,
           ),
         }
       : {}),
-    output: number(usage.output_tokens ?? usage.outputTokens ?? 0),
-    reasoningOutput: number(
+    output: usage.output_tokens ?? usage.outputTokens ?? 0,
+    reasoningOutput:
       usage.reasoning_output_tokens ?? usage.reasoningOutputTokens ?? 0,
-    ),
   };
 }
 
 export function sumTokens(rows: readonly TokenRow[]): Tokens {
-  const sum = (key: (typeof TOKEN_CATEGORIES)[number]) =>
-    rows.some((row) => row.tokens[key] == null)
-      ? null
-      : rows.reduce((sum, row) => sum + (row.tokens[key] ?? 0), 0);
   return {
-    uncachedInput: sum("uncachedInput"),
-    cacheReadInput: sum("cacheReadInput"),
-    cacheWriteInput: sum("cacheWriteInput"),
-    output: sum("output"),
-    reasoningOutput: sum("reasoningOutput"),
+    ...Object.fromEntries(
+      TOKEN_CATEGORIES.map((key) => [
+        key,
+        rows.some((row) => row.tokens[key] == null)
+          ? null
+          : rows.reduce((sum, row) => sum + row.tokens[key]!, 0),
+      ]),
+    ),
     // Contract v4: an absent lifetime split contributes zero one-hour writes.
     cacheWriteInput1h: rows.reduce(
       (sum, row) => sum + (row.tokens.cacheWriteInput1h ?? 0),
       0,
     ),
-  };
+  } as Tokens;
 }
 
 export function totalTokens(tokens: Optional<Tokens>) {
   if (TOKEN_CATEGORIES.slice(0, 4).some((key) => tokens[key] == null))
     return null;
   return (
-    (tokens.uncachedInput ?? 0) +
-    (tokens.cacheReadInput ?? 0) +
-    (tokens.cacheWriteInput ?? 0) +
-    (tokens.output ?? 0)
+    tokens.uncachedInput! +
+    tokens.cacheReadInput! +
+    tokens.cacheWriteInput! +
+    tokens.output!
   );
 }
 
 /** Final journal entry wins per Claude message id; partial content blocks repeat that id. */
 export function nativeResponses(
-  records: unknown[],
+  rawRecords: unknown[],
   provider: Schema["AnalyticsAgentRecord"]["provider"],
 ): Response[] {
+  // The journal owns these string-indexed fields; preserve the base optional checks.
+  const records = rawRecords as Record<
+    string,
+    string & Record<string, string>
+  >[];
   const responses = new Map<string, Response>();
-  let model: string | null | undefined;
+  let model: string | undefined;
   for (const row of records) {
-    if (!isRecord(row)) continue;
-    const payload = isRecord(row.payload) ? row.payload : {};
-    const message = isRecord(row.message) ? row.message : {};
-    if (row.type === "turn_context")
-      model =
-        typeof payload.model === "string" || payload.model === null
-          ? payload.model
-          : undefined;
+    if (row.type === "turn_context") model = row.payload?.model;
     if (
       provider === "claude" &&
       row.type === "assistant" &&
-      typeof message.id === "string" &&
-      message.id &&
-      message.usage &&
-      message.model !== "<synthetic>"
+      row.message?.id &&
+      row.message?.usage &&
+      row.message.model !== "<synthetic>"
     ) {
-      responses.set(message.id, {
-        responseId: message.id,
-        model:
-          typeof message.model === "string" || message.model === null
-            ? message.model
-            : undefined,
-        tokens: nativeTokens(message.usage, provider),
-        rawUsage: message.usage,
+      responses.set(row.message.id, {
+        responseId: row.message.id,
+        model: row.message.model,
+        tokens: nativeTokens(row.message.usage, provider),
+        rawUsage: row.message.usage,
       });
     }
     if (
       provider === "codex" &&
       row.type === "token_usage_record" &&
-      typeof payload.response_id === "string" &&
-      payload.response_id
+      row.payload?.response_id
     ) {
-      responses.set(payload.response_id, {
-        responseId: payload.response_id,
-        turnId:
-          typeof payload.turn_id === "string" || payload.turn_id === null
-            ? payload.turn_id
-            : undefined,
-        model: typeof payload.model === "string" ? payload.model : model,
-        tokens: nativeTokens(payload.usage, provider),
-        rawUsage: payload.usage,
+      const p = row.payload;
+      responses.set(p.response_id, {
+        responseId: p.response_id,
+        turnId: p.turn_id,
+        model: p.model ?? model,
+        tokens: nativeTokens(p.usage, provider),
+        rawUsage: p.usage,
       });
     }
   }
@@ -356,15 +330,13 @@ export function nativeEvidence(
       "sessions",
       `${agent.threadId}.json`,
     );
-    const saved: unknown = JSON.parse(fs.readFileSync(snapshot, "utf8"));
-    if (!isRecord(saved))
-      throw new Error("Native session snapshot is not an object");
+    const saved: Session & { session?: Session } = JSON.parse(
+      fs.readFileSync(snapshot, "utf8"),
+    );
     const session = saved.session ?? saved;
-    if (!isRecord(session)) throw new Error("Native session is not an object");
-    const ids = new Set<unknown>([agent.threadId, session.nativeId]);
-    if (Array.isArray(session.historyBranches))
-      for (const branch of session.historyBranches)
-        if (isRecord(branch)) ids.add(branch.nativeId);
+    const ids = new Set([agent.threadId, session.nativeId]);
+    for (const branch of session.historyBranches ?? [])
+      ids.add(branch.nativeId);
     const config =
       account.claudeOptions?.configDir ??
       account.home ??
@@ -376,18 +348,14 @@ export function nativeEvidence(
     for (const project of fs.readdirSync(projects, { withFileTypes: true })) {
       if (!project.isDirectory()) continue;
       for (const id of ids) {
-        if (typeof id !== "string" || !id || path.basename(id) !== id) continue;
+        if (!id || path.basename(id) !== id) continue;
         const file = path.join(projects, project.name, `${id}.jsonl`);
         if (fs.existsSync(file)) files.add(file);
       }
     }
   } else {
     for (const entry of history)
-      if (
-        entry.threadId === agent.threadId &&
-        typeof entry.path === "string" &&
-        entry.path
-      )
+      if (entry.threadId === agent.threadId && entry.path)
         files.add(entry.path);
     if (!files.size) {
       const sessions = path.join(account.home, "sessions");
@@ -419,7 +387,7 @@ export function nativeEvidence(
 }
 
 /** Canonical observations take precedence, including identity and non-response kinds. */
-export function recordedUsage(analytics: Analytics, _provider?: Provider) {
+export function recordedUsage(analytics: Analytics) {
   const responses = [];
   const gaps = [];
   for (const row of analytics.timeline ?? []) {
@@ -437,27 +405,33 @@ export function recordedUsage(analytics: Analytics, _provider?: Provider) {
     if (
       !row.responseId ||
       ["nativeNotice", "codexThread", "claudeQuery"].includes(
-        row.counterDomain ?? "",
+        row.counterDomain!,
       )
     )
       continue;
-    const known = (key: keyof Schema["AnalyticsProviderTokens"]) => {
-      const value = selected?.[key];
-      return typeof value === "number" &&
-        Number.isSafeInteger(value) &&
-        value >= 0
-        ? value
-        : null;
-    };
+    const known = (
+      key: keyof Pick<
+        Schema["AnalyticsProviderTokens"],
+        | "inputTokens"
+        | "cachedInputTokens"
+        | "cacheWriteInputTokens"
+        | "outputTokens"
+        | "reasoningOutputTokens"
+      >,
+    ) => Number.isSafeInteger(selected?.[key]) && selected![key]! >= 0;
     const selected =
       row.delta?.inputTokens != null && row.delta?.outputTokens != null
         ? row.delta
         : row.requestUsage && typeof row.requestUsage === "object"
           ? row.requestUsage
           : row.last;
-    const input = known("inputTokens");
-    const read = known("cachedInputTokens");
-    const write = known("cacheWriteInputTokens");
+    const input = known("inputTokens") ? selected!.inputTokens! : null;
+    const read = known("cachedInputTokens")
+      ? selected!.cachedInputTokens!
+      : null;
+    const write = known("cacheWriteInputTokens")
+      ? selected!.cacheWriteInputTokens!
+      : null;
     const uncached =
       row.inputTokensAreUncached === true ||
       row.usageSource === "claudeResponse";
@@ -474,13 +448,15 @@ export function recordedUsage(analytics: Analytics, _provider?: Provider) {
       tokens: {
         uncachedInput: uncached
           ? input
-          : input == null || cacheReadInput == null || cacheWriteInput == null
+          : [input, cacheReadInput, cacheWriteInput].includes(null)
             ? null
-            : input - cacheReadInput - cacheWriteInput,
+            : input! - cacheReadInput! - cacheWriteInput!,
         cacheReadInput,
         cacheWriteInput,
-        output: known("outputTokens"),
-        reasoningOutput: known("reasoningOutputTokens"),
+        output: known("outputTokens") ? selected!.outputTokens! : null,
+        reasoningOutput: known("reasoningOutputTokens")
+          ? selected!.reasoningOutputTokens!
+          : null,
       },
       evidence: "legacy",
       record: row,
@@ -489,7 +465,7 @@ export function recordedUsage(analytics: Analytics, _provider?: Provider) {
   return { responses, gaps };
 }
 
-export function recordedResponses(analytics: Analytics, _provider?: Provider) {
+export function recordedResponses(analytics: Analytics) {
   return recordedUsage(analytics).responses;
 }
 
@@ -520,8 +496,7 @@ export function usageTable(evidence: Evidence, label: string) {
       totalTokens(row.recorded.tokens) == null ||
       !totalTokens(row.truth.tokens)
         ? null
-        : Number(totalTokens(row.recorded.tokens)) /
-          Number(totalTokens(row.truth.tokens)),
+        : totalTokens(row.recorded.tokens)! / totalTokens(row.truth.tokens)!,
     "unpriced gaps": row.recorded.gaps?.length ?? null,
     "recorded projection": row.recorded.projection ?? "persisted-usage-v3",
     "budget tokens": row.budget.tokensUsed,
@@ -580,8 +555,7 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
       responses.some((row) =>
         TOKEN_CATEGORIES.slice(0, 4).some(
           (key) =>
-            !Number.isSafeInteger(row.tokens?.[key]) ||
-            Number(row.tokens[key]) < 0,
+            !Number.isSafeInteger(row.tokens?.[key]) || row.tokens[key]! < 0,
         ),
       )
     )
@@ -615,7 +589,7 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
       "OLD truth.prices rates by native model; USD per million tokens; base tiers only; missing/conflicting rates or incomplete usage = null",
     providers: evidence.providers.map((row) => {
       const available = Array.isArray(row.analytics?.timeline);
-      const recorded = available ? recordedUsage(row.analytics ?? {}) : null;
+      const recorded = available ? recordedUsage(row.analytics!) : null;
       return {
         ...row,
         truth: {
@@ -639,13 +613,9 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
                 : reprice(recorded.responses, row.provider),
             }
           : {
-              tokens: {
-                uncachedInput: null,
-                cacheReadInput: null,
-                cacheWriteInput: null,
-                output: null,
-                reasoningOutput: null,
-              },
+              tokens: Object.fromEntries(
+                TOKEN_CATEGORIES.map((key) => [key, null]),
+              ) as Tokens,
               projection: `unknown: raw analytics unavailable (saved format ${evidence.format ?? "unversioned"})`,
             },
       };
@@ -658,49 +628,36 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
 }
 
 /** Independent base-rate arithmetic; refuse tiered requests rather than guess. */
-export function pricingModels(
-  catalog: Pick<PricingArtifact, "catalog">,
-  provider: Provider,
-): RawProvider["models"] {
-  return (
-    catalog.catalog.providers[provider === "claude" ? "anthropic" : "openai"]
-      ?.models ?? {}
-  );
-}
-
 export function priceResponses(
   responses: Response[],
   catalog: Pick<PricingArtifact, "catalog">,
   provider: Provider,
 ) {
-  const models = pricingModels(catalog, provider);
+  const models =
+    catalog.catalog.providers[provider === "claude" ? "anthropic" : "openai"]!
+      .models;
   const rows = responses.map((response) => {
-    const cost = models[String(response.model)]?.cost;
+    const cost = models[response.model!]?.cost;
     if (!cost) throw new Error(`No price for native model ${response.model}`);
     const tokens = response.tokens;
     const context =
-      Number(tokens.uncachedInput) +
-      Number(tokens.cacheReadInput) +
-      Number(tokens.cacheWriteInput);
-    const thresholds = (cost.tiers ?? []).flatMap((entry) =>
-      entry.tier?.type === "context" &&
-      typeof entry.tier.size === "number" &&
-      Number.isFinite(entry.tier.size)
-        ? [entry.tier.size]
-        : [],
-    );
+      tokens.uncachedInput! + tokens.cacheReadInput! + tokens.cacheWriteInput!;
+    const thresholds = (cost.tiers ?? [])
+      .filter((tier) => tier.tier?.type === "context")
+      .map((tier) => tier.tier!.size!)
+      .filter(Number.isFinite);
     if (
       (cost.context_over_200k && !thresholds.length) ||
-      thresholds.some((threshold) => context >= threshold)
+      thresholds.some((threshold) => context >= threshold!)
     )
       throw new Error("Usage smoke exceeds base-rate pricing scope");
     const hour = tokens.cacheWriteInput1h ?? 0;
     const parts: [number, number | null | undefined][] = [
-      [Number(tokens.uncachedInput), cost.input],
-      [Number(tokens.cacheReadInput), cost.cache_read],
-      [Number(tokens.cacheWriteInput) - hour, cost.cache_write],
-      [hour, Number(cost.input) * CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER],
-      [Number(tokens.output), cost.output],
+      [tokens.uncachedInput!, cost.input],
+      [tokens.cacheReadInput!, cost.cache_read],
+      [tokens.cacheWriteInput! - hour, cost.cache_write],
+      [hour, cost.input! * CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER],
+      [tokens.output!, cost.output],
     ];
     if (parts.some(([tokens, rate]) => tokens > 0 && !Number.isFinite(rate)))
       throw new Error(`Missing price category for ${response.model}`);
@@ -709,7 +666,7 @@ export function priceResponses(
       rates: cost,
       costUsd:
         parts.reduce(
-          (total, [tokens, rate]) => total + tokens * Number(rate ?? 0),
+          (total, [tokens, rate]) => total + tokens * (rate ?? 0),
           0,
         ) / 1000000,
     };
@@ -740,6 +697,14 @@ else:
     }),
   );
 }
+
+type ToolEvidence = Record<string, Schema["JsonValue"] | undefined> &
+  Partial<
+    Record<
+      "command" | "cwd" | "aggregatedOutput",
+      Extract<Schema["JsonValue"], string>
+    >
+  > & { arguments?: Record<string, Schema["JsonValue"]> };
 
 /** Transcript proof of three turns, two long-turn responses, pwd and Claude steer. */
 export function scenarioEvidence(
@@ -775,22 +740,21 @@ export function scenarioEvidence(
   const answers = long.filter(
     (item) => item.role === "assistant" && item.text?.trim(),
   );
-  const tools: (Record<string, unknown> &
-    Pick<Transcript, "id" | "turnId" | "toolStatus">)[] = long
+  const tools = long
     .filter((item) => item.role === "output")
-    .map((item) => {
-      const value: unknown = JSON.parse(item.text ?? "");
-      if (!isRecord(value)) throw new Error("Tool evidence is not an object");
-      return {
+    .map(
+      (
+        item,
+      ): ToolEvidence & Pick<Transcript, "id" | "turnId" | "toolStatus"> => ({
         id: item.id,
         turnId: item.turnId,
         toolStatus: item.toolStatus,
-        ...value,
-      };
-    });
+        ...(JSON.parse(item.text!) as ToolEvidence),
+      }),
+    );
   if (answers.length < 2)
     throw new Error("Long turn has fewer than two assistant responses");
-  const readOnlyNote = items[second]?.text?.includes(NOTES_FILE);
+  const readOnlyNote = items[second].text!.includes(NOTES_FILE);
   const tool = tools[0];
   const file = path.join(root, NOTES_FILE);
   const bareCat = /^[A-Za-z0-9_./-]+$/.test(file) ? `cat ${file}` : null;
@@ -799,7 +763,7 @@ export function scenarioEvidence(
     tool?.command === `cat '${file.replaceAll("'", "'\\''")}'` ||
     (!/[\\$`"]/.test(file) && tool?.command === `cat "${file}"`);
   const shellWrapper = /^\/bin\/(?:ba|z)?sh -(?:lc|c) (.+)$/.exec(
-    typeof tool?.command === "string" ? tool.command : "",
+    tool?.command ?? "",
   );
   // Codex quotes the wrapped script as one argument: -lc 'cat /path'.
   const wrapped =
@@ -810,27 +774,23 @@ export function scenarioEvidence(
     tool.cwd === root &&
     (plainCat || (bareCat && wrapped === bareCat)) &&
     tool.exitCode === 0 &&
-    typeof tool.aggregatedOutput === "string" &&
-    tool.aggregatedOutput.trim() === NOTES_MARKER;
+    tool.aggregatedOutput?.trim() === NOTES_MARKER;
   const claudeRead =
     provider === "claude" &&
     tool?.tool === "Read" &&
-    isRecord(tool.arguments) &&
-    tool.arguments.file_path === file &&
+    tool.arguments?.file_path === file &&
     Object.keys(tool.arguments).every((key) =>
       ["file_path", "offset", "limit"].includes(key),
     ) &&
     JSON.stringify(tool.result ?? tool.output ?? "").includes(NOTES_MARKER);
   const validTool =
     tools.length === 1 &&
-    tool &&
     (readOnlyNote
       ? tool.toolStatus === "completed" && (codexCat || claudeRead)
       : tool.exitCode === 0 &&
-        /\bpwd$/.test(typeof tool.command === "string" ? tool.command : "") &&
+        /\bpwd$/.test(tool.command ?? "") &&
         tool.cwd === root &&
-        typeof tool.aggregatedOutput === "string" &&
-        tool.aggregatedOutput.includes(root));
+        tool.aggregatedOutput?.includes(root));
   if (!validTool)
     throw new Error(
       `Long turn did not complete exactly one ${readOnlyNote ? "note read" : "pwd call"} in the run folder`,
@@ -841,14 +801,14 @@ export function scenarioEvidence(
   if (provider === "claude" && !steer)
     throw new Error("Claude steer is absent from the transcript");
   return {
-    longTurnId: tool?.turnId,
+    longTurnId: tools[0].turnId,
     assistantResponses: answers.length,
     words: answers
       .map((item) => item.text)
       .join(" ")
       .trim()
       .split(/\s+/).length,
-    tool,
+    tool: tools[0],
     steer: steer ? { id: steer.id, at: steer.at } : null,
   };
 }
@@ -859,11 +819,11 @@ export function publicationReady(
   current: Cost | null | undefined,
   analytics: Analytics,
   finalTurnId: string | null | undefined,
-) {
+): displayed is Cost {
   const ready = (cost: Cost | null | undefined): cost is Cost =>
     cost?.pricingState === "ready" &&
     Number.isFinite(cost.totalUSD) &&
-    (cost.pricedSamples ?? 0) > 0 &&
+    cost.pricedSamples! > 0 &&
     !cost.refreshing &&
     !cost.unknownModels?.length;
   return Boolean(
@@ -874,8 +834,7 @@ export function publicationReady(
     displayed.totalUSD === current.totalUSD &&
     displayed.pricedSamples === current.pricedSamples &&
     analytics.timeline?.some((row) => row.turnId === finalTurnId) &&
-    (!("usageGeneration" in analytics) ||
-      analytics.usageGeneration == null ||
+    (analytics.usageGeneration == null ||
       analytics.usageGeneration === current.generation),
   );
 }
@@ -892,10 +851,10 @@ export function bridgeProcessMatches(
   const owned = (row: ProcessRow) => {
     const seen = new Set();
     let parent: number | undefined = row.ppid;
-    while (parent != null && parent > 1 && !seen.has(parent)) {
+    while (parent! > 1 && !seen.has(parent!)) {
       if (parent === serverPid) return true;
-      seen.add(parent);
-      parent = parents.get(parent);
+      seen.add(parent!);
+      parent = parents.get(parent!);
     }
     return false;
   };
@@ -938,18 +897,18 @@ export function validateSteer(
   item: Transcript | undefined,
   receipt: Optional<Schema["MessageReceiptEntityDto"]> | undefined,
   submitted:
-    | { id?: string | undefined; turnId?: string | null | undefined }
+    | { id?: string | null | undefined; turnId?: string | null | undefined }
     | undefined,
   longTurnId: string | null | undefined,
   startedAt: Transcript["at"],
   endedAt: number,
 ) {
   const input = item?.inputs?.find((input) => input.id === submitted?.id);
-  if (!item || !submitted || !receipt || !input || receipt.id !== submitted.id)
+  if (!input || receipt?.id !== submitted?.id)
     throw new Error("Steer identity does not match the submitted message");
   if (
-    receipt.status !== "delivered" ||
-    !receipt.materialized ||
+    receipt!.status !== "delivered" ||
+    !receipt!.materialized ||
     input.deliveryStatus !== "delivered" ||
     input.pending ||
     !input.materialized ||
@@ -957,12 +916,18 @@ export function validateSteer(
   )
     throw new Error("Steer delivery is not materialized and successful");
   if (
-    submitted.turnId !== longTurnId ||
-    Number(item.at) < Number(startedAt) ||
-    Number(item.at) > endedAt
+    submitted!.turnId !== longTurnId ||
+    (item!.at! as number) < (startedAt! as number) ||
+    (item!.at! as number) > endedAt
   )
     throw new Error("Steer is not associated with turn 2");
-  return { id: submitted.id, turnId: longTurnId, receipt, input, at: item.at };
+  return {
+    id: submitted!.id,
+    turnId: longTurnId,
+    receipt,
+    input,
+    at: item!.at,
+  };
 }
 
 /** Persist a complete sibling, then replace the checkpoint in one rename. */
@@ -1036,24 +1001,29 @@ export function verifiedPermissions(
   const identity = directoryIdentity(root);
   if (
     !same(identity, expected) ||
-    typeof record.cwd !== "string" ||
-    !same(directoryIdentity(record.cwd), expected)
+    !same(directoryIdentity(record.cwd!), expected)
   )
     throw new Error("Run folder identity changed");
   if (record.yoloMode !== false || record.role !== "orchestrator")
     throw new Error("Unsafe usage permissions: expected a non-YOLO lead");
   if (record.approvalPolicy != null && record.approvalPolicy !== "on-request")
     throw new Error("Unsafe usage approval policy");
-  const supplied = [record.sandboxPolicy, record.sandbox].filter(
-    (policy) => policy != null,
-  );
+  const supplied = (
+    [record.sandboxPolicy, record.sandbox] as (
+      | string
+      | Record<string, Schema["JsonValue"]>
+      | null
+      | undefined
+    )[]
+  ).filter((policy) => policy != null);
   const roots: unknown[] = [record.cwd];
   for (const policy of supplied) {
     if (typeof policy === "string") {
       if (policy !== "workspace-write")
         throw new Error("Unsafe or unknown sandbox policy");
     } else if (
-      isRecord(policy) &&
+      typeof policy === "object" &&
+      !Array.isArray(policy) &&
       policy.type === "workspaceWrite" &&
       (policy.networkAccess == null || policy.networkAccess === false)
     ) {

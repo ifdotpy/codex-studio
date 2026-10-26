@@ -27,22 +27,21 @@ test("stopping a fixture process group reaps its descendant processes", async ()
     ],
     { detached: true, stdio: ["ignore", "pipe", "ignore"] },
   );
-  assert.ok(child.pid !== undefined);
-  const childPid = child.pid;
+
   try {
     const [output] = await once(child.stdout, "data");
     const grandchildPid = Number(String(output));
     assert.ok(Number.isSafeInteger(grandchildPid));
-    assert.equal(fixtureProcessGroupExists(childPid), true);
-    registerFixtureProcessGroup(registryDirectory, childPid);
+    assert.equal(fixtureProcessGroupExists(child.pid!), true);
+    registerFixtureProcessGroup(registryDirectory, child.pid!);
 
     await reapFixtureProcessGroups(registryDirectory);
 
-    assert.equal(fixtureProcessGroupExists(childPid), false);
+    assert.equal(fixtureProcessGroupExists(child.pid!), false);
     assert.throws(() => process.kill(grandchildPid, 0), { code: "ESRCH" });
     assert.deepEqual(readdirSync(registryDirectory), []);
   } finally {
-    if (child.pid !== undefined && fixtureProcessGroupExists(childPid))
+    if (child.pid !== undefined && fixtureProcessGroupExists(child.pid!))
       await reapFixtureProcessGroups(registryDirectory);
     rmSync(registryDirectory, { recursive: true, force: true });
   }
@@ -85,23 +84,22 @@ test("reaper stops fixture descendants after the direct process exits", async ()
     ],
     { detached: true, stdio: ["ignore", "pipe", "ignore"] },
   );
-  assert.ok(child.pid !== undefined);
-  const childPid = child.pid;
+
   try {
     await once(child, "spawn");
-    registerFixtureProcessGroup(registryDirectory, childPid);
+    registerFixtureProcessGroup(registryDirectory, child.pid!);
     const [output] = await once(child.stdout, "data");
     const grandchildPid = Number(String(output));
     await once(child, "close");
-    assert.equal(fixtureProcessGroupExists(childPid), true);
+    assert.equal(fixtureProcessGroupExists(child.pid!), true);
 
     await reapFixtureProcessGroups(registryDirectory);
 
-    assert.equal(fixtureProcessGroupExists(childPid), false);
+    assert.equal(fixtureProcessGroupExists(child.pid!), false);
     assert.throws(() => process.kill(grandchildPid, 0), { code: "ESRCH" });
     assert.deepEqual(readdirSync(registryDirectory), []);
   } finally {
-    if (child.pid !== undefined && fixtureProcessGroupExists(childPid))
+    if (child.pid !== undefined && fixtureProcessGroupExists(child.pid!))
       await reapFixtureProcessGroups(registryDirectory);
     rmSync(registryDirectory, { recursive: true, force: true });
   }

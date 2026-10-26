@@ -44,7 +44,7 @@ const local = await fixture("Home", false, {
     }
   },
 });
-let desktop: ElectronApplication | null = null;
+let desktop!: ElectronApplication;
 let desktopPid: number | undefined;
 try {
   const executablePath = process.env.CODEX_FRAMES_EXECUTABLE;
@@ -91,33 +91,23 @@ try {
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().at(0)?.isVisible(),
+      BrowserWindow.getAllWindows()[0].isVisible(),
     ),
     false,
   );
   await page.waitForFunction(() => !!window.codexDesktop);
   assert.match(
-    await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      if (!bridge.serverCredentialAction)
-        throw new Error(
-          "The desktop serverCredentialAction method is unavailable.",
-        );
+    (await page.evaluate(() => {
       return (
-        bridge
+        window.codexDesktop!
           // @ts-expect-error invitation is deliberately absent to check gesture validation first.
-          .serverCredentialAction({
-            action: "pair",
-            origin: "https://remote.tailnet.ts.net",
-            requestId: "manual-without-gesture",
-          })
-          .catch((error: unknown) =>
-            error instanceof Error ? error.message : String(error),
-          )
-          .then((value) => String(value))
+          .serverCredentialAction!({
+          action: "pair",
+          origin: "https://remote.tailnet.ts.net",
+          requestId: "manual-without-gesture",
+        }).catch((error: unknown) => (error as Error).message)
       );
-    }),
+    })) as string,
     /desktop button/,
   );
   local.discoverPeer(remote);
@@ -174,7 +164,7 @@ try {
       new Promise<void>((resolve) => {
         watchdog = setTimeout(() => {
           try {
-            process.kill(desktopPid ?? 0, "SIGKILL");
+            process.kill(desktopPid!, "SIGKILL");
           } catch {}
           resolve();
         }, 5000);

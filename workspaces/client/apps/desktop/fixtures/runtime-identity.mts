@@ -12,9 +12,9 @@ http
       application: "codex-agents",
       protocol: 1,
       backendKind: "rust",
-      backendBuild: process.env.CODEX_BACKEND_BUILD ?? "",
+      backendBuild: process.env.CODEX_BACKEND_BUILD!,
       pid: process.pid,
-      stateDir: process.env.CODEX_AGENTS_STATE_DIR ?? "",
+      stateDir: process.env.CODEX_AGENTS_STATE_DIR!,
     } satisfies BackendIdentity;
     response.end(JSON.stringify(identity));
   })

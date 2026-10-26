@@ -30,25 +30,20 @@ export function fixtureSessionApi(
         rows,
       ),
     getSessionMessages: async () =>
-      rows.flatMap((row): SessionMessage[] => {
-        if (
-          (row.type !== "user" && row.type !== "assistant") ||
-          row.isSidechain ||
-          row.isMeta ||
-          typeof row.uuid !== "string" ||
-          typeof row.sessionId !== "string"
+      rows
+        .filter(
+          (row) =>
+            ["user", "assistant"].includes(row.type) &&
+            !row.isSidechain &&
+            !row.isMeta,
         )
-          return [];
-        return [
-          {
-            type: row.type,
-            uuid: row.uuid,
-            session_id: row.sessionId,
-            message: row.message,
-            parent_tool_use_id: null,
-            parent_agent_id: null,
-          },
-        ];
-      }),
+        .map((row) => ({
+          type: row.type as SessionMessage["type"],
+          uuid: row.uuid!,
+          session_id: row.sessionId as SessionMessage["session_id"],
+          message: row.message,
+          parent_tool_use_id: null,
+          parent_agent_id: null,
+        })),
   };
 }

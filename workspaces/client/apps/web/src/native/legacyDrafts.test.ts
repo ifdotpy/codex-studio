@@ -1,4 +1,3 @@
-import { assert } from "vitest";
 import { afterEach, expect, it, vi } from "vitest";
 import { importLegacyDrafts, readLegacyDrafts } from "./legacyDrafts";
 
@@ -66,7 +65,6 @@ it("reads stored branches and pending edits without replication and reuses the e
   );
   await importLegacyDrafts(workspace, invoke);
   expect(invoke.mock.calls[0]).toEqual(invoke.mock.calls[1]);
-  assert(invoke.mock.calls[0] !== undefined);
   expect(invoke.mock.calls[0][0]).toBe("drafts.import");
   expect(data.size).toBe(1);
 });

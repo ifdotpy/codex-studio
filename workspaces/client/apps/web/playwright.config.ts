@@ -22,7 +22,7 @@ if (playwrightScratch.ownedRoot)
   process.once("exit", () =>
     rmSync(playwrightScratch.root, { recursive: true, force: true }),
   );
-if (!("cached" in workerSelection && workerSelection.cached))
+if (!workerSelection.cached)
   console.log(
     `Playwright worker bound=${workerSelection.bound} ${JSON.stringify(workerSelection)}`,
   );
