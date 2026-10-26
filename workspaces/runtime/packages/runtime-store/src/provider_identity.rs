@@ -284,7 +284,7 @@ pub(crate) fn validate_2026_10_26(root: &Path) -> StoreResult<Accounts> {
 /// 2026-10-26 upgrade in the existing Canvas startup transaction, before strict columns.
 /// Remove only after supported states and restorable backups crossed this format,
 /// or upgrades from older formats are explicitly retired, and all tagged title
-/// effects have completed their fingerprint conversion.
+/// effects have completed their fingerprint conversion or are terminal.
 pub fn migrate_canvas_2026_10_26(tx: &Transaction<'_>, accounts: &Accounts) -> StoreResult<()> {
     if crate::agent_columns::has_explicit_provider_column(tx)? {
         return Ok(());

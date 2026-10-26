@@ -1112,7 +1112,7 @@ fn signature(snapshot: &Snapshot) -> String {
 
 /// Complete the 2026-10-26 provider migration using the actual title snapshot.
 /// Retire with the store migration only after supported states and backups cross
-/// the format boundary and no tagged title effects remain.
+/// the format boundary and all tagged title effects are converted or terminal.
 fn migrate_title_fingerprint_2026_10_26(
     tx: &Connection,
     snapshot: &Snapshot,
