@@ -1,4 +1,3 @@
-import { fixtureOrigin } from "./performance-fixture.ts";
 import type {} from "./scroll-restart.fixture.tsx";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -50,9 +49,8 @@ test("Scroll restart", async () => {
     await server.listen();
     browser = await browserType.launch({
       headless: true,
-      ...(browserType === chromium
-        ? { executablePath: browserExecutablePath }
-        : {}),
+      executablePath:
+        browserType === chromium ? browserExecutablePath : undefined,
     });
     const page = await browser.newPage();
     await page.clock.install();
@@ -65,14 +63,14 @@ test("Scroll restart", async () => {
       }),
     );
     const mount = async () => {
-      await page.goto(fixtureOrigin(server) + "/check");
+      await page.goto(server.resolvedUrls!.local[0] + "check");
       await page.evaluate(async () =>
         (await import("./scroll-restart.fixture.tsx")).mount(),
       );
-      await page.waitForFunction(() => !!window.scrollRestartFixture);
+      await page.waitForFunction(() => !!window.fixture);
     };
     const ready = async () => {
-      await page.evaluate(() => window.scrollRestartFixture.setReady(true));
+      await page.evaluate(() => window.fixture.setReady(true));
       await page.waitForFunction(
         () => document.querySelectorAll("[data-message]").length === 80,
       );
@@ -80,67 +78,55 @@ test("Scroll restart", async () => {
     await mount();
     await ready();
     await page.evaluate(() => {
-      window.scrollRestartFollowChanges = 0;
-      window.scrollRestartFollowUnsubscribe =
-        window.scrollRestartFixture.position.subscribeFollow(() => {
-          window.scrollRestartFollowChanges++;
-        });
-      const root = document.getElementById("scroll");
-      if (!root) throw new Error("Missing scroll fixture");
+      window.followChanges = 0;
+      window.followUnsubscribe = window.fixture.position.subscribeFollow(() => {
+        window.followChanges++;
+      });
+      const root = document.getElementById("scroll")!;
       root.dispatchEvent(new WheelEvent("wheel", { deltaY: -1 }));
       root.scrollTop = 900;
       root.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await page.waitForFunction(
-      () =>
-        !window.scrollRestartFixture.position.getFollow() &&
-        window.scrollRestartFollowChanges > 0,
+      () => !window.fixture.position.getFollow() && window.followChanges > 0,
     );
     assert.equal(
-      await page.evaluate(() =>
-        window.scrollRestartFixture.position.getFollow(),
-      ),
+      await page.evaluate(() => window.fixture.position.getFollow()),
       false,
     );
-    assert.ok(await page.evaluate(() => window.scrollRestartFollowChanges > 0));
-    await page.evaluate(() => window.scrollRestartFollowUnsubscribe());
+    assert.ok(await page.evaluate(() => window.followChanges > 0));
+    await page.evaluate(() => window.followUnsubscribe());
     await mount();
     assert.equal(
-      await page.evaluate(() =>
-        window.scrollRestartFixture.position.getFollow(),
-      ),
+      await page.evaluate(() => window.fixture.position.getFollow()),
       false,
     );
     await ready();
     await page.waitForFunction(
-      () => document.getElementById("scroll")?.scrollTop === 900,
+      () => document.getElementById("scroll")!.scrollTop === 900,
     );
     // Expire the hook's recent-input window, including performance.now().
     await page.clock.fastForward(650);
     await page.evaluate(() => {
-      window.scrollRestartMessageMeasurements = 0;
+      window.messageMeasurements = 0;
       const original = Element.prototype.getBoundingClientRect;
       Element.prototype.getBoundingClientRect = function (...args) {
-        if (this.matches("[data-message]"))
-          window.scrollRestartMessageMeasurements++;
+        if (this.matches("[data-message]")) window.messageMeasurements++;
         return original.apply(this, args);
       };
     });
-    await page.evaluate(() => window.scrollRestartFixture.position.remember());
-    await page.evaluate(() => (window.scrollRestartMessageMeasurements = 0));
+    await page.evaluate(() => window.fixture.position.remember());
+    await page.evaluate(() => (window.messageMeasurements = 0));
     for (let revision = 1; revision <= 20; revision++) {
-      await page.evaluate(
-        (value) => window.scrollRestartFixture.redraw(value),
-        revision,
-      );
+      await page.evaluate((value) => window.fixture.redraw(value), revision);
       await page.waitForFunction(
         (value) =>
-          document.getElementById("scroll")?.dataset.revision === String(value),
+          document.getElementById("scroll")!.dataset.revision === String(value),
         revision,
       );
     }
     const messageMeasurements = await page.evaluate(
-      () => window.scrollRestartMessageMeasurements,
+      () => window.messageMeasurements,
     );
     assert.ok(
       messageMeasurements < 100,
@@ -150,27 +136,21 @@ test("Scroll restart", async () => {
       await page.locator("#scroll").evaluate((node) => node.scrollTop),
       900,
     );
-    await page.evaluate(() =>
-      window.scrollRestartFixture.select("workspace-b:agent:lead"),
-    );
+    await page.evaluate(() => window.fixture.select("workspace-b:agent:lead"));
     await page.waitForFunction(
-      () => document.getElementById("scroll")?.scrollTop === 4500,
+      () => document.getElementById("scroll")!.scrollTop === 4500,
     );
-    await page.evaluate(() =>
-      window.scrollRestartFixture.select("workspace-a:agent:lead"),
-    );
+    await page.evaluate(() => window.fixture.select("workspace-a:agent:lead"));
     await page.waitForFunction(
-      () => document.getElementById("scroll")?.scrollTop === 900,
+      () => document.getElementById("scroll")!.scrollTop === 900,
     );
-    await page.evaluate(() =>
-      window.scrollRestartFixture.position.setFollow(true),
-    );
+    await page.evaluate(() => window.fixture.position.setFollow(true));
     await mount();
     await ready();
     await page.waitForFunction(
       () =>
-        window.scrollRestartFixture.position.getFollow() &&
-        document.getElementById("scroll")?.scrollTop === 4500,
+        window.fixture.position.getFollow() &&
+        document.getElementById("scroll")!.scrollTop === 4500,
     );
     assert.deepEqual(errors, []);
     console.log(

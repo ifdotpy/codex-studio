@@ -1,16 +1,13 @@
 import type { DesktopBridge } from "../../src/desktop.ts";
 declare global {
   interface Window {
-    browserApprovalFixture: {
-      notes: string[];
-      opened: Array<
-        [string, Parameters<NonNullable<DesktopBridge["openSignIn"]>>[0]]
-      >;
-    };
+    // __opened is a string[] in sign-in-card-phone-ui.fixture.tsx.
+    browserApprovalOpened: Array<
+      [string, Parameters<NonNullable<DesktopBridge["openSignIn"]>>[0]]
+    >;
   }
 }
 import { signInCards, browserSignInUrl } from "./sign-in.fixture.ts";
-import { required } from "../messages/browser-helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -51,7 +48,8 @@ const requests = [
   ),
 ];
 
-createRoot(required(document.getElementById("root"))).render(
+window.__notes = [];
+createRoot(document.getElementById("root")!).render(
   React.createElement(
     MantineProvider,
     null,
@@ -61,7 +59,7 @@ createRoot(required(document.getElementById("root"))).render(
       scope: "fixture",
       agents: [agent],
       refresh: async () => {},
-      notify: (s) => window.browserApprovalFixture.notes.push(s),
+      notify: (s) => window.__notes.push(s),
     }),
   ),
 );

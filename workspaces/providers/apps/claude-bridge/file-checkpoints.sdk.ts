@@ -1,5 +1,4 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
-import assert from "node:assert/strict";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 import type {
   SDKSystemMessage,
@@ -25,8 +24,6 @@ export const forkSession = async () => {
 };
 export const getSessionMessages = async (id: string) => messages.get(id) || [];
 export function query({ prompt, options }: FixtureQuery) {
-  assert.ok(options.env);
-  const env = options.env;
   const log = (value: unknown) =>
     appendFileSync(
       path.join(options.cwd, "sdk-calls.jsonl"),
@@ -35,7 +32,7 @@ export function query({ prompt, options }: FixtureQuery) {
   log({
     kind: "query",
     enabled: options.enableFileCheckpointing,
-    env: env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING,
+    env: options.env!.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING,
     resume: options.resume,
   });
   const abort = new AbortController();
@@ -59,9 +56,9 @@ export function query({ prompt, options }: FixtureQuery) {
       if (!rewind.dryRun)
         copyFileSync(
           path.join(
-            process.env.CLAUDE_CONFIG_DIR ?? "",
+            process.env.CLAUDE_CONFIG_DIR!,
             "file-history",
-            options.resume ?? "",
+            options.resume!,
             "0123456789abcdef@v1",
           ),
           path.join(options.cwd, "file.txt"),
@@ -75,20 +72,17 @@ export function query({ prompt, options }: FixtureQuery) {
     async *[Symbol.asyncIterator]() {
       const input = await prompt.next();
       if (input.done) return;
-      assert.ok(input.value.uuid);
-      assert.ok(options.sessionId);
-      messages.set(options.sessionId ?? "", [
+      messages.set(options.sessionId!, [
         {
           type: "user",
-          uuid: input.value.uuid,
+          uuid: input.value.uuid!,
           message: input.value.message,
           parent_tool_use_id: null,
         },
       ]);
       const config = process.env.CLAUDE_CONFIG_DIR;
-      assert.ok(config);
       const project = path.join(
-        config,
+        config!,
         "projects",
         options.cwd.replace(/[^a-zA-Z0-9]/g, "-"),
       );
@@ -97,7 +91,7 @@ export function query({ prompt, options }: FixtureQuery) {
         path.join(project, options.sessionId + ".jsonl"),
         JSON.stringify({
           type: "user",
-          uuid: input.value.uuid,
+          uuid: input.value.uuid!,
           parentUuid: null,
           sessionId: options.sessionId,
           cwd: options.cwd,
@@ -106,14 +100,14 @@ export function query({ prompt, options }: FixtureQuery) {
           message: input.value.message,
         }) + "\n",
       );
-      mkdirSync(path.join(config, "file-history", options.sessionId ?? ""), {
+      mkdirSync(path.join(config!, "file-history", options.sessionId!), {
         recursive: true,
       });
       writeFileSync(
         path.join(
-          config,
+          config!,
           "file-history",
-          options.sessionId,
+          options.sessionId!,
           "0123456789abcdef@v1",
         ),
         "checkpoint",
@@ -145,7 +139,7 @@ export function query({ prompt, options }: FixtureQuery) {
       yield {
         type: "user",
         isReplay: true,
-        uuid: input.value.uuid,
+        uuid: input.value.uuid!,
       } satisfies Pick<SDKUserMessageReplay, "type" | "isReplay" | "uuid">;
       yield {
         type: "result",

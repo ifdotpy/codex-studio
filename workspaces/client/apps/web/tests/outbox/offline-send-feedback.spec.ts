@@ -22,10 +22,10 @@ test("offline send has one saved-message status and preserves its delivery ident
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => (log += chunk));
+  fixture.stderr!.on("data", (chunk) => (log += chunk));
   try {
     const port = await new Promise<number>((resolve, reject) => {
-      fixture.stdout?.once("data", (chunk) =>
+      fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
@@ -40,7 +40,7 @@ test("offline send has one saved-message status and preserves its delivery ident
         });
         const text = `Saved offline ${width} ${scheme}`;
         const posts: PostBody<"/api/messages">[] = [];
-        let release = () => {};
+        let release: () => void;
         const deliveryGate = new Promise<void>(
           (resolve) => (release = resolve),
         );
@@ -113,7 +113,7 @@ test("offline send has one saved-message status and preserves its delivery ident
           await expect.poll(() => posts.length).toBe(1);
           // A network event alone cannot clear the status before acceptance.
           await expect(status).toBeVisible();
-          release();
+          release!();
           await expect(status).toHaveCount(0);
           await expect(page.locator(".outbox-controls")).toHaveCount(0);
           await expect(page.locator("#messages")).toContainText(text);
@@ -135,7 +135,7 @@ test("offline send has one saved-message status and preserves its delivery ident
           );
           throw error;
         } finally {
-          release();
+          release!();
           await page.context().setOffline(false);
           await page.context().close();
         }

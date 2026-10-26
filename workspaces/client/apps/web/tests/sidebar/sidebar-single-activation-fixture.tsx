@@ -1,10 +1,10 @@
-import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
+import type { ServerNavigation } from "../../src/servers/navigation.ts";
 import type { Snapshot } from "../../src/types.ts";
 import type { AgentEntityDto } from "../../src/generated/api.ts";
 import type { SidebarSource } from "../../src/servers/mergedSidebar.ts";
 declare global {
   interface Window {
-    sidebarActivationPrepared: string;
+    prepared: string;
   }
 }
 import React, { useState } from "react";
@@ -28,12 +28,15 @@ const threads: AgentEntityDto[] = Array.from({ length: 30 }, (_, index) => ({
   created: 1,
   updated: 1,
 }));
-const data: Snapshot = {
+// Sidebar-only fixtures omit snapshot graph arrays and unrelated runtime collections.
+const sidebarSnapshot = (
+  value: Pick<Snapshot, "stateDir" | "token" | "threads"> & {
+    runtime: Partial<Snapshot["runtime"]>;
+  },
+): Snapshot => value as Snapshot;
+const data = sidebarSnapshot({
   stateDir: "sidebar-single-activation",
   token: "fixture-token",
-  nodes: [],
-  chats: [],
-  edges: [],
   threads,
   runtime: {
     projects: [
@@ -44,15 +47,9 @@ const data: Snapshot = {
     requests: [],
     complaints: [],
     peerTeams: [],
-    tasks: [],
-    monitors: [],
-    rules: [],
-    events: [],
-    work: [],
-    studioErrors: [],
     sidebarOrder: { revision: 0, groups: {} },
   },
-};
+});
 const scenario = new URLSearchParams(location.search).get("groups");
 const groupChat = (
   id: string,
@@ -69,6 +66,10 @@ const groupChat = (
   created: 1,
   updated: 1,
 });
+type Radio =
+  import("../../src/generated/api.ts").components["schemas"]["RoomRadio"];
+// The shared row fixture omits unused active, error, speaker and teamId fields.
+const partialRadio = (value: Partial<Radio>): Radio => value as Radio;
 const groupData: Snapshot = {
   ...data,
   threads: [
@@ -105,12 +106,26 @@ const groupData: Snapshot = {
         name: "Shared room",
         projectPath: "/shared-only",
         members: [],
-        radio: structuredClone(sidebarFixtureRadio),
+        radio: partialRadio({
+          direct: true,
+          status: "idle",
+          next: [],
+          revision: 0,
+        }),
       },
     ],
   },
 };
-const source: SidebarSource = {
+// Versions are unused by this owner-only fixture.
+const sidebarSource = (
+  value: Pick<SidebarSource, "id" | "online"> & {
+    sidebar: Omit<
+      SidebarSource["sidebar"],
+      "peerTeamsVersion" | "projectOrganizationVersion"
+    >;
+  },
+): SidebarSource => value as SidebarSource;
+const source = sidebarSource({
   id: "local",
   online: true,
   sidebar: {
@@ -120,26 +135,20 @@ const source: SidebarSource = {
     rooms: groupData.runtime.rooms,
     peerTeams: [],
     sidebarOrder: groupData.runtime.sidebarOrder,
-    peerTeamsVersion: undefined,
-    projectOrganizationVersion: undefined,
     savedOrder: {},
     compact: {},
     collapsed: {},
     indicators: [],
     unread: [],
   },
-};
+});
 const model = mergeSidebar([source], 0, true);
 const backends = new Map([["local", localSidebarBackend]]);
 const online = () => true;
-const navigation = {
-  opened: null,
-  projects: [],
-  chats: [],
-  ready: true,
-  alerts: [],
-  error: "",
-};
+// Combined sidebar activation needs only the selected chat; other navigation fields are unused.
+const fixtureNavigation = (
+  value: Partial<ServerNavigation>,
+): ServerNavigation => value as ServerNavigation;
 function Fixture() {
   const [opened, setOpened] = useState<string | null>(null);
   const [opens, setOpens] = useState<string[]>([]);
@@ -150,11 +159,11 @@ function Fixture() {
           model={model}
           backends={backends}
           online={online}
-          refreshOwner={async () => navigation}
+          refreshOwner={async () => fixtureNavigation({})}
           executeCommand={async () => {}}
           aliases={{ local: "Fixture" }}
           current="local"
-          navigation={{ local: navigation }}
+          navigation={{ local: fixtureNavigation({ opened: null }) }}
           send={noop}
           applyNavigation={noop}
           mobile={true}
@@ -175,7 +184,7 @@ function Fixture() {
             setOpens((old) => [...old, id]);
           }}
           prepareChat={(id) => {
-            window.sidebarActivationPrepared = id;
+            window.prepared = id;
           }}
           newChat={noop}
           addProject={noop}
@@ -198,6 +207,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Fixture root is missing");
-createRoot(root).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

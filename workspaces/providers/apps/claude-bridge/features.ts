@@ -46,11 +46,9 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
   const raw = response.rate_limits;
   const window = (value: NativeWindow | null | undefined, minutes: number) =>
     value && {
-      usedPercent:
-        typeof value.utilization === "number" &&
-        Number.isFinite(value.utilization)
-          ? Math.max(0, Math.min(100, value.utilization))
-          : null,
+      usedPercent: Number.isFinite(value.utilization)
+        ? Math.max(0, Math.min(100, value.utilization!))
+        : null,
       resetsAt:
         value.resets_at && Number.isFinite(Date.parse(value.resets_at))
           ? Date.parse(value.resets_at) / 1000
@@ -115,16 +113,13 @@ export function limitEvent(
         id !== "claude" &&
         !["claude-opus", "claude-sonnet", "claude-oauth-apps"].includes(id),
     );
-    const id =
-      names.length === 1
-        ? (names[0] ?? "claude-unknown-limit")
-        : "claude-unknown-limit";
+    const id = names.length === 1 ? names[0] : "claude-unknown-limit";
     bucket = all[id] ||= { limitId: id, limitName: "Claude · Unknown limit" };
-  } else if (["seven_day_opus", "seven_day_sonnet"].includes(type ?? "")) {
-    const name = (type ?? "").slice(10),
-      id = usagePolicy.modelBuckets[name] ?? "";
+  } else if (["seven_day_opus", "seven_day_sonnet"].includes(type as string)) {
+    const name = type!.slice(10),
+      id = usagePolicy.modelBuckets[name];
     bucket = all[id] ||= { limitId: id, limitName: "Claude · " + name };
-  } else if (!["five_hour", "seven_day"].includes(type ?? "")) {
+  } else if (!["five_hour", "seven_day"].includes(type as string)) {
     if (!info.status && !info.overageStatus) return null;
     const id = type === "overage" ? "claude-overage" : "claude-unknown-limit";
     bucket = all[id] ||= {
@@ -138,27 +133,16 @@ export function limitEvent(
     typeof info.overageStatus === "string" ||
     typeof info.isUsingOverage === "boolean" ||
     typeof info.overageInUse === "boolean";
-  if (
-    !(
-      typeof info.utilization === "number" && Number.isFinite(info.utilization)
-    ) &&
-    !hasStatus
-  )
-    return null;
+  if (!Number.isFinite(info.utilization) && !hasStatus) return null;
   bucket[key] = {
     ...bucket[key],
     ...(Number.isFinite(info.utilization)
       ? {
-          usedPercent: Math.max(
-            0,
-            Math.min(100, (info.utilization ?? NaN) * 100),
-          ),
+          usedPercent: Math.max(0, Math.min(100, info.utilization! * 100)),
         }
       : {}),
     windowDurationMins: type === "five_hour" ? 300 : 10080,
-    ...(typeof info.resetsAt === "number" && Number.isFinite(info.resetsAt)
-      ? { resetsAt: info.resetsAt }
-      : {}),
+    ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
   };
   // Replace permission on each event; a later rejection revokes it.
   bucket.claudeRateLimit = structuredClone(info);
@@ -207,16 +191,12 @@ export class InputQueue<
 > {
   values: (T & { studioInputBatch?: T[] })[] = [];
   nonQueryIds = new Set<string | undefined>();
-  pending: T[] = [];
+  pending: (T & { uuid?: string; shouldQuery?: boolean })[] = [];
   // Stop removes every SDK message that has not crossed the iterator boundary.
   withdraw() {
     const messages = this.pending.splice(0);
     for (const value of this.values.splice(0))
-      messages.push(
-        ...(typeof value === "object"
-          ? value.studioInputBatch || [value]
-          : [value]),
-      );
+      messages.push(...(value.studioInputBatch || [value]));
     return messages;
   }
   wake: (() => void) | null = null;
@@ -238,14 +218,11 @@ export class InputQueue<
         await new Promise<void>((resolve) => (this.wake = resolve));
       if (this.closed) break;
       if (this.values.length) {
-        const value = this.values.shift();
-        if (value === undefined) continue;
+        const value = this.values.shift()!;
         this.pending = [...(value.studioInputBatch || [value])];
         while (this.pending.length && !this.closed) {
-          const message = this.pending.shift();
-          if (message === undefined) continue;
-          if (typeof message === "object" && message.shouldQuery === false)
-            this.nonQueryIds.add(message.uuid);
+          const message = this.pending.shift()!;
+          if (message.shouldQuery === false) this.nonQueryIds.add(message.uuid);
           yield message;
         }
       }
@@ -257,7 +234,7 @@ export class InputQueue<
 export function overageAllowed(info: RateLimitInfo) {
   if (info.overageStatus === "rejected") return false;
   return (
-    usagePolicy.allowedOverageStatuses.includes(info.overageStatus ?? "") ||
+    usagePolicy.allowedOverageStatuses.includes(info.overageStatus as string) ||
     info.isUsingOverage === true ||
     info.overageInUse === true
   );
@@ -299,7 +276,7 @@ export function providerNotice(message: Record<string, unknown>) {
   }
   if (
     ["model_fallback", "model_consent_fallback"].includes(
-      String(message.subtype),
+      message.subtype as string,
     )
   ) {
     const original =
