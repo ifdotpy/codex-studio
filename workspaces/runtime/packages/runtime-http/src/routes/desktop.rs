@@ -24,7 +24,7 @@ pub(crate) async fn get(
 }
 
 pub(crate) async fn snapshot(state: HttpState) -> Result<Value, crate::error::ApiError> {
-    let status = studio_runtime_process::blocking_pool::spawn_blocking(
+    let mut status = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/desktop-status",
         move || {
             let disk_space =
@@ -34,6 +34,21 @@ pub(crate) async fn snapshot(state: HttpState) -> Result<Value, crate::error::Ap
     )
     .await
     .map_err(|_| crate::error::ApiError::internal())?;
+    if let Some(native) = status
+        .get_mut("nativeRuntime")
+        .filter(|value| !value.is_null())
+    {
+        // The stored status keeps private rotation receipts and extension fields.
+        // Project its clone through the public contract without changing the source.
+        studio_runtime_schema::strip_stored_extra_fields("NativeRuntimeStatus", native)
+            .map_err(|_| crate::error::ApiError::internal())?;
+        if studio_runtime_schema::first_error("NativeRuntimeStatus", native)
+            .map_err(|_| crate::error::ApiError::internal())?
+            .is_some()
+        {
+            return Err(crate::error::ApiError::internal());
+        }
+    }
     Ok(status)
 }
 

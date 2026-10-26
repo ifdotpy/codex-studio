@@ -23525,6 +23525,10 @@
             "title": "Backendbuild",
             "type": "string"
           },
+          "backendKind": {
+            "title": "Backendkind",
+            "type": "string"
+          },
           "browser": {
             "anyOf": [
               {

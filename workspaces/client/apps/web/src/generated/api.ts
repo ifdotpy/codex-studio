@@ -11545,6 +11545,8 @@ export interface components {
       application: string;
       /** Backendbuild */
       backendBuild: string;
+      /** Backendkind */
+      backendKind?: string;
       browser: components["schemas"]["BrowserStatus"] | null;
       /** @default null */
       diskSpace?: components["schemas"]["DiskSpaceStatus"] | null;

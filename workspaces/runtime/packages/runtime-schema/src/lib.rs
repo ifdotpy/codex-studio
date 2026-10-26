@@ -669,6 +669,8 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "ComplaintEntityDto",
         "ConfigureResponse",
         "DiagnosticsResponse",
+        "DesktopResponse",
+        "NativeRuntimeStatus",
         "EdgeEntityDto",
         "ErrorResponse",
         "EventEntityDto",

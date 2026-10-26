@@ -1670,4 +1670,106 @@ mod tests {
         assert!(value["diskSpace"].is_object());
         assert!(value["publicOrigin"].is_null());
     }
+
+    #[tokio::test]
+    async fn desktop_source_projects_legacy_native_rotation_without_mutating_status() {
+        use studio_runtime_services::native_runtime::{
+            CompatibilityProbe, CompatibilityResult, NativeRuntime, NativeRuntimeError,
+        };
+
+        struct NoProbe;
+        impl CompatibilityProbe for NoProbe {
+            fn version(&self, _: &std::path::Path) -> Result<String, NativeRuntimeError> {
+                panic!("desktop publication must not probe a provider")
+            }
+            fn check(
+                &self,
+                _: &std::path::Path,
+                _: studio_runtime_services::provider_binaries::NativePlatform,
+            ) -> Result<CompatibilityResult, NativeRuntimeError> {
+                panic!("desktop publication must not run a compatibility check")
+            }
+        }
+
+        let (root, state) = state().await;
+        let canonical_root = studio_runtime_store::path_identity::resolve(root.path())
+            .expect("canonical isolated runtime root");
+        let runtime = Arc::new(
+            NativeRuntime::new(canonical_root.as_path(), Arc::new(NoProbe)).expect("runtime"),
+        );
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../runtime-services/tests/native_runtime_state.json"
+        ))
+        .expect("maintained historical status corpus");
+        let original = &corpus["rotation"];
+        let bytes = serde_json::to_vec(original).expect("historical status bytes");
+        let path = runtime.status_path();
+        tokio::fs::create_dir_all(path.parent().expect("status directory"))
+            .await
+            .expect("isolated status directory");
+        tokio::fs::write(&path, &bytes)
+            .await
+            .expect("isolated historical status");
+        let state = state.with_native_runtime(runtime.clone());
+
+        publish_desktop(&state)
+            .await
+            .expect("a private rotation receipt must not block desktop startup publication");
+        let value = entity(&state, "desktop", "current");
+        assert!(
+            studio_runtime_schema::validate_sync_entity_payload_strict(
+                "desktop",
+                "current",
+                false,
+                &json!({"collection":"desktop","id":"current","value":value}),
+            )
+            .expect("strict outward schema")
+        );
+        assert_eq!(value["nativeRuntime"]["status"], "ready");
+        assert_eq!(value["nativeRuntime"]["selected"], original["selected"]);
+        let mut account = original["accounts"]["default"].clone();
+        account.as_object_mut().expect("account").remove("rotation");
+        assert_eq!(value["nativeRuntime"]["accounts"]["default"], account);
+        assert!(value["nativeRuntime"].get("futurePythonField").is_none());
+        let response = crate::routes::desktop::snapshot(state.clone())
+            .await
+            .expect("desktop response");
+        assert_eq!(
+            studio_runtime_schema::first_error("DesktopResponse", &response)
+                .expect("outward response schema"),
+            None,
+        );
+        assert_eq!(
+            tokio::fs::read(&path).await.expect("unchanged status"),
+            bytes
+        );
+        assert_eq!(
+            runtime
+                .read_state()
+                .expect("read status")
+                .expect("status")
+                .record(),
+            original
+        );
+
+        let mut malformed = original.clone();
+        malformed["accounts"]["default"]["targetVersion"] = json!(42);
+        let malformed_bytes = serde_json::to_vec(&malformed).expect("malformed known field");
+        tokio::fs::write(&path, &malformed_bytes)
+            .await
+            .expect("isolated malformed status");
+        assert!(
+            crate::routes::desktop::snapshot(state.clone())
+                .await
+                .is_err()
+        );
+        assert!(publish_desktop(&state).await.is_err());
+        assert_eq!(entity(&state, "desktop", "current"), value);
+        assert_eq!(
+            tokio::fs::read(&path)
+                .await
+                .expect("malformed source preserved"),
+            malformed_bytes,
+        );
+    }
 }
