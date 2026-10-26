@@ -253,6 +253,19 @@ export class ResourceEntityDelivery {
       return;
     }
     if (
+      !hasChanges &&
+      !this.storageBlocked &&
+      (this.current || this.pending.length) &&
+      this.pending.length < MAX_PENDING_FRAMES &&
+      (this.epoch === undefined || this.epoch === event.epoch)
+    ) {
+      // A frame without data cannot replace data that waits to be written,
+      // for example the state frame whose data comes as a staged transfer.
+      this.pending.push(event);
+      void this.flush();
+      return;
+    }
+    if (
       (event.reason !== "change" && !hasInitialSnapshot) ||
       this.storageBlocked ||
       !hasChanges ||

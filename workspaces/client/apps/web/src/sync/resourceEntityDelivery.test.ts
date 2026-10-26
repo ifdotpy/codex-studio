@@ -293,6 +293,40 @@ describe("bounded stream entity delivery", () => {
     expect(persist).toHaveBeenCalledTimes(1);
   });
 
+  it("queues a state frame without changes behind a pending write", async () => {
+    let finish!: () => void;
+    const persist = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      )
+      .mockResolvedValue(undefined);
+    const dispatch = vi.fn();
+    const failed = vi.fn();
+    const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
+    const first = frame(1, "initial");
+    first.resourceVersions[0] = {
+      ...first.resourceVersions[0],
+      cursor: { workspaceId: "a".repeat(32), seq: 1 },
+      replyKind: "snapshot",
+    } as (typeof first.resourceVersions)[0];
+    delivery.receive(first);
+    // The state data of this frame arrives as a separate staged transfer.
+    delivery.receive({
+      ...frame(2, "initial"),
+      resourceVersions: [{ revision: 2 }],
+    });
+    expect(failed).not.toHaveBeenCalled();
+    finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failed).not.toHaveBeenCalled();
+    expect(dispatch.mock.calls.map(([event]) => event.revision)).toEqual([
+      1, 2,
+    ]);
+  });
+
   it("keeps state delivery when a transcript-only frame arrives", async () => {
     let finish!: () => void;
     const persist = vi
