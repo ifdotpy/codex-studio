@@ -7,9 +7,9 @@ declare function registerProcessor(
 ): void;
 
 export class StudioCapture extends AudioWorkletProcessor {
-  buffer: Int16Array;
-  offset: number;
-  stopped: boolean;
+  declare buffer: Int16Array;
+  declare offset: number;
+  declare stopped: boolean;
   constructor() {
     super();
     this.buffer = new Int16Array(4096);

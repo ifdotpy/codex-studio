@@ -2,7 +2,7 @@
 // Offline replay only: no server reads or writes. Payloads stay outside the checkout.
 import { readFile, writeFile } from "node:fs/promises";
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
-import type { OpenAPI3 } from "openapi-typescript";
+import { promisify } from "node:util";
 import {
   createBrotliCompress,
   brotliDecompressSync,
@@ -12,7 +12,17 @@ import {
 const [input, output] = process.argv.slice(2);
 if (!input || !output)
   throw new Error("usage: replay-view-scoped.ts <recorded.sse> <report.json>");
-const schema: OpenAPI3 = JSON.parse(
+const schema: {
+  components: {
+    schemas: Record<
+      string,
+      {
+        properties: Record<string, unknown>;
+        "x-studio-entity-scope": { collections: string[] };
+      }
+    >;
+  };
+} = JSON.parse(
   await readFile(
     new URL(
       "../../../runtime/packages/runtime-http/openapi.json",
@@ -35,24 +45,11 @@ const encoderValue = (name: string) => {
 };
 const quality = encoderValue("STREAM_BROTLI_QUALITY");
 const lgwin = encoderValue("STREAM_BROTLI_LGWIN");
-const schemas = schema.components?.schemas;
-if (!schemas) throw new Error("Missing schema components");
-const summary = schemas.AgentSummaryEntityDto;
-if (!summary || !("properties" in summary))
-  throw new Error("Missing summary properties");
-const state = schemas.StateResource;
-if (!state || !("x-studio-entity-scope" in state))
-  throw new Error("Missing state entity scope");
-const summaryFields = Object.keys(summary.properties ?? {});
-const scope: unknown = state["x-studio-entity-scope"];
-if (
-  !scope ||
-  typeof scope !== "object" ||
-  !("collections" in scope) ||
-  !Array.isArray(scope.collections)
-)
-  throw new Error("Missing state collections");
-const globalCollections = new Set<unknown>(scope.collections);
+const schemas = schema.components.schemas;
+const summaryFields = Object.keys(schemas.AgentSummaryEntityDto.properties);
+const globalCollections = new Set(
+  schemas.StateResource["x-studio-entity-scope"].collections,
+);
 const recorded = await readFile(input, "utf8");
 if (!recorded.endsWith("\n\n"))
   throw new Error("Recording ends with an incomplete SSE event");
@@ -82,7 +79,6 @@ for (const frame of frames) {
   const versions: unknown[] = [];
   for (const [index, entry] of (event.resourceVersions ?? []).entries()) {
     const resource = entry.resource ?? event.resources[index];
-    if (!resource) throw new Error("Missing resource identity");
     if (resource?.kind !== "state") {
       // Background replay has no open chat or mounted panel.
       if (resource?.kind !== "drafts") {
@@ -106,11 +102,13 @@ for (const frame of frames) {
           value?: Record<string, unknown>;
         } = { ...row, collection: "agentSummary" };
         if (row.op === "upsert") {
-          const value: Record<string, unknown> = { ...row.value };
           mapped.value = Object.fromEntries(
             summaryFields
-              .filter((field) => field in value)
-              .map((field) => [field, value[field]]),
+              .filter((field) => field in row.value)
+              .map((field) => [
+                field,
+                (row.value as Record<string, unknown>)[field],
+              ]),
           );
           for (const field of [
             "hasQuestion",
@@ -142,9 +140,14 @@ for (const frame of frames) {
     }
   }
   if (!resources.length) continue;
-  const replayed = { ...event, resources, resourceVersions: versions };
+  event.resources = resources;
+  (
+    event as Omit<typeof event, "resourceVersions"> & {
+      resourceVersions: unknown[];
+    }
+  ).resourceVersions = versions;
   transformed.push(
-    `${lines.filter((line) => !line.startsWith("data:")).join("\n")}\ndata: ${JSON.stringify(replayed)}\n\n`,
+    `${lines.filter((line) => !line.startsWith("data:")).join("\n")}\ndata: ${JSON.stringify(event)}\n\n`,
   );
 }
 async function compress(events: string[]) {
@@ -156,11 +159,12 @@ async function compress(events: string[]) {
   });
   const chunks: Buffer[] = [];
   encoder.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const flush = promisify(encoder.flush.bind(encoder)) as (
+    operation: number,
+  ) => Promise<void>;
   for (const frame of events) {
     encoder.write(frame);
-    await new Promise<void>((resolve) =>
-      encoder.flush(constants.BROTLI_OPERATION_FLUSH, resolve),
-    );
+    await flush(constants.BROTLI_OPERATION_FLUSH);
   }
   const ended = new Promise((resolve, reject) => {
     encoder.once("end", resolve);

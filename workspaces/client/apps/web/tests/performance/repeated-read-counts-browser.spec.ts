@@ -1,7 +1,6 @@
 import type { Browser, Request } from "@playwright/test";
 import type { ResourceChangeEvent, ResourceRef } from "../playwright.ts";
-import { readProviderObject } from "../fixtures/fixture-scripts.ts";
-import { required } from "./performance-fixture.ts";
+
 // Count real renderer GETs against the isolated repository fixture backend.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -41,37 +40,36 @@ async function repeatedReadCountsScenario(
   let log = "";
   const fixtureResponses = new Map<
     string,
-    ReturnType<typeof readProviderObject>
+    ReturnType<typeof readFixtureResponse>
   >();
   const fixtureWaiters = new Map<
     string,
     {
-      resolve: (value: ReturnType<typeof readProviderObject>) => void;
+      resolve: (value: ReturnType<typeof readFixtureResponse>) => void;
       reject: (error: Error) => void;
       timeout: ReturnType<typeof setTimeout>;
     }
   >();
   let fixtureOutputBuffer = "";
-  required(fixture.stdout).on("data", (chunk) => {
+  fixture.stdout!.on("data", (chunk) => {
     fixtureOutputBuffer += String(chunk);
     const lines = fixtureOutputBuffer.split("\n");
     fixtureOutputBuffer = lines.pop() || "";
     for (const line of lines) {
       try {
-        const response = readProviderObject(line);
-        if (typeof response.id !== "string") continue;
-        const waiter = fixtureWaiters.get(response.id);
+        const response = readFixtureResponse(line);
+        const waiter = fixtureWaiters.get(response.id!);
         if (waiter) {
           clearTimeout(waiter.timeout);
-          fixtureWaiters.delete(response.id);
+          fixtureWaiters.delete(response.id!);
           waiter.resolve(response);
         } else if (response.id) fixtureResponses.set(response.id, response);
       } catch {}
     }
   });
-  required(fixture.stderr).on("data", (chunk) => (log += chunk));
+  fixture.stderr!.on("data", (chunk) => (log += chunk));
   const port = await new Promise<number>((resolve, reject) => {
-    required(fixture.stdout).once("data", (chunk) =>
+    fixture.stdout!.once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(Error(log)));
@@ -97,14 +95,14 @@ async function repeatedReadCountsScenario(
         constructor(...args: ConstructorParameters<typeof EventSource>) {
           super(...args);
           this.addEventListener("resources", (event) => {
-            window.repeatedReadResourceEvents.push({
+            window.__resourceEvents.push({
               at: Date.now(),
               event: readResourceEvent(event.data),
             });
           });
         }
       };
-      window.repeatedReadResourceEvents = [];
+      window.__resourceEvents = [];
     });
     page.on("request", (request) => {
       const url = new URL(request.url());
@@ -218,9 +216,7 @@ async function repeatedReadCountsScenario(
       }
     };
     const captureNewResourceEvents = async () => {
-      const events = await page.evaluate(
-        () => window.repeatedReadResourceEvents,
-      );
+      const events = await page.evaluate(() => window.__resourceEvents);
       resourceEvents.push(...events.slice(observedEventCount));
       observedEventCount = events.length;
     };
@@ -292,7 +288,7 @@ async function repeatedReadCountsScenario(
     const streamRequestId = `stream-transcript-${Date.now()}`;
     const streamAck = fixtureResponses.has(streamRequestId)
       ? Promise.resolve(fixtureResponses.get(streamRequestId))
-      : new Promise<ReturnType<typeof readProviderObject>>(
+      : new Promise<ReturnType<typeof readFixtureResponse>>(
           (resolve, reject) => {
             const timeout = setTimeout(
               () => reject(new Error(`fixture stream write timed out: ${log}`)),
@@ -302,14 +298,14 @@ async function repeatedReadCountsScenario(
           },
         );
     const streamStartedAt = Date.now();
-    required(fixture.stdin).write(
+    fixture.stdin!.write(
       `${JSON.stringify({
         id: streamRequestId,
         method: "fixture/stream-transcript",
         params: { agent: otherChatId, id: streamMessageId, text: streamedText },
       })}\n`,
     );
-    const streamReply = required(await streamAck);
+    const streamReply = (await streamAck)!;
     assert.equal(streamReply.ok, true);
     await page
       .locator(`[data-message="${otherChatId}:${streamMessageId}"]`)
@@ -317,7 +313,7 @@ async function repeatedReadCountsScenario(
     const openedChatStreamMs = Date.now() - streamStartedAt;
     const transcriptEvent = await page.evaluate(
       ({ agentId, startedAt }) =>
-        window.repeatedReadResourceEvents.find(
+        window.__resourceEvents.find(
           ({ at, event }) =>
             at >= startedAt &&
             event.resources.some(
@@ -415,7 +411,7 @@ async function repeatedReadCountsScenario(
           );
           fixtureWaiters.set(freshnessId, { resolve, reject, timeout });
         });
-    required(fixture.stdin).write(
+    fixture.stdin!.write(
       `${JSON.stringify({
         id: freshnessId,
         method: "fixture/model-catalog",
@@ -432,7 +428,7 @@ async function repeatedReadCountsScenario(
     await page.getByRole("option", { name: "Fixture model new" }).click();
     assert.match(await modelPicker.innerText(), /Fixture model new/);
     console.log(
-      `STREAM_NAVIGATION_LATENCY ${JSON.stringify({ firstStreamOpenMs: (loadStreams[0]?.at ?? NaN) - loadStartedAt, reconfigureAfterOpeningChatMs: (otherStreams[0]?.at ?? NaN) - openOtherStartedAt, streamedMessageToVisibleMs: openedChatStreamMs, transcriptEventToTextMs, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, back: openLeadFirstContentMs } })}`,
+      `STREAM_NAVIGATION_LATENCY ${JSON.stringify({ firstStreamOpenMs: loadStreams[0]?.at - loadStartedAt, reconfigureAfterOpeningChatMs: otherStreams[0]?.at - openOtherStartedAt, streamedMessageToVisibleMs: openedChatStreamMs, transcriptEventToTextMs, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, back: openLeadFirstContentMs } })}`,
     );
     console.log(
       `REPEATED_READ_COUNTS ${JSON.stringify({ load, toOther, back, settings: settingsCounts, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, backToLead: openLeadFirstContentMs }, readTimeline: requestTimeline, streamOpens: { load: streamSummary(loadStreams), toOther: streamSummary(otherStreams), back: streamSummary(backStreams) }, resourceEvents: resourceEvents.map(({ at, event: { reason, resources } }) => ({ at, reason, resourceCounts: resources.reduce<Record<string, number>>((result, resource) => ((result[resource.kind] = (result[resource.kind] || 0) + 1), result), {}) })), sendFlow: { streamOpens: streamSummary(sendStreams), duplicateUrls: repeatedSendStreamUrls.length, readsWithin700ms: sendRequests } })}`,
@@ -520,7 +516,7 @@ async function repeatedReadCountsScenario(
     }))
       for (const [key, count] of Object.entries(countsInPhase)) {
         const kind = routeKind(key);
-        const [startedAt, settledAt] = required(phaseBounds[phase]);
+        const [startedAt, settledAt] = phaseBounds[phase]!;
         const invalidations = kind
           ? resourceEvents.filter(
               ({ at, event }) =>
@@ -599,10 +595,15 @@ type AccountReadTiming = {
 };
 // Subscription URLs are produced by the renderer under test using ResourceRef.
 function parseResources(value: string | null): ResourceRef[] {
-  return JSON.parse(value ?? "null");
+  return JSON.parse(value!);
 }
 declare global {
   interface Window {
-    repeatedReadResourceEvents: TimedResourceEvent[];
+    __resourceEvents: TimedResourceEvent[];
   }
+}
+
+// This test sends each request ID and reads back its fixture server response.
+function readFixtureResponse(text: string): { id?: string; ok?: boolean } {
+  return JSON.parse(text);
 }

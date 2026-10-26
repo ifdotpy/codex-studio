@@ -1,7 +1,7 @@
 import type { TaskReviewFrames } from "./task-review-stream.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
-import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -154,10 +154,9 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await server.listen();
-    await page.addInitScript((json) => {
-      const value: TaskReviewFrames = JSON.parse(json);
-      window.taskReviewFrames = value;
-    }, JSON.stringify(frames()));
+    await page.addInitScript<unknown>((value) => {
+      window.taskReviewFrames = value as TaskReviewFrames;
+    }, frames());
     await page.route("**/api/work*", async (route) => {
       if (route.request().method() === "GET")
         return route.fulfill({
@@ -173,72 +172,52 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
             json: { error: "The reply was lost. Retry the same action." },
           });
         }
-        required(tasks[0]).status = "accepted";
-        required(tasks[0]).version++;
-        required(required(tasks[0]).decisions).push({
+        tasks[0]!.status = "accepted";
+        tasks[0]!.version++;
+        tasks[0]!.decisions!.push({
           decision: "accept",
-          reason:
-            typeof body.result === "string"
-              ? body.result
-              : JSON.stringify(body.result),
+          reason: body.result as string,
           gateOverrideReason: body.override_reason,
           by: "lead",
           created: 3,
         });
       } else if (body.action === "update") {
-        if (
-          typeof body.result_schema === "object" &&
-          body.result_schema?.type === "invalid"
-        )
+        if ((body.result_schema as { type?: string })?.type === "invalid")
           return route.fulfill({
             status: 400,
             json: { error: "Invalid result_schema at /type: unknown type" },
           });
-        Object.assign(required(tasks[1]), {
+        Object.assign(tasks[1]!, {
           title: body.title,
           description: body.description,
           resultSchema: fixtureResultSchema(body.result_schema),
           gate: body.gate,
-          version: required(tasks[1]).version + 1,
+          version: tasks[1]!.version + 1,
         });
       } else if (body.action === "set_default_gate") {
-        if (body.gate === undefined) throw new Error("Missing default gate");
-        taskDefaultGate = body.gate;
+        taskDefaultGate = body.gate!;
       } else if (body.action === "create") {
-        const resultSchema = fixtureResultSchema(body.result_schema);
-        const gate = body.gate;
-        const serializedGate: components["schemas"]["WorkItem"]["gate"] =
-          gate && typeof gate === "object"
-            ? gate.timeout_ms === undefined
-              ? { command: gate.command }
-              : { command: gate.command, timeout_ms: gate.timeout_ms }
-            : gate;
-        tasks.push({
+        // This base fixture uses the renderer's request fields rather than a complete persisted WorkItem.
+        const createdTask = {
           ...common,
           ...body,
           id: "created-task",
-          title: required(body.title),
-          description: body.description ?? undefined,
-          dependencies: body.dependencies ?? undefined,
-          version: body.version ?? common.version,
-          status: required(body.status),
-          gate: serializedGate,
-          result_schema: resultSchema,
-          resultSchema,
-        } satisfies components["schemas"]["WorkItem"]);
+          status: body.status,
+          resultSchema: body.result_schema,
+        } as components["schemas"]["WorkItem"];
+        tasks.push(createdTask);
       } else if (body.action === "reject") {
-        required(tasks[0]).status = "ready";
-        required(tasks[0]).version++;
+        tasks[0]!.status = "ready";
+        tasks[0]!.version++;
       }
-      await page.evaluate((json) => {
-        const value: TaskReviewFrames = JSON.parse(json);
-        window.taskReviewFrames = value;
+      await page.evaluate<void, unknown>((value) => {
+        window.taskReviewFrames = value as TaskReviewFrames;
         window.dispatchEvent(new Event("task-review-frame"));
-      }, JSON.stringify(frames()));
+      }, frames());
       return route.fulfill({ json: { ok: true } });
     });
     await page.setViewportSize({ width: 320, height: 800 });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.getByRole("button", { name: /Review the release/ }).click();
     const detail = page.getByRole("article", { name: "Task detail" });
     await expect(detail).toContainText("Gate status: failed");
@@ -310,7 +289,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       override_reason:
         "The check needs the staging service. I verified the release locally.",
     });
-    expect(required(accepts[0]).id).toBeTruthy();
+    expect(accepts[0]!.id).toBeTruthy();
 
     await page.getByLabel("Filter by status").selectOption("blocked");
     await expect(
@@ -388,5 +367,6 @@ function fixtureResultSchema(
   | (components["schemas"]["WorkItem"]["resultSchema"] &
       components["schemas"]["JsonValue"])
   | undefined {
-  return schema === undefined ? undefined : JSON.parse(JSON.stringify(schema));
+  return schema as components["schemas"]["WorkItem"]["resultSchema"] &
+    components["schemas"]["JsonValue"];
 }

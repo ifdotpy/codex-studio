@@ -183,9 +183,7 @@ export function splitJoinedAnswer(
         break;
       }
     if (!matched) {
-      const part = parts[index];
-      if (part === undefined) throw new Error("Missing answer part");
-      other.push(part);
+      other.push(parts[index]);
       index++;
       continue;
     }

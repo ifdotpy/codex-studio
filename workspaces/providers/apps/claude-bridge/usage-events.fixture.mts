@@ -9,7 +9,7 @@ export {
 } from "./sdk-fixtures.ts";
 // The parent test writes this private environment document from SDK-checked fixtures.
 function readEvents(): SessionFixtureMessage[] {
-  return JSON.parse(process.env.STUDIO_FIXTURE_EVENTS ?? "[]");
+  return JSON.parse(process.env.STUDIO_FIXTURE_EVENTS!);
 }
 const events = readEvents();
 export function query({ prompt, options }: FixtureQuery) {

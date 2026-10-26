@@ -61,21 +61,23 @@ test("close flushes bounds synchronously; fullscreen is not restored; hidden mod
   const profile = mkdtempSync(path.join(tmpdir(), "studio-window-state-"));
   try {
     const app = new EventEmitter();
+    // The base attaches these members before trackWindowState observes them.
+    const win = new EventEmitter() as EventEmitter &
+      Parameters<typeof trackWindowState>[0];
     let bounds = { x: 30, y: 40, width: 1200, height: 850 };
-    const win = Object.assign(new EventEmitter(), {
-      isDestroyed: () => false,
-      isFullScreen: () => true,
-      isMaximized: () => false,
-      getNormalBounds: () => bounds,
-      maximize: () => {
-        throw new Error("Hidden windows must stay hidden");
-      },
-    });
+    win.isDestroyed = () => false;
+    win.isFullScreen = () => true;
+    win.isMaximized = () => false;
+    win.getNormalBounds = () => bounds;
+    win.maximize = () => {
+      throw new Error("Hidden windows must stay hidden");
+    };
     const tracker = trackWindowState(
       win,
       app,
       profile,
-      windowState({ version: 1, bounds, maximized: true }, [display()]),
+      // This witness reads only maximized; bounds and minimum sizes are unused.
+      { maximized: true } as Parameters<typeof trackWindowState>[3],
       { hidden: true },
     );
     tracker.restore();

@@ -220,8 +220,6 @@ function main() {
 try {
   process.exitCode = main();
 } catch (error) {
-  console.error(
-    `Pre-commit checks failed: ${error instanceof Error ? error.message : String(error)}`,
-  );
+  console.error(`Pre-commit checks failed: ${(error as Error).message}`);
   process.exitCode = 1;
 }

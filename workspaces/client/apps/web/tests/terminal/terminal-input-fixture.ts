@@ -1,13 +1,11 @@
-import { fixtureSnapshot } from "../fixtures/snapshot.ts";
-import type { Agent } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
+import type { Agent, Snapshot } from "../../src/types.ts";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import TerminalDock from "../../src/components/TerminalDock.tsx";
 import { setToken } from "../../src/api.ts";
 export function mount(shell: string) {
-  window.terminalInputRecoveryRoot?.unmount();
+  window.reactRoot?.unmount();
   localStorage.setItem("codex.terminal.open", "true");
   localStorage.setItem(
     "codex.terminal.selected",
@@ -20,19 +18,21 @@ export function mount(shell: string) {
     source: "managed",
     status: "idle",
   };
-  const root = createRoot(required(document.getElementById("app")));
+  // This one-off fixture omits snapshot metadata and runtime collections.
+  const data = { threads: [agent] } as Snapshot;
+  const root = createRoot(document.getElementById("app")!);
   root.render(
     React.createElement(
       MantineProvider,
       null,
       React.createElement(TerminalDock, {
-        data: fixtureSnapshot([agent]),
+        data,
         agent,
-        notify: (value) => window.terminalInputRecoveryNotices.push(value),
+        notify: (value) => window.notices.push(value),
       }),
     ),
   );
-  window.terminalInputRecoveryRoot = root;
+  window.reactRoot = root;
 }
 
 window.terminalInputRecoveryMount = mount;

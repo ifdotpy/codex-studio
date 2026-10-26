@@ -3,11 +3,10 @@ import type { Account } from "../../src/components/Accounts.tsx";
 import { fixtureAccount } from "./fixture-helpers.ts";
 declare global {
   interface Window {
-    claudeSettingsAuthFixture: { signInAccount: string };
+    signInAccount: string;
   }
 }
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
@@ -38,7 +37,7 @@ function Fixture() {
         agent={agent}
         account={account}
         onSignIn={(key) => {
-          window.claudeSettingsAuthFixture = { signInAccount: key };
+          window.signInAccount = key;
           setLogin(true);
         }}
       />
@@ -48,8 +47,8 @@ function Fixture() {
           scope="settings-fixture"
           onClose={() => setLogin(false)}
           onReady={() => {
-            const ready = structuredClone(account);
-            ready.status = "ready";
+            // Authored account fixture view preserves the base shallow update.
+            const ready = { ...account, status: "ready" } as Account;
             setAccount(ready);
             setLogin(false);
           }}
@@ -58,4 +57,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

@@ -13,12 +13,8 @@ export async function exportBrowserProfile(
 ): Promise<BrowserProfileSnapshot> {
   async function encode(value: unknown): Promise<EncodedProfileValue> {
     if (value === undefined) return ["undefined"];
-    if (
-      value === null ||
-      typeof value === "string" ||
-      typeof value === "boolean"
-    )
-      return ["value", value];
+    if (value === null || ["string", "boolean"].includes(typeof value))
+      return ["value", value as null | string | boolean];
     if (typeof value === "number") {
       if (Object.is(value, -0)) return ["number", "-0"];
       if (!Number.isFinite(value)) return ["number", String(value)];
@@ -57,11 +53,7 @@ export async function exportBrowserProfile(
       ];
     if (Array.isArray(value))
       return ["array", await Promise.all(value.map(encode))];
-    if (
-      value !== null &&
-      typeof value === "object" &&
-      Object.getPrototypeOf(value) === Object.prototype
-    )
+    if (Object.getPrototypeOf(value) === Object.prototype)
       return [
         "object",
         await Promise.all(
@@ -86,25 +78,19 @@ export async function exportBrowserProfile(
     });
   const preferences = Object.fromEntries(
     Array.from({ length: localStorage.length }, (_, index) => {
-      const key = localStorage.key(index);
-      if (key === null) throw new Error("Saved preference key is unavailable.");
-      const value = localStorage.getItem(key);
-      if (value === null)
-        throw new Error("Saved preference value is unavailable.");
-      return [key, value];
+      const key = localStorage.key(index)!;
+      return [key, localStorage.getItem(key)!];
     }),
   );
   const databases: BrowserProfileDatabase[] = [];
   for (const { name, version } of await indexedDB.databases()) {
-    if (name === undefined || version === undefined)
-      throw new Error("Saved database identity is unavailable.");
-    const opened = indexedDB.open(name, version);
-    opened.onupgradeneeded = () => opened.transaction?.abort();
+    const opened = indexedDB.open(name!, version);
+    opened.onupgradeneeded = () => opened.transaction!.abort();
     const db = await request(opened);
     try {
       const names = [...db.objectStoreNames];
       if (!names.length) {
-        databases.push({ name, version, stores: [] });
+        databases.push({ name, version, stores: [] } as BrowserProfileDatabase);
         continue;
       }
       const transaction = db.transaction(names, "readonly");
@@ -140,19 +126,14 @@ export async function exportBrowserProfile(
         if (!store.autoIncrement) continue;
         store.nextKey = await new Promise<number>((resolve, reject) => {
           const probe = db.transaction(store.name, "readwrite");
-          let key: IDBValidKey | undefined;
+          let key: number | undefined;
           let failure: DOMException | null | undefined;
-          probe.onabort = () =>
-            failure
-              ? reject(failure)
-              : typeof key === "number"
-                ? resolve(key)
-                : reject(new Error("Invalid generated key"));
+          probe.onabort = () => (failure ? reject(failure) : resolve(key!));
           probe.oncomplete = () =>
             reject(new Error("Key probe unexpectedly committed"));
           const added = probe.objectStore(store.name).add({});
           added.onsuccess = () => {
-            key = added.result;
+            key = added.result as number;
             probe.abort();
           };
           added.onerror = () => {
@@ -214,7 +195,7 @@ export async function exportBrowserProfile(
         if (emitChunk) store.chunks = chunks;
         else store.records = records;
       }
-      databases.push({ name, version, stores });
+      databases.push({ name, version, stores } as BrowserProfileDatabase);
     } finally {
       db.close();
     }

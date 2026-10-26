@@ -1,7 +1,6 @@
 import { stripTypeScriptTypes } from "node:module";
 import type { WebContents } from "electron";
 import type { BackendIdentity } from "./backend.ts";
-import { present, parsedRecord } from "./test-support.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -21,7 +20,7 @@ const timer = setTimeout(() => {
 }, 110000);
 const loaded = (contents: Pick<WebContents, "once">, action: () => void) =>
   new Promise<void>((resolve) => {
-    contents.once("did-finish-load", () => resolve());
+    contents.once("did-finish-load", resolve as () => void);
     action();
   });
 import "./main.ts";
@@ -43,7 +42,7 @@ app.once("browser-window-created", (_event, win) => {
           .readFileSync(filename, "utf8")
           .trim()
           .split("\n")
-          .map((line) => parsedRecord(line));
+          .map((line): Record<string, unknown> => JSON.parse(line));
       for (let attempt = 0; attempt < 4; attempt++) {
         await loaded(contents, () => contents.forcefullyCrashRenderer());
         assert.equal(win.isVisible(), false);
@@ -63,17 +62,14 @@ app.once("browser-window-created", (_event, win) => {
         (await win.capturePage()).toPNG(),
       );
       assert.equal(
-        present(
-          records()
-            .filter((record) => record.event === "renderer-crash")
-            .at(-1),
-        ).failures,
+        records()
+          .filter((record) => record.event === "renderer-crash")
+          .at(-1)!.failures,
         4,
       );
       assert.equal(
-        typeof present(
-          records().find((record) => record.event === "renderer-crash"),
-        ).exitCode,
+        typeof records().find((record) => record.event === "renderer-crash")!
+          .exitCode,
         "number",
       );
       // The static fallback can request only the fixed workspace URL.
@@ -86,26 +82,19 @@ app.once("browser-window-created", (_event, win) => {
       // Native Reload targets this known window even while its renderer is dead and unfocused.
       await loaded(contents, () => {
         contents.once("render-process-gone", () => {
-          const menu = present(Menu.getApplicationMenu());
-          const item = present(menu.getMenuItemById("reload-workspace"));
-          item.click(item, win, {
-            shiftKey: false,
-            ctrlKey: false,
-            altKey: false,
-            metaKey: false,
-            triggeredByAccelerator: false,
-          });
+          (
+            Menu.getApplicationMenu()!.getMenuItemById("reload-workspace")!
+              .click as () => void
+          )();
         });
         contents.forcefullyCrashRenderer();
       });
       assert.equal(contents.getURL(), `${origin}/`);
       await loaded(contents, () => contents.forcefullyCrashRenderer());
       assert.equal(
-        present(
-          records()
-            .filter((record) => record.event === "renderer-crash")
-            .at(-1),
-        ).failures,
+        records()
+          .filter((record) => record.event === "renderer-crash")
+          .at(-1)!.failures,
         1,
       );
       // Healthy-interval boundaries use fake time in renderer-recovery.test.mjs.

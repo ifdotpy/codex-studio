@@ -2,7 +2,6 @@ import type {
   InteractionVariant,
   InteractionResult,
 } from "./interaction-scenario.ts";
-import { required } from "./performance-fixture.ts";
 import { test, expect, spawnFixture } from "../playwright.ts";
 import { mkdtemp, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -39,7 +38,7 @@ test(
       throw new Error("Benchmark samples must be an integer between 1 and 9.");
     const runs = Array.from({ length: samples }, (_, sample) =>
       variants.map((_, index) => ({
-        ...required(variants[(index + sample) % variants.length]),
+        ...variants[(index + sample) % variants.length]!,
         sample,
       })),
     ).flat();
@@ -55,12 +54,12 @@ test(
       try {
         const origin = await new Promise<string>((resolve, reject) => {
           let text = "";
-          required(child.stdout).on("data", (chunk) => {
+          child.stdout!.on("data", (chunk) => {
             text += chunk;
             const match = text.match(/http:\/\/127\.0\.0\.1:\d+/);
             if (match) resolve(match[0]);
           });
-          required(child.stderr).on("data", (chunk) => (log += chunk));
+          child.stderr!.on("data", (chunk) => (log += chunk));
           child.once("exit", (code) =>
             reject(new Error(`Fixture exited ${code}: ${log}`)),
           );
@@ -78,7 +77,7 @@ test(
           await result.waitFor({ state: "attached", timeout: 25000 });
           // The browser fixture writes this same-program result document.
           const value: InteractionResult = JSON.parse(
-            required(await result.textContent()),
+            (await result.textContent())!,
           );
           await writeFile(
             output + ".latest.json",
@@ -87,7 +86,7 @@ test(
           expect(value.passed, value.stack || value.error).toBe(true);
           expect(errors).toEqual([]);
           results.push({ label, sample, ...value });
-          await writeFile(required(output), JSON.stringify(results, null, 2));
+          await writeFile(output!, JSON.stringify(results, null, 2));
         } finally {
           await context.close();
         }

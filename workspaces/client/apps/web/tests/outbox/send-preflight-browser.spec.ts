@@ -2,7 +2,6 @@ import type { components } from "../../src/generated/api.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { Route } from "playwright";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
-import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 // Real outbox and API calls against a local fixture. No native model requests.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -26,7 +25,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   await server.listen();
-  const origin = fixtureOrigin(server);
+  const origin = server.resolvedUrls!.local[0];
   const workspaceId = "c".repeat(32);
   try {
     const page = fixturePage;
@@ -48,7 +47,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await page.route("**/api/sync/identity", (route) => {
       if (preflight) preflight.identities.push(route);
       else
-        return route.fulfill({
+        return route!.fulfill({
           json: { workspaceId } satisfies Pick<
             components["schemas"]["SyncIdentityResponse"],
             "workspaceId"
@@ -58,7 +57,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await page.route("**/api/session", (route) => {
       if (preflight) preflight.sessions.push(route);
       else
-        return route.fulfill({
+        return route!.fulfill({
           json: {
             token: "fixture",
           } satisfies components["schemas"]["SessionResponse"],
@@ -106,42 +105,33 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
       preflight = { identities: [], sessions: [] };
     };
     const begin = (value: PostBody<"/api/messages">, copies = 1) =>
-      page.evaluate(
-        ({ value, copies }) => window.preflightSend_start(value, copies),
-        {
-          value,
-          copies,
-        },
-      );
-    const settle = () => page.evaluate(() => window.preflightSend_result);
-    const stored = (id: string) =>
-      page.evaluate((id) => window.preflightSend_read(id), id);
+      page.evaluate(({ value, copies }) => window.start(value, copies), {
+        value,
+        copies,
+      });
+    const settle = () => page.evaluate(() => window.result);
+    const stored = (id: string) => page.evaluate((id) => window.read(id), id);
     const prerequisites = () =>
       until(
         () =>
-          preflight?.identities.length === 1 && preflight.sessions.length === 1,
+          preflight!.identities.length === 1 &&
+          preflight!.sessions.length === 1,
         "Both prerequisite reads must start before either response arrives",
       );
-    const identity = (value = workspaceId, status = 200) => {
-      const route = preflight?.identities[0];
-      assert.ok(route);
-      return route.fulfill({
+    const identity = (value = workspaceId, status = 200) =>
+      preflight!.identities[0].fulfill({
         status,
         json:
           status === 200
             ? { workspaceId: value }
             : { error: "Identity failed" },
       });
-    };
-    const session = (status = 200) => {
-      const route = preflight?.sessions[0];
-      assert.ok(route);
-      return route.fulfill({
+    const session = (status = 200) =>
+      preflight!.sessions[0].fulfill({
         status,
         json:
           status === 200 ? { token: "fixture" } : { error: "Session failed" },
       });
-    };
 
     // Holding identity must not prevent the session read. Concurrent callers share
     // the existing message task and cannot multiply its reads or POST.
@@ -151,7 +141,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await prerequisites();
     assert.equal(posts.length, 0);
     await session();
-    assert.equal((await stored(parallel.id)).attempted, false);
+    assert.equal((await stored(parallel.id))!.attempted, false);
     assert.equal(
       posts.length,
       0,
@@ -163,13 +153,13 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
       ["delivered", "delivered"],
     );
     assert.equal(posts.length, 1);
-    assert.deepEqual(posts[0]?.body, parallel);
-    assert.equal(posts[0]?.headers["x-canvas-workspace"], workspaceId);
-    assert.equal(posts[0]?.headers["x-canvas-token"], "fixture");
+    assert.deepEqual(posts[0].body, parallel);
+    assert.equal(posts[0].headers["x-canvas-workspace"], workspaceId);
+    assert.equal(posts[0].headers["x-canvas-token"], "fixture");
     await begin(parallel);
-    assert.equal((await settle())[0]?.status, "delivered");
-    assert.equal(preflight?.identities.length, 1);
-    assert.equal(preflight?.sessions.length, 1);
+    assert.equal((await settle())[0].status, "delivered");
+    assert.equal(preflight!.identities.length, 1);
+    assert.equal(preflight!.sessions.length, 1);
     assert.equal(posts.length, 1, "An accepted message must not be sent again");
 
     // The other prerequisite can finish first without bypassing workspace checks.
@@ -179,8 +169,8 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await prerequisites();
     await session();
     await identity("d".repeat(32));
-    assert.equal((await settle())[0]?.code, 409);
-    assert.equal((await stored(changedWorkspace.id)).attempted, false);
+    assert.equal((await settle())[0].code, 409);
+    assert.equal((await stored(changedWorkspace.id))!.attempted, false);
     assert.equal(posts.length, 1);
 
     // Either failed prerequisite keeps the command off the network.
@@ -189,8 +179,8 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await begin(failedIdentity);
     await prerequisites();
     await identity(workspaceId, 503);
-    assert.equal((await settle())[0]?.queued, true);
-    assert.equal((await stored(failedIdentity.id)).attempted, false);
+    assert.equal((await settle())[0].queued, true);
+    assert.equal((await stored(failedIdentity.id))!.attempted, false);
     await session();
     assert.equal(posts.length, 1);
     arm();
@@ -199,8 +189,8 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await prerequisites();
     await identity();
     await session(403);
-    assert.equal((await settle())[0]?.code, 403);
-    assert.equal((await stored(failedSession.id)).attempted, false);
+    assert.equal((await settle())[0].code, 403);
+    assert.equal((await stored(failedSession.id))!.attempted, false);
     assert.equal(posts.length, 1);
 
     // Queue controls remain effective while the concurrent reads are pending.
@@ -209,23 +199,23 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
       const pending = body(`preflight-${action}`);
       await begin(pending);
       await prerequisites();
-      await page.evaluate(
-        async ({ id, action }) => {
-          if (action === "remove") {
-            await window.preflightSend_send.stopRemovedMessage(id);
-          } else {
-            await window.preflightSend_send.changeOutbox(id, action);
-          }
-        },
+      await page.evaluate<
+        void | boolean,
+        { id: string; action: typeof action }
+      >(
+        ({ id, action }) =>
+          action === "remove"
+            ? window.send.stopRemovedMessage(id)
+            : window.send.changeOutbox(id, action),
         { id: pending.id, action },
       );
       await identity();
       await session();
       assert.equal(
-        (await settle())[0]?.status,
+        (await settle())[0].status,
         action === "pause" ? "paused" : "cancelled",
       );
-      assert.equal((await stored(pending.id)).attempted, false);
+      assert.equal((await stored(pending.id))!.attempted, false);
       assert.equal(posts.length, 1);
     }
 
@@ -235,17 +225,17 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     loseResponse = true;
     const lost = body("lost-response");
     await begin(lost);
-    assert.equal((await settle())[0]?.queued, true);
-    assert.equal((await stored(lost.id)).attempted, true);
+    assert.equal((await settle())[0].queued, true);
+    assert.equal((await stored(lost.id))!.attempted, true);
     await begin(lost);
-    assert.equal((await settle())[0]?.status, "delivered");
+    assert.equal((await settle())[0].status, "delivered");
     assert.deepEqual(
       posts.filter((post) => post.body.id === lost.id).map((post) => post.body),
       [lost, lost],
     );
     assert.deepEqual([...effects], [parallel.id, lost.id]);
     await begin({ ...lost, text: "Changed command" });
-    assert.match((await settle())[0]?.error ?? "", /different content/);
+    assert.match((await settle())[0].error!, /different content/);
     assert.equal(posts.length, 3);
     expect(errors).toEqual([]);
     console.log(

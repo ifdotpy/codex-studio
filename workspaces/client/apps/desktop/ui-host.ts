@@ -1,3 +1,4 @@
+import type { AddressInfo } from "node:net";
 import * as http from "node:http";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -41,10 +42,10 @@ async function startUiHost({
       response.writeHead(status);
       response.end();
     };
-    if (!["GET", "HEAD"].includes(request.method ?? "")) return fail(405);
+    if (!["GET", "HEAD"].includes(request.method!)) return fail(405);
     // The UI host owns no API or state. It never forwards a local API request.
     try {
-      const url = new URL(request.url ?? "", "http://127.0.0.1");
+      const url = new URL(request.url!, "http://127.0.0.1");
       const pathname = decodeURIComponent(url.pathname);
       if (
         pathname.startsWith("/api/") ||
@@ -89,11 +90,8 @@ async function startUiHost({
     server.once("error", reject);
     server.listen(port, "127.0.0.1", resolve);
   });
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("UI server has no TCP address.");
   return {
-    origin: `http://127.0.0.1:${address.port}`,
+    origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     pid: process.pid,
     owned: false,
     uiOnly: true,

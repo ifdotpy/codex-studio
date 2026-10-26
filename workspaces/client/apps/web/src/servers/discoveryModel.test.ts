@@ -99,7 +99,7 @@ describe("automatic update setting", () => {
       tailscaleUser: null,
     },
     clients: [],
-    ...(settings === undefined ? {} : { settings }),
+    settings,
     servers: [],
     invites: [],
   });

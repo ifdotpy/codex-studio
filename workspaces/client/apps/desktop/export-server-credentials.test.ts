@@ -23,7 +23,7 @@ test("credential migration uses stdin and leaves the encrypted source intact", a
       },
     };
     await assert.rejects(
-      exportServerCredentials({ profile, destination: undefined, safeStorage }),
+      exportServerCredentials({ profile, safeStorage }),
       /destination/,
     );
     const executable = path.join(profile, "importer");
@@ -43,9 +43,8 @@ test("credential migration uses stdin and leaves the encrypted source intact", a
     await assert.rejects(
       exportServerCredentials({ profile, destination, safeStorage }),
       (error: unknown) => {
-        assert(error instanceof Error);
-        assert.match(error.message, /Native key import failed/);
-        assert.ok(!error.message.includes("private-fixture"));
+        assert.match((error as Error).message, /Native key import failed/);
+        assert.ok(!(error as Error).message.includes("private-fixture"));
         return true;
       },
     );

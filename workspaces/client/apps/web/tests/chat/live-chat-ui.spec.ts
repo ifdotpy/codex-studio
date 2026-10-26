@@ -33,9 +33,7 @@ test("Live chat ui", async ({
   });
   let log = "",
     page;
-  assert.ok(proc.stderr && proc.stdout && proc.stdin);
-  const stdin = proc.stdin;
-  proc.stderr.on("data", (d) => (log += d));
+  proc.stderr!.on("data", (d) => (log += d));
   const poll = async (fn: () => unknown | Promise<unknown>, label: string) => {
     for (let i = 0; i < 100; i++) {
       if (await fn()) return;
@@ -58,11 +56,10 @@ test("Live chat ui", async ({
       if (r.url().includes("/api/transcript/stream")) transcriptStreams++;
     });
     const initial = await state();
-    const lead = initial.runtime.agents.find((a) => a.name === "Other project");
-    assert.ok(lead, "fixture lead exists");
-    let resolveInitialTranscript: () => void = () => {
-      throw new Error("Transcript resolver not initialized");
-    };
+    const lead = initial.runtime.agents.find(
+      (a) => a.name === "Other project",
+    )!;
+    let resolveInitialTranscript!: () => void;
     const initialTranscriptLoaded = new Promise<void>((resolve) => {
       resolveInitialTranscript = resolve;
     });
@@ -92,25 +89,22 @@ test("Live chat ui", async ({
     const transcriptPollsAtStart = transcriptPolls;
     await page.locator("#message").fill("Exercise the live stream");
     await page.locator("#send").click();
-    let agent: TestAgent = lead;
+    let agent!: TestAgent;
     await poll(async () => {
-      const next = (await state()).runtime.agents.find(
+      agent = (await state()).runtime.agents.find(
         (a) => a.name === "Other project",
-      );
-      assert.ok(next, "fixture agent exists");
-      agent = next;
+      )!;
       return agent.status === "running" && agent.turnId;
     }, "turn starts");
     const event = (
       method: string,
       params: Omit<FixtureNotificationHook["params"], "threadId">,
     ) => {
-      assert.ok(agent.threadId, "running fixture agent has thread identity");
-      return stdin.write(
+      return proc.stdin!.write(
         JSON.stringify({
           method,
           params: {
-            threadId: agent.threadId,
+            threadId: agent.threadId!,
             turnId: agent.turnId,
             ...params,
           } satisfies FixtureNotificationHook["params"],
@@ -260,8 +254,8 @@ test("Live chat ui", async ({
     });
     await poll(
       async () =>
-        (await state()).runtime.agents.find((a) => a.id === agent.id)
-          ?.status === "completed",
+        (await state()).runtime.agents.find((a) => a.id === agent.id)!
+          .status === "completed",
       "turn completes",
     );
     await page.locator(".agent-phase.active").waitFor({ state: "detached" });

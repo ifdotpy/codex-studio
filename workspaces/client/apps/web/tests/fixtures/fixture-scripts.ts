@@ -29,10 +29,25 @@ export function parseFixtureModels(
   return JSON.parse(text);
 }
 
-// Provider input has no generated Studio contract; narrow the JSON-RPC envelope.
-export function readProviderObject(text: string): Record<string, unknown> {
-  const value: unknown = JSON.parse(text);
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    throw new Error("Expected a fixture provider object");
-  return value as Record<string, unknown>;
+/** Indexed view of the fixture's RPC envelope; method handlers read their own fields. */
+export type FixtureRpcMessage = {
+  id: string;
+  method: string;
+  params?: { threadId?: string; turnId?: string; input?: unknown } & Record<
+    string,
+    unknown
+  >;
+};
+export type FixtureControlInput = {
+  id: string;
+  thread: string;
+  steps: FixtureStep[];
+};
+export type FixtureControlReply = { ok: boolean };
+
+// The fixture RPC/control peers own these documents; handlers keep the base protocol behavior.
+export function readProviderObject<
+  T extends Record<string, unknown> = Record<string, unknown>,
+>(text: string): T {
+  return JSON.parse(text);
 }

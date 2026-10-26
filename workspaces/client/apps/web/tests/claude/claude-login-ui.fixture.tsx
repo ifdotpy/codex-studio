@@ -10,9 +10,7 @@ import { MantineProvider, Modal, Button } from "@mantine/core";
 import "@mantine/core/styles.css";
 import Accounts from "../../src/components/Accounts.tsx";
 import AccountSignInNotice from "../../src/components/AccountSignInNotice.tsx";
-const account: Account = {
-  home: "/fixture",
-  source: "fixture",
+const account: Partial<Account> = {
   id: "claude",
   label: "Personal",
   email: "me@example.com",
@@ -20,38 +18,51 @@ const account: Account = {
   status: "changed",
   error:
     "This profile's account changed. Restore its original login or add a separate profile.",
-};
-const state = {
+} satisfies Pick<
+  Account,
+  "id" | "label" | "email" | "provider" | "status" | "error"
+>;
+const state: Omit<
+  React.ComponentProps<typeof Accounts>["state"],
+  "data" | "refresh"
+> & {
+  data: Omit<Partial<AccountsState>, "accounts"> & {
+    accounts: Partial<Account>[];
+  };
+  refresh: () => Promise<AccountsState | null | void>;
+} = {
   scope: "fixture",
   data: {
     accounts: [account],
     defaultAccountKey: "claude",
-    archivedAccounts: [],
-    defaultAccountGroups: [],
-    logins: [],
-    supportsDelete: false,
-    supportsDisconnect: false,
-  } satisfies AccountsState,
+  },
   setData: () => {},
-  refresh: async () => null,
+  refresh: async (): Promise<AccountsState | null | void> => {},
   error: "",
+};
+// The base partial fixture omits account home/source and Accounts collection/capability fields.
+const partialAccountsFixture = { account, state } as {
+  account: Account;
+  state: React.ComponentProps<typeof Accounts>["state"];
 };
 function Fixture() {
   const [opened, setOpened] = useState(false);
   return (
     <MantineProvider>
       <AccountSignInNotice
-        account={account}
+        account={partialAccountsFixture.account}
         errors={[{ message: "An unrelated earlier error" }]}
         onSignIn={(key) => (window.signInAccount = key)}
       />
       <Button onClick={() => setOpened(true)}>Manage accounts</Button>
       <Modal opened={opened} onClose={() => setOpened(false)} title="Accounts">
-        <Accounts managerOnly state={state} onError={() => {}} />
+        <Accounts
+          managerOnly
+          state={partialAccountsFixture.state}
+          onError={() => {}}
+        />
       </Modal>
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing fixture root");
-createRoot(root).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

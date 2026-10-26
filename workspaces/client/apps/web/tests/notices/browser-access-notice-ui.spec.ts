@@ -67,23 +67,18 @@ test("Browser access notice ui", async ({
     });
     await page.goto(fixtureServerOrigin(server));
     await page.waitForFunction(
-      () => typeof window.applyBrowserAccessSnapshot === "function",
+      () => typeof window.applySnapshot === "function",
     );
     const notice = page.getByRole("status");
     const set = async (snapshot: BrowserAccessSnapshot) => {
-      await page.evaluate(
-        (value) => window.applyBrowserAccessSnapshot(value),
-        snapshot,
-      );
+      await page.evaluate((value) => window.applySnapshot(value), snapshot);
     };
     await set({ accountKey: "disabled", active: true });
     await notice.waitFor();
     const details = notice.locator("details");
     await details.locator("summary").click();
     assert.equal(
-      await details.evaluate(
-        (element) => element instanceof HTMLDetailsElement && element.open,
-      ),
+      await details.evaluate((element) => (element as HTMLDetailsElement).open),
       true,
     );
     assert.match(

@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { OutgoingTabMessage } from "./resourceEvents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -31,6 +30,7 @@ vi.mock("./resume", () => ({
 }));
 
 class Source {
+  readonly url: string;
   static instances: Source[] = [];
   static skipNextAutoHandshake = false;
   listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
@@ -40,7 +40,6 @@ class Source {
   closed = false;
   schemaEmitted = false;
   autoHandshake: boolean;
-  readonly url: string;
   constructor(url: string) {
     this.url = url;
 
@@ -105,10 +104,10 @@ class Source {
 }
 
 class Channel {
+  readonly name: string;
   static instances: Channel[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
   messages: OutgoingTabMessage[] = [];
-  readonly name: string;
   constructor(name: string) {
     this.name = name;
 
@@ -232,7 +231,6 @@ describe("shared resource event transport", () => {
       value,
     });
     expect(accept).toHaveBeenCalledOnce();
-    assert.ok(accept.mock.calls[0] != null);
     expect(accept.mock.calls[0][0].progress).toEqual({ resource, value });
   });
 
@@ -285,9 +283,7 @@ describe("shared resource event transport", () => {
     });
     await vi.advanceTimersByTimeAsync(20);
     expect(voice).toHaveBeenCalledOnce();
-    assert.ok(discovery.mock.calls[0] != null);
     expect(discovery.mock.calls[0][0].discoverySnapshot).toEqual(snapshot);
-    assert.ok(voice.mock.calls[0] != null);
     expect(voice.mock.calls[0][0].voiceRecords).toEqual(batch);
   });
 
@@ -354,7 +350,6 @@ describe("shared resource event transport", () => {
     });
     await vi.advanceTimersByTimeAsync(20);
     expect(listener).toHaveBeenCalledTimes(3);
-    assert.ok(listener.mock.calls[2] != null);
     expect(listener.mock.calls[2][0].reason).toBe("reconnect");
     stop();
   });
