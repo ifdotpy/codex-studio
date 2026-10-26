@@ -73,8 +73,6 @@ inherits = "ci"
 default-filter = '''
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
-    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(provider_task::prepared_write_)) |
-    (package(=studio-runtime-providers) & kind(test) & binary(=codec) & (test(frame_to_value_) | test(borrowed_encoder_preserves_exact_bytes_and_reuses_output_storage))) |
     (package(=studio-runtime-schema) & kind(lib) & test(bridge_wire)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(only_a_claude_worker_turns_user_mcp_servers_off)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
@@ -185,8 +183,6 @@ platform = 'cfg(target_os = "linux")'
 default-filter = '''
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
-    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(provider_task::prepared_write_)) |
-    (package(=studio-runtime-providers) & kind(test) & binary(=codec) & (test(frame_to_value_) | test(borrowed_encoder_preserves_exact_bytes_and_reuses_output_storage))) |
     (package(=studio-runtime-schema) & kind(lib) & test(bridge_wire)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(only_a_claude_worker_turns_user_mcp_servers_off)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
