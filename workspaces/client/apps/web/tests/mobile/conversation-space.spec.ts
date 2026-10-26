@@ -1,3 +1,4 @@
+import { visibleBounds } from "./mobile-ui-fixture.ts";
 import assert from "node:assert/strict";
 import {
   test,
@@ -142,8 +143,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             page.locator(".composer-tools-disclosure > summary"),
             page.locator("#composer .execution-summary-trigger"),
           ]) {
-            const box = await target.boundingBox();
-            assert.ok(box);
+            const box = await visibleBounds(target);
             expect(box.width).toBeGreaterThanOrEqual(44);
             expect(box.height).toBeGreaterThanOrEqual(44);
           }
@@ -153,8 +153,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             page.getByRole("button", { name: "Account limits", exact: true }),
             ...(await page.locator(".account-limits-dot-target").all()),
           ]) {
-            const box = await target.boundingBox();
-            assert.ok(box);
+            const box = await visibleBounds(target);
             expect(box.width).toBeGreaterThanOrEqual(24);
             expect(box.height).toBeGreaterThanOrEqual(24);
           }
@@ -189,7 +188,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
         if (warning) {
           const notice = page.locator(".supervisor-recovery-notice");
           await expect(notice).toHaveAttribute("title", /13 GB free/);
-          expect((await notice.boundingBox())?.height).toBeLessThanOrEqual(44);
+          expect((await visibleBounds(notice)).height).toBeLessThanOrEqual(44);
         } else
           await expect(page.locator(".supervisor-recovery-notice")).toHaveCount(
             0,
@@ -202,8 +201,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
           });
           await expect(attach).toHaveCount(1);
           await expect(attach).toBeVisible();
-          const attachBox = await attach.boundingBox();
-          assert.ok(attachBox);
+          const attachBox = await visibleBounds(attach);
           expect(attachBox.width).toBeGreaterThanOrEqual(44);
           expect(attachBox.height).toBeGreaterThanOrEqual(44);
           // Only the lead provider remains beside its name on phones.
@@ -230,10 +228,9 @@ test("phone conversation gives the transcript its viewport budget", async ({
             ".composer-tools-disclosure > summary",
           );
           await disclosure.click();
-          const toolsBounds = await page
-            .locator(".composer-tools-popover")
-            .boundingBox();
-          assert.ok(toolsBounds);
+          const toolsBounds = await visibleBounds(
+            page.locator(".composer-tools-popover"),
+          );
           expect(toolsBounds.x).toBeGreaterThanOrEqual(0);
           expect(toolsBounds.x + toolsBounds.width).toBeLessThanOrEqual(width);
 
@@ -243,8 +240,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               name: label,
               exact: true,
             });
-            const bounds = await button.boundingBox();
-            assert.ok(bounds);
+            const bounds = await visibleBounds(button);
             expect(bounds.width).toBeGreaterThanOrEqual(44);
             expect(bounds.height).toBeGreaterThanOrEqual(44);
           }
@@ -254,16 +250,14 @@ test("phone conversation gives the transcript its viewport budget", async ({
           ).toBeVisible();
           await disclosure.click();
           // The lead name remains visible and stays inside the trigger.
-          const model = await page
-            .locator(
+          const model = await visibleBounds(
+            page.locator(
               '.execution-summary-segment[data-role="lead"] .execution-model',
-            )
-            .boundingBox();
-          assert.ok(model);
-          const execution = await page
-            .locator(".execution-summary-trigger")
-            .boundingBox();
-          assert.ok(execution);
+            ),
+          );
+          const execution = await visibleBounds(
+            page.locator(".execution-summary-trigger"),
+          );
           expect(model).not.toBeNull();
           expect(model.x + model.width).toBeLessThanOrEqual(
             execution.x + execution.width,
