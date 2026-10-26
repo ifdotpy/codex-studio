@@ -110,23 +110,33 @@
 .team-search-count {
   flex-shrink: 0;
 }
+/* Worker strip: name, activity, task, then wrapping meta, on one 8 px grid. */
 #team .worker-entry {
   position: relative;
   display: block;
+  container: worker-strip / inline-size;
   min-block-size: var(--studio-strip-min-height);
   margin: 0;
   margin-inline-start: calc(
     min(var(--worker-depth, 0), 3) * var(--studio-strip-indent)
   );
-  padding: var(--mantine-spacing-xs)
-    calc(var(--studio-control-size) + var(--mantine-spacing-xs))
-    var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  padding: var(--studio-strip-step)
+    calc(var(--studio-control-size) + var(--studio-strip-step))
+    var(--studio-strip-step) var(--studio-strip-step);
   border: 0;
-  border-block-end: var(--studio-border-width) solid var(--line);
   border-radius: 0;
   background: transparent;
   content-visibility: auto;
   contain-intrinsic-size: auto var(--studio-strip-min-height);
+}
+/* The divider spans the content column: from the text edge to the row end. */
+#team .worker-entry::after {
+  content: "";
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline: var(--studio-strip-step) 0;
+  border-block-end: var(--studio-border-width) solid var(--line);
+  pointer-events: none;
 }
 #team .worker-entry[data-has-parent="true"]::before {
   content: "";
@@ -153,21 +163,23 @@
 #team .worker-text {
   display: flex;
   flex-direction: column;
-  gap: calc(var(--mantine-spacing-xs) / 4);
+  gap: calc(var(--studio-strip-step) / 2);
 }
 #team .worker-name-line {
   display: flex;
   align-items: center;
-  gap: calc(var(--mantine-spacing-xs) / 2);
+  gap: calc(var(--studio-strip-step) / 2);
   min-inline-size: 0;
-  line-height: 1.2;
+  overflow: hidden;
+  line-height: 1.25;
 }
+/* Only the name shrinks; fixed icons and time leave it 16+ characters at 20rem. */
 #team .worker-name-line strong {
-  flex: 1;
+  flex: 0 1 auto;
   min-inline-size: 0;
   font-size: var(--studio-text-body);
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -180,8 +192,8 @@
   color: var(--muted);
 }
 #team :is(.worker-provider, .worker-role) svg {
-  inline-size: var(--studio-text-body);
-  block-size: var(--studio-text-body);
+  inline-size: var(--studio-text-meta);
+  block-size: var(--studio-text-meta);
 }
 #team .worker-indicator .chat-status {
   inline-size: var(--studio-text-body);
@@ -190,22 +202,23 @@
   color: var(--studio-state);
 }
 #team .worker-elapsed {
-  padding-inline-start: calc(var(--mantine-spacing-xs) / 2);
   flex: none;
   margin-inline-start: auto;
+  padding-inline-start: calc(var(--studio-strip-step) / 2);
   color: var(--muted);
   font-size: var(--studio-text-meta);
   font-variant-numeric: tabular-nums;
-  line-height: 1.2;
+  line-height: 1.25;
+  white-space: nowrap;
   text-align: end;
 }
 #team .worker-live-line {
   display: flex;
   align-items: center;
-  gap: calc(var(--mantine-spacing-xs) / 2);
+  gap: calc(var(--studio-strip-step) / 2);
   min-inline-size: 0;
   font-size: var(--studio-text-meta);
-  line-height: 1.2;
+  line-height: 1.25;
 }
 #team .worker-activity-icon {
   flex: none;
@@ -214,72 +227,85 @@
   color: var(--muted);
 }
 #team .worker-activity {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-inline-size: 0;
-  max-inline-size: 55%;
-  color: var(--muted);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 #team .worker-activity.worker-error {
-  max-inline-size: 100%;
   color: var(--studio-state-error);
   margin: 0;
 }
-#team .worker-live-line:has(.worker-error) .worker-task {
-  display: none;
-}
 #team .worker-task {
-  flex: 1;
+  display: block;
   min-inline-size: 0;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  line-height: 1.25;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 #team .worker-bottom {
-  margin-block-start: calc(var(--mantine-spacing-xs) / 4);
+  margin-block-start: calc(var(--studio-strip-step) / 2);
   display: flex;
-  align-items: baseline;
-  gap: calc(var(--mantine-spacing-xs) / 2);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--studio-strip-step) / 2) var(--studio-strip-step);
   min-inline-size: 0;
   font-size: var(--studio-text-meta);
-  line-height: 1.2;
+  line-height: 1.25;
 }
+/* Meta facts wrap as whole items; only an item wider than the row truncates. */
 #team .worker-meta {
   display: flex;
-  align-items: baseline;
-  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: 1 1 auto;
+  justify-content: flex-start;
   min-inline-size: 0;
-  gap: calc(var(--mantine-spacing-xs) / 2);
+  gap: calc(var(--studio-strip-step) / 4) var(--studio-strip-step);
   margin: 0;
   color: var(--muted);
   font-size: var(--studio-text-meta);
-  line-height: 1.2;
+  line-height: 1.25;
 }
-#team :is(.worker-model-name, .worker-account) {
-  min-inline-size: 0;
+#team .worker-meta > * {
+  max-inline-size: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#team .worker-effort {
-  flex: none;
+#team .worker-environment {
+  padding-inline: calc(var(--studio-strip-step) / 2);
+  border: var(--studio-border-width) solid var(--line);
+  border-radius: var(--mantine-radius-sm);
 }
 #team .token-rate {
-  padding-inline-start: calc(var(--mantine-spacing-xs) / 2);
   flex: 0 0 auto;
   inline-size: auto;
   margin-inline-start: auto;
   font-size: var(--studio-text-meta);
-  line-height: 1.2;
+  line-height: 1.25;
 }
 #team .token-rate:empty {
   display: none;
 }
+/* Below 22rem of strip content the account name is dropped from the meta. */
+@container worker-strip (max-width: 22rem) {
+  #team .worker-account {
+    display: none;
+  }
+}
+#team .worker-actions {
+  display: flex;
+  margin-block-start: var(--studio-strip-step);
+}
 #team .worker-options {
   position: absolute;
-  inset-block-start: var(--mantine-spacing-xs);
+  inset-block-start: calc(var(--studio-strip-step) / 2);
   inset-inline-end: 0;
   opacity: 0;
 }
@@ -373,15 +399,19 @@
   color: var(--studio-state-answer);
 }
 @media (hover: none), (pointer: coarse) {
-  #team .worker-entry {
-    padding-inline-end: calc(
-      var(--studio-touch-target) + var(--mantine-spacing-xs)
-    );
-  }
+  /* Touch targets grow around the desktop icon position, into the gutter,
+     so the content column keeps its width. */
   #team .worker-options {
     opacity: 1;
     min-inline-size: var(--studio-touch-target);
     min-block-size: var(--studio-touch-target);
+    inset-block-start: calc(
+      var(--studio-strip-step) / 2 +
+        (var(--studio-control-size) - var(--studio-touch-target)) / 2
+    );
+    inset-inline-end: calc(
+      (var(--studio-control-size) - var(--studio-touch-target)) / 2
+    );
   }
   .team-summary-filters button {
     min-block-size: var(--studio-touch-target);

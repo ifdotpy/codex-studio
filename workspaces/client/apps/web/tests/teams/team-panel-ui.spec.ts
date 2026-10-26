@@ -197,15 +197,12 @@ test("Team panel ui", async ({
         probe.style.width = "var(--mantine-spacing-md)";
         team.append(probe);
         const gutter = probe.getBoundingClientRect().width;
-        probe.style.width = "var(--mantine-spacing-sm)";
-        probe.style.height = "var(--mantine-spacing-xs)";
-        const { width: inlinePadding, height: blockPadding } =
-          probe.getBoundingClientRect();
+        probe.style.width = "var(--studio-strip-step)";
+        const step = probe.getBoundingClientRect().width;
         probe.remove();
         return {
           gutter,
-          inlinePadding,
-          blockPadding,
+          step,
           strips: [...team.querySelectorAll(".worker-entry")].map((strip) => {
             const computed = getComputedStyle(strip);
             return {
@@ -232,13 +229,10 @@ test("Team panel ui", async ({
       );
       for (const strip of geometry.strips) {
         assert.ok(
-          strip.inline >= geometry.inlinePadding,
-          "Strip content has at least sm inline padding",
-        );
-        assert.ok(
-          strip.top >= geometry.blockPadding &&
-            strip.bottom >= geometry.blockPadding,
-          "Strip content has at least xs block padding",
+          [strip.inline, strip.top, strip.bottom].every(
+            (padding) => Math.abs(padding - geometry.step) < 0.5,
+          ),
+          "Strip content uses the 8 px strip step",
         );
       }
       for (const edge of geometry.edges)

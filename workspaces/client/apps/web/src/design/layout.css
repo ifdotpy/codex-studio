@@ -10,6 +10,8 @@
   --studio-secondary-touch-target: 1.5rem;
   /* A title and optional live activity line on a dispatch strip. */
   --studio-strip-min-height: 2.75rem;
+  /* Spacing grid step inside a Team worker strip (8 px at the default root size). */
+  --studio-strip-step: 0.5rem;
   /* One level of project or agent hierarchy. */
   --studio-strip-indent: 0.375rem;
   /* Keep a useful part of the conversation title visible in phone headers. */
