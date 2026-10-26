@@ -8,13 +8,17 @@ Export a copy only when the user asks for it.
 
 Use `layr` for all local version control commands.
 Use `layr status`, `layr diff`, `layr log`, and `layr show` to inspect the work.
-Use `layr add` and `layr commit` to save the task result.
-Submit the full state ID from `layr rev-parse HEAD` as the task revision.
-Use Git only for the remote bridge and tools that call Git themselves.
-Use `layr push --squash -m <task title>` to export one task commit to the remote when authorized.
+For Layr 0.3.0, use `layr add` and `layr save -m "<message>"` to save the task result.
+Submit the full state ID from `layr rev-parse head` as the task revision.
+For a Layr Cloud remote, follow the [Layr skill](../../layr/SKILL.md): open and
+update changes with named saves and pushes, fetch checks and comments as JSON,
+reply, approve exact states, and merge through the queue. Use `gh` for review
+and merge only for GitHub-only projects. Cloud completion does not replace
+Studio task acceptance.
+Use `layr git push --squash -m <task title>` for an authorized Git mirror export.
 In a project synced with the Mac, Git lives on the Mac: `layr push` from the VM is off and
 agents may not add remotes. Accepted work reaches the Mac folder as uncommitted changes.
-If a tool in the VM needs git HEAD at the current layr state, run `layr git-sync`; it does not
+If a tool in the VM needs git HEAD at the current layr state, run `layr git sync`; it does not
 push.
 
 The lead owns the main line and may commit in it.
@@ -68,15 +72,6 @@ A disconnect does not prove that the operation failed.
 Existing sessions keep their saved tools and role guidance.
 This guidance applies only to new layr sessions.
 
-## Vault backups
-
-A vault push saves the VM main state. It does not include the separate Mac source folder.
-For a full Mac backup, import the approved files into btrfs before the vault push.
-Use the source manifest to check both the saved state and restored cloud files.
-
-Use a layr-desk writer with multipart support for objects above S3's single-request limit.
-Update the vault stack from that release before the first multipart push.
-Keep conditional object creation enabled. Multipart setup and upload parts need the
-`s3:ObjectCreationOperation` policy exception, but completion must require `If-None-Match`.
-The writer still holds a complete file and its encoded forms in memory.
-Size the temporary VM for the largest file, then remove its resources after verified restoration.
+These command names require the real Layr 0.3.0 CLI. Existing VM sessions with
+the older bundled CLI retain their frozen guidance. Check the selected binary
+before applying the 0.3.0 skill.

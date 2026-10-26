@@ -554,10 +554,10 @@ pub(crate) fn account_notice(
         .provider_handle
         .strip_prefix("account:")
         .filter(|s| !s.is_empty())
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let kind = NoticeKind::parse(method)
         .filter(|kind| kind.is_account_notice())
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let connection = format!("connection-{}", identity.generation);
     let text = warning_text(kind, params);
     let key = sha256_hex(
