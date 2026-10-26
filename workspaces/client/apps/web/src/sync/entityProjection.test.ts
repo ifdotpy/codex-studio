@@ -36,15 +36,15 @@ it("revives a locally evicted source version without reviving authoritative tomb
     [{ id: row.id, seq: 3, _deleted: true, evicted: true }],
     true,
   );
-  assert.ok(removed);
+
   assert.equal(removed.threads.length, 0);
   const revived = applyEntityChanges(state, [row], true);
-  assert.ok(revived);
+
   assert.ok(revived.threads[0] !== null && revived.threads[0] !== undefined);
   assert.equal(revived.threads[0].id, "moved");
   applyEntityChanges(state, [{ id: row.id, seq: 4, _deleted: true }], true);
   const stale = applyEntityChanges(state, [row], true);
-  assert.ok(stale);
+
   assert.equal(stale.threads.length, 0);
 });
 
@@ -73,7 +73,7 @@ it("retains other agents when one streamed summary or detail changes", () => {
     ],
     true,
   );
-  assert.ok(first);
+
   const untouched = first.runtime.agents[1];
   const updated = applyEntityChanges(
     state,
@@ -90,7 +90,6 @@ it("retains other agents when one streamed summary or detail changes", () => {
     true,
   );
 
-  assert.ok(updated);
   assert.notEqual(updated.runtime.agents[0], first.runtime.agents[0]);
 
   assert.ok(
@@ -114,7 +113,7 @@ it("retains other agents when one streamed summary or detail changes", () => {
     ],
     true,
   );
-  assert.ok(detailed);
+
   assert.ok(
     detailed.runtime.agents[0] !== null &&
       detailed.runtime.agents[0] !== undefined,
@@ -127,7 +126,7 @@ it("retains other agents when one streamed summary or detail changes", () => {
     [{ id: "entity:agentDetail:a", seq: 5, _deleted: true }],
     true,
   );
-  assert.ok(closed);
+
   assert.ok(
     closed.runtime.agents[0] !== null && closed.runtime.agents[0] !== undefined,
   );
@@ -139,7 +138,7 @@ it("retains other agents when one streamed summary or detail changes", () => {
     [{ id: "entity:agentSummary:a", seq: 6, _deleted: true }],
     true,
   );
-  assert.ok(removed);
+
   assert.deepEqual(removed.runtime.agents, [untouched]);
 
   assert.equal(removed.runtime.agents[0], untouched);
@@ -164,7 +163,7 @@ it("renders the list from summaries and adds detail without losing unread state"
     [entityRow({ collection: "agentSummary", id: "a", value: summary }, 1)],
     true,
   );
-  assert.ok(first);
+
   assert.ok(first.threads[0] !== null && first.threads[0] !== undefined);
   assert.equal(first.threads[0].name, "Current");
 
@@ -190,7 +189,7 @@ it("renders the list from summaries and adds detail without losing unread state"
     ],
     true,
   );
-  assert.ok(open);
+
   assert.ok(open.threads[0] !== null && open.threads[0] !== undefined);
   assert.equal(open.threads[0].lastAnswer, "Answer");
 
@@ -213,7 +212,7 @@ it("renders the list from summaries and adds detail without losing unread state"
     ],
     true,
   );
-  assert.ok(updated);
+
   assert.ok(updated.threads[0] !== null && updated.threads[0] !== undefined);
   assert.equal(updated.threads[0].name, "Renamed");
 
@@ -224,7 +223,7 @@ it("renders the list from summaries and adds detail without losing unread state"
     [{ id: "entity:agentDetail:a", seq: 4, _deleted: true }],
     true,
   );
-  assert.ok(closed);
+
   assert.ok(closed.threads[0] !== null && closed.threads[0] !== undefined);
   assert.equal(closed.threads[0].lastAnswer, undefined);
 
@@ -278,7 +277,7 @@ it("projects bounded workspace summaries and receipts with deletes", () => {
     ],
     true,
   );
-  assert.ok(first);
+
   assert.ok(
     first.runtime.messageReceipts !== null &&
       first.runtime.messageReceipts !== undefined,
@@ -309,7 +308,7 @@ it("projects bounded workspace summaries and receipts with deletes", () => {
     [{ id: "entity:annotation:n", seq: 4, _deleted: true }],
     true,
   );
-  assert.ok(next);
+
   assert.ok(
     next.runtime.annotations !== null && next.runtime.annotations !== undefined,
   );
@@ -343,7 +342,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
     ];
     const first = applyEntityRows(state, initial, true);
     assert.equal(parsed, 0, "structured entity rows need no JSON parsing");
-    assert.ok(first);
+
     const agentA = first.threads[0];
 
     const projectList = first.runtime.projects;
@@ -361,7 +360,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       true,
     );
     assert.equal(parsed, 0, "structured updates need no JSON parsing");
-    assert.ok(changed);
+
     assert.equal(
       changed.threads[0],
       agentA,
@@ -389,7 +388,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       ],
       true,
     );
-    assert.ok(stale);
+
     assert.ok(stale.threads[1] !== null && stale.threads[1] !== undefined);
     assert.equal(
       stale.threads[1].name,
@@ -409,7 +408,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       ],
       true,
     );
-    assert.ok(deleted);
+
     assert.deepEqual(
       deleted.threads.map((agent) => agent.id),
       ["a"],
@@ -427,7 +426,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       ],
       true,
     );
-    assert.ok(afterStale);
+
     assert.deepEqual(
       afterStale.threads.map((agent) => agent.id),
       ["a"],
@@ -449,7 +448,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       ],
       true,
     );
-    assert.ok(restored);
+
     assert.deepEqual(
       restored.threads.map((agent) => agent.id),
       ["a", "b"],
@@ -733,8 +732,14 @@ it("projects entity rows and preserves server sequence ordering", () => {
   const initial = applyEntityRows(
     state,
     [
-      { id: "state:ready", payload: "ignored", seq: 1 },
-      { id: "other:agent", payload: "ignored", seq: 1 },
+      { id: "state:ready", payload: "ignored", seq: 1 } satisfies Omit<
+        EntityRow,
+        "payload"
+      >,
+      { id: "other:agent", payload: "ignored", seq: 1 } satisfies Omit<
+        EntityRow,
+        "payload"
+      >,
       entityRow(
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
@@ -742,7 +747,7 @@ it("projects entity rows and preserves server sequence ordering", () => {
     ],
     true,
   );
-  assert.ok(initial);
+
   assert.deepEqual(initial.threads, [{ id: "a", name: "A" }]);
 
   const unchanged = applyEntityRows(
@@ -760,7 +765,7 @@ it("projects entity rows and preserves server sequence ordering", () => {
     true,
   );
   assert.equal(unchanged, initial, "equal and older sequences are ignored");
-  assert.ok(unchanged);
+
   assert.deepEqual(unchanged.threads, [{ id: "a", name: "A" }]);
   const unchangedForIrrelevantRows = applyEntityRows(
     state,
@@ -769,7 +774,10 @@ it("projects entity rows and preserves server sequence ordering", () => {
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
       ),
-      { id: "other:agent", payload: "ignored", seq: 3 },
+      { id: "other:agent", payload: "ignored", seq: 3 } satisfies Omit<
+        EntityRow,
+        "payload"
+      >,
     ],
     true,
   );
@@ -805,12 +813,12 @@ it("projects every collection and preserves other collection identities", () => 
     {
       collection: "complaint",
       id: "complaint",
-      value: { id: "complaint", name: "complaint" },
+      value: { id: "complaint" },
     },
     {
       collection: "request",
       id: "request",
-      value: { id: "request", name: "request" },
+      value: { id: "request" },
     },
     {
       collection: "rule",
@@ -835,23 +843,23 @@ it("projects every collection and preserves other collection identities", () => 
     {
       collection: "edge",
       id: "edge",
-      value: { id: "edge", name: "edge" },
+      value: { id: "edge" },
     },
     {
       collection: "event",
       id: "event",
-      value: { id: "event", name: "event" },
+      value: { id: "event" },
     },
     {
       collection: "work",
       id: "work",
-      value: { id: "work", name: "work" },
+      value: { id: "work" },
     },
-    // @ts-expect-error workspace deliberately retains unknown id and name fields.
+
     {
       collection: "workspace",
       id: "current",
-      value: { id: "workspace", name: "workspace" },
+      value: { stateDir: "" },
     },
   ] satisfies SyncEntityPayload[];
   const collections = fixtureEntities.map((entity) => entity.collection);
@@ -874,19 +882,12 @@ it("projects every collection and preserves other collection identities", () => 
   const state = emptyEntityProjection();
   const first = applyEntityRows(
     state,
-    fixtureEntities.map((entity, index) =>
-      entityRow(
-        // @ts-expect-error the workspace row intentionally contains only extension fields.
-        entity,
-        index + 1,
-      ),
-    ),
+    fixtureEntities.map((entity, index) => entityRow(entity, index + 1)),
     true,
   );
   for (const [collection, runtimeName] of collections.map(
     (collection) => [collection, runtimeNames[collection]] as const,
   )) {
-    assert.ok(first);
     if (collection === "chat") assert.equal(first.chats.length, 1);
     else if (collection === "edge") assert.equal(first.edges.length, 1);
     else if (collection === "agent") assert.equal(first.threads.length, 1);
@@ -895,7 +896,6 @@ it("projects every collection and preserves other collection identities", () => 
 
   const priorArrays = new Map(
     collections.map((collection): [(typeof collections)[number], unknown] => {
-      assert.ok(first);
       if (collection === "chat") return [collection, first.chats];
 
       if (collection === "edge") return [collection, first.edges];
@@ -933,7 +933,7 @@ it("projects every collection and preserves other collection identities", () => 
   );
   for (const [collection, priorArray] of priorArrays) {
     if (collection === "workspace") continue;
-    assert.ok(changed);
+
     const nextArray =
       collection === "chat"
         ? changed.chats
@@ -968,7 +968,7 @@ it("keeps chats after an unrelated entity update", () => {
     ],
     true,
   );
-  assert.ok(initial);
+
   const chats = initial.chats;
   const updated = applyEntityRows(
     state,
@@ -988,7 +988,7 @@ it("keeps chats after an unrelated entity update", () => {
     ],
     true,
   );
-  assert.ok(updated);
+
   assert.equal(updated.chats, chats);
 
   assert.deepEqual(updated.chats, [{ id: "c", title: "Shared chat" }]);
@@ -1064,7 +1064,7 @@ it("skips malformed entity rows once and still applies the rest of the batch", (
       ],
       true,
     );
-    assert.ok(changed);
+
     assert.ok(changed.threads[0] !== null && changed.threads[0] !== undefined);
     assert.equal(changed.threads[0].name, "A2");
 
@@ -1074,7 +1074,6 @@ it("skips malformed entity rows once and still applies the rest of the batch", (
     );
     assert.equal(changed.runtime.projects[0].name, "P2");
 
-    assert.ok(initial);
     assert.equal(changed.chats, initial.chats);
     assert.equal(reports.length, malformedRows.length);
     assert.ok(
@@ -1146,9 +1145,9 @@ it("moves replaced entities between collections and removes rows omitted by RxDB
     ],
     true,
   );
-  assert.ok(first);
+
   assert.deepEqual(first.threads, [{ id: "a", name: "A" }]);
-  assert.ok(moved);
+
   assert.deepEqual(moved.threads, []);
 
   assert.deepEqual(moved.runtime.projects, [{ id: "p", name: "P" }]);
@@ -1157,7 +1156,7 @@ it("moves replaced entities between collections and removes rows omitted by RxDB
   assert.deepEqual(state.values.agent.size, 0);
 
   const removed = applyEntityRows(state, [], true);
-  assert.ok(removed);
+
   assert.deepEqual(removed.runtime.projects, []);
 
   assert.equal(state.rows.get("entity:project:p")?.deleted, true);
@@ -1180,7 +1179,7 @@ it("handles explicit deletes, unseen tombstones, and re-created rows", () => {
     ],
     true,
   );
-  assert.ok(snapshot);
+
   assert.deepEqual(snapshot.threads, [{ id: "a" }]);
   assert.deepEqual(state.rows.get("entity:chat:c"), {
     seq: 2,
@@ -1250,7 +1249,7 @@ it("waits for readiness while retaining the latest entity rows", () => {
     [entityRow({ collection: "agent", id: "a", value: { id: "a" } }, 1)],
     true,
   );
-  assert.ok(ready);
+
   assert.deepEqual(ready.threads, [{ id: "a" }]);
 });
 
@@ -1288,7 +1287,7 @@ it("updates stable entities in place and relocates changed entity IDs", () => {
     ],
     true,
   );
-  assert.ok(stable);
+
   assert.deepEqual(
     stable.threads.map(({ id }) => id),
     ["a", "b"],
@@ -1317,7 +1316,7 @@ it("updates stable entities in place and relocates changed entity IDs", () => {
     ],
     true,
   );
-  assert.ok(relocated);
+
   assert.deepEqual(relocated.threads, [
     { id: "b", name: "B" },
     { id: "renamed", name: "A3" },
@@ -1345,7 +1344,7 @@ it("moves a stable server row between entity collections", () => {
     ],
     true,
   );
-  assert.ok(moved);
+
   assert.deepEqual(moved.threads, []);
 
   assert.deepEqual(moved.runtime.projects, [{ id: "a" }]);
@@ -1374,7 +1373,7 @@ it("moves newly omitted tombstones to the end of retention order", () => {
 
 it("initializes empty runtime collections and reuses agents on unrelated updates", () => {
   const empty = applyEntityRows(emptyEntityProjection(), [], true);
-  assert.ok(empty);
+
   for (const key of [
     "agents",
     "rooms",
@@ -1407,8 +1406,7 @@ it("initializes empty runtime collections and reuses agents on unrelated updates
     ],
     true,
   );
-  assert.ok(first);
-  assert.ok(edgeChange);
+
   assert.equal(edgeChange.threads, first.threads);
 
   assert.equal(edgeChange.runtime.agents, first.runtime.agents);
@@ -1424,9 +1422,9 @@ it("keeps an empty chat list empty while unrelated entities update", () => {
     [entityRow({ collection: "agent", id: "a", value: { id: "a" } }, 1)],
     true,
   );
-  assert.ok(first);
+
   assert.deepEqual(first.chats, []);
-  assert.ok(updated);
+
   assert.deepEqual(updated.chats, []);
 });
 
@@ -1458,10 +1456,9 @@ it("reuses unchanged work, request, and peer team arrays when agents change", ()
     ],
     true,
   );
-  assert.ok(updated);
+
   assert.deepEqual(updated.runtime.work, [{ id: "w1" }]);
 
-  assert.ok(initial);
   assert.equal(updated.runtime.work, initial.runtime.work);
 
   assert.equal(updated.runtime.requests, initial.runtime.requests);
@@ -1489,7 +1486,7 @@ it("does not reapply unchanged workspace fields over a changed collection", () =
     ],
     true,
   );
-  assert.ok(initial);
+
   assert.deepEqual(initial.runtime.agents, [{ id: "a1", name: "A" }]);
   const updated = applyEntityRows(
     state,
@@ -1510,7 +1507,6 @@ it("does not reapply unchanged workspace fields over a changed collection", () =
     true,
   );
 
-  assert.ok(updated);
   assert.deepEqual(updated.runtime.agents, [{ id: "a1", name: "A2" }]);
 
   assert.equal(updated.runtime.stateDir, "/workspace");
@@ -1518,6 +1514,7 @@ it("does not reapply unchanged workspace fields over a changed collection", () =
 
 it("maps all runtime collections and carries workspace and edge data into snapshots", () => {
   const state = emptyEntityProjection();
+  const workspace = { stateDir: "/workspace", custom: "value" };
   const entries = [
     { collection: "agent", id: "a", value: { id: "a" } },
     { collection: "chat", id: "c", value: { id: "c" } },
@@ -1535,7 +1532,7 @@ it("maps all runtime collections and carries workspace and edge data into snapsh
     {
       collection: "workspace",
       id: "current",
-      value: { stateDir: "/workspace", custom: "value" },
+      value: workspace,
     },
   ] satisfies SyncEntityPayload[];
   const snapshot = applyEntityRows(
@@ -1543,7 +1540,7 @@ it("maps all runtime collections and carries workspace and edge data into snapsh
     entries.map((entity, index) => entityRow(entity, index + 1)),
     true,
   );
-  assert.ok(snapshot);
+
   assert.deepEqual(snapshot.threads, [{ id: "a" }]);
 
   assert.deepEqual(snapshot.chats, [{ id: "c" }]);
@@ -1594,7 +1591,7 @@ it("reuses unchanged runtime lists and edges, but replaces changed collections",
     ],
     true,
   );
-  assert.ok(first);
+
   const projects = first.runtime.projects;
 
   const edges = first.edges;
@@ -1619,7 +1616,6 @@ it("reuses unchanged runtime lists and edges, but replaces changed collections",
   );
   assert.notEqual(changedAgent, first);
 
-  assert.ok(changedAgent);
   assert.notEqual(changedAgent.threads, first.threads);
 
   assert.equal(changedAgent.runtime.projects, projects);
@@ -1662,7 +1658,7 @@ it("reuses unchanged runtime lists and edges, but replaces changed collections",
     ],
     true,
   );
-  assert.ok(changedEdge);
+
   assert.deepEqual(changedEdge.edges, [{ id: "e2" }]);
 
   assert.equal(changedEdge.runtime.projects, projects);
@@ -1687,7 +1683,7 @@ it("reuses unchanged runtime lists and edges, but replaces changed collections",
     ],
     true,
   );
-  assert.ok(changedWorkspace);
+
   assert.equal(changedWorkspace.stateDir, "/two");
 
   assert.equal(
@@ -1727,8 +1723,7 @@ it("retains graph nodes while another collection changes", () => {
     ],
     true,
   );
-  assert.ok(changed);
-  assert.ok(initial);
+
   assert.equal(changed.nodes, initial.nodes);
 
   assert.equal(changed.threads, initial.threads);
@@ -1759,7 +1754,6 @@ it("retains graph nodes while another collection changes", () => {
     ],
     true,
   );
-  assert.ok(renamed);
 
   assert.notEqual(renamed.nodes, changed.nodes);
 
@@ -1836,8 +1830,8 @@ it("keeps extra and wrong-typed known DTO fields after envelope validation", () 
         },
         1,
       ),
-      // @ts-expect-error name is deliberately numeric to witness envelope-only validation.
       entityRow(
+        // @ts-expect-error name is deliberately numeric to witness envelope-only validation.
         {
           collection: "agent",
           id: "wrong-type",
@@ -1852,7 +1846,7 @@ it("keeps extra and wrong-typed known DTO fields after envelope validation", () 
     ],
     true,
   );
-  assert.ok(snapshot);
+
   assert.equal(snapshot.runtime.agents.length, 2);
 
   assert.ok(
@@ -1886,26 +1880,23 @@ it("applies v4 structured entity rows without parsing JSON strings", () => {
     seq: 1,
   };
   const first = applyEntityRows(state, [upsert], true);
-  assert.ok(first);
+
   assert.equal(first.threads[0]?.name, "A");
   const deleted = applyEntityRows(
     state,
     [
       {
         id: upsert.id,
-        payload: "",
-        collection: "agent",
-        entityId: "a",
         seq: 2,
         _deleted: true,
-      },
+      } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
-  assert.ok(deleted);
+
   assert.deepEqual(deleted.threads, []);
   const stale = applyEntityRows(state, [upsert], true);
-  assert.ok(stale);
+
   assert.deepEqual(stale.threads, []);
 });
 
@@ -1935,7 +1926,7 @@ it("projects independent account limits and preserves them across workspace upda
     ],
     true,
   );
-  assert.ok(initial);
+
   assert.ok(
     initial.runtime.rateLimitsByAccount !== null &&
       initial.runtime.rateLimitsByAccount !== undefined,
@@ -1973,7 +1964,6 @@ it("projects independent account limits and preserves them across workspace upda
     ],
     true,
   );
-  assert.ok(next);
 
   assert.equal(
     next.runtime.rateLimitsByAccount,
@@ -1998,11 +1988,15 @@ it("projects independent account limits and preserves them across workspace upda
         },
         3,
       ),
-      { id: "entity:rateLimit:alpha", seq: 5, payload: "{}", _deleted: true },
+      {
+        id: "entity:rateLimit:alpha",
+        seq: 5,
+        _deleted: true,
+      } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
-  assert.ok(withoutAlpha);
+
   assert.ok(
     withoutAlpha.runtime.rateLimitsByAccount !== null &&
       withoutAlpha.runtime.rateLimitsByAccount !== undefined,
@@ -2033,43 +2027,40 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
     [
       {
         id: "entity:workspace:current",
-        payload: "",
         entity: {
           collection: "workspace",
           id: "current",
           value: { stateDir: "fixture" },
         },
         seq: 1,
-      },
+      } satisfies Omit<EntityRow, "payload">,
       entityRow({ collection: "studioError", id: item.id, value: item }, 2),
     ],
     true,
   );
-  assert.ok(initial);
+
   assert.deepEqual(initial.runtime.studioErrors, [item]);
   const removed = applyEntityRows(
     state,
     [
       {
         id: "entity:workspace:current",
-        payload: "",
         entity: {
           collection: "workspace",
           id: "current",
           value: { stateDir: "fixture" },
         },
         seq: 1,
-      },
+      } satisfies Omit<EntityRow, "payload">,
       {
         id: `entity:studioError:${item.id}`,
         seq: 3,
-        payload: "{}",
         _deleted: true,
-      },
+      } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
-  assert.ok(removed);
+
   assert.deepEqual(removed.runtime.studioErrors, []);
 });
 it("projects queue stream upserts and deletion without endpoint reads", () => {
@@ -2088,7 +2079,7 @@ it("projects queue stream upserts and deletion without endpoint reads", () => {
     entity: { collection: "queue", id: "chat", value },
   };
   const initial = applyEntityRows(state, [row], true);
-  assert.ok(initial);
+
   assert.ok(
     initial.runtime.queuesByAgent !== null &&
       initial.runtime.queuesByAgent !== undefined,
@@ -2096,10 +2087,17 @@ it("projects queue stream upserts and deletion without endpoint reads", () => {
   assert.deepEqual(initial.runtime.queuesByAgent.chat, value);
   const next = applyEntityRows(
     state,
-    [row, { id: "entity:queue:chat", seq: 2, payload: "{}", _deleted: true }],
+    [
+      row,
+      {
+        id: "entity:queue:chat",
+        seq: 2,
+        _deleted: true,
+      } satisfies Omit<EntityRow, "payload">,
+    ],
     true,
   );
-  assert.ok(next);
+
   assert.ok(
     next.runtime.queuesByAgent !== null &&
       next.runtime.queuesByAgent !== undefined,
@@ -2207,13 +2205,21 @@ for (const { entity, select } of sourceCases)
     const state = emptyEntityProjection();
     const row = entityRow(entity, 1);
     const initial = applyEntityRows(state, [row], true);
-    assert.ok(initial);
+
     assert.deepEqual(select(initial), entity.value);
     const next = applyEntityRows(
       state,
-      [row, { id: row.id, seq: 2, payload: "{}", _deleted: true }],
+      [
+        row,
+        {
+          id: row.id,
+          seq: 2,
+          payload: "{}",
+          _deleted: true,
+        } satisfies Omit<EntityRow, "payload">,
+      ],
       true,
     );
-    assert.ok(next);
+
     assert.equal(select(next), undefined);
   });

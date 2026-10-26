@@ -60,7 +60,7 @@ export function createEntityDataObserver(
               string,
               { seq: number; entity: SyncEntityPayload }
             >();
-            const values = rows.map((row) => row.toMutableJSON());
+            const values = rows.map((row) => row.toJSON());
             const selectedAgents = new Set([selectedAgent]);
             for (const value of needsTeam ? values : []) {
               const entity = value.entity;

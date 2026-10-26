@@ -345,7 +345,7 @@ composite actions. Heavy and load checks remain outside hosted CI.
 
 ## Live UI team acceptance
 
-`workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs` drives a live Studio
+`workspaces/client/apps/web/scripts/verify-ui-team-scale.ts` drives a live Studio
 backend through headless Chromium: it creates a lead chat in the dialog, types one
 prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
 counters and process load while the team runs. It deletes the chat and its agents
@@ -359,20 +359,20 @@ required transfers make the audit inconclusive and fail the run. Cleanup reports
 agents and owned processes separately from the unverified owned-thread boundary.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
-workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
+workspaces/client/apps/web/scripts/verify-ui-team-scale.ts --workers 3`; `--help`
 lists the options. Evidence goes to a directory outside the checkout.
 
 Both scale verifiers keep their signal handlers active until teardown settles.
 An interrupt requests cancellation; another interrupt during cleanup waits for
 the same teardown. The force-exit policy and signal exit codes are owned by
-[`scaleVerifierTeardown.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierTeardown.mjs).
+[`scaleVerifierTeardown.ts`](../workspaces/client/apps/web/scripts/scaleVerifierTeardown.ts).
 A forced exit first reports the evidence path and last known remaining agents;
 that snapshot does not prove the backend has stopped them. A failed audit or
 evidence write still permits the UI verifier's single conversation-delete
 attempt, and in-flight audit reads settle before deletion. Offline signal and
 stub-API coverage runs in the short tooling tier.
 
-Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
+Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.ts`) reads the
 lead and worker transcripts, the lead's tool requests, the backend journal of the
 run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)
 and diagnostics counters. The run fails on a failed or interrupted turn, a worker
@@ -385,10 +385,10 @@ Shared-server input/recovery gauges are evidence only: the summary reports their
 baseline, end and delta, without attributing other chats' work to this team. The scoped input audit reads
 a fenced, read-only snapshot of every retained `runtime_events` row through
 `readRetainedInputRows` in
-[`verify-rust-chat-scale.mjs`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.mjs).
+[`verify-rust-chat-scale.ts`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.ts).
 The bounded event SSE window is not authoritative for pending-input absence.
 The audit uses the status projection owned by
-[`scaleVerifierHelpers.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.mjs).
+[`scaleVerifierHelpers.ts`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.ts).
 Baseline and final global gauges remain in the evidence. A worker's extra turn
 triggered by a unique `agent_message` from the run's lead is attributed to the
 lead and reported as an anomaly with the message text; repeated input identities

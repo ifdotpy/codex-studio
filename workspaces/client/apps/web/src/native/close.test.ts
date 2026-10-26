@@ -171,6 +171,6 @@ it("shows desktop configuration failures without freezing the editor", async () 
   const alert = harness.append.mock.calls[0][0];
   expect(alert.role).toBe("alert");
   expect(alert.textContent).toBe("The active server prevents this change.");
-  alert.append.mock.calls[0]?.[0].onclick();
+  alert.append.mock.calls[0][0].onclick();
   expect(alert.remove).toHaveBeenCalledOnce();
 });

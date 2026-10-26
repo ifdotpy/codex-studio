@@ -1,3 +1,4 @@
+import type { SyncEntityPayload } from "../generated/api";
 import assert from "node:assert/strict";
 import { it } from "vitest";
 import { applyEntityRows, emptyEntityProjection } from "./entityProjection.ts";
@@ -9,14 +10,13 @@ it("projects per-account model entities, including hidden rows", () => {
     hidden: true,
     accountKey: "default",
     provider: "codex",
-  };
+  } satisfies Extract<SyncEntityPayload, { collection: "model" }>["value"];
   const state = emptyEntityProjection();
   applyEntityRows(
     state,
     [
       {
         id: "entity:model:default:gpt-hidden",
-        payload: "",
         entity: { collection: "model", id: "default:gpt-hidden", value },
         seq: 1,
       },

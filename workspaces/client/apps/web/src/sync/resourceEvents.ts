@@ -79,37 +79,16 @@ export type ResourceHeartbeatEvent =
 export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
-export type ResourceVersion = {
-  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"] | undefined;
-  cursor?: components["schemas"]["SubscriptionCursor"] | undefined;
-  replyKind?: components["schemas"]["SubscriptionReplyKind"] | undefined;
-  /** Transient subscribed value; never sent through the entity persister. */
-  progress?: ResourceProgress;
-  epoch: string;
-  revision: number;
-  reason?: ResourceChangeEvent["reason"];
-  draftChanges?: components["schemas"]["DraftChangeBatch"] | undefined;
-  /** Transient access metadata; never written to the entity cache. */
-  discoverySnapshot?: components["schemas"]["AccessSnapshot"] | undefined;
-  /** Transient cursor interval and media session state. */
-  voiceRecords?: components["schemas"]["VoiceRecordBatch"] | undefined;
-  /** Highest entity row represented by this StateResource revision, when present. */
-  entitySequence?: number;
-  /** Transcript cursor persisted before this notification; readers verify local coverage. */
-  transcriptSequence?: number;
-  /** A revision-only transcript change is the server's oversized-interval signal. */
-  transcriptReadRequired?: boolean;
-  /** The server cannot enumerate the exact changed rows; clients must reconcile. */
-  entitySequenceReset?: boolean;
-};
-
-export type ResourceProgressEvent =
-  components["schemas"]["ResourceProgressEvent"];
-export type ResourceProgress = ResourceProgressEvent extends infer Progress
-  ? Progress extends { resource: infer Resource; value: infer Value }
-    ? { resource: Resource; value: Value }
-    : never
-  : never;
+import type {
+  ResourceVersion,
+  ResourceProgress,
+  ResourceProgressEvent,
+} from "./subscriptions/contracts";
+export type {
+  ResourceVersion,
+  ResourceProgress,
+  ResourceProgressEvent,
+} from "./subscriptions/contracts";
 type Version = ResourceVersion;
 
 type Listener = (version?: ResourceVersion) => void;
@@ -185,7 +164,7 @@ export type TabMessage = (
   | TabResourceRecovery
 ) & { apiSchemaHash: string; health?: ResourceConnectionHealth };
 
-type OutgoingMessage =
+export type OutgoingMessage =
   | {
       kind: "subscriptions";
       resources: ResourceRef[];
