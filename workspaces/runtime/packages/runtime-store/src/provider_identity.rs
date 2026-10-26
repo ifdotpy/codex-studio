@@ -152,16 +152,16 @@ fn agent_patches(
             )?;
         }
     }
-    if let Some(lazy) = value.get("lazyAccountTransfer").filter(|v| !v.is_null()) {
-        if let Some(source) = lazy.get("sourceState") {
-            provider_patch(
-                source,
-                &format!("{path}.lazyAccountTransfer.sourceState"),
-                "provider",
-                ProviderKind::Codex,
-                patches,
-            )?;
-        }
+    if let Some(lazy) = value.get("lazyAccountTransfer").filter(|v| !v.is_null())
+        && let Some(source) = lazy.get("sourceState")
+    {
+        provider_patch(
+            source,
+            &format!("{path}.lazyAccountTransfer.sourceState"),
+            "provider",
+            ProviderKind::Codex,
+            patches,
+        )?;
     }
     Ok(())
 }

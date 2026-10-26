@@ -1349,6 +1349,7 @@ mod tests {
                 "account-registry/AccountRecord",
                 &json!({
                     "id":"default",
+                    "provider":crate::ProviderKind::Codex,
                     "home":"/tmp/default",
                     "label":"Default",
                     "source":"test",
