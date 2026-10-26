@@ -4508,13 +4508,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -6156,13 +6150,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -8249,13 +8237,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -10012,13 +9994,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -18056,13 +18032,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -23709,15 +23679,9 @@
             "default": null
           },
           "workspaceMode": {
+            "$ref": "#/components/schemas/WorkspaceMode",
             "default": "worktree",
-            "enum": [
-              "layr",
-              "image",
-              "worktree",
-              "shared"
-            ],
-            "title": "Workspacemode",
-            "type": "string"
+            "title": "Workspacemode"
           },
           "yolo_mode": {
             "default": true,
@@ -61450,15 +61414,7 @@
           "status": {
             "anyOf": [
               {
-                "enum": [
-                  "ready",
-                  "running",
-                  "blocked",
-                  "review",
-                  "accepted",
-                  "cancelled"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkStatus"
               },
               {
                 "type": "null"
@@ -61686,16 +61642,8 @@
             "type": "string"
           },
           "status": {
-            "enum": [
-              "ready",
-              "blocked",
-              "running",
-              "review",
-              "accepted",
-              "cancelled"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/WorkStatus",
+            "title": "Status"
           },
           "submissionRefusal": {
             "$ref": "#/components/schemas/TaskSubmissionRefusal"
@@ -62123,6 +62071,17 @@
         "title": "WorkResultRecordResponse",
         "type": "object"
       },
+      "WorkStatus": {
+        "enum": [
+          "ready",
+          "blocked",
+          "running",
+          "review",
+          "accepted",
+          "cancelled"
+        ],
+        "type": "string"
+      },
       "WorkViewRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -62177,15 +62136,7 @@
                 "type": "string"
               },
               {
-                "enum": [
-                  "ready",
-                  "running",
-                  "blocked",
-                  "review",
-                  "accepted",
-                  "cancelled"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkStatus"
               }
             ],
             "title": "Displaystatus"
@@ -62249,16 +62200,8 @@
             "type": "string"
           },
           "status": {
-            "enum": [
-              "ready",
-              "running",
-              "blocked",
-              "review",
-              "accepted",
-              "cancelled"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/WorkStatus",
+            "title": "Status"
           },
           "submissionRefusal": {
             "$ref": "#/components/schemas/TaskSubmissionRefusal"
@@ -62653,6 +62596,15 @@
         },
         "title": "WorkspaceEntityDto",
         "type": "object"
+      },
+      "WorkspaceMode": {
+        "enum": [
+          "layr",
+          "image",
+          "worktree",
+          "shared"
+        ],
+        "type": "string"
       },
       "WorkspaceResource": {
         "additionalProperties": false,

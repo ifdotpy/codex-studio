@@ -200,7 +200,7 @@ fn wake_candidate(
             let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
                 Err(error) => error,
                 Ok(_) => StoreError::RecordContract(
-                    "workspaceMode projection disagrees with its OpenAPI owner".into(),
+                    "workspaceMode projection disagrees with its generated owner",
                 ),
             };
             Err(std::sync::Arc::new(error))
@@ -1744,29 +1744,14 @@ mod account_wake_index_tests {
 
     #[test]
     fn stored_wake_boundary_mode_projection_matches_openapi_owner() {
-        use super::WorkspaceMode;
         let openapi: serde_json::Value =
             serde_json::from_str(include_str!("../../../../runtime-http/openapi.json"))
                 .expect("OpenAPI owner");
-        let mut owned =
-            openapi["components"]["schemas"]["AgentRecordResponse"]["properties"]["workspaceMode"]
-                ["anyOf"][0]["enum"]
-                .as_array()
-                .expect("mode owner")
-                .clone();
-        let mut typed = [
-            WorkspaceMode::Layr,
-            WorkspaceMode::Image,
-            WorkspaceMode::Worktree,
-            WorkspaceMode::Shared,
-        ]
-        .map(|mode| serde_json::to_value(mode).expect("mode encodes"))
-        .to_vec();
-        owned.sort_by_key(serde_json::Value::to_string);
-        typed.sort_by_key(serde_json::Value::to_string);
         assert_eq!(
-            typed, owned,
-            "WorkspaceMode must mirror AgentRecordResponse.workspaceMode OpenAPI owner"
+            openapi["components"]["schemas"]["AgentRecordResponse"]["properties"]["workspaceMode"]
+                ["anyOf"][0]["$ref"],
+            "#/components/schemas/WorkspaceMode",
+            "wake projection consumes the generated Rust owner"
         );
         let schema: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../runtime-schema/src/schemas/persisted-agent-record.schema.json"

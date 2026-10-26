@@ -22,6 +22,7 @@ pub mod provider_lifecycle;
 pub mod provider_method_policy;
 pub mod provider_rate_limits;
 pub mod queue_command;
+pub mod records;
 pub mod shared_values;
 pub mod studio_errors;
 pub mod supervisor_contract;

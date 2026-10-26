@@ -9,6 +9,9 @@
     "dependencies": {
       "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/dependencies"
     },
+    "updated": {
+      "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/updated"
+    },
     "results": { "type": "array", "items": { "type": "object" } },
     "decisions": { "type": "array", "items": { "type": "object" } },
     "id": {

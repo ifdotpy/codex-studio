@@ -782,7 +782,10 @@ pub(super) fn hold_invalid_agent_record_in(
     // Publish a minimal safe agent view so the renderer can show that this
     // row is held while the malformed persisted bytes remain untouched.
     let public = crate::sync_views::invalid_agent_view(agent_id, &parsed, diagnostic);
-    let context = crate::sync_entity_context::agent_view_context(tx, &public, server_id)?;
+    let context = crate::sync_views::AgentViewContext {
+        project_server_id: server_id.map(str::to_owned),
+        ..Default::default()
+    };
     let projection = crate::sync_views::agent_entity_view(&public, &context).ok_or_else(|| {
         StoreError::InvalidSyncObject {
             scope: "runtime_agents".into(),

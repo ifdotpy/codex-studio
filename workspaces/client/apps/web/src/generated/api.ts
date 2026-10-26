@@ -4202,10 +4202,7 @@ export interface components {
         | null
         | undefined;
       /** Workspacemode */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /** Workspaceoperation */
       workspaceOperation?: null | string | undefined;
       /** Worktree */
@@ -4604,10 +4601,7 @@ export interface components {
         | null
         | undefined;
       /** Workspacemode */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /** Workspaceoperation */
       workspaceOperation?: null | string | undefined;
       /** Worktree */
@@ -5957,10 +5951,7 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspacemodeexplicit
        * @default null
@@ -6691,10 +6682,7 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
        * @default null
@@ -9583,10 +9571,7 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
        * @default null
@@ -12251,9 +12236,8 @@ export interface components {
       /**
        * Workspacemode
        * @default worktree
-       * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree" | "shared" | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | undefined;
       /**
        * Yolo Mode
        * @default true
@@ -27544,17 +27528,7 @@ export interface components {
       /** Rootid */
       rootId?: null | string | undefined;
       /** Status */
-      status?:
-        | (
-            | "ready"
-            | "running"
-            | "blocked"
-            | "review"
-            | "accepted"
-            | "cancelled"
-          )
-        | null
-        | undefined;
+      status?: components["schemas"]["WorkStatus"] | null | undefined;
       /** Title */
       title?: null | string | undefined;
     };
@@ -27735,17 +27709,8 @@ export interface components {
         | undefined;
       /** Rootid */
       rootId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "ready"
-        | "blocked"
-        | "running"
-        | "review"
-        | "accepted"
-        | "cancelled";
+      /** Status */
+      status: components["schemas"]["WorkStatus"];
       submissionRefusal?:
         | components["schemas"]["TaskSubmissionRefusal"]
         | undefined;
@@ -27940,6 +27905,8 @@ export interface components {
       /** Taskshistorylimit */
       tasksHistoryLimit?: number | null | undefined;
     };
+    /** @enum {string} */
+    WorkspaceMode: "layr" | "image" | "worktree" | "shared";
     /** WorkspaceResource */
     WorkspaceResource: {
       /** Agentid */
@@ -28189,6 +28156,14 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** @enum {string} */
+    WorkStatus:
+      | "ready"
+      | "blocked"
+      | "running"
+      | "review"
+      | "accepted"
+      | "cancelled";
     /** WorktreeCleanupErrorRecordResponse */
     WorktreeCleanupErrorRecordResponse: {
       /** At */
@@ -28325,16 +28300,7 @@ export interface components {
       /** Description */
       description: string;
       /** Displaystatus */
-      displayStatus:
-        | "blocked"
-        | (
-            | "ready"
-            | "running"
-            | "blocked"
-            | "review"
-            | "accepted"
-            | "cancelled"
-          );
+      displayStatus: "blocked" | components["schemas"]["WorkStatus"];
       gate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /**
        * Handoff
@@ -28369,17 +28335,8 @@ export interface components {
         | undefined;
       /** Rootid */
       rootId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "ready"
-        | "running"
-        | "blocked"
-        | "review"
-        | "accepted"
-        | "cancelled";
+      /** Status */
+      status: components["schemas"]["WorkStatus"];
       submissionRefusal?:
         | components["schemas"]["TaskSubmissionRefusal"]
         | undefined;

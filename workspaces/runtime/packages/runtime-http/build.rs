@@ -39,6 +39,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let document: serde_json::Value = serde_json::from_slice(&fs::read(&spec_path)?)?;
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
+    for (name, owner) in [
+        ("WorkStatus", "studio_runtime_schema::records::WorkStatus"),
+        (
+            "WorkspaceMode",
+            "studio_runtime_schema::records::WorkspaceMode",
+        ),
+    ] {
+        analysis
+            .schemas
+            .get_mut(name)
+            .ok_or("missing owned record domain")?
+            .schema_type = SchemaType::Primitive {
+            rust_type: owner.into(),
+            serde_with: None,
+        };
+    }
     analysis
         .schemas
         .get_mut("MonitorState")

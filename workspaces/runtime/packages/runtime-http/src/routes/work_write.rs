@@ -15,6 +15,7 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use std::sync::Arc;
 use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
+use studio_runtime_store::{JsonRecord, WorkItemRecord};
 
 enum WorkCommitError {
     Store,
@@ -523,12 +524,12 @@ async fn commit(
                     work_write::write(tx, &agent, request_id.as_deref(), &signature, command)
                 };
                 let result = match command {
-                    // Claim has no preparation outside this transaction. A
-                    // located record refusal here proves no effect; submit and
-                    // accept retain uncertainty about earlier preparation.
+                    // Work-record field checks run only after write_internal
+                    // reconciles the exact receipt. Agent checks precede that
+                    // reconciliation and must retain uncertainty about replay.
                     WorkWrite::Claim(input) => write(WorkWrite::Claim(input)).map_err(|error| match error {
-                        WorkWriteError::Event(studio_runtime_services::event_write::EventWriteError::Store(error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }))
-                        | WorkWriteError::Store(error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }) => WorkCommitError::RefusedClaim(error),
+                        WorkWriteError::Event(studio_runtime_services::event_write::EventWriteError::Store(error))
+                        | WorkWriteError::Store(error) if matches!(&error,studio_runtime_store::StoreError::InvalidSyncObjectField {scope,..} if scope == WorkItemRecord::TABLE) => WorkCommitError::RefusedClaim(error),
                         error => WorkCommitError::Write(error),
                     })?,
                     command => write(command)?,
@@ -1121,6 +1122,47 @@ mod managed_work_port_tests {
 
     fn schema() -> Value {
         json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false})
+    }
+
+    #[tokio::test]
+    async fn stored_review_boundary_claim_replay_keeps_prior_effect_uncertain() {
+        let (state, store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"Replay boundary","owner":"worker"}),
+                "replay-create",
+            )
+            .await,
+        );
+        let task_id = created["id"].as_str().expect("task id").to_owned();
+        let args = json!({"action":"claim","task_id":task_id,"version":created["version"]});
+        // Commit the first claim and discard its response, as on response loss.
+        drop(port.act("worker", &args, "same-claim").await);
+        let reader = store.test_reader().expect("reader");
+        let snapshot = || {
+            reader.query_row("SELECT w.record,r.signature,r.result FROM runtime_work w JOIN runtime_operation_receipts r ON r.id='same-claim' WHERE w.id=?1", [&task_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).expect("successful claim and exact receipt")
+        };
+        let before = snapshot();
+        assert_eq!(
+            serde_json::from_str::<Value>(&before.0).expect("stored task")["status"],
+            "running"
+        );
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode',7) WHERE id='worker'", [])?;
+            Ok(())
+        }).await.expect("corrupt actor after committed success");
+        let replay = port.act("worker", &args, "same-claim").await;
+        assert!(
+            matches!(replay, WorkActionOutcome::Unknown(_)),
+            "a prior committed effect cannot become NotApplied: {replay:?}"
+        );
+        assert_eq!(
+            snapshot(),
+            before,
+            "the retry preserves the exact prior task and receipt"
+        );
     }
 
     #[tokio::test]

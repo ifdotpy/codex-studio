@@ -13,16 +13,7 @@ use crate::{
 
 pub type AccountWakePage = BTreeMap<String, Vec<WakeCandidate>>;
 
-/// Mirrors AgentRecordResponse.workspaceMode in OpenAPI; the projection parity
-/// witness checks this closed set against that owner.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceMode {
-    Layr,
-    Image,
-    Worktree,
-    Shared,
-}
+pub use studio_runtime_schema::records::WorkspaceMode;
 
 /// A selected row keeps its identity even when its mode is invalid, so registry
 /// isolation can hold that row without discarding the rest of the bounded page.

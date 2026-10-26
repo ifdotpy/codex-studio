@@ -620,6 +620,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::studio_errors::check_schema_parity(openapi)?;
     crate::queue_command::check_schema_parity(openapi)?;
+    crate::records::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
     for (suffix, value) in [
         ("minimum", values::IDLE_COMPACTION_MIN_TOKENS),
@@ -984,6 +985,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     check_backend_kind_parity(root)?;
     check_provider_sql_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    crate::records::refresh_openapi(&mut openapi)?;
     for (name, schema) in crate::studio_errors::schemas()? {
         openapi["components"]["schemas"][name] = schema;
     }

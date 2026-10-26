@@ -2203,7 +2203,7 @@ mod bounded_reconcile_tests {
     }
 
     #[tokio::test]
-    async fn stored_wake_boundary_keeps_healthy_candidates_and_raw_evidence() {
+    async fn stored_review_boundary_invalid_hold_keeps_healthy_candidates_and_raw_evidence() {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
@@ -2222,6 +2222,7 @@ mod bounded_reconcile_tests {
         }).await.expect("pending candidates");
         store.transaction(|tx| {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode',7) WHERE id='bad-mode'", [])?;
+            tx.execute("INSERT INTO runtime_work(id,record) VALUES('bad-work',?1)", [serde_json::json!({"id":"bad-work","owner":"bad-mode"}).to_string()])?;
             Ok(())
         }).await.expect("existing corrupt mode");
         let connection = store.test_reader().expect("fixture connection");
@@ -2232,6 +2233,13 @@ mod bounded_reconcile_tests {
                 |row| row.get(0),
             )
             .expect("raw evidence");
+        let raw_work: String = connection
+            .query_row(
+                "SELECT record FROM runtime_work WHERE id='bad-work'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("corrupt work evidence");
         let page = target_page(&connection, "", &BTreeMap::new())
             .expect("one malformed mode must not abort target_page");
         let (_, agents, _) = classify_pending_agents(
@@ -2273,6 +2281,16 @@ mod bounded_reconcile_tests {
             )
             .expect("invalid-agent hold");
         assert_eq!(held, 1);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT record FROM runtime_work WHERE id='bad-work'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .expect("retained work evidence"),
+            raw_work
+        );
         assert_eq!(
             connection
                 .query_row(

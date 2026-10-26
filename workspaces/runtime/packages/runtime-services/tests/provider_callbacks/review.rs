@@ -142,13 +142,23 @@ async fn work_commands_match_python_arguments_bounds_and_provenance() {
 #[tokio::test]
 async fn malformed_work_never_poison_store_writer() {
     for (field, value) in [
-        ("results", json!(["bad"])),
-        ("decisions", json!([5])),
-        ("status", Value::Null),
+        ("results", Some(json!(["bad"]))),
+        ("decisions", Some(json!([5]))),
+        ("status", Some(Value::Null)),
+        ("status", None),
+        ("status", Some(json!("unknown"))),
+        ("dependencies", Some(json!({"0":"prerequisite"}))),
+        ("dependencies", Some(json!([7]))),
     ] {
         let (_dir, store, context) = fixture().await;
         let mut work = template().value["baseWork"].clone();
-        work[field] = value;
+        if let Some(value) = value {
+            work[field] = value;
+        } else {
+            work.as_object_mut()
+                .expect("work fixture object")
+                .remove(field);
+        }
         put_record(&store, "runtime_work", &work).await;
         let frame = call(
             &context,

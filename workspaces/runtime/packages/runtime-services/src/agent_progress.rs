@@ -120,10 +120,7 @@ pub(crate) fn derive(
         && commands.is_empty()
     {
         if let Some(task) = assignment {
-            let mut since = task
-                .get("updated")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or_default();
+            let mut since = task.updated();
             if crate::sync_policy::table_exists(connection, "runtime_execution_runs")? {
                 let raw: Option<String> = connection.query_row(
                     "SELECT record FROM runtime_execution_runs WHERE agent=?1 ORDER BY created DESC LIMIT 1",
@@ -190,6 +187,23 @@ pub(crate) fn publish_owner(transaction: &Transaction<'_>, agent_id: &str) -> St
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stored_review_boundary_progress_refuses_present_invalid_updated() {
+        let connection = Connection::open_in_memory().expect("fixture database");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .expect("fixture work table");
+        for updated in [json!("bad"), json!(null), json!(false), json!([])] {
+            connection.execute("INSERT OR REPLACE INTO runtime_work VALUES('assigned',?1)",[json!({"id":"assigned","status":"running","owner":"worker","dependencies":[],"updated":updated}).to_string()]).expect("corrupt timestamp fixture");
+            let error = assignments(&connection, "worker")
+                .expect_err("malformed timestamp cannot become epoch zero");
+            assert!(
+                error.to_string().contains("runtime_work/assigned"),
+                "{error:?}"
+            );
+        }
+    }
 
     #[test]
     fn stored_work_boundary_progress_refuses_missing_status_instead_of_omitting_assignment() {

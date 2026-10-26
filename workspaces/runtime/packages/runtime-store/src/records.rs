@@ -261,31 +261,7 @@ impl JsonRecord for AgentRecord {
     }
 }
 
-/// Active work states mirror the WorkItem.status OpenAPI owner; the boundary
-/// parity witness below checks every variant.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkStatus {
-    Ready,
-    Running,
-    Blocked,
-    Review,
-    Accepted,
-    Cancelled,
-}
-
-impl WorkStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Ready => "ready",
-            Self::Running => "running",
-            Self::Blocked => "blocked",
-            Self::Review => "review",
-            Self::Accepted => "accepted",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
+pub use studio_runtime_schema::records::WorkStatus;
 
 record_newtype!(
     TaskRecord,
@@ -376,6 +352,10 @@ struct WorkItemFields {
     #[serde(default)]
     dependencies: Vec<String>,
     owner: Option<String>,
+    // Omission retains the existing progress timestamp default. Present null
+    // or malformed timestamps cannot become a legitimate epoch-zero value.
+    #[serde(default)]
+    updated: f64,
 }
 
 impl Serialize for WorkItemRecord {
@@ -469,19 +449,23 @@ impl WorkItemRecord {
             .and_then(Value::as_str)
             .unwrap_or("<unknown>")
             .to_owned();
+        Self::checked_at(value, &id)
+    }
+
+    fn checked_at(value: Value, row_id: &str) -> StoreResult<Self> {
         if let Some((pointer, reason)) = studio_runtime_schema::first_error(Self::SCHEMA, &value)
             .map_err(crate::StoreError::SchemaValidation)?
         {
             return Err(crate::StoreError::InvalidSyncObjectField {
                 scope: Self::TABLE.into(),
-                id,
+                id: row_id.to_owned(),
                 pointer,
                 reason,
             });
         }
         Self::from_value(value).map_err(|error| crate::StoreError::InvalidSyncObjectField {
             scope: Self::TABLE.into(),
-            id,
+            id: row_id.to_owned(),
             pointer: String::new(),
             reason: error.to_string(),
         })
@@ -492,7 +476,10 @@ impl WorkItemRecord {
             table: Self::TABLE,
             id: row_id.to_owned(),
         };
-        let record = Self::checked(serde_json::from_str(encoded).map_err(|_| invalid())?)?;
+        let record = Self::checked_at(
+            serde_json::from_str(encoded).map_err(|_| invalid())?,
+            row_id,
+        )?;
         if record.id().as_ref() != row_id {
             return Err(invalid());
         }
@@ -519,6 +506,9 @@ impl WorkItemRecord {
     }
     pub fn owner(&self) -> Option<&str> {
         self.fields.owner.as_deref()
+    }
+    pub fn updated(&self) -> f64 {
+        self.fields.updated
     }
 
     pub fn blocked_by(&self, statuses: &BTreeMap<String, WorkStatus>) -> Vec<String> {
@@ -547,7 +537,7 @@ impl WorkItemRecord {
     }
 
     pub fn set_status(&mut self, status: WorkStatus) {
-        self.value["status"] = Value::String(status.as_str().to_owned());
+        self.value["status"] = serde_json::json!(status);
         self.fields.status = status;
     }
 }
@@ -1427,39 +1417,36 @@ mod tests {
     }
 
     #[test]
+    fn stored_review_boundary_work_diagnostic_uses_physical_row_id() {
+        let connection = Connection::open_in_memory().expect("fixture database");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .expect("work table");
+        connection
+            .execute(
+                "INSERT INTO runtime_work VALUES('physical-work',?1)",
+                [json!({"id":"payload-work","status":null}).to_string()],
+            )
+            .expect("corrupt fixture");
+        assert!(
+            matches!(super::Table::<WorkItemRecord>::new(&connection).get(&super::TaskId::from("physical-work")),Err(crate::StoreError::InvalidSyncObjectField{id,..}) if id=="physical-work")
+        );
+    }
+
+    #[test]
     fn stored_work_boundary_contract_matches_openapi_owner() {
         let openapi: Value = serde_json::from_str(include_str!("../../runtime-http/openapi.json"))
             .expect("OpenAPI owner");
-        let mut owned =
-            openapi["components"]["schemas"]["WorkItem"]["properties"]["status"]["enum"]
-                .as_array()
-                .expect("closed status owner")
-                .clone();
-        let mut typed = [
-            WorkStatus::Ready,
-            WorkStatus::Running,
-            WorkStatus::Blocked,
-            WorkStatus::Review,
-            WorkStatus::Accepted,
-            WorkStatus::Cancelled,
-        ]
-        .map(|status| {
-            let encoded = serde_json::to_value(status).expect("status encodes");
-            assert_eq!(encoded, json!(status.as_str()));
-            encoded
-        })
-        .to_vec();
-        owned.sort_by_key(Value::to_string);
-        typed.sort_by_key(Value::to_string);
         assert_eq!(
-            typed, owned,
-            "WorkStatus must match the WorkItem.status OpenAPI owner"
+            openapi["components"]["schemas"]["WorkItem"]["properties"]["status"]["$ref"],
+            "#/components/schemas/WorkStatus",
+            "work status consumes the generated Rust owner"
         );
         let schema: Value = serde_json::from_str(include_str!(
             "../../runtime-schema/src/schemas/persisted-work-item-record.schema.json"
         ))
         .expect("persisted owner");
-        for field in ["status", "dependencies"] {
+        for field in ["status", "dependencies", "updated"] {
             assert_eq!(
                 schema["properties"][field]["$ref"],
                 json!(format!(
@@ -1478,6 +1465,11 @@ mod tests {
         assert_eq!(record.status(), WorkStatus::Ready);
         assert_eq!(record.owner(), None);
         assert!(record.dependencies().is_empty());
+        assert_eq!(
+            record.updated(),
+            0.0,
+            "omission keeps the existing progress timestamp default"
+        );
         assert_eq!(
             record.into_value(),
             raw,
