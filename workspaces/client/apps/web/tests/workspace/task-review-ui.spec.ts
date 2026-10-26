@@ -206,6 +206,13 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
         taskDefaultGate = body.gate;
       } else if (body.action === "create") {
         const resultSchema = fixtureResultSchema(body.result_schema);
+        const gate = body.gate;
+        const serializedGate =
+          gate && typeof gate === "object"
+            ? gate.timeout_ms === undefined
+              ? { command: gate.command }
+              : { command: gate.command, timeout_ms: gate.timeout_ms }
+            : gate;
         tasks.push({
           ...common,
           ...body,
@@ -215,6 +222,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
           dependencies: body.dependencies ?? undefined,
           version: body.version ?? common.version,
           status: required(body.status),
+          gate: serializedGate,
           result_schema: resultSchema,
           resultSchema,
         } satisfies components["schemas"]["WorkItem"]);
