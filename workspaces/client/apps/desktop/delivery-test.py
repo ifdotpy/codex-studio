@@ -373,5 +373,31 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse((self.state / updates.PENDING_FILE).exists())
 
 
+    def test_rollback_to_a_superseded_install_starts_a_new_delivery(self):
+        first = self.stage()
+        shutil.copytree(self.source, self.installed, dirs_exist_ok=True)
+        self.identity.update(pid=12, backendBuild=hashlib.sha256(b'new').hexdigest())
+        updates.write_json(self.state / updates.RECEIPT_FILE,
+                           {'id': first['id'], 'outcome': 'installed'})
+        installed = delivery.wait_for_completion(first, self.installed, self.receipts,
+                                                 lambda: dict(self.identity))
+        delivery.save_record(self.state, self.receipts / delivery.CONTRACT['receiptFile'], installed)
+        (self.state / updates.PENDING_FILE).unlink()
+        # A later delivery of commit B installs its build and replaces the receipt.
+        shutil.rmtree(self.installed)
+        self.make_app(self.installed, {**self.build, 'builtAt': 3000.5, 'commit': 'c' * 40}, b'bee')
+        self.identity.update(backendBuild=hashlib.sha256(b'bee').hexdigest())
+        updates.write_json(self.state / updates.RECEIPT_FILE,
+                           {'id': 'another-operation', 'outcome': 'installed'})
+        observe = lambda: dict(self.identity)
+        with patch.object(delivery.time, 'sleep', side_effect=AssertionError('must not wait')):
+            self.assertIsNone(delivery.resume_saved(self.source, self.commit, self.installed,
+                                                    self.receipts, observe))
+            record = self.stage()
+        self.assertEqual(record['phase'], delivery.PHASES['submitted'])
+        self.assertEqual(updates.read_pending(self.state)['build'], self.build)
+        self.assertEqual(self.server(self.installed).read_bytes(), b'bee')
+
+
 if __name__ == '__main__':
     unittest.main()
