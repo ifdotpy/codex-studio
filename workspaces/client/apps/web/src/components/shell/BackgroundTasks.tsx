@@ -222,11 +222,11 @@ export default function BackgroundTasks({
   close: () => void;
   afterClose?: () => void;
   data: Snapshot;
-  leadId?: string;
+  leadId?: string | undefined;
   openAgent: (id: string) => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
-  initialFocus?: { id: string; leadId: string; requestId: string };
+  initialFocus?: { id: string; leadId: string; requestId: string } | undefined;
 }) {
   const { get, post } = useServerApi();
   const services = useServerServices();
@@ -239,7 +239,7 @@ export default function BackgroundTasks({
   const [kind, setKind] = useState("all"),
     [query, setQuery] = useState(""),
     [selection, setSelection] = useState<{
-      scope?: string;
+      scope?: string | undefined;
       id: string;
       requested?: boolean;
     } | null>(null),
@@ -524,7 +524,7 @@ export default function BackgroundTasks({
     <Drawer
       opened={opened}
       onClose={close}
-      onExitTransitionEnd={afterClose}
+      {...(afterClose === undefined ? {} : { onExitTransitionEnd: afterClose })}
       returnFocus={!afterClose}
       position="right"
       size={940}
@@ -781,7 +781,7 @@ export function BackgroundTaskStrip({
   select,
 }: {
   task: DisplayBackgroundTask;
-  owner?: Agent;
+  owner?: Agent | undefined;
   now: number;
   selected: boolean;
   select: () => void;
@@ -826,7 +826,7 @@ function TaskDetail({
   controlPending,
 }: {
   task: DisplayBackgroundTask;
-  owner?: Agent;
+  owner?: Agent | undefined;
   now: number;
   requests: PendingRequest[];
   back: () => void;

@@ -222,13 +222,13 @@ function useCompactHeaderTools() {
 export default function Conversation(p: {
   id: string | null;
   visible?: boolean;
-  projectName?: string;
-  recentChats?: RecentProjectChat[];
+  projectName?: string | undefined;
+  recentChats?: RecentProjectChat[] | undefined;
   syncWorkspaceId?: string;
-  agent?: Agent;
-  lead?: Agent;
-  room?: Room;
-  legacy?: Json;
+  agent?: Agent | undefined;
+  lead?: Agent | undefined;
+  room?: Room | undefined;
+  legacy?: Json | undefined;
   data: ConversationData;
   waitSource: ChatWaitSource;
   getDraft: DraftReader;
@@ -260,9 +260,9 @@ export default function Conversation(p: {
   limits: Json | null;
   limitsAccounts?: UsageAccount[];
   limitsLoading?: boolean;
-  jumpTarget?: { messageId: string; requestId: string };
+  jumpTarget?: { messageId: string; requestId: string } | undefined;
   onJumpHandled?: (requestId: string) => void;
-  limitsAccountLabel?: string;
+  limitsAccountLabel?: string | undefined;
   reloadLimits: () => void;
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();
@@ -1783,8 +1783,16 @@ export default function Conversation(p: {
                 onReorder={(ids) =>
                   messageQueue.reorder(
                     mergeQueueOrder(
-                      messageQueue.items.map((item) => item.id),
-                      queue.map((item) => item.id),
+                      messageQueue.items.map((item) => {
+                        if (item.id === undefined)
+                          throw new Error("Missing queue item ID");
+                        return item.id;
+                      }),
+                      queue.map((item) => {
+                        if (item.id === undefined)
+                          throw new Error("Missing queue item ID");
+                        return item.id;
+                      }),
                       ids,
                     ),
                   )

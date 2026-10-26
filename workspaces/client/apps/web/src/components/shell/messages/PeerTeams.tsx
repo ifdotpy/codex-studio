@@ -49,12 +49,12 @@ export function PeerTeamGroup({
   serverOffline = false,
 }: {
   itemId?: string;
-  roomId?: string;
+  roomId?: string | undefined;
   openRoom: (id: string) => void;
-  refresh?: () => Promise<void>;
+  refresh?: (() => Promise<void>) | undefined;
   scope: string;
   disabled?: boolean;
-  serverAlias?: string;
+  serverAlias?: string | undefined;
   serverOffline?: boolean;
   team: PeerTeam;
   closed: boolean;
@@ -63,7 +63,9 @@ export function PeerTeamGroup({
   dissolve: () => void;
   children: ReactNode;
   reorder?: HTMLAttributes<HTMLElement>;
-  drop?: HTMLAttributes<HTMLElement> & { "data-folder-drop"?: string };
+  drop?: HTMLAttributes<HTMLElement> & {
+    "data-folder-drop"?: string | undefined;
+  };
 }) {
   const backend = useRef(useSidebarBackend()).current;
   const { post, saved, save } = backend;
@@ -216,11 +218,11 @@ export function PeerTeamForm({
   close,
 }: {
   project: Project;
-  team?: PeerTeam;
+  team?: PeerTeam | undefined;
   teams: PeerTeam[];
   agents: Agent[];
   action: "save" | "delete";
-  refresh?: () => Promise<void>;
+  refresh?: (() => Promise<void>) | undefined;
   close: () => void;
 }) {
   const backend = useRef(useSidebarBackend()).current;
