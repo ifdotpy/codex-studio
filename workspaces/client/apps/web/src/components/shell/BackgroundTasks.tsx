@@ -812,7 +812,7 @@ export function BackgroundTaskStrip({
   );
 }
 
-function TaskDetail({
+export function TaskDetail({
   task: summary,
   owner,
   now,
