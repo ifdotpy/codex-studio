@@ -1,11 +1,14 @@
+import assert from "node:assert/strict";
+import type { Page, Locator } from "@playwright/test";
+import type { AccountRateLimitsDto } from "../playwright.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 import { accountLimitFixtures } from "../../src/components/AccountLimits.fixtures.ts";
 
-async function keyboardCycle(page, region) {
+async function keyboardCycle(page: Page, region: Locator) {
   const targets = await region.evaluate((root) => {
     const elements = [
-      ...root.querySelectorAll(
+      ...root.querySelectorAll<HTMLElement>(
         "button,a[href],input,select,textarea,[tabindex]",
       ),
     ].filter(
@@ -48,27 +51,28 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
     email: item.email,
     provider: item.provider,
     plan: item.plan,
-    status: "ready",
+    status: "ready" as const,
     isDefault: index === 0,
     home: `/fixture/${item.key}`,
     source: "fixture",
   }));
-  const limits = Object.fromEntries(
-    accounts.map((account, index) => [
-      account.id,
-      {
-        ...accountLimitFixtures[index].limits,
-        accountKey: account.id,
-        ...(accountLimitFixtures[index].limits.data
-          ? {
-              data: {
-                ...accountLimitFixtures[index].limits.data,
-                accountId: account.accountId,
-              },
-            }
-          : {}),
-      },
-    ]),
+  const limits: Record<string, AccountRateLimitsDto> = Object.fromEntries(
+    accounts.map((account, index) => {
+      const item = accountLimitFixtures[index];
+      assert.ok(item);
+      const value = item.limits;
+      assert.ok(value && typeof value === "object" && "at" in value);
+      return [
+        account.id,
+        {
+          ...value,
+          accountKey: account.id,
+          ...(value.data
+            ? { data: { ...value.data, accountId: account.accountId } }
+            : {}),
+        } satisfies AccountRateLimitsDto,
+      ];
+    }),
   );
   const local = await fixture("Workstation", false, {
     accounts,
@@ -91,8 +95,9 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
     },
   });
   local.snapshot.runtime.rateLimitsByAccount = limits;
-  local.snapshot.runtime.rateLimits = limits.default;
+  local.snapshot.runtime.rateLimits = limits.default ?? null;
   const lead = local.snapshot.threads[0];
+  assert.ok(lead);
   local.setChats(
     accounts.map((account, index) => ({
       ...lead,
@@ -177,6 +182,7 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
                 const context = document
                   .createElement("canvas")
                   .getContext("2d");
+                if (!context) throw new Error("Missing canvas context");
                 context.font = getComputedStyle(element).font;
                 return context.measureText("00000000").width;
               })(),
@@ -189,6 +195,7 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
           const alignment = await rows.first().evaluate((row) => {
             const name = row.querySelector(".account-identity > strong");
             const plan = row.querySelector(".account-plan");
+            if (!name || !plan) throw new Error("Missing account identity");
             return Math.abs(
               name.getBoundingClientRect().x -
                 plan.getBoundingClientRect().x -
@@ -250,6 +257,7 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
           level: 3,
         });
         const headingBox = await heading.boundingBox();
+        assert.ok(headingBox);
         const headingLine = await heading.evaluate((element) =>
           parseFloat(getComputedStyle(element).lineHeight),
         );
@@ -257,10 +265,12 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
         const invitation = await dialog
           .getByRole("button", { name: "Add with an invitation", exact: true })
           .boundingBox();
-        if (width === 320)
+        if (width === 320) {
+          assert.ok(invitation);
           expect(invitation.y).toBeGreaterThanOrEqual(
             headingBox.y + headingBox.height,
           );
+        }
         await dialog
           .getByRole("button", { name: "Edit", exact: true })
           .first()

@@ -1,3 +1,13 @@
+import { required } from "./fixture-helpers.ts";
+import type {
+  Browser,
+  ElectronApplication,
+  Page,
+  TestInfo,
+  BrowserContext,
+} from "@playwright/test";
+import { _electron } from "playwright";
+import type { PostBody } from "../../src/api.ts";
 import {
   readTestState,
   spawnFixture as spawn,
@@ -21,7 +31,7 @@ import {
   selectModel,
 } from "../fixtures/model-picker.ts";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -90,16 +100,16 @@ test("execution settings ui", async ({ browser: _browser }) => {
       FIXTURE_HOLD: "workers",
     },
   });
-  let browser,
-    log = "";
-  proc.stderr.on("data", (d) => (log += d));
+  let browser: Browser | ElectronApplication | undefined;
+  let log = "";
+  proc.stderr?.on("data", (d) => (log += d));
   try {
-    const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
+    const port = await new Promise<number>((resolve, reject) => {
+      proc.stdout?.once("data", (d) => resolve(Number(String(d).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const url = `http://127.0.0.1:${port}`;
-    let page;
+    let page: Page;
     if (process.env.CODEX_TEST_DESKTOP) {
       browser = await _electron.launch({
         executablePath: process.env.CODEX_TEST_DESKTOP,
@@ -113,16 +123,18 @@ test("execution settings ui", async ({ browser: _browser }) => {
       });
       page = await browser.firstWindow();
       assert.equal(
-        await browser.evaluate(({ BrowserWindow }) =>
-          BrowserWindow.getAllWindows()[0].isVisible(),
-        ),
+        await browser.evaluate(({ BrowserWindow }) => {
+          const first = BrowserWindow.getAllWindows()[0];
+          if (!first) throw new Error("Missing hidden fixture window");
+          return first.isVisible();
+        }),
         false,
       );
     } else {
       browser = _browser;
       page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     }
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     if (process.env.CODEX_TEST_DESKTOP) {
       await page.waitForURL(url + "/");
@@ -132,7 +144,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     }
     const state = async () =>
       (await readTestState(url, { agentDetails: true })).runtime.agents;
-    const settingsResponse = (id, matches) =>
+    const settingsResponse = (
+      id: string,
+      matches: (body: PostBody<"/api/conversation">) => boolean,
+    ) =>
       page.waitForResponse((response) => {
         const request = response.request();
         if (
@@ -140,10 +155,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
           request.method() !== "POST"
         )
           return false;
-        const body = request.postDataJSON();
+        const body: PostBody<"/api/conversation"> = request.postDataJSON();
         return body.id === id && matches(body);
       });
-    const waitFor = async (predicate) => {
+    const waitFor = async <T>(predicate: () => T | Promise<T>) => {
       for (let i = 0; i < 100; i++) {
         const result = await predicate();
         if (result) return result;
@@ -176,7 +191,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       await expect(chatSettingsDialog.getByRole("tablist")).toHaveCount(0);
       await expect(chatSettingsDialog.getByRole("listbox")).toHaveCount(0);
     };
-    const openSettings = async (name) => {
+    const openSettings = async (name: string) => {
       if (await chatSettingsDialog.isVisible()) {
         await page.keyboard.press("Escape");
         await expect(chatSettingsDialog).toBeHidden();
@@ -201,6 +216,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .filter({ hasText: "Release lead" })
       .click();
     const lead = (await state()).find((a) => a.name === "Release lead");
+    assert.ok(lead);
+    assert.ok(lead.model);
+    assert.ok(lead.concurrency != null);
     await page.locator("#message").fill("/model");
     await page.locator("#message").press("Enter");
     await expect(picker).toBeVisible();
@@ -223,9 +241,16 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await applyLimit.scrollIntoViewIfNeeded();
     const inputBox = await parallelInput.boundingBox();
     const applyBox = await applyLimit.boundingBox();
-    expect(applyBox.x).toBeGreaterThan(inputBox.x + inputBox.width);
+    expect(required(applyBox).x).toBeGreaterThan(
+      required(inputBox).x + required(inputBox).width,
+    );
     expect(
-      Math.abs(applyBox.y + applyBox.height - inputBox.y - inputBox.height),
+      Math.abs(
+        required(applyBox).y +
+          required(applyBox).height -
+          required(inputBox).y -
+          required(inputBox).height,
+      ),
     ).toBeLessThan(1);
     await parallelInput.fill(String(lead.concurrency));
     await expect(applyLimit).toHaveCount(0);
@@ -236,8 +261,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     for (const [width, height] of [
       [1440, 900],
       [390, 844],
-    ]) {
-      for (const scheme of ["light", "dark"]) {
+    ] as const) {
+      for (const scheme of ["light", "dark"] as const) {
         await page.setViewportSize({ width, height });
         await page.emulateMedia({ colorScheme: scheme });
         await expect(page.locator("html")).toHaveAttribute(
@@ -266,7 +291,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
           expect(geometry.right).toBeLessThanOrEqual(width);
           expect(geometry.content).toBeLessThanOrEqual(geometry.width);
           layoutMeasurements.push({
-            width,
+            viewportWidth: width,
             height,
             scheme,
             surface,
@@ -334,7 +359,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(async () => {
       const row = (await state()).find((a) => a.id === lead.id);
-      return (row.pendingSettings?.model || row.model) !== lead.model;
+      return (
+        (required(row).pendingSettings?.model || required(row).model) !==
+        lead.model
+      );
     });
     await page.keyboard.press("Escape");
     await listBox.waitFor({ state: "hidden" });
@@ -353,7 +381,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(async () => {
       const row = (await state()).find((a) => a.id === lead.id);
-      return (row.pendingSettings?.model || row.model) === lead.model;
+      return (
+        (required(row).pendingSettings?.model || required(row).model) ===
+        lead.model
+      );
     });
     await waitFor(async () => (await modelValue(leadModel)) === lead.model);
     assert.equal(await modelValue(leadModel), lead.model);
@@ -368,7 +399,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await leadReasoningSaved).ok());
     await waitFor(
       async () =>
-        (await state()).find((a) => a.id === lead.id).effort === "high",
+        required((await state()).find((a) => a.id === lead.id)).effort ===
+        "high",
     );
     await waitFor(() => leadReasoning.isEnabled());
     await openTeam();
@@ -390,7 +422,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .filter({ hasText: "Wait for this turn to end" })
       .waitFor();
     assert.equal((await yoloSaved).status(), 400);
-    assert.equal((await state()).find((a) => a.id === lead.id).yoloMode, true);
+    assert.equal(
+      required((await state()).find((a) => a.id === lead.id)).yoloMode,
+      true,
+    );
     await waitFor(() => yolo.isChecked());
     await waitFor(() => yolo.isEnabled());
     await openSettings("Main agent settings");
@@ -405,7 +440,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await leadFastModeSaved).ok());
     await waitFor(
       async () =>
-        (await state()).find((a) => a.id === lead.id).fastMode === true,
+        required((await state()).find((a) => a.id === lead.id)).fastMode ===
+        true,
     );
     await waitFor(() => leadFastMode.isEnabled());
     await page.keyboard.press("Escape");
@@ -440,8 +476,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await nestedDelegationSaved).ok());
     await waitFor(
       async () =>
-        (await state()).find((a) => a.id === lead.id).workerDefaults
-          .delegationDepth === 2,
+        required(
+          required((await state()).find((a) => a.id === lead.id))
+            .workerDefaults,
+        ).delegationDepth === 2,
     );
     await openSettings("Subagent defaults");
     const defaultModel = dialog.getByLabel("Default subagent model", {
@@ -504,7 +542,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       await defaultModel.waitFor({ state: "visible" });
       const box = await defaultModel.boundingBox();
       assert.ok(
-        box.x >= 0 && box.x + box.width <= width + 1,
+        required(box).x >= 0 &&
+          required(box).x + required(box).width <= width + 1,
         `model list fits ${width}`,
       );
     }
@@ -515,7 +554,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
     let current = (await state()).find((a) => a.id === lead.id);
-    assert.deepEqual(current.workerDefaults, {
+    assert.deepEqual(required(current).workerDefaults, {
       model: "gpt-6-luna",
       effort: "high",
       fastMode: true,
@@ -523,8 +562,11 @@ test("execution settings ui", async ({ browser: _browser }) => {
       cyberAccessProgram: "standard",
       delegationDepth: 2,
     });
-    const spawnWorker = async (name, overrides = {}) => {
-      proc.stdin.write(
+    const spawnWorker = async (
+      name: string,
+      overrides: Partial<PostBody<"/api/agents">> = {},
+    ) => {
+      proc.stdin?.write(
         JSON.stringify({
           method: "fixture/create-worker",
           parent: lead.id,
@@ -574,8 +616,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(
       async () =>
-        (await state()).find((a) => a.id === lead.id).workerDefaults.model ===
-        "test-slow",
+        required(
+          required((await state()).find((a) => a.id === lead.id))
+            .workerDefaults,
+        ).model === "test-slow",
     );
     await waitFor(() => defaultModel.isEnabled());
     const solModelSaved = settingsResponse(
@@ -586,8 +630,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await solModelSaved).ok());
     await waitFor(
       async () =>
-        (await state()).find((a) => a.id === lead.id).workerDefaults.model ===
-        "gpt-5.6-sol",
+        required(
+          required((await state()).find((a) => a.id === lead.id))
+            .workerDefaults,
+        ).model === "gpt-5.6-sol",
     );
     await waitFor(() => defaultModel.isEnabled());
     const higherWorkerReasoningSaved = settingsResponse(
@@ -614,23 +660,26 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await defaultReasoning.selectOption("low");
     assert.ok((await lowReasoningSaved).ok());
     await waitFor(async () => {
-      const defaults = (await state()).find(
-        (a) => a.id === lead.id,
+      const defaults = required(
+        (await state()).find((a) => a.id === lead.id),
       ).workerDefaults;
-      return defaults.model === "gpt-5.6-sol" && defaults.effort === "low";
+      return (
+        required(defaults).model === "gpt-5.6-sol" &&
+        required(defaults).effort === "low"
+      );
     });
     await waitFor(() => defaultReasoning.isEnabled());
     await expect(
       dialog.getByRole("switch", { name: "Fast mode", exact: true }),
     ).not.toBeChecked();
     await waitFor(async () => {
-      const defaults = (await state()).find(
-        (a) => a.id === lead.id,
+      const defaults = required(
+        (await state()).find((a) => a.id === lead.id),
       ).workerDefaults;
       return (
-        defaults.model === "gpt-5.6-sol" &&
-        defaults.effort === "low" &&
-        defaults.fastMode === false
+        required(defaults).model === "gpt-5.6-sol" &&
+        required(defaults).effort === "low" &&
+        required(defaults).fastMode === false
       );
     });
     await waitFor(
@@ -644,7 +693,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.equal(next.effort, "low");
     assert.equal(next.fastMode, false);
     assert.equal(
-      (await state()).find((a) => a.id === first.id).model,
+      required((await state()).find((a) => a.id === first.id)).model,
       "gpt-6-luna",
     );
     for (const width of [1440, 768, 390, 320]) {
@@ -669,7 +718,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       body: JSON.stringify({ cwd: root }),
     });
     assert.equal(freshResponse.status, 200);
-    const fresh = await freshResponse.json();
+    const fresh: import("../../src/types.ts").Agent =
+      await freshResponse.json();
     await page.reload();
     await page.locator(`[data-chat="${fresh.id}"]`).click();
     await openSettings("Main agent settings");
@@ -690,7 +740,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await freshYoloOffSaved).ok());
     await waitFor(
       async () =>
-        (await state()).find((a) => a.id === fresh.id).yoloMode === false,
+        required((await state()).find((a) => a.id === fresh.id)).yoloMode ===
+        false,
     );
     await waitFor(async () => !(await freshYolo.isDisabled()));
     await waitFor(async () => !(await freshYolo.isChecked()));
@@ -705,7 +756,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await freshYoloOnSaved).ok());
     await waitFor(
       async () =>
-        (await state()).find((a) => a.id === fresh.id).yoloMode === true,
+        required((await state()).find((a) => a.id === fresh.id)).yoloMode ===
+        true,
     );
     await waitFor(async () => !(await freshYolo.isDisabled()));
     await page.keyboard.press("Escape");
@@ -717,7 +769,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.locator(`[data-chat="${lead.id}"]`).click();
     const running = (await state()).find((agent) => agent.name === "Worker 00");
     const openWorker = async () => {
-      const row = page.locator(`[data-worker="${running.id}"]`);
+      const row = page.locator(`[data-worker="${required(running).id}"]`);
       if (!(await row.isVisible()))
         await page.getByRole("button", { name: "Team", exact: true }).click();
       await row.click();
@@ -742,9 +794,11 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await expect(
       workerDialog.getByLabel("Subagent reasoning", { exact: true }),
     ).toBeVisible();
-    const pendingBodies = [];
+    const pendingBodies: PostBody<"/api/conversation">[] = [];
     await page.route("**/api/conversation", async (route) => {
-      const body = route.request().postDataJSON();
+      const body: PostBody<"/api/conversation"> = route
+        .request()
+        .postDataJSON();
       if (!body.next_turn) {
         await route.continue();
         return;
@@ -764,13 +818,18 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
     assert.equal(
-      (await state()).find((agent) => agent.id === running.id).effort,
-      running.effort,
+      required(
+        (await state()).find((agent) => agent.id === required(running).id),
+      ).effort,
+      required(running).effort,
       "The active turn keeps its reasoning",
     );
     assert.equal(
-      (await state()).find((agent) => agent.id === running.id).pendingSettings
-        .effort,
+      required(
+        required(
+          (await state()).find((agent) => agent.id === required(running).id),
+        ).pendingSettings,
+      ).effort,
       "medium",
     );
     await page.reload();
@@ -790,10 +849,15 @@ test("execution settings ui", async ({ browser: _browser }) => {
       pendingBodies[0],
       "Recovery uses the same settings and request identity",
     );
-    assert.match(pendingBodies[0].request_id, /^[0-9a-f-]{36}$/);
+    assert.match(
+      required(required(pendingBodies[0]).request_id),
+      /^[0-9a-f-]{36}$/,
+    );
     assert.equal(
-      (await state()).find((agent) => agent.id === running.id).effort,
-      running.effort,
+      required(
+        (await state()).find((agent) => agent.id === required(running).id),
+      ).effort,
+      required(running).effort,
     );
     assert.deepEqual(errors, []);
     console.log(
@@ -801,7 +865,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
         root,
     );
   } catch (error) {
-    throw new Error(`${error.message}\nFixture log:\n${log}`, { cause: error });
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}\nFixture log:\n${log}`,
+      { cause: error },
+    );
   } finally {
     if (process.env.CODEX_TEST_DESKTOP) await browser?.close();
   }

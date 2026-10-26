@@ -5,8 +5,8 @@ against the generated API schema. It lists fixtures that construct a response
 or stored receipt using a request body field such as `id`, `request_id`, or
 `login_id`; it does not claim that each fixture has already been schema-audited.
 
-- `accounts/account-transfer-ui.spec.mjs`
-- `accounts/accounts-ui-smoke.spec.mjs`
+- `accounts/account-transfer-ui.spec.ts`
+- `accounts/accounts-ui-smoke.spec.ts`
 - `claude/claude-login-ui.spec.mjs`
 - `drafts/dialog-drafts-ui.spec.mjs`
 - `drafts/draft-push-coalescing-browser.spec.mjs`
@@ -21,10 +21,10 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `radio/radio-create-browser.spec.mjs`
 - `servers/multi-server-fixture.ts`
 - `servers/project-locations-ui.spec.mjs`
-- `settings/claude-settings-auth-ui.spec.mjs`
-- `settings/execution-settings-canonical-browser.spec.mjs`
+- `settings/claude-settings-auth-ui.spec.ts`
+- `settings/execution-settings-canonical-browser.spec.ts`
 - `settings/settings-ux-ui.spec.mjs`
-- `settings/unified-agent-picker-browser.spec.mjs`
+- `settings/unified-agent-picker-browser.spec.ts`
 - `shell/shell-ux-ui.spec.mjs`
 - `sidebar/sidebar-parity-fixture.mjs`
 - `teams/peer-teams-browser.spec.mjs`
