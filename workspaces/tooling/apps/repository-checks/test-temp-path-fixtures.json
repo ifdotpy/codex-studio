@@ -55,7 +55,7 @@
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
     "\"\\u{200b} file:///tmp/%D0%96%F0%9F%A6%80.rs#L12C2 \\u{200b}\",",
-    "json!({\"path\":\"/tmp/Ж🦀.rs\",\"line\":12}),",
+    "json!({\"path\":\"/tmp/\u0416\ud83e\udd80.rs\",\"line\":12}),",
     "\"sandbox:/tmp/report.md:9:2\",",
     "json!({\"path\":\"/tmp/report.md\",\"line\":9}),",
     "\"file://localhost/tmp/a.md#L4-L8\",",
@@ -64,10 +64,6 @@
   "workspaces/client/packages/client-core/src/vault_keys.rs": [
     "let file = script(\"project_1\", \"/tmp/a'b/tool\").unwrap();",
     "\"#!/bin/sh\\nrm -f \\\"$0\\\"\\nexec '/tmp/a'\\\\''b/tool' keys --project 'project_1' --clear\\n\""
-  ],
-  "workspaces/providers/apps/claude-bridge/command-background.test.ts": [
-    "yield {type:'user',uuid:'u-1',message:{role:'user',content:[{type:'tool_result',tool_use_id:'toolu-1',content:'Command running in background with ID: bash-1. Output is being written to: /tmp/bash-1.output'}]},tool_use_result:{stdout:'',stderr:'',interrupted:false,backgroundTaskId:'bash-1',backgroundedByUser:true}};",
-    "yield {type:'system',subtype:'task_notification',task_id:'bash-1',tool_use_id:'toolu-1',status:'completed',output_file:'/tmp/bash-1.output',summary:'Background command completed (exit code 0)',uuid:'s-3'};"
   ],
   "workspaces/providers/apps/claude-bridge/disk-full.test.ts": [
     "cwd: \"/tmp/work\","

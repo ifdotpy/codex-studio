@@ -1,3 +1,7 @@
+import {
+  javascriptFindings,
+  JAVASCRIPT_EXCEPTIONS,
+} from "../javascript-policy.ts";
 import type {
   LocatedPackage,
   WorkspacePackage,
@@ -53,6 +57,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
+    assert.match(recipe.command, /javascript-check/);
     assert.match(recipe.command, /vm-guest\/run-guest-suite\.mts/);
     assert.doesNotMatch(
       recipe.command,
@@ -1537,3 +1542,59 @@ for (const declaration of ["import", "export"]) {
     }
   });
 }
+
+test("JavaScript policy rejects unlisted tracked output, unchecked exceptions and missing project coverage", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "studio-js-policy-"));
+  const exception = JAVASCRIPT_EXCEPTIONS[0];
+  assert.ok(exception);
+  const file = path.join(root, exception.file);
+  const config = "tsconfig.json";
+  const generated = "generated/output.js";
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    mkdirSync(path.join(root, "generated"));
+    writeFileSync(path.join(root, generated), "// @ts-check\n");
+    writeFileSync(
+      path.join(root, config),
+      JSON.stringify({
+        compilerOptions: { allowJs: true },
+        include: ["**/*.cjs"],
+      }),
+    );
+    writeFileSync(file, "export {};\n");
+    const tracked = [exception.file, generated, config];
+    assert.ok(
+      javascriptFindings(root, tracked).some((finding) =>
+        finding.includes(generated),
+      ),
+      "tracked generated JS is not implicitly exempt",
+    );
+    assert.ok(
+      javascriptFindings(root, tracked).some((finding) =>
+        finding.includes("@ts-check"),
+      ),
+    );
+    writeFileSync(file, "// @ts-check\nexport {};\n");
+    assert.deepEqual(javascriptFindings(root, tracked, [exception.file]), []);
+    assert.ok(
+      javascriptFindings(root, [exception.file], [exception.file]).some(
+        (finding) => finding.includes("tsconfig"),
+      ),
+    );
+    writeFileSync(
+      path.join(root, config),
+      JSON.stringify({
+        compilerOptions: { allowJs: true },
+        exclude: ["**/*.cjs"],
+      }),
+    );
+    assert.ok(
+      javascriptFindings(root, tracked, [exception.file]).some((finding) =>
+        finding.includes("tsconfig"),
+      ),
+      "excluded files are not project roots",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

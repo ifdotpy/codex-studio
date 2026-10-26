@@ -48,3 +48,5 @@ A file stays JavaScript only when its runtime loads that file unchanged and has
 no TypeScript loader, for example a sandboxed preload script or a file embedded
 by the Rust build. Such a file starts with `// @ts-check`, takes its types from
 their TypeScript owners, and belongs to a checked project.
+
+The [JavaScript exception list](../workspaces/tooling/apps/repository-checks/javascript-policy.ts) owns the permitted files and their purposes; tracked generated JavaScript follows the same rule, while untracked build output is outside the check.
