@@ -7,6 +7,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
 use serde_json::Value;
 use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE;
 
 use crate::{StoreError, StoreResult};
 
@@ -18,6 +19,9 @@ const ANALYTICS_PROVIDER_FORMAT_KEY: &str = "providerIdentityFormat";
 const PROVIDER_IDENTITY_FORMAT: &str = "2026-10-26";
 /// The only historical registry version accepted by the dated migration.
 const LEGACY_REGISTRY_FORMAT_VERSION: u32 = 1;
+
+/// Original provider leaf for a title fingerprint awaiting dated conversion; JSON field name.
+pub const TITLE_FINGERPRINT_PROVIDER_2026_10_26: &str = "titleFingerprintProvider20261026";
 
 fn invalid(source: &str) -> StoreError {
     StoreError::SchemaMismatch(format!("provider identity migration 2026-10-26: {source}"))
@@ -279,7 +283,8 @@ pub(crate) fn validate_2026_10_26(root: &Path) -> StoreResult<Accounts> {
 
 /// 2026-10-26 upgrade in the existing Canvas startup transaction, before strict columns.
 /// Remove only after supported states and restorable backups crossed this format,
-/// or upgrades from older formats are explicitly retired.
+/// or upgrades from older formats are explicitly retired, and all tagged title
+/// effects have completed their fingerprint conversion.
 pub fn migrate_canvas_2026_10_26(tx: &Transaction<'_>, accounts: &Accounts) -> StoreResult<()> {
     if crate::agent_columns::has_explicit_provider_column(tx)? {
         return Ok(());
@@ -290,6 +295,24 @@ pub fn migrate_canvas_2026_10_26(tx: &Transaction<'_>, accounts: &Accounts) -> S
         .collect::<StoreResult<Vec<_>>>()?;
     if updates.iter().all(|(_, rows)| rows.is_empty()) {
         return Ok(());
+    }
+    if crate::schema::table_exists(tx, "runtime_operation_receipts")? {
+        // Catalog-selected title settings are not persisted, so retain only the
+        // original provider leaf. The finisher verifies the entire old hash
+        // before converting it with its real snapshot and catalog.
+        tx.execute(
+            "UPDATE runtime_operation_receipts AS effect
+             SET result=json_set(result,?1,NULL)
+             WHERE signature=?2 AND json_type(result,'$.fingerprint')='text'
+               AND EXISTS (SELECT 1 FROM runtime_agents AS agent
+                 WHERE agent.id=json_extract(effect.result,'$.agent_id')
+                   AND (json_type(agent.record,'$.provider') IS NULL
+                        OR json_type(agent.record,'$.provider')='null'))",
+            rusqlite::params![
+                format!("$.{TITLE_FINGERPRINT_PROVIDER_2026_10_26}"),
+                TITLE_EFFECT_SIGNATURE
+            ],
+        )?;
     }
     let mut preserved = Vec::new();
     for table in crate::agent_volatile::MIGRATION_PRESERVED_TABLES {
@@ -376,6 +399,78 @@ mod tests {
             tx.execute_batch(&sql)?;
         }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn migration_2026_10_26_marks_only_bound_legacy_title_effects() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("fresh state");
+        store.transaction(|tx| {
+            legacy_table(tx)?;
+            for (id, provider) in [("absent", None), ("null", Some(Value::Null)),
+                ("codex", Some(json!("codex"))), ("claude", Some(json!("claude")))] {
+                let mut agent = json!({"id":id,"rootId":id,"epoch":1,"status":"idle"});
+                if let Some(provider) = provider { agent["provider"] = provider; }
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![id,agent.to_string()])?;
+            }
+            for (id, agent, signature, fingerprint) in [
+                ("absent-effect","absent",super::TITLE_EFFECT_SIGNATURE,Some("old-absent")),
+                ("null-effect","null",super::TITLE_EFFECT_SIGNATURE,Some("old-null")),
+                ("codex-effect","codex",super::TITLE_EFFECT_SIGNATURE,Some("explicit-codex")),
+                ("claude-effect","claude",super::TITLE_EFFECT_SIGNATURE,Some("explicit-claude")),
+                ("unbound-effect","absent",super::TITLE_EFFECT_SIGNATURE,None),
+                ("foreign-effect","absent","another-operation",Some("foreign")),
+                ("orphan-effect","missing",super::TITLE_EFFECT_SIGNATURE,Some("orphan")),
+            ] {
+                let mut effect = json!({"agent_id":agent,"request_id":id,"state":"written","title":"Saved title","epoch":1});
+                if let Some(fingerprint) = fingerprint { effect["fingerprint"] = json!(fingerprint); }
+                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                    rusqlite::params![id,signature,effect.to_string()])?;
+            }
+            Ok::<_, StoreError>(())
+        }).await.expect("historical effects");
+        let before = store
+            .test_reader()
+            .expect("reader")
+            .prepare("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")
+            .expect("receipts")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("receipt rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("receipt values");
+        drop(store);
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("migrated effects");
+        let reader = store.test_reader().expect("reader");
+        for (id, signature, raw) in before {
+            let mut expected: Value = serde_json::from_str(&raw).expect("original effect");
+            if matches!(id.as_str(), "absent-effect" | "null-effect") {
+                expected[super::TITLE_FINGERPRINT_PROVIDER_2026_10_26] = Value::Null;
+            }
+            let (actual_signature, actual): (String, String) = reader
+                .query_row(
+                    "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("migrated effect");
+            assert_eq!(actual_signature, signature);
+            assert_eq!(
+                serde_json::from_str::<Value>(&actual).expect("migrated JSON"),
+                expected,
+                "{id}"
+            );
+        }
     }
 
     #[tokio::test]

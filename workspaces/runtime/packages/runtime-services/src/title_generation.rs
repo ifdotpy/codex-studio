@@ -19,6 +19,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -26,7 +27,6 @@ const MAX_ITEMS: usize = 40;
 const MAX_ITEM_BYTES: usize = 1_048_576;
 /// Python's one-shot title generation deadline (`codex_rename.py:109-110`).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-const TITLE_EFFECT_SIGNATURE: &str = "title-generation-effect-v1";
 
 #[derive(Debug, Error)]
 pub enum TitleError {
@@ -567,6 +567,7 @@ async fn generate_inner(
             let snapshot = &snapshot_for_admission;
             let catalog = &catalog_for_admission;
             let fingerprint = fingerprint_for_admission.as_str();
+            migrate_title_fingerprint_2026_10_26(tx, snapshot, fingerprint)?;
             let saved = tx
                 .query_row(
                     "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
@@ -1107,6 +1108,49 @@ fn signature(snapshot: &Snapshot) -> String {
     });
     let digest = Sha256::digest(serde_json::to_vec(&content).unwrap_or_default());
     data_encoding::HEXLOWER.encode(&digest)
+}
+
+/// Complete the 2026-10-26 provider migration using the actual title snapshot.
+/// Retire with the store migration only after supported states and backups cross
+/// the format boundary and no tagged title effects remain.
+fn migrate_title_fingerprint_2026_10_26(
+    tx: &Connection,
+    snapshot: &Snapshot,
+    fingerprint: &str,
+) -> Result<(), TitleError> {
+    use studio_runtime_store::provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
+
+    let agent_id = snapshot.agent["id"]
+        .as_str()
+        .ok_or_else(|| invalid("runtime_agents", "<missing-id>"))?;
+    let Some(mut effect) = read_effect(tx, &snapshot.request_id, agent_id)? else {
+        return Ok(());
+    };
+    let Some(provider) = effect.record.get(TITLE_FINGERPRINT_PROVIDER_2026_10_26) else {
+        return Ok(());
+    };
+    if !provider.is_null() || snapshot.provider.as_deref() != Some(ProviderKind::Codex.key()) {
+        return Err(TitleError::Conflict);
+    }
+    let mut historical = snapshot.clone();
+    historical.agent["provider"] = provider.clone();
+    if effect.record.get("fingerprint").and_then(Value::as_str)
+        != Some(signature(&historical).as_str())
+    {
+        return Err(TitleError::Conflict);
+    }
+    effect.record["fingerprint"] = json!(fingerprint);
+    effect
+        .record
+        .as_object_mut()
+        .ok_or_else(|| {
+            invalid(
+                "runtime_operation_receipts",
+                &effect_id(&snapshot.request_id),
+            )
+        })?
+        .remove(TITLE_FINGERPRINT_PROVIDER_2026_10_26);
+    write_effect(tx, &snapshot.request_id, agent_id, &effect.record)
 }
 
 fn python_rename_signature(agent_id: &str) -> String {
