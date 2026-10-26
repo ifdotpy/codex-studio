@@ -732,8 +732,8 @@ it("projects entity rows and preserves server sequence ordering", () => {
   const initial = applyEntityRows(
     state,
     [
-      { id: "state:ready", payload: "ignored", seq: 1 },
-      { id: "other:agent", payload: "ignored", seq: 1 },
+      { id: "state:ready", payload: "ignored", seq: 1 } satisfies EntityRow,
+      { id: "other:agent", payload: "ignored", seq: 1 } satisfies EntityRow,
       entityRow(
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
@@ -768,7 +768,7 @@ it("projects entity rows and preserves server sequence ordering", () => {
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
       ),
-      { id: "other:agent", payload: "ignored", seq: 3 },
+      { id: "other:agent", payload: "ignored", seq: 3 } satisfies EntityRow,
     ],
     true,
   );
@@ -1881,7 +1881,7 @@ it("applies v4 structured entity rows without parsing JSON strings", () => {
         payload: "",
         seq: 2,
         _deleted: true,
-      },
+      } satisfies EntityRow,
     ],
     true,
   );
@@ -1980,7 +1980,12 @@ it("projects independent account limits and preserves them across workspace upda
         },
         3,
       ),
-      { id: "entity:rateLimit:alpha", seq: 5, payload: "{}", _deleted: true },
+      {
+        id: "entity:rateLimit:alpha",
+        seq: 5,
+        payload: "{}",
+        _deleted: true,
+      } satisfies EntityRow,
     ],
     true,
   );
@@ -2022,7 +2027,7 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
           value: { stateDir: "fixture" },
         },
         seq: 1,
-      },
+      } satisfies EntityRow,
       entityRow({ collection: "studioError", id: item.id, value: item }, 2),
     ],
     true,
@@ -2041,13 +2046,13 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
           value: { stateDir: "fixture" },
         },
         seq: 1,
-      },
+      } satisfies EntityRow,
       {
         id: `entity:studioError:${item.id}`,
         seq: 3,
         payload: "{}",
         _deleted: true,
-      },
+      } satisfies EntityRow,
     ],
     true,
   );
@@ -2078,7 +2083,15 @@ it("projects queue stream upserts and deletion without endpoint reads", () => {
   assert.deepEqual(initial.runtime.queuesByAgent.chat, value);
   const next = applyEntityRows(
     state,
-    [row, { id: "entity:queue:chat", seq: 2, payload: "{}", _deleted: true }],
+    [
+      row,
+      {
+        id: "entity:queue:chat",
+        seq: 2,
+        payload: "{}",
+        _deleted: true,
+      } satisfies EntityRow,
+    ],
     true,
   );
 
@@ -2193,7 +2206,15 @@ for (const { entity, select } of sourceCases)
     assert.deepEqual(select(initial), entity.value);
     const next = applyEntityRows(
       state,
-      [row, { id: row.id, seq: 2, payload: "{}", _deleted: true }],
+      [
+        row,
+        {
+          id: row.id,
+          seq: 2,
+          payload: "{}",
+          _deleted: true,
+        } satisfies EntityRow,
+      ],
       true,
     );
 

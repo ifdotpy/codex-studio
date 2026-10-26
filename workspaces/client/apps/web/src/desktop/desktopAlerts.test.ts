@@ -399,6 +399,12 @@ it("does not show a complaint from before the window started when its page arriv
   assert.equal(fresh(withoutTime), true);
 });
 
+const signInParams = {
+  bridgeId: "b1",
+  host: "id.example.com",
+  expiresAt: 1600,
+  source: "host",
+} satisfies NonNullable<Request["params"]>;
 const signIn = (fields: Partial<Request> = {}): Request => ({
   id: "card-1",
   method: "browser/open",
@@ -461,7 +467,7 @@ it("reminds once before a sign-in card closes, and not while a phone sign-in wai
   // The person already opened the page on a phone: the card waits for the pasted result.
   const waiting = signIn({
     params: {
-      ...signIn().params,
+      ...signInParams,
       phase: "waiting",
       waiting: { expiresAt: 1600 },
     },
@@ -470,7 +476,7 @@ it("reminds once before a sign-in card closes, and not while a phone sign-in wai
   // A card whose deadline passed gives no reminder.
   assert.deepEqual(ids(1601), ["signin:card-1"]);
   // A card shorter than the grace plus the reminder lead gets only the first alert.
-  const short = signIn({ params: { ...signIn().params, expiresAt: 1200 } });
+  const short = signIn({ params: { ...signInParams, expiresAt: 1200 } });
   assert.deepEqual(ids(1100, short), ["signin:card-1"]);
 });
 
