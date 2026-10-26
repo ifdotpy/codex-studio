@@ -77,6 +77,6 @@ test.each([false, true])("shows the layr worker badge, remote=%s", (remote) => {
   } as unknown as Agent;
   expect(workspaceBadgeInfo(current)).toEqual({
     label: "Layr VM",
-    title: "Linux VM with Layr · /projects/example",
+    title: "Virtual machine with Layr · /projects/example",
   });
 });
