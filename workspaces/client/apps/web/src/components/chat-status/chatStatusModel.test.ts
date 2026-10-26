@@ -685,10 +685,11 @@ it("classifies unread, work, answer, error and paused states from current runtim
     waitState(undefined, { requests: [input] }).label,
     "Waiting for 1 input",
   );
+  const withoutRequests = snapshot([waitingLead]);
+  // @ts-expect-error A malformed snapshot can omit the required requests collection at runtime.
+  withoutRequests.runtime.requests = undefined;
   assert.equal(
-    // @ts-expect-error A malformed snapshot can omit the required requests collection at runtime.
-    chatWaitState(snapshot([waitingLead], { requests: undefined }), waitingLead)
-      .inputs,
+    chatWaitState(withoutRequests, waitingLead).inputs,
     0,
     "snapshots without a requests collection contain no input triggers",
   );
