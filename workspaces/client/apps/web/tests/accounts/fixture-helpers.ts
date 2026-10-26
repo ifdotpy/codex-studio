@@ -1,6 +1,6 @@
 import type { Server } from "node:http";
 import type { ViteDevServer } from "vite";
-import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
+import type { ApiPostPath, JsonInputOf, PostBody } from "../../src/apiTypes.ts";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import type { Agent } from "../../src/types.ts";
 import type {
@@ -143,16 +143,20 @@ export async function readFixtureResponse<
 }
 
 export function fixtureAgentEntity(
-  documents: import("../playwright.ts").SyncPullResponse["documents"],
+  documents: JsonInputOf<
+    import("../playwright.ts").SyncPullResponse["documents"]
+  >,
   id: string,
 ) {
   return documents
     .filter(
       (
         document,
-      ): document is Extract<
-        import("../playwright.ts").SyncEntity,
-        { op: "upsert"; collection: "agent" }
+      ): document is JsonInputOf<
+        Extract<
+          import("../playwright.ts").SyncEntity,
+          { op: "upsert"; collection: "agent" }
+        >
       > =>
         "op" in document &&
         document.op === "upsert" &&
