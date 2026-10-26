@@ -13,7 +13,7 @@ const servers = await Promise.all([
   fixture("Third", true),
   fixture("Fourth", true),
 ]);
-let desktop: ElectronApplication | null = null;
+let desktop!: ElectronApplication;
 function memory(pid: number | undefined) {
   const rows = execFileSync("ps", ["-axo", "pid=,ppid=,rss=,args="], {
     encoding: "utf8",
@@ -27,11 +27,11 @@ function memory(pid: number | undefined) {
           pid: Number(parts[1]),
           parent: Number(parts[2]),
           bytes: Number(parts[3]) * 1024,
-          args: parts[4] ?? "",
+          args: parts[4],
         }
       );
     })
-    .filter((row) => row !== null);
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
   const descendants = new Set([pid]);
   let changed = true;
   while (changed) {
@@ -99,7 +99,7 @@ try {
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().at(0)?.isVisible(),
+      BrowserWindow.getAllWindows()[0].isVisible(),
     ),
     false,
   );
@@ -107,25 +107,12 @@ try {
     await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });
     await page.evaluate(
       async ({ invitation }) => {
-        const bridge = window.codexDesktop;
-        if (!bridge) throw new Error("The desktop bridge is unavailable.");
-        if (!bridge.serverCredentialAction)
-          throw new Error(
-            "The desktop serverCredentialAction method is unavailable.",
-          );
-        const server = await bridge.serverCredentialAction({
+        const server = (await window.codexDesktop!.serverCredentialAction!({
           action: "pair",
           origin: invitation.origin,
           invitation,
           requestId: crypto.randomUUID(),
-        });
-        if (
-          !server ||
-          typeof server !== "object" ||
-          !("id" in server) ||
-          typeof server.id !== "string"
-        )
-          throw new Error("Pairing receipt is unavailable.");
+        })) as import("./server-credentials.ts").PairReceipt;
         const rows: unknown[] = JSON.parse(
           localStorage.getItem("studio-paired-servers-v1") || "[]",
         );
@@ -152,13 +139,11 @@ try {
     quietSeconds?: number;
   };
   const measurements: Measurement[] = [];
-  const [first, second, third] = servers;
-  assert.ok(first && second && third);
-  await pair(first);
-  await pair(second);
+  await pair(servers[0]);
+  await pair(servers[1]);
   await page.clock.install();
   for (const count of [2, 3]) {
-    if (count === 3) await pair(third);
+    if (count === 3) await pair(servers[2]);
     await page.reload();
     for (const server of servers.slice(0, count))
       await page
@@ -227,8 +212,7 @@ try {
     );
 } finally {
   if (desktop) {
-    const pid = desktop.process().pid;
-    assert.ok(pid);
+    const pid = desktop.process().pid!;
     const watchdog = setTimeout(() => {
       try {
         process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");

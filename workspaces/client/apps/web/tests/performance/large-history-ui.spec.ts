@@ -1,5 +1,5 @@
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
-import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
+import { transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
   readTestState,
   readFixtureSyncContract,
@@ -23,18 +23,15 @@ test("Large history @performance", async ({ context }) => {
   });
   let log = "",
     page;
-  required(proc.stderr).on("data", (d) => (log += d));
+  proc.stderr!.on("data", (d) => (log += d));
   const port = await new Promise((resolve, reject) => {
-    required(proc.stdout).once("data", (d) =>
-      resolve(Number(String(d).trim())),
-    );
+    proc.stdout!.once("data", (d) => resolve(Number(String(d).trim())));
     proc.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
   const state = await readTestState(origin);
-  const lead = state.threads.find((x) => x.name === "Other project");
-  const other = state.threads.find((x) => x.name === "Release lead");
-  if (!lead || !other) throw new Error("Missing fixture chats");
+  const lead = state.threads.find((x) => x.name === "Other project")!;
+  const other = state.threads.find((x) => x.name === "Release lead")!;
   let items: Message[] = [];
   const turns = Number(process.env.HISTORY_TURNS || 70);
   const steps = Number(process.env.HISTORY_STEPS || 12);
@@ -171,7 +168,7 @@ test("Large history @performance", async ({ context }) => {
     await r.fulfill({
       json: {
         items: selected,
-        nextCursor: start > 0 ? required(items[start - 1]).id : null,
+        nextCursor: start > 0 ? items[start - 1]!.id : null,
         nextAfterCursor:
           end < items.length ? selected.at(-1)?.id || null : null,
       },
@@ -360,7 +357,7 @@ test("Large history @performance", async ({ context }) => {
     assert.equal(
       await page
         .locator(`[data-message="tool-${turns - 1}-0"]`)
-        .evaluate((node) => node instanceof HTMLDetailsElement && node.open),
+        .evaluate((node) => (node as HTMLDetailsElement).open),
       true,
       "Reopening the group preserves the selected tool details",
     );

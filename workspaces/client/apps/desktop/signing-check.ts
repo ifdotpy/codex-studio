@@ -19,9 +19,9 @@ function statFile(file: string, label: string) {
     stat = statSync(file);
   } catch (error) {
     throw new CheckFailure(
-      error instanceof Error && "code" in error && error.code === "ENOENT"
+      (error as NodeJS.ErrnoException).code === "ENOENT"
         ? `${label} ${file} does not exist.`
-        : `${label} ${file} is not readable: ${error instanceof Error && "code" in error ? error.code : undefined}.`,
+        : `${label} ${file} is not readable: ${(error as NodeJS.ErrnoException).code}.`,
     );
   }
   if (!stat.isFile()) throw new CheckFailure(`${label} ${file} is not a file.`);
@@ -53,7 +53,7 @@ function loadSettings(env: NodeJS.ProcessEnv) {
     settings = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
     throw new CheckFailure(
-      `Signing configuration ${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      `Signing configuration ${file} is not valid JSON: ${(error as Error).message}`,
     );
   }
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
@@ -65,11 +65,11 @@ function loadSettings(env: NodeJS.ProcessEnv) {
 export function checkSigning(env = process.env) {
   const { source, settings } = loadSettings(env);
   validateSigningConfiguration(settings, source);
-  const { keychain, passwordFile } = settings;
-  if (keychain) statFile(keychain, "Keychain file");
-  if (keychain && passwordFile) requirePrivate(passwordFile, "Password file");
+  if (settings.keychain) statFile(settings.keychain, "Keychain file");
+  if (settings.keychain && settings.passwordFile)
+    requirePrivate(settings.passwordFile, "Password file");
   // Unlock and identity lookup are the same code the build runs.
-  return { keychain: keychain, identity: signingIdentity(env) };
+  return { keychain: settings.keychain, identity: signingIdentity(env) };
 }
 
 export function signingCheckReport(env = process.env) {
@@ -82,7 +82,7 @@ export function signingCheckReport(env = process.env) {
   } catch (error) {
     return {
       ok: false,
-      line: `FAIL: ${error instanceof Error ? error.message : String(error)}\nSee ${signingSetupDocument}`,
+      line: `FAIL: ${(error as Error).message}\nSee ${signingSetupDocument}`,
     };
   }
 }

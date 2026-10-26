@@ -5,7 +5,11 @@ import test from "node:test";
 import { waitForFixturePort } from "./fixture-readiness.ts";
 
 class FakeChild extends EventEmitter {
-  stdout = new PassThrough();
+  stdout: PassThrough;
+  constructor() {
+    super();
+    this.stdout = new PassThrough();
+  }
 }
 
 test("fixture readiness parses a port across output chunks", async () => {

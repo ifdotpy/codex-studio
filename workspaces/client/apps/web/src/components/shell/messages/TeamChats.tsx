@@ -274,40 +274,23 @@ export default function TeamChats({
       const estimate = (message: (typeof items)[number]) =>
         heights.current.get(message.id) ||
         Math.max(112, Math.ceil((message.text?.length || 0) / 78) * 23 + 82);
-      const offsets = [0];
-      let total = 0;
-      for (const item of items) {
-        total += estimate(item);
-        offsets.push(total);
-      }
+      const offsets: number[] = Array.from({ length: items.length + 1 });
+      offsets[0] = 0;
+      for (let index = 0; index < items.length; index++)
+        offsets[index + 1] = offsets[index] + estimate(items[index]);
       const top = root.scrollTop;
       const bottom = top + root.clientHeight;
       let start = 0;
-      while (start < items.length) {
-        const offset = offsets[start + 1];
-        if (offset === undefined)
-          throw new Error("Missing message start offset");
-        if (offset >= top) break;
-        start++;
-      }
+      while (start < items.length && offsets[start + 1] < top) start++;
       let end = start;
-      while (end < items.length) {
-        const offset = offsets[end];
-        if (offset === undefined) throw new Error("Missing message end offset");
-        if (offset >= bottom) break;
-        end++;
-      }
+      while (end < items.length && offsets[end] < bottom) end++;
       start = Math.max(0, start - 8);
       end = Math.min(items.length, Math.max(start + 1, end + 8));
-      const startOffset = offsets[start],
-        endOffset = offsets[end];
-      if (startOffset === undefined || endOffset === undefined)
-        throw new Error("Missing message window offset");
       const next = {
         start,
         end,
-        top: startOffset,
-        bottom: total - endOffset,
+        top: offsets[start],
+        bottom: offsets.at(-1)! - offsets[end],
       };
       setVirtualRange((old) =>
         old.start === next.start &&

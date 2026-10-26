@@ -33,9 +33,12 @@ export const forkSession = async () => ({
 });
 export const getSessionMessages = async () => [];
 export function inputText(input: SDKUserMessage) {
-  const content = input.message.content;
-  const first = typeof content === "string" ? undefined : content[0];
-  return first?.type === "text" ? first.text : undefined;
+  return (
+    input.message.content[0] as Extract<
+      Exclude<SDKUserMessage["message"]["content"], string>[number],
+      { type: "text" }
+    >
+  ).text;
 }
 
 // Scripted SDK waits keep the child IPC channel alive until their signal settles.

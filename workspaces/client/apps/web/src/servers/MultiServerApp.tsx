@@ -585,7 +585,8 @@ function MultiServerShell({
       const directory =
         project?.path ||
         view?.chats.find((row) => row.id === view.opened)?.path ||
-        (typeof data.path === "string" ? data.path : "");
+        (data.path as string) ||
+        "";
       setNewChatDialog({
         server: id,
         project: {
@@ -653,24 +654,20 @@ function MultiServerShell({
       const value = data;
       if (
         typeof value.opened !== "boolean" ||
-        typeof value.height !== "number" ||
         !Number.isFinite(value.height) ||
-        typeof value.count !== "number" ||
         !Number.isInteger(value.count) ||
-        typeof value.active !== "number" ||
         !Number.isInteger(value.active) ||
         typeof value.canCreate !== "boolean"
       )
         return;
-      const { opened, height, count, active, canCreate } = value;
       setTerminals((old) => ({
         ...old,
         [id]: {
-          opened,
-          height: Math.max(0, Math.min(4000, height)),
-          count,
-          active,
-          canCreate,
+          opened: value.opened as boolean,
+          height: Math.max(0, Math.min(4000, value.height as number)),
+          count: value.count as number,
+          active: value.active as number,
+          canCreate: value.canCreate as boolean,
         },
       }));
     } else if (data.kind === "studio-server-toggle-sidebar") {
@@ -720,14 +717,14 @@ function MultiServerShell({
       setAccountsByServer((old) => ({ ...old, [id]: accounts }));
     } else if (
       data.kind === "studio-server-status" &&
-      (data.status === "connecting" ||
-        data.status === "live" ||
-        data.status === "offline" ||
-        data.status === "degraded" ||
-        data.status === "schema-mismatch")
+      ["connecting", "live", "offline", "degraded", "schema-mismatch"].includes(
+        data.status as string,
+      )
     ) {
-      const status = data.status;
-      setStatus((old) => ({ ...old, [id]: status }));
+      setStatus((old) => ({
+        ...old,
+        [id]: data.status as ResourceConnectionState,
+      }));
       if (data.status === "live")
         setLastSeen((old) => ({ ...old, [id]: Date.now() / 1000 }));
     }
@@ -1147,7 +1144,7 @@ function MultiServerShell({
                 <p role="status">Searching this server...</p>
               )}
               {searchResults[server.id]?.error && (
-                <p role="alert">{searchResults[server.id]?.error}</p>
+                <p role="alert">{searchResults[server.id].error}</p>
               )}
               {searchResults[server.id]?.results.map((result, index) => (
                 <button

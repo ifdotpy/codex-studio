@@ -23,8 +23,10 @@ export async function runScaleVerifier<T>(
   let signalCount = 0;
   const handlers = new Map<NodeJS.Signals, () => void>();
   const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    const code = SIGNAL_EXIT_CODES[signal];
+  for (const [signal, code] of Object.entries(SIGNAL_EXIT_CODES) as [
+    NodeJS.Signals,
+    number,
+  ][]) {
     const handler = () => {
       signalCount += 1;
       process.exitCode = code;

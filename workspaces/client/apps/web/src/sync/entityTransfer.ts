@@ -278,7 +278,7 @@ type Pending = {
 export class EntityTransferAssembler {
   private readonly pending = new Map<string, Pending>();
   private generation = 0;
-  private readonly storage: TransferStorage;
+  declare private readonly storage: TransferStorage;
   constructor(storage: TransferStorage = new IndexedTransferStorage()) {
     this.storage = storage;
   }

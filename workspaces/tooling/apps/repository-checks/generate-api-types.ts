@@ -36,7 +36,7 @@ function normalizeRecursiveJsonValue(generated: string) {
     "openapi-typescript output has no unique recursive JsonValue component";
   const start = /^([ \t]*)JsonValue: /m.exec(generated);
   if (!start) throw new Error(failure);
-  const indent = start[1] ?? "";
+  const indent = start[1];
   const afterStart = start.index + start[0].length;
   const ending = new RegExp(
     `^${indent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}}[^;\\n]*;`,

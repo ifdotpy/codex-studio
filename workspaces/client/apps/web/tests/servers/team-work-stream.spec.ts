@@ -1,5 +1,3 @@
-import { requiredFixtureValue } from "./browser-fixture.ts";
-import assert from "node:assert/strict";
 import type { TestAgent, TestRuntimeView } from "../playwright.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
@@ -10,6 +8,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, createFixtureViteServer } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
+
+type GateResult = NonNullable<
+  NonNullable<TestRuntimeView["workDetails"]>[number]["results"]
+>[number]["gate"];
+// This fixture exercises streamed output and omits the gate's cwd and log.
+const partialGate = (
+  value: Omit<NonNullable<GateResult>, "cwd" | "log">,
+): NonNullable<GateResult> => value as NonNullable<GateResult>;
 
 test("team, task assignments and projects render typed stream changes without extra state reads", async ({
   page,
@@ -47,11 +53,11 @@ test("team, task assignments and projects render typed stream changes without ex
       }
       if (url.pathname === "/api/projects" && request.method === "POST") {
         const projectBody = fixturePostBody<"/api/projects">(body);
-        assert.ok("path" in projectBody && projectBody.path);
+
         projectWrites.push(projectBody);
         const project = {
-          id: projectBody.path,
-          path: projectBody.path,
+          id: projectBody.path!,
+          path: projectBody.path!,
           name: "Created live project",
           folders: [],
           peerTeams: [],
@@ -73,7 +79,7 @@ test("team, task assignments and projects render typed stream changes without ex
     },
   });
   const lead = backend.snapshot.runtime.agents[0];
-  assert.ok(lead);
+
   backend.snapshot.runtime.viewScopedAgents = true;
   const worker: TestAgent = {
     ...lead,
@@ -157,8 +163,7 @@ test("team, task assignments and projects render typed stream changes without ex
     worker.error = "Stream regression failure";
     worker.commandProgress = [];
     Object.assign(task, { status: "review", version: 2, updated: 2 });
-    const gate = { command: "verify", timeout_ms: 1234 };
-    task.gate = gate;
+    task.gate = { command: "verify", timeout_ms: 1234 };
     task.results = [
       {
         id: "stream-result",
@@ -168,16 +173,14 @@ test("team, task assignments and projects render typed stream changes without ex
         revision: "abc123",
         files: [],
         created: 2,
-        gate: {
+        gate: partialGate({
           status: "failed",
-          cwd: null,
-          log: null,
-          config: gate,
+          config: task.gate,
           exitCode: 1,
           output: "Full streamed gate output",
           revision: "abc123",
           monitorId: "gate-check",
-        },
+        }),
       },
     ];
     task.decisions = [
@@ -188,7 +191,7 @@ test("team, task assignments and projects render typed stream changes without ex
         created: 2,
       },
     ];
-    requiredFixtureValue(backend.snapshot.runtime.work[0]).status = task.status;
+    backend.snapshot.runtime.work[0]!.status = task.status;
     backend.publishState([
       { kind: "state" },
       { kind: "work", agentId: lead.id },

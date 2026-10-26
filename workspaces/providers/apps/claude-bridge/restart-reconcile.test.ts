@@ -26,7 +26,7 @@ const replyId = "33333333-3333-4333-8333-333333333333";
 const nextId = "44444444-4444-4444-8444-444444444444";
 const cwd = "/native/project";
 const row = (
-  type: string,
+  type: "user" | "assistant",
   uuid: string,
   parentUuid: string | null,
   content: SDKUserMessage["message"]["content"],
@@ -43,7 +43,7 @@ const row = (
   isSidechain: false,
   message: {
     id: "msg-" + uuid,
-    role: type === "user" ? "user" : "assistant",
+    role: type,
     content,
   },
   ...extra,
@@ -100,7 +100,7 @@ function nativeFilesystem(
         },
         async read(buffer, offset, length, position) {
           raw.copy(buffer, offset, position, position + length);
-          if (changed && ++reads > 1) buffer[0] = (buffer[0] ?? 0) ^ 1;
+          if (changed && ++reads > 1) buffer[0] ^= 1;
           return { bytesRead: length };
         },
         async close() {},
@@ -133,10 +133,8 @@ async function loadStale(
         },
       ],
     };
-    const originalTurn = original.turns[0];
-    assert.ok(originalTurn);
     if (options.partial)
-      originalTurn.items.push({
+      original.turns[0].items.push({
         id: "msg-final",
         type: "agentMessage",
         text: "The task",
@@ -156,9 +154,7 @@ async function loadStale(
       },
     });
     const restored = await store.get(sessionId);
-    const restoredTurn = restored.turns[0];
-    assert.ok(restoredTurn);
-    await check(restoredTurn);
+    await check(restored.turns[0]);
     await store.persist(restored);
     const again = await createSessionStore(root).get(sessionId);
     assert.deepEqual(
@@ -261,7 +257,7 @@ for (const [name, rows, options] of [
   test(`restart keeps ${name} uncertain`, async () => {
     await loadStale(rows, options, (turn) => {
       assert.equal(turn.status, "uncertain");
-      assert.match(turn.error?.message ?? "", /could not confirm/);
+      assert.match(turn.error!.message, /could not confirm/);
     });
   });
 
@@ -311,9 +307,9 @@ test("thread/read and resume deliver the recovered final reply without a model q
         threadId: sessionId,
         includeTurns: true,
       });
-      assert.equal(result.thread.turns[0]?.status, "completed");
+      assert.equal(result.thread.turns[0].status, "completed");
       assert.equal(
-        result.thread.turns[0]?.items.at(-1)?.text,
+        result.thread.turns[0].items.at(-1)!.text,
         "The task is complete.",
       );
     }
@@ -329,14 +325,15 @@ test("thread/read and resume deliver the recovered final reply without a model q
 test("restart replaces a partial mirror reply with all native text blocks", async () => {
   const final = reply();
   final.message.stop_reason = null;
-  assert.ok(Array.isArray(final.message.content));
-  final.message.content.push({ type: "text", text: "The checks pass." });
+  (final.message.content as Exclude<typeof final.message.content, string>).push(
+    { type: "text", text: "The checks pass." },
+  );
   await loadStale([user(), final], { partial: true }, (turn) => {
     assert.equal(turn.status, "completed");
     const answers = turn.items.filter((item) => item.type === "agentMessage");
     assert.equal(answers.length, 1);
-    assert.equal(answers[0]?.text, "The task is complete.\nThe checks pass.");
-    assert.equal(answers[0]?.phase, "final_answer");
+    assert.equal(answers[0].text, "The task is complete.\nThe checks pass.");
+    assert.equal(answers[0].phase, "final_answer");
   });
 });
 
@@ -368,14 +365,11 @@ test("bridge reads retain the unconfirmed outcome and reason without a model que
       threadId: sessionId,
       includeTurns: true,
     });
-    assert.equal(result.thread.turns[0]?.status, "uncertain");
-    assert.match(
-      result.thread.turns[0]?.error?.message ?? "",
-      /could not confirm/,
-    );
+    assert.equal(result.thread.turns[0].status, "uncertain");
+    assert.match(result.thread.turns[0].error!.message, /could not confirm/);
     const state = await bridge.call("claude/state", { threadId: sessionId });
-    assert.equal(state.turns[0]?.status, "uncertain");
-    assert.deepEqual(state.turns[0]?.error, result.thread.turns[0]?.error);
+    assert.equal(state.turns[0].status, "uncertain");
+    assert.deepEqual(state.turns[0].error, result.thread.turns[0].error);
     assert.equal(
       bridge.notes.some((entry) => entry.method === "turn/started"),
       false,

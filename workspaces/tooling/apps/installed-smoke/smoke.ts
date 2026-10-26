@@ -22,8 +22,6 @@ import { parseArgs } from "node:util";
 import {
   compareEvidence,
   readEvidence,
-  pricingModels,
-  isRecord,
   usageTable,
   nativeEvidence,
   recordedUsage,
@@ -44,7 +42,6 @@ import {
   sqliteEvidence,
 } from "./usage.ts";
 
-import assert from "node:assert/strict";
 import type {
   Schema,
   Provider,
@@ -96,6 +93,28 @@ type LiveEntity = Record<string, unknown> &
       | Schema["EventEntityDto"]["status"]
       | Schema["MessageReceiptEntityDto"]["status"];
   };
+type SyncDocument = Partial<
+  Extract<Schema["SyncPullResponse"]["documents"][number], { payload: string }>
+> &
+  Partial<
+    Omit<
+      Extract<
+        Schema["SyncPullResponse"]["documents"][number],
+        { op: "upsert" }
+      >,
+      "op"
+    >
+  > &
+  Partial<
+    Pick<
+      Extract<Schema["SyncPullResponse"]["documents"][number], { op: string }>,
+      "op"
+    >
+  >;
+type SyncPage = Omit<Schema["SyncPullResponse"], "documents"> & {
+  documents?: SyncDocument[];
+};
+
 export type OwnedEntities = {
   analytics: Analytics;
   agent: Optional<
@@ -169,6 +188,7 @@ const ARCHIVE_SHOWN_MS = 10_000;
 const URL_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 /** Pricing owner: the models.dev artifact that the backend reads in its state folder. */
 const PRICING_ARTIFACT = "model-pricing/models-dev-v1.json";
+const PRICING_PROVIDERS = { codex: "openai", claude: "anthropic" } as const;
 const TERMINAL_STATUSES = new Set([
   "completed",
   "idle",
@@ -205,7 +225,7 @@ export class Report {
       const detail =
         error instanceof CheckFailed
           ? error.message
-          : String(error instanceof Error ? (error.stack ?? error) : error);
+          : String((error as Error)?.stack ?? error);
       this.rows.push({
         name,
         status: "FAIL",
@@ -257,7 +277,8 @@ export function cheapestModel(
   pricing: Pick<PricingArtifact, "catalog">,
   provider: Provider,
 ) {
-  const priced = pricingModels(pricing, provider);
+  const priced =
+    pricing?.catalog?.providers?.[PRICING_PROVIDERS[provider]]?.models ?? {};
   let best: {
     model: string;
     price: number;
@@ -268,15 +289,8 @@ export function cheapestModel(
       continue;
     }
     const cost =
-      priced[row.model]?.cost ??
-      (typeof row.resolvedModel === "string"
-        ? priced[row.resolvedModel]?.cost
-        : undefined);
-    if (
-      !cost ||
-      typeof cost.input !== "number" ||
-      typeof cost.output !== "number"
-    ) {
+      priced[row.model]?.cost ?? priced[row.resolvedModel as string]?.cost;
+    if (typeof cost?.input !== "number" || typeof cost?.output !== "number") {
       continue;
     }
     const price = cost.input + cost.output;
@@ -284,9 +298,7 @@ export function cheapestModel(
       best = {
         model: row.model,
         price,
-        efforts: Array.isArray(row.supportedReasoningEfforts)
-          ? row.supportedReasoningEfforts
-          : [],
+        efforts: (row.supportedReasoningEfforts ?? []) as Schema["JsonValue"][],
       };
     }
   }
@@ -299,9 +311,7 @@ export function lowestEffort(efforts: readonly Schema["JsonValue"][]) {
   const names = efforts.map((entry) =>
     typeof entry === "string"
       ? entry
-      : entry && typeof entry === "object" && !Array.isArray(entry)
-        ? entry.reasoningEffort
-        : undefined,
+      : (entry as Record<string, Schema["JsonValue"]> | null)?.reasoningEffort,
   );
   return order.find((name) => names.includes(name));
 }
@@ -334,9 +344,7 @@ export function syncTranscriptIds(
       `the transcript pull has no document transcript:${agent}`,
     );
   }
-  const payload: Schema["TranscriptStreamDelta"] = JSON.parse(
-    head.payload ?? "null",
-  );
+  const payload: Schema["TranscriptStreamDelta"] = JSON.parse(head.payload!);
   if (Array.isArray(payload.order)) {
     return payload.order;
   }
@@ -355,8 +363,8 @@ export function browserCardId(bridgeId: string) {
     .update(`studio-browser-open:${bridgeId}`)
     .digest()
     .subarray(0, 16);
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return [
     hex.slice(0, 8),
@@ -449,12 +457,7 @@ function lockHolders(file: string) {
       .map(Number);
   } catch (error) {
     // lsof exits 1 when no process has the file open.
-    if (
-      error &&
-      typeof error === "object" &&
-      "status" in error &&
-      error.status === 1
-    ) {
+    if ((error as { status?: number }).status === 1) {
       return [];
     }
     throw error;
@@ -517,7 +520,7 @@ class Backend {
         `${method} ${route}: HTTP ${response.status} ${text.slice(0, 300)}`,
       );
     }
-    return JSON.parse(text || "null");
+    return text ? JSON.parse(text) : null!;
   }
 
   async get<T>(route: string, ms?: number): Promise<T> {
@@ -534,9 +537,7 @@ class Backend {
       timing.outcome = "success";
       return value;
     } catch (error) {
-      timing.outcome = /timeout|timed out/i.test(
-        error instanceof Error ? error.message : String(error),
-      )
+      timing.outcome = /timeout|timed out/i.test((error as Error).message)
         ? "timeout"
         : "error";
       throw error;
@@ -620,7 +621,7 @@ export class LiveChanges {
     let buffer = "";
     const decoder = new TextDecoder();
     try {
-      for await (const chunk of body ?? []) {
+      for await (const chunk of body!) {
         buffer += decoder
           .decode(chunk, { stream: true })
           .replaceAll("\r\n", "\n");
@@ -637,8 +638,11 @@ export class LiveChanges {
           const event: Schema["ResourceChangeEvent"] = JSON.parse(data);
           for (const entry of event.resourceVersions ?? []) {
             for (const doc of entry.entityChanges?.documents ?? []) {
-              if (doc.op !== "delete" && "value" in doc)
-                this.entities.set(`${doc.collection}:${doc.id}`, doc.value);
+              if (doc.op !== "delete")
+                this.entities.set(
+                  `${doc.collection}:${doc.id}`,
+                  (doc as Extract<typeof doc, { op: "upsert" }>).value,
+                );
             }
           }
           this.version++;
@@ -698,8 +702,8 @@ export class Smoke {
   declare report: Report;
   declare runId: string;
   declare temporaryRoot: string;
-  declare root: string | null;
-  declare rootIdentity: DirectoryIdentity | undefined;
+  declare root: string;
+  declare rootIdentity: DirectoryIdentity;
   declare projectRegistered: boolean;
   declare chats: string[];
   declare openCards: Map<string, string>;
@@ -707,14 +711,11 @@ export class Smoke {
     string,
     Optional<Pick<Schema["AgentSummaryEntityDto"], "name" | "archived">>
   >;
-  declare desktop: Schema["DesktopResponse"] | null;
-  declare state: string | null;
-  declare live:
-    | Pick<LiveChanges, "entities" | "changed" | "close">
-    | null
-    | undefined;
-  declare accountRecords: Map<string, Schema["Account"]> | undefined;
-  declare accountsByProvider: Map<Provider, string> | undefined;
+  declare desktop: Schema["DesktopResponse"];
+  declare state: string;
+  declare live: LiveChanges | null | undefined;
+  declare accountRecords: Map<string, Schema["Account"]>;
+  declare accountsByProvider: Map<Provider, string>;
   declare evidencePath: string | undefined;
   declare interrupted: boolean | undefined;
   constructor(options: Options) {
@@ -736,14 +737,14 @@ export class Smoke {
     this.runId = randomBytes(4).toString("hex");
     this.usageEvidence.runId = this.runId;
     this.temporaryRoot = fs.realpathSync(os.tmpdir());
-    this.root = null;
+    this.root = null!;
     this.projectRegistered = false;
     this.chats = [];
     /** Sign-in cards that this run submitted and did not decline yet: request id to chat. */
     this.openCards = new Map();
     this.ownerChats = new Map();
-    this.desktop = null;
-    this.state = null;
+    this.desktop = null!;
+    this.state = null!;
   }
 
   checkActive() {
@@ -782,7 +783,7 @@ export class Smoke {
       this.usageEvidence.submissions.push({
         route,
         id: body.id,
-        room: "room" in body ? body.room : undefined,
+        room: (body as Partial<Schema["ManagedMessageBody"]>).room,
         at: new Date().toISOString(),
       });
       this.saveUsage();
@@ -794,8 +795,6 @@ export class Smoke {
   }
 
   async bridgeObservation(accountKey: string) {
-    assert.ok(this.state);
-    assert.ok(this.desktop);
     const desktop =
       await this.backend.get<Schema["DesktopResponse"]>("/api/desktop");
     if (desktop.stateDir !== this.state)
@@ -832,7 +831,7 @@ export class Smoke {
               {
                 pid: Number(match[1]),
                 ppid: Number(match[2]),
-                command: match[3] ?? "",
+                command: match[3],
               },
             ]
           : [];
@@ -857,10 +856,11 @@ export class Smoke {
       desktop.pid,
       {
         enabled: desktop.supervisorMode,
-        health:
-          desktop.supervisor && "stateDir" in desktop.supervisor
-            ? desktop.supervisor
-            : null,
+        health: desktop.supervisor as Parameters<
+          typeof bridgeProcessMatches
+        >[4] extends { health?: infer H }
+          ? H
+          : never,
         accountKey,
         stateDir: this.state,
       },
@@ -935,8 +935,11 @@ export class Smoke {
     const processes = command("/bin/ps", ["-axww", "-o", "pid=,command="])
       .split("\n")
       .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
-      .filter((match) => match !== null)
-      .map(([, pid, line]) => ({ pid: Number(pid), line: line ?? "" }));
+      .filter(
+        Boolean as typeof Boolean &
+          ((match: RegExpExecArray | null) => match is RegExpExecArray),
+      )
+      .map(([, pid, line]) => ({ pid: Number(pid), line }));
     // A second backend of this bundle is starting, or waits for the runtime lock.
     const server = installationPaths(this.app).server;
     const others = processes.filter(
@@ -976,7 +979,6 @@ export class Smoke {
   }
 
   async build() {
-    assert.ok(this.desktop);
     const server = installationPaths(this.app).server;
     const running =
       process.platform === "linux"
@@ -1077,7 +1079,6 @@ export class Smoke {
   }
 
   async chooseModel(provider: Provider, account: string) {
-    assert.ok(this.state);
     if (this.model?.[provider]) {
       return { model: this.model[provider], efforts: [] };
     }
@@ -1122,33 +1123,28 @@ export class Smoke {
         const answer = items.find(
           (item) => item.role === "assistant" && item.text?.includes(token),
         );
-        if (chat && !chat.inFlight && FAILED_STATUSES.has(chat.status)) {
+        if (chat && !chat!.inFlight && FAILED_STATUSES.has(chat.status)) {
           throw new CheckFailed(`the chat is ${chat.status}`);
         }
         const settled =
-          chat && !chat.inFlight && TERMINAL_STATUSES.has(chat.status);
+          chat && !chat!.inFlight && TERMINAL_STATUSES.has(chat!.status);
         return {
           done: Boolean(answer && settled),
           value: items,
           note: `status ${chat?.status}`,
         };
       },
-      this.live
-        ? (ms) => this.live?.changed(ms) ?? Promise.resolve()
-        : undefined,
+      this.live ? (ms) => this.live!.changed(ms) : undefined,
     );
   }
 
   permissionRecord(id: string) {
-    assert.ok(this.state);
     return sqliteEvidence(this.state, id, this.runId).permissions;
   }
 
   async analyticsSnapshot(id: string, ms?: number) {
-    if (this.sqliteRoAgent === id) {
-      assert.ok(this.state);
+    if (this.sqliteRoAgent === id)
       return sqliteEvidence(this.state, id, this.runId, true).analytics;
-    }
     const before = this.backend.analyticsTimings.length;
     try {
       return await this.backend.get<Schema["AnalyticsResponse"]>(
@@ -1168,12 +1164,8 @@ export class Smoke {
   }
 
   async turn(provider: Provider) {
-    assert.ok(this.root);
-    assert.ok(this.rootIdentity);
-    assert.ok(this.accountsByProvider);
-    const root = this.root;
-    const account = this.accountsByProvider.get(provider);
-    assert.ok(account);
+    const account = this.accountsByProvider.get(provider)!;
+
     const { model, efforts } = await this.chooseModel(provider, account);
     const id = randomUUID();
     const token = `SMOKE_${this.runId}_${provider.toUpperCase()}`;
@@ -1193,11 +1185,10 @@ export class Smoke {
         await this.backend.get<Schema["SyncProtocolResponse"]>(
           "/api/sync/protocol",
         );
-      const live = new LiveChanges(this.backend, id, protocol.protocolVersion, {
+      this.live = new LiveChanges(this.backend, id, protocol.protocolVersion, {
         signal: this.cancel.signal,
       });
-      this.live = live;
-      await live.ready;
+      await this.live.ready;
     }
     if (this.usage) {
       this.checkActive();
@@ -1225,20 +1216,20 @@ export class Smoke {
         REQUEST_MS,
         async () => {
           this.checkActive();
-          const detail = this.live?.entities.get(`agentDetail:${id}`);
+          const detail = this.live!.entities.get(`agentDetail:${id}`);
           return {
             done: Boolean(detail),
             value: detail
               ? verifiedPermissions(
                   { ...created, ...detail, ...this.permissionRecord(id) },
                   provider,
-                  root,
+                  this.root,
                   this.rootIdentity,
                 )
               : null,
           };
         },
-        (ms) => this.live?.changed(ms) ?? Promise.resolve(),
+        (ms) => this.live!.changed(ms),
       );
       this.usageEvidence.permissions ??= {};
       this.usageEvidence.permissions[id] = permission;
@@ -1273,7 +1264,6 @@ export class Smoke {
   }
 
   async usageScenario(chat: Chat, provider: Provider) {
-    assert.ok(this.root);
     this.checkActive();
     const { id } = chat;
     const token = `SMOKE_${this.runId}_${provider}_LONG`;
@@ -1298,7 +1288,7 @@ export class Smoke {
         async () => {
           this.checkActive();
           const status = await this.chatStatus(id);
-          const active = this.live?.entities.get(`agentSummary:${id}`);
+          const active = this.live!.entities.get(`agentSummary:${id}`);
           return {
             done:
               status?.inFlight === true &&
@@ -1308,7 +1298,7 @@ export class Smoke {
             note: status?.status,
           };
         },
-        (ms) => this.live?.changed(ms) ?? Promise.resolve(),
+        (ms) => this.live!.changed(ms),
       );
       steer = {
         id: randomUUID(),
@@ -1319,7 +1309,7 @@ export class Smoke {
       this.usageEvidence.scenarios[id] = { steer, inputId };
       this.saveUsage();
       steer.receipt = await this.submitModel("/api/messages", {
-        id: steer.id ?? "",
+        id: steer.id!,
         room: id,
         delivery: "current_turn",
         text: "Keep going with the same requested 300-word answer and the single read-only note read; mention reproducibility. This is the usage-check steer, not a new task.",
@@ -1350,12 +1340,6 @@ export class Smoke {
       longTurn?: { inputId: string; items: Transcript[] | undefined };
     } = {},
   ) {
-    assert.ok(this.state);
-    assert.ok(this.root);
-    assert.ok(chat.account);
-    assert.ok(this.accountRecords);
-    const account = this.accountRecords.get(chat.account);
-    assert.ok(account);
     const { id } = chat;
     console.log(`Collecting ${provider} usage for ${id}`);
     const transcript = await this.transcript(id);
@@ -1364,13 +1348,13 @@ export class Smoke {
       .at(-1)?.turnId;
     const entities =
       scenario.entities ?? (await this.ownEntities(id, finalTurnId));
-    assert.ok(entities);
+
     const analytics = entities.analytics;
     const stored = { agent: entities.agent, history: analytics.history ?? [] };
     const truth = nativeEvidence(
       this.state,
       stored.agent,
-      account,
+      this.accountRecords.get(chat.account!)!,
       stored.history,
     );
     Object.assign(
@@ -1390,24 +1374,19 @@ export class Smoke {
         Schema["UsageReconciliationResponse"]
       >(`/api/diagnostics/usage-reconciliation?agent=${id}`);
     } catch (error) {
-      if (
-        !(error instanceof Error ? error.message : String(error)).includes(
-          "HTTP 404",
-        )
-      )
-        throw error;
+      if (!(error as Error).message.includes("HTTP 404")) throw error;
     }
     const displayedCost = entities.sessionCost;
     const previous = this.usageEvidence.providers.find(
       (row) => row.agentId === id,
     );
     const savedBridge =
-      this.usageEvidence.servingBridges?.[chat.account] ??
+      this.usageEvidence.servingBridges?.[chat.account!] ??
       scenario.savedBridge ??
       previous?.bridgeProcesses;
     const provenance =
       provider === "claude"
-        ? await this.currentBridgeProvenance(chat.account, savedBridge)
+        ? await this.currentBridgeProvenance(chat.account!, savedBridge)
         : {
             serving: [],
             current: { available: false, reason: "not a Claude run" },
@@ -1423,7 +1402,7 @@ export class Smoke {
       );
       const submitted = scenario.steer ??
         this.usageEvidence.scenarios?.[id]?.steer ?? {
-          id: input?.id ?? undefined,
+          id: input?.id,
           turnId: proof.longTurnId,
           association:
             "recovered from materialized current-turn input within turn-2 transcript window",
@@ -1442,7 +1421,7 @@ export class Smoke {
       const endedAt = Math.max(
         ...transcript
           .filter((item) => item.turnId === proof.longTurnId)
-          .map((item) => Number(item.at)),
+          .map((item) => item.at! as number),
       );
       proof.steer = validateSteer(
         item,
@@ -1525,15 +1504,18 @@ export class Smoke {
       await stream.ready;
       const deadline = Date.now() + USAGE_SNAPSHOT_MS;
       const read = <T>(route: string) =>
-        this.backend.get<T>(route, Math.max(1, deadline - Date.now()));
-      const analyticsSnapshot = () =>
-        this.analyticsSnapshot(id, Math.max(1, deadline - Date.now()));
-      const result = await until<OwnedEntities>(
+        route === analyticsRoute(id)
+          ? (this.analyticsSnapshot(
+              id,
+              Math.max(1, deadline - Date.now()),
+            ) as Promise<T>)
+          : this.backend.get<T>(route, Math.max(1, deadline - Date.now()));
+      return (await until<OwnedEntities>(
         "final-turn usage publication",
         USAGE_SNAPSHOT_MS,
         async () => {
           this.checkActive();
-          const analytics = await analyticsSnapshot();
+          const analytics = await read<Analytics>(analyticsRoute(id));
           const summary = (analytics.agents ?? []).find((row) => row.id === id);
           const detail = stream.entities.get(`agentDetail:${id}`);
           const sessionCost = stream.entities.get(`sessionCost:${id}`);
@@ -1548,14 +1530,13 @@ export class Smoke {
           if (
             !summary ||
             !detail ||
-            !sessionCost ||
             !publicationReady(sessionCost, currentCost, analytics, final)
           )
             return {
               done: false,
               note: `cost generation ${sessionCost?.generation}/${currentCost.generation}, state ${sessionCost?.pricingState}`,
             };
-          const after = await analyticsSnapshot();
+          const after = await read<Analytics>(analyticsRoute(id));
           return {
             done:
               JSON.stringify(after.timeline) ===
@@ -1573,9 +1554,7 @@ export class Smoke {
           };
         },
         (ms) => stream.changed(ms),
-      );
-      assert.ok(result);
-      return result;
+      ))!;
     } finally {
       await stream.close();
     }
@@ -1586,27 +1565,26 @@ export class Smoke {
     const evidence = readEvidence(file);
     if (
       evidence.format !== "studio-live-usage-v1" ||
-      !/^[a-f0-9]{8}$/.test(evidence.runId ?? "") ||
+      !/^[a-f0-9]{8}$/.test(evidence.runId!) ||
       !Array.isArray(evidence.chatIds)
     )
       throw new CheckFailed("Invalid usage evidence file");
     this.usageEvidence = evidence;
-    assert.ok(evidence.runId);
-    this.runId = evidence.runId;
+
+    this.runId = evidence.runId!;
     this.chats = evidence.chatIds;
     if (this.sqliteRoAgent && !this.chats.includes(this.sqliteRoAgent))
       throw new CheckFailed(
         "SQLite analytics recovery must name a chat of this exact run",
       );
-    assert.ok(evidence.runFolder);
-    assert.ok(evidence.server);
-    this.root = evidence.runFolder;
+
+    this.root = evidence.runFolder!;
     this.desktop =
       await this.backend.get<Schema["DesktopResponse"]>("/api/desktop");
     this.state = this.desktop.stateDir;
     if (
-      this.desktop.backendBuild !== evidence.server.sha256 ||
-      this.state !== evidence.server.stateDir
+      this.desktop.backendBuild !== evidence.server!.sha256 ||
+      this.state !== evidence.server!.stateDir
     )
       throw new CheckFailed(
         "Recovery requires the same backend build and state directory",
@@ -1626,14 +1604,11 @@ export class Smoke {
         publicationReady(
           completed.displayedCost,
           completed.publication.currentCost,
-          completed.analytics ?? {},
+          completed.analytics!,
           completed.publication.finalTurnId,
         ) &&
         (completed.provider !== "claude" ||
-          (completed.scenario?.steer &&
-            "receipt" in completed.scenario.steer &&
-            isRecord(completed.scenario.steer.receipt) &&
-            completed.scenario.steer.receipt.materialized))
+          completed.scenario?.steer?.receipt?.materialized)
       ) {
         console.log(`Keeping completed usage snapshot for ${id}`);
         continue;
@@ -1641,14 +1616,13 @@ export class Smoke {
       console.log(`Recovering usage snapshot for ${id}`);
       const entities = await this.ownEntities(id);
       const { agent } = entities;
-      assert.ok(agent.accountKey);
-      assert.ok(agent.provider === "codex" || agent.provider === "claude");
+
       if (!agent.name?.startsWith(`Studio smoke ${this.runId} `))
         throw new CheckFailed(`Chat ${id} is not owned by run ${this.runId}`);
       this.checkActive();
       await this.collectUsage(
-        { id, account: agent.accountKey, model: agent.model ?? undefined },
-        agent.provider,
+        { id, account: agent.accountKey!, model: agent.model! },
+        agent.provider as Provider,
         {
           entities,
           savedBridge: this.usageEvidence.providers.find(
@@ -1664,7 +1638,6 @@ export class Smoke {
   }
 
   serverObservation() {
-    assert.ok(this.desktop);
     return {
       pid: this.desktop.pid,
       stateDir: this.state,
@@ -1687,7 +1660,7 @@ export class Smoke {
         serving: saved,
         current: {
           available: false,
-          reason: error instanceof Error ? error.message : String(error),
+          reason: (error as Error).message,
           at: new Date().toISOString(),
         },
       };
@@ -1725,7 +1698,7 @@ export class Smoke {
     // An exact retry of the same id must not enqueue the message again.
     await this.submitModel("/api/messages", message);
     const items = await this.answered(agent, token, TURN_MS);
-    const copies = messageItems(items ?? [], id);
+    const copies = messageItems(items!, id);
     if (copies.length !== 1) {
       throw new CheckFailed(
         `the transcript has ${copies.length} copies of message ${id}`,
@@ -1744,7 +1717,7 @@ export class Smoke {
   }
 
   async entitySeq() {
-    const page = await this.backend.get<Schema["SyncPullResponse"]>(
+    const page = await this.backend.get<SyncPage>(
       "/api/sync/pull?scope=state:entities:v1&after=0&limit=1",
     );
     return page?.maxSeq ?? 0;
@@ -1763,24 +1736,24 @@ export class Smoke {
     const found: LiveEntity[] = [];
     let cursor = after;
     for (;;) {
-      const page = await this.backend.get<Schema["SyncPullResponse"]>(
+      const page = await this.backend.get<SyncPage>(
         `/api/sync/pull?scope=state:entities:v1&after=${cursor}`,
       );
       for (const document of page?.documents ?? []) {
         if (
           !(
-            ("collection" in document && document.collection === collection) ||
+            document.collection === collection ||
             document.id?.startsWith(`entity:${collection}:`)
           ) ||
-          ("_deleted" in document && document._deleted) ||
-          ("op" in document && document.op === "delete")
+          document._deleted ||
+          document.op === "delete"
         ) {
           continue;
         }
         const payload: { value: LiveEntity } =
-          "value" in document
+          document.value !== undefined
             ? { value: document.value }
-            : JSON.parse("payload" in document ? document.payload : "null");
+            : JSON.parse(document.payload!);
         if (accept(payload.value)) {
           found.push(payload.value);
         }
@@ -1822,12 +1795,11 @@ export class Smoke {
         `no completed monitor of the chat: ${JSON.stringify(monitors.map((value) => [value.status, value.exitCode]))}`,
       );
     }
-    return `monitor ${finished[0]?.id ?? "?"} completed with exit 0`;
+    return `monitor ${finished[0].id ?? "?"} completed with exit 0`;
   }
 
   /** Submit a sign-in card the way a command's $BROWSER does, then decline it at once. */
   async signInCard(agent: string) {
-    assert.ok(this.state);
     const socket = path.join(this.state, "browser-host", "open.sock");
     const after = await this.entitySeq();
     const submitted = Date.now();
@@ -1863,18 +1835,16 @@ export class Smoke {
     const id = browserCardId(reply.id);
     this.openCards.set(id, agent);
     // The client shows a card through its pending request entity.
-    let shown = false;
+    let shown: boolean | undefined = false;
     try {
-      shown = Boolean(
-        await until("sign-in card", CARD_SHOWN_MS, async () => {
-          const cards = await this.changedEntities(
-            after,
-            "request",
-            (value) => value?.id === id && value.status === "pending",
-          );
-          return { done: cards.length > 0, value: true };
-        }),
-      );
+      shown = await until("sign-in card", CARD_SHOWN_MS, async () => {
+        const cards = await this.changedEntities(
+          after,
+          "request",
+          (value) => value?.id === id && value.status === "pending",
+        );
+        return { done: cards.length > 0, value: true };
+      });
     } catch (error) {
       if (!(error instanceof CheckFailed)) {
         throw error;
@@ -1926,9 +1896,9 @@ export class Smoke {
       );
       return {
         done:
-          chat != null &&
-          !chat.inFlight &&
-          TERMINAL_STATUSES.has(chat.status) &&
+          Boolean(chat) &&
+          !chat!.inFlight &&
+          TERMINAL_STATUSES.has(chat!.status) &&
           pending.length === 0,
         value: chat,
         note: `status ${chat?.status}, ${pending.length} pending events`,
@@ -1938,7 +1908,7 @@ export class Smoke {
 
   async clientTranscript(agent: string) {
     const items = await this.transcript(agent);
-    const pull = await this.backend.get<Schema["SyncPullResponse"]>(
+    const pull = await this.backend.get<SyncPage>(
       `/api/sync/pull?scope=${encodeURIComponent(`transcript:${agent}`)}&after=0`,
     );
     const synced = syncTranscriptIds(pull?.documents ?? [], agent);
@@ -1967,7 +1937,7 @@ export class Smoke {
     });
     if (changed.length > 0) {
       throw new CheckFailed(
-        `${changed.length} owner chats changed name or archive state, first ${changed[0]?.[0]}`,
+        `${changed.length} owner chats changed name or archive state, first ${changed[0][0]}`,
       );
     }
     return `${this.ownerChats.size} owner chats unchanged`;
@@ -2000,9 +1970,7 @@ export class Smoke {
         // The decline wakes the chat; it must run while the folder exists.
         await this.settled(agent, after);
       } catch (error) {
-        problems.push(
-          `card ${id}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        problems.push(`card ${id}: ${(error as Error).message}`);
       }
     }
     const archived: string[] = [];
@@ -2021,9 +1989,7 @@ export class Smoke {
         }
         archived.push(id);
       } catch (error) {
-        problems.push(
-          `archive ${id}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        problems.push(`archive ${id}: ${(error as Error).message}`);
       }
     }
     try {
@@ -2043,7 +2009,7 @@ export class Smoke {
         };
       });
     } catch (error) {
-      problems.push(error instanceof Error ? error.message : String(error));
+      problems.push((error as Error).message);
     }
     if (!this.projectRegistered && this.root) {
       try {
@@ -2058,7 +2024,7 @@ export class Smoke {
         );
       } catch (error) {
         problems.push(
-          `recover project ${this.root}: ${error instanceof Error ? error.message : String(error)}`,
+          `recover project ${this.root}: ${(error as Error).message}`,
         );
       }
     }
@@ -2070,18 +2036,14 @@ export class Smoke {
           request_id: `smoke-remove-${this.runId}`,
         });
       } catch (error) {
-        problems.push(
-          `project ${this.root}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        problems.push(`project ${this.root}: ${(error as Error).message}`);
       }
     }
     if (this.root) {
       try {
         removeRunRoot(this.root, this.runId, this.temporaryRoot);
       } catch (error) {
-        problems.push(
-          `folder ${this.root}: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        problems.push(`folder ${this.root}: ${(error as Error).message}`);
       }
     }
     if (problems.length > 0) {
@@ -2119,21 +2081,20 @@ export class Smoke {
       this.makeRoot();
       if (this.usage) this.saveUsage();
       let first = null;
-      assert.ok(this.accountsByProvider);
+
       for (const provider of this.accountsByProvider.keys()) {
-        const current: { chat?: Chat } = {};
+        let chat: Chat | null = null;
         const passed = await report.run(`${provider} turn`, async () => {
-          current.chat = await this.turn(provider);
-          if (this.usage)
-            return await this.usageScenario(current.chat, provider);
-          return current.chat.detail;
+          chat = await this.turn(provider);
+          if (this.usage) return await this.usageScenario(chat, provider);
+          return chat.detail;
         });
         if (this.live) {
           await this.live.close();
           this.live = null;
         }
-        if (passed && !first && current.chat) {
-          first = current.chat.id;
+        if (passed && !first) {
+          first = chat!.id;
         }
         if (this.interrupted) {
           break;
@@ -2144,13 +2105,12 @@ export class Smoke {
           await this.backend.get<Schema["SyncProtocolResponse"]>(
             "/api/sync/protocol",
           );
-        const live = new LiveChanges(
+        this.live = new LiveChanges(
           this.backend,
           first,
           protocol.protocolVersion,
         );
-        this.live = live;
-        await live.ready;
+        await this.live.ready;
         await report.run("message once", () => this.messageOnce(first));
         await report.run("monitor exit", () => this.monitor(first));
         await report.run("sign-in card", () => this.signInCard(first));
@@ -2222,10 +2182,7 @@ async function cli() {
     if (files.length !== 2)
       throw new CheckFailed("--compare requires <old.json> <new.json>");
     console.table(
-      compareEvidence(
-        readEvidence(files[0] ?? ""),
-        readEvidence(files[1] ?? ""),
-      ),
+      compareEvidence(readEvidence(files[0]), readEvidence(files[1])),
     );
     return 0;
   }
