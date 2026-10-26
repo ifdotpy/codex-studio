@@ -399,7 +399,7 @@ test("branch from completed turn preserves a running source and refuses its acti
   const target = await forkAtTurn(f.session, { lastTurnId: "u1" }, f.deps);
   assert.deepEqual(f.session, before);
   assert.equal(target.turns.length, 1);
-  assert.equal(target.turns[0].status, "completed");
+  assert.equal(target.turns[0]?.status, "completed");
   for (const params of [{}, { lastTurnId: "u2" }])
     await assert.rejects(
       forkAtTurn(f.session, params, f.deps),

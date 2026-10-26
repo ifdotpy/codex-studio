@@ -1,3 +1,5 @@
+import type { SDKPartialAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
+type StreamEvent = SDKPartialAssistantMessage["event"];
 export const modelUsage: import("@anthropic-ai/claude-agent-sdk").ModelUsage = {
   inputTokens: 10,
   outputTokens: 720,
@@ -10,60 +12,63 @@ export const modelUsage: import("@anthropic-ai/claude-agent-sdk").ModelUsage = {
   maxOutputTokens: 32000,
 };
 
-export const events: import("@anthropic-ai/claude-agent-sdk").SDKPartialAssistantMessage["event"][] =
-  [
-    {
-      type: "message_start",
-      message: {
-        id: "response-1",
-        type: "message",
-        role: "assistant",
-        model: "claude-opus-5-5",
-        content: [],
-        container: null,
-        context_management: null,
-        diagnostics: null,
-        stop_details: null,
-        stop_reason: null,
-        stop_sequence: null,
-        usage: {
-          input_tokens: 10,
-          output_tokens: 1,
-          cache_read_input_tokens: 30,
-          cache_creation_input_tokens: 40,
-          cache_creation: null,
-          fallback_credit: null,
-          inference_geo: null,
-          iterations: null,
-          output_tokens_details: null,
-          server_tool_use: null,
-          service_tier: null,
-          speed: null,
-        },
-      },
-    },
-    {
-      type: "message_delta",
+export const events: [
+  Extract<StreamEvent, { type: "message_start" }>,
+  Extract<StreamEvent, { type: "message_delta" }>,
+  Extract<StreamEvent, { type: "message_stop" }>,
+] = [
+  {
+    type: "message_start",
+    message: {
+      id: "response-1",
+      type: "message",
+      role: "assistant",
+      model: "claude-opus-5-5",
+      content: [],
+      container: null,
       context_management: null,
-      delta: {
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        container: null,
-        stop_details: null,
-      },
+      diagnostics: null,
+      stop_details: null,
+      stop_reason: null,
+      stop_sequence: null,
       usage: {
-        input_tokens: 12,
-        output_tokens: 720,
-        cache_read_input_tokens: 32,
-        cache_creation_input_tokens: 42,
+        input_tokens: 10,
+        output_tokens: 1,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 40,
+        cache_creation: null,
         fallback_credit: null,
+        inference_geo: null,
         iterations: null,
-        output_tokens_details: { thinking_tokens: 20 },
+        output_tokens_details: null,
         server_tool_use: null,
+        service_tier: null,
+        speed: null,
       },
     },
-    { type: "message_stop" },
-  ];
+  },
+  {
+    type: "message_delta",
+    context_management: null,
+    delta: {
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      container: null,
+      stop_details: null,
+    },
+    usage: {
+      input_tokens: 12,
+      output_tokens: 720,
+      cache_read_input_tokens: 32,
+      cache_creation_input_tokens: 42,
+      fallback_credit: null,
+      iterations: null,
+      output_tokens_details: { thinking_tokens: 20 },
+      server_tool_use: null,
+    },
+  },
+  { type: "message_stop" },
+];
 
 export const sdkResult: import("@anthropic-ai/claude-agent-sdk").SDKResultMessage =
   {

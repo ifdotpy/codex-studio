@@ -84,10 +84,11 @@ export function createCatalogCache<
           if (!closed) confirmed = { value, startedAt };
           return value;
         },
-        (error) => {
+        (error: unknown) => {
           // A proven account rejection invalidates even an unexpired proof.
           if (
-            error instanceof Error &&
+            error !== null &&
+            typeof error === "object" &&
             "claudeAccountValidationFailed" in error &&
             error.claudeAccountValidationFailed === true
           )
@@ -150,7 +151,8 @@ export async function loadCatalog<Live, Value>({
     } catch (error) {
       if (
         background ||
-        (error instanceof Error &&
+        (error !== null &&
+          typeof error === "object" &&
           "claudeAccountValidationFailed" in error &&
           error.claudeAccountValidationFailed === true)
       )

@@ -89,7 +89,7 @@ export function createAccountCheck({
   nativePath?: string;
 }) {
   let pinned = expectedIdentity;
-  return function checkAccount(account: unknown) {
+  return function checkAccount<Account>(account: Account) {
     if (!expectedEmail)
       reject(
         "expected_identity",
@@ -162,18 +162,35 @@ export function createAccountCheck({
     let uuid = text("accountUuid" in account ? account.accountUuid : undefined);
     try {
       const native = readOptional(nativePath);
-      const profile = native === null ? null : JSON.parse(native).oauthAccount;
+      const parsed: unknown = native === null ? null : JSON.parse(native);
+      const profile =
+        parsed !== null &&
+        typeof parsed === "object" &&
+        "oauthAccount" in parsed
+          ? parsed.oauthAccount
+          : null;
       if (profile) {
+        if (typeof profile !== "object")
+          reject(
+            "organization_metadata",
+            "Claude Code organization metadata is unavailable. No input was submitted.",
+          );
+        const emailAddress =
+          "emailAddress" in profile ? profile.emailAddress : undefined;
+        const organizationUuid =
+          "organizationUuid" in profile ? profile.organizationUuid : undefined;
+        const accountUuid =
+          "accountUuid" in profile ? profile.accountUuid : undefined;
         if (
-          profile.emailAddress !== account.email ||
+          emailAddress !== account.email ||
           (organization &&
-            text(profile.organizationUuid) &&
-            organization !== profile.organizationUuid) ||
-          (uuid && text(profile.accountUuid) && uuid !== profile.accountUuid)
+            text(organizationUuid) &&
+            organization !== organizationUuid) ||
+          (uuid && text(accountUuid) && uuid !== accountUuid)
         )
           reject("identity_mismatch");
-        organization ||= text(profile.organizationUuid);
-        uuid ||= text(profile.accountUuid);
+        organization ||= text(organizationUuid);
+        uuid ||= text(accountUuid);
       }
       const observed = credentialIdentity(account.email, organization, uuid);
       if (identityPath) {

@@ -3,6 +3,8 @@ import type {
   SessionMessage,
   SlashCommand,
   ForkSessionOptions,
+  ForkSessionResult,
+  GetSessionMessagesOptions,
   RewindFilesResult,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Session, Turn, FileRestorePlan } from "./session-state.ts";
@@ -10,12 +12,12 @@ export interface ControlDependencies {
   persist(session: Session): Promise<unknown>;
   getSessionMessages(
     id: string,
-    options?: { dir?: string },
+    options?: GetSessionMessagesOptions,
   ): Promise<SessionMessage[]>;
   forkSession(
     id: string,
     options: ForkSessionOptions,
-  ): Promise<{ sessionId: string }>;
+  ): Promise<ForkSessionResult>;
   rewindFiles(
     id: string,
     messageId: string,

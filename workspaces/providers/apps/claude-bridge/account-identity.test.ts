@@ -1,6 +1,7 @@
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -57,7 +58,7 @@ const refuses = (fn: () => unknown) =>
   });
 
 test("shared Claude credential identity contract matches the Rust owner", () => {
-  const cases = JSON.parse(
+  const cases: unknown = JSON.parse(
     fs.readFileSync(
       new URL(
         "../../../runtime/packages/runtime-services/src/account_driver/claude_identity_cases.json",
@@ -66,13 +67,38 @@ test("shared Claude credential identity contract matches the Rust owner", () => 
       "utf8",
     ),
   );
-  for (const [email, organization, uuid, expected] of cases.identities)
+  assert.ok(
+    cases &&
+      typeof cases === "object" &&
+      "identities" in cases &&
+      "comparisons" in cases,
+  );
+  assert.ok(
+    Array.isArray(cases.identities) && Array.isArray(cases.comparisons),
+  );
+  const identities: unknown[] = cases.identities;
+  const expectedIdentities: string[] = [];
+  for (const row of identities) {
+    assert.ok(Array.isArray(row));
+    const [email, organization, uuid, expected]: unknown[] = row;
+    assert.ok(typeof email === "string" && typeof expected === "string");
     assert.equal(credentialIdentity(email, organization, uuid), expected);
-  for (const [old, next, expected] of cases.comparisons)
-    assert.equal(
-      acceptsIdentity(cases.identities[old][3], cases.identities[next][3]),
-      expected,
+    expectedIdentities.push(expected);
+  }
+  const comparisons: unknown[] = cases.comparisons;
+  for (const row of comparisons) {
+    assert.ok(Array.isArray(row));
+    const [old, next, expected]: unknown[] = row;
+    assert.ok(
+      typeof old === "number" &&
+        typeof next === "number" &&
+        typeof expected === "boolean",
     );
+    const previous = expectedIdentities[old],
+      observed = expectedIdentities[next];
+    assert.ok(previous !== undefined && observed !== undefined);
+    assert.equal(acceptsIdentity(previous, observed), expected);
+  }
 });
 
 test("checkAccount refuses another organization or UUID with the same email", () => {
@@ -140,24 +166,10 @@ test("checkAccount preserves email provider and subscription refusal", () => {
     );
 });
 
-const SDK = String.raw`
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-export function query({prompt}) {
- return {
-  accountInfo:async()=>({email:'test@example.test',subscriptionType:'max',apiProvider:'firstParty'}),
-  supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
-  initializationResult:async()=>({commands:[]}),
-  close(){},
-  async *[Symbol.asyncIterator](){
-    const input=await prompt.next();
-    if(!input.done) throw new Error('INPUT MUST NOT BE SUBMITTED');
-  }
- };
-}
-`;
+const SDK = await readFile(
+  new URL("./account-identity.fixture.mts", import.meta.url),
+  "utf8",
+);
 test("the real bridge reports native UUIDs and refuses input after an organization change", async () => {
   const bridge = await startBridge(SDK, "claude-org-identity-");
   bridges.push(bridge);
