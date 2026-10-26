@@ -1,35 +1,11 @@
 //! Known Codex error classifications. The generated vendor leaf owns their
 //! spellings and payloads; parity rejects a changed known set. This is a tag
 //! projection, not a replacement for the lossless provider error JSON record.
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const CODEX_ERROR_SCHEMA: &str = include_str!("schemas/codex/CodexErrorInfo.json");
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum KnownCodexErrorKind {
-    ContextWindowExceeded,
-    SessionBudgetExceeded,
-    UsageLimitExceeded,
-    RateLimitExceeded,
-    FlexUnavailable,
-    ServerOverloaded,
-    CyberPolicy,
-    MisalignmentPolicyViolation,
-    TooManyDenials,
-    HttpConnectionFailed,
-    ResponseStreamConnectionFailed,
-    InternalServerError,
-    Unauthorized,
-    BadRequest,
-    ThreadRollbackFailed,
-    SandboxError,
-    ResponseStreamDisconnected,
-    ResponseTooManyFailedAttempts,
-    ActiveTurnNotSteerable,
-    Other,
-}
+pub use crate::codex_generated::KnownCodexErrorKind;
 
 /// External and historical records may carry a string or a single-key object.
 /// Never choose an arbitrary key from an ambiguous provider extension object.

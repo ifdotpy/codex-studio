@@ -265,54 +265,37 @@ pub fn codex_usage_schema_compatible(candidate: &Value) -> bool {
     true
 }
 
-/// Mirror of Codex's generated TokenUsageBreakdown (signed int64 on the wire).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexTokenUsageBreakdown {
-    pub input_tokens: i64,
-    pub cached_input_tokens: i64,
-    #[serde(default)]
-    pub cache_write_input_tokens: i64,
-    pub output_tokens: i64,
-    pub reasoning_output_tokens: i64,
-    pub total_tokens: i64,
-}
+pub use crate::codex_generated::{
+    CodexThreadTokenUsage, CodexThreadTokenUsageUpdatedNotification, CodexTokenUsageBreakdown,
+};
 impl CodexTokenUsageBreakdown {
     /// Convert inclusive Codex input exactly as pricing::price_usage does.
     pub fn tokens(&self) -> Result<UsageTokens, UsageParseError> {
+        // An added vendor accounting category must be classified explicitly.
+        let Self {
+            input_tokens,
+            cached_input_tokens,
+            cache_write_input_tokens,
+            output_tokens,
+            reasoning_output_tokens,
+            total_tokens,
+        } = *self;
         let positive =
             |n| u64::try_from(n).map_err(|_| UsageParseError("negative Codex token count".into()));
-        let input = positive(self.input_tokens)?;
-        let read = positive(self.cached_input_tokens)?.min(input);
-        let write = positive(self.cache_write_input_tokens)?.min(input - read);
-        positive(self.total_tokens)?;
+        let input = positive(input_tokens)?;
+        let read = positive(cached_input_tokens)?.min(input);
+        let write = positive(cache_write_input_tokens)?.min(input - read);
+        positive(total_tokens)?;
         Ok(UsageTokens {
             uncached_input: input - read - write,
             cache_read_input: read,
             cache_write_input: write,
             cache_write_input_1h: None,
-            output: positive(self.output_tokens)?,
-            reasoning_output: Some(positive(self.reasoning_output_tokens)?),
+            output: positive(output_tokens)?,
+            reasoning_output: Some(positive(reasoning_output_tokens)?),
         })
     }
 }
-/// Mirror of Codex's generated ThreadTokenUsage.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexThreadTokenUsage {
-    pub total: CodexTokenUsageBreakdown,
-    pub last: CodexTokenUsageBreakdown,
-    pub model_context_window: Option<i64>,
-}
-/// Mirror of Codex's generated ThreadTokenUsageUpdatedNotification.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexThreadTokenUsageUpdatedNotification {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub token_usage: CodexThreadTokenUsage,
-}
-
 fn optional_text(value: &Value, key: &str) -> Result<Option<String>, UsageParseError> {
     match value.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -420,13 +403,21 @@ pub fn parse_token_usage(
     // Only native Codex notifications deserialize the exact vendored SDK mirror.
     let scope = match provider {
         ProviderKind::Codex if source.is_none() => {
-            let native: CodexThreadTokenUsageUpdatedNotification =
-                CodexThreadTokenUsageUpdatedNotification::deserialize(params)?;
+            let CodexThreadTokenUsageUpdatedNotification {
+                thread_id: _,
+                turn_id,
+                token_usage,
+            } = CodexThreadTokenUsageUpdatedNotification::deserialize(params)?;
+            let CodexThreadTokenUsage {
+                total,
+                last,
+                model_context_window: _,
+            } = token_usage;
             return Ok(UsageObservation::Cumulative {
                 scope: UsageScope::CodexThread,
-                turn_id: Some(native.turn_id),
-                total: native.token_usage.total.tokens()?,
-                last: Some(native.token_usage.last.tokens()?),
+                turn_id: Some(turn_id),
+                total: total.tokens()?,
+                last: Some(last.tokens()?),
                 model_context_window,
                 models: None,
             });
@@ -730,7 +721,7 @@ mod tests {
         fn normalize(value: &mut Value) {
             match value {
                 Value::Object(map) => {
-                    for key in ["$schema", "title", "description"] {
+                    for key in ["$schema", "$comment", "title", "description"] {
                         map.remove(key);
                     }
                     if let Some(Value::Array(required)) = map.get_mut("required") {

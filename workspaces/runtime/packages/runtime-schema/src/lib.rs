@@ -4,6 +4,7 @@
 pub mod agent_limits;
 pub mod agent_progress;
 pub mod api_schema;
+mod codex_generated;
 pub mod complaints;
 pub mod contracts;
 pub mod delivery;

@@ -34,17 +34,10 @@ pub struct ThreadIdentity {
     pub thread_id: String,
 }
 
-// Vendor mirrors are checked against selected codex-cli 0.164.0 generated
-// leaves, produced by generate-provider-lifecycle.ts with --experimental.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[schemars(rename = "TurnStatus")]
-pub enum CodexTurnStatus {
-    Completed,
-    Interrupted,
-    Failed,
-    InProgress,
-}
+pub use crate::codex_generated::{
+    CodexThreadActiveFlag, CodexThreadStatus, CodexTurnItemsView, CodexTurnStatus,
+};
+
 impl CodexTurnStatus {
     pub fn observe(turn: &Value) -> Option<Self> {
         serde_json::from_value(turn.get("status")?.clone()).ok()
@@ -59,35 +52,6 @@ impl CodexTurnStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[schemars(rename = "ThreadActiveFlag")]
-pub enum CodexThreadActiveFlag {
-    WaitingOnApproval,
-    WaitingOnUserInput,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[schemars(rename = "ThreadStatus")]
-pub enum CodexThreadStatus {
-    NotLoaded,
-    Idle,
-    SystemError,
-    Active {
-        #[serde(rename = "activeFlags")]
-        active_flags: Vec<CodexThreadActiveFlag>,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[schemars(rename = "TurnItemsView")]
-pub enum CodexTurnItemsView {
-    NotLoaded,
-    Summary,
-    Full,
-}
 impl CodexTurnItemsView {
     pub const fn as_str(self) -> &'static str {
         match self {

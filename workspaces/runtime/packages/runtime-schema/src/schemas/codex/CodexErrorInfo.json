@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "Codex CLI 0.164.0: app-server generate-json-schema --experimental; definitions/CodexErrorInfo from v2/ErrorNotification.json. Refresh with pnpm run contracts:vendor-errors.",
+  "$comment": "Owner: codex-cli 0.164.0; app-server generate-json-schema --experimental. definitions/CodexErrorInfo from v2/ErrorNotification.json. Refresh with pnpm run contracts:vendor:refresh.",
   "title": "CodexErrorInfo",
   "anyOf": [
     {
