@@ -1,5 +1,5 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import type { Json, JsonValue } from "../types";
+import type { Json, JsonInput } from "../types";
 import { jsonObject } from "./accountUsage";
 export type SessionCostValue = Json;
 type Entry = { scope: string; value: SessionCostValue; storedAt: number };
@@ -11,7 +11,7 @@ const maxStoredBytes = 64 * 1024;
 export const sessionCostScope = (stateDir: string, rootId: string) =>
   JSON.stringify([stateDir, rootId]);
 
-function valid(input: JsonValue, scope: string): input is Entry {
+function valid(input: JsonInput, scope: string): input is Entry {
   const value = jsonObject(input);
   const cost = jsonObject(value?.value);
   return (

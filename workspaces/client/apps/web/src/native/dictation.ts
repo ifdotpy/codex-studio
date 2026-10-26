@@ -106,7 +106,7 @@ export function createNativeDictation(
             typeof value.total !== "number"
           )
             return;
-          callback(value);
+          callback(value as Parameters<typeof callback>[0]);
         });
         if (disposed) {
           stop();
