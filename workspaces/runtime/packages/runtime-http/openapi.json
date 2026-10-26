@@ -28216,6 +28216,24 @@
         "title": "HostResources",
         "type": "object"
       },
+      "HttpErrorKind": {
+        "description": "Safe HTTP classifications, shared with the existing operator log.",
+        "enum": [
+          "handler_panic",
+          "store_configuration",
+          "store_data",
+          "store_database",
+          "store_io",
+          "store_ownership",
+          "store_schema",
+          "store_concurrency",
+          "response_body_read",
+          "costs_computation",
+          "costs_state",
+          "unclassified"
+        ],
+        "type": "string"
+      },
       "HttpMetricSummary": {
         "additionalProperties": false,
         "properties": {
@@ -30519,6 +30537,24 @@
         "title": "MessageRequest",
         "type": "object"
       },
+      "MigrationPhase": {
+        "enum": [
+          "validate",
+          "apply",
+          "commit",
+          "rollback"
+        ],
+        "type": "string"
+      },
+      "MigrationRollbackOutcome": {
+        "description": "A failed step's rollback, never a claim about previously committed migration steps.",
+        "enum": [
+          "not_required",
+          "rolled_back",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "MigrationStatus": {
         "additionalProperties": false,
         "properties": {
@@ -30577,6 +30613,16 @@
         },
         "title": "MigrationStatus",
         "type": "object"
+      },
+      "MigrationTarget": {
+        "description": "Migration execution stays in runtime-store; these facts are shared operator and UI evidence.",
+        "enum": [
+          "canvas",
+          "analytics",
+          "account_registry",
+          "supervisor"
+        ],
+        "type": "string"
       },
       "MissingToolRequestResponse": {
         "additionalProperties": {
@@ -40531,6 +40577,13 @@
         "title": "RecoveryOutcome",
         "type": "string"
       },
+      "RecoveryPhase": {
+        "enum": [
+          "scan",
+          "history"
+        ],
+        "type": "string"
+      },
       "RecoveryResponse": {
         "additionalProperties": false,
         "properties": {
@@ -49144,88 +49197,104 @@
         "type": "object"
       },
       "StudioError": {
-        "additionalProperties": false,
-        "description": "One agent work item that ended because of a Studio error, not because of the agent's own work.",
-        "properties": {
-          "action": {
-            "description": "resume runs connection recovery for the agent; check opens the agent for the owner.",
-            "enum": [
-              "resume",
-              "check"
+        "description": "An action always carries its real destination. Server incidents have no invented agent.",
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "const": "resume",
+                "type": "string"
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "agentName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "agentId",
+              "agentName"
             ],
-            "title": "Action",
-            "type": "string"
+            "type": "object"
           },
-          "agentId": {
-            "title": "Agentid",
-            "type": "string"
+          {
+            "properties": {
+              "action": {
+                "const": "check",
+                "type": "string"
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "agentName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "agentId",
+              "agentName"
+            ],
+            "type": "object"
           },
-          "agentName": {
-            "title": "Agentname",
-            "type": "string"
-          },
+          {
+            "properties": {
+              "action": {
+                "const": "details",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
           "at": {
-            "description": "Unix seconds of the failure.",
+            "description": "Unix seconds.",
+            "format": "double",
             "minimum": 0,
-            "title": "At",
             "type": "number"
           },
           "detail": {
-            "description": "The stored error.",
-            "title": "Detail",
             "type": "string"
           },
-          "eventId": {
+          "diagnostics": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/StudioErrorDiagnostics"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Eventid"
+            "description": "Absent only on retained client fixtures from before structured diagnostics."
+          },
+          "eventId": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "description": "Row identity; dismissing it hides this row only.",
-            "title": "Id",
             "type": "string"
           },
           "kind": {
-            "enum": [
-              "monitor_outcome_lost",
-              "monitor_not_recorded",
-              "input_not_sent",
-              "input_unconfirmed",
-              "input_uncertain",
-              "input_stuck",
-              "turn_disconnected",
-              "workspace_failed"
-            ],
-            "title": "Kind",
-            "type": "string"
+            "$ref": "#/components/schemas/StudioErrorKind"
           },
           "monitorId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Monitorid"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reason": {
-            "description": "The reason in plain words.",
-            "title": "Reason",
             "type": "string"
           },
           "subject": {
-            "description": "The command or the start of the message.",
-            "title": "Subject",
             "type": "string"
           }
         },
@@ -49233,15 +49302,397 @@
           "id",
           "kind",
           "reason",
-          "action",
-          "agentId",
-          "agentName",
           "detail",
           "subject",
           "at"
         ],
-        "title": "StudioError",
         "type": "object"
+      },
+      "StudioErrorCause": {
+        "description": "Only facts extracted by typed adapters belong here; never arbitrary error strings or payloads.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "migration"
+                ],
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/components/schemas/MigrationPhase"
+              },
+              "rollback": {
+                "$ref": "#/components/schemas/MigrationRollbackOutcome"
+              },
+              "target": {
+                "$ref": "#/components/schemas/MigrationTarget"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "target",
+              "phase",
+              "rollback"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "stored_record"
+                ],
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              },
+              "pointer": {
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "object",
+              "id",
+              "pointer"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "extendedCode": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "kind": {
+                "enum": [
+                  "sqlite"
+                ],
+                "type": "string"
+              },
+              "primaryCode": {
+                "format": "int32",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "primaryCode",
+              "extendedCode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "category": {
+                "$ref": "#/components/schemas/StudioErrorJsonCategory"
+              },
+              "column": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "enum": [
+                  "json"
+                ],
+                "type": "string"
+              },
+              "line": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "line",
+              "column",
+              "category"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "io"
+                ],
+                "type": "string"
+              },
+              "osCode": {
+                "format": "int32",
+                "nullable": true,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "osCode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "schema_object"
+                ],
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "object"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/components/schemas/HttpErrorKind"
+              },
+              "kind": {
+                "enum": [
+                  "runtime"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "class"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StudioErrorContext": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "requestId": {
+                "nullable": true,
+                "type": "string"
+              },
+              "source": {
+                "enum": [
+                  "monitor"
+                ],
+                "type": "string"
+              },
+              "turnId": {
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "requestId",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "source": {
+                "enum": [
+                  "input"
+                ],
+                "type": "string"
+              },
+              "turnId": {
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "source": {
+                "enum": [
+                  "agent"
+                ],
+                "type": "string"
+              },
+              "turnId": {
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/components/schemas/HttpErrorKind"
+              },
+              "requestId": {
+                "nullable": true,
+                "type": "string"
+              },
+              "route": {
+                "type": "string"
+              },
+              "source": {
+                "enum": [
+                  "http"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "route",
+              "requestId",
+              "status",
+              "class"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "agentId": {
+                "nullable": true,
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/components/schemas/RecoveryPhase"
+              },
+              "source": {
+                "enum": [
+                  "recovery"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "account",
+              "phase",
+              "agentId"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StudioErrorDiagnostics": {
+        "additionalProperties": false,
+        "properties": {
+          "causes": {
+            "description": "Ordered from the owning boundary to the underlying safe machine facts.",
+            "items": {
+              "$ref": "#/components/schemas/StudioErrorCause"
+            },
+            "type": "array"
+          },
+          "certainty": {
+            "$ref": "#/components/schemas/StudioErrorEffectCertainty"
+          },
+          "context": {
+            "$ref": "#/components/schemas/StudioErrorContext"
+          }
+        },
+        "required": [
+          "context",
+          "certainty",
+          "causes"
+        ],
+        "type": "object"
+      },
+      "StudioErrorEffectCertainty": {
+        "description": "Evidence about effects, distinct from provider delivery (\"written\" is not applied).",
+        "enum": [
+          "read_only",
+          "not_applied",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "StudioErrorJsonCategory": {
+        "enum": [
+          "io",
+          "syntax",
+          "data",
+          "eof"
+        ],
+        "type": "string"
+      },
+      "StudioErrorKind": {
+        "description": "Why work needs attention. The service owns classification and publication.",
+        "enum": [
+          "monitor_outcome_lost",
+          "monitor_not_recorded",
+          "input_not_sent",
+          "input_unconfirmed",
+          "input_uncertain",
+          "input_stuck",
+          "turn_disconnected",
+          "workspace_failed",
+          "http_failure",
+          "recovery_failed"
+        ],
+        "type": "string"
       },
       "StudioErrorsDismissRequest": {
         "additionalProperties": false,

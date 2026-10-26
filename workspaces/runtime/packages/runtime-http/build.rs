@@ -39,6 +39,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let document: serde_json::Value = serde_json::from_slice(&fs::read(&spec_path)?)?;
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
+    analysis
+        .schemas
+        .get_mut("StudioError")
+        .ok_or("missing incident schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::studio_errors::StudioError".into(),
+        serde_with: None,
+    };
     // HTTP identities use the schema owner's enum, including through references.
     analysis
         .schemas

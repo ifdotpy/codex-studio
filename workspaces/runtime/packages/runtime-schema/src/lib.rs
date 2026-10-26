@@ -3,6 +3,7 @@
 
 pub mod agent_limits;
 pub mod agent_progress;
+pub mod studio_errors;
 pub mod api_schema;
 mod codex_generated;
 pub mod complaints;

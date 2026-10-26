@@ -14039,6 +14039,23 @@ export interface components {
       /** Totalmemorybytes */
       totalMemoryBytes: number | null;
     };
+    /**
+     * @description Safe HTTP classifications, shared with the existing operator log.
+     * @enum {string}
+     */
+    HttpErrorKind:
+      | "handler_panic"
+      | "store_configuration"
+      | "store_data"
+      | "store_database"
+      | "store_io"
+      | "store_ownership"
+      | "store_schema"
+      | "store_concurrency"
+      | "response_body_read"
+      | "costs_computation"
+      | "costs_state"
+      | "unclassified";
     /** HttpMetricSummary */
     HttpMetricSummary: {
       /** Max */
@@ -15008,6 +15025,13 @@ export interface components {
        */
       protocol: 1;
     };
+    /** @enum {string} */
+    MigrationPhase: "validate" | "apply" | "commit" | "rollback";
+    /**
+     * @description A failed step's rollback, never a claim about previously committed migration steps.
+     * @enum {string}
+     */
+    MigrationRollbackOutcome: "not_required" | "rolled_back" | "unknown";
     /** MigrationStatus */
     MigrationStatus: {
       /** @default null */
@@ -15033,6 +15057,11 @@ export interface components {
        */
       stateReadError?: null | string | undefined;
     };
+    /**
+     * @description Migration execution stays in runtime-store; these facts are shared operator and UI evidence.
+     * @enum {string}
+     */
+    MigrationTarget: "canvas" | "analytics" | "account_registry" | "supervisor";
     /** MissingToolRequestResponse */
     MissingToolRequestResponse: {
       /** Id */
@@ -19207,6 +19236,8 @@ export interface components {
      * @enum {string}
      */
     RecoveryOutcome: "completed" | "failed" | "interrupted";
+    /** @enum {string} */
+    RecoveryPhase: "scan" | "history";
     /** RecoveryResponse */
     RecoveryResponse: {
       /**
@@ -22657,70 +22688,160 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null | undefined;
     };
-    /**
-     * StudioError
-     * @description One agent work item that ended because of a Studio error, not because of the agent's own work.
-     */
+    /** @description An action always carries its real destination. Server incidents have no invented agent. */
     StudioError: {
       /**
-       * Action
-       * @description resume runs connection recovery for the agent; check opens the agent for the owner.
-       * @enum {string}
-       */
-      action: "resume" | "check";
-      /** Agentid */
-      agentId: string;
-      /** Agentname */
-      agentName: string;
-      /**
-       * At
-       * @description Unix seconds of the failure.
+       * Format: double
+       * @description Unix seconds.
        */
       at: number;
-      /**
-       * Detail
-       * @description The stored error.
-       */
       detail: string;
-      /**
-       * Eventid
-       * @default null
-       */
+      /** @description Absent only on retained client fixtures from before structured diagnostics. */
+      diagnostics?:
+        | components["schemas"]["StudioErrorDiagnostics"]
+        | null
+        | undefined;
       eventId?: string | null | undefined;
-      /**
-       * Id
-       * @description Row identity; dismissing it hides this row only.
-       */
       id: string;
-      /**
-       * Kind
-       * @enum {string}
-       */
-      kind:
-        | "monitor_outcome_lost"
-        | "monitor_not_recorded"
-        | "input_not_sent"
-        | "input_unconfirmed"
-        | "input_uncertain"
-        | "input_stuck"
-        | "turn_disconnected"
-        | "workspace_failed";
-      /**
-       * Monitorid
-       * @default null
-       */
+      kind: components["schemas"]["StudioErrorKind"];
       monitorId?: string | null | undefined;
-      /**
-       * Reason
-       * @description The reason in plain words.
-       */
       reason: string;
-      /**
-       * Subject
-       * @description The command or the start of the message.
-       */
       subject: string;
+    } & (
+      | {
+          /** @constant */
+          action: "resume";
+          agentId: string;
+          agentName: string;
+        }
+      | {
+          /** @constant */
+          action: "check";
+          agentId: string;
+          agentName: string;
+        }
+      | {
+          /** @constant */
+          action: "details";
+        }
+    );
+    /** @description Only facts extracted by typed adapters belong here; never arbitrary error strings or payloads. */
+    StudioErrorCause:
+      | {
+          id: string;
+          /** @enum {string} */
+          kind: "migration";
+          phase: components["schemas"]["MigrationPhase"];
+          rollback: components["schemas"]["MigrationRollbackOutcome"];
+          target: components["schemas"]["MigrationTarget"];
+        }
+      | {
+          id: string;
+          /** @enum {string} */
+          kind: "stored_record";
+          object: string;
+          pointer: string | null;
+        }
+      | {
+          /** Format: int32 */
+          extendedCode: number;
+          /** @enum {string} */
+          kind: "sqlite";
+          /** Format: int32 */
+          primaryCode: number;
+        }
+      | {
+          category: components["schemas"]["StudioErrorJsonCategory"];
+          /** Format: uint */
+          column: number;
+          /** @enum {string} */
+          kind: "json";
+          /** Format: uint */
+          line: number;
+        }
+      | {
+          /** @enum {string} */
+          kind: "io";
+          /** Format: int32 */
+          osCode: number | null;
+        }
+      | {
+          /** @enum {string} */
+          kind: "schema_object";
+          object: string;
+        }
+      | {
+          class: components["schemas"]["HttpErrorKind"];
+          /** @enum {string} */
+          kind: "runtime";
+        };
+    StudioErrorContext:
+      | {
+          /** Format: int64 */
+          epoch: number | null;
+          requestId: string | null;
+          /** @enum {string} */
+          source: "monitor";
+          turnId: string | null;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @enum {string} */
+          source: "input";
+          turnId: string | null;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number | null;
+          /** @enum {string} */
+          source: "agent";
+          turnId: string | null;
+        }
+      | {
+          class: components["schemas"]["HttpErrorKind"];
+          requestId: string | null;
+          route: string;
+          /** @enum {string} */
+          source: "http";
+          /** Format: uint16 */
+          status: number;
+        }
+      | {
+          account: string;
+          agentId: string | null;
+          phase: components["schemas"]["RecoveryPhase"];
+          /** @enum {string} */
+          source: "recovery";
+        };
+    StudioErrorDiagnostics: {
+      /** @description Ordered from the owning boundary to the underlying safe machine facts. */
+      causes: components["schemas"]["StudioErrorCause"][];
+      certainty: components["schemas"]["StudioErrorEffectCertainty"];
+      context: components["schemas"]["StudioErrorContext"];
     };
+    /**
+     * @description Evidence about effects, distinct from provider delivery ("written" is not applied).
+     * @enum {string}
+     */
+    StudioErrorEffectCertainty: "read_only" | "not_applied" | "unknown";
+    /** @enum {string} */
+    StudioErrorJsonCategory: "io" | "syntax" | "data" | "eof";
+    /**
+     * @description Why work needs attention. The service owns classification and publication.
+     * @enum {string}
+     */
+    StudioErrorKind:
+      | "monitor_outcome_lost"
+      | "monitor_not_recorded"
+      | "input_not_sent"
+      | "input_unconfirmed"
+      | "input_uncertain"
+      | "input_stuck"
+      | "turn_disconnected"
+      | "workspace_failed"
+      | "http_failure"
+      | "recovery_failed";
     /** StudioErrorsDismissRequest */
     StudioErrorsDismissRequest: {
       /** @description Legacy single error id. Supply either id or ids. */

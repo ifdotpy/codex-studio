@@ -618,6 +618,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    crate::studio_errors::check_schema_parity(openapi)?;
     crate::queue_command::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
     for (suffix, value) in [
@@ -983,6 +984,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     check_backend_kind_parity(root)?;
     check_provider_sql_parity(root)?;
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    for (name, schema) in crate::studio_errors::schemas()? {
+        openapi["components"]["schemas"][name] = schema;
+    }
     openapi["components"]["schemas"]["ComplaintResponseStatus"] = crate::complaints::schema();
     openapi["components"]["schemas"]["ComplaintBody"]["properties"]["status"] =
         crate::complaints::status_property();
