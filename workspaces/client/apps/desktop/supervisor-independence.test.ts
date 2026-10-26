@@ -1,6 +1,7 @@
+import type { AddressInfo } from "node:net";
 import { parsedRecord } from "./test-support.ts";
 import type { HealthResult } from "../web/src/generated/rustOwned.ts";
-import { present, record, portOf } from "./test-support.ts";
+import { record } from "./test-support.ts";
 import type { RecoveryRun } from "./recovery.ts";
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
@@ -105,7 +106,6 @@ async function stateChange<T>(
 test.skipIf(!supervisorBinary)(
   "desktop and recovery lifecycle changes preserve an active Rust supervisor owner",
   async () => {
-    assert(supervisorBinary);
     const fixture = mkdtempSync(path.join(tmpdir(), "svo-"));
     const statePath = path.join(fixture, "state");
     mkdirSync(statePath);
@@ -115,7 +115,7 @@ test.skipIf(!supervisorBinary)(
     mkdirSync(path.join(resources, "bin"), { recursive: true });
     mkdirSync(path.join(resources, "web/dist"), { recursive: true });
     symlinkSync(
-      supervisorBinary,
+      supervisorBinary!,
       path.join(resources, "bin/codex-process-supervisor"),
     );
     symlinkSync(
@@ -139,7 +139,7 @@ test.skipIf(!supervisorBinary)(
       | undefined;
     let backendServer: Server | undefined;
     try {
-      owner = spawn(supervisorBinary, ["--state", state], {
+      owner = spawn(supervisorBinary!, ["--state", state], {
         stdio: "ignore",
         env: {
           ...process.env,
@@ -177,8 +177,8 @@ test.skipIf(!supervisorBinary)(
           ? Promise.resolve(messages.shift())
           : new Promise<unknown>((resolve) => waiters.push(resolve));
       await new Promise<void>((resolve, reject) => {
-        present(socket).once("connect", resolve);
-        present(socket).once("error", reject);
+        socket!.once("connect", resolve);
+        socket!.once("error", reject);
       });
       socket.write(
         `${JSON.stringify({
@@ -208,11 +208,11 @@ test.skipIf(!supervisorBinary)(
       const opened = record(await nextMessage());
       assert.equal(opened.requestId, 1);
       assert.equal(opened.error, undefined);
-      const activeChildPid = present(status(state).handles[0]).pid;
+      const activeChildPid = status(state).handles[0]!.pid;
       assert(typeof activeChildPid === "number");
       childPid = activeChildPid;
       assert.equal(initialHealth.handles.length, 0);
-      assert.equal(record(present(status(state).handles[0])).pid, childPid);
+      assert.equal(record(status(state).handles[0]!).pid, childPid);
 
       const files = recoveryPaths({ CODEX_AGENTS_STATE_DIR: state }, fixture);
       const registered = new Set([
@@ -223,9 +223,9 @@ test.skipIf(!supervisorBinary)(
       const run: RecoveryRun = async (_file, args) => {
         calls.push(args);
         const [action, target] = args;
-        if (action === "print" && !registered.has(present(target)))
+        if (action === "print" && !registered.has(target!))
           throw new Error("service is not loaded");
-        if (action === "bootout") registered.delete(present(target));
+        if (action === "bootout") registered.delete(target!);
         if (action === "bootstrap")
           registered.add(
             args[2] === files.supervisorPlist
@@ -253,9 +253,9 @@ test.skipIf(!supervisorBinary)(
         );
       });
       await new Promise<void>((resolve) =>
-        present(backendServer).listen(0, "127.0.0.1", resolve),
+        backendServer!.listen(0, "127.0.0.1", resolve),
       );
-      const port = portOf(backendServer);
+      const port = (backendServer.address() as AddressInfo).port;
       const appArgs = {
         applicationPath:
           "/Applications/Codex Studio.app/Contents/Resources/app.asar",
@@ -283,7 +283,7 @@ test.skipIf(!supervisorBinary)(
       assert.ok(
         calls.every(
           ([action, target]) =>
-            !["bootout", "kickstart"].includes(present(action)) ||
+            !["bootout", "kickstart"].includes(action!) ||
             target !== `gui/501/${files.supervisorLabel}`,
         ),
         "recovery updates must not stop or kick the supervisor service",
@@ -315,7 +315,6 @@ test.skipIf(!supervisorBinary)(
           "recovery did not attach to the independent owner",
         );
       } catch (error) {
-        assert(error instanceof Error);
         let log = "";
         try {
           log = readFileSync(
@@ -324,14 +323,12 @@ test.skipIf(!supervisorBinary)(
           );
         } catch {}
         throw new Error(
-          `${error.message}; exit=${recoveryProcess.exitCode}; stdout/stderr=${recoveryOutput}; log=${log}`,
+          `${(error as Error).message}; exit=${recoveryProcess.exitCode}; stdout/stderr=${recoveryOutput}; log=${log}`,
         );
       }
       // A launchctl kickstart -k replaces only the recovery job process.
       recoveryProcess.kill("SIGTERM");
-      await new Promise((resolve) =>
-        present(recoveryProcess).once("exit", resolve),
-      );
+      await new Promise((resolve) => recoveryProcess!.once("exit", resolve));
       recoveryProcess = null;
 
       const app = Object.assign(new EventEmitter(), {
@@ -353,33 +350,32 @@ test.skipIf(!supervisorBinary)(
           .pid,
         ownerPid,
       );
-      assert.equal(present(afterQuit.handles[0]).pid, childPid);
+      assert.equal(afterQuit.handles[0]!.pid, childPid);
       assert.equal(afterQuit.recovery.blocked, null);
     } finally {
-      if (recoveryProcess && present(recoveryProcess).exitCode === null) {
+      if (recoveryProcess && recoveryProcess!.exitCode === null) {
         recoveryProcess.kill("SIGTERM");
-        await new Promise((resolve) =>
-          present(recoveryProcess).once("exit", resolve),
-        );
+        await new Promise((resolve) => recoveryProcess!.once("exit", resolve));
       }
       if (backendServer)
-        await new Promise((resolve) => present(backendServer).close(resolve));
+        await new Promise((resolve) => backendServer!.close(resolve));
       if (childPid) {
         await stateChange(
           state,
           () => {
             try {
-              process.kill(present(childPid), 0);
+              process.kill(childPid!, 0);
               return false;
             } catch (error) {
-              if (record(error).code === "ESRCH") return true;
+              if ((error as NodeJS.ErrnoException).code === "ESRCH")
+                return true;
               throw error;
             }
           },
           "fake child did not exit",
           () => {
             try {
-              process.kill(present(childPid), "SIGTERM");
+              process.kill(childPid!, "SIGTERM");
             } catch (error) {
               if (record(error).code !== "ESRCH") throw error;
             }
@@ -389,7 +385,7 @@ test.skipIf(!supervisorBinary)(
       socket?.destroy();
       if (owner && owner.exitCode === null) {
         owner.kill("SIGTERM");
-        await new Promise((resolve) => present(owner).once("exit", resolve));
+        await new Promise((resolve) => owner!.once("exit", resolve));
       }
       rmSync(fixture, { recursive: true, force: true, maxRetries: 10 });
     }

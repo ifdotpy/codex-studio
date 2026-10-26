@@ -1,5 +1,5 @@
 import { parsedRecord } from "./test-support.ts";
-import { present } from "./test-support.ts";
+
 import type { PairReceipt, Invitation } from "./server-credentials.ts";
 import { expect, test, vi } from "vitest";
 import { pairApproved } from "./approved-pair.ts";
@@ -42,7 +42,7 @@ function fixture() {
   const credentials = { pair: vi.fn(async () => receipt) };
   const fetchRequest = vi.fn<typeof fetch>(async (input, init) => {
     const url = String(input);
-    init = present(init);
+    init = init!;
     expect(new URL(url).origin).toBe("http://127.0.0.1:4620");
     expect(init.redirect).toBe("error");
     if (url.endsWith("/api/session"))
@@ -113,7 +113,7 @@ test("automatic access rejects a renderer invitation that differs from its local
 });
 test("automatic access checks revocation after the invitation returns", async () => {
   const f = fixture();
-  const original = present(f.fetchRequest.getMockImplementation());
+  const original = f.fetchRequest.getMockImplementation()!;
   f.fetchRequest.mockImplementation(async (url, init) => {
     const response = await original(url, init);
     if (init?.method === "POST") f.peer.status = "revoked";

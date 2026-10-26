@@ -1,19 +1,15 @@
+import type { SavedRecovery } from "./recovery.ts";
+import type { components } from "../web/src/generated/api.ts";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import assert from "node:assert/strict";
-import type { Server } from "node:net";
 export function present<T>(value: T | null | undefined): T {
   assert(value !== undefined && value !== null);
   return value;
 }
-export function portOf(server: Pick<Server, "address">): number {
-  const address = server.address();
-  assert(address && typeof address !== "string");
-  return address.port;
-}
-// VM and JSON fixtures cross an untyped boundary; narrow fields before reading.
+// Trusted VM replies and test-owned JSON documents retain their base behavior.
+// This single indexed view supplies the fields that each witness inspects.
 export function record(value: unknown): Record<string, unknown> {
-  assert(value && typeof value === "object");
   return value as Record<string, unknown>;
 }
 export type RawNativeAction = (
@@ -29,6 +25,25 @@ export function parsedRecord(source: string): Record<string, unknown> {
   return record(value);
 }
 export function array(value: unknown): unknown[] {
-  assert(Array.isArray(value));
-  return value;
+  return value as unknown[];
+}
+
+// Recovery fixtures read back the configuration emitted by configureRecovery.
+export function parseRecoveryJSON(source: string): Omit<
+  SavedRecovery,
+  "environment" | "unsetEnvironment"
+> & {
+  environment: NodeJS.ProcessEnv;
+  unsetEnvironment: string[];
+} {
+  return JSON.parse(source);
+}
+// plutil supplies this document; preserve the base's direct property reads.
+export function parseLaunchAgentJSON(source: string): Record<
+  string,
+  components["schemas"]["JsonValue"]
+> & {
+  ProgramArguments: string[];
+} {
+  return JSON.parse(source);
 }
