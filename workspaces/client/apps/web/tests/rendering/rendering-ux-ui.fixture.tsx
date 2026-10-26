@@ -5,7 +5,6 @@ declare global {
   interface Window {
     setText: (value: string) => void;
     setCount: (value: number) => void;
-    setStreaming: (value: boolean) => void;
     setTheme: (value: "light" | "dark") => void;
     retained: Element;
   }

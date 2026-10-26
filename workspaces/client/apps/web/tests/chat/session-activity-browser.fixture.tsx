@@ -5,20 +5,16 @@ import SessionActivity from "../../src/components/agents/SessionActivity.tsx";
 import type { SessionActivityItem } from "../../src/components/agents/SessionActivity.tsx";
 declare global {
   interface Window {
-    sessionActivityFixture: {
-      opened: SessionActivityItem[];
-      time: number;
-      activities: SessionActivityItem[];
-      setActivities: (value: SessionActivityItem[]) => void;
-    };
+    opened: SessionActivityItem[];
+    time: number;
+    activities: SessionActivityItem[];
+    setActivities: (value: SessionActivityItem[]) => void;
   }
 }
-// Activities and setters are assigned by the first render before use.
-window.sessionActivityFixture = {} as Window["sessionActivityFixture"];
 const now = Date.now() / 1000;
-window.sessionActivityFixture.opened = [];
-window.sessionActivityFixture.time = Date.now();
-Date.now = () => window.sessionActivityFixture.time;
+window.opened = [];
+window.time = Date.now();
+Date.now = () => window.time;
 const items: SessionActivityItem[] = [
   {
     id: "long-command",
@@ -60,15 +56,14 @@ const items: SessionActivityItem[] = [
 ];
 function Fixture() {
   const [activities, setActivities] = useState(items);
-  window.sessionActivityFixture.setActivities = (value) =>
-    flushSync(() => setActivities(value));
-  window.sessionActivityFixture.activities = activities;
+  window.setActivities = (value) => flushSync(() => setActivities(value));
+  window.activities = activities;
   return (
     <>
       <header>Main chat</header>
       <SessionActivity
         activities={activities}
-        onOpen={(value) => window.sessionActivityFixture.opened.push(value)}
+        onOpen={(value) => window.opened.push(value)}
       />
       <main>Conversation</main>
     </>
