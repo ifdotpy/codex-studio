@@ -72,6 +72,9 @@ inherits = "ci"
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
+    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(provider_task::prepared_write_)) |
+    (package(=studio-runtime-providers) & kind(test) & binary(=codec) & test(frame_to_value_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
     (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
     (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
@@ -179,6 +182,9 @@ platform = 'cfg(target_os = "linux")'
 # Transport safety: unsent cancellation, strict replies, and shared per-thread ordering.
 default-filter = '''
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
+    (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
+    (package(=studio-runtime-process) & kind(test) & binary(=integration) & test(provider_task::prepared_write_)) |
+    (package(=studio-runtime-providers) & kind(test) & binary(=codec) & test(frame_to_value_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
     (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
     (package(=studio-runtime-store) & kind(lib) & test(repositories::analytics_capture::cost_hint_tests::)) |
