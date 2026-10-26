@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import frameOwners from "./frame-owner.ts";
+import { serverFrameHost } from "./frame-owner.ts";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, access, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +12,16 @@ try {
   desktop = await electron.launch({
     ...(process.env.CODEX_UI_EXECUTABLE
       ? { executablePath: process.env.CODEX_UI_EXECUTABLE, args: ["--hidden"] }
-      : { args: [root, "--hidden", "--ui-only"] }),
+      : {
+          args: [
+            root,
+            "--hidden",
+            "--ui-only",
+            ...(process.platform === "linux" && !process.env.DISPLAY
+              ? ["--ozone-platform=headless"]
+              : []),
+          ],
+        }),
     env: {
       ...process.env,
       CODEX_DESKTOP_PROFILE: path.join(folder, "profile"),
@@ -21,6 +30,10 @@ try {
     },
   });
   const page = await desktop.firstWindow();
+  await desktop.evaluate(({ BrowserWindow }) => {
+    for (const win of BrowserWindow.getAllWindows())
+      win.setBounds({ width: 1440, height: 960 });
+  });
   page.setDefaultTimeout(15000);
   const apiRequests = [];
   page.on("request", (request) => {
@@ -74,7 +87,7 @@ try {
       frame.title = "unpaired";
       document.body.append(frame);
     },
-    { serverHost: frameOwners.serverFrameHost("unpaired") },
+    { serverHost: serverFrameHost("unpaired") },
   );
   const serverFrame = await page
     .locator('iframe[title="unpaired"]')
