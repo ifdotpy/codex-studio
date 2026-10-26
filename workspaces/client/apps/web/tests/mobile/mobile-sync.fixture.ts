@@ -19,6 +19,7 @@ declare global {
     syncErrors: string[];
     stopState: () => void;
     stopDrafts: () => void;
-    state: Snapshot | null;
+    // Renamed from state: chat/chat-read-client-browser.fixture.tsx declares window.state as ChatReadState.
+    mobileSyncState: Snapshot | null;
   }
 }

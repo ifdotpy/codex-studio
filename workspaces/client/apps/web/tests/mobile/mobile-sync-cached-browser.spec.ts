@@ -156,7 +156,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
         const client = await import("/src/sync/client.ts");
         window.syncErrors = [];
         window.stopState = client.subscribeStateProjection(
-          (value) => (window.state = value),
+          (value) => (window.mobileSyncState = value),
           (error) => {
             if (error) window.syncErrors.push(String(error));
           },
@@ -167,7 +167,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       });
     await startWatchers();
     await page.waitForFunction(
-      () => window.state?.runtime?.agents?.[0]?.name === "Cached",
+      () => window.mobileSyncState?.runtime?.agents?.[0]?.name === "Cached",
     );
     const cachedMs = Date.now() - started;
     assert.ok(
@@ -211,7 +211,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       "A different server cannot receive cached drafts",
     );
     assert.equal(
-      await page.evaluate(() => window.state!.runtime.agents[0].name),
+      await page.evaluate(() => window.mobileSyncState!.runtime.agents[0].name),
       "Cached",
     );
     assert.ok(
@@ -227,7 +227,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     await startWatchers();
     await page
       .waitForFunction(
-        () => window.state?.runtime?.agents?.[0]?.name === "Fresh",
+        () => window.mobileSyncState?.runtime?.agents?.[0]?.name === "Fresh",
         null,
         {
           timeout: 10000,
@@ -247,7 +247,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
             ).syncDatabase();
             const rows = await db.projections.find().exec();
             return {
-              value: window.state,
+              value: window.mobileSyncState,
               errors: window.syncErrors,
               hidden: document.hidden,
               online: navigator.onLine,
