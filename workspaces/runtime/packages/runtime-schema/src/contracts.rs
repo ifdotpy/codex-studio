@@ -1011,6 +1011,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
+        generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
+        generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();
         generator.subschema_for::<studio_client_domain::protocol::Response>();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
@@ -1021,7 +1023,11 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         });
         rendered.push(Rendered {
             path: web("rustOwned.ts"),
-            text: api_types(root, &document, "--rust-owned")?,
+            text: api_types(root, &document, "--rust-owned")? + &format!(
+                "export const STDIN_TIMING_DIAGNOSTIC_PREFIX = {};\nexport const REPLY_TIMING_DIAGNOSTIC_PREFIX = {};\n",
+                json_string(crate::provider_diagnostics::STDIN_TIMING_DIAGNOSTIC_PREFIX),
+                json_string(crate::provider_diagnostics::REPLY_TIMING_DIAGNOSTIC_PREFIX),
+            ),
         });
         rendered.push(Rendered {
             path: web("api.ts"),

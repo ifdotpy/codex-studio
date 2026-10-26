@@ -59,16 +59,40 @@ export interface components {
       length: number;
       nodes: components["schemas"]["MarkdownNode"][];
     };
+    ReplyTimingDiagnostic: {
+      /** Format: uint64 */
+      generation: number;
+      method: string;
+      operationId: string;
+      /** @description `result` or `error`. */
+      outcome: string;
+      providerHandle: string;
+      /** Format: uint128 */
+      replyAtNs: number;
+      requestId: components["schemas"]["RequestId"];
+    };
     Request: {
       id: string;
       method: string;
       /** @default null */
       params: unknown;
     };
+    /** @description Numeric Codex IDs and string Claude bridge IDs are distinct on the wire. */
+    RequestId: number | string;
     Response: {
       error?: components["schemas"]["CommandError"] | null | undefined;
       id: string;
       result?: unknown | undefined;
+    };
+    StdinTimingDiagnostic: {
+      /** Format: uint64 */
+      generation: number;
+      method: string;
+      operationId: string;
+      providerHandle: string;
+      requestId: components["schemas"]["RequestId"];
+      /** Format: uint128 */
+      stdinFlushedAtNs: number;
     };
   };
   responses: never;
@@ -87,5 +111,12 @@ export type MarkdownKind = components["schemas"]["MarkdownKind"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
+export type ReplyTimingDiagnostic =
+  components["schemas"]["ReplyTimingDiagnostic"];
 export type Request = components["schemas"]["Request"];
+export type RequestId = components["schemas"]["RequestId"];
 export type Response = components["schemas"]["Response"];
+export type StdinTimingDiagnostic =
+  components["schemas"]["StdinTimingDiagnostic"];
+export const STDIN_TIMING_DIAGNOSTIC_PREFIX = "studio_provider_stdin_write ";
+export const REPLY_TIMING_DIAGNOSTIC_PREFIX = "studio_provider_reply ";
