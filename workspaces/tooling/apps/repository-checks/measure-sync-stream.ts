@@ -46,27 +46,40 @@ const resources: unknown = JSON.parse(
 );
 if (!Array.isArray(resources)) throw new Error("resources must be an array");
 const url = new URL("/api/sync/stream", values.url);
-url.searchParams.set("protocol", values.protocol ?? protocolVersion);
+url.searchParams.set("protocol", values.protocol!);
 url.searchParams.set("resources", JSON.stringify(resources));
 url.searchParams.set("tokenRates", String(values["token-rates"]));
 const byteLength = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
-// Studio's generated contract owns resource events; the server validates the wire shape.
-function resourceEvent(
-  source: string,
-): components["schemas"]["ResourceChangeEvent"] {
+type SamplingDocument = Omit<
+  components["schemas"]["EntityChangeBatch"]["documents"][number],
+  "collection" | "value"
+> & {
+  collection?: string;
+  payload?: string;
+  value?: Record<string, unknown>;
+};
+type SamplingVersion = Omit<
+  components["schemas"]["ResourceRevisionEntry"],
+  "entityChanges"
+> & {
+  entityChanges?: Omit<
+    components["schemas"]["EntityChangeBatch"],
+    "documents"
+  > & { documents: SamplingDocument[] };
+};
+type SamplingEvent = Omit<
+  components["schemas"]["ResourceChangeEvent"],
+  "resourceVersions"
+> & { resourceVersions: SamplingVersion[] };
+// Current generated envelopes and legacy payload strings share this recording boundary.
+function resourceEvent(source: string): SamplingEvent {
   return JSON.parse(source);
 }
-// Old recordings used a JSON payload string; it has no current server contract.
-function legacyEntityValue(source: string) {
-  const parsed: unknown = JSON.parse(source);
-  const value =
-    parsed && typeof parsed === "object" && "value" in parsed
-      ? parsed.value
-      : null;
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? { ...value }
-    : null;
+// Old recordings have no current server owner; retain the original indexed JSON view.
+function legacyEntityValue(source: string): Record<string, unknown> {
+  const parsed: { value: Record<string, unknown> } = JSON.parse(source);
+  return parsed.value;
 }
 
 function sample(acceptEncoding: string) {
@@ -216,23 +229,16 @@ function sample(acceptEncoding: string) {
                 byteLength(ref) + (version ? byteLength(version) : 0);
               for (const row of version?.entityChanges?.documents || []) {
                 const collection =
-                  row.collection ||
-                  String(Reflect.get(row, "id") ?? "").split(":")[1] ||
-                  "unknown";
+                  row.collection || row.id?.split(":")[1] || "unknown";
                 const entity = (report.entityCollections[collection] ||= {
                   count: 0,
                   bytes: 0,
                 });
                 entity.count++;
                 entity.bytes += byteLength(row);
-                const payload =
-                  "payload" in row &&
-                  typeof row.payload === "string" &&
-                  row.payload
-                    ? legacyEntityValue(row.payload)
-                    : null;
-                const value: Record<string, unknown> | null =
-                  ("value" in row ? { ...row.value } : null) ?? payload ?? null;
+                const value =
+                  row.value ??
+                  (row.payload ? legacyEntityValue(row.payload) : null);
                 const key = `${collection}:${row.id}`;
                 const previous = previousEntities.get(key);
                 if (value && previous) {
