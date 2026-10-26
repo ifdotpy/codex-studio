@@ -361,8 +361,9 @@ fn api_schema_ts(schema_hash: &str) -> String {
 /// The Rust-owned constants appended to the generated API declarations.
 fn api_types_tail() -> String {
     format!(
-        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
+        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_IDENTITY_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
         crate::SYNC_PROTOCOL_VERSION,
+        crate::sync_protocol::SYNC_IDENTITY_PROTOCOL_VERSION,
         json_string(crate::SYNC_ENTITY_SCOPE),
         crate::TOKEN_RATE_MAX_ENTRIES,
         crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
@@ -841,6 +842,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         serde_json::json!({"type":"string", "const":crate::desktop::BACKEND_KIND});
     openapi["components"]["schemas"]["AnalyticsUsageRecord"]["properties"]["studioUsage"] =
         serde_json::json!({"$ref":"#/components/schemas/UsageObservation"});
+    openapi["components"]["schemas"]["SyncIdentityResponse"]["properties"]["syncProtocol"]["const"] =
+        serde_json::json!(crate::sync_protocol::SYNC_IDENTITY_PROTOCOL_VERSION);
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
