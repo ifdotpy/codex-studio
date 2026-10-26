@@ -1,13 +1,17 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
-import { randomUUID } from "node:crypto";
-import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
+import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import type { SDKTaskNotificationMessage } from "@anthropic-ai/claude-agent-sdk";
 // The legacy killed notification deliberately exercises an SDK compatibility boundary.
 type NativeTaskFixtureMessage =
   | SessionFixtureMessage
-  | Partial<Omit<SDKTaskNotificationMessage, "status"> & { status: "killed" }>;
+  | Partial<
+      Omit<SDKTaskNotificationMessage, "status" | "uuid"> & {
+        status: "killed";
+        uuid: string;
+      }
+    >;
 import { waitForFile } from "./sdk-fixtures.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 
 import fs from "node:fs";
 import path from "node:path";
@@ -64,7 +68,7 @@ export function query({ prompt, options }: FixtureQuery) {
         task_type: "local_bash",
         is_backgrounded: true,
         description: "Watch the build",
-        uuid: randomUUID(),
+        uuid: "s-1",
       };
       yield {
         type: "system",
@@ -72,14 +76,14 @@ export function query({ prompt, options }: FixtureQuery) {
         task_id: "native-1",
         description: "Watch the build",
         summary: "Build still running",
-        uuid: randomUUID(),
+        uuid: "s-2",
       };
       yield {
         type: "system",
         subtype: "task_updated",
         task_id: "native-1",
         patch: { description: "Build almost done", status: "running" },
-        uuid: randomUUID(),
+        uuid: "s-3",
       };
       yield {
         type: "result",
@@ -91,21 +95,20 @@ export function query({ prompt, options }: FixtureQuery) {
         () => {},
       );
       if (abort.signal.aborted) return;
-      const status = fs.readFileSync(cwd + "/.finish", "utf8");
-      if (
-        status !== "completed" &&
-        status !== "failed" &&
-        status !== "killed" &&
-        status !== "stopped"
-      )
-        throw new Error("Unknown fixture task status");
+      // The test writes the task status consumed by this fixture.
+      const status = fs.readFileSync(cwd + "/.finish", "utf8") as NonNullable<
+        Extract<
+          NativeTaskFixtureMessage,
+          { subtype?: "task_notification" }
+        >["status"]
+      >;
       // A state patch can precede the notification that supplies the final output.
       yield {
         type: "system",
         subtype: "task_updated",
         task_id: "native-1",
         patch: { status: status === "stopped" ? "killed" : status },
-        uuid: randomUUID(),
+        uuid: "s-4",
       };
       yield {
         type: "system",
@@ -114,11 +117,11 @@ export function query({ prompt, options }: FixtureQuery) {
         status,
         output_file: path.join(cwd, "native-1.output"),
         summary: "Task " + status,
-        uuid: randomUUID(),
+        uuid: "s-5",
       };
       yield {
         type: "assistant",
-        uuid: randomUUID(),
+        uuid: "wake-message",
         message: {
           id: "wake-message",
           model: "claude-opus-5-5",
@@ -132,8 +135,8 @@ export function query({ prompt, options }: FixtureQuery) {
         usage,
         result: "Native task finished",
       };
-      await new Promise<void>((resolve) =>
-        abort.signal.addEventListener("abort", () => resolve(), { once: true }),
+      await new Promise<unknown>((resolve) =>
+        abort.signal.addEventListener("abort", resolve, { once: true }),
       );
     },
   };

@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type {
-  SessionFixtureQuery,
-  SessionFixtureMessage,
+  SessionFixtureTextQuery as SessionFixtureQuery,
+  SessionFixtureLegacyMessage as SessionFixtureMessage,
 } from "./session-sdk-types.ts";
 export { resolveSettings } from "../sdk-fixtures.ts";
 export const tool = (
@@ -53,15 +52,11 @@ export function query({ prompt, options }: SessionFixtureQuery) {
           subtype: "init",
           session_id: options.resume || options.sessionId,
         };
-        if (
-          Array.isArray(input.message.content) &&
-          input.message.content[0]?.type === "text" &&
-          input.message.content[0].text === "/compact"
-        )
+        if (input.message.content[0].text === "/compact")
           yield {
             type: "system",
             subtype: "compact_boundary",
-            uuid: randomUUID(),
+            uuid: "boundary",
             compact_metadata: {
               trigger: "manual",
               pre_tokens: 210000,
@@ -70,7 +65,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
           };
         yield {
           type: "assistant",
-          uuid: randomUUID(),
+          uuid: "message",
           message: {
             id: "response",
             role: "assistant",

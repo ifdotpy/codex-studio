@@ -1,7 +1,6 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
-import { inputText } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 
 import fs from "node:fs";
 export {
@@ -72,7 +71,7 @@ export function query({ prompt, options }: FixtureQuery) {
       while (!abort.signal.aborted) {
         const input = await prompt.next();
         if (input.done) return;
-        log({ input: inputText(input.value) });
+        log({ input: input.value.message.content[0].text });
         yield { type: "user", isReplay: true, uuid: input.value.uuid };
         yield {
           type: "system",
