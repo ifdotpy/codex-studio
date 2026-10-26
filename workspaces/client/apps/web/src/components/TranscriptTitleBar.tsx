@@ -33,15 +33,17 @@ export function TranscriptTitleBar({ children }: { children: ReactNode }) {
           : undefined,
       );
     };
+    resize.observe(node);
     if (node.parentElement) resize.observe(node.parentElement);
     const bodyChanges = new MutationObserver(update);
     bodyChanges.observe(document.body, { childList: true });
     const viewportChanges = new MutationObserver(update);
     viewportChanges.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["style", "data-viewport-top-strip"],
+      attributeFilter: ["data-viewport-top-strip"],
     });
     window.addEventListener("resize", update);
+    window.addEventListener("studio-native-viewport", update);
     update();
     return () => {
       resize.disconnect();
@@ -49,6 +51,7 @@ export function TranscriptTitleBar({ children }: { children: ReactNode }) {
       bodyChanges.disconnect();
       viewportChanges.disconnect();
       window.removeEventListener("resize", update);
+      window.removeEventListener("studio-native-viewport", update);
     };
   }, []);
   return (

@@ -120,17 +120,21 @@
 }
 
 /* The title overlays the rail-mode transcript. Its padding protects the first turn. */
-:root #conversation:has(> .duo-transcript-bar) {
+:root[data-duo-ui] #conversation:has(> .duo-transcript-bar) {
   --duo-title-band-height: var(--layout-duo-title-height);
 }
-html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
+html[data-duo-ui][data-viewport-top-strip]:has(
+    > body > .edge-rail[data-side="top"]
+  )
   #conversation:has(> .duo-transcript-bar) {
   --duo-title-band-height: max(
     var(--layout-duo-title-height),
     var(--native-safe-top, 0px)
   );
 }
-html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
+html[data-duo-ui][data-viewport-top-strip]:has(
+    > body > .edge-rail[data-side="top"]
+  )
   #conversation
   > .duo-transcript-bar {
   position: fixed;
@@ -139,7 +143,7 @@ html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
   right: 0;
 }
 
-:root #conversation > .duo-transcript-bar {
+:root[data-duo-ui] #conversation > .duo-transcript-bar {
   box-sizing: border-box;
   position: absolute;
   inset: 0 0 auto;
@@ -154,22 +158,22 @@ html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
   -webkit-backdrop-filter: blur(var(--layout-duo-title-blur));
   backdrop-filter: blur(var(--layout-duo-title-blur));
 }
-:root .duo-transcript-bar .conversation-heading {
+:root[data-duo-ui] .duo-transcript-bar .conversation-heading {
   height: 100%;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
   gap: 0;
 }
-:root .duo-transcript-bar #conversation-title {
+:root[data-duo-ui] .duo-transcript-bar #conversation-title {
   width: 100%;
 }
-:root .duo-transcript-bar .conversation-meta {
+:root[data-duo-ui] .duo-transcript-bar .conversation-meta {
   max-width: 100%;
   overflow: hidden;
   font-size: var(--studio-text-meta);
 }
-:root #conversation:has(> .duo-transcript-bar) #messages {
+:root[data-duo-ui] #conversation:has(> .duo-transcript-bar) #messages {
   padding-top: calc(var(--duo-title-band-height) + var(--mantine-spacing-lg));
   scroll-padding-top: var(--duo-title-band-height);
 }

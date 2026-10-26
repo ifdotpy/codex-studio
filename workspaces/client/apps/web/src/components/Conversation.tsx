@@ -229,6 +229,7 @@ export default function Conversation(p: {
   headerToolsInMenu?: boolean | undefined;
   onRailToolsChange?: ((tools: ReactNode) => void) | undefined;
   transcriptHeading?: ReactNode;
+  transcriptTitleBar?: ReactNode;
   duo?: boolean;
   projectName?: string | undefined;
   recentChats?: RecentProjectChat[] | undefined;
@@ -1711,8 +1712,8 @@ export default function Conversation(p: {
           </details>,
           headerTools,
         )}
-      {p.transcriptHeading && (
-        <TranscriptTitleBar>{p.transcriptHeading}</TranscriptTitleBar>
+      {p.transcriptTitleBar && (
+        <TranscriptTitleBar>{p.transcriptTitleBar}</TranscriptTitleBar>
       )}
       <div
         id="messages"
@@ -1727,6 +1728,9 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
+          {p.transcriptHeading && (
+            <div className="transcript-heading">{p.transcriptHeading}</div>
+          )}
           {removed.hasRemoved && (
             <Button size="compact-xs" onClick={() => removed.restore()}>
               Restore removed messages

@@ -69,7 +69,8 @@ for (const size of [
       });
       await page.setViewportSize(size);
       if (size.height > size.width) {
-        // Emulate the native top rail; its owner is the iOS shell.
+        // Stand-in for the iOS shell DOM until PR #528 merges.
+        // The shell owns the top strip attribute, rail and native safe inset.
         await page.locator(".edge-rail").evaluate((rail) => {
           document.documentElement.setAttribute("data-viewport-top-strip", "");
           document.documentElement.style.setProperty(
@@ -153,6 +154,32 @@ for (const size of [
       await page.screenshot({
         path: test.info().outputPath("duo-title-middle.png"),
       });
+      const keyboardFrameReads = await heading.evaluate(async (node) => {
+        const original = node.getBoundingClientRect;
+        let reads = 0;
+        node.getBoundingClientRect = () => {
+          reads++;
+          return original.call(node);
+        };
+        try {
+          for (let frame = 0; frame < 8; frame++) {
+            document.documentElement.style.setProperty(
+              "--fixture-keyboard-frame",
+              String(frame),
+            );
+            await new Promise<void>((resolve) =>
+              requestAnimationFrame(() => resolve()),
+            );
+          }
+          return reads;
+        } finally {
+          node.getBoundingClientRect = original;
+          document.documentElement.style.removeProperty(
+            "--fixture-keyboard-frame",
+          );
+        }
+      });
+      expect(keyboardFrameReads).toBeLessThanOrEqual(2);
       writeFileSync(
         test.info().outputPath("title-geometry.json"),
         JSON.stringify({ geometry, after }, null, 2),
