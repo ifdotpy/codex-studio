@@ -882,3 +882,98 @@ async fn rewind_rejection_preserves_the_reason_without_claiming_no_file_effects(
     assert_eq!(agent["workspaceOperation"], "branch_recovery");
     assert!(!agent["workspaceReservationId"].is_null());
 }
+
+struct LivePermissionsNative {
+    calls: Mutex<Vec<String>>,
+    fail: bool,
+}
+impl ControlSession for LivePermissionsNative {
+    fn binding(&self) -> ControlBinding {
+        ControlBinding::new("account".into(), "connection".into(), 1).expect("fixture binding")
+    }
+    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
+        let method = method.to_owned();
+        Box::pin(async move {
+            self.calls.lock().expect("calls").push(method.clone());
+            match method.as_str() {
+                "claude/state" => {
+                    Ok(json!({"tasks":[],"turns":[{"id":"three","status":"inProgress"}]}))
+                }
+                "claude/settings" if self.fail => Err(ControlError::SettingsNotApplied(
+                    "fixture live apply failed".into(),
+                )),
+                "claude/settings" => Ok(json!({"settings":params["settings"]})),
+                _ => panic!("unexpected live control {method}"),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn live_permissions_claude_control_applies_while_running_and_pending_without_replay() {
+    for status in ["running", "approval"] {
+        for fail in [false, true] {
+            let root = tempfile::tempdir().expect("state");
+            let cwd = root.path().join("cwd");
+            std::fs::create_dir(&cwd).expect("cwd");
+            let state = root.path().join("state");
+            std::fs::create_dir(&state).expect("state directory");
+            seed_state(&state, &cwd).await;
+            let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+            store.transaction(move |tx| {
+                tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.status',?1,'$.inFlight',json('true'),'$.claudeOptions',json('{\"permissionMode\":\"default\"}')) WHERE id='agent'", [status])?;
+                Ok(())
+            }).await.expect("running state");
+            let native = Arc::new(LivePermissionsNative {
+                calls: Mutex::new(vec![]),
+                fail,
+            });
+            let unloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let unload_count = unloads.clone();
+            let service = Controls::new(
+                Arc::new(StoredControls::new(
+                    store.clone(),
+                    Arc::new(move |_| {
+                        unload_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }),
+                )),
+                native.clone(),
+            );
+            let other_setting = ControlRequest::from_value(&json!({"id":"agent","action":"settings","request_id":"thinking","settings":{"permissionMode":"default","thinking":false}})).expect("request");
+            assert!(matches!(
+                service.execute(other_setting).await,
+                Err(ControlError::Busy)
+            ));
+
+            let request = ControlRequest::from_value(&json!({"id":"agent","action":"settings","request_id":"live-permission","settings":{"permissionMode":"bypassPermissions","thinking":true}})).expect("request");
+            let result = service.execute(request.clone()).await;
+            assert_eq!(result.is_ok(), !fail, "{status}: {result:?}");
+            let agent = AgentRepository::get(
+                &store.test_reader().expect("reader"),
+                &AgentId("agent".into()),
+            )
+            .expect("agent")
+            .expect("agent")
+            .into_value();
+            assert_eq!(
+                agent["claudeOptions"]["permissionMode"],
+                if fail { "default" } else { "bypassPermissions" }
+            );
+            assert_eq!(agent["status"], status);
+            assert_eq!(unloads.load(std::sync::atomic::Ordering::SeqCst), 0);
+            if !fail {
+                service.execute(request).await.expect("replay");
+                assert_eq!(
+                    native
+                        .calls
+                        .lock()
+                        .expect("calls")
+                        .iter()
+                        .filter(|method| *method == "claude/settings")
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+}

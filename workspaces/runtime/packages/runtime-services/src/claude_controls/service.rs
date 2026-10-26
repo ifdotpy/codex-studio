@@ -121,7 +121,10 @@ impl Controls {
         if result.is_err() {
             let evidence = if matches!(&result, Err(ControlError::NotSent)) {
                 FailureEvidence::NotSent
-            } else if matches!(&result, Err(ControlError::RewindNotApplied(_))) {
+            } else if matches!(
+                &result,
+                Err(ControlError::RewindNotApplied(_) | ControlError::SettingsNotApplied(_))
+            ) {
                 FailureEvidence::NotApplied
             } else if uncertain {
                 FailureEvidence::Uncertain

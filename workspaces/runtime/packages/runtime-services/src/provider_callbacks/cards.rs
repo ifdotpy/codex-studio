@@ -80,6 +80,12 @@ pub async fn admit_native(
             if let Some(body) = immediate(&snapshot, &request)? {
                 return Ok(NativeAdmission::Answer(body));
             }
+            if snapshot.actor()["provider"] != "claude"
+                && snapshot.actor()["yoloMode"] == true
+                && let Some(result) = full_access_answer(&request.method, &request.params)?
+            {
+                return Ok(NativeAdmission::Answer(ResponseBody::Result(result)));
+            }
             let CallbackDecision::Pending(id) = admit(tx, &context, &snapshot, &request, now)?
             else {
                 return Err(CallbackError::Unknown);
@@ -190,6 +196,74 @@ pub(super) fn immediate(
     }
     snapshot.active()?;
     Ok(None)
+}
+
+/// Tool approvals share the same answer conversion as explicit user answers.
+/// Questions and elicitation always continue to require an answer from the user.
+fn full_access_answer(method: &str, params: &Value) -> Result<Option<Value>, CallbackError> {
+    if !matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) {
+        return Ok(None);
+    }
+    answer_value(method, params, &json!({"decision":"accept"})).map(|(result, _)| Some(result))
+}
+
+/// Prepare pending approvals under the current committed policy and exact native
+/// context. The existing outbox owns each delivery, including unknown outcomes.
+pub async fn prepare_full_access_pending(
+    store: &RuntimeStore,
+    root: &str,
+    now: f64,
+) -> Result<Vec<super::Reply>, CallbackError> {
+    let root = root.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let mut replies = Vec::new();
+            for card in records::all(tx, "runtime_requests")? {
+                if card["status"] != "pending"
+                    && card["status"] != "answering"
+                    && card["status"] != "uncertain"
+                {
+                    continue;
+                }
+                let Some(agent) = card["agent"].as_str() else {
+                    continue;
+                };
+                let Some(actor) = records::get(tx, "runtime_agents", agent)? else {
+                    continue;
+                };
+                if actor["id"] != root && actor["rootId"] != root {
+                    continue;
+                }
+                if actor["provider"] == "claude" || actor["yoloMode"] != true {
+                    continue;
+                }
+                let Some(method) = card["method"].as_str() else {
+                    continue;
+                };
+                if full_access_answer(method, &card["params"])?.is_none() {
+                    continue;
+                }
+                if card["status"] != "pending" {
+                    return Err(CallbackError::Unknown);
+                }
+                if let Some(reply) = prepare_answer_in(
+                    tx,
+                    card["id"].as_str().ok_or(CallbackError::Unknown)?,
+                    &json!({"decision":"accept"}),
+                    now,
+                    false,
+                )? {
+                    replies.push(reply);
+                }
+            }
+            Ok(replies)
+        })
+        .await
 }
 pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackError> {
     let id = card["id"]

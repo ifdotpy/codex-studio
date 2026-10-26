@@ -2231,7 +2231,27 @@ pub async fn conversation(
         }) {
             return Err(MutationError::Stale.into());
         }
-        if (execution_requested || request.cwd.is_some() || request.yolo_mode.is_some())
+        let permission_receipt = request.yolo_mode.and(request_id.as_ref()).map(|id| {
+            (
+                id.clone(),
+                crate::event_write::request_signature(&json!({
+                    "operation":"live_permissions", "agent":request.id,
+                    "yolo":request.yolo_mode, "account":request.expected_account,
+                    "cwd":request.cwd, "model":request.model, "effort":request.effort,
+                    "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled,
+                    "excluded":request.excluded,
+                })),
+            )
+        });
+        if let Some((id, signature)) = &permission_receipt
+            && let Some(receipt) = EventWriteRepository::receipt(tx, id)?
+        {
+            if receipt.signature != *signature {
+                return Err(MutationError::Conflict.into());
+            }
+            return Ok(sync_projection(tx, &target)?);
+        }
+        if (execution_requested || request.cwd.is_some())
             && (truthy(target.get("inFlight"))
                 || matches!(
                     target.get("status").and_then(Value::as_str),
@@ -2310,6 +2330,9 @@ pub async fn conversation(
         if let Some(yolo) = request.yolo_mode {
             update_team_yolo(tx, &request.id, yolo, &validate)?;
         }
+        if let Some((id, signature)) = permission_receipt {
+            EventWriteRepository::put_receipt(tx, &id, &signature, "{\"applied\":true}")?;
+        }
         Ok(projection)
     })
     .await
@@ -2346,46 +2369,13 @@ fn update_team_yolo(
             team.push((id, record));
         }
     }
-    let team_ids = team
+    // Permission changes are live; running turns, tools and monitors do not
+    // lock this policy. Workspace transitions retain their existing exclusion.
+    if team
         .iter()
-        .map(|(id, _)| id.as_str())
-        .collect::<std::collections::HashSet<_>>();
-    for (_, record) in &team {
-        if truthy(record.get("workspaceOperation"))
-            || truthy(record.get("inFlight"))
-            || matches!(
-                record.get("status").and_then(Value::as_str),
-                Some("running" | "starting" | "approval")
-            )
-        {
-            return Err(MutationError::InFlight.into());
-        }
-    }
-    for table in ["runtime_monitors", "runtime_tasks"] {
-        let query = if table == "runtime_monitors" {
-            "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('starting','running','approval')"
-        } else {
-            "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status') IN ('running','starting','pending','unknown')"
-        };
-        let mut statement = tx.prepare(query).map_err(StoreError::from)?;
-        let records = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(StoreError::from)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)?;
-        if records.iter().any(|raw| {
-            serde_json::from_str::<Value>(raw)
-                .ok()
-                .and_then(|record| {
-                    record
-                        .get("agent")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .is_some_and(|agent| team_ids.contains(agent.as_str()))
-        }) {
-            return Err(MutationError::InFlight.into());
-        }
+        .any(|(_, record)| truthy(record.get("workspaceOperation")))
+    {
+        return Err(MutationError::InFlight.into());
     }
     for (id, mut record) in team {
         if id == root_id {
@@ -2484,12 +2474,16 @@ fn previous_lead(
             if !truthy(record.get("isLead")) {
                 return Err(OperationError::Invalid("Select a lead conversation"));
             }
+            if truthy(record.get("agentArchive")) {
+                return Ok(None);
+            }
             if truthy(record.get("deletedAt")) {
                 return Err(MutationError::Deleted.into());
             }
-            Ok(record)
+            Ok(Some(record))
         })
         .transpose()
+        .map(Option::flatten)
 }
 
 /// The startup account snapshot, or the live registry when a driver is present.

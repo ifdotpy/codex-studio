@@ -7,6 +7,7 @@ export default {
     ...base.test,
     name: "fast",
     include: [
+      "live-permissions.test.mjs",
       // Test-side fixture waits must preserve the worker's IPC lifetime.
       "file-signals.test.mjs",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.

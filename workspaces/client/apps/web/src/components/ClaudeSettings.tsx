@@ -294,6 +294,11 @@ export function ClaudeSettings({
   useEffect(() => {
     if (turn && !historyTurns.some((item) => item.id === turn)) setTurn("");
   }, [state, turn]);
+  const permissionsLocked =
+    !stateLoaded ||
+    (!!account && !accountCanStart(account)) ||
+    busyAction ||
+    !!savingField;
   const locked =
     !stateLoaded ||
     (!!account && !accountCanStart(account)) ||
@@ -329,7 +334,7 @@ export function ClaudeSettings({
             <SegmentedControl
               aria-label="Permission mode"
               value={values.permissionMode}
-              disabled={locked}
+              disabled={permissionsLocked}
               data={[
                 { value: "default", label: "Ask" },
                 { value: "acceptEdits", label: "Edits" },
@@ -352,7 +357,7 @@ export function ClaudeSettings({
         <NativeSelect
           label="Permission mode"
           value={values.permissionMode}
-          disabled={locked}
+          disabled={permissionsLocked}
           onChange={(event) => {
             const selected = permissionMode(event.currentTarget.value);
             if (selected)
@@ -372,7 +377,7 @@ export function ClaudeSettings({
           <NativeSelect
             label="Permission mode"
             value={values.permissionMode}
-            disabled={locked}
+            disabled={permissionsLocked}
             onChange={(event) => {
               const selected = permissionMode(event.currentTarget.value);
               if (selected)

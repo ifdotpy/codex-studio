@@ -1210,8 +1210,13 @@ function ScopedExecutionSettings({
     const generation = ++refreshGeneration.current;
     let confirmed = false;
     try {
+      const storageKey = `permissions:${agent.id}:${accountOf(agent)}:${enabled}`;
+      const requestId =
+        saved<string | null>(storageKey, null) || crypto.randomUUID();
+      save(storageKey, requestId);
       const canonical = await post("/api/conversation", {
         id: agent.id,
+        request_id: requestId,
         yolo_mode: enabled,
         expected_account_key: accountOf(agent),
       });
@@ -1223,6 +1228,7 @@ function ScopedExecutionSettings({
         throw new Error(
           "The settings account changed. Check the current settings.",
         );
+      save(storageKey, null);
       confirmed = true;
       if (!mounted.current) return;
       setPendingYolo({
@@ -1548,7 +1554,9 @@ function ScopedExecutionSettings({
       )}
     </>
   );
-  const permissionsActive = !!agent.inFlight || busy.has(agent.status ?? "");
+  const fullAccess = pendingYolo?.value ?? agent.yoloMode === true;
+  const askingNextTurn =
+    (!!agent.inFlight || busy.has(agent.status ?? "")) && !fullAccess;
   const permissions =
     agent.isLead && agent.provider !== "claude" ? (
       settingsRow ? (
@@ -1560,10 +1568,8 @@ function ScopedExecutionSettings({
             className="execution-setting-control"
             fullWidth
             aria-label="Full access without approval"
-            value={
-              (pendingYolo?.value ?? agent.yoloMode === true) ? "full" : "ask"
-            }
-            disabled={saving || permissionsActive || !("yoloMode" in agent)}
+            value={fullAccess ? "full" : "ask"}
+            disabled={saving || !("yoloMode" in agent)}
             data={[
               { value: "ask", label: "Ask" },
               { value: "full", label: "Full" },
@@ -1571,11 +1577,11 @@ function ScopedExecutionSettings({
             onChange={(value) => void changeYolo(value === "full")}
           />
           <Text size="xs" c="dimmed" className="execution-setting-description">
-            {permissionsActive
-              ? "Available when this turn ends."
-              : !("yoloMode" in agent)
-                ? "Available after the server update."
-                : "Applies to the whole team."}
+            {!("yoloMode" in agent)
+              ? "Available after the server update."
+              : askingNextTurn
+                ? "Ask policy changes apply from the next turn."
+                : "Applies immediately to the whole team."}
           </Text>
           {error && (
             <p className="execution-error" role="alert">
@@ -1589,16 +1595,18 @@ function ScopedExecutionSettings({
           <Switch
             label="Full access without approval"
             aria-label="Full access without approval"
-            checked={pendingYolo?.value ?? agent.yoloMode === true}
-            disabled={saving || permissionsActive || !("yoloMode" in agent)}
+            checked={fullAccess}
+            disabled={saving || !("yoloMode" in agent)}
             description={
               !("yoloMode" in agent)
                 ? "Available after the server update."
-                : permissionsActive
-                  ? "Available when this turn ends."
+                : askingNextTurn
+                  ? "Ask policy changes apply from the next turn."
                   : agent.yoloMode == null
                     ? "The team uses normal Codex permissions."
-                    : "Tools run without permission prompts."
+                    : fullAccess
+                      ? "Tools run without permission prompts."
+                      : "Tools ask for permission."
             }
             onChange={(event) => void changeYolo(event.currentTarget.checked)}
           />

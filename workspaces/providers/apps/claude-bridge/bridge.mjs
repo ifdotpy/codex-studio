@@ -350,6 +350,8 @@ const request = (method, params, signal, onSent) =>
       signal?.removeEventListener("abort", abort);
     };
     pending.set(id, {
+      method,
+      params,
       resolve: (value) => {
         cleanup();
         resolve(value);
@@ -2492,11 +2494,61 @@ async function handle(method, p) {
   if (method === "claude/settings") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
-      throw new Error("Pause Claude before changing these settings");
-    discardQuery(s.id, active);
-    s.claude = p.settings;
-    await persist(s);
+    const previous = s.claude;
+    // Only the permission mode has a live SDK control. Other changes still
+    // require an idle query. Missing thinking means the default, enabled.
+    const permissionOnly =
+      (p.settings.thinking !== false) === (previous?.thinking !== false) &&
+      (p.settings.autoCompactWindow ?? null) ===
+        (previous?.autoCompactWindow ?? null);
+    if (active && permissionOnly) {
+      const oldMode = permissionMode(s);
+      const nextMode = permissionMode({ ...s, claude: p.settings });
+      await active.ready;
+      try {
+        await active.q.setPermissionMode(nextMode);
+        s.claude = p.settings;
+        await persist(s);
+      } catch (error) {
+        s.claude = previous;
+        // A confirmed rollback proves the old mode still owns the live query.
+        // Failure to confirm that rollback remains an uncertain control result.
+        await active.q.setPermissionMode(oldMode);
+        // The journal may have committed before a metadata write failed.
+        // Confirm its inverse before reporting a definite failed apply.
+        await persist(s);
+        throw Object.assign(error, {
+          data: { settingsOutcome: "not_applied" },
+        });
+      }
+      active.permissionMode = nextMode;
+      if (nextMode === "bypassPermissions") {
+        for (const [id, waiting] of pending) {
+          if (
+            waiting.params?.threadId === s.id &&
+            [
+              "item/commandExecution/requestApproval",
+              "item/fileChange/requestApproval",
+            ].includes(waiting.method)
+          ) {
+            pending.delete(id);
+            waiting.resolve({ decision: "accept" });
+            emit("serverRequest/resolved", { threadId: s.id, requestId: id });
+          }
+        }
+      }
+    } else {
+      if (active && (active.turn || active.tasks.size || queryHasInput(active)))
+        throw new Error("Pause Claude before changing these settings");
+      discardQuery(s.id, active);
+      s.claude = p.settings;
+      try {
+        await persist(s);
+      } catch (error) {
+        s.claude = previous;
+        throw error;
+      }
+    }
     return { settings: s.claude };
   }
   if (method === "thread/rollback") {

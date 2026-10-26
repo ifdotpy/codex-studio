@@ -66,6 +66,7 @@ vi.mock("react", async (load) => ({
   useCallback: (callback: unknown) => callback,
 }));
 vi.mock("../../servers/ServerServicesContext", () => ({
+  useServerStorage: () => ({ setItem: vi.fn(), removeItem: vi.fn() }),
   useServerApi: () => ({
     post: h.post,
     saved: (_key: string, fallback: unknown) => fallback,
@@ -90,7 +91,8 @@ vi.mock("./WorkerModelPicker", async (load) => ({
     retry: vi.fn(),
   }),
 }));
-import { ExecutionSettings } from "./ExecutionSettings";
+import { ExecutionSettings, ExecutionPermissions } from "./ExecutionSettings";
+import { ClaudeSettings } from "../ClaudeSettings";
 import { ExecutionSummaryTrigger } from "./ExecutionSummaryTrigger";
 
 function children(node: ReactNode): ReactElement<any>[] {
@@ -114,9 +116,9 @@ const initial: Agent = {
   effort: "medium",
   status: "idle",
 };
-function render(agent = initial) {
+function render(agent = initial, permissions = false) {
   const controller = invoke(
-    createElement(ExecutionSettings, {
+    createElement(permissions ? ExecutionPermissions : ExecutionSettings, {
       agent,
       catalog: {
         models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
@@ -138,7 +140,7 @@ function render(agent = initial) {
     }),
   );
   const menu = invoke(controller);
-  const scoped = children(menu.props.children).find(
+  const scoped = (permissions ? [menu] : children(menu.props.children)).find(
     (node) =>
       typeof node.type === "function" &&
       node.type.name === "ScopedExecutionSettings",
@@ -150,6 +152,14 @@ function render(agent = initial) {
   }
   h.scoped = scopedKey;
   const controls = invoke(scoped);
+  if (permissions)
+    return {
+      controls,
+      model: "",
+      label: "",
+      picker: {} as any,
+      triggerAgent: agent,
+    };
   const picker = children(controls).find(
     (node) =>
       typeof node.type === "function" && node.type.name === "AgentSetupPicker",
@@ -160,6 +170,7 @@ function render(agent = initial) {
   )!.props.children;
   for (const effect of h.effects.splice(0)) effect();
   return {
+    controls,
     model,
     label: trigger.props["aria-label"],
     picker: picker.props,
@@ -353,4 +364,71 @@ test("an older same-domain request cannot replace the latest acknowledgment", as
   finish[0]({ ...initial, model: "gpt-6-luna" });
   await Promise.resolve();
   expect(render().model).toBe("Astra 6");
+});
+
+for (const status of ["running", "approval"] as const) {
+  test(`Codex permissions remain enabled while ${status}`, () => {
+    const controls = render(
+      {
+        ...initial,
+        status,
+        inFlight: true,
+        yoloMode: false,
+      },
+      true,
+    ).controls;
+    const permission = children(controls).find(
+      (node) => node.props["aria-label"] === "Full access without approval",
+    )!;
+    expect(permission).toBeDefined();
+    expect(permission.props.disabled).toBe(false);
+  });
+}
+
+for (const status of ["running", "approval"] as const) {
+  test(`Claude permissions remain enabled while ${status}`, async () => {
+    h.post.mockResolvedValue({
+      settings: { permissionMode: "default" },
+      turns: [],
+      tasks: [],
+    });
+    const element = createElement(ClaudeSettings, {
+      agent: { ...initial, provider: "claude", status, inFlight: true },
+    });
+    invoke(element);
+    for (const effect of h.effects.splice(0)) effect();
+    await new Promise<void>(queueMicrotask);
+    const controls = invoke(element);
+    const permission = children(controls).find(
+      (node) => node.props.label === "Permission mode",
+    )!;
+    expect(permission).toBeDefined();
+    expect(permission.props.disabled).toBe(false);
+  });
+}
+
+test("Codex explains when Ask takes effect for a turn started with Full", () => {
+  const controls = render(
+    {
+      ...initial,
+      status: "running",
+      inFlight: true,
+      yoloMode: false,
+    },
+    true,
+  ).controls;
+  const permission = children(controls).find(
+    (node) => node.props["aria-label"] === "Full access without approval",
+  )!;
+  expect(permission.props.description).toBe(
+    "Ask policy changes apply from the next turn.",
+  );
+});
+
+test("Codex describes the selected Ask mode truthfully", () => {
+  const controls = render({ ...initial, yoloMode: false }, true).controls;
+  const permission = children(controls).find(
+    (node) => node.props["aria-label"] === "Full access without approval",
+  )!;
+  expect(permission.props.description).toBe("Tools ask for permission.");
 });

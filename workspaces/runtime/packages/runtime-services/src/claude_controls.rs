@@ -23,6 +23,8 @@ pub enum ControlError {
     RewindRejected(String),
     #[error("{0}")]
     RewindNotApplied(String),
+    #[error("{0}")]
+    SettingsNotApplied(String),
     #[error("Claude control request was not sent")]
     NotSent,
     #[error("Claude control service is unavailable")]
@@ -175,6 +177,22 @@ impl ControlSnapshot {
     pub fn epoch(&self) -> u64 {
         self.agent.epoch
     }
+    /// Permission mode is the only setting with an SDK live control. Missing
+    /// thinking means enabled; absent and null compact limits both mean default.
+    pub(crate) fn live_permissions(&self, request: &ControlRequest) -> bool {
+        request.action == Action::Settings
+            && request.settings.as_ref().is_some_and(|next| {
+                let previous = &self.raw["claudeOptions"];
+                (next.get("thinking").and_then(Value::as_bool) != Some(false))
+                    == (previous.get("thinking").and_then(Value::as_bool) != Some(false))
+                    && next
+                        .get("autoCompactWindow")
+                        .filter(|value| !value.is_null())
+                        == previous
+                            .get("autoCompactWindow")
+                            .filter(|value| !value.is_null())
+            })
+    }
     pub fn reserve(&self, request: &ControlRequest, pending: bool, now: f64) -> Result<Writes> {
         if request.id != self.agent.id || truthy(self.raw.get("accountTransferId")) {
             return Err(ControlError::Changed);
@@ -216,8 +234,9 @@ impl ControlSnapshot {
             }
             // A definite no-send result can reserve again after fresh idle proof.
         }
-        if truthy(self.raw.get("inFlight"))
-            || ["running", "starting", "approval"].contains(&self.agent.status.as_str())
+        if !self.live_permissions(request)
+            && (truthy(self.raw.get("inFlight"))
+                || ["running", "starting", "approval"].contains(&self.agent.status.as_str()))
         {
             return Err(ControlError::Busy);
         }
@@ -263,15 +282,16 @@ impl ControlSnapshot {
         if truthy(op.get("submitted")) {
             return Err(ControlError::Unknown);
         }
-        if truthy(native.get("tasks"))
-            || native
-                .get("turns")
-                .and_then(Value::as_array)
-                .is_some_and(|turns| {
-                    turns
-                        .iter()
-                        .any(|t| t.get("status") == Some(&json!("inProgress")))
-                })
+        if !self.live_permissions(request)
+            && (truthy(native.get("tasks"))
+                || native
+                    .get("turns")
+                    .and_then(Value::as_array)
+                    .is_some_and(|turns| {
+                        turns
+                            .iter()
+                            .any(|t| t.get("status") == Some(&json!("inProgress")))
+                    }))
         {
             return Err(ControlError::Busy);
         }

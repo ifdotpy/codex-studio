@@ -402,7 +402,9 @@ fn control_error(error: ControlError) -> ApiError {
             StatusCode::CONFLICT,
             "Claude control outcome is unknown; inspect workspace recovery",
         ),
-        ControlError::RewindNotApplied(reason) => ApiError::new(StatusCode::BAD_REQUEST, reason),
+        ControlError::RewindNotApplied(reason) | ControlError::SettingsNotApplied(reason) => {
+            ApiError::new(StatusCode::BAD_REQUEST, reason)
+        }
         ControlError::RewindRejected(reason) => ApiError::new(
             StatusCode::CONFLICT,
             format!("Claude file restore requires recovery: {reason}"),

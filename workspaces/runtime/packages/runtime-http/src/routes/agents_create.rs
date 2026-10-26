@@ -1483,10 +1483,31 @@ async fn conversation(
         )
         .await?;
     }
-    dispatch::<generated::AgentResponse>(state, move |context| {
+    let permission_root = request
+        .yolo_mode
+        .filter(|enabled| *enabled)
+        .map(|_| request.id.clone());
+    let callbacks = state.callback_runtime.clone();
+    let result = dispatch::<generated::AgentResponse>(state, move |context| {
         Box::pin(agents_create::conversation(context, request))
     })
-    .await
+    .await?;
+    if let (Some(root), Some(callbacks)) = (permission_root, callbacks) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ApiError::internal())?
+            .as_secs_f64();
+        callbacks
+            .approve_full_access_pending(&root, now)
+            .await
+            .map_err(|error| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("Permissions saved; pending approval delivery failed: {error}"),
+                )
+            })?;
+    }
+    Ok(result)
 }
 async fn finish_title_request(
     store: std::sync::Arc<studio_runtime_store::RuntimeStore>,

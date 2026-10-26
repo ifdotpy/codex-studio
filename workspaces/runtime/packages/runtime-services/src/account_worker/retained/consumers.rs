@@ -11,6 +11,9 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// Maximum provider control error excerpt, in Unicode characters.
+const MAX_CONTROL_ERROR_CHARACTERS: usize = 2048;
+
 pub struct ClaudePort {
     port: RetainedSessionPort,
     binding: ControlBinding,
@@ -114,12 +117,11 @@ impl ClaudeSessionPort for ClaudePort {
                     result,
                 }),
                 RequestResult::Rejected(error) if restoring_files => {
-                    const MAX_REWIND_ERROR_CHARACTERS: usize = 2048;
                     let reason = error
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("The bridge rejected the file restore");
-                    let reason = reason.chars().take(MAX_REWIND_ERROR_CHARACTERS).collect();
+                    let reason = reason.chars().take(MAX_CONTROL_ERROR_CHARACTERS).collect();
                     let data = &error["data"];
                     if data["fileRestoreOutcome"] == "not_applied"
                         && rewind_request
@@ -133,6 +135,23 @@ impl ClaudeSessionPort for ClaudePort {
                     } else {
                         Err(ControlError::RewindRejected(reason))
                     }
+                }
+                RequestResult::Rejected(error)
+                    if call.identity.method == studio_runtime_providers::Method::ClaudeSettings
+                        && error
+                            .pointer("/data/settingsOutcome")
+                            .and_then(Value::as_str)
+                            == Some("not_applied") =>
+                {
+                    Err(ControlError::SettingsNotApplied(
+                        error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("The permission change was not applied")
+                            .chars()
+                            .take(MAX_CONTROL_ERROR_CHARACTERS)
+                            .collect(),
+                    ))
                 }
                 RequestResult::Rejected(_) => Err(ControlError::Request),
                 RequestResult::NotSent => Err(ControlError::NotSent),

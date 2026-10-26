@@ -163,6 +163,18 @@ impl CallbackRuntime {
         }
     }
 
+    pub async fn approve_full_access_pending(
+        &self,
+        root: &str,
+        now: f64,
+    ) -> Result<(), CallbackError> {
+        let replies = callbacks::prepare_full_access_pending(&self.store, root, now).await?;
+        for reply in replies {
+            self.deliver(&reply).await?;
+        }
+        Ok(())
+    }
+
     pub async fn answer(&self, id: &str, data: &Value, now: f64) -> Result<Value, CallbackError> {
         if let Some(context) = callbacks::pending_native_delete_context(&self.store, id).await?
             && !self.port.has_live_session(&context)
