@@ -8,10 +8,12 @@ export type DesktopNotice = {
   level: NonNullable<DiskSpaceStatus["level"]>;
 };
 
-type DesktopNoticeSource = {
-  supervisorNotice?: string | null;
-  diskSpace?: Pick<DiskSpaceStatus, "level" | "message"> | null;
-};
+type DesktopNoticeSource = Partial<
+  Pick<
+    components["schemas"]["DesktopResponse"],
+    "supervisorNotice" | "diskSpace"
+  >
+>;
 
 // The notices that /api/desktop asks the window to show, most severe first.
 export function desktopNotices(data: DesktopNoticeSource): DesktopNotice[] {

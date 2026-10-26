@@ -28,8 +28,8 @@ export default function ProjectLocationsSettings({
   saved,
 }: {
   project: LocationProject;
-  servers?: ProjectServerChoice[];
-  initialServer?: string;
+  servers?: ProjectServerChoice[] | undefined;
+  initialServer?: string | undefined;
   saved: () => Promise<void>;
 }) {
   const { get, post, refreshSession } = useServerApi();
@@ -46,7 +46,7 @@ export default function ProjectLocationsSettings({
   const request = useRef<{
     id: string;
     server: string;
-    path?: string;
+    path?: string | undefined;
     action: "add_location" | "remove_location";
   } | null>(null);
   const [heads, setHeads] = useState<Record<string, string>>({});

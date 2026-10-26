@@ -1,11 +1,7 @@
 import { nativeEventResponse } from "./stream";
 import { nativeRequest } from "./client";
 
-type HttpResponse = {
-  status: number;
-  headers: Record<string, string>;
-  base64: string;
-};
+import type { HttpResponse } from "./host";
 
 // Aborting stops the caller's wait. A submitted mutation may already have
 // committed; never retry it or claim that abort rolled it back.

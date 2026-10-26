@@ -23,9 +23,9 @@ export default function PromptNavigator({
   loadingOlder = false,
 }: {
   compact?: boolean;
-  inMenu?: boolean;
-  agentId?: string;
-  loadOlder?: () => void;
+  inMenu?: boolean | undefined;
+  agentId?: string | undefined;
+  loadOlder?: (() => void) | undefined;
   loadingOlder?: boolean;
   messages: Message[];
   container: RefObject<HTMLDivElement | null>;

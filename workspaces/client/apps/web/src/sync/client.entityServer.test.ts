@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { DRAFT_SERVER_READY_TIMEOUT_MS } from "./draftServerFixture";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
@@ -141,7 +142,7 @@ async function request(path: string, body?: unknown) {
   const response = await fetch(`${origin}${path}`, {
     headers,
     method: body === undefined ? "GET" : "POST",
-    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const value = await response.json();
   expect(response.ok, JSON.stringify(value)).toBe(true);
@@ -911,6 +912,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       ["entity:agentSummary:worker"],
       false,
     );
+    assert.ok(stored != null);
     expect(stored.entity?.collection).toBe("agentSummary");
     forwardFrames = false;
     const titled = await request("/fixture/entity", {
@@ -962,6 +964,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       expect(resumed.ok).toBe(true);
       for await (const frame of resourceFrames(resumed)) {
         expect(frame.reason).toBe("reconnect");
+        assert.ok(frame.resourceVersions[0] != null);
         expect(frame.resourceVersions[0].replyKind).toBe("delta");
         expect(frame.resourceVersions[0].entityChanges?.after).toBe(
           cursor!.seq,

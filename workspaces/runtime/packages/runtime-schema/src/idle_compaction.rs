@@ -83,3 +83,22 @@ mod tests {
         assert!(serde_json::from_str::<Mode>("\"compact_on_return\"").is_err());
     }
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheReport {
+    pub request_id: String,
+    pub ttl: String,
+    pub warm: bool,
+    /// Provider request activity time, in Unix milliseconds.
+    pub last_activity_at: f64,
+    pub context_tokens: u64,
+    pub prefix: String,
+    #[serde(default = "enabled")]
+    pub compaction_enabled: bool,
+    #[serde(default = "enabled")]
+    pub idle_compaction_enabled: bool,
+}
+fn enabled() -> bool {
+    true
+}

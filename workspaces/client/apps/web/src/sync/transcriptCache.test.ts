@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("./client", () => ({}));
@@ -23,7 +24,7 @@ it("applies every delta immediately and publishes the latest transcript once", a
   cache.cacheTranscriptValue(
     "workspace",
     "a",
-    { items: [{ id: "a", text: "initial" }] },
+    { items: [{ id: "a", role: "assistant", text: "initial" }] },
     1,
   );
   const accept = vi.fn();
@@ -34,7 +35,7 @@ it("applies every delta immediately and publishes the latest transcript once", a
     "a",
     {},
     2,
-    [{ id: "a", text: "second" }],
+    [{ id: "a", role: "assistant", text: "second" }],
     [],
   );
   cache.patchTranscriptValue(
@@ -42,27 +43,30 @@ it("applies every delta immediately and publishes the latest transcript once", a
     "a",
     {},
     3,
-    [{ id: "b", text: "third", toolStatus: "running" }],
+    [{ id: "b", role: "tool", text: "third", toolStatus: "running" }],
     ["a"],
   );
   cache.patchTranscriptValue(
     "workspace",
     "a",
-    { completed: true },
+    { truncated: true },
     4,
-    [{ id: "b", text: "finished", toolStatus: "completed" }],
+    [{ id: "b", role: "tool", text: "finished", toolStatus: "completed" }],
     [],
   );
   expect(cache.peekTranscript("workspace", "a")).toEqual({
     seq: 4,
     payload: {
-      completed: true,
-      items: [{ id: "b", text: "finished", toolStatus: "completed" }],
+      truncated: true,
+      items: [
+        { id: "b", role: "tool", text: "finished", toolStatus: "completed" },
+      ],
     },
   });
   expect(accept).toHaveBeenCalledOnce();
   vi.advanceTimersByTime(50);
   expect(accept).toHaveBeenCalledTimes(2);
+  assert.ok(accept.mock.calls[1] != null);
   expect(accept.mock.calls[1][0]).toEqual(
     cache.peekTranscript("workspace", "a"),
   );
@@ -76,12 +80,20 @@ it("keeps workspace notifications separate and cancels notifications for a close
   const stopOld = cache.subscribeTranscript("old", "same", old);
   const stopCurrent = cache.subscribeTranscript("current", "same", current);
   cache.cacheTranscriptValue("old", "same", { items: [] }, 100);
-  cache.cacheTranscriptValue("current", "same", { items: [{ id: "new" }] }, 1);
+  cache.cacheTranscriptValue(
+    "current",
+    "same",
+    { items: [{ id: "new", role: "assistant", text: "" }] },
+    1,
+  );
   stopOld();
   vi.advanceTimersByTime(50);
   expect(old).not.toHaveBeenCalled();
   expect(current).toHaveBeenCalledOnce();
-  expect(current.mock.calls[0][0].payload.items).toEqual([{ id: "new" }]);
+  assert.ok(current.mock.calls[0] != null);
+  expect(current.mock.calls[0][0].payload.items).toEqual([
+    { id: "new", role: "assistant", text: "" },
+  ]);
   stopCurrent();
 });
 
@@ -105,8 +117,14 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
     role: "user" as const,
     text: "input batch",
     inputs: [
-      { id: "input", kind: "user", text: "Hello", at: 1 },
-      { id: "result", kind: "child_result", text: "Worker finished", at: 2 },
+      { id: "input", kind: "user", text: "Hello", at: 1, truncated: false },
+      {
+        id: "result",
+        kind: "child_result",
+        text: "Worker finished",
+        at: 2,
+        truncated: false,
+      },
     ],
   };
   const reply = { id: "reply", role: "assistant" as const, text: "Answer" };
@@ -114,6 +132,7 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
   const accept = vi.fn();
   const stop = cache.subscribeTranscript("workspace", "chat", accept);
   // useMessages retains this payload in page.latest until the next publication.
+  assert.ok(accept.mock.calls[0] != null);
   const retained = accept.mock.calls[0][0];
   const rendered = transcriptMessages(retained.payload.items, "chat");
   expect(rendered.map(({ id, role, text }) => ({ id, role, text }))).toEqual([
@@ -130,6 +149,7 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
   expect(transcriptMessages(retained.payload.items, "chat")).toEqual(rendered);
   expect(retained.payload.items).toEqual([batch, reply]);
   const current = cache.peekTranscript("workspace", "chat")!;
+  assert.ok(current.payload != null);
   expect(current.payload.items).toEqual([reply]);
   expect(current.payload.items[0]).toBe(reply);
   expect(transcriptMessages(current.payload.items, "chat")).toEqual([
@@ -137,6 +157,7 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
   ]);
   vi.advanceTimersByTime(50);
   expect(accept).toHaveBeenCalledTimes(2);
+  assert.ok(accept.mock.calls[1] != null);
   expect(accept.mock.calls[1][0]).toBe(current);
   stop();
 });
@@ -146,10 +167,10 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
   async (operation) => {
     const { createTranscriptCache } = await import("./transcriptCache");
     const cache = createTranscriptCache();
-    const first = { id: "first", text: "Original" };
-    const kept = { id: "kept", text: "Unchanged" };
-    const added = { id: "added", text: "New" };
-    const replacement = { id: "first", text: "Updated" };
+    const first = { id: "first", role: "assistant", text: "Original" };
+    const kept = { id: "kept", role: "assistant", text: "Unchanged" };
+    const added = { id: "added", role: "assistant", text: "New" };
+    const replacement = { id: "first", role: "assistant", text: "Updated" };
     const items = [first, kept];
     cache.cacheTranscriptValue("workspace", "chat", { items }, 1);
     const retained = cache.peekTranscript("workspace", "chat")!;
@@ -168,6 +189,7 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
       operation === "reorder" ? ["kept", "first"] : undefined,
     );
 
+    assert.ok(retained.payload != null);
     expect(retained.payload.items).toBe(items);
     expect(items).toEqual([first, kept]);
     expect(retained.seq).toBe(1);
@@ -179,6 +201,7 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
       reorder: [kept, first],
     }[operation];
     expect(current.seq).toBe(2);
+    assert.ok(current.payload != null);
     expect(current.payload.items).toEqual(expected);
     for (const [index, item] of expected.entries())
       expect(current.payload.items[index]).toBe(item);

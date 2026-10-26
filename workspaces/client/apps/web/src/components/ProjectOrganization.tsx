@@ -27,10 +27,10 @@ export function ProjectNameForm({
   displayPath,
 }: {
   project: Project;
-  folder?: ProjectFolder | "new";
-  parentId?: string;
+  folder?: ProjectFolder | "new" | undefined;
+  parentId?: string | undefined;
   saved: () => Promise<void>;
-  displayPath?: string;
+  displayPath?: string | undefined;
 }) {
   const [name, setName] = useState(
     folder === "new" ? "" : folder?.name || project.name || "",

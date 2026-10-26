@@ -1,25 +1,7 @@
 import { frameRequest, isNativeFrame } from "./frame";
 import { queueMarkdown } from "./markdownQueue";
-type Invoke = (
-  command: string,
-  args: Record<string, unknown>,
-) => Promise<unknown>;
-type Host = {
-  core: { invoke: Invoke };
-  event?: {
-    listen: (
-      name: string,
-      callback: (event: { payload: unknown }) => void,
-    ) => Promise<() => void>;
-  };
-};
-export function nativeHost(): Host | undefined {
-  return (
-    globalThis as typeof globalThis & {
-      __TAURI__?: Host;
-    }
-  ).__TAURI__;
-}
+import { nativeHost } from "./host";
+export { nativeHost } from "./host";
 export function hasNativeClient() {
   return typeof nativeHost()?.core?.invoke === "function" || isNativeFrame();
 }

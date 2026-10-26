@@ -1,3 +1,4 @@
+import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactElement } from "react";
 import type {
@@ -159,9 +160,11 @@ function renderActivity(pending: boolean, currentAgent = agent) {
   } as unknown as Props);
   const phases = phaseElements(tree);
   expect(phases).toHaveLength(1);
-  expect(phases[0].props.savedMessagePending).toBe(pending);
-  expect(phases[0].props.connectionDetails).toBe("Failed to fetch");
-  return renderToStaticMarkup(createElement(LiveAgentPhase, phases[0].props));
+  expect(required(phases[0]).props.savedMessagePending).toBe(pending);
+  expect(required(phases[0]).props.connectionDetails).toBe("Failed to fetch");
+  return renderToStaticMarkup(
+    createElement(LiveAgentPhase, required(phases[0]).props),
+  );
 }
 afterEach(() => {
   h.health = "live";
@@ -337,7 +340,7 @@ it("keeps queued feedback through a real in-flight send and clears it only after
   const send = outbox.durableSend(saved.body);
   await requestStarted;
   const repeat = outbox.durableSend(saved.body);
-  expect(entries()[0].status).toBe("queued");
+  expect(required(entries()[0]).status).toBe("queued");
   expect(renderActivity(feedback(entries()).pending)).not.toContain(
     "Connection lost",
   );
@@ -345,8 +348,8 @@ it("keeps queued feedback through a real in-flight send and clears it only after
   receipt({ id: saved.id, status: "delivered" });
   await Promise.all([send, repeat]);
   expect(post).toHaveBeenCalledTimes(1);
-  expect(post.mock.calls[0][1]).toEqual(saved.body);
-  expect(entries()[0].status).toBe("accepted");
+  expect(required(required(post.mock.calls[0])[1])).toEqual(saved.body);
+  expect(required(entries()[0]).status).toBe("accepted");
   const completed = feedback(entries(), ["Failed to fetch"]);
   expect(completed.pending).toBe(false);
   expect(completed.owns("Failed to fetch")).toBe(true);

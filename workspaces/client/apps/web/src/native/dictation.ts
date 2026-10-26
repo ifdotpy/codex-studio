@@ -1,3 +1,4 @@
+import type { NativeEvent } from "./host";
 import type { DesktopBridge } from "../desktop";
 import { hasNativeClient, listenNativeEvents, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
@@ -82,7 +83,9 @@ export function createNativeDictation(
       let stop: (() => void) | undefined;
       const subscription = crypto.randomUUID();
       void (async () => {
-        stop = await listen((event: any) => {
+        stop = await listen((input) => {
+          // The native host owns the progress payload; retain its base checks.
+          const event = input as NativeEvent<Parameters<typeof callback>[0]>;
           if (!disposed && event?.event === subscription) callback(event.value);
         });
         if (disposed) {
@@ -116,7 +119,9 @@ export function createNativeDictation(
       finish = resolve;
     });
     let chunkError: unknown;
-    const stopListening = await listen((event: any) => {
+    const stopListening = await listen((input) => {
+      // The native host owns microphone chunks; retain its base checks.
+      const event = input as NativeEvent<{ stopped?: boolean; pcm?: string }>;
       if (event?.event !== subscription) return;
       if (event.value?.stopped) {
         finish?.();

@@ -17,9 +17,9 @@ export default function MarkdownImage({
 }: {
   src: string;
   alt: string;
-  agentId?: string;
-  basePath?: string;
-  localPath?: string;
+  agentId?: string | undefined;
+  basePath?: string | undefined;
+  localPath?: string | undefined;
 }) {
   const { get } = useServerApi();
 

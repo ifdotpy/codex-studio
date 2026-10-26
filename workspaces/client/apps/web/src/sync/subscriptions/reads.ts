@@ -11,7 +11,10 @@ import type {
 } from "./events";
 
 type ResourceReadWatcher = (() => void) & { refresh: () => void };
-type ReadTrigger = { resourceKey: string; version?: ResourceVersion };
+type ReadTrigger = {
+  resourceKey: string;
+  version?: ResourceVersion | undefined;
+};
 
 /**
  * Run one targeted read for the initial resource baseline and each later

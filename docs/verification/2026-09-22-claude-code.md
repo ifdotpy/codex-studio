@@ -31,7 +31,7 @@ Passed:
 - `tests/accounts-contract.py`: ten tests.
 - `tests/runtime-accounts-contract.py`: 11 tests.
 - `tests/accounts-ui-smoke.mjs`: account selection and limit display checks.
-- `desktop/test.mjs`: hidden-window desktop checks, including backend survival.
+- `desktop/test.ts`: hidden-window desktop checks, including backend survival.
 - Production web build and desktop package build.
 
 `tests/live-updates-contract.py` passes 12 of 13 tests. Its historical message

@@ -5,7 +5,7 @@ type Props = {
   options: { value: string; label: string }[];
   value: string;
   onChange: (value: string) => void;
-  disabled?: boolean;
+  disabled?: boolean | undefined;
 };
 
 /** An ordinal native radio scale, with no width-dependent JavaScript. */
@@ -24,7 +24,7 @@ export function EffortField({
       value={value}
       data-value={value}
       aria-label={label}
-      disabled={disabled}
+      disabled={!!disabled}
       aria-disabled={disabled}
       onChange={onChange}
       data={options.map((option) => ({

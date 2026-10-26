@@ -239,7 +239,7 @@ The current turn shows tool calls by default, including completed commands while
 the agent thinks. Manual collapse remains available. Turn completion preserves
 the visible calls; older commands stay hidden when history is reopened.
 
-`workspaces/client/apps/web/tests/chat/live-chat-ui.spec.mjs` injects app-server notifications into an isolated runtime.
+`workspaces/client/apps/web/tests/chat/live-chat-ui.spec.ts` injects app-server notifications into an isolated runtime.
 It tests the real HTTP stream and React interface without model inference.
 
 ## Orchestration workspace
@@ -373,7 +373,7 @@ this receipt. Review an unconfirmed outcome before sending another instruction.
 Targeted checks:
 
 ```sh
-pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.mjs
+pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.ts
 ```
 
 ## Rust worker-defaults verification
@@ -381,7 +381,7 @@ pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.m
 The existing-chat verifier updates worker defaults on only the supplied chat:
 
 ```sh
-node scripts/verify-rust-worker-defaults.mjs \
+node scripts/verify-rust-worker-defaults.ts \
   --url "$HTTPS_URL" \
   --chat-id "$CHAT_UUID" \
   --lead-account "$ACCOUNT_KEY" \
@@ -397,7 +397,7 @@ server. It stops before creation if the project folder is available only on a
 remote server:
 
 ```sh
-node scripts/verify-rust-worker-defaults-create.mjs \
+node scripts/verify-rust-worker-defaults-create.ts \
   --url "$HTTPS_URL" \
   --project "$PROJECT_PATH" \
   --lead-account "$ACCOUNT_KEY" \
@@ -420,7 +420,7 @@ Use the read-only observer to measure a running Linux server while the web UI is
 idle:
 
 ```sh
-node scripts/verify-rust-idle.mjs \
+node scripts/verify-rust-idle.ts \
   --url "$HTTPS_URL" \
   --pid "$RUST_SERVER_PID" \
   --evidence-dir "$EVIDENCE_DIR"

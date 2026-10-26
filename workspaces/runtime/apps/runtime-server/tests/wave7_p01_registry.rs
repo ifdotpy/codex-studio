@@ -2436,9 +2436,9 @@ async fn supervised_child_observes_explicit_and_inherited_working_directories() 
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::AsyncBufReadExt;
     let root = tempfile::tempdir().unwrap();
-    let executable = root.path().join("provider");
+    let executable = root.path().join("provider.mts");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mts"),
         &executable,
     )
     .unwrap();
@@ -2779,9 +2779,9 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
         json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
     )
     .unwrap();
-    let executable = fixture._root.path().join("provider");
+    let executable = fixture._root.path().join("provider.mts");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mts"),
         &executable,
     )
     .unwrap();
@@ -3089,7 +3089,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     use tower::ServiceExt;
     if std::env::var_os("STUDIO_W8_CLAUDE_CHILD").is_none() {
         let temp = tempfile::tempdir().unwrap();
-        let sdk = temp.path().join("scripted-sdk.mjs");
+        let sdk = temp.path().join("scripted-sdk.mts");
         let loader = temp.path().join("sdk-loader.mjs");
         let loader_log = temp.path().join("loader.log");
         let node_log = temp.path().join("node.stderr");
@@ -3110,7 +3110,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         )
         .unwrap();
         std::os::unix::fs::symlink(bridge_node_modules, temp.path().join("node_modules")).unwrap();
-        std::fs::write(&sdk, include_str!("fixtures/claude-sdk.mjs")).unwrap();
+        std::fs::write(&sdk, include_str!("fixtures/claude-sdk.mts")).unwrap();
         std::fs::write(
             &loader,
             "import fs from 'node:fs'; import {registerHooks} from 'node:module'; import {pathToFileURL} from 'node:url'; fs.appendFileSync(process.env.STUDIO_TEST_CLAUDE_LOG,'loader-loaded\\n'); registerHooks({resolve(specifier,context,nextResolve){if(specifier==='@anthropic-ai/claude-agent-sdk'){fs.appendFileSync(process.env.STUDIO_TEST_CLAUDE_LOG,'sdk-resolved\\n');return {url:pathToFileURL(process.env.STUDIO_TEST_CLAUDE_SDK).href,shortCircuit:true};}return nextResolve(specifier,context);}});\n",
@@ -3553,9 +3553,9 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
     )
     .unwrap();
-    let executable = fixture._root.path().join("provider");
+    let executable = fixture._root.path().join("provider.mts");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mts"),
         &executable,
     )
     .unwrap();
@@ -3758,9 +3758,9 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
     )
     .unwrap();
-    let executable = fixture._root.path().join("provider");
+    let executable = fixture._root.path().join("provider.mts");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mts"),
         &executable,
     )
     .unwrap();
@@ -3897,9 +3897,9 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
         json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
     )
     .unwrap();
-    let executable = fixture._root.path().join("provider");
+    let executable = fixture._root.path().join("provider.mts");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mts"),
         &executable,
     )
     .unwrap();
@@ -4071,9 +4071,9 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
         json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
     )
     .unwrap();
-    let executable = fixture._root.path().join("provider");
+    let executable = fixture._root.path().join("provider.mts");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mts"),
         &executable,
     )
     .unwrap();
@@ -4554,11 +4554,11 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     assert!(node.status.success());
     let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
     let script = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/restart-provider.mjs"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/restart-provider.mts"),
     )
     .unwrap();
     let body = script.split_once('\n').map_or("", |(_, body)| body);
-    let executable = root.join("provider");
+    let executable = root.join("provider.mts");
     std::fs::write(&executable, format!("#!{node}\n{body}")).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let supervisor_root = root.clone();

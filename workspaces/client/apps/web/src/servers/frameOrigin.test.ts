@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { frameURL, serverFrameHost } from "./frameOrigin";
 const native = createRequire(import.meta.url)(
-  "../../../desktop/frame-owner.cjs",
+  "../../../desktop/frame-owner.ts",
 );
 it("uses distinct DNS-valid frame hosts for case-sensitive IDs, UUIDs and maximum length IDs", () => {
   const ids = [
@@ -82,7 +82,7 @@ it("encodes server IDs as lowercase unpadded base32 in labels of at most 50 char
       "7d265689-5a48-4aaa-85d6-54e0510fbb83",
       "studio-g5sdenrvgy4dsljvme2dqljumfqwcljygvsdmljvgrstanjrgb.tgeyrygm.localhost",
     ],
-  ]) {
+  ] as const) {
     expect(serverFrameHost(id), id).toBe(host);
   }
 });

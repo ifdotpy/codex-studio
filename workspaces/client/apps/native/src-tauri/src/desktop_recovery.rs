@@ -179,7 +179,7 @@ fn configure(
         .find(|path| path.is_file())
         .ok_or("Node.js is unavailable for desktop recovery configuration.")?;
     let output = Command::new(node)
-        .arg(resources.join("helpers/recovery.cjs"))
+        .arg(resources.join("helpers/recovery.ts"))
         .arg(executable)
         .arg(resources)
         .arg(enabled.to_string())

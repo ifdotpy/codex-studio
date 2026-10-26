@@ -23,7 +23,7 @@ function Guidance({
   cyberAccessProgram,
 }: {
   error: ReturnType<typeof nativeErrorView>;
-  cyberAccessProgram?: string | null;
+  cyberAccessProgram?: string | null | undefined;
 }) {
   return (
     <>
@@ -72,13 +72,13 @@ export function NativeError({
   refresh,
 }: {
   agent: Agent;
-  planType?: string;
+  planType?: string | undefined;
   limits?: Json | null;
   openLimits?: () => void;
   /** Read the account limits of this chat again. */
   refreshLimits?: () => void;
-  newChat?: () => void;
-  chooseChat?: () => void;
+  newChat?: (() => void) | undefined;
+  chooseChat?: (() => void) | undefined;
   refresh?: () => Promise<void>;
 }) {
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -187,7 +187,7 @@ export function NativeError({
           <Button
             size="xs"
             variant="light"
-            color={recovery ? "gray" : undefined}
+            {...(recovery ? { color: "gray" } : {})}
             onClick={openLimits}
           >
             View account limits
@@ -208,7 +208,7 @@ export function NativeNotice({
   planType,
 }: {
   item: Message;
-  planType?: string;
+  planType?: string | undefined;
 }) {
   if ("nativeHookQuiet" in item && item.nativeHookQuiet) return null;
   const nativeErrorValue = "nativeError" in item ? item.nativeError : undefined;

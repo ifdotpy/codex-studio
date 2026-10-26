@@ -1,4 +1,4 @@
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 export type DraftSyncFailureDirection = "pull" | "push" | "replication";
 

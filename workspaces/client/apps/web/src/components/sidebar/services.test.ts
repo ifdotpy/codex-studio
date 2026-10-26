@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import { describe, expect, it, vi } from "vitest";
 import { post, saved, save } from "../../api";
 import { serverLocalStorage } from "../../servers/storage";
@@ -49,7 +50,7 @@ describe("sidebar server ownership", () => {
           : target.kind === "project"
             ? target.path
             : target.group;
-      return JSON.parse(identity)[0];
+      return required(JSON.parse(identity)[0]);
     });
     const body = { id: "same-chat", pinned: true };
     for (const backend of [left, right]) {
@@ -70,9 +71,11 @@ describe("sidebar server ownership", () => {
         })
         .post("/api/organization", body);
       expect(backend.post).toHaveBeenCalledWith("/api/organization", body);
-      expect((backend === left ? leftPost : rightPost).mock.calls[0][1]).toBe(
-        body,
-      );
+      expect(
+        required(
+          required((backend === left ? leftPost : rightPost).mock.calls[0])[1],
+        ),
+      ).toBe(body);
     }
     expect(sidebarIdentity("a:b", "c")).not.toBe(sidebarIdentity("a", "b:c"));
   });
@@ -102,7 +105,7 @@ describe("sidebar server ownership", () => {
     selected = "right";
     await services.byOwner(backend.ownerId).post("/api/organization", body);
     expect(left.post).toHaveBeenCalledTimes(2);
-    expect(leftPost.mock.calls[1][1]).toBe(body);
+    expect(required(required(leftPost.mock.calls[1])[1])).toBe(body);
     expect(right.post).not.toHaveBeenCalled();
   });
 

@@ -1,15 +1,23 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
-export type SessionCostValue = Record<string, any>;
+import type { components } from "../generated/api";
+export type SessionCostValue = Partial<
+  components["schemas"]["SessionCostResponse"]
+>;
 type Entry = { scope: string; value: SessionCostValue; storedAt: number };
 
 const prefix = "studio-session-cost:";
 const maxEntries = 16;
 const maxStoredBytes = 64 * 1024;
 
+// These records are written by this cache; valid() still checks legacy cache eligibility.
+function readSessionCostEntry(raw: string): Entry | null {
+  return JSON.parse(raw) as Entry | null;
+}
+
 export const sessionCostScope = (stateDir: string, rootId: string) =>
   JSON.stringify([stateDir, rootId]);
 
-function valid(value: any, scope: string): value is Entry {
+function valid(value: Entry | null, scope: string): value is Entry {
   return (
     value?.scope === scope &&
     Number.isFinite(value?.storedAt) &&
@@ -40,7 +48,7 @@ export function createSessionCostCache(localStorage: Storage) {
     let entry = entries.get(scope);
     if (!entry) {
       try {
-        const saved = JSON.parse(
+        const saved = readSessionCostEntry(
           localStorage.getItem(prefix + scope) || "null",
         );
         if (valid(saved, scope)) entry = remember(saved);
@@ -95,7 +103,7 @@ export function createSessionCostCache(localStorage: Storage) {
         const raw = localStorage.getItem(candidate) || "";
         let at = 0;
         try {
-          at = Number(JSON.parse(raw).storedAt) || 0;
+          at = Number(readSessionCostEntry(raw)!.storedAt) || 0;
         } catch {
           /* Invalid cache records are evicted first. */
         }

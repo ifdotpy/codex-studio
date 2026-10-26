@@ -18,7 +18,7 @@ import type {
   MarkdownTree as Tree,
   MarkdownBlock as Block,
 } from "../generated/rustOwned";
-type Context = { agentId?: string; basePath?: string };
+type Context = { agentId?: string | undefined; basePath?: string | undefined };
 const textContent = (node: MarkdownNode): string =>
   (node.text || "") + (node.children || []).map(textContent).join("");
 

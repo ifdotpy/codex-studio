@@ -16,10 +16,12 @@ export class CompletedMarkdownCache {
   >();
   private bytes = 0;
 
-  constructor(
-    private readonly maxBytes = 4 * 1024 * 1024,
-    private readonly maxEntries = 512,
-  ) {}
+  private readonly maxBytes: number;
+  private readonly maxEntries: number;
+  constructor(maxBytes = 4 * 1024 * 1024, maxEntries = 512) {
+    this.maxBytes = maxBytes;
+    this.maxEntries = maxEntries;
+  }
 
   get(text: string) {
     const entry = this.entries.get(text);

@@ -84,7 +84,7 @@ const ProjectLayrReadiness = forwardRef<
     /** A report in the tooltip needs the user, for example a Mac folder sync conflict. */
     attention?: boolean;
     /** The project's vault: a cloud replaces the dot. */
-    vault?: "ok" | "error" | null;
+    vault?: "ok" | "error" | null | undefined;
   } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">
 >(function ProjectLayrReadiness(
   { summary, attention = false, vault = null, ...props },

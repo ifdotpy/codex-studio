@@ -299,7 +299,7 @@ The actor validation gate passed on 2026-10-16 at commit
 tests, 10 tooling tests, and 5 browser tests), strict workspace Clippy with
 `-D warnings`, workspace doctests, and strict runtime mypy. Any later delivery
 must rerun the required gate against its exact commit head. The tracked [Rust
-chat lifecycle verifier](../../workspaces/client/apps/web/scripts/verify-rust-chat-lifecycle.mjs)
+chat lifecycle verifier](../../workspaces/client/apps/web/scripts/verify-rust-chat-lifecycle.ts)
 also passed once against real state on the `1ed0548b`-equivalent tree; this
 limited smoke does not validate the current exact head. Raw-read migration and
 targeted invalidation behavior validation remain pending.

@@ -15,7 +15,9 @@ pub(crate) fn routes() -> RouteGroup {
 }
 
 pub(crate) async fn identity(State(state): State<HttpState>) -> Json<serde_json::Value> {
-    Json(json!({"workspaceId": state.workspace_id, "syncProtocol": 2}))
+    Json(
+        json!({"workspaceId": state.workspace_id, "syncProtocol": studio_runtime_schema::sync_protocol::SYNC_IDENTITY_PROTOCOL_VERSION}),
+    )
 }
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {

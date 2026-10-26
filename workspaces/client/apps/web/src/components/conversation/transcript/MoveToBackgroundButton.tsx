@@ -19,7 +19,7 @@ export default function MoveToBackgroundButton({
   itemId,
 }: {
   agentId: string;
-  turnId?: string;
+  turnId?: string | undefined;
   itemId: string;
 }) {
   const api = useServerApi();

@@ -106,15 +106,17 @@ function messageGroups(
       : item.turnId
         ? (showCompletedCommands.get(item.turnId) ?? true)
         : true);
-  const groups: (Message | Message[])[] = [];
+  const groups: (Message | [Message, ...Message[]])[] = [];
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
+    if (!item) throw new Error("Missing transcript message");
     if (isEmptyAssistantMessage(item)) continue;
     if (!showItem(item) && isPastCommand(item)) continue;
     if (workRow(item) || (includeReasoning && item.role === "reasoning")) {
-      const run = [item];
+      const run: [Message, ...Message[]] = [item];
       while (index + 1 < items.length) {
         const next = items[index + 1];
+        if (!next) throw new Error("Missing next transcript message");
         if (
           isEmptyAssistantMessage(next) ||
           (!showItem(next) && isPastCommand(next))
@@ -164,12 +166,14 @@ const WorkBlock = memo(function WorkBlock({
   items: Message[];
   storageKey: string;
   storageIds: string[];
-  agentId?: string;
+  agentId?: string | undefined;
   active: boolean;
 }) {
   const key = `${storageKey}:tools-v3`;
   const tools = items.filter((item) => ["tool", "output"].includes(item.role));
-  const id = storageIds[0] || items[0].id;
+  const [first] = items;
+  if (!first) throw new Error("Work block has no messages");
+  const id = storageIds[0] || first.id;
   const [open, setOpen] = useState(
     () =>
       saved<Record<string, boolean>>(key, {})[id] ??
@@ -270,14 +274,14 @@ function Turn({
   storageKey: string;
   render: (message: Message) => ReactNode;
   questions: QuestionCards;
-  agentId?: string;
-  cwd?: string;
+  agentId?: string | undefined;
+  cwd?: string | undefined;
   onJump: (id: string) => void;
   failureReason: string;
   failurePending: boolean;
   failureLookupFailed: boolean;
   retryFailure: () => void;
-  revealedMessage?: string;
+  revealedMessage?: string | undefined;
 }) {
   const result = group.result;
   const turns = group.turns || [group];
@@ -419,14 +423,14 @@ export default function TurnHistory({
   requests = NO_REQUESTS,
 }: {
   items: Message[];
-  agent?: Agent;
+  agent?: Agent | undefined;
   /** Live request entities; pending questions get an Answer action. */
   requests?: RequestDto[];
-  currentTurn?: string;
+  currentTurn?: string | undefined;
   enabled: boolean;
   storageKey: string;
   renderMessage: (message: Message) => ReactNode;
-  agentId?: string;
+  agentId?: string | undefined;
   onJump: (id: string) => void;
   scrollContainer?: RefObject<HTMLDivElement | null>;
   rememberScroll?: () => void;
@@ -446,7 +450,7 @@ export default function TurnHistory({
   );
   const previousGroups = useRef<{
     items: Message[];
-    currentTurn?: string;
+    currentTurn?: string | undefined;
     groups: HistoryGroup[];
   } | null>(null);
   const groups = useMemo(() => {

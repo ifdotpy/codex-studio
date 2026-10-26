@@ -145,20 +145,20 @@ it("separates transcript and sequence caches even when server object IDs collide
   a.cacheTranscriptValue(
     "same-workspace",
     "same-chat",
-    { items: [{ id: "same-message", text: "A" }] },
+    { items: [{ id: "same-message", role: "assistant", text: "A" }] },
     10,
   );
   b.cacheTranscriptValue(
     "same-workspace",
     "same-chat",
-    { items: [{ id: "same-message", text: "B" }] },
+    { items: [{ id: "same-message", role: "assistant", text: "B" }] },
     1,
   );
   expect(
-    a.peekTranscript("same-workspace", "same-chat")?.payload.items[0].text,
+    a.peekTranscript("same-workspace", "same-chat")?.payload?.items[0]?.text,
   ).toBe("A");
   expect(
-    b.peekTranscript("same-workspace", "same-chat")?.payload.items[0].text,
+    b.peekTranscript("same-workspace", "same-chat")?.payload?.items[0]?.text,
   ).toBe("B");
   a.clearTranscript("same-workspace", "same-chat");
   expect(b.peekTranscript("same-workspace", "same-chat")?.seq).toBe(1);

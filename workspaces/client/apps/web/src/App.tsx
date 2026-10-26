@@ -648,7 +648,9 @@ export default function App({ active = true }: { active?: boolean }) {
     [workerQuery, setWorkerQuery] = useState(""),
     [workerFilter, setWorkerFilter] = useState("all"),
     [completedOpen, setCompletedOpen] = useState(false),
-    [sharedCreate, setSharedCreate] = useState<{ path?: string } | null>(null),
+    [sharedCreate, setSharedCreate] = useState<{
+      path?: string | undefined;
+    } | null>(null),
     [creating, setCreating] = useState(false),
     [sending, setSending] = useState(false),
     [toast, setToast] = useState(""),

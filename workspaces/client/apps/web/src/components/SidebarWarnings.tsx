@@ -32,7 +32,7 @@ export default function SidebarWarnings({
   visible = true,
 }: {
   data: Snapshot;
-  agent?: Agent;
+  agent?: Agent | undefined;
   opened: string | null;
   accountKey: string;
   syncWorkspaceId: string;

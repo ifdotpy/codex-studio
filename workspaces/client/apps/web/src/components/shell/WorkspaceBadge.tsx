@@ -72,8 +72,8 @@ export default function WorkspaceBadge({
   agent,
   passive = false,
 }: {
-  agent?: Agent;
-  passive?: boolean;
+  agent?: Agent | undefined;
+  passive?: boolean | undefined;
 }) {
   const info = workspaceBadgeInfo(agent);
   if (!info) return null;

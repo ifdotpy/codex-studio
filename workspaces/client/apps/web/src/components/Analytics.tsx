@@ -143,8 +143,11 @@ function ContextChart({
         No context-window measurements in this period.
       </div>
     );
-  const start = points[0].at,
-    end = points.at(-1)!.at;
+  const first = points[0],
+    last = points.at(-1);
+  if (!first || !last) throw new Error("Missing analytics context points");
+  const start = first.at,
+    end = last.at;
   const groups = new Map<string, AnalyticsContextPoint[]>();
   points.forEach((p) => {
     const id = aggregate ? "Selected agents" : p.agentId;
@@ -219,7 +222,7 @@ function ContextChart({
         {[...groups].map(([id, group], i) => (
           <span key={id}>
             <i style={{ background: colors[i % colors.length] }} />
-            {aggregate ? id : group[0].agentName || id}
+            {aggregate ? id : group[0]?.agentName || id}
           </span>
         ))}
       </div>
@@ -401,7 +404,7 @@ function Payload({
   data,
 }: {
   title: string;
-  data?: AnalyticsPayload | null;
+  data?: AnalyticsPayload | null | undefined;
 }) {
   return (
     <div className="analytics-payload">
@@ -1046,7 +1049,7 @@ export default function Analytics({
                     <Button
                       size="compact-xs"
                       variant="subtle"
-                      loading={loadingDetails.turns}
+                      loading={!!loadingDetails.turns}
                       onClick={() => loadOlderDetails("turns")}
                     >
                       Load 100 older turns
@@ -1175,7 +1178,7 @@ export default function Analytics({
                     <Button
                       size="compact-xs"
                       variant="subtle"
-                      loading={loadingDetails.rateLimits}
+                      loading={!!loadingDetails.rateLimits}
                       onClick={() => loadOlderDetails("rateLimits")}
                     >
                       Load 100 older snapshots

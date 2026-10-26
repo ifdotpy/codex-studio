@@ -1,5 +1,5 @@
-import { importBrowserProfile } from "./importBrowserProfile.mjs";
-import { combineBrowserProfiles } from "./combineBrowserProfiles.mjs";
+import { importBrowserProfile } from "./importBrowserProfile.ts";
+import { combineBrowserProfiles } from "./combineBrowserProfiles.ts";
 import { setNativeJournalStorage } from "./draftJournal";
 import { hasNativeClient, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";

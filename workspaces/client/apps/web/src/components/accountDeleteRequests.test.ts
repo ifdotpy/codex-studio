@@ -1,3 +1,4 @@
+import type { AccountDeleteTarget } from "./accountDeleteRequests";
 import { beforeEach, expect, it } from "vitest";
 import {
   accountForExternalCommand,
@@ -14,7 +15,7 @@ const storage = {
 beforeEach(() => values.clear());
 
 it("resolves an external account action to the account's stored delete identity", () => {
-  const accounts = [
+  const accounts: AccountDeleteTarget[] = [
     {
       id: "other-account",
       provider: "codex",

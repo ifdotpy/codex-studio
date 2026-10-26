@@ -37,7 +37,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
     const [owner, frame] = frameEntry;
     const { correlation, value } = event.data as {
       correlation: string;
-      value: CredentialRequest;
+      value: Extract<CredentialRequest, { action: "request" | "cancel" }>;
     };
     const reply = (result: unknown, error?: string) =>
       frame.contentWindow?.postMessage(

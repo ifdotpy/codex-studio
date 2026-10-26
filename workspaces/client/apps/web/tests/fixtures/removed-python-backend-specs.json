@@ -137,7 +137,7 @@
     "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
   },
   {
-    "file": "tests/messages/simple-messages-ui.spec.mjs",
+    "file": "tests/messages/simple-messages-ui.spec.ts",
     "tests": ["\"simple messages ui\""],
     "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
   },
@@ -224,7 +224,7 @@
     "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
   },
   {
-    "file": "tests/settings/preferences-sync-browser.spec.mjs",
+    "file": "tests/settings/preferences-sync-browser.spec.ts",
     "tests": [
       "\"visual preferences update across contexts and seed a fresh first render\""
     ],

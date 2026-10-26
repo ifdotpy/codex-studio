@@ -1,6 +1,6 @@
 //! Fail-point matrix of busy-turn input. Each row is one test below; the
 //! account-worker witnesses in `runtime-services` drive the same rows through
-//! the worker, and `claude-bridge/steer.test.mjs` proves the bridge's side.
+//! the worker, and `claude-bridge/steer.test.ts` proves the bridge's side.
 //!
 //! | Step / failure                                   | Durable result                         |
 //! | ------------------------------------------------ | -------------------------------------- |

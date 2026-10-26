@@ -1,3 +1,7 @@
+import { snapshotFixture } from "../snapshotFixture";
+import assert from "node:assert/strict";
+import { navigationSnapshot } from "./navigation.ts";
+import type { Agent } from "../types";
 import { expect, it } from "vitest";
 import { isServerCommand } from "./navigation";
 
@@ -43,4 +47,38 @@ it("rejects malformed account providers and operations", () => {
       label: "Work",
     }),
   ).toBe(false);
+});
+
+it("shows the active target chat and hides the source move record", () => {
+  const chat: Agent = {
+    id: "same-id",
+    source: "managed",
+    isLead: true,
+    cwd: "/project",
+  };
+  const source = navigationSnapshot(
+    snapshotFixture([{ ...chat, movedTo: { server: "target", move: "move" } }]),
+    null,
+    "",
+  );
+  const target = navigationSnapshot(
+    snapshotFixture([
+      { ...chat, movedFrom: { server: "source", move: "move" } },
+    ]),
+    null,
+    "",
+  );
+  assert.deepEqual(source.chats, []);
+  assert.deepEqual(
+    navigationSnapshot(
+      snapshotFixture([{ ...chat, moveImportPending: true }]),
+      null,
+      "",
+    ).chats,
+    [],
+  );
+  assert.deepEqual(
+    target.chats.map((row) => row.id),
+    ["same-id"],
+  );
 });

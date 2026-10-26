@@ -18,12 +18,12 @@ type Receipt = PostResult<"/api/accounts/claude/login">;
 type SavedFlow = {
   requestId: string;
   startRequestId: string;
-  codeRequestId?: string;
+  codeRequestId?: string | undefined;
   cancelRequestId?: string;
   label: string;
   email: string;
   createdAt: number;
-  unknownSince?: number;
+  unknownSince?: number | undefined;
   codeSubmissionUncertain?: boolean;
 };
 const UNKNOWN_REQUEST_GRACE_MS = 5000;

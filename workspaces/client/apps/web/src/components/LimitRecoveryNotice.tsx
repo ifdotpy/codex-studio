@@ -36,13 +36,13 @@ export default function LimitRecoveryNotice({
   tabIndex,
   onRefresh,
 }: {
-  recovery?: LimitRecovery;
+  recovery?: LimitRecovery | undefined;
   agentId?: string;
-  usageResume?: Agent["usageResume"];
+  usageResume?: Agent["usageResume"] | undefined;
   inline?: boolean;
-  tabIndex?: number;
+  tabIndex?: number | undefined;
   /** Read the account limits again. */
-  onRefresh?: () => Promise<void> | void;
+  onRefresh?: (() => Promise<void> | void) | undefined;
 }) {
   const { post } = useServerApi();
   const [now, setNow] = useState(() => Date.now() / 1000);

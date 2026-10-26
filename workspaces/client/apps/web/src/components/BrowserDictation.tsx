@@ -6,7 +6,7 @@ import { Mic } from "lucide-react";
 import "./realtime-voice.css";
 
 // Web Speech is implemented by the browser. It is not the Electron speech bridge.
-type Recognition = {
+export type Recognition = {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
@@ -22,7 +22,7 @@ type Recognition = {
   stop(): void;
   abort(): void;
 };
-type SpeechWindow = Window & {
+export type SpeechWindow = Window & {
   SpeechRecognition?: new () => Recognition;
   webkitSpeechRecognition?: new () => Recognition;
 };

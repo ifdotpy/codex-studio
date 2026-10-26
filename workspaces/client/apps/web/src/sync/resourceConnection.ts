@@ -41,9 +41,9 @@ export type ResourceConnectionFailure =
   | "unknown";
 
 export type ResourceConnectionDetail = {
-  failure?: ResourceConnectionFailure;
+  failure?: ResourceConnectionFailure | undefined;
   /** Deadline of the current scheduled retry, in Unix epoch milliseconds. */
-  retryAt?: number;
+  retryAt?: number | undefined;
 };
 
 /** Maximum wait for optional local resume cursors, in milliseconds. */
@@ -75,7 +75,7 @@ export type ResourceConnectionHealth = {
   sequence: number;
   sentAt: number;
   /** Last validated server frame time; peer publications never advance it. */
-  validatedAt?: number;
+  validatedAt?: number | undefined;
 };
 
 export function hasFreshServerFrame(

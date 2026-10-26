@@ -6,9 +6,10 @@ import {
 
 export interface IconActionProps extends Omit<
   ActionIconProps & ElementProps<"button">,
-  "aria-label" | "title"
+  "aria-label" | "title" | "color"
 > {
   label: string;
+  color?: ActionIconProps["color"] | undefined;
   title?: string;
 }
 
@@ -16,7 +17,15 @@ export interface IconActionProps extends Omit<
 export function IconAction({
   label,
   title = label,
+  color,
   ...props
 }: IconActionProps) {
-  return <MantineActionIcon {...props} aria-label={label} title={title} />;
+  return (
+    <MantineActionIcon
+      {...props}
+      {...(color === undefined ? {} : { color })}
+      aria-label={label}
+      title={title}
+    />
+  );
 }

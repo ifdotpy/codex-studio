@@ -31,13 +31,13 @@ export type ServerNavigation = {
     archived: boolean;
     status: string;
     unread: boolean;
-    serverId?: string | null;
-    projectId?: string | null;
-    projectServerId?: string | null;
-    provider?: string | null;
-    updated?: number | null;
-    created?: number | null;
-    indicator?: ChatIndicator;
+    serverId?: string | null | undefined;
+    projectId?: string | null | undefined;
+    projectServerId?: string | null | undefined;
+    provider?: string | null | undefined;
+    updated?: number | null | undefined;
+    created?: number | null | undefined;
+    indicator?: ChatIndicator | undefined;
     inFlight?: boolean;
     pinned?: boolean;
     team?: boolean;
@@ -60,8 +60,8 @@ export type ServerCommand =
       settings?: NewChatSettings;
       path?: string;
       folder?: string;
-      projectId?: string;
-      projectServerId?: string;
+      projectId?: string | undefined;
+      projectServerId?: string | undefined;
     }
   | { action: "add-project" }
   | { action: "refresh" }

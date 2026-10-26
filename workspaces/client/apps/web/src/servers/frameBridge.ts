@@ -1,3 +1,4 @@
+import type { ScreenSearchResultsMessage } from "./screenChannel";
 import { useScreenChannel } from "./ScreenContext";
 import { useServerApi, useServerResources } from "./ServerServicesContext";
 import {
@@ -52,14 +53,14 @@ export function useServerFrame(
             kind: "studio-server-search-results",
             requestId: command.requestId,
             results: value.results,
-          });
+          } satisfies ScreenSearchResultsMessage);
         } catch (failure) {
           screen.publish({
             kind: "studio-server-search-results",
             requestId: command.requestId,
             results: [],
             error: errorText(failure),
-          });
+          } satisfies ScreenSearchResultsMessage);
         }
       } else await handler.current(command);
     });
@@ -230,7 +231,7 @@ export function useServerFrame(
                 serverId: serverViewId,
                 requestId: command.requestId,
                 results: value.results,
-              },
+              } satisfies ScreenSearchResultsMessage,
               serverParentOrigin,
             );
           })
@@ -242,7 +243,7 @@ export function useServerFrame(
                 requestId: command.requestId,
                 error: errorText(failure),
                 results: [],
-              },
+              } satisfies ScreenSearchResultsMessage,
               serverParentOrigin,
             );
           });

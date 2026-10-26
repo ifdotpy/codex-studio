@@ -1,0 +1,15 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2024", "DOM"],
+    "types": []
+  },
+  "include": [
+    "src-tauri/src/native-check.js",
+    "src-tauri/src/native-check-types.ts"
+  ]
+}

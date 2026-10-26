@@ -63,11 +63,11 @@ export default function AgentPhase({
   savedMessagePending = false,
   connectionDetails,
 }: {
-  agent?: Agent;
+  agent?: Agent | undefined;
   connection: MessageConnection | null;
-  wait?: ChatWaitState;
-  savedMessagePending?: boolean;
-  connectionDetails?: string;
+  wait?: ChatWaitState | undefined;
+  savedMessagePending?: boolean | undefined;
+  connectionDetails?: string | undefined;
 }) {
   const visualRef = useVisualActivityRef<HTMLDivElement>();
   if (!agent) return null;
@@ -263,10 +263,10 @@ export function LiveAgentPhase({
   ...props
 }: {
   source: ChatWaitSource;
-  agent?: Agent;
+  agent?: Agent | undefined;
   connection: MessageConnection | null;
-  savedMessagePending?: boolean;
-  connectionDetails?: string;
+  savedMessagePending?: boolean | undefined;
+  connectionDetails?: string | undefined;
 }) {
   const wait = useChatWait(source, props.agent);
   return <AgentPhase {...props} wait={wait} />;

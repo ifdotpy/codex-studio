@@ -49,7 +49,7 @@ import {
   CHAT_INDICATOR_URGENCY,
   type ChatIndicatorKind,
 } from "../chat-status/chatStatusModel";
-import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
+import type { Agent, JsonInput, Monitor, Request, Snapshot } from "../../types";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
@@ -82,12 +82,12 @@ export const responseStopIdentity = (
 export const responseOwnerIdentityKey = (
   owner:
     | {
-        id?: string;
-        accountKey?: string | null;
-        epoch?: number | null;
-        inFlight?: boolean | null;
-        threadId?: string | null;
-        turnId?: string | null;
+        id?: string | undefined;
+        accountKey?: string | null | undefined;
+        epoch?: number | null | undefined;
+        inFlight?: boolean | null | undefined;
+        threadId?: string | null | undefined;
+        turnId?: string | null | undefined;
       }
     | undefined,
 ) =>
@@ -126,8 +126,8 @@ export function monitorTask(
 }
 
 function isJsonObject(
-  value: JsonValue | null | undefined,
-): value is Record<string, JsonValue> {
+  value: JsonInput | null | undefined,
+): value is Record<string, JsonInput> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -220,13 +220,13 @@ export default function BackgroundTasks({
 }: {
   opened: boolean;
   close: () => void;
-  afterClose?: () => void;
+  afterClose?: (() => void) | undefined;
   data: Snapshot;
-  leadId?: string;
+  leadId?: string | undefined;
   openAgent: (id: string) => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
-  initialFocus?: { id: string; leadId: string; requestId: string };
+  initialFocus?: { id: string; leadId: string; requestId: string } | undefined;
 }) {
   const { get, post } = useServerApi();
   const services = useServerServices();
@@ -239,9 +239,9 @@ export default function BackgroundTasks({
   const [kind, setKind] = useState("all"),
     [query, setQuery] = useState(""),
     [selection, setSelection] = useState<{
-      scope?: string;
+      scope?: string | undefined;
       id: string;
-      requested?: boolean;
+      requested?: boolean | undefined;
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
@@ -524,7 +524,7 @@ export default function BackgroundTasks({
     <Drawer
       opened={opened}
       onClose={close}
-      onExitTransitionEnd={afterClose}
+      {...(afterClose === undefined ? {} : { onExitTransitionEnd: afterClose })}
       returnFocus={!afterClose}
       position="right"
       size={940}
@@ -781,7 +781,7 @@ export function BackgroundTaskStrip({
   select,
 }: {
   task: DisplayBackgroundTask;
-  owner?: Agent;
+  owner?: Agent | undefined;
   now: number;
   selected: boolean;
   select: () => void;
@@ -812,7 +812,7 @@ export function BackgroundTaskStrip({
   );
 }
 
-function TaskDetail({
+export function TaskDetail({
   task: summary,
   owner,
   now,
@@ -826,7 +826,7 @@ function TaskDetail({
   controlPending,
 }: {
   task: DisplayBackgroundTask;
-  owner?: Agent;
+  owner?: Agent | undefined;
   now: number;
   requests: PendingRequest[];
   back: () => void;

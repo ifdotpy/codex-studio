@@ -37,11 +37,11 @@ export default function ComposerAutocomplete({
   opened: boolean;
   options: Option[];
   loading: boolean;
-  error?: string;
-  warning?: string;
+  error?: string | undefined;
+  warning?: string | undefined;
   id: string;
   label: string;
-  resetKey?: string;
+  resetKey?: string | undefined;
   loadingMessage?: string;
   emptyMessage?: string;
   onSelect: (value: string) => void;

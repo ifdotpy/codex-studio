@@ -1,4 +1,4 @@
-"""Stdlib case workers; run-guest-suite.mjs owns the deadline and process cleanup."""
+"""Stdlib case workers; run-guest-suite.mts owns the deadline and process cleanup."""
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import redirect_stderr, redirect_stdout

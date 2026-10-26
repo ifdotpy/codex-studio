@@ -28,18 +28,18 @@ status.
 
 The relocation keeps Python module names and moves source roots as follows:
 
-| Former path                           | Current path                                                          |
-| ------------------------------------- | --------------------------------------------------------------------- |
-| `scripts/` implementation             | `workspaces/runtime/apps/server/src/`                                 |
-| `scripts/claude_bridge/`              | `workspaces/providers/apps/claude-bridge/`                            |
-| `tests/` server and runtime contracts | `workspaces/runtime/apps/server/tests/`                               |
-| `tests/client/`                       | `workspaces/client/apps/web/tests/`                                   |
-| `web/`                                | `workspaces/client/apps/web/`                                         |
-| `desktop/`                            | `workspaces/client/apps/desktop/`                                     |
-| `vm/guest/`                           | `workspaces/runtime/apps/vm-guest/`                                   |
-| `prompts/`                            | `workspaces/runtime/apps/server/prompts/`                             |
-| `scripts/check-code.mjs`              | `workspaces/tooling/apps/repository-checks/check-code.mjs`            |
-| `tests/pre-commit-hook.mjs`           | `workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs` |
+| Former path                           | Current path                                                         |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| `scripts/` implementation             | `workspaces/runtime/apps/server/src/`                                |
+| `scripts/claude_bridge/`              | `workspaces/providers/apps/claude-bridge/`                           |
+| `tests/` server and runtime contracts | `workspaces/runtime/apps/server/tests/`                              |
+| `tests/client/`                       | `workspaces/client/apps/web/tests/`                                  |
+| `web/`                                | `workspaces/client/apps/web/`                                        |
+| `desktop/`                            | `workspaces/client/apps/desktop/`                                    |
+| `vm/guest/`                           | `workspaces/runtime/apps/vm-guest/`                                  |
+| `prompts/`                            | `workspaces/runtime/apps/server/prompts/`                            |
+| `scripts/check-code.mjs`              | `workspaces/tooling/apps/repository-checks/check-code.ts`            |
+| `tests/pre-commit-hook.mjs`           | `workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.ts` |
 
 ## Outcome and scope
 

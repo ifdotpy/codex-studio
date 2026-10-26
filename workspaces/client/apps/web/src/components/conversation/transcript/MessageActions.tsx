@@ -7,15 +7,15 @@ const messageActionTooltipEvents = { hover: true, focus: true, touch: false };
 
 export type MessageActionsProps = {
   hidden?: boolean;
-  info?: MessageInfoProps;
+  info?: MessageInfoProps | undefined;
   onCopy: () => void;
-  onQuote?: () => void;
-  onEdit?: () => void;
+  onQuote?: (() => void) | undefined;
+  onEdit?: (() => void) | undefined;
   editLoading?: boolean;
   editDisabled?: boolean;
-  onBranch?: () => void;
+  onBranch?: (() => void) | undefined;
   branchDisabled?: boolean;
-  onAnotherAnswer?: () => void;
+  onAnotherAnswer?: (() => void) | undefined;
   anotherAnswerDisabled?: boolean;
 };
 

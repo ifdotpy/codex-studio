@@ -1,20 +1,14 @@
-import { ApiError } from "../api";
+import { ApiError, type PostResult } from "../api";
+type CodeReceipt = Pick<
+  PostResult<"/api/accounts/claude/login">,
+  "status" | "codeSubmitted"
+>;
 
-export function codeVerificationPending(
-  receipt: {
-    status: string;
-    codeSubmitted?: boolean | null;
-  } | null,
-): boolean {
+export function codeVerificationPending(receipt: CodeReceipt | null): boolean {
   return receipt?.status === "pending" && receipt.codeSubmitted === true;
 }
 
-export function codeSubmissionResolved(
-  receipt: {
-    status: string;
-    codeSubmitted?: boolean | null;
-  } | null,
-): boolean {
+export function codeSubmissionResolved(receipt: CodeReceipt | null): boolean {
   return (
     receipt?.codeSubmitted === true ||
     ["ready", "error", "cancelled"].includes(receipt?.status || "")
