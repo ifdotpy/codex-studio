@@ -1,6 +1,6 @@
 import type { PostBody } from "../../src/apiTypes.ts";
 import assert from "node:assert/strict";
-import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 // Exercise the Codex 0.159 write_stdin_approval request through the real card and answer API.
 import { mkdtemp, rm } from "node:fs/promises";
@@ -46,7 +46,7 @@ test("Terminal Input Approval Ui", async ({
         body: '<!doctype html><div id="root"></div><script type="module">import "/tests/terminal/stdin-approval-fixture.tsx";</script>',
       }),
     );
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await page.waitForFunction(() =>
       document.querySelector('[data-request="request-159"]'),
     );

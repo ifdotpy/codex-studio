@@ -2,7 +2,6 @@ import type { GetResult } from "../../src/apiTypes.ts";
 import type { components } from "../../src/generated/api.ts";
 import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 import type {} from "./team-room-bounds-ui.fixture.tsx";
-import { required } from "./helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -125,7 +124,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
         } satisfies GetResult<"/api/agent-chat">,
       });
     });
-    await page.goto(`${required(server.resolvedUrls?.local[0])}check`);
+    await page.goto(`${server.resolvedUrls!.local[0]!}check`);
     await page.locator('[data-room="private:lead:worker"]').click();
     const start = Date.now();
     await page

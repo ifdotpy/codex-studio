@@ -3,9 +3,7 @@ import type { GetResult, PostBody, PostResult } from "../src/api.ts";
 import type { ApiGetPath, ApiPostPath } from "../src/apiTypes.ts";
 
 export function fixtureOrigin(server: ViteDevServer): string {
-  const url = server.resolvedUrls?.local[0];
-  if (!url) throw new Error("Fixture server has no local URL");
-  return url.replace(/\/$/, "");
+  return server.resolvedUrls!.local[0].replace(/\/$/, "");
 }
 
 // Requests originate in the renderer under test and use the generated API contract.

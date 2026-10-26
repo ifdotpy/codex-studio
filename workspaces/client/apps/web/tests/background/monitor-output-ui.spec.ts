@@ -1,4 +1,4 @@
-import { fixturePostBody, required } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import type { GetResult, PostBody } from "../../src/apiTypes.ts";
 import type {} from "./monitor-output-ui.fixture.tsx";
 // Hidden browser fixture for the real activity drawer. Native processes use HTTP fixtures.
@@ -104,9 +104,7 @@ for (const width of [320, 1200]) {
       if (url.pathname === "/api/sync/identity")
         return route.fulfill({
           headers: {
-            "X-Studio-API-Schema": required(
-              request.headers()["x-studio-api-schema"],
-            ),
+            "X-Studio-API-Schema": request.headers()["x-studio-api-schema"]!,
           },
           json: {
             workspaceId: "1234567890abcdef1234567890abcdef",
@@ -142,7 +140,7 @@ for (const width of [320, 1200]) {
     });
     try {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto(required(server.resolvedUrls?.local[0]) + "fixture");
+      await page.goto(server.resolvedUrls!.local[0]! + "fixture");
       await expect(page.getByText("1250 matches suppressed")).toBeVisible();
       await expect(
         page.getByText("Output wakes paused", { exact: true }),
@@ -163,7 +161,7 @@ for (const width of [320, 1200]) {
         })
         .click();
       await expect(page.getByLabel("Command", { exact: true })).toHaveValue(
-        required(monitor.command),
+        monitor.command!,
       );
       await expect(
         page.getByLabel("Output patterns, one per line"),
@@ -196,10 +194,8 @@ for (const width of [320, 1200]) {
       await page.getByRole("button", { name: "Check restart result" }).click();
       await expect.poll(() => calls.length).toBe(2);
       expect(calls[0]).toEqual(calls[1]);
-      expect(required(calls[0]).body.outputPatterns).toEqual([
-        "build complete",
-      ]);
-      expect(required(calls[0]).path).toBe("/api/monitor/restart");
+      expect(calls[0]!.body.outputPatterns).toEqual(["build complete"]);
+      expect(calls[0]!.path).toBe("/api/monitor/restart");
       if (width === 320)
         await page
           .getByRole("button", { name: "Activity", exact: true })

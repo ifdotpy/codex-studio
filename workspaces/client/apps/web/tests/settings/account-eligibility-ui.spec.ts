@@ -1,5 +1,4 @@
 import type { EntityEnvelope } from "../playwright.ts";
-import assert from "node:assert/strict";
 import type { components } from "../../src/generated/api.ts";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,52 +27,50 @@ for (const provider of ["codex", "claude"])
       stdio: ["pipe", "pipe", "pipe"],
     });
     let log = "";
-    server.stderr?.on("data", (chunk) => (log += chunk));
+    server.stderr!.on("data", (chunk) => (log += chunk));
     try {
       const port = await waitForFixturePort(server, { diagnostics: () => log });
       const origin = `http://127.0.0.1:${port}`;
       const lead = (await readTestState(origin)).runtime.agents.find(
         (agent) => agent.name === "Release lead",
       );
-      assert.ok(lead);
       await page.route("**/api/accounts", async (route) => {
         const response = await route.fetch();
-        const data: components["schemas"]["AccountsResponse"] =
-          await response.json();
-        const base = data.accounts[0];
-        assert.ok(base);
+        const data: import("../../src/apiTypes.ts").JsonInputOf<
+          components["schemas"]["AccountsResponse"]
+        > = await response.json();
+        const base = data.accounts[0]!;
         const providers: components["schemas"]["Account"]["provider"][] =
           provider === "codex"
             ? ["codex", "codex", "codex", "claude", "claude"]
             : ["claude", "codex", "codex", "codex", "claude"];
-        data.accounts = providers.map((accountProvider, index) =>
-          Object.assign(structuredClone(base), {
-            id: index ? `eligibility-${index}` : base.id,
-            accountId: index ? `eligibility-${index}` : base.accountId,
-            provider: accountProvider,
-            status: "ready",
-            label:
-              index === 0
-                ? "Current account with a very long organization name"
-                : index === 1
-                  ? "ifdotpy+alexcodex@gmail.example.com"
-                  : index === 2
-                    ? "A very long account name for the enterprise workspace"
-                    : `Claude code ${index}`,
-            email:
-              index === 1
+        data.accounts = providers.map((accountProvider, index) => ({
+          ...base,
+          id: index ? `eligibility-${index}` : base.id,
+          accountId: index ? `eligibility-${index}` : base.accountId,
+          provider: accountProvider,
+          status: "ready",
+          label:
+            index === 0
+              ? "Current account with a very long organization name"
+              : index === 1
                 ? "ifdotpy+alexcodex@gmail.example.com"
-                : "magritte+long.organization.name@tutamail.example.com",
-          }),
-        );
+                : index === 2
+                  ? "A very long account name for the enterprise workspace"
+                  : `Claude code ${index}`,
+          email:
+            index === 1
+              ? "ifdotpy+alexcodex@gmail.example.com"
+              : "magritte+long.organization.name@tutamail.example.com",
+        }));
         await route.fulfill({ response, json: data });
       });
       await page.route("**/api/limits?**", (route) =>
         route.fulfill({
           json: {
-            accountKey:
-              new URL(route.request().url()).searchParams.get("account_key") ||
-              "",
+            accountKey: new URL(route.request().url()).searchParams.get(
+              "account_key",
+            )!,
             at: Date.now() / 1000,
             data: {
               rateLimits: {
@@ -97,20 +94,20 @@ for (const provider of ["codex", "claude"])
       );
       await page.route("**/api/sync/pull*", async (route) => {
         const response = await route.fetch();
-        const data: components["schemas"]["SyncPullResponse"] =
-          await response.json();
+        const data: Omit<
+          components["schemas"]["SyncPullResponse"],
+          "documents"
+        > & {
+          documents: Extract<
+            components["schemas"]["SyncPullResponse"]["documents"][number],
+            { payload: string }
+          >[];
+        } = await response.json();
         for (const document of data.documents || []) {
-          if (!("payload" in document)) continue;
           if (document._deleted) continue;
-          const entity: EntityEnvelope = JSON.parse(document.payload);
-          if (
-            entity.collection === "agent" &&
-            entity.id === lead.id &&
-            entity.value &&
-            typeof entity.value === "object" &&
-            !Array.isArray(entity.value)
-          ) {
-            Object.assign(entity.value, { provider, yoloMode: false });
+          const entity: EntityEnvelope = JSON.parse(document.payload!);
+          if (entity.collection === "agent" && entity.id === lead!.id) {
+            Object.assign(entity.value!, { provider, yoloMode: false });
             document.payload = JSON.stringify(entity);
           }
         }
@@ -118,7 +115,7 @@ for (const provider of ["codex", "claude"])
       });
       await page.setViewportSize({ width: 1440, height: 900 });
       await page.goto(origin);
-      await page.locator(`[data-chat="${lead.id}"]`).click();
+      await page.locator(`[data-chat="${lead!.id}"]`).click();
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();

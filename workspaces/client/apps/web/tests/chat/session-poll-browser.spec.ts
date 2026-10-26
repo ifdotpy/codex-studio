@@ -1,3 +1,5 @@
+import type { AddressInfo } from "node:net";
+import type { JsonValue } from "../../src/apiTypes.ts";
 import type {
   SyncPullResponse,
   SyncEntity,
@@ -57,9 +59,6 @@ test("Session Poll Browser", async ({
     ],
   });
   await server.listen();
-  const address = server.httpServer?.address();
-  if (!address || typeof address === "string")
-    throw new Error("Missing fixture server address");
   try {
     const page = testPage;
     const errors: string[] = [];
@@ -121,16 +120,19 @@ test("Session Poll Browser", async ({
         headers: apiSchemaHeaders(),
       });
     });
-    await page.goto(`http://127.0.0.1:${address.port}/check`);
+    await page.goto(
+      `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}/check`,
+    );
 
     await page.waitForFunction(
       () =>
-        Reflect.get(
-          window.sessionPollFixture?.data?.runtime ?? {},
-          "marker",
-        ) === "replicated",
+        (
+          window.snapshot?.data?.runtime as
+            | Record<string, JsonValue>
+            | undefined
+        )?.marker === "replicated",
     );
-    await page.evaluate(() => window.sessionPollFixture.refresh());
+    await page.evaluate(() => window.snapshot.refresh());
     assert.ok(sessions >= 2);
     assert.equal(
       snapshotReads,
@@ -139,26 +141,27 @@ test("Session Poll Browser", async ({
     );
     assert.ok(pulls > 0, "Startup and refresh use the entity pull");
     token = "rotated";
-    await page.evaluate(() => window.sessionPollFixture.refresh());
+    await page.evaluate(() => window.snapshot.refresh());
     assert.equal(
-      await page.evaluate(() => window.sessionPollFixture.data?.token),
+      await page.evaluate(() => window.snapshot.data!.token),
       "rotated",
     );
     assert.equal(
-      await page.evaluate(() =>
-        Reflect.get(window.sessionPollFixture.data?.runtime ?? {}, "marker"),
+      await page.evaluate(
+        () =>
+          (window.snapshot.data!.runtime as Record<string, JsonValue>).marker,
       ),
       "replicated",
     );
     for (const failure of [503, 404]) {
       status = failure;
-      await page.evaluate(() => window.sessionPollFixture.refresh());
+      await page.evaluate(() => window.snapshot.refresh());
       assert.equal(
-        await page.evaluate(() => window.sessionPollFixture.error),
+        await page.evaluate(() => window.snapshot.error),
         "Session unavailable",
       );
       assert.equal(
-        await page.evaluate(() => window.sessionPollFixture.data?.token),
+        await page.evaluate(() => window.snapshot.data!.token),
         "rotated",
       );
       assert.equal(
@@ -169,15 +172,12 @@ test("Session Poll Browser", async ({
     }
     status = 200;
     token = "recovered";
-    await page.evaluate(() => window.sessionPollFixture.refresh());
+    await page.evaluate(() => window.snapshot.refresh());
     assert.equal(
-      await page.evaluate(() => window.sessionPollFixture.data?.token),
+      await page.evaluate(() => window.snapshot.data!.token),
       "recovered",
     );
-    assert.equal(
-      await page.evaluate(() => window.sessionPollFixture.error),
-      "",
-    );
+    assert.equal(await page.evaluate(() => window.snapshot.error), "");
     assert.equal(snapshotReads, 0, "Never download the full state");
     assert.equal(snapshotReads, 0, "Never invoke the old snapshot fallback");
     assert.deepEqual(errors, []);

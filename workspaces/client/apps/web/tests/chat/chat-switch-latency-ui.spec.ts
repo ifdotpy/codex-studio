@@ -3,11 +3,15 @@ import {
   projectionIsStored,
   completedTranscriptAgent,
 } from "./prefetch-storage.fixture.ts";
-import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import type { Page, Route } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 import type { Agent } from "../../src/types.ts";
-import { fixtureGetResult, fixturePostBody } from "./http.ts";
+import {
+  fixturePullResult,
+  fixtureGetResult,
+  fixturePostBody,
+} from "./http.ts";
 import { initializeInstrumentation } from "./chat-switch-latency-ui.fixture.ts";
 import {
   readTestState,
@@ -38,18 +42,17 @@ test(
       stdio: ["ignore", "pipe", "pipe"],
     });
     let log = "",
-      page: Page | undefined;
-    proc.stderr?.on("data", (d) => (log += d));
+      page!: Page;
+    proc.stderr!.on("data", (d) => (log += d));
     try {
       const port = await new Promise<number>((resolve, reject) => {
-        proc.stdout?.once("data", (d) => resolve(Number(String(d).trim())));
+        proc.stdout!.once("data", (d) => resolve(Number(String(d).trim())));
         proc.once("exit", () => reject(Error(log)));
       });
       const origin = `http://127.0.0.1:${port}`;
       const state = await readTestState(origin);
-      const a = state.threads.find((x) => x.name === "Other project");
-      const b = state.threads.find((x) => x.name === "Release lead");
-      assert.ok(a && b, "Expected both fixture chats");
+      const a = state.threads.find((x) => x.name === "Other project")!;
+      const b = state.threads.find((x) => x.name === "Release lead")!;
       // Background transcript warming keeps only the top-ranked desktop chat.
       // Pin one other managed chat so this cold target stays outside that watch.
       const initialTopWatchRows = state.threads
@@ -64,13 +67,12 @@ test(
       assert.equal(initialTopWatchRows.length, 1);
       for (const agent of initialTopWatchRows) agent.pinned = true;
       Object.assign(a, { pinned: false, updated: 0 });
-      const activePage = runnerPage;
-      page = activePage;
-      await activePage.setViewportSize({ width: 1440, height: 960 });
-      activePage.setDefaultTimeout(10000);
+      page = runnerPage;
+      await page.setViewportSize({ width: 1440, height: 960 });
+      page.setDefaultTimeout(10000);
       const errors: string[] = [];
-      activePage.on("pageerror", (e) => errors.push(e.message));
-      await activePage.addInitScript(initializeInstrumentation);
+      page.on("pageerror", (e) => errors.push(e.message));
+      await page.addInitScript(initializeInstrumentation);
       const snapshot = {
         ...state,
         threads: state.threads.map((x) => ({
@@ -86,7 +88,7 @@ test(
       const payload = (
         agent: Agent,
         tag: string,
-      ): GetResult<"/api/transcript/page"> &
+      ): import("./prefetch-storage.fixture.ts").LegacyTranscriptPage &
         Partial<
           Pick<components["schemas"]["TranscriptStreamDelta"], "order">
         > => ({
@@ -108,7 +110,7 @@ test(
       let latestASequence = 10;
       const responseFor = (
         id: string,
-        data: GetResult<"/api/transcript/page">,
+        data: import("./prefetch-storage.fixture.ts").LegacyTranscriptPage,
         seq: number,
         after = 0,
       ) => ({
@@ -120,7 +122,7 @@ test(
           transcriptSeq: seq,
         }),
       });
-      await activePage.route("**/api/sync/pull?*", async (r) => {
+      await page.route("**/api/sync/pull?*", async (r) => {
         const url = new URL(r.request().url());
         const scope = url.searchParams.get("scope");
         if (!scope?.startsWith("transcript:")) return r.fallback();
@@ -153,43 +155,36 @@ test(
             ),
           });
       });
-      await activePage.goto(origin);
-      await activePage.waitForFunction(() =>
-        performance
-          .getEntriesByType("resource")
-          .filter(
-            (entry): entry is PerformanceResourceTiming =>
-              entry instanceof PerformanceResourceTiming,
-          )
-          .some((entry) => {
-            const url = new URL(entry.name);
-            return url.pathname === "/api/session" && entry.responseEnd > 0;
-          }),
+      await page.goto(origin);
+      await page.waitForFunction(() =>
+        (
+          performance.getEntriesByType(
+            "resource",
+          ) as PerformanceResourceTiming[]
+        ).some((entry) => {
+          const url = new URL(entry.name);
+          return url.pathname === "/api/session" && entry.responseEnd > 0;
+        }),
       );
-      await activePage.locator("#conversation-title").waitFor();
-      await activePage.locator(`[data-chat="${b.id}"]`).waitFor();
-      await activePage.locator(`[data-chat="${b.id}"]`).click();
+      await page.locator("#conversation-title").waitFor();
+      await page.locator(`[data-chat="${b.id}"]`).waitFor();
+      await page.locator(`[data-chat="${b.id}"]`).click();
       await page
         .locator("#conversation-title")
         .getByText("Release lead", { exact: true })
         .waitFor();
-      await activePage
-        .locator("#messages [data-message^='b-']")
-        .first()
-        .waitFor();
+      await page.locator("#messages [data-message^='b-']").first().waitFor();
       console.log(
         "chat-switch startup readiness",
         JSON.stringify(
-          await activePage.evaluate(() => {
-            const resources = performance
-              .getEntriesByType("resource")
-              .filter(
-                (entry): entry is PerformanceResourceTiming =>
-                  entry instanceof PerformanceResourceTiming,
-              )
-              .filter((entry) =>
-                new URL(entry.name).pathname.startsWith("/api/"),
-              );
+          await page.evaluate(() => {
+            const resources = (
+              performance.getEntriesByType(
+                "resource",
+              ) as PerformanceResourceTiming[]
+            ).filter((entry) =>
+              new URL(entry.name).pathname.startsWith("/api/"),
+            );
             const identity = resources.find(
               (entry) => new URL(entry.name).pathname === "/api/sync/identity",
             );
@@ -198,7 +193,7 @@ test(
             );
             return {
               navigationStart: 0,
-              firstSidebarRowAt: window.switchLatencyFirstSidebarRowVisibleAt,
+              firstSidebarRowAt: window.__firstSidebarRowVisibleAt,
               sessionRequestStartAt: session?.startTime ?? null,
               sessionResponseAt: session?.responseEnd ?? null,
               identityRequestStartAt: identity?.startTime ?? null,
@@ -223,21 +218,21 @@ test(
       );
       const open = async (id: string, message: string) => {
         const firstVisit = !visited.has(id);
-        const chat = activePage.locator(`[data-chat="${id}"]`);
+        const chat = page.locator(`[data-chat="${id}"]`);
         const selector = `[data-message="${message}"]`;
         const prefix = message.slice(0, message.lastIndexOf("-"));
         await chat.evaluate((element, target) => {
-          window.switchLatencyPrepareStartedAt = undefined;
-          window.switchLatencyStartedAt = undefined;
-          window.switchLatencyFirstRowsPaintAt = undefined;
-          window.switchLatencyPaintAt = undefined;
-          window.switchLatencyScrollStartedAt = undefined;
+          window.__chatSwitchPrepareStartedAt = undefined;
+          window.__chatSwitchStartedAt = undefined;
+          window.__chatSwitchFirstRowsPaintAt = undefined;
+          window.__chatSwitchPaintAt = undefined;
+          window.__chatSwitchScrollStartedAt = undefined;
           const markPrepareIntent = (event: Event) => {
             if (
               event.target instanceof Element &&
               event.target.closest(`[data-chat="${element.dataset.chat}"]`)
             ) {
-              window.switchLatencyPrepareStartedAt = performance.now();
+              window.__chatSwitchPrepareStartedAt = performance.now();
               window.removeEventListener(
                 "pointerover",
                 markPrepareIntent,
@@ -249,7 +244,7 @@ test(
           element.addEventListener(
             "pointerdown",
             () => {
-              window.switchLatencyStartedAt = performance.now();
+              window.__chatSwitchStartedAt = performance.now();
               const messages = document.querySelector("#messages");
               const messageBounds = messages?.getBoundingClientRect();
               const targetPrefix = target;
@@ -270,7 +265,7 @@ test(
                   );
                 });
                 if (row?.isConnected) {
-                  window.switchLatencyFirstRowsPaintAt = performance.now();
+                  window.__chatSwitchFirstRowsPaintAt = performance.now();
                   return;
                 }
                 requestAnimationFrame(recordFirstRows);
@@ -288,7 +283,7 @@ test(
                   bounds.bottom > viewport.top &&
                   bounds.top < viewport.bottom
                 ) {
-                  window.switchLatencyPaintAt = performance.now();
+                  window.__chatSwitchPaintAt = performance.now();
                   return;
                 }
                 requestAnimationFrame(recordVisibleTarget);
@@ -301,24 +296,19 @@ test(
         }, prefix);
         if (id === a.id && firstVisit) coldSwitchArmed = true;
         await chat.click();
-        await activePage.waitForFunction(
-          () => typeof window.switchLatencyFirstRowsPaintAt === "number",
+        await page.waitForFunction(
+          () => typeof window.__chatSwitchFirstRowsPaintAt === "number",
         );
-        const firstRowsTiming = await activePage.evaluate((id) => {
-          const startedAt = window.switchLatencyStartedAt;
-          const prepareStartedAt = window.switchLatencyPrepareStartedAt;
-          if (startedAt === undefined)
-            throw new Error("Missing chat switch gesture");
+        const firstRowsTiming = await page.evaluate((id) => {
+          const startedAt = window.__chatSwitchStartedAt!;
+          const prepareStartedAt = window.__chatSwitchPrepareStartedAt;
           const gestureStartedAt = prepareStartedAt ?? startedAt;
-          const firstRowsAt = window.switchLatencyFirstRowsPaintAt;
-          if (firstRowsAt === undefined)
-            throw new Error("Missing first rows timestamp");
-          const resource = performance
-            .getEntriesByType("resource")
-            .filter(
-              (entry): entry is PerformanceResourceTiming =>
-                entry instanceof PerformanceResourceTiming,
-            )
+          const firstRowsAt = window.__chatSwitchFirstRowsPaintAt!;
+          const resource = (
+            performance.getEntriesByType(
+              "resource",
+            ) as PerformanceResourceTiming[]
+          )
             .filter((entry) => {
               const url = new URL(entry.name);
               return (
@@ -352,12 +342,11 @@ test(
             pullStillPendingAtFirstRowsMs: resource
               ? Math.max(0, resource.responseEnd - firstRowsAt)
               : null,
-            precedingRequests: performance
-              .getEntriesByType("resource")
-              .filter(
-                (entry): entry is PerformanceResourceTiming =>
-                  entry instanceof PerformanceResourceTiming,
-              )
+            precedingRequests: (
+              performance.getEntriesByType(
+                "resource",
+              ) as PerformanceResourceTiming[]
+            )
               .filter((entry) => {
                 const url = new URL(entry.name);
                 return (
@@ -371,7 +360,7 @@ test(
                 startAfterClickMs: entry.startTime - startedAt,
                 durationMs: entry.duration,
               })),
-            longTasks: window.switchLatencyLongTasks
+            longTasks: window.__chatSwitchLongTasks
               .filter(
                 (entry) =>
                   entry.startTime >= gestureStartedAt &&
@@ -384,17 +373,17 @@ test(
           };
         }, id);
         if (!visited.has(id)) {
-          await activePage.locator("#messages").evaluate((messages) => {
-            window.switchLatencyScrollStartedAt = performance.now();
+          await page.locator("#messages").evaluate((messages) => {
+            window.__chatSwitchScrollStartedAt = performance.now();
             messages.scrollTop = messages.scrollHeight;
             messages.dispatchEvent(new Event("scroll"));
           });
           visited.add(id);
         }
-        await activePage.locator(selector).waitFor({ state: "visible" });
-        const targetMountAfterScrollMs = await activePage.evaluate(() =>
-          typeof window.switchLatencyScrollStartedAt === "number"
-            ? performance.now() - window.switchLatencyScrollStartedAt
+        await page.locator(selector).waitFor({ state: "visible" });
+        const targetMountAfterScrollMs = await page.evaluate(() =>
+          typeof window.__chatSwitchScrollStartedAt === "number"
+            ? performance.now() - window.__chatSwitchScrollStartedAt
             : null,
         );
         const timing = {
@@ -421,17 +410,11 @@ test(
         .locator("#conversation-title")
         .getByText("Release lead", { exact: true })
         .waitFor();
-      await activePage
-        .locator("#messages [data-message^='b-']")
-        .first()
-        .waitFor();
-      await activePage.waitForFunction(() => {
-        const entries = performance
-          .getEntriesByType("resource")
-          .filter(
-            (entry): entry is PerformanceResourceTiming =>
-              entry instanceof PerformanceResourceTiming,
-          );
+      await page.locator("#messages [data-message^='b-']").first().waitFor();
+      await page.waitForFunction(() => {
+        const entries = performance.getEntriesByType(
+          "resource",
+        ) as PerformanceResourceTiming[];
         return entries.some((entry) => {
           const url = new URL(entry.name);
           return url.pathname === "/api/session" && entry.responseEnd > 0;
@@ -440,7 +423,7 @@ test(
       const projectionDatabaseName =
         `rxdb-dexie-studio-entity-projection-${syncContract.identity.workspaceId}-` +
         `${readApiSchemaHash()}--0--projections`;
-      const targetWasCold = await activePage.evaluate(projectionIsStored, {
+      const targetWasCold = await page.evaluate(projectionIsStored, {
         databaseName: projectionDatabaseName,
         documentId: `transcript:${a.id}`,
         onlyIfExists: true,
@@ -450,14 +433,12 @@ test(
         false,
         "The target chat has no stored transcript before the user opens it",
       );
-      await activePage.waitForFunction(() =>
-        window.switchLatencyResourceFrames.some(
-          (frame) => frame.reason === "initial",
-        ),
+      await page.waitForFunction(() =>
+        window.__resourceFrames.some((frame) => frame.reason === "initial"),
       );
-      const targetInInitialSubscription = await activePage.evaluate(
+      const targetInInitialSubscription = await page.evaluate(
         (targetId) =>
-          window.switchLatencyResourceFrames.some(
+          window.__resourceFrames.some(
             (frame) =>
               frame.reason === "initial" &&
               frame.resources?.some(
@@ -504,9 +485,9 @@ test(
       console.log(
         "cold-open prepare trace",
         JSON.stringify(
-          await activePage.evaluate(
+          await page.evaluate(
             (targetId) => ({
-              targetedFrames: window.switchLatencyResourceFrames
+              targetedFrames: window.__resourceFrames
                 .filter((frame) =>
                   frame.resources?.some(
                     (resource) =>
@@ -530,7 +511,7 @@ test(
         cold < 1500,
         `Cold history appears without the old three-second delay: ${cold}ms`,
       );
-      await activePage.locator("#messages").evaluate((e) => {
+      await page.locator("#messages").evaluate((e) => {
         e.scrollTop = 950;
         e.dispatchEvent(new Event("scroll"));
       });
@@ -547,13 +528,13 @@ test(
         `Saved history appears before a blocked refresh: ${cached}ms`,
       );
       assert.equal(
-        await activePage.locator('[data-message="b-29"]').count(),
+        await page.locator('[data-message="b-29"]').count(),
         0,
         "No other chat history leaks",
       );
       assert.ok(
         Math.abs(
-          (await activePage.locator("#messages").evaluate((e) => e.scrollTop)) -
+          (await page.locator("#messages").evaluate((e) => e.scrollTop)) -
             savedTop,
         ) < 2,
         "Saved scroll position survives instant history restore",
@@ -567,7 +548,7 @@ test(
       fresh.order = fresh.items.map((x) => x.id);
       latestA = fresh;
       latestASequence = 30;
-      const freshPull = activePage.waitForResponse((response) => {
+      const freshPull = page.waitForResponse((response) => {
         const url = new URL(response.url());
         return (
           url.pathname === "/api/sync/pull" &&
@@ -591,24 +572,24 @@ test(
         ),
       });
       await freshPull;
-      await activePage.locator("#messages").evaluate((messages) => {
+      await page.locator("#messages").evaluate((messages) => {
         messages.scrollTop = messages.scrollHeight;
         messages.dispatchEvent(new Event("scroll"));
       });
-      await activePage.locator('[data-message="fresh-29"]').waitFor();
-      await activePage.evaluate(
+      await page.locator('[data-message="fresh-29"]').waitFor();
+      await page.evaluate(
         () =>
           new Promise((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(resolve)),
           ),
       );
       assert.equal(
-        await activePage.locator('[data-message="obsolete-29"]').count(),
+        await page.locator('[data-message="obsolete-29"]').count(),
         0,
         "Delayed HTTP cannot replace a newer stream",
       );
       const heldB = new Promise<Route>((resolve) => (resolveHeldB = resolve));
-      const lateRequest = activePage.waitForRequest((request) => {
+      const lateRequest = page.waitForRequest((request) => {
         const url = new URL(request.url());
         return (
           url.pathname === "/api/sync/pull" &&
@@ -629,19 +610,19 @@ test(
           Number(lateOtherUrl.searchParams.get("after") || 0),
         ),
       });
-      await activePage.evaluate(
+      await page.evaluate(
         () =>
           new Promise((resolve) =>
             requestAnimationFrame(() => requestAnimationFrame(resolve)),
           ),
       );
       assert.equal(
-        await activePage.locator('[data-message="late-other-29"]').count(),
+        await page.locator('[data-message="late-other-29"]').count(),
         0,
         "Response from a previous chat cannot replace current history",
       );
       // Exercise the real RxDB projection path, including a slow pull on revisit.
-      await activePage.unroute("**/api/sync/**");
+      await page.unroute("**/api/sync/**");
       const identity = await fixtureGetResult(
         "/api/sync/identity",
         await fetch(origin + "/api/sync/identity"),
@@ -650,13 +631,13 @@ test(
       let syncPulls = 0;
       const waitForProjection = async (id: string, sequence: number) => {
         const databaseName = `rxdb-dexie-studio-entity-projection-${identity.workspaceId}-${readApiSchemaHash()}--0--projections`;
-        await activePage.waitForFunction(projectionIsStored, {
+        await page.waitForFunction(projectionIsStored, {
           databaseName,
           documentId: `transcript:${id}`,
           sequence,
         });
       };
-      await activePage.route("**/api/sync/pull?*", async (r) => {
+      await page.route("**/api/sync/pull?*", async (r) => {
         const url = new URL(r.request().url());
         const scope = url.searchParams.get("scope");
         if (!scope?.startsWith("transcript:")) return r.fallback();
@@ -668,14 +649,12 @@ test(
           selected,
           selected.id === a.id ? "sync-a" : "sync-b",
         );
-        assert.ok(data.agent);
-        const runningAgent = {
-          ...data.agent,
+        data.agent = {
+          ...data.agent!,
           status: "running",
           inFlight: true,
           turnId: "fixture-live-turn",
         };
-        data.agent = runningAgent;
         const seq = selected.id === a.id ? 100 : 101;
         const after = Number(url.searchParams.get("after") || 0);
         await r.fulfill({
@@ -699,31 +678,27 @@ test(
       // Preserve the old server's byte comparison in this fixture. New UI writes
       // must clear drafts safely before a busy backend can be upgraded.
       let legacyDraftConflicts = 0;
-      await activePage.route("**/api/sync/drafts", async (r) => {
-        const old = await fixtureGetResult(
-          "/api/sync/pull",
+      await page.route("**/api/sync/drafts", async (r) => {
+        const old = await fixturePullResult(
           await fetch(origin + "/api/sync/pull?scope=drafts"),
         );
-        if (!("documents" in old)) throw new Error("Unexpected drafts reset");
         const conflicts = [];
         for (const row of fixturePostBody(
           "/api/sync/drafts",
           r.request().postDataJSON(),
         ).rows) {
           const next = row.newDocumentState;
-          const previous = old.documents.find(
-            (x) => x.id === next.id && "payload" in x,
-          );
+          const previous = old.documents.find((x) => x.id === next.id);
           const assumed = row.assumedMasterState;
           if (
             previous &&
-            "payload" in previous &&
             (!assumed ||
               assumed.payload !== previous.payload ||
-              ("_deleted" in assumed && !!assumed._deleted) !==
-                !!previous._deleted) &&
+              !!(assumed as typeof assumed & { _deleted?: boolean })
+                ._deleted !== !!previous._deleted) &&
             (next.payload !== previous.payload ||
-              ("_deleted" in next && !!next._deleted) !== !!previous._deleted)
+              !!(next as typeof next & { _deleted?: boolean })._deleted !==
+                !!previous._deleted)
           )
             conflicts.push(previous);
         }
@@ -734,11 +709,11 @@ test(
         return r.fallback();
       });
       hold = false;
-      await activePage.reload();
+      await page.reload();
       await open(a.id, "sync-a-29");
       projectionDelay = 1000;
-      await activePage.locator(`[data-chat="${b.id}"]`).click();
-      await activePage.locator('[data-message="sync-b-29"]').waitFor();
+      await page.locator(`[data-chat="${b.id}"]`).click();
+      await page.locator('[data-message="sync-b-29"]').waitFor();
       await waitForProjection(a.id, 100);
       await waitForProjection(b.id, 101);
       const pullsBeforeQuickReturn = syncPulls;
@@ -765,12 +740,12 @@ test(
         "Real RxDB replication loaded both chat projections",
       );
       assert.equal(
-        await activePage.locator('[data-message="sync-b-29"]').count(),
+        await page.locator('[data-message="sync-b-29"]').count(),
         0,
         "Replicated chat history stays scoped",
       );
       const sends: PostBody<"/api/messages">[] = [];
-      await activePage.route("**/api/messages", async (r) => {
+      await page.route("**/api/messages", async (r) => {
         const body = fixturePostBody(
           "/api/messages",
           r.request().postDataJSON(),
@@ -792,15 +767,15 @@ test(
           >,
         });
       });
-      await activePage.locator("#stop").waitFor();
+      await page.locator("#stop").waitFor();
       for (const action of ["button", "Enter"]) {
-        await activePage.locator("#message").fill(`Sync shortcut ${action}`);
-        if (action === "button") await activePage.locator("#send").click();
-        else await activePage.locator("#message").press(action);
+        await page.locator("#message").fill(`Sync shortcut ${action}`);
+        if (action === "button") await page.locator("#send").click();
+        else await page.locator("#message").press(action);
         await page
           .waitForFunction(
             () =>
-              document.querySelector<HTMLTextAreaElement>("#message")?.value ===
+              document.querySelector<HTMLTextAreaElement>("#message")!.value ===
               "",
           )
           .catch(async (error) => {
@@ -816,8 +791,8 @@ test(
           expectedCount,
           "The outbox submits each message once",
         );
-        assert.equal(sends.at(-1)?.delivery, "current_turn");
-        assert.equal(sends.at(-1)?.room, a.id);
+        assert.equal(sends.at(-1)!.delivery, "current_turn");
+        assert.equal(sends.at(-1)!.room, a.id);
       }
       assert.equal(sends.length, 2, "Each shortcut sends exactly one message");
       assert.equal(

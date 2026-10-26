@@ -558,16 +558,15 @@ const sharedFixtures: import("@playwright/test").Fixtures<
     async ({ playwright, browserName }, use, workerInfo) => {
       const browserType = playwright[browserName];
       const launch = browserType.launch;
-      const processTreeBreakdown: ReturnType<
-        typeof sampleProcessTreeMemory
-      >["processes"] = [];
       const memoryPeak = {
         rssBytes: 0,
         pssBytes: 0,
         processTreeRssBytes: 0,
         processTreePssBytes: 0,
         processTreeProcessCount: 0,
-        processTreeBreakdown,
+        processTreeBreakdown: [] as ReturnType<
+          typeof sampleProcessTreeMemory
+        >["processes"],
         samples: 0,
       };
       const sampleMemory = () => {
@@ -681,7 +680,7 @@ const sharedFixtures: import("@playwright/test").Fixtures<
         },
       );
       let diagnostics = "";
-      child.stderr!.on("data", (chunk) => {
+      child.stderr?.on("data", (chunk) => {
         diagnostics += chunk;
       });
       try {
@@ -950,7 +949,7 @@ function spawnScopedFixture(
     }
   });
   let scratchFailure = "";
-  child.stderr!.on("data", (chunk) => {
+  child.stderr?.on("data", (chunk) => {
     const text = String(chunk);
     if (
       /ENOSPC|EDQUOT|No space left on device|disk quota exceeded|database or disk is full/i.test(
@@ -983,10 +982,7 @@ function spawnScopedFixture(
       file: testInfo.file,
       workerIndex: testInfo.workerIndex,
       path: fixtureStateDirectory,
-      bytes:
-        fixtureStateDirectory === undefined
-          ? 0
-          : directoryBytes(fixtureStateDirectory),
+      bytes: directoryBytes(fixtureStateDirectory!),
     });
   if (sampleScratch) {
     recordScratchSize();
@@ -1708,15 +1704,11 @@ function entityValuesFromSnapshot(
     id: row.id,
     value: row,
   }));
-  append(runtime.complaints, (row) => ({
-    collection: "complaint",
-    id: row.id,
-    value: ((row) => {
-      const entity = { ...row };
-      Reflect.deleteProperty(entity, "needsResponse");
-      return entity;
-    })(row),
-  }));
+  append(runtime.complaints, (row) => {
+    const entity: typeof row & JsonObject = { ...row };
+    delete entity.needsResponse;
+    return { collection: "complaint", id: row.id, value: entity };
+  });
   append(runtime.peerTeams, (row) => ({
     collection: "peerTeam",
     id: row.id,
@@ -1743,30 +1735,33 @@ function entityValuesFromSnapshot(
     },
   }));
   for (const task of runtime.workDetails ?? []) {
-    for (const [index, value] of (task.results ?? []).entries()) {
-      const id = `${task.id}:${index}`;
-      values.push({
-        collection: "workResult",
-        id,
-        value: { id, taskId: task.id, rootId: task.rootId, index, value },
-      });
-    }
-    for (const [index, value] of (task.decisions ?? []).entries()) {
-      const id = `${task.id}:${index}`;
-      values.push({
-        collection: "workDecision",
-        id,
-        value: { id, taskId: task.id, rootId: task.rootId, index, value },
-      });
-    }
-    for (const [index, value] of (task.releases ?? []).entries()) {
-      const id = `${task.id}:${index}`;
-      values.push({
-        collection: "workRelease",
-        id,
-        value: { id, taskId: task.id, rootId: task.rootId, index, value },
-      });
-    }
+    if (Array.isArray(task.results))
+      for (const [index, value] of task.results.entries()) {
+        const id = `${task.id}:${index}`;
+        values.push({
+          collection: "workResult",
+          id,
+          value: { id, taskId: task.id, rootId: task.rootId, index, value },
+        });
+      }
+    if (Array.isArray(task.decisions))
+      for (const [index, value] of task.decisions.entries()) {
+        const id = `${task.id}:${index}`;
+        values.push({
+          collection: "workDecision",
+          id,
+          value: { id, taskId: task.id, rootId: task.rootId, index, value },
+        });
+      }
+    if (Array.isArray(task.releases))
+      for (const [index, value] of task.releases.entries()) {
+        const id = `${task.id}:${index}`;
+        values.push({
+          collection: "workRelease",
+          id,
+          value: { id, taskId: task.id, rootId: task.rootId, index, value },
+        });
+      }
   }
   append(runtime.agentDetails, (row) => ({
     collection: "agentDetail",
@@ -1805,12 +1800,14 @@ function entityValuesFromSnapshot(
       id: "current",
       value: runtime.desktop,
     });
-  for (const [id, value] of Object.entries(runtime.accountCostsByAccount ?? {}))
-    if (isJsonObject(value))
-      values.push({ collection: "accountCost", id, value });
-  for (const [id, value] of Object.entries(runtime.sessionCostsByAgent ?? {}))
-    if (isJsonObject(value))
-      values.push({ collection: "sessionCost", id, value });
+  if (isJsonObject(runtime.accountCostsByAccount))
+    for (const [id, value] of Object.entries(runtime.accountCostsByAccount))
+      if (isJsonObject(value))
+        values.push({ collection: "accountCost", id, value });
+  if (isJsonObject(runtime.sessionCostsByAgent))
+    for (const [id, value] of Object.entries(runtime.sessionCostsByAgent))
+      if (isJsonObject(value))
+        values.push({ collection: "sessionCost", id, value });
   append(runtime.terminals, (row) => ({
     collection: "terminal",
     id: row.id,
