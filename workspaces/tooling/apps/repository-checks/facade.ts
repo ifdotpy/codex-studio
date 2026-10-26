@@ -139,7 +139,7 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "test.mjs",
+    file: "test.ts",
     specifier: "../web/tests/playwright.ts",
     reason:
       "The native desktop scenario reuses the renderer's browser test-state helper.",

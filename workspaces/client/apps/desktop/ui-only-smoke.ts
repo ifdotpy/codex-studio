@@ -1,3 +1,4 @@
+import { hiddenElectronArguments } from "./hidden-electron.ts";
 import assert from "node:assert/strict";
 import type { ElectronApplication } from "playwright-core";
 import { serverFrameHost } from "./frame-owner.ts";
@@ -14,14 +15,7 @@ try {
     ...(process.env.CODEX_UI_EXECUTABLE
       ? { executablePath: process.env.CODEX_UI_EXECUTABLE, args: ["--hidden"] }
       : {
-          args: [
-            root,
-            "--hidden",
-            "--ui-only",
-            ...(process.platform === "linux" && !process.env.DISPLAY
-              ? ["--ozone-platform=headless"]
-              : []),
-          ],
+          args: [root, "--hidden", "--ui-only", ...hiddenElectronArguments],
         }),
     env: {
       ...process.env,
