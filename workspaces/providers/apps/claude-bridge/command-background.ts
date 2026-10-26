@@ -4,11 +4,13 @@ import type {
   SDKTaskStartedMessage,
   SDKTaskUpdatedMessage,
   SDKTaskNotificationMessage,
+  SDKTaskProgressMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 type TaskEvent =
   | Pick<SDKTaskStartedMessage, "subtype" | "is_backgrounded">
   | Pick<SDKTaskUpdatedMessage, "subtype" | "patch">
-  | Pick<SDKTaskNotificationMessage, "subtype">;
+  | Pick<SDKTaskNotificationMessage, "subtype">
+  | Pick<SDKTaskProgressMessage, "subtype">;
 
 // Move a running Claude Bash call to the background (the Ctrl+B control).
 //

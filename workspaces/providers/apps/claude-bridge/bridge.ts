@@ -957,7 +957,7 @@ async function permissions(
       });
     return { behavior: "deny", message };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer ?? undefined);
     options.signal?.removeEventListener("abort", cancel);
   }
   return result.decision === "accept" || result.decision === "acceptForSession"
@@ -1653,7 +1653,7 @@ async function recoverStall(
         ),
       );
   await Promise.race([finished, deadline]);
-  clearTimeout(timer);
+  clearTimeout(timer ?? undefined);
   if (
     closing ||
     active.turn !== turn ||
@@ -3670,7 +3670,7 @@ function shutdown() {
           }),
         ]);
       } finally {
-        clearTimeout(timer);
+        clearTimeout(timer ?? undefined);
       }
     };
     for (const [, active] of activeQueries) {
