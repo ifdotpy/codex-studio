@@ -66,8 +66,8 @@ for (const source of ["init", "hook", "fork", "both"])
         .trim()
         .split("\n")
         .map(parseIdentityQueryRecord);
-      expect(queries[1].resume).toBe(NEW);
-      expect(queries[1].resume).not.toBe(CONVERSATION);
+      expect(queries[1]?.resume).toBe(NEW);
+      expect(queries[1]?.resume).not.toBe(CONVERSATION);
     } finally {
       await bridge.close();
     }
@@ -222,10 +222,10 @@ test("another new-session source durably saves target and identity before hook r
     { signal: new AbortController().signal },
   );
   expect(snapshots).toHaveLength(2);
-  expect(snapshots[0].nativeId).toBe(OLD);
-  expect(snapshots[0].pendingNativeSession!.target).toBe(NEW);
-  expect(snapshots[1].nativeId).toBe(NEW);
-  expect(snapshots[1].pendingNativeSession).toBeUndefined();
+  expect(snapshots[0]?.nativeId).toBe(OLD);
+  expect(snapshots[0]?.pendingNativeSession?.target).toBe(NEW);
+  expect(snapshots[1]?.nativeId).toBe(NEW);
+  expect(snapshots[1]?.pendingNativeSession).toBeUndefined();
   expect(completedWrites).toBe(2);
 });
 

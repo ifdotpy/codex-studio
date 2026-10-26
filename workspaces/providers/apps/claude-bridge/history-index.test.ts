@@ -42,8 +42,15 @@ async function fixture(serviceFirst = true) {
   const configDir = path.join(cwd, "config");
   process.env.CLAUDE_CONFIG_DIR = configDir;
   const nativeId = randomUUID();
-  const ids: string[] = Array.from({ length: 6 }, () => randomUUID());
-  const rows: sdk.SessionStoreEntry[] = ids.map((uuid, index) => ({
+  const ids: [string, string, string, string, string, string] = [
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+  ];
+  const row = (uuid: string, index: number): sdk.SessionStoreEntry => ({
     type: index === 2 || index === 5 ? "assistant" : "user",
     uuid,
     parentUuid: index ? ids[index - 1] : null,
@@ -71,7 +78,22 @@ async function fixture(serviceFirst = true) {
         ? { id: `msg_${index}`, stop_reason: "end_turn" }
         : {}),
     },
-  }));
+  });
+  const rows: [
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+  ] = [
+    row(ids[0], 0),
+    row(ids[1], 1),
+    row(ids[2], 2),
+    row(ids[3], 3),
+    row(ids[4], 4),
+    row(ids[5], 5),
+  ];
   const file = path.join(
     configDir,
     "projects",
@@ -109,9 +131,9 @@ for (const damage of ["malformed uuid", "unknown record"])
     const f = await fixture();
     const rows = f.rows.slice(0, 3);
     rows.push({
-      ...rows[2],
+      ...f.rows[2],
       uuid: damage === "malformed uuid" ? "bad-uuid" : randomUUID(),
-      parentUuid: rows[2].uuid,
+      parentUuid: f.rows[2].uuid,
       ...(damage === "unknown record" ? { type: "future-input" } : {}),
     });
     await fs.writeFile(
@@ -134,14 +156,14 @@ for (const serviceFirst of [true, false])
     const deps = controls();
     const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
     expect(fork.turns).toHaveLength(1);
-    expect(fork.turns[0].items[0].nativeIds).toHaveLength(2);
+    expect(fork.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
     await rollbackSession(
       f.session,
       { requestId: randomUUID(), turnId: "turn3" },
       deps,
     );
     expect(f.session.turns).toHaveLength(1);
-    expect(f.session.turns[0].items[0].nativeIds).toHaveLength(2);
+    expect(f.session.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
   });
 
 for (const damage of ["malformed uuid", "unknown record"])
@@ -181,13 +203,10 @@ for (const damage of ["malformed uuid", "unknown record"])
     const root = path.join(f.cwd, "state");
     await createSessionStore(root).persist(f.session);
     const restored = await createSessionStore(root).get(f.session.id);
-    expect(restored.turns[0].status).toBe("uncertain");
-    expect(restored.turns[0].startOutcome).toBe("preparing");
-    expect(restored.turns[0].items[1].deliveryStatus).toBe("submitted");
-    expect(
-      (restored.turns[0] as Turn & { unappliedSteers?: unknown })
-        .unappliedSteers,
-    ).toBeUndefined();
+    expect(restored.turns[0]?.status).toBe("uncertain");
+    expect(restored.turns[0]?.startOutcome).toBe("preparing");
+    expect(restored.turns[0]?.items[1]?.deliveryStatus).toBe("submitted");
+    expect(restored.turns[0]).not.toHaveProperty("unappliedSteers");
   });
 
 test("post-clear controls use current native turns while preserving earlier mirror history", async () => {

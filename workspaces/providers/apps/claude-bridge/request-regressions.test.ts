@@ -138,6 +138,35 @@ test("requests without params retain the empty parameter default", async () => {
   }
 });
 
+test("method dispatch preserves initialization and explicit unsupported method refusals", async () => {
+  const bridge = await startBridge(fixture);
+  try {
+    assert.deepEqual(await bridge.call("initialize", {}), {
+      userAgent: "studio-claude-bridge",
+      platform: process.platform,
+      capabilities: {
+        claudeVersion: 23,
+        passiveAccountRead: true,
+        activityRead: true,
+      },
+    });
+    assert.deepEqual(await bridge.call("initialized", {}), {});
+    await assert.rejects(
+      bridge.call("skills/extraRoots/set", {}),
+      /Claude uses its native skills and MCP configuration/,
+    );
+    const [reply] = await rawReplies(bridge, [
+      { id: "raw-unknown", method: "future/method", params: {} },
+    ]);
+    assert.deepEqual(reply?.error, {
+      code: -32000,
+      message: "Claude does not support future/method",
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
 test("concurrent interrupts revalidate a reserved turn after session lookup", async () => {
   const bridge = await startBridge(fixture, "claude-interrupt-race-", {
     clock: true,

@@ -4,7 +4,40 @@ import type {
   BridgeMethodResult,
   BridgeServerRequest,
   BridgeParams,
+  BridgeModel,
 } from "./bridge-protocol.ts";
+import { commandMethods, type createCommandTransport } from "./commands.ts";
+import type { externalCatalog } from "./move-external.ts";
+
+export const invalidCommand = {
+  // @ts-expect-error Model methods cannot enter the native command transport.
+  "model/list": true,
+} satisfies typeof commandMethods;
+export function checkCommandMethods(
+  transport: ReturnType<typeof createCommandTransport>,
+) {
+  // @ts-expect-error Initialization is internal to the command transport.
+  void transport.handle("initialize");
+  // @ts-expect-error Model methods cannot enter the native command transport.
+  void transport.handle("model/list");
+}
+export const invalidMcpStatus = {
+  name: "fixture",
+  // @ts-expect-error MCP status comes from the SDK's closed domain.
+  status: "invented",
+} satisfies Parameters<typeof externalCatalog>[0][number];
+export const invalidEffort = {
+  // @ts-expect-error Reasoning effort comes from the SDK model catalog.
+  reasoningEffort: "invented",
+  description: "Invalid effort",
+} satisfies BridgeModel["supportedReasoningEfforts"][number];
+export const sdkEffort = {
+  reasoningEffort: "xhigh",
+  description: "Extra high effort",
+} satisfies BridgeModel["supportedReasoningEfforts"][number];
+// @ts-expect-error The bridge still advertises medium as its default effort.
+export const invalidDefaultEffort: BridgeModel["defaultReasoningEffort"] =
+  "high";
 
 export const start = {
   id: 1,

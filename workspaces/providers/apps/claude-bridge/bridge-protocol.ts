@@ -178,8 +178,14 @@ export type BridgeModel = {
   description: ModelInfo["description"];
   isDefault: boolean;
   hidden: false;
-  supportedReasoningEfforts: { reasoningEffort: string; description: string }[];
-  defaultReasoningEffort: "medium" | null;
+  supportedReasoningEfforts: {
+    reasoningEffort: NonNullable<ModelInfo["supportedEffortLevels"]>[number];
+    description: string;
+  }[];
+  defaultReasoningEffort: Extract<
+    NonNullable<ModelInfo["supportedEffortLevels"]>[number],
+    "medium"
+  > | null;
   serviceTiers: { id: "priority"; name: "Fast" }[];
 };
 export type BridgeMoveProof = MoveProof & {

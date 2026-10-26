@@ -160,7 +160,7 @@ import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { createCommandTransport, commandMethods } from "./commands.ts";
+import { createCommandTransport } from "./commands.ts";
 
 import { thinkingFlag } from "./thinking.ts";
 import {
@@ -1669,7 +1669,7 @@ async function recoverStall(
   if (!found.stop)
     Promise.resolve()
       .then(() => {
-        if (!closing) return active.q?.interrupt();
+        return closing ? undefined : active.q?.interrupt();
       })
       .catch((error) =>
         process.stderr.write(
@@ -2517,6 +2517,7 @@ function closeQuery(active: ActiveQuery) {
     );
     return error;
   }
+  return undefined;
 }
 // One query-close accounting owner; a late SDK unwind cannot publish it twice.
 function drainUsage(threadId: string, active: ActiveQuery) {
@@ -2623,11 +2624,6 @@ async function handle(
     ].includes(method)
   )
     assertNativeSessionReady(await session(p.threadId));
-  if (commandMethods.has(method))
-    return commands.handle(
-      method,
-      isRecord(p) ? p : {},
-    ) satisfies HandlerResult<typeof method>;
   if (
     isRecord(p) &&
     typeof p.threadId === "string" &&
@@ -2651,1028 +2647,1150 @@ async function handle(
         "A Claude history operation needs recovery before continuing",
       );
   }
-  if (method === "initialize")
-    return {
-      userAgent: "studio-claude-bridge",
-      platform: process.platform,
-      capabilities: {
-        claudeVersion: 23,
-        passiveAccountRead: true,
-        activityRead: true,
-      },
-    } satisfies HandlerResult<typeof method>;
-  if (method === "initialized")
-    return {} satisfies HandlerResult<typeof method>;
-  if (method === "model/list") {
-    const native = await catalog();
-    const models: ModelInfo[] = [
-      ...native.models,
-      ...(providerOptions.customModels || [])
-        .filter((m) => !native.models.some((n) => n.value === m.id))
-        .map((m): ModelInfo => ({
-          value: m.id,
-          displayName: m.label,
-          description: "Custom Claude model",
-          supportsEffort: true,
-          supportedEffortLevels: ["low", "medium", "high", "max"],
+  switch (request.method) {
+    case "config/read":
+    case "command/exec":
+    case "command/exec/write":
+    case "command/exec/resize":
+    case "command/exec/terminate": {
+      const { method, params: p } = request;
+      return commands.handle(method, p) satisfies HandlerResult<typeof method>;
+    }
+
+    case "initialize": {
+      const { method } = request;
+      return {
+        userAgent: "studio-claude-bridge",
+        platform: process.platform,
+        capabilities: {
+          claudeVersion: 23,
+          passiveAccountRead: true,
+          activityRead: true,
+        },
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "initialized": {
+      const { method } = request;
+      return {} satisfies HandlerResult<typeof method>;
+    }
+
+    case "model/list": {
+      const { method } = request;
+      const native = await catalog();
+      const models: ModelInfo[] = [
+        ...native.models,
+        ...(providerOptions.customModels || [])
+          .filter((m) => !native.models.some((n) => n.value === m.id))
+          .map((m): ModelInfo => ({
+            value: m.id,
+            displayName: m.label,
+            description: "Custom Claude model",
+            supportsEffort: true,
+            supportedEffortLevels: ["low", "medium", "high", "max"],
+          })),
+      ];
+      return {
+        data: models.map((model) => ({
+          id: model.value,
+          model: model.value,
+          // Aliases such as "sonnet" name a dated model; spawn accepts either id.
+          resolvedModel: model.resolvedModel || null,
+          displayName: "Claude · " + model.displayName,
+          description: model.description,
+          isDefault: model.value === "default",
+          hidden: false,
+          supportedReasoningEfforts: (model.supportedEffortLevels || []).map(
+            (reasoningEffort) => ({
+              reasoningEffort,
+              description: reasoningEffort,
+            }),
+          ),
+          defaultReasoningEffort: model.supportsEffort ? "medium" : null,
+          serviceTiers: model.supportsFastMode
+            ? [{ id: "priority", name: "Fast" }]
+            : [],
         })),
-    ];
-    return {
-      data: models.map((model) => ({
-        id: model.value,
-        model: model.value,
-        // Aliases such as "sonnet" name a dated model; spawn accepts either id.
-        resolvedModel: model.resolvedModel || null,
-        displayName: "Claude · " + model.displayName,
-        description: model.description,
-        isDefault: model.value === "default",
-        hidden: false,
-        supportedReasoningEfforts: (model.supportedEffortLevels || []).map(
-          (reasoningEffort) => ({
-            reasoningEffort,
-            description: reasoningEffort,
+        nextCursor: null,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    // Whether this process runs a Claude turn or a background task now. The server retires an
+    // idle bridge after an update; saved turn records cannot say this, as a turn that a stopped
+    // bridge left behind stays in progress there.
+    case "claude/activity": {
+      const { method } = request;
+      return {
+        busy: [...queries.values()].some(
+          (active) => !!active.turn || active.tasks?.size > 0,
+        ),
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "account/read": {
+      const { method, params: p } = request;
+      const { account } =
+        p.passive === true ? await catalogCache.readPassive() : await catalog();
+      return {
+        account: {
+          type: "claude",
+          email: account.email,
+          organizationUuid: account.organizationUuid,
+          accountUuid: account.accountUuid,
+          _credentialIdentity: account._credentialIdentity,
+          planType: account.subscriptionType,
+        },
+        requiresOpenaiAuth: false,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "account/rateLimits/read": {
+      const { method, params: p } = request;
+      const data = await probe(p.cwd, async (q) =>
+        usageLimits(
+          await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
+            skipBehaviors: true,
           }),
         ),
-        defaultReasoningEffort: model.supportsEffort ? "medium" : null,
-        serviceTiers: model.supportsFastMode
-          ? [{ id: "priority", name: "Fast" }]
-          : [],
-      })),
-      nextCursor: null,
-    } satisfies HandlerResult<typeof method>;
-  }
-  // Whether this process runs a Claude turn or a background task now. The server retires an
-  // idle bridge after an update; saved turn records cannot say this, as a turn that a stopped
-  // bridge left behind stays in progress there.
-  if (method === "claude/activity")
-    return {
-      busy: [...queries.values()].some(
-        (active) => !!active.turn || active.tasks?.size > 0,
-      ),
-    } satisfies HandlerResult<typeof method>;
-  if (method === "account/read") {
-    const { account } =
-      p.passive === true ? await catalogCache.readPassive() : await catalog();
-    return {
-      account: {
-        type: "claude",
-        email: account.email,
-        organizationUuid: account.organizationUuid,
-        accountUuid: account.accountUuid,
-        _credentialIdentity: account._credentialIdentity,
-        planType: account.subscriptionType,
-      },
-      requiresOpenaiAuth: false,
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "account/rateLimits/read") {
-    const data = await probe(p.cwd, async (q) =>
-      usageLimits(
-        await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
-          skipBehaviors: true,
-        }),
-      ),
-    );
-    data.accountId = "claude:" + process.env.STUDIO_CLAUDE_ACCOUNT;
-    lastLimits = data;
-    return data satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/commands")
-    return probe(p.cwd, async (q) =>
-      commandCatalog((await q.initializationResult()).commands),
-    ) satisfies HandlerResult<typeof method>;
-  if (method === "claude/moveVersions")
-    return moveVersions(
-      process.env.STUDIO_CLAUDE_BIN || "claude",
-    ) satisfies HandlerResult<typeof method>;
-  if (method === "claude/moveIdentity")
-    return moveIdentity(
-      process.env.STUDIO_CLAUDE_BIN || "claude",
-    ) satisfies HandlerResult<typeof method>;
-  if (method === "claude/moveProof") {
-    const s = await session(p.threadId);
-    const file = await nativeFile(s.nativeId || s.id, undefined, s.cwd);
-    return proofOptions(
-      s,
-      await savedPromptProof(file, s),
-    ) satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/movePreflight") {
-    const source = p.proof;
-    if (source.session.model !== p.model)
-      throw new Error("The saved Claude model differs from preflight");
-    const proof = await proofOptions(
-      exactSession({ ...source.session, cwd: p.cwd }),
-      exactProof(source),
-    );
-    if (proof.optionsHash !== source.optionsHash)
-      throw new Error(
-        "The effective target tool options differ from the source proof",
       );
-    return {
-      snapshotHash: proof.snapshotHash,
-      optionsHash: proof.optionsHash,
-      proofMethod: proof.proofMethod,
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/moveExport") {
-    const s = await session(p.threadId);
-    if (queries.get(s.id)?.turn || queries.get(s.id)?.tasks.size)
-      throw new Error(
-        "Finish the Claude turn and background tasks before a move",
-      );
-    const proof = await proofOptions(
-      s,
-      await savedPromptProof(
-        await nativeFile(s.nativeId || s.id, undefined, s.cwd),
+      data.accountId = "claude:" + process.env.STUDIO_CLAUDE_ACCOUNT;
+      lastLimits = data;
+      return data satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/commands": {
+      const { method, params: p } = request;
+      return probe(p.cwd, async (q) =>
+        commandCatalog((await q.initializationResult()).commands),
+      ) satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/moveVersions": {
+      const { method } = request;
+      return moveVersions(
+        process.env.STUDIO_CLAUDE_BIN || "claude",
+      ) satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/moveIdentity": {
+      const { method } = request;
+      return moveIdentity(
+        process.env.STUDIO_CLAUDE_BIN || "claude",
+      ) satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/moveProof": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
+      const file = await nativeFile(s.nativeId || s.id, undefined, s.cwd);
+      return proofOptions(
         s,
-      ),
-    );
-    const { session: _sessionProof, ...moveProof } = proof;
-    return {
-      path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
-      session: {
-        ...structuredClone(s),
-        turns: [],
-        moveProof,
-        dynamicToolsJson: JSON.stringify(s.dynamicTools),
-      },
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/moveImport") {
-    const existing = await sessionStore
-      .metadata(p.session.id)
-      .catch(() => null);
-    const active = queries.get(p.session.id);
-    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
-      throw new Error("The destination Claude session is active");
-    const owner = existing && (await session(p.session.id));
-    if (
-      owner &&
-      (owner.nativeId || owner.id) !== (p.session.nativeId || p.session.id)
-    )
-      throw new Error(
-        "The destination Claude session has a different native identity",
+        await savedPromptProof(file, s),
+      ) satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/movePreflight": {
+      const { method, params: p } = request;
+      const source = p.proof;
+      if (source.session.model !== p.model)
+        throw new Error("The saved Claude model differs from preflight");
+      const proof = await proofOptions(
+        exactSession({ ...source.session, cwd: p.cwd }),
+        exactProof(source),
       );
-    let s: Session = exactSession({ ...p.session, cwd: p.cwd });
-    if (!s.moveProof) throw new Error("Claude move proof is missing");
-    s.moveProof = exactProof(s.moveProof);
-    const saved = await savedPromptProof(p.path, s);
-    if (saved.snapshotHash !== s.moveProof?.snapshotHash)
-      throw new Error(
-        "The imported saved prompt snapshot differs from preflight",
+      if (proof.optionsHash !== source.optionsHash)
+        throw new Error(
+          "The effective target tool options differ from the source proof",
+        );
+      return {
+        snapshotHash: proof.snapshotHash,
+        optionsHash: proof.optionsHash,
+        proofMethod: proof.proofMethod,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/moveExport": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
+      if (queries.get(s.id)?.turn || queries.get(s.id)?.tasks.size)
+        throw new Error(
+          "Finish the Claude turn and background tasks before a move",
+        );
+      const proof = await proofOptions(
+        s,
+        await savedPromptProof(
+          await nativeFile(s.nativeId || s.id, undefined, s.cwd),
+          s,
+        ),
       );
-    const proof = await proofOptions(s, saved);
-    if (proof.optionsHash !== s.moveProof.optionsHash)
-      throw new Error(
-        "The effective target tool options changed before import",
+      const { session: _sessionProof, ...moveProof } = proof;
+      return {
+        path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
+        session: {
+          ...structuredClone(s),
+          turns: [],
+          moveProof,
+          dynamicToolsJson: JSON.stringify(s.dynamicTools),
+        },
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/moveImport": {
+      const { method, params: p } = request;
+      const existing = await sessionStore
+        .metadata(p.session.id)
+        .catch(() => null);
+      const active = queries.get(p.session.id);
+      if (active && (active.turn || active.tasks.size || queryHasInput(active)))
+        throw new Error("The destination Claude session is active");
+      const owner = existing && (await session(p.session.id));
+      if (
+        owner &&
+        (owner.nativeId || owner.id) !== (p.session.nativeId || p.session.id)
+      )
+        throw new Error(
+          "The destination Claude session has a different native identity",
+        );
+      let s: Session = exactSession({ ...p.session, cwd: p.cwd });
+      if (!s.moveProof) throw new Error("Claude move proof is missing");
+      s.moveProof = exactProof(s.moveProof);
+      const saved = await savedPromptProof(p.path, s);
+      if (saved.snapshotHash !== s.moveProof?.snapshotHash)
+        throw new Error(
+          "The imported saved prompt snapshot differs from preflight",
+        );
+      const proof = await proofOptions(s, saved);
+      if (proof.optionsHash !== s.moveProof.optionsHash)
+        throw new Error(
+          "The effective target tool options changed before import",
+        );
+      discardQuery(p.session.id, active);
+      await publishNative(
+        p.path,
+        nativeDestination(s.nativeId || s.id, p.cwd),
+        !!existing,
       );
-    discardQuery(p.session.id, active);
-    await publishNative(
-      p.path,
-      nativeDestination(s.nativeId || s.id, p.cwd),
-      !!existing,
-    );
-    if (existing) {
-      const cached = await session(s.id);
-      for (const key of Object.keys(cached))
-        Reflect.deleteProperty(cached, key);
-      Object.assign(cached, s);
-      s = cached;
-    } else sessions.set(s.id, s);
-    await persist(s);
-    return {
-      thread: wireThread(s, await sessionStore.metadata(s.id), false),
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/repairReport")
-    return sessionStore.repairReport(p.threadId) satisfies HandlerResult<
-      typeof method
-    >;
-  if (method === "claude/fileBackups") {
-    const s = await session(p.threadId);
-    return fileBackups(
-      s,
-      p.settledRequestIds ?? null,
-      root,
-      persist,
-    ) satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/state") {
-    const s = await session(p.threadId),
-      active = queries.get(s.id);
-    return {
-      settings: s.claude || {},
-      turns: s.turns.map((t) => ({
-        id: t.id,
-        status: t.status,
-        ...(t.error ? { error: t.error } : {}),
-        canRestoreFiles: fileRestoreReason(s, t, active) === null,
-        restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
-        text:
-          previewInput(
-            t.items.find((i) => i.type === "userMessage")?.content,
-          ) || "Claude turn",
-      })),
-      tasks: [...(active?.tasks.values() || [])],
-      version: s.claudeVersion,
-      nativeId: s.nativeId || s.id,
-      ...(s.nativeSessionTransitionError
-        ? {
-            nativeSessionOutcome: "unknown",
-            nativeSessionError: s.nativeSessionTransitionError,
-          }
-        : {}),
-      contextWindow: s.contextWindow,
-      totalTokens: s.totalTokens,
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/diagnostics") {
-    const values = [...queries.values()];
-    return {
-      liveQueries: values.length,
-      activeTurns: values.filter((active) => active.turn).length,
-      backgroundQueries: values.filter((active) => active.tasks.size).length,
-      idleQueries: values.filter((active) => !active.turn && !active.tasks.size)
-        .length,
-      sessionCache: sessionStore.stats(),
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "claude/settings") {
-    const s = await session(p.threadId),
-      active = queries.get(s.id);
-    const previous = s.claude;
-    // Only the permission mode has a live SDK control. Other changes still
-    // require an idle query. Missing thinking means the default, enabled.
-    const permissionOnly =
-      Object.hasOwn(p.settings, "permissionMode") &&
-      (p.settings.thinking !== false) === (previous?.thinking !== false) &&
-      (p.settings.autoCompactWindow ?? null) ===
-        (previous?.autoCompactWindow ?? null);
-    if (active && permissionOnly) {
-      const oldMode = permissionMode(s);
-      const nextMode = permissionMode({ ...s, claude: p.settings });
-      await active.ready;
-      try {
-        await active.q!.setPermissionMode(nextMode);
-        s.claude = p.settings;
-        await persist(s);
-      } catch (error) {
-        s.claude = previous;
-        // A confirmed rollback proves the old mode still owns the live query.
-        // Failure to confirm that rollback remains an uncertain control result.
-        await active.q!.setPermissionMode(oldMode);
-        // The journal may have committed before a metadata write failed.
-        // Confirm its inverse before reporting a definite failed apply.
-        await persist(s);
-        // SDK setPermissionMode and the session store throw Error instances.
-        throw Object.assign(error as Error, {
-          data: { settingsOutcome: "not_applied" },
-        });
-      }
-      active.permissionMode = nextMode;
-      if (nextMode === "bypassPermissions") {
-        for (const [id, waiting] of pending) {
-          if (
-            waiting.params?.threadId === s.id &&
-            [
-              "item/commandExecution/requestApproval",
-              "item/fileChange/requestApproval",
-            ].includes(waiting.method)
-          ) {
-            pending.delete(id);
-            waiting.resolve({ id, result: { decision: "accept" } });
-            emit("serverRequest/resolved", { threadId: s.id, requestId: id });
+      if (existing) {
+        const cached = await session(s.id);
+        for (const key of Object.keys(cached))
+          Reflect.deleteProperty(cached, key);
+        Object.assign(cached, s);
+        s = cached;
+      } else sessions.set(s.id, s);
+      await persist(s);
+      return {
+        thread: wireThread(s, await sessionStore.metadata(s.id), false),
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/repairReport": {
+      const { method, params: p } = request;
+      return sessionStore.repairReport(p.threadId) satisfies HandlerResult<
+        typeof method
+      >;
+    }
+
+    case "claude/fileBackups": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
+      return fileBackups(
+        s,
+        p.settledRequestIds ?? null,
+        root,
+        persist,
+      ) satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/state": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId),
+        active = queries.get(s.id);
+      return {
+        settings: s.claude || {},
+        turns: s.turns.map((t) => ({
+          id: t.id,
+          status: t.status,
+          ...(t.error ? { error: t.error } : {}),
+          canRestoreFiles: fileRestoreReason(s, t, active) === null,
+          restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
+          text:
+            previewInput(
+              t.items.find((i) => i.type === "userMessage")?.content,
+            ) || "Claude turn",
+        })),
+        tasks: [...(active?.tasks.values() || [])],
+        version: s.claudeVersion,
+        nativeId: s.nativeId || s.id,
+        ...(s.nativeSessionTransitionError
+          ? {
+              nativeSessionOutcome: "unknown",
+              nativeSessionError: s.nativeSessionTransitionError,
+            }
+          : {}),
+        contextWindow: s.contextWindow,
+        totalTokens: s.totalTokens,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/diagnostics": {
+      const { method } = request;
+      const values = [...queries.values()];
+      return {
+        liveQueries: values.length,
+        activeTurns: values.filter((active) => active.turn).length,
+        backgroundQueries: values.filter((active) => active.tasks.size).length,
+        idleQueries: values.filter(
+          (active) => !active.turn && !active.tasks.size,
+        ).length,
+        sessionCache: sessionStore.stats(),
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/settings": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId),
+        active = queries.get(s.id);
+      const previous = s.claude;
+      // Only the permission mode has a live SDK control. Other changes still
+      // require an idle query. Missing thinking means the default, enabled.
+      const permissionOnly =
+        Object.hasOwn(p.settings, "permissionMode") &&
+        (p.settings.thinking !== false) === (previous?.thinking !== false) &&
+        (p.settings.autoCompactWindow ?? null) ===
+          (previous?.autoCompactWindow ?? null);
+      if (active && permissionOnly) {
+        const oldMode = permissionMode(s);
+        const nextMode = permissionMode({ ...s, claude: p.settings });
+        await active.ready;
+        try {
+          await active.q!.setPermissionMode(nextMode);
+          s.claude = p.settings;
+          await persist(s);
+        } catch (error) {
+          s.claude = previous;
+          // A confirmed rollback proves the old mode still owns the live query.
+          // Failure to confirm that rollback remains an uncertain control result.
+          await active.q!.setPermissionMode(oldMode);
+          // The journal may have committed before a metadata write failed.
+          // Confirm its inverse before reporting a definite failed apply.
+          await persist(s);
+          // SDK setPermissionMode and the session store throw Error instances.
+          throw Object.assign(error as Error, {
+            data: { settingsOutcome: "not_applied" },
+          });
+        }
+        active.permissionMode = nextMode;
+        if (nextMode === "bypassPermissions") {
+          for (const [id, waiting] of pending) {
+            if (
+              waiting.params?.threadId === s.id &&
+              [
+                "item/commandExecution/requestApproval",
+                "item/fileChange/requestApproval",
+              ].includes(waiting.method)
+            ) {
+              pending.delete(id);
+              waiting.resolve({ id, result: { decision: "accept" } });
+              emit("serverRequest/resolved", { threadId: s.id, requestId: id });
+            }
           }
         }
-      }
-    } else {
-      if (active && (active.turn || active.tasks.size || queryHasInput(active)))
-        throw new Error("Pause Claude before changing these settings");
-      discardQuery(s.id, active);
-      s.claude = p.settings;
-      try {
-        await persist(s);
-      } catch (error) {
-        s.claude = previous;
-        throw error;
-      }
-    }
-    return { settings: s.claude } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/rollback") {
-    const s = await session(p.threadId),
-      active = queries.get(s.id);
-    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
-      throw new Error("Pause Claude before rollback");
-    discardQuery(s.id, active);
-    return rollbackSession(s, p, {
-      persist,
-      forkSession,
-      getHistoryIndex: (id, options) =>
-        verifiedHistoryIndex({ id, cwd: options?.dir ?? s.cwd }),
-      prepareFileRestore: (session, messages, messageId) =>
-        prepareFileRestore(session, messages, messageId, root),
-      verifyFileRestore,
-      rewindFiles: (nativeId, messageId, options) =>
-        rewindSessionFiles(query, settings(s), nativeId, messageId, options),
-    }) satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/start") {
-    const s = {
-      ...p,
-      id: randomUUID(),
-      createdAt: Math.floor(Date.now() / 1000),
-      turns: [],
-      started: false,
-      model: p.model || "default",
-    };
-    sessions.set(s.id, s);
-    await persist(s);
-    return {
-      ...p,
-      thread: wireThread(s, await sessionStore.metadata(s.id)),
-      model: s.model,
-      sandbox: null,
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/turns/list" || method === "thread/turns/items/list") {
-    const s = await session(p.threadId);
-    const page = <T>(values: T[]) => {
-      const offset = p.cursor ? Number(p.cursor) : 0,
-        limit = Math.max(1, Math.min(100, p.limit || 20));
-      if (!Number.isSafeInteger(offset) || offset < 0)
-        throw new Error("Invalid Claude history cursor");
-      return {
-        data: values.slice(offset, offset + limit),
-        nextCursor:
-          offset + limit < values.length ? String(offset + limit) : null,
-      };
-    };
-    if (method === "thread/turns/list") {
-      const values = s.turns.filter(
-        (turn) => !pendingTurnReceipts.has(turn.id),
-      );
-      if (p.sortDirection !== "asc") values.reverse();
-      return page(values) satisfies HandlerResult<typeof method>;
-    }
-    const turn = s.turns.find((turn) => turn.id === p.turnId);
-    if (!turn) throw new Error("Unknown Claude turn");
-    return page(turn.items) satisfies HandlerResult<typeof method>;
-  }
-  if (request.method === "thread/list") {
-    const p = request.params;
-    const page = await sessionStore.listMetadata(p.cursor, p.limit);
-    return {
-      data: page.data.map((metadata) => ({
-        id: metadata.id,
-        cwd: metadata.cwd,
-        createdAt: metadata.createdAt,
-        updatedAt: metadata.updatedAt,
-        preview: metadata.preview,
-        name: metadata.name,
-        historyVersion: createHash("sha256")
-          .update(metadata.revision)
-          .digest("hex"),
-        turns: [],
-        status: { type: queries.get(metadata.id)?.turn ? "active" : "idle" },
-        modelProvider: "claude",
-      })),
-      nextCursor: page.nextCursor,
-    } satisfies HandlerResult<typeof request.method>;
-  }
-  if (method === "skills/extraRoots/set")
-    throw new Error("Claude uses its native skills and MCP configuration");
-  if (method === "thread/resume" || method === "thread/read") {
-    if (method === "thread/read" && p.includeTurns !== true) {
-      const metadata = await sessionStore.metadata(p.threadId);
-      return {
-        thread: wireThread(null, metadata, false),
-        model: metadata.model,
-        sandbox: null,
-        approvalPolicy: metadata.approvalPolicy,
-        activePermissionProfile: metadata.activePermissionProfile,
-      } satisfies HandlerResult<typeof method>;
-    }
-    const s = await session(p.threadId);
-    let reattached = false;
-    if (method === "thread/resume") {
-      const active = queries.get(s.id);
-      const idle = () => {
-        const query = queries.get(s.id);
-        return (
-          !query || (!query.turn && !query.tasks.size && !queryHasInput(query))
-        );
-      };
-      if (idle())
-        await reconcileHistoricalBash(s, {
-          isIdle: idle,
-          complete: (turn, item, times) => finishItem(s, turn, item, times),
-          persist,
-        });
-      // Reattach to a live query without changing its settings or background work.
-      // turn/start already steers its current turn or queues the next input.
-      if (
-        !active ||
-        (!active.turn && !active.tasks.size && !queryHasInput(active))
-      ) {
-        discardQuery(s.id, active);
-        Object.assign(
-          s,
-          p,
-          p.dynamicTools
-            ? { dynamicTools: exactTurnTools(s, p.dynamicTools) }
-            : {},
-        );
-        await persist(s);
-      } else reattached = true;
-    }
-    const includeTurns =
-      method === "thread/read"
-        ? p.includeTurns === true
-        : p.excludeTurns !== true;
-    return {
-      thread: wireThread(s, await sessionStore.metadata(s.id), includeTurns),
-      model: s.model,
-      sandbox: null,
-      approvalPolicy: s.approvalPolicy ?? null,
-      activePermissionProfile: s.activePermissionProfile ?? null,
-      ...(reattached ? { reattached: true } : {}),
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/unsubscribe") {
-    const active = queries.get(p.threadId);
-    if (active && queryBusy(p.threadId, active))
-      throw new Error("Pause the Claude turn before detaching");
-    discardQuery(p.threadId, active);
-    if (active) studioUnloaded.add(p.threadId);
-    await sessionStore.evict(p.threadId);
-    return {
-      status: active ? "unsubscribed" : "notLoaded",
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/loaded/list")
-    return {
-      data: [...queries.keys()],
-      nextCursor: null,
-    } satisfies HandlerResult<typeof method>;
-  if (method === "thread/fork") {
-    const old = await session(p.threadId);
-    const active = queries.get(old.id);
-    if (
-      (active?.turn || active?.tasks.size) &&
-      (p.lastTurnId == null || p.lastTurnId === old.turns.at(-1)?.id)
-    )
-      throw new Error(
-        "Select an earlier completed Claude turn before branching",
-      );
-    const s = await forkAtTurn(old, p, {
-      forkSession,
-      getHistoryIndex: (id, options) =>
-        verifiedHistoryIndex({ id, cwd: options?.dir ?? old.cwd }),
-      persist,
-    });
-    sessions.set(s.id, s);
-    return {
-      thread: wireThread(
-        s,
-        await sessionStore.metadata(s.id),
-        p.excludeTurns !== true,
-      ),
-      model: s.model,
-      sandbox: null,
-      approvalPolicy: s.approvalPolicy ?? null,
-      activePermissionProfile: s.activePermissionProfile ?? null,
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/compact/start") {
-    const s = await session(p.threadId);
-    if (p.idleCompaction) {
-      const { effective: options } = await resolveSettings({
-        cwd: s.cwd,
-        settingSources: settings(s).settingSources ?? [],
-      });
-      const refusal = idleRefusal(
-        s,
-        queries.get(s.id),
-        p.idleCompaction,
-        options,
-      );
-      const disabled = !compactionEnabled(options);
-      const reason = disabled
-        ? "compaction_off"
-        : options.idleCompaction === false
-          ? "idle_compaction_off"
-          : refusal;
-      if (reason) throw new Error("Idle compaction skipped: " + reason);
-    }
-    return handle({
-      method: "turn/start",
-      params: {
-        ...p,
-        model: s.model,
-        clientUserMessageId: p.requestId || randomUUID(),
-        input: [{ type: "text", text: "/compact" }],
-      },
-    }) satisfies HandlerResult<typeof method>;
-  }
-  if (method === "turn/start") {
-    const s = await session(p.threadId);
-    const matches = p.clientUserMessageId
-      ? s.turns.flatMap((turn) =>
-          turn.items
-            .filter(
-              (item, index) =>
-                item.type === "userMessage" &&
-                (item.id === p.clientUserMessageId ||
-                  (index === 0 &&
-                    turn.clientUserMessageId === p.clientUserMessageId)),
-            )
-            .map((item) => ({ turn, item })),
+      } else {
+        if (
+          active &&
+          (active.turn || active.tasks.size || queryHasInput(active))
         )
-      : [];
-    if (
-      matches.some(
-        ({ item }) => JSON.stringify(item.content) !== JSON.stringify(p.input),
-      )
-    )
-      throw new Error("This message identity has different content");
-    const prior = matches.find(({ turn, item }) =>
-      item.delivery === "steer"
-        ? item.deliveryStatus !== "not_applied"
-        : turn.startOutcome !== "not_applied",
-    );
-    if (prior) {
-      const steered = prior.item.delivery === "steer";
-      if (
-        (steered ? prior.item.deliveryStatus : prior.turn.startOutcome) ===
-        "preparing"
-      )
-        throw Object.assign(new Error("Claude input receipt outcome unknown"), {
-          data: { turnStartOutcome: "unknown" },
-        });
-      return {
-        turn: { id: prior.turn.id, status: prior.turn.status },
-        ...(steered ? { steered: true } : {}),
-      } satisfies HandlerResult<typeof method>;
-    }
-    const running = queries.get(s.id)?.turn;
-    if (running) {
-      try {
-        await handle({
-          method: "turn/steer",
-          params: {
-            threadId: s.id,
-            expectedTurnId: running.id,
-            clientUserMessageId: p.clientUserMessageId ?? "",
-            input: p.input,
-          },
-        });
-        return {
-          turn: { id: running.id, status: running.status },
-          steered: true,
-        } satisfies HandlerResult<typeof method>;
-      } catch (error) {
-        // The running turn ended before this input reached Claude. Nothing
-        // was submitted, so the input starts the next turn instead.
-        if (!errorField(error, "steerNotSubmitted") || running.interrupted)
+          throw new Error("Pause Claude before changing these settings");
+        discardQuery(s.id, active);
+        s.claude = p.settings;
+        try {
+          await persist(s);
+        } catch (error) {
+          s.claude = previous;
           throw error;
-        await finishingTurns.get(running);
-        if (queries.get(s.id)?.turn) throw error;
+        }
       }
+      return { settings: s.claude } satisfies HandlerResult<typeof method>;
     }
-    let nativeCommand;
-    if (p.claudeCommand) {
-      const commands = await handle({
-        method: "claude/commands",
-        params: { cwd: s.cwd },
-      });
-      nativeCommand = explicitNativeCommand(p.claudeCommand, commands);
-      // Unknown slash text remains ordinary user input; never extract commands from it.
+
+    case "thread/rollback": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId),
+        active = queries.get(s.id);
+      if (active && (active.turn || active.tasks.size || queryHasInput(active)))
+        throw new Error("Pause Claude before rollback");
+      discardQuery(s.id, active);
+      return rollbackSession(s, p, {
+        persist,
+        forkSession,
+        getHistoryIndex: (id, options) =>
+          verifiedHistoryIndex({ id, cwd: options?.dir ?? s.cwd }),
+        prepareFileRestore: (session, messages, messageId) =>
+          prepareFileRestore(session, messages, messageId, root),
+        verifyFileRestore,
+        rewindFiles: (nativeId, messageId, options) =>
+          rewindSessionFiles(query, settings(s), nativeId, messageId, options),
+      }) satisfies HandlerResult<typeof method>;
     }
-    const groups = await inputGroups(
-      nativeCommand ? [{ type: "text", text: nativeCommand }] : p.input,
-      content,
-    );
-    const turnId = randomUUID();
-    const turn: FreshTurn = {
-      id: turnId,
-      clientUserMessageId: p.clientUserMessageId,
-      ...(p.idleCompaction ? { idleCompaction: true } : {}),
-      startOutcome: "preparing",
-      status: "inProgress",
-      items: [
-        {
-          id: p.clientUserMessageId || randomUUID(),
-          type: "userMessage",
-          content: p.input,
-          nativeId: nativeUserMessageId(p.clientUserMessageId || turnId),
-        },
-      ],
-    };
-    const message = userMessage(
-      s,
-      turn,
-      groups,
-      p.clientUserMessageId || turn.id,
-    );
-    let active: ActiveQuery | null | undefined = queries.get(s.id);
-    const startedAt = Date.now();
-    const deadline = startedAt + PREPARATION_TIMEOUT_MS;
-    const control = <T>(read: () => T | Promise<T>, phase: string) =>
-      boundedPreparation(
-        read,
-        deadline,
-        () => {
-          if (
-            active &&
-            queries.get(s.id) === active &&
-            !active.turn &&
-            !active.tasks.size
-          )
-            discardQuery(s.id, active);
-        },
-        phase,
-        startedAt,
-      );
-    const requestedTools =
-      exactTurnTools(s, p.dynamicTools) || s.dynamicTools || [];
-    const toolsIdentity = JSON.stringify(requestedTools);
-    const toolsChanged = active && active.toolsIdentity !== toolsIdentity;
-    s.dynamicTools = requestedTools;
-    if (active && !active.turn && !active.tasks.size) {
-      // A persistent query can die between turns (its Claude process ends).
-      // Nothing is running in it, so start this turn in a fresh query.
-      try {
-        await control(() => active?.ready, "active_ready");
-      } catch (error) {
-        if (!deadQuery(error)) throw error;
-        discardQuery(s.id, active);
-        active = null;
-      }
-    }
-    if (active) {
-      const live = active;
-      await control(() => live.ready, "active_ready");
-      const q = live.q;
-      if (!q) throw new Error("Claude query is closed");
-      if (toolsChanged) {
-        // Replace only the Studio MCP server; background tasks keep running.
-        // The SDK keeps an already registered in-process server even when its
-        // tools change. Remove it first so the new schema replaces it.
-        await control(
-          () => q.setMcpServers(live.externalMcpServers || {}),
-          "mcp_remove",
-        );
-        await control(
-          () =>
-            q.setMcpServers({
-              ...live.externalMcpServers,
-              studio: studioTools(s, () => live.turn),
-            }),
-          "mcp_install",
-        );
-        active.toolsIdentity = toolsIdentity;
-      }
-      try {
-        await control(() => q.setModel(p.model || s.model), "model_set");
-        await control(
-          () => q.setPermissionMode(permissionMode(s, p)),
-          "permissions_set",
-        );
-        active.permissionMode = permissionMode(s, p);
-        const flagSettings = await control(
-          () => flags(s, p, true),
-          "catalog_flags",
-        );
-        await control(() => q.applyFlagSettings(flagSettings), "flag_settings");
-      } catch (error) {
-        if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
-        discardQuery(s.id, active);
-        active = null;
-      }
-    }
-    if (active) {
-      if (queries.get(s.id) !== active || active.input.closed)
-        throw new Error("Claude closed before this turn could start");
-      if (active.turn)
-        throw new Error(
-          "Claude background work started a turn; wait or steer that turn",
-        );
-      active.turn = turn;
-      active.finalization = null;
-      active.idleRequestStartedAt = Date.now();
-      active.reservingInput = true;
-    }
-    s.model = p.model || s.model;
-    if (!s.moveProof)
-      s.moveTurnOptions = {
-        ...(p.effort !== undefined ? { effort: p.effort } : {}),
-        ...(p.serviceTier !== undefined ? { serviceTier: p.serviceTier } : {}),
+
+    case "thread/start": {
+      const { method, params: p } = request;
+      const s = {
+        ...p,
+        id: randomUUID(),
+        createdAt: Math.floor(Date.now() / 1000),
+        turns: [],
+        started: false,
+        model: p.model || "default",
       };
-    pendingTurnReceipts.add(turn.id);
-    s.turns.push(turn);
-    s.preview =
-      p.input?.find((item) => item.type === "text")?.text?.slice(0, 160) || "";
-    try {
+      sessions.set(s.id, s);
       await persist(s);
-    } catch (error) {
-      if (active?.turn === turn) {
-        active.turn = null;
-        active.reservingInput = false;
+      return {
+        ...p,
+        thread: wireThread(s, await sessionStore.metadata(s.id)),
+        model: s.model,
+        sandbox: null,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "thread/turns/list":
+    case "thread/turns/items/list": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
+      const page = <T>(values: T[]) => {
+        const offset = p.cursor ? Number(p.cursor) : 0,
+          limit = Math.max(1, Math.min(100, p.limit || 20));
+        if (!Number.isSafeInteger(offset) || offset < 0)
+          throw new Error("Invalid Claude history cursor");
+        return {
+          data: values.slice(offset, offset + limit),
+          nextCursor:
+            offset + limit < values.length ? String(offset + limit) : null,
+        };
+      };
+      if (method === "thread/turns/list") {
+        const values = s.turns.filter(
+          (turn) => !pendingTurnReceipts.has(turn.id),
+        );
+        if (p.sortDirection !== "asc") values.reverse();
+        return page(values) satisfies HandlerResult<typeof method>;
       }
-      s.turns = s.turns.filter((t) => t !== turn);
-      pendingTurnReceipts.delete(turn.id);
-      // No SDK admission occurred; retire only this reservation's guard and
-      // save the cleanup (or defer it on a full disk) before reporting refusal.
-      if (cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0])))
-        await persistLive(s);
-      throw isDiskFull(error) ? diskFullInputError(error) : error;
+      const turn = s.turns.find((turn) => turn.id === p.turnId);
+      if (!turn) throw new Error("Unknown Claude turn");
+      return page(turn.items) satisfies HandlerResult<typeof method>;
     }
-    if (active) {
-      active.reservingInput = false;
-      if (active.turn !== turn || active.input.closed) {
-        const error = new Error("Claude stopped before accepting the new turn");
-        turn.status = "failed";
-        turn.startOutcome = "not_applied";
-        turn.error = { message: error.message };
-        cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
-        pendingTurnReceipts.delete(turn.id);
-        await persistLive(s);
-        throw Object.assign(error, {
-          data: { turnStartOutcome: "not_applied" },
-        });
+
+    case "thread/list": {
+      const { method, params: p } = request;
+      const page = await sessionStore.listMetadata(p.cursor, p.limit);
+      return {
+        data: page.data.map((metadata) => ({
+          id: metadata.id,
+          cwd: metadata.cwd,
+          createdAt: metadata.createdAt,
+          updatedAt: metadata.updatedAt,
+          preview: metadata.preview,
+          name: metadata.name,
+          historyVersion: createHash("sha256")
+            .update(metadata.revision)
+            .digest("hex"),
+          turns: [],
+          status: { type: queries.get(metadata.id)?.turn ? "active" : "idle" },
+          modelProvider: "claude",
+        })),
+        nextCursor: page.nextCursor,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "skills/extraRoots/set": {
+      throw new Error("Claude uses its native skills and MCP configuration");
+    }
+
+    case "thread/resume":
+    case "thread/read": {
+      const { method, params: p } = request;
+      if (method === "thread/read" && p.includeTurns !== true) {
+        const metadata = await sessionStore.metadata(p.threadId);
+        return {
+          thread: wireThread(null, metadata, false),
+          model: metadata.model,
+          sandbox: null,
+          approvalPolicy: metadata.approvalPolicy,
+          activePermissionProfile: metadata.activePermissionProfile,
+        } satisfies HandlerResult<typeof method>;
       }
-    } else {
-      active = newActive(turn);
-      queries.set(s.id, active);
-      active.consumer = new Promise((resolve, reject) => {
-        const owned = active;
-        if (!owned) return reject(new Error("Claude query is missing"));
-        setImmediate(() => startSession(s, owned, p).then(resolve, reject));
-      });
-      active.consumer.catch((error) =>
-        process.stderr.write("Claude consumer: " + errorText(error) + "\n"),
-      );
+      const s = await session(p.threadId);
+      let reattached = false;
+      if (method === "thread/resume") {
+        const active = queries.get(s.id);
+        const idle = () => {
+          const query = queries.get(s.id);
+          return (
+            !query ||
+            (!query.turn && !query.tasks.size && !queryHasInput(query))
+          );
+        };
+        if (idle())
+          await reconcileHistoricalBash(s, {
+            isIdle: idle,
+            complete: (turn, item, times) => finishItem(s, turn, item, times),
+            persist,
+          });
+        // Reattach to a live query without changing its settings or background work.
+        // turn/start already steers its current turn or queues the next input.
+        if (
+          !active ||
+          (!active.turn && !active.tasks.size && !queryHasInput(active))
+        ) {
+          discardQuery(s.id, active);
+          Object.assign(
+            s,
+            p,
+            p.dynamicTools
+              ? { dynamicTools: exactTurnTools(s, p.dynamicTools) }
+              : {},
+          );
+          await persist(s);
+        } else reattached = true;
+      }
+      const includeTurns =
+        method === "thread/read"
+          ? p.includeTurns === true
+          : p.excludeTurns !== true;
+      return {
+        thread: wireThread(s, await sessionStore.metadata(s.id), includeTurns),
+        model: s.model,
+        sandbox: null,
+        approvalPolicy: s.approvalPolicy ?? null,
+        activePermissionProfile: s.activePermissionProfile ?? null,
+        ...(reattached ? { reattached: true } : {}),
+      } satisfies HandlerResult<typeof method>;
     }
-    catalogCache.activityChanged();
-    emit("turn/started", {
-      threadId: s.id,
-      turn: { id: turn.id, status: "inProgress" },
-    });
-    active.input.push(message);
-    turn.startOutcome = "accepted";
-    // The reply reports the turn as Claude accepted it. The SDK stream runs
-    // while the receipt saves, so a fast turn may already have ended; its
-    // end arrives as turn/completed, as with Codex.
-    const acceptedStatus = turn.status;
-    try {
-      // Claude has this input. A full disk only delays its saved receipt.
-      await persistLive(s, turn);
-    } catch (error) {
-      throw Object.assign(
-        new Error(
-          "Claude accepted input; receipt persistence failed; outcome unknown",
-          { cause: error },
-        ),
-        { data: { turnStartOutcome: "unknown" } },
-      );
-    } finally {
-      pendingTurnReceipts.delete(turn.id);
+
+    case "thread/unsubscribe": {
+      const { method, params: p } = request;
+      const active = queries.get(p.threadId);
+      if (active && queryBusy(p.threadId, active))
+        throw new Error("Pause the Claude turn before detaching");
+      discardQuery(p.threadId, active);
+      if (active) studioUnloaded.add(p.threadId);
+      await sessionStore.evict(p.threadId);
+      return {
+        status: active ? "unsubscribed" : "notLoaded",
+      } satisfies HandlerResult<typeof method>;
     }
-    return {
-      turn: { id: turn.id, status: acceptedStatus },
-    } satisfies HandlerResult<typeof method>;
-  }
-  if (method === "turn/steer") {
-    const s = await session(p.threadId),
-      active = queries.get(s.id);
-    if (
-      !active?.turn ||
-      active.turn.interrupted ||
-      active.turn.id !== p.expectedTurnId
-    )
-      throw new Error("The steer belongs to a different Claude turn");
-    const turn = active.turn,
-      id = p.clientUserMessageId;
-    if (!id) throw new Error("Steer requires its original message identity");
-    const previous = turn.items.find((item) => item.id === id);
-    if (previous) {
+
+    case "thread/loaded/list": {
+      const { method } = request;
+      return {
+        data: [...queries.keys()],
+        nextCursor: null,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "thread/fork": {
+      const { method, params: p } = request;
+      const old = await session(p.threadId);
+      const active = queries.get(old.id);
       if (
-        ["not_applied", "cancelled"].some(
-          (status) => status === previous.deliveryStatus,
+        (active?.turn || active?.tasks.size) &&
+        (p.lastTurnId == null || p.lastTurnId === old.turns.at(-1)?.id)
+      )
+        throw new Error(
+          "Select an earlier completed Claude turn before branching",
+        );
+      const s = await forkAtTurn(old, p, {
+        forkSession,
+        getHistoryIndex: (id, options) =>
+          verifiedHistoryIndex({ id, cwd: options?.dir ?? old.cwd }),
+        persist,
+      });
+      sessions.set(s.id, s);
+      return {
+        thread: wireThread(
+          s,
+          await sessionStore.metadata(s.id),
+          p.excludeTurns !== true,
+        ),
+        model: s.model,
+        sandbox: null,
+        approvalPolicy: s.approvalPolicy ?? null,
+        activePermissionProfile: s.activePermissionProfile ?? null,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "thread/compact/start": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
+      if (p.idleCompaction) {
+        const { effective: options } = await resolveSettings({
+          cwd: s.cwd,
+          settingSources: settings(s).settingSources ?? [],
+        });
+        const refusal = idleRefusal(
+          s,
+          queries.get(s.id),
+          p.idleCompaction,
+          options,
+        );
+        const disabled = !compactionEnabled(options);
+        const reason = disabled
+          ? "compaction_off"
+          : options.idleCompaction === false
+            ? "idle_compaction_off"
+            : refusal;
+        if (reason) throw new Error("Idle compaction skipped: " + reason);
+      }
+      return handle({
+        method: "turn/start",
+        params: {
+          ...p,
+          model: s.model,
+          clientUserMessageId: p.requestId || randomUUID(),
+          input: [{ type: "text", text: "/compact" }],
+        },
+      }) satisfies HandlerResult<typeof method>;
+    }
+
+    case "turn/start": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
+      const matches = p.clientUserMessageId
+        ? s.turns.flatMap((turn) =>
+            turn.items
+              .filter(
+                (item, index) =>
+                  item.type === "userMessage" &&
+                  (item.id === p.clientUserMessageId ||
+                    (index === 0 &&
+                      turn.clientUserMessageId === p.clientUserMessageId)),
+              )
+              .map((item) => ({ turn, item })),
+          )
+        : [];
+      if (
+        matches.some(
+          ({ item }) =>
+            JSON.stringify(item.content) !== JSON.stringify(p.input),
         )
       )
-        throw new Error(previous.error);
-      if (JSON.stringify(previous.content) !== JSON.stringify(p.input))
         throw new Error("This message identity has different content");
-      return { turnId: turn.id } satisfies HandlerResult<typeof method>;
-    }
-    // Errors with steerNotSubmitted: the input was never handed to Claude.
-    const notSubmitted = (message: string) =>
-      Object.assign(new Error(message), { steerNotSubmitted: true });
-    if (finishingTurns.has(turn))
-      throw notSubmitted(
-        "Claude finished before this steer could be submitted",
+      const prior = matches.find(({ turn, item }) =>
+        item.delivery === "steer"
+          ? item.deliveryStatus !== "not_applied"
+          : turn.startOutcome !== "not_applied",
       );
-    active.pendingSteers.add(id);
-    let item: Item | undefined;
-    try {
-      const groups = await inputGroups(p.input, content);
+      if (prior) {
+        const steered = prior.item.delivery === "steer";
+        if (
+          (steered ? prior.item.deliveryStatus : prior.turn.startOutcome) ===
+          "preparing"
+        )
+          throw Object.assign(
+            new Error("Claude input receipt outcome unknown"),
+            {
+              data: { turnStartOutcome: "unknown" },
+            },
+          );
+        return {
+          turn: { id: prior.turn.id, status: prior.turn.status },
+          ...(steered ? { steered: true } : {}),
+        } satisfies HandlerResult<typeof method>;
+      }
+      const running = queries.get(s.id)?.turn;
+      if (running) {
+        try {
+          await handle({
+            method: "turn/steer",
+            params: {
+              threadId: s.id,
+              expectedTurnId: running.id,
+              clientUserMessageId: p.clientUserMessageId ?? "",
+              input: p.input,
+            },
+          });
+          return {
+            turn: { id: running.id, status: running.status },
+            steered: true,
+          } satisfies HandlerResult<typeof method>;
+        } catch (error) {
+          // The running turn ended before this input reached Claude. Nothing
+          // was submitted, so the input starts the next turn instead.
+          if (!errorField(error, "steerNotSubmitted") || running.interrupted)
+            throw error;
+          await finishingTurns.get(running);
+          if (queries.get(s.id)?.turn) throw error;
+        }
+      }
+      let nativeCommand;
+      if (p.claudeCommand) {
+        const commands = await handle({
+          method: "claude/commands",
+          params: { cwd: s.cwd },
+        });
+        nativeCommand = explicitNativeCommand(p.claudeCommand, commands);
+        // Unknown slash text remains ordinary user input; never extract commands from it.
+      }
+      const groups = await inputGroups(
+        nativeCommand ? [{ type: "text", text: nativeCommand }] : p.input,
+        content,
+      );
+      const turnId = randomUUID();
+      const turn: FreshTurn = {
+        id: turnId,
+        clientUserMessageId: p.clientUserMessageId,
+        ...(p.idleCompaction ? { idleCompaction: true } : {}),
+        startOutcome: "preparing",
+        status: "inProgress",
+        items: [
+          {
+            id: p.clientUserMessageId || randomUUID(),
+            type: "userMessage",
+            content: p.input,
+            nativeId: nativeUserMessageId(p.clientUserMessageId || turnId),
+          },
+        ],
+      };
+      const message = userMessage(
+        s,
+        turn,
+        groups,
+        p.clientUserMessageId || turn.id,
+      );
+      let active: ActiveQuery | null | undefined = queries.get(s.id);
+      const startedAt = Date.now();
+      const deadline = startedAt + PREPARATION_TIMEOUT_MS;
+      const control = <T>(read: () => T | Promise<T>, phase: string) =>
+        boundedPreparation(
+          read,
+          deadline,
+          () => {
+            if (
+              active &&
+              queries.get(s.id) === active &&
+              !active.turn &&
+              !active.tasks.size
+            )
+              discardQuery(s.id, active);
+          },
+          phase,
+          startedAt,
+        );
+      const requestedTools =
+        exactTurnTools(s, p.dynamicTools) || s.dynamicTools || [];
+      const toolsIdentity = JSON.stringify(requestedTools);
+      const toolsChanged = active && active.toolsIdentity !== toolsIdentity;
+      s.dynamicTools = requestedTools;
+      if (active && !active.turn && !active.tasks.size) {
+        // A persistent query can die between turns (its Claude process ends).
+        // Nothing is running in it, so start this turn in a fresh query.
+        try {
+          await control(() => active?.ready, "active_ready");
+        } catch (error) {
+          if (!deadQuery(error)) throw error;
+          discardQuery(s.id, active);
+          active = null;
+        }
+      }
+      if (active) {
+        const live = active;
+        await control(() => live.ready, "active_ready");
+        const q = live.q;
+        if (!q) throw new Error("Claude query is closed");
+        if (toolsChanged) {
+          // Replace only the Studio MCP server; background tasks keep running.
+          // The SDK keeps an already registered in-process server even when its
+          // tools change. Remove it first so the new schema replaces it.
+          await control(
+            () => q.setMcpServers(live.externalMcpServers || {}),
+            "mcp_remove",
+          );
+          await control(
+            () =>
+              q.setMcpServers({
+                ...live.externalMcpServers,
+                studio: studioTools(s, () => live.turn),
+              }),
+            "mcp_install",
+          );
+          active.toolsIdentity = toolsIdentity;
+        }
+        try {
+          await control(() => q.setModel(p.model || s.model), "model_set");
+          await control(
+            () => q.setPermissionMode(permissionMode(s, p)),
+            "permissions_set",
+          );
+          active.permissionMode = permissionMode(s, p);
+          const flagSettings = await control(
+            () => flags(s, p, true),
+            "catalog_flags",
+          );
+          await control(
+            () => q.applyFlagSettings(flagSettings),
+            "flag_settings",
+          );
+        } catch (error) {
+          if (!deadQuery(error) || active.turn || active.tasks.size)
+            throw error;
+          discardQuery(s.id, active);
+          active = null;
+        }
+      }
+      if (active) {
+        if (queries.get(s.id) !== active || active.input.closed)
+          throw new Error("Claude closed before this turn could start");
+        if (active.turn)
+          throw new Error(
+            "Claude background work started a turn; wait or steer that turn",
+          );
+        active.turn = turn;
+        active.finalization = null;
+        active.idleRequestStartedAt = Date.now();
+        active.reservingInput = true;
+      }
+      s.model = p.model || s.model;
+      if (!s.moveProof)
+        s.moveTurnOptions = {
+          ...(p.effort !== undefined ? { effort: p.effort } : {}),
+          ...(p.serviceTier !== undefined
+            ? { serviceTier: p.serviceTier }
+            : {}),
+        };
+      pendingTurnReceipts.add(turn.id);
+      s.turns.push(turn);
+      s.preview =
+        p.input?.find((item) => item.type === "text")?.text?.slice(0, 160) ||
+        "";
+      try {
+        await persist(s);
+      } catch (error) {
+        if (active?.turn === turn) {
+          active.turn = null;
+          active.reservingInput = false;
+        }
+        s.turns = s.turns.filter((t) => t !== turn);
+        pendingTurnReceipts.delete(turn.id);
+        // No SDK admission occurred; retire only this reservation's guard and
+        // save the cleanup (or defer it on a full disk) before reporting refusal.
+        if (
+          cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]))
+        )
+          await persistLive(s);
+        throw isDiskFull(error) ? diskFullInputError(error) : error;
+      }
+      if (active) {
+        active.reservingInput = false;
+        if (active.turn !== turn || active.input.closed) {
+          const error = new Error(
+            "Claude stopped before accepting the new turn",
+          );
+          turn.status = "failed";
+          turn.startOutcome = "not_applied";
+          turn.error = { message: error.message };
+          cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
+          pendingTurnReceipts.delete(turn.id);
+          await persistLive(s);
+          throw Object.assign(error, {
+            data: { turnStartOutcome: "not_applied" },
+          });
+        }
+      } else {
+        active = newActive(turn);
+        queries.set(s.id, active);
+        active.consumer = new Promise((resolve, reject) => {
+          const owned = active;
+          if (!owned) return reject(new Error("Claude query is missing"));
+          setImmediate(() => startSession(s, owned, p).then(resolve, reject));
+        });
+        active.consumer.catch((error) =>
+          process.stderr.write("Claude consumer: " + errorText(error) + "\n"),
+        );
+      }
+      catalogCache.activityChanged();
+      emit("turn/started", {
+        threadId: s.id,
+        turn: { id: turn.id, status: "inProgress" },
+      });
+      active.input.push(message);
+      turn.startOutcome = "accepted";
+      // The reply reports the turn as Claude accepted it. The SDK stream runs
+      // while the receipt saves, so a fast turn may already have ended; its
+      // end arrives as turn/completed, as with Codex.
+      const acceptedStatus = turn.status;
+      try {
+        // Claude has this input. A full disk only delays its saved receipt.
+        await persistLive(s, turn);
+      } catch (error) {
+        throw Object.assign(
+          new Error(
+            "Claude accepted input; receipt persistence failed; outcome unknown",
+            { cause: error },
+          ),
+          { data: { turnStartOutcome: "unknown" } },
+        );
+      } finally {
+        pendingTurnReceipts.delete(turn.id);
+      }
+      return {
+        turn: { id: turn.id, status: acceptedStatus },
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "turn/steer": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId),
+        active = queries.get(s.id);
       if (
-        turn.interrupted ||
-        active.turn !== turn ||
-        finishingTurns.has(turn) ||
-        queries.get(s.id) !== active ||
-        active.input.closed
+        !active?.turn ||
+        active.turn.interrupted ||
+        active.turn.id !== p.expectedTurnId
       )
+        throw new Error("The steer belongs to a different Claude turn");
+      const turn = active.turn,
+        id = p.clientUserMessageId;
+      if (!id) throw new Error("Steer requires its original message identity");
+      const previous = turn.items.find((item) => item.id === id);
+      if (previous) {
+        if (
+          ["not_applied", "cancelled"].some(
+            (status) => status === previous.deliveryStatus,
+          )
+        )
+          throw new Error(previous.error);
+        if (JSON.stringify(previous.content) !== JSON.stringify(p.input))
+          throw new Error("This message identity has different content");
+        return { turnId: turn.id } satisfies HandlerResult<typeof method>;
+      }
+      // Errors with steerNotSubmitted: the input was never handed to Claude.
+      const notSubmitted = (message: string) =>
+        Object.assign(new Error(message), { steerNotSubmitted: true });
+      if (finishingTurns.has(turn))
         throw notSubmitted(
           "Claude finished before this steer could be submitted",
         );
-      item = {
-        id,
-        type: "userMessage",
-        content: p.input,
-        nativeId: nativeUserMessageId(id),
-        delivery: "steer",
-        deliveryStatus: "preparing",
-      };
-      turn.items.push(item);
-      const message = userMessage(s, turn, groups, id);
+      active.pendingSteers.add(id);
+      let item: Item | undefined;
       try {
-        await persist(s);
+        const groups = await inputGroups(p.input, content);
+        if (
+          turn.interrupted ||
+          active.turn !== turn ||
+          finishingTurns.has(turn) ||
+          queries.get(s.id) !== active ||
+          active.input.closed
+        )
+          throw notSubmitted(
+            "Claude finished before this steer could be submitted",
+          );
+        item = {
+          id,
+          type: "userMessage",
+          content: p.input,
+          nativeId: nativeUserMessageId(id),
+          delivery: "steer",
+          deliveryStatus: "preparing",
+        };
+        turn.items.push(item);
+        const message = userMessage(s, turn, groups, id);
+        try {
+          await persist(s);
+        } catch (error) {
+          throw isDiskFull(error) ? diskFullInputError(error) : error;
+        }
+        if (
+          turn.interrupted ||
+          active.turn !== turn ||
+          finishingTurns.has(turn) ||
+          queries.get(s.id) !== active ||
+          active.input.closed
+        )
+          throw notSubmitted(
+            "Claude stopped before this steer could be submitted",
+          );
+        active.input.push(message);
+        item.deliveryStatus = "submitted";
+        return { turnId: turn.id } satisfies HandlerResult<typeof method>;
       } catch (error) {
-        throw isDiskFull(error) ? diskFullInputError(error) : error;
+        active.pendingSteers.delete(id);
+        if (item) {
+          item.deliveryStatus = "not_applied";
+          cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
+          item.error = errorText(error);
+          await persistLive(s);
+        }
+        if (
+          active.deferredResult &&
+          active.turn === turn &&
+          !active.pendingSteers.size
+        ) {
+          const result = active.deferredResult;
+          active.deferredResult = null;
+          await finishTurn(s, active, result);
+        }
+        throw error;
       }
-      if (
-        turn.interrupted ||
-        active.turn !== turn ||
-        finishingTurns.has(turn) ||
-        queries.get(s.id) !== active ||
-        active.input.closed
-      )
-        throw notSubmitted(
-          "Claude stopped before this steer could be submitted",
-        );
-      active.input.push(message);
-      item.deliveryStatus = "submitted";
-      return { turnId: turn.id } satisfies HandlerResult<typeof method>;
-    } catch (error) {
-      active.pendingSteers.delete(id);
-      if (item) {
-        item.deliveryStatus = "not_applied";
-        cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
-        item.error = errorText(error);
-        await persistLive(s);
+    }
+
+    case "turn/interrupt": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
+      const active = queries.get(p.threadId);
+      // Match Codex: an interrupt without an active turn changes nothing.
+      // Closing an idle session here would also end its background tasks.
+      if (!active?.turn) throw new Error("no active turn to interrupt");
+      if (p.turnId && p.turnId !== active.turn.id)
+        throw new Error("The interrupt belongs to a different Claude turn");
+      const turn = active.turn;
+      turn.interrupted = true;
+      const reservingInput = active.reservingInput;
+      if (reservingInput) {
+        // An interrupt can race the durable pre-input receipt. Invalidate only
+        // that reservation so the queued background work and query stay open.
+        active.turn = null;
+        active.reservingInput = false;
+        catalogCache.activityChanged();
       }
-      if (
-        active.deferredResult &&
-        active.turn === turn &&
-        !active.pendingSteers.size
-      ) {
-        const result = active.deferredResult;
-        active.deferredResult = null;
-        await finishTurn(s, active, result);
+      const stopTasks = p.stopBackgroundTasks !== false && active.tasks.size;
+      if (stopTasks && typeof active.q?.stopTask !== "function")
+        throw new Error("Claude does not support stopping background tasks");
+      let results: PromiseSettledResult<void>[] = [];
+      if (!reservingInput && !finishingTurns.has(turn) && !active.stopTimer) {
+        const timer = setTimeout(() => {
+          if (active.stopTimer !== timer) return;
+          active.stopTimer = null;
+          if (active.turn !== turn) return;
+          void recoverStall(s, active, {
+            id: "stop:" + turn.id,
+            stop: true,
+          }).catch((error) => lifecycleFailure(s, active, error));
+        }, limits.interruptWaitMs);
+        active.stopTimer = timer;
+        timer.unref();
       }
-      throw error;
-    }
-  }
-  if (method === "turn/interrupt") {
-    const s = await session(p.threadId);
-    const active = queries.get(p.threadId);
-    // Match Codex: an interrupt without an active turn changes nothing.
-    // Closing an idle session here would also end its background tasks.
-    if (!active?.turn) throw new Error("no active turn to interrupt");
-    if (p.turnId && p.turnId !== active.turn.id)
-      throw new Error("The interrupt belongs to a different Claude turn");
-    const turn = active.turn;
-    turn.interrupted = true;
-    const reservingInput = active.reservingInput;
-    if (reservingInput) {
-      // An interrupt can race the durable pre-input receipt. Invalidate only
-      // that reservation so the queued background work and query stay open.
-      active.turn = null;
-      active.reservingInput = false;
-      catalogCache.activityChanged();
-    }
-    const stopTasks = p.stopBackgroundTasks !== false && active.tasks.size;
-    if (stopTasks && typeof active.q?.stopTask !== "function")
-      throw new Error("Claude does not support stopping background tasks");
-    let results: PromiseSettledResult<void>[] = [];
-    if (!reservingInput && !finishingTurns.has(turn) && !active.stopTimer) {
-      const timer = setTimeout(() => {
-        if (active.stopTimer !== timer) return;
-        active.stopTimer = null;
-        if (active.turn !== turn) return;
-        void recoverStall(s, active, {
-          id: "stop:" + turn.id,
-          stop: true,
-        }).catch((error) => lifecycleFailure(s, active, error));
-      }, limits.interruptWaitMs);
-      active.stopTimer = timer;
-      timer.unref();
-    }
-    const receipt = await interruptInputQueue(
-      s,
-      active,
-      stopTasks
-        ? async () => {
-            results = await Promise.allSettled(
-              [...active.tasks.keys()].map((taskId) =>
-                active.q?.stopTask(taskId),
-              ),
-            );
-          }
-        : undefined,
-    );
-    // The pending start owns the reservation's durable rejection. Do not
-    // wait for its blocked save before the caller can observe the interrupt.
-    if (!reservingInput) {
-      if (active.turn === turn && active.deferredResult)
-        await finishTurn(s, active, active.deferredResult);
-      else await persistLive(s);
-    }
-    const failure = results.find((result) => result.status === "rejected");
-    if (failure?.status === "rejected")
-      throw Object.assign(
-        new Error(
-          failure.reason?.message || "Claude background task stop failed",
-        ),
-        {
-          data: { interruptReceipt: receipt },
-        },
+      const receipt = await interruptInputQueue(
+        s,
+        active,
+        stopTasks
+          ? async () => {
+              results = await Promise.allSettled(
+                [...active.tasks.keys()].map((taskId) =>
+                  active.q?.stopTask(taskId),
+                ),
+              );
+            }
+          : undefined,
       );
-    return receipt satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/name/set") {
-    const s = await session(p.threadId);
-    if (typeof p.name !== "string" || !p.name.trim())
-      throw new Error("Thread name must not be empty");
-    s.name = p.name;
-    await persist(s);
-    return {} satisfies HandlerResult<typeof method>;
-  }
-  if (method === "thread/backgroundTerminals/list") {
-    const data = [...(queries.get(p.threadId)?.tasks.values() || [])];
-    return { data, terminals: data, nextCursor: null } satisfies HandlerResult<
-      typeof method
-    >;
-  }
-  if (method === "thread/queue/list") {
-    const data = [...(queries.get(p.threadId)?.pendingSteers || [])].map(
-      (id) => ({ id, status: "queued" as const }),
-    );
-    return { data, items: data, nextCursor: null } satisfies HandlerResult<
-      typeof method
-    >;
-  }
-  if (method === "thread/commandExecution/background")
-    return moveCommandToBackground(
-      queries.get(p.threadId),
-      p,
-    ) satisfies HandlerResult<typeof method>;
-  if (method === "claude/stopTask") {
-    const active = queries.get(p.threadId);
-    if (!active?.q || !active.tasks.has(p.taskId))
-      throw new Error("This Claude background task is no longer active");
-    await active.q.stopTask(p.taskId);
-    return {} satisfies HandlerResult<typeof method>;
-  }
-  if (method === "mcpServerStatus/list" || method === "mcpServer/reconnect") {
-    await session(p.threadId);
-    const active = queries.get(p.threadId);
-    if (!active) throw new Error("The Claude session query is not loaded");
-    await active.ready;
-    if (queries.get(p.threadId) !== active || !active.q)
-      throw new Error("The Claude session query is not loaded");
-    if (method === "mcpServer/reconnect") {
+      // The pending start owns the reservation's durable rejection. Do not
+      // wait for its blocked save before the caller can observe the interrupt.
+      if (!reservingInput) {
+        if (active.turn === turn && active.deferredResult)
+          await finishTurn(s, active, active.deferredResult);
+        else await persistLive(s);
+      }
+      const failure = results.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected")
+        throw Object.assign(
+          new Error(
+            failure.reason?.message || "Claude background task stop failed",
+          ),
+          {
+            data: { interruptReceipt: receipt },
+          },
+        );
+      return receipt satisfies HandlerResult<typeof method>;
+    }
+
+    case "thread/name/set": {
+      const { method, params: p } = request;
+      const s = await session(p.threadId);
       if (typeof p.name !== "string" || !p.name.trim())
-        throw new Error("An MCP server name is required");
-      if (typeof active.q.reconnectMcpServer !== "function")
-        throw new Error("This Claude SDK does not support MCP reconnect");
-      await active.q.reconnectMcpServer(p.name);
+        throw new Error("Thread name must not be empty");
+      s.name = p.name;
+      await persist(s);
       return {} satisfies HandlerResult<typeof method>;
     }
-    const offset = p.cursor == null ? 0 : Number(p.cursor);
-    if (!Number.isSafeInteger(offset) || offset < 0)
-      throw new Error("Invalid Claude MCP status cursor");
-    const limit = p.limit == null ? null : Number(p.limit);
-    if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1))
-      throw new Error("Claude MCP status limit must be a positive integer");
-    const statuses = await active.q.mcpServerStatus();
-    const end = limit === null ? statuses.length : offset + limit;
-    // SDK configuration can contain credentials. Discovery exposes status only.
-    const data = statuses
-      .slice(offset, end)
-      .map(({ config: _config, ...status }) => status);
-    return {
-      data,
-      nextCursor: end < statuses.length ? String(end) : null,
-    } satisfies HandlerResult<typeof method>;
+
+    case "thread/backgroundTerminals/list": {
+      const { method, params: p } = request;
+      const data = [...(queries.get(p.threadId)?.tasks.values() || [])];
+      return {
+        data,
+        terminals: data,
+        nextCursor: null,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "thread/queue/list": {
+      const { method, params: p } = request;
+      const data = [...(queries.get(p.threadId)?.pendingSteers || [])].map(
+        (id) => ({ id, status: "queued" as const }),
+      );
+      return { data, items: data, nextCursor: null } satisfies HandlerResult<
+        typeof method
+      >;
+    }
+
+    case "thread/commandExecution/background": {
+      const { method, params: p } = request;
+      return moveCommandToBackground(
+        queries.get(p.threadId),
+        p,
+      ) satisfies HandlerResult<typeof method>;
+    }
+
+    case "claude/stopTask": {
+      const { method, params: p } = request;
+      const active = queries.get(p.threadId);
+      if (!active?.q || !active.tasks.has(p.taskId))
+        throw new Error("This Claude background task is no longer active");
+      await active.q.stopTask(p.taskId);
+      return {} satisfies HandlerResult<typeof method>;
+    }
+
+    case "mcpServerStatus/list":
+    case "mcpServer/reconnect": {
+      const { method, params: p } = request;
+      await session(p.threadId);
+      const active = queries.get(p.threadId);
+      if (!active) throw new Error("The Claude session query is not loaded");
+      await active.ready;
+      if (queries.get(p.threadId) !== active || !active.q)
+        throw new Error("The Claude session query is not loaded");
+      if (method === "mcpServer/reconnect") {
+        if (typeof p.name !== "string" || !p.name.trim())
+          throw new Error("An MCP server name is required");
+        if (typeof active.q.reconnectMcpServer !== "function")
+          throw new Error("This Claude SDK does not support MCP reconnect");
+        await active.q.reconnectMcpServer(p.name);
+        return {} satisfies HandlerResult<typeof method>;
+      }
+      const offset = p.cursor == null ? 0 : Number(p.cursor);
+      if (!Number.isSafeInteger(offset) || offset < 0)
+        throw new Error("Invalid Claude MCP status cursor");
+      const limit = p.limit == null ? null : Number(p.limit);
+      if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1))
+        throw new Error("Claude MCP status limit must be a positive integer");
+      const statuses = await active.q.mcpServerStatus();
+      const end = limit === null ? statuses.length : offset + limit;
+      // SDK configuration can contain credentials. Discovery exposes status only.
+      const data = statuses
+        .slice(offset, end)
+        .map(({ config: _config, ...status }) => status);
+      return {
+        data,
+        nextCursor: end < statuses.length ? String(end) : null,
+      } satisfies HandlerResult<typeof method>;
+    }
+
+    case "skills/list": {
+      const { method, params: p } = request;
+      return listSkills(p?.cwds) satisfies HandlerResult<typeof method>;
+    }
+    default:
+      request satisfies never;
+      throw new Error("Claude does not support " + method);
   }
-  if (method === "skills/list")
-    return listSkills(p?.cwds) satisfies HandlerResult<typeof method>;
-  throw new Error("Claude does not support " + method);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

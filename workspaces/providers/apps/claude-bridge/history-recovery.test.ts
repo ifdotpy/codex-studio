@@ -69,11 +69,11 @@ for (const serviceFirst of [true, false])
             includeTurns: true,
           })
         ).thread;
-        const item = thread.turns[0].items.find(
+        const item = thread.turns[0]?.items.find(
           (item) => item.id === "exact-input",
-        )!;
-        expect(item.nativeIds).toHaveLength(2);
-        expect(item.deliveryStatus).toBe(
+        );
+        expect(item?.nativeIds).toHaveLength(2);
+        expect(item?.deliveryStatus).toBe(
           damage === "all"
             ? "delivered"
             : ["absent", "unknown system"].includes(damage)
@@ -81,7 +81,7 @@ for (const serviceFirst of [true, false])
               : "submitted",
         );
         if (!["all", "absent", "unknown system"].includes(damage))
-          expect(item.error).toMatch(/unknown/);
+          expect(item?.error).toMatch(/unknown/);
       } finally {
         await bridge.close();
       }

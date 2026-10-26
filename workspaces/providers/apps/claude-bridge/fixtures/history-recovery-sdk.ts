@@ -67,14 +67,16 @@ export function query({ prompt, options }: SessionFixtureQuery) {
         JSON.stringify({ method: "fixture/anchor", params: {} }) + "\n",
       );
       const parts: SDKUserMessage[] = [];
-      do {
+      while (true) {
         const next = await prompt.next();
         if (next.done) return;
         parts.push(next.value);
-      } while (parts.at(-1)!.shouldQuery === false);
+        if (next.value.shouldQuery !== false) break;
+      }
       const damage = process.env.HISTORY_DAMAGE;
       if (damage === "all") for (const part of parts) record(part);
-      if (damage === "partial") record(parts[0]);
+      if (damage === "partial")
+        for (const part of parts.slice(0, 1)) record(part);
       if (damage === "malformed uuid" || damage === "unknown record")
         fs.appendFileSync(
           file,

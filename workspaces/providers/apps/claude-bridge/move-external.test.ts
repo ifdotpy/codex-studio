@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type {
   McpServerConfig,
+  McpServerStatus,
   McpClaudeAIProxyServerConfig,
   Options,
   Query,
@@ -123,7 +124,10 @@ test("external proof lists only current server aliases and never transfers crede
 });
 
 test("external server failure and missing schemas return only safe names", async () => {
-  for (const state of [[], [{ ...status, status: "needs-auth" }]])
+  for (const state of [
+    [],
+    [{ ...status, status: "needs-auth" }],
+  ] satisfies Parameters<typeof externalCatalog>[0][])
     await assert.rejects(
       externalCatalog(state, "/target", ["anarlog"], dependencies),
       /anarlog/,
@@ -147,6 +151,29 @@ test("external server failure and missing schemas return only safe names", async
         );
       },
     );
+});
+
+test("every disconnected SDK status refuses external proof before listing tools", async () => {
+  const disconnected: Exclude<McpServerStatus["status"], "connected">[] = [
+    "failed",
+    "needs-auth",
+    "pending",
+    "disabled",
+  ];
+  for (const state of disconnected) {
+    let listings = 0;
+    await assert.rejects(
+      externalCatalog([{ ...status, status: state }], "/target", ["anarlog"], {
+        ...dependencies,
+        listTools: async () => {
+          listings++;
+          return tools;
+        },
+      }),
+      /anarlog/,
+    );
+    assert.equal(listings, 0);
+  }
 });
 
 test("stdio proof sends initialize and tools/list without tool calls or model input", async () => {

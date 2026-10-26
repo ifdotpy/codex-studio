@@ -28,11 +28,14 @@ export type ExternalServer = {
   claudeAI?: boolean;
   proxyId?: string;
 };
-type Status = Pick<McpServerStatus, "name"> & {
-  status: string;
-  source?: string;
-  config?: McpServerStatus["config"];
-};
+type Status = Pick<McpServerStatus, "name" | "status" | "source" | "config">;
+const mcpStatusConnected = {
+  connected: true,
+  failed: false,
+  "needs-auth": false,
+  pending: false,
+  disabled: false,
+} satisfies Record<McpServerStatus["status"], boolean>;
 export type CatalogDependencies = {
   localConfigs?: (cwd: string) => Promise<Record<string, unknown>>;
   listTools?: (config: ExternalConfig) => Promise<Partial<Tool>[]>;
@@ -386,7 +389,7 @@ export async function externalCatalog(
     const row = statuses.find(
       (entry) => serverAlias(entry.name) === alias && entry.source !== "sdk",
     );
-    if (!row || row.status !== "connected" || !row.config)
+    if (!row || mcpStatusConnected[row.status] !== true || !row.config)
       throw externalRefusal(
         aliases,
         statuses.map((entry) => entry.name),
@@ -538,11 +541,8 @@ export async function targetExternalCatalog(
     );
     if (config) configured[server.name] = config;
   }
-  const statuses: Status[] = expected.map((server) => ({
-    name: server.name,
-    source: server.claudeAI ? "claudeai" : "user",
-    status: "connected",
-    config: server.claudeAI
+  const statuses: Status[] = expected.map((server) => {
+    const config: ExternalConfig | undefined = server.claudeAI
       ? {
           type: "claudeai-proxy",
           id: server.proxyId ?? "",
@@ -550,8 +550,14 @@ export async function targetExternalCatalog(
         }
       : configured[server.name]
         ? parseExternalConfig(configured[server.name])
-        : undefined,
-  }));
+        : undefined;
+    return {
+      name: server.name,
+      source: server.claudeAI ? "claudeai" : "user",
+      status: "connected",
+      ...(config ? { config } : {}),
+    };
+  });
   const result = await externalCatalog(
     statuses,
     cwd,
