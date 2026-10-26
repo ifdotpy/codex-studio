@@ -4,13 +4,15 @@ import { execFileSync } from "node:child_process";
 // job (recover_backend.py) and the update installer (install_update.py).
 export const pythonEntryPoints = ["recover_backend.py", "install_update.py"];
 
-// Every Python file that package.mjs copies into Contents/Resources: the entry
-// points and the local modules that they import. check-package.mjs derives the
+// Every recovery resource that package.mjs copies into Contents/Resources: the entry
+// points, their local modules, and their shared delivery contract. check-package.mjs derives the
 // required modules from the imports of the packaged entry points, so a module
 // missing here fails that check.
 export const pythonResources = [
   ...pythonEntryPoints,
   "desktop_process.py",
+  "desktop_delivery.py",
+  "delivery-contract.json",
   "desktop_updates.py",
   "desktop_vm.py",
 ];
