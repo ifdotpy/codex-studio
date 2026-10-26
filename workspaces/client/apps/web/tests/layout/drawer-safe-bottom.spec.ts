@@ -36,7 +36,9 @@ for (const profile of profiles) {
       try {
         const sidebar = await fixture.open(page);
         await sidebar
-          .getByRole("button", { name: /^Local Saved pin\b/ })
+          .getByRole("button")
+          .filter({ hasText: "Local Saved pin" })
+          .filter({ has: page.locator("strong") })
           .first()
           .click();
         await cdp.send("Emulation.setSafeAreaInsetsOverride", {
@@ -73,16 +75,20 @@ for (const profile of profiles) {
             return rect.y + rect.height;
           })
           .toBeCloseTo(profile.height, 1);
-        expect(
-          await drawer.evaluate((node) => {
+        const bottomHit = () =>
+          drawer.evaluate((node) => {
             const rect = node.getBoundingClientRect();
             const hit = document.elementFromPoint(
               rect.x + rect.width / 2,
               window.innerHeight - 1,
             );
-            return !!hit && node.contains(hit);
-          }),
-        ).toBe(true);
+            return {
+              covered: !!hit && node.contains(hit),
+              target: hit?.outerHTML.slice(0, 500),
+              rect: rect.toJSON(),
+            };
+          });
+        await expect.poll(async () => (await bottomHit()).covered).toBe(true);
         expect(
           await page.evaluate(({ width, height, right }) => {
             return [1, (width - right) / 2, width - right - 1].every((x) => {

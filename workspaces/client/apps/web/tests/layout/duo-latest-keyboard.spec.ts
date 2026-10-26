@@ -73,7 +73,9 @@ test("Latest shares the composer motion while the reader stays above the last me
   try {
     const sidebar = await fixture.open(page);
     await sidebar
-      .getByRole("button", { name: /^Local Saved pin\b/ })
+      .getByRole("button")
+      .filter({ hasText: "Local Saved pin" })
+      .filter({ has: page.locator("strong") })
       .first()
       .click();
     await cdp.send("Emulation.setSafeAreaInsetsOverride", {

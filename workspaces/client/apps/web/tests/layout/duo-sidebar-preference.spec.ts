@@ -3,7 +3,7 @@ import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
 test.use({ hasTouch: true, reducedMotion: "reduce", serviceWorkers: "block" });
 
-test("Duo has its own sidebar preference and keeps the header in two rows", async ({
+test("Duo has its own sidebar preference and keeps one header row", async ({
   page,
   context,
 }) => {
@@ -39,7 +39,7 @@ test("Duo has its own sidebar preference and keeps the header in two rows", asyn
         .map((rect) => Math.round(rect.y + rect.height / 2));
       return new Set(centers).size;
     });
-    expect(rows).toBeLessThanOrEqual(2);
+    expect(rows).toBe(1);
     await resize.press("ArrowLeft");
     await expect.poll(width).toBeCloseTo(300.8, 1);
     await page.setViewportSize({ width: 1200, height: 669 });
