@@ -261,15 +261,14 @@ it("Claude account status and key updates do not reload settings; explicit retry
   let currentAgent = agent;
   const accountFields = {
     id: "claude",
+    status: "signedOut",
     home: "/fixture",
     source: "fixture",
     provider: "claude",
     label: "Claude",
   } satisfies Account;
-  let account: typeof accountFields & Pick<Account, "status"> = {
-    ...accountFields,
-    status: "signedOut",
-  };
+  let account: Omit<typeof accountFields, "status"> & Pick<Account, "status"> =
+    accountFields;
   const read = () => ClaudeSettings({ agent: currentAgent, account });
   render(read);
   await settle();
