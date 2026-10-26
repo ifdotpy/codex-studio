@@ -3,12 +3,15 @@ import type { Session, Turn } from "./session-state.ts";
 export type ToolClock = {
   startedAt: number;
   timeoutMs: number | null;
-  tool?: string;
+  tool?: string | undefined;
 };
 export type Stall = ToolClock & {
   id: string;
   elapsedMs: number;
   silentMs: number;
+};
+export type StallReport = Omit<Stall, "id" | "startedAt"> & {
+  toolUseId: Stall["id"];
 };
 export type StallLimits = Pick<
   ReturnType<typeof stallLimits>,
