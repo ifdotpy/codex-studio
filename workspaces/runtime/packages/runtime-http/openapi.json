@@ -15451,6 +15451,9 @@
             "title": "Source",
             "type": "string"
           },
+          "studioUsage": {
+            "$ref": "#/components/schemas/UsageObservation"
+          },
           "threadId": {
             "anyOf": [
               {
@@ -24459,6 +24462,10 @@
           },
           "backendBuild": {
             "title": "Backendbuild",
+            "type": "string"
+          },
+          "backendKind": {
+            "const": "rust",
             "type": "string"
           },
           "browser": {

@@ -2,37 +2,15 @@ import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { startBridge } from "./testing/bridge-harness.ts";
 
-const bridges = [];
+const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
-function sdk(events) {
-  return `
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-export function query({prompt,options}) {
- const abort=new AbortController();
- return {
-  supportedModels:async()=>[{value:'sonnet',displayName:'Sonnet',resolvedModel:'claude-sonnet-4-6'}],
-  accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
-  initializationResult:async()=>({commands:[]}),mcpServerStatus:async()=>[],
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},
-  setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  close(){abort.abort();},interrupt:async()=>abort.abort(),
-  async *[Symbol.asyncIterator]() {
-   const input=await prompt.next(); if(input.done)return;
-   yield {type:'user',isReplay:true,uuid:input.value.uuid};
-   yield {type:'system',subtype:'init'};
-   for(const event of ${JSON.stringify(events)})yield event;
-   await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
-  }
- };
-}`;
-}
-async function run(events, model = "sonnet") {
-  const bridge = await startBridge(sdk(events), "claude-usage-");
+const sdk = new URL("./usage-events.fixture.mts", import.meta.url);
+async function run(events: readonly unknown[], model = "sonnet") {
+  const bridge = await startBridge(sdk, "claude-usage-", {
+    env: { STUDIO_FIXTURE_EVENTS: JSON.stringify(events) },
+  });
   bridges.push(bridge);
   await bridge.call("turn/start", {
     threadId: bridge.thread,

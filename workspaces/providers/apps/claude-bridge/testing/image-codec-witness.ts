@@ -7,7 +7,7 @@ import {
   MAX_IMAGE_SIDE,
   MAX_IMAGE_BYTES,
   MAX_IMAGE_BASE64_BYTES,
-} from "../images.mjs";
+} from "../images.ts";
 
 let cases = 0;
 for (const format of ["png", "jpeg", "gif", "webp"]) {

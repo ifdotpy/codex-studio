@@ -837,6 +837,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
+    openapi["components"]["schemas"]["DesktopResponse"]["properties"]["backendKind"] =
+        serde_json::json!({"type":"string", "const":crate::desktop::BACKEND_KIND});
+    openapi["components"]["schemas"]["AnalyticsUsageRecord"]["properties"]["studioUsage"] =
+        serde_json::json!({"$ref":"#/components/schemas/UsageObservation"});
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -1047,6 +1051,20 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_metadata_contract_exposes_backend_and_usage_observations() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        assert_eq!(
+            document.pointer("/components/schemas/DesktopResponse/properties/backendKind/const"),
+            Some(&serde_json::json!("rust"))
+        );
+        assert_eq!(
+            document
+                .pointer("/components/schemas/AnalyticsUsageRecord/properties/studioUsage/$ref"),
+            Some(&serde_json::json!("#/components/schemas/UsageObservation"))
+        );
+    }
 
     #[test]
     fn markdown_output_matches_rust_owned_schema() {

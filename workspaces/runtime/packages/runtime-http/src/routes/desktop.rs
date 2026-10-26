@@ -134,7 +134,7 @@ fn status(state: &HttpState, disk_space: DiskSpaceStatus) -> Value {
         });
     json!({
         "application": "codex-agents", "protocol": 1, "mobileProtocol": 1,
-        "backendKind": "rust",
+        "backendKind": studio_runtime_schema::desktop::BACKEND_KIND,
         "backendBuild": backend_build(), "nativeRuntime": native_runtime,
         "providerVersions": state.provider_versions.as_ref().map_or_else(
             || json!({"checkedAt": null, "providers": [], "warnings": []}),
