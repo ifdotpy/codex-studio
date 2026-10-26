@@ -36,3 +36,9 @@ export async function waitForFrames(page: Page, count = 4) {
     count,
   );
 }
+
+// Serializable DOM geometry in CSS pixels returned by browser measurements.
+export type BrowserRectangle = Pick<
+  DOMRectReadOnly,
+  "x" | "y" | "width" | "height" | "top" | "right" | "bottom" | "left"
+>;

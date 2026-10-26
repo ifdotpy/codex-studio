@@ -1,3 +1,4 @@
+import type { BrowserRectangle } from "./browser.ts";
 import { test, expect } from "../playwright.ts";
 
 test("desktop conversation header keeps title and actions on one row", async ({
@@ -18,10 +19,10 @@ test("desktop conversation header keeps title and actions on one row", async ({
   ).toBeVisible();
   const header = page.locator(".simple-workspace-header");
   const geometry = await header.evaluate((element) => {
-    const rect = (selector: string) => {
+    const rect = (selector: string): BrowserRectangle => {
       const node = element.querySelector(selector);
       if (!node) throw new Error(`Missing header element ${selector}`);
-      return node.getBoundingClientRect();
+      return node.getBoundingClientRect().toJSON();
     };
     return [
       "#sidebar-toggle",

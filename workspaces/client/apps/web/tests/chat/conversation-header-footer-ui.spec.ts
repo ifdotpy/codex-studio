@@ -1,3 +1,4 @@
+import type { BrowserRectangle } from "./browser.ts";
 import assert from "node:assert/strict";
 import {
   test,
@@ -121,10 +122,10 @@ test("conversation header stays compact and usage facts remain visible", async (
         );
         await page.evaluate(() => document.fonts.ready);
         const geometry = await page.evaluate(() => {
-          const rect = (s: string) => {
+          const rect = (s: string): BrowserRectangle => {
             const node = document.querySelector(s);
             if (!node) throw new Error(`Missing geometry element ${s}`);
-            return node.getBoundingClientRect();
+            return node.getBoundingClientRect().toJSON();
           };
           return {
             header: rect(".simple-workspace-header"),
@@ -135,7 +136,9 @@ test("conversation header stays compact and usage facts remain visible", async (
             dots: rect(".account-limits-dots"),
             dotTargets: [
               ...document.querySelectorAll(".account-limits-dot-target"),
-            ].map((element) => element.getBoundingClientRect()),
+            ].map((element): BrowserRectangle =>
+              element.getBoundingClientRect().toJSON(),
+            ),
             limits: rect(".account-limits-toggle"),
             controls: [
               ...document.querySelectorAll(
@@ -147,7 +150,7 @@ test("conversation header stays compact and usage facts remain visible", async (
                   e.getClientRects().length &&
                   getComputedStyle(e).display !== "none",
               )
-              .map((e) => e.getBoundingClientRect()),
+              .map((e): BrowserRectangle => e.getBoundingClientRect().toJSON()),
             teamStrip: !!document.querySelector(".conversation-team-strip"),
             overflow: document.documentElement.scrollWidth > innerWidth,
           };
@@ -183,14 +186,14 @@ test("conversation header stays compact and usage facts remain visible", async (
 
 function assertGeometry(r: {
   width: number;
-  header: DOMRect;
-  title: DOMRect;
-  server: DOMRect;
-  limits: DOMRect;
-  dots: DOMRect;
-  dotTargets: DOMRect[];
-  estimate: DOMRect;
-  controls: DOMRect[];
+  header: BrowserRectangle;
+  title: BrowserRectangle;
+  server: BrowserRectangle;
+  limits: BrowserRectangle;
+  dots: BrowserRectangle;
+  dotTargets: BrowserRectangle[];
+  estimate: BrowserRectangle;
+  controls: BrowserRectangle[];
   teamStrip: boolean;
   overflow: boolean;
 }) {
