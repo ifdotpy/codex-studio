@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { decodeLegacyAgentDocument } from "./scaleVerifierHelpers.ts";
+import { createRequire } from "node:module";
 import type { Page, Response, Locator } from "playwright";
 import type { components, AgentEntityDto } from "../src/generated/api.ts";
 import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   parseArgs,
@@ -13,9 +14,11 @@ import {
   ensureHttps,
   localClassicViewUrl,
   assertLocalClassicView,
-  parseApiJson,
 } from "./verify-rust-worker-defaults.ts";
-import type { JournalBase } from "./verify-rust-worker-defaults.ts";
+import type {
+  JournalBase,
+  LegacySyncPull,
+} from "./verify-rust-worker-defaults.ts";
 
 type CreateRequest = components["schemas"]["CreateLeadRequest"];
 type DeleteRequest = components["schemas"]["IdRequest"];
@@ -107,18 +110,10 @@ async function readServerAgent(
           signal: AbortSignal.timeout(timeoutMs),
         },
       );
-      const identityBody = parseIdentity(
-        await identityResponse.text().catch(() => "null"),
-      );
-      function parseIdentity(
-        text: string,
-      ): components["schemas"]["AccessSnapshot"] | null {
-        try {
-          return JSON.parse(text) as components["schemas"]["AccessSnapshot"];
-        } catch {
-          return null;
-        }
-      }
+      let identityBody: components["schemas"]["AccessSnapshot"] | null = null;
+      try {
+        identityBody = await identityResponse.json();
+      } catch {}
       if (
         identityResponse.status !== 200 ||
         identityBody?.identity?.serverId !== expectedServerId
@@ -133,12 +128,15 @@ async function readServerAgent(
         credentials: "same-origin",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      const body = await response.text().catch(() => "null");
+      let body: LegacySyncPull | null = null;
+      try {
+        body = await response.json();
+      } catch {}
       return {
         origin: url.origin,
-        serverId: identityBody?.identity.serverId,
+        serverId: identityBody!.identity.serverId,
         status: response.status,
-        body,
+        documents: body?.documents || [],
       };
     },
     {
@@ -163,26 +161,27 @@ async function readServerAgent(
     200,
     `Authoritative sync read returned HTTP ${result.status}.`,
   );
-  const body = parseApiJson<"SyncPullResponse">(result.body);
-  const document = body?.documents.find((item) => {
+  const document = result.documents.find((item) => {
     if (item.id === id || item.id?.endsWith(`:${id}`)) return true;
+    if (typeof item.payload !== "string") return false;
     try {
-      const entity = decodeLegacyAgentDocument(item);
+      const entity: components["schemas"]["SyncEntityPayload"] | null =
+        JSON.parse(item.payload);
       return entity?.collection === "agent" && entity.id === id;
     } catch {
       return false;
     }
   });
   if (!document) return null;
-  assert.ok("payload" in document, "Sync document has no legacy payload.");
   if (document._deleted) return { deleted: true as const, seq: document.seq };
   assert.equal(
     typeof document.payload,
     "string",
     "Sync document has no payload.",
   );
-  const entity = decodeLegacyAgentDocument(document);
-  assert.ok(entity, "Sync payload is not an agent.");
+  const entity: components["schemas"]["SyncAgentEntityPayload"] = JSON.parse(
+    document.payload!,
+  );
   return { deleted: false as const, seq: document.seq, agent: entity.value };
 }
 
@@ -195,11 +194,14 @@ async function readLocalServerIdentity(page: Page, expectedOrigin: string) {
         credentials: "same-origin",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      const body = await response.text().catch(() => "null");
+      let body: components["schemas"]["AccessSnapshot"] | null = null;
+      try {
+        body = await response.json();
+      } catch {}
       return {
         origin: location.origin,
         status: response.status,
-        body,
+        identity: body?.identity,
       };
     },
     { origin: expectedOrigin, timeoutMs: READBACK_TIMEOUT_MS },
@@ -210,20 +212,18 @@ async function readLocalServerIdentity(page: Page, expectedOrigin: string) {
     "Server identity read used another origin.",
   );
   assert.equal(result.status, 200, "Could not read the local server identity.");
-  const body = parseApiJson<"AccessSnapshot">(result.body);
-  const identity = body?.identity;
   assert.ok(
-    typeof identity?.serverId === "string" && identity.serverId,
+    typeof result.identity?.serverId === "string" && result.identity.serverId,
     "Local server identity has no server ID.",
   );
   assert.ok(
-    typeof identity?.label === "string" && identity.label,
+    typeof result.identity?.label === "string" && result.identity.label,
     "Local server identity has no label.",
   );
   return {
     origin: result.origin,
-    serverId: identity.serverId,
-    label: identity.label,
+    serverId: result.identity.serverId,
+    label: result.identity.label,
   };
 }
 
@@ -251,7 +251,6 @@ async function pinLocalServer(
   origin: string,
   expectedServerId: string | undefined,
 ) {
-  assert.ok(expectedServerId, "Preflight server identity is missing.");
   const identity = await readLocalServerIdentity(page, origin);
   assert.equal(
     identity.serverId,
@@ -273,8 +272,7 @@ function matchesMutationResponse(
       request.method() === "POST" &&
       url.origin === origin &&
       url.pathname === path &&
-      parseApiJson<"ConversationRequest">(request.postData() || "null")?.id ===
-        id
+      request.postDataJSON()?.id === id
     );
   } catch {
     return false;
@@ -282,12 +280,11 @@ function matchesMutationResponse(
 }
 
 function assertDesiredAgent(
-  agent: AgentEntityDto | null | undefined,
+  agent: AgentEntityDto,
   id: string,
   leadAccountKey: string,
   workerAccountKey: string,
 ) {
-  assert.ok(agent, "Server returned no agent.");
   assert.equal(agent?.id, id, "Server returned another chat identity.");
   assert.equal(agent?.isLead, true, "Created chat is not a lead.");
   assert.equal(
@@ -351,19 +348,14 @@ function assertDesiredAgent(
   };
 }
 
-function assertCreateRequest(
-  body: CreateRequest | null,
-  journal: Journal,
-): asserts body is CreateRequest & { id: string } {
-  assert.ok(body, "New chat request is missing.");
-  assert.ok(journal.baseline, "Missing preflight baseline.");
+function assertCreateRequest(body: CreateRequest | null, journal: Journal) {
   assert.ok(uuid(body?.id), "New chat request has no UUID identity.");
   assert.ok(
-    !journal.baseline.chatIds.includes(body.id),
+    !journal.baseline!.chatIds.includes(body.id),
     "Refusing to reuse an existing chat ID.",
   );
   assert.ok(
-    !journal.baseline.pendingCreationIds.includes(body.id),
+    !journal.baseline!.pendingCreationIds.includes(body.id),
     "Refusing a pending user chat ID.",
   );
   assert.equal(
@@ -409,32 +401,25 @@ function assertCreateRequest(
     false,
     "Refusing to create a chat with a message.",
   );
+  return body as CreateRequest & { id: string };
 }
 
 async function baseline(page: Page) {
   const chatIds = await page
     .locator("[data-chat]")
     .evaluateAll((rows) =>
-      rows
-        .map((row) => row.getAttribute("data-chat"))
-        .filter((id): id is string => Boolean(id)),
+      rows.map((row) => row.getAttribute("data-chat")).filter(Boolean),
     );
   const pendingCreationIds = await page.evaluate(() => {
-    const ids: string[] = [];
+    const ids = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith("codex-pending-creation:")) continue;
       try {
-        const request: unknown = JSON.parse(
+        const request: Pick<CreateRequest, "id"> | null = JSON.parse(
           localStorage.getItem(key) || "null",
         );
-        if (
-          request &&
-          typeof request === "object" &&
-          "id" in request &&
-          typeof request.id === "string"
-        )
-          ids.push(request.id);
+        if (typeof request?.id === "string") ids.push(request.id);
       } catch {}
     }
     return ids;
@@ -452,13 +437,13 @@ async function main() {
     process.stdout.write(`${usage()}\n`);
     return;
   }
-  assert.ok(options.values.url, "--url is required.");
-  assert.ok(options.values.project, "--project is required.");
-  assert.ok(options.values["lead-account"], "--lead-account is required.");
-  assert.ok(options.values["evidence-dir"], "--evidence-dir is required.");
-  const leadAccountKey = options.values["lead-account"];
+  assert.ok(options.url, "--url is required.");
+  assert.ok(options.project, "--project is required.");
+  assert.ok(options["lead-account"], "--lead-account is required.");
+  assert.ok(options["evidence-dir"], "--evidence-dir is required.");
+  const leadAccountKey = options["lead-account"];
   const workerAccountKey =
-    options.values["worker-account"] || DEFAULT_WORKER_ACCOUNT_KEY;
+    options["worker-account"] || DEFAULT_WORKER_ACCOUNT_KEY;
   assert.match(
     leadAccountKey,
     /^[A-Za-z0-9._-]+$/,
@@ -469,11 +454,11 @@ async function main() {
     /^[A-Za-z0-9._-]+$/,
     "--worker-account contains unsupported characters.",
   );
-  const origin = ensureHttps(options.values.url);
-  const projectPath = resolve(options.values.project);
-  const evidenceDir = resolve(options.values["evidence-dir"]);
+  const origin = ensureHttps(options.url);
+  const projectPath = resolve(options.project);
+  const evidenceDir = resolve(options["evidence-dir"]);
   const profileDir = resolve(
-    options.values["profile-dir"] || join(evidenceDir, "profile"),
+    options["profile-dir"] || join(evidenceDir, "profile"),
   );
   const journalPath = join(evidenceDir, "rust-worker-defaults-create.json");
   const existing = readJournal<Journal>(journalPath);
@@ -519,11 +504,14 @@ async function main() {
 
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-  const { chromium } = await import("playwright");
+  const webPackage = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../package.json",
+  );
+  const { chromium }: typeof import("playwright") =
+    createRequire(webPackage)("playwright");
   const executablePath =
-    options.values.chromium ||
-    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
-    undefined;
+    options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: true,
     ...(executablePath ? { executablePath } : {}),
@@ -548,11 +536,8 @@ async function main() {
         origin,
         "Chat creation must target the preflight local server origin.",
       );
-      await pinLocalServer(page, origin, journal.localServer?.serverId);
-      const body = parseApiJson<"CreateLeadRequest">(
-        route.request().postData() || "null",
-      );
-      assertCreateRequest(body, journal);
+      await pinLocalServer(page, origin, journal.localServer!.serverId);
+      const body = assertCreateRequest(route.request().postDataJSON(), journal);
       if (journal.create.state !== "not-sent")
         throw new Error("Chat creation was already attempted.");
       journal.create = {
@@ -564,13 +549,13 @@ async function main() {
       saveJournal(journalPath, journal);
       await route.continue();
     } catch (error) {
-      blockedWrite = error instanceof Error ? error.message : String(error);
+      blockedWrite = (error as Error).message;
       recordBlockedAttempt(
         journalPath,
         journal,
         "create",
         route.request().url(),
-        error instanceof Error ? error.message : String(error),
+        (error as Error).message,
       );
       await route.fulfill({
         status: 409,
@@ -596,15 +581,14 @@ async function main() {
     }
     let body;
     try {
-      body = parseApiJson<"IdRequest">(route.request().postData() || "null");
-      assert.ok(body, "Delete request is missing.");
-      assert.ok(journal.baseline, "Missing preflight baseline.");
+      body = route.request().postDataJSON() as DeleteRequest;
+
       assert.equal(
         new URL(route.request().url()).origin,
         origin,
         "Chat deletion must target the preflight local server origin.",
       );
-      await pinLocalServer(page, origin, journal.localServer?.serverId);
+      await pinLocalServer(page, origin, journal.localServer!.serverId);
       assert.notEqual(options.resume, true, "Resume mode never sends deletes.");
       assert.equal(
         journal.ownedCreated,
@@ -621,13 +605,17 @@ async function main() {
         "confirmed",
         "Created chat readback is not confirmed.",
       );
-      assert.equal(body?.id, journal.create.id, "Delete targets another chat.");
+      assert.equal(
+        body?.id,
+        journal.create.id!,
+        "Delete targets another chat.",
+      );
       assert.ok(
-        !journal.baseline.chatIds.includes(body.id),
+        !journal.baseline!.chatIds.includes(body.id),
         "Refusing to delete a baseline chat.",
       );
       assert.ok(
-        !journal.baseline.pendingCreationIds.includes(body.id),
+        !journal.baseline!.pendingCreationIds.includes(body.id),
         "Refusing to delete a pending user chat.",
       );
       if (journal.deletion.state !== "not-sent")
@@ -640,13 +628,13 @@ async function main() {
       saveJournal(journalPath, journal);
       await route.continue();
     } catch (error) {
-      blockedWrite = error instanceof Error ? error.message : String(error);
+      blockedWrite = (error as Error).message;
       recordBlockedAttempt(
         journalPath,
         journal,
         "delete",
         route.request().url(),
-        error instanceof Error ? error.message : String(error),
+        (error as Error).message,
       );
       await route.fulfill({
         status: 409,
@@ -786,7 +774,7 @@ async function main() {
       `Expected one local server card labeled ${localServer.label}.`,
     );
     const matchingCard = matchingLocalCards[0];
-    assert.ok(matchingCard, "Missing local server card.");
+
     const localCardLines = (await matchingCard.innerText())
       .split("\n")
       .map((line) => line.trim());
@@ -963,7 +951,7 @@ async function main() {
         )
         .catch(() => []);
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; Review provider is Codex but Sol is unavailable. ` +
+        `${(error as Error).message}; Review provider is Codex but Sol is unavailable. ` +
           `Visible review models: ${JSON.stringify(availableModels)}`,
       );
     }
@@ -993,7 +981,7 @@ async function main() {
           response,
           origin,
           "/api/leads",
-          journal.create.id,
+          journal.create.id!,
         ),
       { timeout: READBACK_TIMEOUT_MS },
     );
@@ -1002,9 +990,8 @@ async function main() {
       .click();
     const response = await creationResponse;
     assert.equal(blockedWrite, null, blockedWrite || undefined);
-    const canonical = parseApiJson<"AgentResponse">(
-      await response.text().catch(() => "null"),
-    );
+    const canonical: components["schemas"]["AgentResponse"] | null =
+      await response.json().catch(() => null);
     journal.create = {
       ...journal.create,
       state: response.status() === 200 ? "response-received" : "response-error",
@@ -1029,13 +1016,13 @@ async function main() {
     );
     assert.equal(
       canonical?.id,
-      journal.create.id,
+      journal.create.id!,
       "Canonical response identity differs from journaled request.",
     );
-    assert.ok(journal.create.id, "Journal has no created chat identity.");
+
     assertDesiredAgent(
-      canonical,
-      journal.create.id,
+      canonical!,
+      journal.create.id!,
       leadAccountKey,
       workerAccountKey,
     );
@@ -1047,7 +1034,7 @@ async function main() {
       .waitFor();
     const synced = await readServerAgent(
       page,
-      journal.create.id,
+      journal.create.id!,
       origin,
       journal.localServer.serverId,
     );
@@ -1057,16 +1044,16 @@ async function main() {
     );
     const readback = assertDesiredAgent(
       synced.agent,
-      journal.create.id,
+      journal.create.id!,
       leadAccountKey,
       workerAccountKey,
     );
     assert.ok(
-      !journal.baseline.chatIds.includes(journal.create.id),
+      !journal.baseline!.chatIds.includes(journal.create.id!),
       "Created ID existed in the pre-write chat list.",
     );
     assert.ok(
-      !journal.baseline.pendingCreationIds.includes(journal.create.id),
+      !journal.baseline!.pendingCreationIds.includes(journal.create.id!),
       "Created ID existed in the pre-write pending list.",
     );
     journal.ownedCreated = true;
@@ -1094,7 +1081,7 @@ async function main() {
           candidate,
           origin,
           "/api/conversation/delete",
-          journal.create.id,
+          journal.create.id!,
         ),
       { timeout: READBACK_TIMEOUT_MS },
     );
@@ -1102,9 +1089,8 @@ async function main() {
       .getByRole("button", { name: "Delete chat", exact: true })
       .click();
     const deleteResponse = await deleteResponsePromise;
-    const deleteBody = parseApiJson<"DeletedResponse">(
-      await deleteResponse.text().catch(() => "null"),
-    );
+    const deleteBody: components["schemas"]["DeletedResponse"] | null =
+      await deleteResponse.json().catch(() => null);
     assert.equal(
       deleteResponse.status(),
       200,
@@ -1115,7 +1101,7 @@ async function main() {
       [journal.create.id],
       "Server did not confirm deletion of exactly the owned chat.",
     );
-    assert.ok(deleteBody, "Delete response is missing.");
+
     journal.deletion = {
       ...journal.deletion,
       state: "response-received",
@@ -1127,7 +1113,7 @@ async function main() {
     await row.waitFor({ state: "detached", timeout: READBACK_TIMEOUT_MS });
     const deletionReadback = await readServerAgent(
       page,
-      journal.create.id,
+      journal.create.id!,
       origin,
       journal.localServer.serverId,
     );
@@ -1139,11 +1125,11 @@ async function main() {
     journal.deletion.readbackAt = new Date().toISOString();
     saveJournal(journalPath, journal);
     process.stdout.write(
-      `${JSON.stringify({ state: "passed", projectPath, chatId: journal.create.id, lead: { accountKey: readback.accountKey, provider: readback.provider, model: readback.model }, workerDefaults: readback.workerDefaults, reviewDefaults: readback.reviewDefaults, cleanup: journal.deletion.state }, null, 2)}\n`,
+      `${JSON.stringify({ state: "passed", projectPath, chatId: journal.create.id!, lead: { accountKey: readback.accountKey, provider: readback.provider, model: readback.model }, workerDefaults: readback.workerDefaults, reviewDefaults: readback.reviewDefaults, cleanup: journal.deletion.state }, null, 2)}\n`,
     );
   } catch (error) {
     journal.failure = {
-      message: error instanceof Error ? error.message : String(error),
+      message: (error as Error).message,
       at: new Date().toISOString(),
     };
     saveJournal(journalPath, journal);
@@ -1154,6 +1140,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack : error}\n`);
+  process.stderr.write(`${(error as Error).stack || error}\n`);
   process.exitCode = 1;
 });

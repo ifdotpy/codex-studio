@@ -1,8 +1,6 @@
-import assert from "node:assert/strict";
 import { openSync, readSync } from "node:fs";
 
-const path = process.argv[2];
-assert.ok(path);
+const path = process.argv[2]!;
 const fd = openSync(path, "r+");
 process.stdout.write("READY");
 const buffer = Buffer.alloc(64);

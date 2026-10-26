@@ -25,7 +25,7 @@ type WorkerMemoryProfile = {
 // These documents are written by this module and inherited by its own workers.
 export function parseWorkerSelection(
   text: string,
-): Partial<ReturnType<typeof workerSelection>> {
+): ReturnType<typeof workerSelection> {
   return JSON.parse(text);
 }
 function parseWorkerMemoryProfile(text: string): Partial<WorkerMemoryProfile> {
@@ -69,8 +69,7 @@ export function sampleProcessTreeMemory(
   let pssBytes = 0;
   const processes = [];
   while (pending.length) {
-    const pid = pending.pop();
-    if (pid === undefined) continue;
+    const pid = pending.pop()!;
     if (seen.has(pid)) continue;
     seen.add(pid);
     try {
@@ -149,21 +148,23 @@ export function persistWorkerMemorySample({
   );
 }
 
+type WorkerMemoryEstimateOptions = {
+  profile:
+    | Partial<
+        Pick<WorkerMemoryProfile, "processTreeP90PssBytes" | "workerCount">
+      >
+    | undefined;
+  fallbackPssBytes: number;
+};
 export function estimateWorkerMemoryBytes({
   profile,
   fallbackPssBytes,
-}: {
-  profile:
-    | { processTreeP90PssBytes?: number; workerCount?: number }
-    | undefined;
-  fallbackPssBytes: number;
-}) {
+}: WorkerMemoryEstimateOptions) {
   return Number.isSafeInteger(profile?.processTreeP90PssBytes) &&
-    profile?.processTreeP90PssBytes !== undefined &&
-    profile.processTreeP90PssBytes > 0 &&
-    Number.isSafeInteger(profile.workerCount) &&
-    (profile.workerCount ?? 0) >= minimumWorkerMemoryProfileSamples
-    ? profile.processTreeP90PssBytes
+    profile!.processTreeP90PssBytes! > 0 &&
+    Number.isSafeInteger(profile!.workerCount) &&
+    profile!.workerCount! >= minimumWorkerMemoryProfileSamples
+    ? profile!.processTreeP90PssBytes!
     : fallbackPssBytes;
 }
 
@@ -238,7 +239,7 @@ export function completeWorkerMemoryRun(environment = process.env) {
   const latestPath = join(stateDirectory, "latest.json");
   try {
     const current = parseWorkerMemoryProfile(readFileSync(latestPath, "utf8"));
-    if ((current.completedAt ?? 0) > profile.completedAt) return;
+    if (current.completedAt! > profile.completedAt) return;
   } catch {
     // No previous completed profile is available.
   }
@@ -447,8 +448,8 @@ function workerSelection(environment = process.env) {
   const measuredWorkerPssBytes =
     Number.isSafeInteger(memoryProfile?.processTreeP90PssBytes) &&
     Number.isSafeInteger(memoryProfile?.workerCount) &&
-    (memoryProfile?.workerCount ?? 0) >= minimumWorkerMemoryProfileSamples
-      ? memoryProfile?.processTreeP90PssBytes
+    memoryProfile!.workerCount! >= minimumWorkerMemoryProfileSamples
+      ? memoryProfile!.processTreeP90PssBytes
       : defaultWorkerTreePssBytes;
   const measuredWorkerMemoryBytes = estimateWorkerMemoryBytes({
     profile: memoryProfile,
@@ -485,7 +486,9 @@ function workerSelection(environment = process.env) {
   };
 }
 
-export function getPlaywrightWorkerSelection(environment = process.env) {
+export function getPlaywrightWorkerSelection(
+  environment = process.env,
+): ReturnType<typeof workerSelection> & { cached?: boolean } {
   const cachedSelection = environment.CODEX_PLAYWRIGHT_WORKER_SELECTION;
   if (cachedSelection !== undefined) {
     try {
@@ -494,18 +497,11 @@ export function getPlaywrightWorkerSelection(environment = process.env) {
         parsed &&
         typeof parsed === "object" &&
         Number.isSafeInteger(parsed.workers) &&
-        parsed.workers !== undefined &&
-        parsed.workers >= 1 &&
+        parsed.workers! >= 1 &&
         Number.isSafeInteger(parsed.memoryWorkers) &&
-        parsed.memoryWorkers !== undefined &&
-        parsed.memoryWorkers >= parsed.workers
+        parsed.memoryWorkers! >= parsed.workers!
       )
-        return {
-          ...parsed,
-          workers: parsed.workers,
-          memoryWorkers: parsed.memoryWorkers,
-          cached: true,
-        };
+        return { ...parsed, cached: true };
     } catch {
       // Recompute below if an inherited decision was malformed.
     }

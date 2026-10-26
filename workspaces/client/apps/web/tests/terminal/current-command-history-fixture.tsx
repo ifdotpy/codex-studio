@@ -1,5 +1,4 @@
 import type { Message } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 export type HistorySnapshot = {
   label: string;
   items: Message[];
@@ -39,4 +38,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);
