@@ -181,7 +181,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       ),
     );
 
-    await page.goto(fixtureUrl(server) + "?multi");
+    await page.goto(fixtureUrl(server) + `?multi&now=${now}`);
     const ownTab = page.getByRole("tab", {
       name: "own@example.test account limits",
     });
