@@ -18,7 +18,16 @@ const defaultRoot = path.resolve(scriptDirectory, "../../../..");
 const mode = process.argv[2];
 const check = process.argv[3];
 const repositoryRoot = defaultRoot;
-const codeExtensions = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"]);
+const codeExtensions = new Set([
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".cts",
+  ".mts",
+]);
 const formatExtensions = new Set([
   ...codeExtensions,
   ".css",
@@ -30,7 +39,10 @@ const formatExtensions = new Set([
   ".yml",
 ]);
 
-function git(args, options = {}) {
+function git(
+  args: string[],
+  options: import("node:child_process").ExecFileSyncOptionsWithBufferEncoding = {},
+) {
   return execFileSync("git", args, {
     cwd: repositoryRoot,
     encoding: "buffer",
@@ -39,11 +51,11 @@ function git(args, options = {}) {
   });
 }
 
-function listPaths(output) {
+function listPaths(output: Buffer) {
   return output.toString("utf8").split("\0").filter(Boolean);
 }
 
-function isCheckable(relativePath, extensions) {
+function isCheckable(relativePath: string, extensions: ReadonlySet<string>) {
   return extensions.has(path.extname(relativePath).toLowerCase());
 }
 
@@ -57,7 +69,7 @@ function getIndexPaths() {
   return new Set(listPaths(git(["ls-files", "-z"])));
 }
 
-function run(binary, args, cwd) {
+function run(binary: string, args: string[], cwd: string) {
   const result = spawnSync(binary, args, { cwd, stdio: "inherit" });
   if (result.error) {
     throw result.error;
@@ -167,6 +179,8 @@ function main() {
 try {
   process.exitCode = main();
 } catch (error) {
-  console.error(`Pre-commit checks failed: ${error.message}`);
+  console.error(
+    `Pre-commit checks failed: ${error instanceof Error ? error.message : String(error)}`,
+  );
   process.exitCode = 1;
 }

@@ -1,22 +1,28 @@
+import type { RawNativeAction } from "./test-support.ts";
+import { present, record } from "./test-support.ts";
+import type { DesktopBridge } from "./api.ts";
+import type { SaveDialogOptions, SaveDialogReturnValue } from "electron";
+import type { components } from "../web/src/generated/api.ts";
+import { mainTestSource, mainDependency } from "./main-test-source.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import vm from "node:vm";
-import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 
 import { test } from "vitest";
 
 test("main and preload enforce safe native file action boundaries", async () => {
-  const require = createRequire(new URL("./main.cjs", import.meta.url));
   const root = await fs.mkdtemp(path.join(tmpdir(), "studio-native-files-"));
-  const calls = [];
-  let selected,
-    metadata,
-    responseError = null,
-    fetchGate = null,
-    writeFails = false,
+  const calls: [string, ...unknown[]][] = [];
+  let selected: Partial<SaveDialogReturnValue> | undefined;
+  let metadata: Partial<components["schemas"]["FileInfo"]> & {
+    error?: string;
+  } = {};
+  let responseError: string | null = null;
+  let fetchGate: Promise<void> | null = null;
+  let writeFails = false,
     navigateOnWrite = false;
   const origin = "http://127.0.0.1:4620";
   const mainFrame = { url: origin + "/" };
@@ -27,29 +33,42 @@ test("main and preload enforce safe native file action boundaries", async () => 
     isDestroyed() {
       return this.destroyed;
     },
-    previewFile: (...args) => calls.push(["preview", ...args]),
+    previewFile: (...args: Parameters<Electron.BrowserWindow["previewFile"]>) =>
+      calls.push(["preview", ...args]),
   };
   const dialog = {
-    showSaveDialog: async (owner, options) => {
+    showSaveDialog: async (owner: typeof win, options: SaveDialogOptions) => {
       assert.equal(owner, win);
       calls.push(["save-dialog", options]);
       return selected || { canceled: true };
     },
-    showErrorBox: (...args) => calls.push(["error", ...args]),
+    showErrorBox: (...args: Parameters<Electron.Dialog["showErrorBox"]>) =>
+      calls.push(["error", ...args]),
   };
   const shell = {
-    showItemInFolder: (file) => calls.push(["reveal", file]),
-    openPath: async (file) => {
+    showItemInFolder: (file: string) => calls.push(["reveal", file]),
+    openPath: async (file: string) => {
       calls.push(["open", file]);
       return responseError || "";
     },
   };
-  const source = await fs.readFile(
-    new URL("./main.cjs", import.meta.url),
-    "utf8",
-  );
-  const context = vm.createContext({
-    require: (name) =>
+  const source = mainTestSource();
+  const sandbox: {
+    actions?: {
+      setup: (window: typeof win, connection: { origin: string }) => void;
+      nativeAction: RawNativeAction;
+      nativeDownload: (
+        event: Pick<Electron.Event, "preventDefault">,
+        item: Pick<
+          Electron.DownloadItem,
+          "getURL" | "getFilename" | "setSaveDialogOptions"
+        > &
+          Pick<NodeJS.EventEmitter, "once">,
+        sender: unknown,
+      ) => void;
+    };
+  } & Record<string, unknown> = {
+    require: (name: string) =>
       name === "electron"
         ? {
             app: {
@@ -64,21 +83,21 @@ test("main and preload enforce safe native file action boundaries", async () => 
         : name === "node:fs/promises"
           ? {
               ...fs,
-              writeFile: async (...args) => {
+              writeFile: async (...args: Parameters<typeof fs.writeFile>) => {
                 if (writeFails) throw new Error("fixture disk full");
                 const result = await fs.writeFile(...args);
                 if (navigateOnWrite) mainFrame.url = "https://elsewhere.test/";
                 return result;
               },
             }
-          : require(name),
+          : mainDependency(name),
     process: { argv: [], env: {}, platform: "darwin" },
     ArrayBuffer,
     Buffer,
     URLSearchParams,
     AbortSignal,
     console,
-    fetch: async (url, options) => {
+    fetch: async (url: string, options: RequestInit) => {
       const requested = new URL(url);
       assert.equal(requested.origin, origin);
       assert.equal(requested.pathname, "/api/file-info");
@@ -88,7 +107,8 @@ test("main and preload enforce safe native file action boundaries", async () => 
       if (fetchGate) await fetchGate;
       return { ok: !metadata.error, json: async () => metadata };
     },
-  });
+  };
+  const context = vm.createContext(sandbox);
   vm.runInContext(
     "(function(){\n" +
       source.slice(0, source.indexOf("async function start()")) +
@@ -97,10 +117,14 @@ test("main and preload enforce safe native file action boundaries", async () => 
   })()`,
     context,
   );
-  context.actions.setup(win, { origin });
+  const actions = present(sandbox.actions);
+  actions.setup(win, { origin });
   const event = { sender: contents, senderFrame: mainFrame };
-  const invoke = (method, value, caller = event) =>
-    context.actions.nativeAction(caller, { method, value });
+  const invoke = (
+    method: string,
+    value?: unknown,
+    caller: { sender: unknown; senderFrame: unknown } = event,
+  ) => actions.nativeAction(caller, { method, value });
   const data = new TextEncoder().encode("saved content").buffer;
   try {
     await assert.rejects(
@@ -135,7 +159,10 @@ test("main and preload enforce safe native file action boundaries", async () => 
       await invoke("saveFile", { name: "../../report.txt", data }),
       false,
     );
-    assert.equal(calls.at(-1)[1].defaultPath, path.join(root, "report.txt"));
+    assert.equal(
+      record(present(calls.at(-1))[1]).defaultPath,
+      path.join(root, "report.txt"),
+    );
     const output = path.join(root, "report.txt");
     await fs.writeFile(output, "old");
     selected = { canceled: false, filePath: output };
@@ -227,8 +254,8 @@ test("main and preload enforce safe native file action boundaries", async () => 
       /Preview/,
     );
     await fs.chmod(output, 0o600);
-    let resume;
-    fetchGate = new Promise((resolve) => {
+    let resume: () => void = () => {};
+    fetchGate = new Promise<void>((resolve) => {
       resume = resolve;
     });
     const pending = invoke("fileAction", { action: "open", target });
@@ -238,18 +265,17 @@ test("main and preload enforce safe native file action boundaries", async () => 
     mainFrame.url = origin + "/";
     fetchGate = null;
 
-    function download(url, sender = contents) {
-      const item = new EventEmitter();
+    function download(url: string, sender: unknown = contents) {
       let prevented = false,
-        options;
-      Object.assign(item, {
+        options: SaveDialogOptions | undefined;
+      const item = Object.assign(new EventEmitter(), {
         getURL: () => url,
         getFilename: () => "export.csv",
-        setSaveDialogOptions: (value) => {
+        setSaveDialogOptions: (value: SaveDialogOptions) => {
           options = value;
         },
       });
-      context.actions.nativeDownload(
+      actions.nativeDownload(
         {
           preventDefault: () => {
             prevented = true;
@@ -272,17 +298,23 @@ test("main and preload enforce safe native file action boundaries", async () => 
     win.destroyed = false;
     const transfer = download("blob:" + origin + "/export");
     assert.equal(transfer.prevented, false);
-    assert.equal(transfer.options.title, "Save As");
-    assert.equal(transfer.options.defaultPath, path.join(root, "export.csv"));
+    assert.equal(present(transfer.options).title, "Save As");
+    assert.equal(
+      present(transfer.options).defaultPath,
+      path.join(root, "export.csv"),
+    );
     let errors = calls.filter((row) => row[0] === "error").length;
     transfer.item.emit("done", {}, "cancelled");
     assert.equal(calls.filter((row) => row[0] === "error").length, errors);
     download(origin + "/export").item.emit("done", {}, "interrupted");
     assert.equal(calls.filter((row) => row[0] === "error").length, errors + 1);
 
-    let bridge;
-    const listeners = {};
-    const ipc = { invoke: async (_channel, request) => request };
+    let bridge: DesktopBridge | undefined;
+    const listeners: Record<string, (event: Pick<Event, "isTrusted">) => void> =
+      {};
+    const ipc = {
+      invoke: async (_channel: string, request: unknown) => request,
+    };
     const preload = await fs.readFile(
       new URL("./preload.cjs", import.meta.url),
       "utf8",
@@ -290,7 +322,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     vm.runInNewContext(preload, {
       require: () => ({
         contextBridge: {
-          exposeInMainWorld: (_name, value) => {
+          exposeInMainWorld: (_name: string, value: DesktopBridge) => {
             bridge = value;
           },
         },
@@ -301,29 +333,34 @@ test("main and preload enforce safe native file action boundaries", async () => 
       location: { search: "" },
       performance: { now: () => 20 },
       window: {
-        addEventListener: (name, listener) => {
+        addEventListener: (
+          name: string,
+          listener: (event: Pick<Event, "isTrusted">) => void,
+        ) => {
           listeners[name] = listener;
         },
       },
     });
+    assert(bridge);
+    assert(bridge.saveFile && bridge.fileAction);
     await assert.rejects(bridge.saveFile({ name: "x", data }), /button/);
-    listeners.click({ isTrusted: false });
+    present(listeners.click)({ isTrusted: false });
     await assert.rejects(
       bridge.fileAction({ action: "open", target }),
       /button/,
     );
-    listeners.click({ isTrusted: true });
+    present(listeners.click)({ isTrusted: true });
     assert.equal(
-      (await bridge.saveFile({ name: "x", data })).method,
+      record(await bridge.saveFile({ name: "x", data })).method,
       "saveFile",
     );
     await assert.rejects(
       bridge.fileAction({ action: "open", target }),
       /button/,
     );
-    listeners.keydown({ isTrusted: true });
+    present(listeners.keydown)({ isTrusted: true });
     assert.equal(
-      (await bridge.fileAction({ action: "preview", target })).method,
+      record(await bridge.fileAction({ action: "preview", target })).method,
       "fileAction",
     );
     console.log(

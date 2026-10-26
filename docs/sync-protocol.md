@@ -472,13 +472,13 @@ time identifies the age of the returned result.
 
 ### Read-only request audit
 
-[`audit-live-requests.mjs`](../workspaces/client/apps/web/scripts/audit-live-requests.mjs)
+[`audit-live-requests.ts`](../workspaces/client/apps/web/scripts/audit-live-requests.ts)
 measures idle and chat-switching traffic in headless Chromium, retaining request
 counts, fetch stacks, CDP initiators and stream metadata outside the checkout.
 It blocks every write except the audited tab's stream subscription updates:
 
 ```sh
-node workspaces/client/apps/web/scripts/audit-live-requests.mjs \
+node workspaces/client/apps/web/scripts/audit-live-requests.ts \
   --url http://127.0.0.1:4620 --chat FIRST_ID --chat SECOND_ID \
   --output "$HOME/.cache/codex-studio/request-audit.json"
 ```

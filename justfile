@@ -20,11 +20,11 @@ build-server:
 
 [doc("Build the Rust release binaries once for HEAD into a shared directory with a commit and SHA-256 manifest. Default directory: CODEX_RELEASE_TARGET_DIR or ~/.cache/codex-studio/release-target.")]
 build-release-binaries dir="":
-    @node workspaces/client/apps/desktop/release-binaries.mjs build {{quote(dir)}}
+    @node workspaces/client/apps/desktop/release-binaries.ts build {{quote(dir)}}
 
 [doc("Check that the prebuilt release binaries in the directory match HEAD and their SHA-256 manifest.")]
 verify-release-binaries dir="":
-    @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
+    @node workspaces/client/apps/desktop/release-binaries.ts verify {{quote(dir)}}
 
 [doc("Deliver a commit (default HEAD) to the live server of this Linux host: source snapshot release, `current` link, systemd restart, automatic rollback when unhealthy. The only way to change the live server binary.")]
 deliver-server commit="HEAD":
@@ -32,11 +32,11 @@ deliver-server commit="HEAD":
 
 [doc("Check the package signing setup in seconds: configuration, file modes, keychain unlock, identity. Prints PASS or the exact FAIL reason, never the password. Run it before package-native.")]
 signing-check:
-    @node workspaces/client/apps/desktop/signing-check.mjs
+    @node workspaces/client/apps/desktop/signing-check.ts
 
 [doc("Native package cycle (checks signing first, then signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
 package-native out *flags:
-    @node workspaces/client/apps/native/package-flow.mjs {{quote(out)}} {{flags}}
+    @node workspaces/client/apps/native/package-flow.ts {{quote(out)}} {{flags}}
 
 [doc("List pnpm and Cargo packages discovered from their manifests.")]
 packages:
@@ -157,7 +157,7 @@ test-browser-smoke *args:
 
 [doc("Check the main user scenarios on the app installed on this Mac, with its own test chats. See docs/testing.md, Installed scenario smoke.")]
 smoke-installed *args:
-    @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.mjs")}} "$@"
+    @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.ts")}} "$@"
 
 [doc("Run the full browser project as a manual heavy check.")]
 test-heavy:
@@ -175,4 +175,4 @@ test-native-profile-migration:
 test-native-webview:
     @pnpm --filter codex-agents-web run build
     @cargo build -p studio-native-client --features native-check --locked
-    @node workspaces/client/apps/native/check-native.mjs
+    @node workspaces/client/apps/native/check-native.ts
