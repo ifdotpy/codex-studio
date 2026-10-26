@@ -132,7 +132,7 @@ installed before this change has no installer; install it once by hand.
 
 ## Native bridge
 
-`bridge.d.ts` re-exports the shared declaration from `web/src/desktop.ts`, which defines `window.codexDesktop`. The bridge is available only in the workspace main frame.
+`api.ts` owns the preload API and `window.codexDesktop`; the renderer imports that contract. Native actions remain subject to the main process frame-owner checks.
 
 | Method                          | Result                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------ |
