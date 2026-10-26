@@ -1491,20 +1491,24 @@ export function evaluatePlaywrightReport(
   };
 }
 
+function playwrightArray(value: unknown): unknown[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("Invalid Playwright array");
+  return value;
+}
+
 function playwrightFailureSummaries(report: unknown) {
   const failures: { title: string; error: string }[] = [];
   const visitSuite = (suite: unknown, parents: unknown[] = []) => {
     if (!isRecord(suite)) throw new Error("Invalid Playwright suite");
     const suiteTitles = suite.title ? [...parents, suite.title] : parents;
-    const specs: unknown[] = Array.isArray(suite.specs) ? suite.specs : [];
+    const specs = playwrightArray(suite.specs);
     for (const spec of specs) {
       if (!isRecord(spec)) throw new Error("Invalid Playwright spec");
-      const tests: unknown[] = Array.isArray(spec.tests) ? spec.tests : [];
+      const tests = playwrightArray(spec.tests);
       for (const test of tests) {
         if (!isRecord(test)) throw new Error("Invalid Playwright test");
-        const results: unknown[] = Array.isArray(test.results)
-          ? test.results
-          : [];
+        const results = playwrightArray(test.results);
         if (
           test.status !== "unexpected" &&
           test.status !== "flaky" &&
@@ -1522,11 +1526,10 @@ function playwrightFailureSummaries(report: unknown) {
               String(entry.status),
             ),
         );
-        const resultErrors: unknown[] =
-          isRecord(result) && Array.isArray(result.errors) ? result.errors : [];
-        const testErrors: unknown[] = Array.isArray(test.errors)
-          ? test.errors
+        const resultErrors = isRecord(result)
+          ? playwrightArray(result.errors)
           : [];
+        const testErrors = playwrightArray(test.errors);
         const error = resultErrors[0] ?? testErrors[0];
         const detail =
           typeof error === "string"
@@ -1544,11 +1547,11 @@ function playwrightFailureSummaries(report: unknown) {
         });
       }
     }
-    const children: unknown[] = Array.isArray(suite.suites) ? suite.suites : [];
+    const children = playwrightArray(suite.suites);
     for (const child of children) visitSuite(child, suiteTitles);
   };
   if (!isRecord(report)) throw new Error("Invalid Playwright report");
-  const suites: unknown[] = Array.isArray(report.suites) ? report.suites : [];
+  const suites = playwrightArray(report.suites);
   for (const suite of suites) visitSuite(suite);
   return failures;
 }

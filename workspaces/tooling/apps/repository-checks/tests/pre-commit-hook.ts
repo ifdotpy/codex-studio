@@ -106,9 +106,9 @@ function commitFixture(root: string) {
 }
 
 try {
-  {
+  for (const extension of ["js", "cts", "mts"]) {
     const root = fixture();
-    stage(root, "desktop/staged-broken.js", "const = ;\n");
+    stage(root, `desktop/staged-broken.${extension}`, "const = ;\n");
     const tree = git(root, "write-tree");
     const result = runHook(root);
     assert.notEqual(
