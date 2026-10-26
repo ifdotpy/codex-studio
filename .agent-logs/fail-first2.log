@@ -1,0 +1,27 @@
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-services)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-services` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 1m 49s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_services-2a4b4886fde2aa64)
+
+running 1 test
+test account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once ... FAILED
+
+failures:
+
+---- account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once stdout ----
+
+thread 'account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once' (442706673) panicked at workspaces/runtime/packages/runtime-services/src/account_worker/tests/disconnected_unknown_start.rs:212:9:
+the absent input was not restored after the provider was replaced: {"accountKey":"default","autoWake":true,"compactions":0,"compactionsObservedOnly":false,"complaintsPresented":[],"concurrency":1,"contextRepairWait":{"error":"Context repair waits for a confirmed input receipt: annotation:input","events":["annotation:input"],"nextCheckAt":0,"scope":"native","source":{"accountKey":"default","attemptId":null,"epoch":0,"id":"fixture-agent","threadId":"fake-thread-0"}},"contextUsage":null,"created":1.0,"cwd":"/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/worker-58a495fc-6959-5e0f-8479-1977f307f17b","cyberAccessProgram":null,"daybreakEnabled":false,"effort":"medium","environment":"host","epoch":0,"error":"Context repair waits for a confirmed input receipt: annotation:input","events":0,"executionMode":"native","executionSettingsAccountKey":"default","fastMode":false,"hostProjectPath":"/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/worker-58a495fc-6959-5e0f-8479-1977f307f17b","id":"fixture-agent","imageWorkspace":false,"imageWorkspaceBaseRef":null,"imageWorkspaceCreatedAt":null,"imageWorkspaceError":null,"imageWorkspaceHasGit":false,"imageWorkspacePhase":null,"imageWorkspaceReady":false,"imageWorkspaceRepo":null,"imageWorkspaceSubpath":".","inFlight":false,"isLead":true,"layrReady":false,"maxAgents":8,"maxAgentsExplicit":false,"model":"fake-model","name":"Rust turn fixture","nativeEffort":null,"needsTitle":false,"parentId":null,"profileId":null,"profileInstructions":"","prompt":"temporary","provider":"codex","restartRecovery":{"accountKey":"default","at":1792833496.042893,"autoWake":true,"epoch":0,"reason":"Native input submission has no confirmed turn identity.","stage":"held","startAttempt":{"accountKey":"default","activeAtReservation":false,"connectionGeneration":1,"connectionId":"test-connection","created":1792833496.000624,"epoch":0,"events":["annotation:input"],"executionOutcome":"unknown","id":"c860ba89e45bcc68b32a6e03cca31b2aea6952b6c95a830e2aa9e8500344ea98","nativeOperationId":"turn:fixture-agent:annotation:input:attempt:c860ba89e45bcc68b32a6e03cca31b2aea6952b6c95a830e2aa9e8500344ea98","requestTicket":"account:default:c860ba89e45bcc68b32a6e03cca31b2aea6952b6c95a830e2aa9e8500344ea98:turn/start","responseError":"The native start result is unknown. Studio is checking the original input in native history.","settingsFixed":true,"submitted":true,"supervisorIdentity":null,"threadId":"fake-thread-0"},"threadId":"fake-thread-0","turnId":null},"role":"orchestrator","rootId":"fixture-agent","startRecoveryCheck":{"at":1792833496.057917,"attemptId":"c860ba89e45bcc68b32a6e03cca31b2aea6952b6c95a830e2aa9e8500344ea98","completeHistory":true,"idleTwice":true,"journalDrained":false,"quiet":false,"reason":"start-outcome-unconfirmed","state":"waiting"},"status":"queued","subagentConcurrencyVersion":2,"tail":"","threadId":"fake-thread-0","tokenBudget":null,"tokensUsed":0,"turnEpoch":0,"turnId":null,"usageResumeEnabled":true,"workerBaseBehindMain":null,"workerBaseCommit":null,"workerBaseMainRef":null,"workerBaseRef":null,"workspaceBackend":null,"workspaceInGit":false,"workspaceMode":"shared","workspaceModeExplicit":false,"worktree":false,"worktreeReady":false,"worktreeWarning":null,"yoloMode":true}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1683 filtered out; finished in 20.80s
+
+error: test failed, to rerun pass `-p studio-runtime-services --lib`

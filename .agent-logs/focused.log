@@ -1,0 +1,701 @@
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-services` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.89s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_services-2a4b4886fde2aa64)
+
+running 199 tests
+test account_driver::tests::disconnected_or_deleted_accounts_are_never_admissible ... ok
+test account_driver::tests::disconnect_during_pending_auth_read_discards_the_stale_result ... ok
+test account_transfer_executor::retained_executor_tests::before_start_executor_checks_and_durably_authorizes_source_queue ... ok
+test account_transfer_executor::retained_executor_tests::only_pre_dispatch_session_errors_prove_not_sent ... ok
+test account_transfer_executor::retained_executor_tests::source_reads_start_a_dormant_source_session ... ok
+test account_transfer_executor::retained_executor_tests::before_start_copies_history_once_and_replays_unknown_fork_after_restart ... ok
+test account_transfer_executor::retained_executor_tests::summary_without_its_transfer_row_does_not_block_a_new_transfer ... ok
+test account_worker::connection_recovery::tests::replacing_worker_invalidates_the_effect_transaction_observation ... ok
+test account_worker::connection_recovery::tests::saved_receipt_survives_its_completion_but_not_a_new_disconnect ... ok
+test account_worker::retained::consumers::history_identity_tests::recovery_history_identity_is_stable_per_command_and_query ... ok
+test account_worker::retained::runtime::tests::payload_delivery_keeps_ineligible_and_already_delivered_reply_until_checkpoint ... ok
+test account_worker::retained::runtime::tests::payload_delivery_moves_checkpointed_reply_and_rejection ... ok
+test account_worker::retained::runtime::tests::payload_delivery_preserves_unknown_correlation_and_never_sends_it_early ... ok
+test account_transfer_executor::retained_executor_tests::summary_without_its_transfer_row_does_not_hold_turn_start ... ok
+test account_worker::retained::storage::replay_identity_tests::concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent ... ok
+test account_worker::retained::storage::replay_identity_tests::replay_identity_normalizes_only_connection_generation ... ok
+test account_worker::retained::storage::replay_identity_tests::monitor_completion_recovered_cancel_authority_is_exact_and_cannot_resume ... ok
+test account_worker::retained::validation_tests::actorless_reads_accept_only_documented_exact_parameter_shapes ... ok
+test account_worker::retained::validation_tests::background_terminal_clean_names_exactly_one_thread ... ok
+test account_worker::retained::validation_tests::command_background_names_exactly_one_item_of_one_turn ... ok
+test account_worker::retained::validation_tests::mcp_reconnect_requires_actor_scope_and_exact_server_shape ... ok
+test account_worker::retained::validation_tests::monitor_requests_require_actor_and_narrow_config_shape ... ok
+test account_worker::retained::validation_tests::native_command_terminal_requests_are_actor_bound_and_exact ... ok
+test account_worker::retained::validation_tests::only_documented_actor_reads_get_bounded_not_loaded_turns ... ok
+test account_worker::retained::validation_tests::retained_worker_accepts_only_bound_actorless_reset_credit_shapes ... ok
+test account_worker::retained::validation_tests::thread_settings_update_requires_exact_native_action_shape ... ok
+test account_worker::retained::validation_tests::transfer_source_requests_are_thread_and_method_scoped ... ok
+test account_worker::retained::validation_tests::voice_calls_require_exact_actor_scope_and_provider_shapes ... ok
+test account_worker::retained::storage::replay_identity_tests::stopped_and_deleted_prior_epoch_may_only_end_its_turn_work ... ok
+test account_worker::tests::a_new_backend_process_still_classifies_the_old_generation_as_a_restart ... ok
+test account_worker::tests::a_replaced_worker_keeps_the_live_turn_of_its_retained_provider ... ok
+test account_worker::tests::a_supervised_provider_exit_is_still_a_disconnect ... ok
+test account_worker::tests::callback_handoff::a_submitted_answer_is_never_sent_again_after_restart ... ok
+test account_worker::tests::callback_handoff::an_accepted_request_is_answered_once_after_restart ... ok
+test account_worker::tests::closure::pending_text_survives_fresh_process_recovery ... ok
+test account_worker::tests::auth_hold::held_start_survives_restart_and_starts_once_after_login ... ok
+test account_worker::tests::closure::retained_submit_and_settlement_keep_one_replay_identity ... ok
+test account_worker::tests::closure::stopped_pending_text_survives_fresh_process_recovery ... ok
+test account_worker::tests::closure::workspace_retry_wakes_after_restart ... ok
+test account_worker::tests::disconnect_parent_event_local_enqueue_failure_is_propagated ... ok
+test account_worker::tests::disconnected_unknown_start::a_disconnect_after_an_unknown_start_checks_native_history_once ... ok
+test account_worker::tests::disconnected_unknown_start::a_disconnected_unknown_start_absent_from_history_stays_uncertain ... ok
+test account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending ... ok
+test account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once ... FAILED
+test account_worker::tests::login_completion::retained_session_login_completion_finishes_the_reauth_receipt ... ok
+test account_worker::tests::late_thread_reply::saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker ... ok
+test account_worker::tests::provider_exit_while_the_server_runs_is_a_disconnect_reported_once ... ok
+test account_worker::tests::orphan_thread_receipt::unwritten_thread_receipt_continues_after_a_message_sent_before_restart ... ok
+test account_worker::tests::publication_drain::analytics_receipts_preserve_entity_delivery_but_recovery_still_resets ... ok
+test account_worker::tests::publication_drain::restart_delivers_a_receipt_that_was_pending ... ok
+test account_worker::tests::publication_off_path::restart_replays_undelivered_publications_once ... ok
+test account_worker::tests::rejected_start_restarts_without_unresolved_transport_receipts ... ok
+test account_worker::tests::restart_after_submitted_before_written_recovers_unknown_without_resend ... ok
+test account_worker::tests::retained::a_new_connection_rechecks_an_adopted_turn_that_its_one_check_saw_running ... ok
+test account_worker::tests::restart_held_first_input_is_reconciled_by_the_first_worker ... ok
+test account_worker::tests::retained::actorless_account_read_only_allows_non_refreshing_voice_shape ... ok
+test account_worker::tests::retained::automatic_recovery_preserves_explicitly_stopped_workers_after_provider_loss_or_restart ... ok
+test account_worker::tests::retained::claude_adapter_distinguishes_not_sent_from_unknown ... ok
+test account_worker::tests::retained::claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop ... ok
+test account_worker::tests::retained::concurrent_exact_retained_requests_keep_uncertainty_and_replay_once ... ok
+test account_worker::tests::retained::concurrent_retained_operation_conflict_does_not_kill_worker ... ok
+test account_worker::tests::retained::automatic_recovery_continues_leads_and_workers_once_after_provider_loss_or_restart ... ok
+test account_worker::tests::retained::connection_recovery_history_receipt_survives_worker_restart_without_resend ... ok
+test account_worker::tests::retained::connection_recovery_repeated_request_returns_saved_status_without_history_read ... ok
+test account_worker::tests::retained::crash_before_checkpoint_replays_unknown_without_resending_durable_reply ... ok
+test account_worker::tests::retained::deleted_voice_stop_requires_the_exact_committed_session ... ok
+test account_worker::tests::retained::diagnostics_probe_of_each_provider_replies_without_a_receipt ... ok
+test account_worker::tests::retained::reconnect_churn_keeps_checkpoints_bounded_by_retained_generations ... ok
+test account_worker::tests::retained::recovery_reconcile_wait_does_not_hold_store_bridge_permit ... ok
+test account_worker::tests::retained::repeated_retained_history_reads_observe_fresh_provider_state ... ok
+test account_worker::tests::retained::reset_service_recovers_lost_response_through_retained_worker_once ... ok
+test account_worker::tests::retained::restart_terminal_commit_before_wake_converges_on_next_worker_start ... ok
+test account_worker::tests::retained::retained_actor_request_answer_after_same_generation_restart_is_recorded_once ... ok
+test account_worker::tests::retained::retained_authorization_refuses_deleted_agent ... ok
+test account_worker::tests::retained::retained_checkpointed_not_sent_retries_with_the_same_ticket_once ... ok
+test account_worker::tests::retained::retained_barrier_waits_for_committed_journal_without_owning_bridge ... ok
+test account_worker::tests::retained::retained_committed_callback_keeps_exact_response_and_sends_once ... ok
+test account_worker::tests::retained::retained_deadline_during_intent_never_writes_after_expiry ... ok
+test account_worker::tests::retained::retained_lost_waiter_preserves_unknown_until_exact_late_reply ... ok
+test account_worker::tests::retained::retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once ... ok
+test account_worker::tests::retained::retained_reply_replays_without_resending_and_rejects_changed_payload ... ok
+test account_worker::tests::retained::retained_reply_failure_cannot_publish_a_positive_receipt ... ok
+test account_worker::tests::retained::retained_request_rejects_a_stale_expected_connection_before_dispatch ... ok
+test account_worker::tests::retained::retained_response_before_write_receipt_stays_positive ... ok
+test account_worker::tests::retained::retained_retry_intent_crash_before_transport_replays_unknown_without_sending ... ok
+test account_worker::tests::retained::retained_retry_lost_response_replays_unknown_without_another_send ... ok
+test account_worker::tests::retained::retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_write ... ok
+test account_worker::tests::retained::retained_uncheckpointed_not_sent_is_unknown_and_not_retried ... ok
+test account_worker::tests::retained::retained_unknown_receipt_stays_unknown_after_reconnect_without_sending ... ok
+test account_worker::tests::retained::retained_written_receipt_replays_after_reconnect_without_sending ... ok
+test account_worker::tests::retained::stale_retained_request_after_restart_settles_unknown_without_resend ... ok
+test account_worker::tests::retained::startup_first_pass_continues_an_interrupted_restart_turn_from_native_history ... ok
+test account_worker::tests::retained::startup_first_pass_finishes_a_completed_restart_turn_without_new_input ... ok
+test account_worker::tests::retained::startup_first_pass_reaches_a_restart_turn_after_the_first_scan_page ... ok
+test account_worker::tests::retained::tool_monitor_on_a_non_default_account_reaches_its_provider ... ok
+test account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input ... ok
+test account_worker::tests::retained_unknown_replay_precedes_changed_vm_session_fence ... ok
+test account_worker::tests::retained_vm_auth_callback_replies_through_the_account_session ... ok
+test account_worker::tests::retained_vm_notification_is_epoch_fenced_and_committed_before_delivery ... ok
+test account_worker::tests::settled_turn_tasks::a_turn_cut_off_by_a_disconnect_closes_its_items_when_it_settles ... ok
+test account_worker::tests::retained_vm_reply_uses_its_actor_cursor_when_host_cursor_is_zero ... ok
+test account_worker::tests::stale_disconnect_recovery::a_reviewer_interrupted_for_its_completed_review_returns_to_completed ... ok
+test account_worker::tests::stale_disconnect_recovery::a_turn_cut_off_by_a_disconnect_still_recovers_after_a_restart ... ok
+test account_worker::tests::stale_disconnect_recovery::an_agent_interrupted_for_an_older_completed_turn_returns_to_completed ... ok
+test account_worker::tests::stale_disconnect_recovery::an_idle_agent_keeps_its_later_completed_turn_across_restarts ... ok
+test account_worker::tests::stale_disconnect_recovery::an_idle_reviewer_stays_completed_across_restarts ... ok
+test account_worker::tests::steer::restart_recovery_unconfirms_a_written_steer_and_keeps_its_receipt ... ok
+test account_worker::tests::stop_after_reattach::stop_while_a_retained_provider_has_no_live_worker_interrupts_its_turn_once ... ok
+test account_worker::tests::start_throttle::a_waiting_start_survives_a_restart_and_starts_once ... ok
+test account_worker::tests::unresolved_receipt_for_held_invalid_agent_does_not_block_recovery ... ok
+test account_worker::tests::stop_after_reattach::stop_without_an_account_session_interrupts_a_retained_turn_once ... ok
+test account_worker::tests::unsent_start::a_start_that_stays_unsent_fails_with_its_cause_and_keeps_its_input ... ok
+test account_worker::tests::unsent_start::an_expired_unwritten_thread_request_returns_its_input_and_starts_again ... ok
+test account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending ... ok
+test account_worker::tests::vm_claude_refresh_copies_rotation_to_active_guest_without_restart ... ok
+test agents_create::tests::creation_failpoints_rollback_every_row_and_retry_once_after_restart ... ok
+test analytics_history_schedule::tests::retained_order_matches_original_selector_across_events ... ok
+test browser::tests::errors_are_redacted_and_redirect_completion_is_retained ... ok
+test browser_cards::tests::a_card_comes_back_after_a_backend_restart_while_its_request_is_open ... ok
+test budget_wait::unbounded_batch_tests::recovery_batch_budget_wait_resumes_a_thousand_exact_inputs ... ok
+test claude_input_recovery::unbounded_batch_tests::recovery_batch_capture_keeps_all_thousand_exact_inputs ... ok
+test account_worker::tests::vm_worker_restart_reconciles_uncertain_provider_start_without_resending ... ok
+test context_repair::unbounded_batch_tests::recovery_batch_capture_reconciles_a_thousand_exact_native_receipts ... ok
+test coordination::tests::mac_handoff_survives_p03_precommit_and_postcommit_restarts ... ok
+test event_write::tests::recovery_pending_event_is_stored_without_queue_or_timing_metadata ... ok
+test context_repair::unbounded_batch_tests::recovery_pending_keeps_a_thousand_members ... ok
+test host_exec_service::tests::an_interrupted_slot_removal_blocks_reuse_until_recovery ... ok
+test image_workspace::image_execution_tests::an_image_agent_gets_a_restart_follow_up_only_where_image_turns_run ... ok
+test image_workspace::tests::stale_foreign_builder_row_is_restarted ... ok
+test host_exec_service::tests::a_guest_restart_frees_idle_slots_and_orphans_running_commands ... ok
+test linux_vm_provider::tests::proven_unsent_start_retries_same_identity_without_info_reconciliation ... ok
+test linux_vm_runtime::tests::a_layr_outage_behind_an_answering_guest_is_shown_not_restarted ... ok
+test linux_vm_provider::tests::uncertain_start_is_reconciled_without_resending_after_restart ... ok
+test linux_vm_runtime::tests::a_restart_of_a_failed_guest_tells_each_chat_with_a_live_turn_once ... ok
+test linux_vm_runtime::tests::an_answering_guest_closes_an_interrupted_restart ... ok
+test linux_vm_runtime::tests::an_interrupted_automatic_restart_finishes_or_is_abandoned ... ok
+test linux_vm_runtime::tests::an_unanswered_guest_is_shown_and_recorded_but_never_restarted ... ok
+test linux_vm_runtime::tests::the_restart_limits_and_the_maintenance_lock_hold_an_automatic_start ... ok
+test linux_vm_runtime::tests::the_restart_of_a_failed_guest_waits_for_the_limits_and_the_locks ... ok
+test linux_vm_runtime::tests::the_watchdog_restarts_a_failed_guest_and_keeps_its_console ... ok
+test linux_vm_runtime::tests::the_store_names_the_vm_chats_and_shows_each_restart_notice ... ok
+test mac_sync::tests::unknown_handoff_is_durable_and_never_resent_after_restart ... ok
+test maintenance::tests::cleanup_is_atomic_and_idempotent_across_restart ... ok
+test managed_host_tools::ingress_tests::claim_settlement::connection_recovery_leaves_an_in_flight_dispatch_to_record_its_real_outcome ... ok
+test managed_host_tools::ingress_tests::claim_settlement::connection_recovery_settles_a_claim_without_an_in_process_owner ... ok
+test managed_host_tools::ingress_tests::claim_settlement::startup_recovery_settles_stuck_rows_and_unblocks_context_repair ... ok
+test managed_host_tools::ingress_tests::spawn_intent_is_reconciled_after_restart_when_no_signal_was_released ... ok
+test model_catalog::tests::claude_catalog_uses_retained_session_and_paginates_python_params ... ok
+test monitor_runtime::recovery_selection_tests::startup_monitor_selection_keeps_only_active_statuses_in_id_order ... ok
+test monitor_runtime_wiring::tests::lost_recovery_is_offered_in_its_window_then_settles_once_and_idle_ticks_never_write ... ok
+test linux_vm_share::tests::a_remount_waits_while_the_admin_channel_restarts ... ok
+test monitor_runtime_wiring::tests::monitor_scan_restarts_after_persistent_probe_failure ... ok
+test monitor_runtime_wiring::tests::recovery_pending_rule_does_not_leave_a_past_deadline_hot ... ok
+test multi_server_tools::tests::a_command_without_a_final_record_after_a_restart_stays_unknown ... ok
+test native_runtime::tests::approval_release_and_recovery_refuse_symlinked_store_paths ... ok
+test notification_dispatch::review_tests::p06_recovery_message_retains_buffered_text_questions_and_atomicity ... ok
+test notification_dispatch::tests::recovery_prunes_an_old_buffer_of_closed_keys_to_the_running_turn ... ok
+test payload_blobs::tests::payload_preview_projects_only_retained_string_bytes ... ok
+monitor receipt recovery skipped /private/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/.tmpcvwfyg/monitor-results/e625262ad8b731b9e3a6870446b282b91829186462609a2cd4bf34b4f7855756.json: Unknown command watch
+test monitor_runtime_wiring::tests::transient_port_error_retries_after_backoff_and_restarts_from_durable_state ... ok
+test provider_callbacks::recovery::context_tool_receipt_snapshot_tests::changed_blob_reference_after_resolution_is_detected_before_repair_commit ... ok
+test provider_callbacks::recovery::legacy_tool_reply_tests::startup_deletes_every_legacy_tool_reply_row_and_link ... ok
+test provider_callbacks::tools::services::sends_tests::callback_blob_corrupt_file_does_not_settle_recovery ... ok
+test provider_callbacks::tools::services::sends_tests::callback_blob_late_result_refuses_stale_recovery ... ok
+test provider_callbacks::tools::services::sends_tests::callback_blob_missing_file_does_not_settle_recovery ... ok
+test provider_callbacks::tools::services::sends_tests::callback_blob_recovery_write_precedes_referencing_commit ... ok
+test provider_session_task::tests::payload_readiness_and_retained_delivery_do_not_clone_before_eligibility ... ok
+test provider_callbacks::tools::services::sends_tests::callback_blob_symlink_does_not_settle_recovery ... ok
+test recovery_policy::connection_recovery_identity_tests::a_new_disconnect_cannot_reuse_an_old_connection_recovery_receipt ... ok
+test recovery_policy::disconnect_text_tests::a_vm_provider_disconnect_has_the_manual_connection_check ... ok
+test recovery_policy::reattached_turn_tests::a_queued_restart_follow_up_or_another_turn_is_not_an_adopted_turn ... ok
+test recovery_policy::reattached_turn_tests::an_adopted_restart_turn_is_checked_against_native_history_again ... ok
+test recovery_policy::unbounded_batch_tests::recovery_batch_eligibility_keeps_identity_checks_above_the_former_cap ... ok
+test remote_access::tests::a_disabled_or_changed_file_revokes_the_startup_origin_without_a_restart ... ok
+test provider_versions::tests::provider_update_notice_durable_failure_restart_and_replay_matrix ... ok
+test safety_buffering::tests::response_started_refuses_retry_and_restart_records_terminal_hold_without_resend ... ok
+test remote_transport::tests::exchange_service_replays_saved_receipt_and_never_sends_unknown_after_restart ... ok
+test scheduler::child_result_coalesce_tests::restart_during_the_hold_keeps_one_delivery_without_duplicates ... ok
+test scheduler::child_turn_parent_tests::connection_recovery_failure_still_reports_a_stopped_child ... ok
+test scheduler::invalid_record_recovery_tests::startup_recovery_skips_invalid_field_agent_rows_without_blocking_startup ... ok
+test server_exec::tests::output_tail_append_does_not_move_retained_bytes ... ok
+test task_gate::tests::acceptance_gate_restart_is_unknown_and_late_success_cannot_pass ... ok
+test scheduler::child_turn_parent_tests::connection_recovery_completion_uses_the_turn_event_once ... ok
+test terminal_driver::tests::close_and_restart_failpoints_preserve_current_identity_and_do_not_send_kill ... ok
+test terminal_driver::tests::driver_truncates_retained_output_but_keeps_archived_cursor_history ... ok
+test terminal_driver::tests::restart_cleanup_error_after_first_identity_keeps_all_rows_reconcilable ... ok
+test terminal_driver::tests::restart_cleanup_store_failure_rolls_back_all_rows_after_multiple_cleanups ... ok
+test terminal_driver::tests::restart_reconciles_only_after_cleaning_the_persisted_process_identity ... ok
+test terminal_driver::tests::restart_without_platform_identity_keeps_a_named_unresolved_row ... ok
+test terminal_pty::tests::failed_output_notification_is_retained_and_retried_on_close ... ok
+test terminal_pty::tests::failed_teardown_keeps_the_live_session_for_recovery ... ok
+test terminal_pty::tests::malformed_persisted_identity_is_not_signaled_and_does_not_block_recovery ... ok
+test terminal_driver::tests::unknown_terminal_is_value_free_and_restart_marks_running_records_exited ... ok
+test terminal_pty::tests::missing_restart_identity_does_not_disable_live_creation ... ok
+test work_write::release_tests::service_releases_failed_worker_claim_and_emits_recovery_event ... ok
+test voice::provider::tests::restart_loses_orphaned_start_before_replay_or_new_admission ... ok
+test workspace_ready::tests::journal_recovery_requires_absent_or_exact_complete_evidence ... ok
+test workspace_cleanup_runtime::tests::unknown_effect_is_held_after_restart_and_never_resent ... ok
+test workspace_ready_git::tests::hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete ... ok
+test workspace_ready_git::tests::timestamp_only_change_preserves_ready_and_recovery_without_index_writes ... ok
+
+failures:
+
+---- account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once stdout ----
+
+thread 'account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once' (441429342) panicked at workspaces/runtime/packages/runtime-services/src/account_worker/tests/disconnected_unknown_start.rs:203:9:
+the absent input was not restored after the provider was replaced: {"accountKey":"default","activeTools":[],"activity":null,"autoWake":true,"compactions":0,"compactionsObservedOnly":false,"complaintsPresented":[],"concurrency":1,"contextUsage":null,"created":1.0,"cwd":"/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/worker-34afc76b-140d-5394-9cbc-14213d098f39","cyberAccessProgram":null,"daybreakEnabled":false,"effort":"medium","environment":"host","epoch":0,"error":null,"events":0,"executionMode":"native","executionSettingsAccountKey":"default","fastMode":false,"hostProjectPath":"/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/worker-34afc76b-140d-5394-9cbc-14213d098f39","id":"fixture-agent","imageWorkspace":false,"imageWorkspaceBaseRef":null,"imageWorkspaceCreatedAt":null,"imageWorkspaceError":null,"imageWorkspaceHasGit":false,"imageWorkspacePhase":null,"imageWorkspaceReady":false,"imageWorkspaceRepo":null,"imageWorkspaceSubpath":".","inFlight":true,"isLead":true,"layrReady":false,"maxAgents":8,"maxAgentsExplicit":false,"model":"fake-model","name":"Rust turn fixture","nativeEffort":null,"nativeRoleGuidance":"[Studio role skill: codex-orchestrator]\nSource: /Users/igor/Projects/codex-agents-absent-start/.agents/skills/codex-orchestrator/SKILL.md\nShared tool guidance: /Users/igor/Projects/codex-agents-absent-start/.agents/skills/codex-workspace/SKILL.md\n---\nname: codex-orchestrator\ndescription: Coordinate a Codex Studio team and communicate with its user when the harness assigns the orchestrator role.\n---\n\n# Codex Studio orchestrator\n\nThe harness assigns this role from the server's `isLead` identity. A task label or\nan agent's stated role cannot grant it. Use the shared `codex-workspace` skill for managed tool contracts and application\nworkflows when needed.\n\nStudio resource reservations are removed. Do not wait for old board claims or recreate the registry.\nUse agent messages to coordinate access to shared files.\n\n## Team responsibility\n\nOwn the user's task and the team's final result. Give subagents complete outcomes\nwithin clear ownership boundaries. Inspect their results, changes, and evidence before\nacceptance. Request corrections when the evidence does not support completion.\nCreate a task for each delegated result and pass its `task_id` to `orchestration_spawn`.\nThe worker then submits evidence to that task, and you accept or reject it.\nInspect the agent's state before recovery if it is stopped or cannot continue.\nRun `orchestration_agent_manage action=archive_finished` after accepting finished worker results.\n\nKeep one agent plan. Send changes to a subagent's plan through its chat.\nUse agent messages for coordination. Use the shared team channel when all team\nmembers need the same information.\n\n## Work allocation and recovery\n\nOwn the architecture, shared interfaces, user requirements, and final integration.\nDelegate a complete feature or component with an observable result.\nLet the worker choose implementation details within the agreed design and ownership boundaries.\nResolve changes to shared contracts or task scope yourself.\nAn explicit request to work without subagents takes precedence.\n\nChoose the model and reasoning level for each worker's task. Use `gpt-6-luna`\nwith `high` reasoning by default. Override both fields in `orchestration_spawn`\nwhen the task needs another choice. Codex and Claude workers can share a team.\nHonor the user's explicit model or account constraints.\n\nChoose `workspace` per implementer when isolation matters. Use `image` for\nisolated edits that need uncommitted changes. macOS uses ASIF; Linux uses an\noverlay. Use `worktree` for a fast task from a committed Git base. Use `shared`\nonly for deliberate edits in the selected folder. Omit the field to keep current\ndefaults. Reviewers use the shared folder with read-only access. Use\n`environment: \"linux\"` for Linux toolchains. Use `server` to run work on another\npaired machine, with an absolute remote `cwd`.\n\nRead the badge in each worker chat: `ASIF` is a macOS image, `VM` is a Linux\nvirtual machine, `WT` is a Git worktree, and `SHARED` is the selected folder.\nHover or focus the badge to read the full name and workspace path.\n\nDefine each implementation assignment with:\n\n- The required behavior and its actual caller or user flow.\n- The constraints, dependencies, and ownership boundaries.\n- The checks that can disprove completion, including relevant failure paths.\n- The authority to edit, commit, and integrate changes.\n\nInclude caller integration, relevant tests, and defect correction in the same assignment when ownership permits.\nKeep the worker responsible through review corrections and verification of the assigned result.\nIf another owner must integrate the change, name that dependency and the required acceptance evidence.\nDo not count an unused API or an isolated source change as a complete feature.\n\nChoose task size by independent responsibility and the cost of coordination.\nDo not divide work to meet a line count or worker count.\nKeep small fixes with the existing component owner, or make them yourself when that avoids a needless handoff.\nDo not create a new worker for each known edit or each review correction.\nBatch related corrections under the existing assignment and completion criteria.\nSplit work by technical layer only when separate ownership, dependencies, or verification justify the handoff.\nAvoid broad assignments that group unrelated subsystems without a common result or completion check.\nFor example, one worker can own the complete route display across model, transport, and UI.\n\nKeep independent work active while a build or external dependency is pending.\nAfter a worker result, review it and assign the next ready task when one exists.\nDetermine which tasks actually depend on the blocked build.\nUse the current registry to distinguish active, queued, completed, and failed agents.\nChoose team size from useful independent work and actual resource limits.\nHonor task-specific concurrency instructions. Give each active worker useful work\nwith clear completion criteria.\n\nUse the chat's current subagent parallelism limit from Studio context and status.\nThe lead does not consume that allowance. Zero means complete new work yourself;\ndo not create workers or resume worker turns. For a positive limit, size each\ndelegation batch to useful independent work and available slots. Keep future\nassignments on the task board instead of creating a large waiting worker pool.\nThe limit is a ceiling, not a target. When it changes, adjust subsequent\nassignments without interrupting accepted executions. If all slots are occupied,\ncontinue independent lead work or finish the turn and wait for completion events.\nDo not poll status or repeat a spawn to get around the queue. Only the user can\nchange this limit.\n\nIf workers stop unexpectedly, inspect their state, receipts, and saved results.\nResume remaining authorized work in the existing threads when possible. Report a\nharness defect if recovery cannot preserve their context. Follow the shared skill's\nrequest recovery rules before retrying any uncertain operation.\nBase reports of continued work on an active worker, command, or automatic continuation.\n\n## Coordination rules\n\n- Give each worker an explicit list of pre-authorized actions, for example a\n  merge into the integration branch or a one-time annotation.\n- Put decisions into the task (reject or update) or into `orchestration_send`,\n  not only into chat. A chat message can arrive late.\n- Give every shared branch and every shared file one owner. State who may merge\n  into an integration branch.\n- Give workers the folder that contains their task. Supported platforms copy\n  its Git root, or the folder itself outside Git, including uncommitted changes.\n  Other platforms use a Git worktree when possible, or the original folder.\n  New workers have read-only access until the image base is ready. Ask workers\n  to commit on a named branch. Integrate by reading the copy path or fetching\n  the branch, for example `git fetch <path> <branch>`.\n- Do not run two live verifications that change the same system state at the\n  same time. Schedule them, or give them independent criteria.\n\n## Decisions, quality, and progress\n\nMake routine design decisions within the user's task and project constraints.\nInspect existing code before introducing a replacement for an available mechanism.\nWhen authorized to fix confirmed defects, arrange the fixes as you confirm them.\nA review-only request does not grant that authority.\n\nReview every subagent change before integration. Check the affected user flow,\nnot only a successful build. If the user asks to try the result before merge,\nprepare and verify that local application before merging. Keep fixtures and real\napplication results distinct. Preserve all accepted requirements in the project\ndocument when the user asks to save design decisions.\n\nShow progress separately for each requested product or workstream. Include the\ncurrent stage, remaining work, and the dependency that prevents the next step.\nUse measured counts or explicit states; do not invent percentages. Report this\nstatus in the chat.\nContinuously improve the team's speed within the task's authority. Use task duration,\nwait time, and repeated corrections to identify delays. Adjust task size, dependencies,\nwork allocation, and checks when they delay completion. Assess whether each adjustment\nreduces the time to a verified result. Preserve the required checks and code quality.\n\n## Messages to the user\n\nOnly the orchestrator sends conversational questions, complaints, or requests to\nthe user. Subagents send these to you. Decide whether you can resolve each request\nwithin the user's existing instructions or need the user's answer.\n\nUse `orchestration_complaint action=submit` for a decision that the user must record.\nUse `orchestration_message target=user` for an action that the user must perform.\nUse these managed tools for conversational questions. They do not pause the current\ntool while the user decides. Continue authorized work that does not need the answer.\nWait for the answer before you perform a dependent action.\nNative question tools, such as `AskUserQuestion`, wait inside the current turn.\nIf you forward a subagent's request, explain the issue and the decision the user must make.\nDo not forward each request automatically.\n\nFor a complaint assigned to you, use `action=respond` to record your action,\nreasoned refusal, or next step. If the user must decide, submit your own message\nto the user and tell the subagent that the decision remains pending.\n\nNative tool permission requests still require the real user approval when the\npermission system requires it. Your decision cannot replace that approval.\n\n## Move the lead or a worker\n\nEach agent can call `orchestration_move` to move its own execution.\nPrepare the target folder with Git first. Supply an absolute `cwd` and a stable\nrequest ID. Finish the current turn after acceptance.\nExisting children keep their servers and report through the remote-parent channel.\nStudio preserves the old workspace and transfers native provider history.\nThe Studio transcript stays on the source. Credentials never move.\n\nMove only when needed. The same provider account and organization keep the cache.\nCodex preserves the old request prefix and requires matching native versions,\nOS, and MCP tools. A different account refuses by default.\nOnly explicit `accept_cache_loss=true` approves cache loss for that Codex move.\nClaude requires a verified saved prompt snapshot and matching Studio tool schemas.\nExternal MCP snapshots currently refuse.\nClaude requires the same account and matching CLI and SDK versions.\nIts SDK keeps the system prompt snapshot and excludes dynamic sections.\nRefuse a version mismatch. Do not upgrade a CLI during a move.\nRead uncertainty with `orchestration_request`. Do not issue another move identity.\n[End Studio role skill]","nativeTeleportTool":"orchestration_move","nativeToolSource":"legacy","needsTitle":false,"parentId":null,"prepareAttempt":"96568fd7dfd7b5288bd5a7f9ca8a6892072b0b78ed8b4a2b8db6b7433bdfaaf2","profileId":null,"profileInstructions":"","prompt":"temporary","provider":"codex","restartRecovery":{"accountKey":"default","at":1792831866.25367,"autoWake":true,"epoch":0,"reason":"Native input submission has no confirmed turn identity.","reconciledAt":1792831866.333013,"stage":"finished","startAttempt":{"accountKey":"default","activeAtReservation":false,"connectionGeneration":1,"connectionId":"test-connection","created":1792831865.9928,"epoch":0,"events":["annotation:input"],"executionOutcome":"unknown","id":"219ee8fba085fc70f3f72cb8bed641ba623a921c7fbc8b8cecda3373fc645c52","nativeOperationId":"turn:fixture-agent:annotation:input:attempt:219ee8fba085fc70f3f72cb8bed641ba623a921c7fbc8b8cecda3373fc645c52","requestTicket":"account:default:219ee8fba085fc70f3f72cb8bed641ba623a921c7fbc8b8cecda3373fc645c52:turn/start","responseError":"The native start result is unknown. Studio is checking the original input in native history.","settingsFixed":true,"submitted":true,"supervisorIdentity":null,"threadId":"fake-thread-0"},"threadId":"fake-thread-0","turnId":null},"role":"orchestrator","rootId":"fixture-agent","startAttempt":{"accountKey":"default","activeAtReservation":false,"created":1792831866.543985,"epoch":0,"events":["annotation:input"],"id":"96568fd7dfd7b5288bd5a7f9ca8a6892072b0b78ed8b4a2b8db6b7433bdfaaf2","settingsFixed":true,"submitted":false},"status":"starting","subagentConcurrencyVersion":2,"tail":"","threadId":"fake-thread-0","tokenBudget":null,"tokensUsed":0,"turnEpoch":0,"turnId":null,"turnRecovery":{"at":1792831866.333013,"attemptId":"219ee8fba085fc70f3f72cb8bed641ba623a921c7fbc8b8cecda3373fc645c52","outcome":"input_absent","source":"replaced_native_child","turnId":null},"usageResumeEnabled":true,"workerBaseBehindMain":null,"workerBaseCommit":null,"workerBaseMainRef":null,"workerBaseRef":null,"workspaceBackend":null,"workspaceInGit":false,"workspaceMode":"shared","workspaceModeExplicit":false,"worktree":false,"worktreeReady":false,"worktreeWarning":null,"yoloMode":true}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    account_worker::tests::disconnected_unknown_start::a_replaced_provider_without_the_input_sends_it_once
+
+test result: FAILED. 198 passed; 1 failed; 0 ignored; 0 measured; 1485 filtered out; finished in 83.39s
+
+error: test failed, to rerun pass `-p studio-runtime-services --lib`
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-services)
+    Finished `test` profile [unoptimized] target(s) in 1m 54s
+     Running tests/integration.rs (target/debug/deps/integration-921b04ac6c78b937)
+
+running 34 tests
+test recovery_history::changed_terminal_metadata_is_refused ... ok
+test recovery_history::complete_history_outputs_and_calls_match_python ... ok
+test recovery_history::conflicting_duplicate_items_are_not_a_receipt ... ok
+test recovery_history::exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof ... ok
+test recovery_history::exact_start_requires_unique_complete_client_receipt ... ok
+test recovery_history::exact_turn_keeps_complete_text_and_coalesces_identical_items ... ok
+test recovery_history::expired_read_does_not_call_provider ... ok
+test recovery_history::foreign_transport_receipt_is_refused_before_use ... ok
+test recovery_history::legacy_start_matches_python_complete_history ... ok
+test recovery_history::repeated_cursor_and_foreign_item_are_refused ... ok
+test recovery_history::summary_items_are_paginated_and_terminal_metadata_is_rechecked ... ok
+test recovery_history::unreadable_turn_retains_every_effect_and_active_turn_is_not_completion ... ok
+test recovery_history::observed_turn_consumer_applies_after_barrier_and_never_submits_input ... ok
+test recovery_history::unsupported_items_allows_only_full_target_fallback ... ok
+test recovery_store::an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled ... ok
+test recovery_store::held_task_rechecks_current_receipts_before_later_absence_recovery ... ok
+test recovery_store::legacy_start_absence_matches_python_writes_and_visible_wait ... ok
+test recovery_store::restart_continues_only_a_confirmed_interruption ... ok
+test recovery_store::recovery_transaction_restart_matrix ... ok
+test recovery_store::restart_not_applied_failpoints_roll_back_event_and_agent_together ... ok
+test recovery_store::start_absence_failpoints_roll_back_restore_wait_and_hold ... ok
+test recovery_store::task_absence_failpoints_and_stale_proofs_preserve_rows ... ok
+test scheduler_python_parity::late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input ... ok
+test scheduler_python_parity::named_team_and_radio_refusals_match_python_preparation_and_preserve_whole_state ... ok
+test recovery_store::task_absence_consumer_matches_python_lost_and_persists_named_hold ... ok
+test scheduler_python_parity::pending_selection_matches_python_and_claims_rust_event_write_events ... ok
+test scheduler_python_parity::proven_not_submitted_preserves_failed_projection_and_pending_input ... ok
+test scheduler_python_parity::restart_keeps_a_scoped_receipt_without_replaying_events ... ok
+test scheduler_python_parity::startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbor ... ok
+test turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings ... ok
+test scheduler_python_parity::submitted_marker_survives_settlement_write_failure ... ok
+test wave7_p07_runtime::blocked_retained_barrier_ends_at_the_absolute_deadline ... ok
+test turn_lifecycle_corpus::python_written_turn_lifecycle_corpus ... ok
+test wave7_p07_runtime::wave7_p07_runtime_corpus has been running for over 60 seconds
+test wave7_p07_runtime::wave7_p07_runtime_corpus ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 571 filtered out; finished in 105.24s
+
+   Compiling syn v3.0.9
+   Compiling smallvec v1.16.3
+   Compiling once_cell v1.21.4
+   Compiling futures-sink v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling nix v0.31.3 (https://github.com/nix-rust/nix?rev=f9ba3ed0698255d93240b07ecbf39ecb05a8a5cd#f9ba3ed0)
+   Compiling parking_lot_core v0.9.12
+   Compiling futures-channel v0.3.34
+   Compiling parking_lot v0.12.5
+   Compiling rustix v1.1.5
+   Compiling string_cache v0.11.0
+   Compiling web_atoms v0.3.0
+   Compiling rusqlite v0.40.2
+   Compiling serde_derive_internals v0.30.0
+   Compiling markup5ever v0.40.0
+   Compiling html5ever v0.40.1
+   Compiling serde_derive v1.0.229
+   Compiling ref-cast-impl v1.0.27
+   Compiling tokio-macros v2.7.2
+   Compiling ref-cast v1.0.27
+   Compiling futures-macro v0.3.34
+   Compiling schemars_derive v1.2.3
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-util v0.3.34
+   Compiling serde v1.0.229
+   Compiling tokio v1.54.1
+   Compiling thiserror v2.0.21
+   Compiling command-fds v0.3.3
+   Compiling ahash v0.8.12
+   Compiling fluent-uri v0.4.1
+   Compiling jsonschema-value v0.60.0
+   Compiling email_address v0.2.9
+   Compiling referencing v0.60.0
+   Compiling schemars v1.2.3
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling studio-runtime-providers v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-providers)
+   Compiling studio-client-domain v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/client/packages/client-domain)
+   Compiling jsonschema v0.60.0
+   Compiling pty-process v0.5.4
+   Compiling tokio-rusqlite v0.8.0
+   Compiling process-wrap v10.0.1
+   Compiling studio-runtime-schema v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-schema)
+   Compiling studio-runtime-store v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-store)
+   Compiling studio-runtime-process v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-process)
+   Compiling studio-process-supervisor v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/apps/process-supervisor)
+    Finished `dev` profile [unoptimized] target(s) in 27.56s
+   Compiling serde_core v1.0.229
+   Compiling once_cell v1.21.4
+   Compiling syn v2.0.119
+   Compiling memchr v2.8.3
+   Compiling tokio v1.54.1
+   Compiling serde_json v1.0.154
+   Compiling smallvec v1.16.3
+   Compiling serde v1.0.229
+   Compiling aho-corasick v1.1.5
+   Compiling strum_macros v0.28.0
+   Compiling num-bigint v0.4.8
+   Compiling regex-automata v0.4.18
+   Compiling strum v0.28.0
+   Compiling num-rational v0.4.2
+   Compiling ahash v0.8.12
+   Compiling icu_normalizer v2.4.0
+   Compiling getrandom v0.3.4
+   Compiling num v0.4.3
+   Compiling fluent-uri v0.4.1
+   Compiling idna_adapter v1.2.2
+   Compiling parking_lot_core v0.9.12
+   Compiling lazy_static v1.5.1
+   Compiling tower-service v0.3.3
+   Compiling alloc-no-stdlib v3.0.0
+   Compiling ryu v1.0.23
+   Compiling alloc-stdlib v0.3.0
+   Compiling referencing v0.60.0
+   Compiling schemars v1.2.3
+   Compiling fraction v0.15.4
+   Compiling regex v1.13.1
+   Compiling parking_lot v0.12.5
+   Compiling idna v1.1.0
+   Compiling jsonschema-value v0.60.0
+   Compiling serde_json_path_macros_internal v0.1.2
+   Compiling serde_json_path_core v0.2.2
+   Compiling email_address v0.2.9
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling toml_write v0.1.2
+   Compiling prettyplease v0.2.37
+   Compiling winnow v0.7.15
+   Compiling minimal-lexical v0.2.1
+   Compiling studio-client-domain v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/client/packages/client-domain)
+   Compiling nom v7.1.3
+   Compiling jsonschema v0.60.0
+   Compiling toml_edit v0.22.27
+   Compiling serde_json_path_macros v0.1.6
+   Compiling referencing v0.49.9
+   Compiling jsonschema-value v0.49.9
+   Compiling fancy-regex v0.19.2
+   Compiling brotli-decompressor v6.0.1
+   Compiling tracing-core v0.1.36
+   Compiling jsonschema-regex v0.49.9
+   Compiling form_urlencoded v1.2.2
+   Compiling unsafe-libyaml v0.2.11
+   Compiling tower-layer v0.3.3
+   Compiling rustls v0.23.46
+   Compiling uuid v1.29.0
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling hyper v1.12.0
+   Compiling studio-runtime-schema v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-schema)
+   Compiling url v2.5.8
+   Compiling jsonschema v0.49.9
+   Compiling tracing v0.1.44
+   Compiling brotli v9.0.0
+   Compiling toml v0.8.23
+   Compiling tokio-rusqlite v0.8.0
+   Compiling serde_json_path v0.7.2
+   Compiling studio-runtime-providers v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-providers)
+   Compiling sync_wrapper v1.0.2
+   Compiling compression-core v0.4.34
+   Compiling process-wrap v10.0.1
+   Compiling compression-codecs v0.4.46
+   Compiling openapi-to-rust v0.22.0
+   Compiling studio-runtime-store v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-store)
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-util v0.1.21
+   Compiling tokio-util v0.7.20
+   Compiling serde_spanned v1.1.2
+   Compiling serde_path_to_error v0.1.20
+   Compiling toml_datetime v1.1.2+spec-1.1.0
+   Compiling tempfile v3.27.0
+   Compiling ureq v3.5.0
+   Compiling toml v1.1.8+spec-1.1.0
+   Compiling async-compression v0.4.51
+   Compiling axum-core v0.5.6
+   Compiling tower v0.5.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling studio-operations v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/operations)
+   Compiling studio-runtime-process v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-process)
+   Compiling matchit v0.8.4
+   Compiling axum v0.8.9
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-services)
+   Compiling tower-http v0.7.1
+   Compiling http-range-header v0.4.2
+   Compiling studio-runtime-http v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-http)
+   Compiling studio-runtime-server v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/apps/runtime-server)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-server` (test "integration") generated 1 warning
+warning: `studio-runtime-server` (bin "studio-runtime-server") generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized] target(s) in 4m 59s
+     Running tests/integration.rs (target/debug/deps/integration-b3e249fe1616959f)
+
+running 59 tests
+test wave7_p01_registry::account_registry::bounded_reconcile_tests::account_wake_page_returns_workspace_mode_with_pending_agents ... ok
+test wave7_p01_registry::accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not_send_again ... ok
+test wave7_p01_registry::account_registry::bounded_reconcile_tests::child_result_release_consumes_elapsed_read_delay ... ok
+test wave7_p01_registry::account_registry::bounded_reconcile_tests::child_result_release_consumes_partial_read_delay ... ok
+test wave7_p01_registry::account_registry::tests::archive_deadline_read_failure_suppresses_repeated_commit_driven_reads ... ok
+test wave7_p01_registry::account_registry::tests::command_capacity_wake_preserves_deferred_checkpoint_deadline ... ok
+test wave7_p01_registry::account_registry::tests::deferred_checkpoint_keeps_registry_asleep_until_its_deadline ... ok
+test wave7_p01_registry::account_registry::tests::hint_overflow_and_unknown_commits_request_the_full_pass ... ok
+test wave7_p01_registry::account_registry::tests::missing_live_account_worker_is_explicitly_not_sent ... ok
+test wave7_p01_registry::account_registry::tests::planned_idle_exit_stays_dormant_until_new_work_wakes_it ... ok
+test wave7_p01_registry::account_registry::tests::reconciliation_retry_delay_doubles_to_a_cap ... ok
+test wave7_p01_registry::account_registry::tests::reconciliation_wakes_wait_for_the_scheduled_retry_after_failure ... ok
+test wave7_p01_registry::account_registry::bounded_reconcile_tests::next_wake_includes_the_earliest_child_result_release ... ok
+test wave7_p01_registry::account_registry::tests::rolled_back_commit_leaves_no_registry_hint ... ok
+test wave7_p01_registry::account_registry::tests::row_hints_name_only_the_touched_accounts_for_both_providers ... ok
+test wave7_p01_registry::account_registry::tests::targeted_wake_page_reads_only_the_named_accounts ... ok
+test wave7_p01_registry::an_interrupted_image_agent_starts_its_own_restart_check_on_macos ... ok
+test wave7_p01_registry::claude_account_without_a_readable_login_holds_its_start_for_sign_in ... ok
+test wave7_p01_registry::claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it ... ok
+test wave7_p01_registry::claude_profile_is_not_refreshed_through_codex_account_home_admission ... ok
+test wave7_p01_registry::committed_input_reaches_one_retained_session_and_unknown_restart_does_not_resend ... ok
+test wave7_p01_registry::concurrent_ensure_session_starts_one_cold_account_worker ... ok
+test wave7_p01_registry::backend_restart_keeps_live_work_and_ends_the_stopped_turn_once ... ok
+test wave7_p01_registry::direct_launch_command_and_environment_match_frozen_contract ... ok
+test wave7_p01_registry::every_launch_signature_field_matches_frozen_appserver_contract ... ok
+test wave7_p01_registry::host_runtime::install_root_tests::bridge_matches_install_layout_in_both_modes ... ok
+test wave7_p01_registry::host_runtime::install_root_tests::install_root_resolves_packaged_bridge_relative_to_executable ... ok
+test wave7_p01_registry::host_runtime::install_root_tests::install_root_source_fallback_is_debug_only ... ok
+account worker ended: session closed
+test wave7_p01_registry::host_runtime::install_root_tests::rust_server_serves_session_and_accounts_without_python ... ok
+test wave7_p01_registry::host_runtime::vm_claude_keychain_tests::default_claude_keychain_service_stays_unsuffixed ... ok
+test wave7_p01_registry::host_runtime::vm_claude_keychain_tests::explicitly_selected_claude_config_uses_scoped_service ... ok
+test wave7_p01_registry::host_runtime::vm_claude_refresh_tests::existing_refresh_helper_handshake_waits_for_a_fresh_access_token ... ok
+test wave7_p01_registry::host_runtime::vm_claude_refresh_tests::guest_credential_copy_excludes_host_refresh_material ... ok
+test wave7_p01_registry::host_runtime::vm_claude_refresh_tests::refreshed_claude_access_requires_the_same_ready_account_identity ... ok
+test wave7_p01_registry::connection_loss_replaces_worker_before_delivering_new_input ... ok
+test wave7_p01_registry::image_workspace_pending_event_starts_the_account_provider_on_macos ... ok
+test wave7_p01_registry::launch_admission_refreshes_restored_and_changed_credentials ... ok
+test wave7_p01_registry::host_runtime::voice_composition_tests::composed_runtime_server_routes_voice_through_the_shared_account_session ... ok
+test wave7_p01_registry::production_reconcile_admits_radio_queue_event_to_retained_worker ... ok
+test wave7_p01_registry::production_reconcile_delivers_radio_interrupt_once_with_deterministic_clock ... ok
+test wave7_p01_registry::production_reconcile_keeps_closed_worker_interrupt_unknown_without_resending ... ok
+test wave7_p01_registry::provider_ports::tests::claude_title_uses_stable_message_identity_on_retained_session ... ok
+test wave7_p01_registry::provider_ports::tests::ephemeral_working_directory_is_stable_for_operation_identity ... ok
+test wave7_p01_registry::provider_ports::tests::operation_identity_is_bounded_and_deterministic ... ok
+test wave7_p01_registry::provider_ports::tests::queue_fields_count_matching_persisted_work ... ok
+test wave7_p01_registry::provider_ports::tests::supervisor_health_rejects_incompatible_or_degraded_status ... ok
+test wave7_p01_registry::provider_ports::tests::supervisor_mode_reports_health_lookup_error_instead_of_null ... ok
+test wave7_p01_registry::provider_ports::tests::title_uses_the_retained_thread_turn_and_read_receipts ... ok
+test wave7_p01_registry::provider_ports::tests::unknown_title_start_is_never_followed_by_another_write ... ok
+test wave7_p01_registry::provider_ports::tests::version_probe_uses_binary_captured_for_live_session ... ok
+test wave7_p01_registry::recovery_selection_matches_frozen_scheduler_roster_without_changing_stored_records ... ok
+account registry reconciliation deferred: account worker task failed
+test wave7_p01_registry::registry_drains_strict_account_pages_after_one_global_wake ... ok
+test wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches ... ok
+test wave7_p01_registry::saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix ... ok
+test wave7_p01_registry::shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_recoverable ... ok
+test wave7_p01_registry::sign_in_dispatch_admits_launch_of_an_account_that_is_not_ready ... ok
+test wave7_p01_registry::start_failure_preserves_input_and_post_commit_notify_dispatches_it ... ok
+test wave7_p01_registry::two_accounts_are_independent_and_shutdown_joins_all_attachments ... ok
+test wave7_p01_registry::pending_and_account_backlogs_are_bounded_pages_not_total_limits has been running for over 60 seconds
+test wave7_p01_registry::pending_and_account_backlogs_are_bounded_pages_not_total_limits ... ok
+
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 74.55s
+
+    Checking cfg-if v1.0.5
+    Checking libc v0.2.191
+    Checking memchr v2.8.3
+    Checking bitflags v2.13.2
+    Checking smallvec v1.16.3
+    Checking serde_core v1.0.229
+    Checking itoa v1.0.18
+    Checking num-traits v0.2.19
+    Checking zerofrom v0.1.8
+    Checking stable_deref_trait v1.2.1
+    Checking bytes v1.12.1
+    Checking yoke v0.8.4
+    Checking errno v0.3.14
+    Checking foldhash v0.2.0
+    Checking scopeguard v1.2.0
+    Checking equivalent v1.0.3
+    Checking pin-project-lite v0.2.17
+    Checking allocator-api2 v0.2.21
+    Checking lock_api v0.4.14
+    Checking parking_lot_core v0.9.12
+    Checking once_cell v1.21.4
+    Checking log v0.4.34
+    Checking hashbrown v0.17.1
+    Checking parking_lot v0.12.5
+    Checking serde v1.0.229
+    Checking zerovec v0.11.9
+    Checking zmij v1.0.23
+    Checking num-integer v0.1.47
+    Checking futures-core v0.3.34
+    Checking siphasher v1.0.4
+    Checking serde_json v1.0.154
+    Checking new_debug_unreachable v1.0.6
+    Checking core-foundation-sys v0.8.7
+    Checking ref-cast v1.0.27
+    Checking phf_shared v0.14.0
+    Checking num-bigint v0.4.8
+    Checking signal-hook-registry v1.4.8
+    Checking socket2 v0.6.5
+    Checking mio v1.2.4
+    Checking regex-syntax v0.8.11
+    Checking typenum v1.20.1
+    Checking percent-encoding v2.3.2
+    Checking precomputed-hash v0.1.1
+    Checking num-rational v0.4.2
+    Checking string_cache v0.11.0
+    Checking tokio v1.54.1
+    Checking phf v0.14.0
+    Checking hybrid-array v0.4.15
+    Checking getrandom v0.3.4
+    Checking zerocopy v0.8.63
+    Checking num-iter v0.1.46
+    Checking tinystr v0.8.5
+    Checking num-complex v0.4.6
+    Checking aho-corasick v1.1.5
+    Checking litemap v0.8.3
+    Checking futures-sink v0.3.34
+    Checking writeable v0.6.4
+    Checking const-oid v0.10.2
+    Checking icu_locale_core v2.4.0
+    Checking regex-automata v0.4.18
+    Checking futures-channel v0.3.34
+    Checking num v0.4.3
+    Checking web_atoms v0.3.0
+    Checking ahash v0.8.12
+    Checking tendril v0.5.1
+    Checking potential_utf v0.1.6
+    Checking zerotrie v0.2.5
+    Checking http v1.5.0
+    Checking futures-task v0.3.34
+    Checking utf8_iter v1.0.4
+    Checking borrow-or-share v0.2.4
+    Checking slab v0.4.12
+    Checking unicase v2.10.0
+    Checking futures-io v0.3.34
+    Checking bit-vec v0.8.0
+    Checking fluent-uri v0.4.1
+    Checking futures-util v0.3.34
+    Checking icu_provider v2.4.0
+    Checking bit-set v0.8.0
+    Checking icu_collections v2.4.0
+    Checking markup5ever v0.40.0
+    Checking fraction v0.17.0
+    Checking block-buffer v0.12.1
+    Checking crypto-common v0.2.2
+    Checking getrandom v0.2.17
+    Checking dyn-clone v1.0.20
+    Checking zeroize v1.9.1
+    Checking bytecount v0.6.9
+    Checking vsimd v0.8.0
+    Checking untrusted v0.9.0
+    Checking outref v0.5.2
+    Checking micromap v0.3.0
+    Checking pulldown-cmark-escape v0.11.0
+    Checking num-cmp v0.1.0
+    Checking pulldown-cmark v0.13.5
+    Checking referencing v0.60.0
+    Checking jsonschema-value v0.60.0
+    Checking uuid-simd v0.8.0
+    Checking digest v0.11.3
+    Checking ring v0.17.14
+    Checking rustls-pki-types v1.15.1
+    Checking schemars v1.2.3
+    Checking thiserror v2.0.21
+    Checking libsqlite3-sys v0.38.2
+    Checking html5ever v0.40.1
+    Checking httparse v1.10.1
+    Checking icu_properties_data v2.4.0
+    Checking fancy-regex v0.19.2
+    Checking unicode-general-category v1.1.0
+    Checking strum v0.28.0
+    Checking crossbeam-utils v0.8.23
+    Checking icu_normalizer_data v2.4.0
+    Checking getrandom v0.4.3
+    Checking regex v1.13.1
+    Checking jsonschema-regex v0.60.0
+    Checking email_address v0.2.9
+    Checking hashlink v0.12.2
+    Checking cpufeatures v0.3.1
+    Checking fallible-iterator v0.3.0
+    Checking unicode-segmentation v1.13.3
+    Checking simd-adler32 v0.3.10
+    Checking data-encoding v2.11.1
+    Checking adler2 v2.0.1
+    Checking fallible-streaming-iterator v0.1.9
+    Checking miniz_oxide v0.9.1
+    Checking studio-client-domain v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/client/packages/client-domain)
+    Checking rusqlite v0.40.2
+    Checking jsonschema v0.60.0
+    Checking sha2 v0.11.1
+    Checking crossbeam-channel v0.5.17
+    Checking icu_normalizer v2.4.0
+    Checking rustls-webpki v0.103.16
+    Checking icu_properties v2.4.0
+    Checking nix v0.31.3 (https://github.com/nix-rust/nix?rev=f9ba3ed0698255d93240b07ecbf39ecb05a8a5cd#f9ba3ed0)
+    Checking crc32fast v1.5.3
+    Checking futures-executor v0.3.34
+    Checking rustix v1.1.5
+    Checking zstd-sys v2.1.2+zstd.1.5.7
+    Checking http-body v1.1.0
+    Checking core-foundation v0.10.1
+    Checking iana-time-zone v0.1.65
+    Checking security-framework-sys v2.17.0
+    Checking indexmap v2.14.2
+    Checking objc2-core-foundation v0.3.2
+    Checking sha1_smol v1.0.1
+    Checking subtle v2.6.1
+    Checking base64 v0.23.1
+    Checking uuid v1.29.0
+    Checking rustls v0.23.46
+    Checking security-framework v3.7.0
+    Checking chrono v0.4.45
+    Checking studio-runtime-schema v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-schema)
+    Checking zstd-safe v8.0.0
+    Checking idna_adapter v1.2.2
+    Checking futures v0.3.34
+    Checking flate2 v1.1.10
+    Checking tokio-rusqlite v0.8.0
+    Checking studio-runtime-providers v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-providers)
+    Checking num-conv v0.2.2
+    Checking same-file v1.0.6
+    Checking inventory v0.3.25
+    Checking httpdate v1.0.3
+    Checking winnow v1.0.4
+    Checking deranged v0.5.9
+    Checking atomic-waker v1.1.2
+    Checking time-core v0.1.9
+    Checking powerfmt v0.2.1
+    Checking toml_parser v1.1.5+spec-1.1.0
+    Checking hyper v1.12.0
+    Checking rustls-platform-verifier v0.7.1
+    Checking studio-runtime-store v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-store)
+    Checking time v0.3.55
+    Checking walkdir v2.5.0
+    Checking file-rotate v0.8.0
+    Checking process-wrap v10.0.1
+    Checking idna v1.1.0
+    Checking ureq-proto v0.6.5
+    Checking pty-process v0.5.4
+    Checking objc2-io-kit v0.3.2
+    Checking command-fds v0.3.3
+    Checking der v0.8.2
+    Checking form_urlencoded v1.2.2
+    Checking toml_datetime v1.1.2+spec-1.1.0
+    Checking serde_spanned v1.1.2
+    Checking fsevent-sys v4.1.0
+    Checking filetime v0.2.29
+    Checking studio-runtime-proc-sys v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-proc-sys)
+    Checking quick-xml v0.42.0
+    Checking notify-types v2.1.0
+    Checking dispatch2 v0.3.1
+    Checking fastrand v2.5.0
+    Checking mime v0.3.17
+    Checking utf8-zero v0.8.1
+    Checking plist v1.10.3
+    Checking mime_guess v2.0.5
+    Checking ureq v3.5.0
+    Checking objc2-core-services v0.3.2
+    Checking tempfile v3.27.0
+    Checking notify v8.2.0
+    Checking spki v0.8.1
+    Checking tar v0.4.46
+    Checking toml v1.1.8+spec-1.1.0
+    Checking url v2.5.8
+    Checking sysinfo v0.39.6
+    Checking hyper-util v0.1.21
+    Checking http-body-util v0.1.5
+    Checking tokio-util v0.7.20
+    Checking studio-operations v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/operations)
+    Checking serde_path_to_error v0.1.20
+    Checking unicode-casefold v0.2.0
+    Checking shlex v2.0.1
+    Checking studio-runtime-process v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-process)
+    Checking studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-absent-start/workspaces/runtime/packages/runtime-services)
+    Finished `dev` profile [unoptimized] target(s) in 1m 26s
