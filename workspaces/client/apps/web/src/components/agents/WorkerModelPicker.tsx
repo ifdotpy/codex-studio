@@ -265,8 +265,8 @@ function readModelCatalog(
       const data = await read({
         query: {
           account_key: accountKey,
-          ...(workers ? { workers: "1" as const } : {}),
-          ...(retry ? { retry: "1" as const } : {}),
+          workers: workers ? "1" : undefined,
+          retry: retry ? "1" : undefined,
         },
       });
       const pending =

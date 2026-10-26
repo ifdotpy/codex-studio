@@ -80,7 +80,7 @@ import {
   subscribeTranscript,
 } from "./transcriptCache";
 
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 
@@ -99,7 +99,7 @@ import {
   holdEntityProjectionDatabaseLock,
 } from "./entityCacheStorage";
 
-export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
 
@@ -134,7 +134,7 @@ const TRANSCRIPT_PROJECTION_FORMAT = 3;
 /** Read persisted metadata written before the unused item revision map was removed. */
 const LEGACY_TRANSCRIPT_PROJECTION_FORMAT = 2;
 
-type TranscriptProjectionMeta = {
+export type TranscriptProjectionMeta = {
   format: typeof TRANSCRIPT_PROJECTION_FORMAT;
   epoch?: string | undefined;
   metadata: Omit<Partial<TranscriptPageData>, "items">;
@@ -154,7 +154,7 @@ type ProjectionState = {
 
 type StateProjectionPayload = Snapshot | null;
 
-type TranscriptProjectionPayload =
+export type TranscriptProjectionPayload =
   import("./transcriptCache").CachedTranscript["payload"];
 
 import { clearTranscript } from "./transcriptCache";
@@ -1438,7 +1438,7 @@ export function createSyncClient(options: SyncClientOptions) {
     collection: RxCollection<SyncDocument>,
     workspaceId: string,
     scope: string,
-    doc: SyncDocument & { _deleted?: boolean },
+    doc: SyncDocument,
   ) {
     const id = scope.slice("transcript:".length);
     if (doc._deleted) {
@@ -1473,7 +1473,7 @@ export function createSyncClient(options: SyncClientOptions) {
     collection: RxCollection<SyncDocument>,
     workspaceId: string,
     scope: string,
-    doc: SyncDocument & { _deleted?: boolean },
+    doc: SyncDocument,
   ) {
     setTimeout(
       () => void cacheStoredTranscript(collection, workspaceId, scope, doc),
@@ -1484,7 +1484,7 @@ export function createSyncClient(options: SyncClientOptions) {
   async function persistTranscriptProjection(
     collection: RxCollection<SyncDocument>,
     scope: string,
-    document: SyncDocument & { _deleted?: boolean },
+    document: SyncDocument,
     workspaceId: string,
     incoming: TranscriptSyncPayload | null,
     after?: number,
@@ -1631,9 +1631,7 @@ export function createSyncClient(options: SyncClientOptions) {
         id: scope,
         payload: JSON.stringify(nextMeta),
         seq: document.seq,
-        ...(document._deleted !== undefined
-          ? { _deleted: document._deleted }
-          : {}),
+        _deleted: document._deleted,
       };
       await persistProjection(
         collection,

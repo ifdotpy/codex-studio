@@ -24,19 +24,25 @@ const checkSource = path.join(
   repositoryRoot,
   "workspaces/tooling/apps/repository-checks/check-code.ts",
 );
-const temporaryRoots = [];
+const temporaryRoots: string[] = [];
 
-function command(program, args, cwd, options = {}) {
+function command(
+  program: string,
+  args: string[],
+  cwd: string,
+  options: import("node:child_process").SpawnSyncOptionsWithStringEncoding = {
+    encoding: "utf8",
+  },
+) {
   const result = spawnSync(program, args, {
     cwd,
-    encoding: "utf8",
     ...options,
   });
   if (result.error) throw result.error;
   return result;
 }
 
-function git(root, ...args) {
+function git(root: string, ...args: string[]) {
   const result = command("git", args, root);
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim();
@@ -79,7 +85,7 @@ function fixture() {
   return root;
 }
 
-function stage(root, relativePath, content) {
+function stage(root: string, relativePath: string, content: string | null) {
   const filePath = path.join(root, relativePath);
   mkdirSync(path.dirname(filePath), { recursive: true });
   if (content === null) {
@@ -90,19 +96,19 @@ function stage(root, relativePath, content) {
   }
 }
 
-function runHook(root) {
+function runHook(root: string) {
   return command(path.join(root, ".githooks", "pre-commit"), [], root);
 }
 
-function commitFixture(root) {
+function commitFixture(root: string) {
   git(root, "add", "-A");
   git(root, "commit", "--quiet", "-m", "fixture baseline");
 }
 
 try {
-  {
+  for (const extension of ["js", "cts", "mts"]) {
     const root = fixture();
-    stage(root, "desktop/staged-broken.js", "const = ;\n");
+    stage(root, `desktop/staged-broken.${extension}`, "const = ;\n");
     const tree = git(root, "write-tree");
     const result = runHook(root);
     assert.notEqual(

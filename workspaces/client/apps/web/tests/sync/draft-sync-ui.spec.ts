@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DRAFT_SYNC_TIMING_MS } from "../../src/sync/draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "../../src/sync/draftSyncTiming.ts";
 
 test("Draft sync ui", async ({
   browser: testBrowser,
