@@ -50,7 +50,16 @@ export interface Item {
   deliveryStatus?: string;
   content?: unknown;
   text?: string;
-  thinking?: string;
+  thinking?: string | boolean;
+  nativeSubagent?: boolean;
+  canMoveToBackground?: boolean;
+  backgroundTaskId?: string;
+  backgroundedByUser?: boolean;
+  outputFile?: string;
+  stalled?: boolean;
+  compactionMetadata?: import("@anthropic-ai/claude-agent-sdk").SDKCompactBoundaryMessage["compact_metadata"];
+  clientId?: string;
+  elapsedSeconds?: number;
   phase?: string;
   studioNotice?: boolean;
   error?: string;
@@ -66,6 +75,7 @@ export interface Item {
   changes?: { path: string; kind: { type: string }; diff: string }[];
 }
 export interface Turn {
+  synthetic?: boolean;
   id: string;
   clientUserMessageId?: string;
   status?: string;

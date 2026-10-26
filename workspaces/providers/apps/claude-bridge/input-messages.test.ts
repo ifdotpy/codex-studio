@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
+import { inputGroups, sdkInputMessages } from "./input-messages.ts";
 import { InputQueue } from "./features.ts";
 
 const convert = async (input) =>

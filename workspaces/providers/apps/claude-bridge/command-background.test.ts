@@ -5,12 +5,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 import {
   backgroundedCommandFields,
   foregroundCommandUpdate,
   moveCommandToBackground,
-} from "./command-background.mjs";
+} from "./command-background.ts";
 
 // Turn "bash": Claude runs one Bash call. After `.registered` exists, the call
 // registers as a foreground local_bash task. `backgroundTasks` records each call

@@ -1,7 +1,7 @@
 import {
   startBridge as startScriptedBridge,
   HANG_GUARD_MS,
-} from "./testing/bridge-harness.mjs";
+} from "./testing/bridge-harness.ts";
 // Busy-turn steer delivery through the real bridge with a scripted SDK.
 // No model calls: the fake query echoes, reads or withholds input on cue.
 import { test as baseTest, vi } from "vitest";

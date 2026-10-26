@@ -4,7 +4,7 @@
 // assistant message with `error: "rate_limit"`, then a failed result.
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 const RESET = 1_900_000_000;
 const LIMIT_TEXT = "You've hit your session limit · resets 3:40am (UTC)";
