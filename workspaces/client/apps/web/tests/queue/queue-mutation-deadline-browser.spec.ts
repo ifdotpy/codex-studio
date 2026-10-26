@@ -53,7 +53,12 @@ test("queue-mutation-deadline-browser @performance", async ({
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          GetResult<"/api/sync/identity">,
+          "workspaceId"
+        >,
+      }),
     );
     await page.route(/\/api\/queue(?:\?.*)?$/, (route) => {
       if (route.request().method() !== "POST")
@@ -61,7 +66,7 @@ test("queue-mutation-deadline-browser @performance", async ({
           json: {
             ...view,
             capabilities: { receipts: true, reorder: true },
-          },
+          } satisfies GetResult<"/api/queue">,
         });
       const body = requestBody<PostBody<"/api/queue">>(route);
       posts.push(body);
