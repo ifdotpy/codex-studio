@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Offline replay only: no server reads or writes. Payloads stay outside the checkout.
 import { readFile, writeFile } from "node:fs/promises";
-import { promisify } from "node:util";
+import type {
+  components,
+  JsonValue,
+} from "../../../client/apps/web/src/generated/api.ts";
+import type { OpenAPI3 } from "openapi-typescript";
 import {
   createBrotliCompress,
   brotliDecompressSync,
@@ -11,7 +15,7 @@ import {
 const [input, output] = process.argv.slice(2);
 if (!input || !output)
   throw new Error("usage: replay-view-scoped.ts <recorded.sse> <report.json>");
-const schema = JSON.parse(
+const schema: OpenAPI3 = JSON.parse(
   await readFile(
     new URL(
       "../../../runtime/packages/runtime-http/openapi.json",
@@ -27,18 +31,31 @@ const source = await readFile(
   ),
   "utf8",
 );
-const encoderValue = (name) => {
+const encoderValue = (name: string) => {
   const value = source.match(new RegExp(`const ${name}: u32 = (\\d+);`))?.[1];
   if (!value) throw new Error(`Missing stream encoder owner ${name}`);
   return Number(value);
 };
 const quality = encoderValue("STREAM_BROTLI_QUALITY");
 const lgwin = encoderValue("STREAM_BROTLI_LGWIN");
-const schemas = schema.components.schemas;
-const summaryFields = Object.keys(schemas.AgentSummaryEntityDto.properties);
-const globalCollections = new Set(
-  schemas.StateResource["x-studio-entity-scope"].collections,
-);
+const schemas = schema.components?.schemas;
+if (!schemas) throw new Error("Missing schema components");
+const summary = schemas.AgentSummaryEntityDto;
+if (!summary || !("properties" in summary))
+  throw new Error("Missing summary properties");
+const state = schemas.StateResource;
+if (!state || !("x-studio-entity-scope" in state))
+  throw new Error("Missing state entity scope");
+const summaryFields = Object.keys(summary.properties ?? {});
+const scope: unknown = state["x-studio-entity-scope"];
+if (
+  !scope ||
+  typeof scope !== "object" ||
+  !("collections" in scope) ||
+  !Array.isArray(scope.collections)
+)
+  throw new Error("Missing state collections");
+const globalCollections = new Set<unknown>(scope.collections);
 const recorded = await readFile(input, "utf8");
 if (!recorded.endsWith("\n\n"))
   throw new Error("Recording ends with an incomplete SSE event");
@@ -46,8 +63,8 @@ const frames = recorded
   .slice(0, -2)
   .split("\n\n")
   .map((frame) => `${frame}\n\n`);
-const summaries = new Map();
-const transformed = [];
+const summaries = new Map<string, string>();
+const transformed: string[] = [];
 let skippedDetails = 0;
 let suppressedSummaries = 0;
 let agentRows = 0;
@@ -63,11 +80,12 @@ for (const frame of frames) {
     transformed.push(frame);
     continue;
   }
-  const event = JSON.parse(text);
-  const resources = [];
-  const versions = [];
+  const event: components["schemas"]["ResourceChangeEvent"] = JSON.parse(text);
+  const resources: components["schemas"]["ResourceRef"][] = [];
+  const versions: unknown[] = [];
   for (const [index, entry] of (event.resourceVersions ?? []).entries()) {
     const resource = entry.resource ?? event.resources[index];
+    if (!resource) throw new Error("Missing resource identity");
     if (resource?.kind !== "state") {
       // Background replay has no open chat or mounted panel.
       if (resource?.kind !== "drafts") {
@@ -84,15 +102,18 @@ for (const frame of frames) {
       versions.push(entry);
       continue;
     }
-    const documents = [];
+    const documents: unknown[] = [];
     for (const row of batch.documents) {
       if (row.collection === "agent") {
-        const mapped = { ...row, collection: "agentSummary" };
+        const mapped: Omit<typeof row, "value"> & {
+          value?: Record<string, JsonValue | undefined>;
+        } = { ...row, collection: "agentSummary" };
         if (row.op === "upsert") {
+          const value: Record<string, JsonValue | undefined> = { ...row.value };
           mapped.value = Object.fromEntries(
             summaryFields
-              .filter((field) => field in row.value)
-              .map((field) => [field, row.value[field]]),
+              .filter((field) => field in value)
+              .map((field) => [field, value[field]]),
           );
           for (const field of [
             "hasQuestion",
@@ -124,25 +145,25 @@ for (const frame of frames) {
     }
   }
   if (!resources.length) continue;
-  event.resources = resources;
-  event.resourceVersions = versions;
+  const replayed = { ...event, resources, resourceVersions: versions };
   transformed.push(
-    `${lines.filter((line) => !line.startsWith("data:")).join("\n")}\ndata: ${JSON.stringify(event)}\n\n`,
+    `${lines.filter((line) => !line.startsWith("data:")).join("\n")}\ndata: ${JSON.stringify(replayed)}\n\n`,
   );
 }
-async function compress(events) {
+async function compress(events: string[]) {
   const encoder = createBrotliCompress({
     params: {
       [constants.BROTLI_PARAM_QUALITY]: quality,
       [constants.BROTLI_PARAM_LGWIN]: lgwin,
     },
   });
-  const chunks = [];
-  encoder.on("data", (chunk) => chunks.push(chunk));
-  const flush = promisify(encoder.flush.bind(encoder));
+  const chunks: Buffer[] = [];
+  encoder.on("data", (chunk: Buffer) => chunks.push(chunk));
   for (const frame of events) {
     encoder.write(frame);
-    await flush(constants.BROTLI_OPERATION_FLUSH);
+    await new Promise<void>((resolve) =>
+      encoder.flush(constants.BROTLI_OPERATION_FLUSH, resolve),
+    );
   }
   const ended = new Promise((resolve, reject) => {
     encoder.once("end", resolve);
