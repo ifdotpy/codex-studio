@@ -378,7 +378,9 @@ async fn client_request(
                         .map_err(|e| e.to_string())?
                         .to_string_lossy()
                         .into_owned();
-                    let vault = studio_client_core::server_keys::KeychainVault { account };
+                    let vault = studio_client_core::server_keys::FileVault::new(&directory);
+                    #[cfg(target_os = "macos")]
+                    studio_client_core::server_keys::move_keychain_keys(&vault, &account)?;
                     *remote = Some(Arc::new(
                         studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
                     ));
@@ -820,9 +822,12 @@ pub fn import_server_credentials() -> Result<(), String> {
         }
         let source =
             serde_json::from_slice(&bytes).map_err(|_| "Invalid server credential archive.")?;
-        let vault = studio_client_core::server_keys::KeychainVault {
-            account: directory.to_string_lossy().into_owned(),
-        };
+        let vault = studio_client_core::server_keys::FileVault::new(&directory);
+        #[cfg(target_os = "macos")]
+        studio_client_core::server_keys::move_keychain_keys(
+            &vault,
+            &directory.to_string_lossy(),
+        )?;
         studio_client_core::server_keys::import(&vault, &source)?;
         println!("Server credentials imported.");
         Ok(())
