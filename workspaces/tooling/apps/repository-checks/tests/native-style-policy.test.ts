@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 // makes browsers ignore 'unsafe-inline' (CSP Level 3), and srcdoc previews
 // inherit the parent policy. Mermaid label measurement, Mantine runtime styles
 // and the static Mermaid and HTML previews then lose their styles.
-// The browser witness is workspaces/client/apps/web/src/components/RichPreview.browser.spec.mjs.
+// The browser witness is workspaces/client/apps/web/src/components/RichPreview.browser.spec.ts.
 const configUrl = new URL(
   "../../../../client/apps/native/src-tauri/tauri.conf.json",
   import.meta.url,

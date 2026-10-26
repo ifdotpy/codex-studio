@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const web = fileURLToPath(new URL("../../../", import.meta.url));
 const testFiles = [
-  "src/components/prompt-composer/PromptInput.spec.mjs",
+  "src/components/prompt-composer/PromptInput.spec.ts",
   "tests/composer/composer-stability-ui.spec.ts",
   "tests/composer/skill-autocomplete-ui.spec.ts",
   "tests/performance/draft-render-performance-browser.spec.ts",

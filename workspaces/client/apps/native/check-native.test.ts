@@ -1,6 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createFixture } from "./check-native.ts";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+
+test("startup registers its load handler when the desktop bridge is absent or undefined", () => {
+  const source = readFileSync(
+    new URL("../web/public/studio-startup.js", import.meta.url),
+    "utf8",
+  );
+  for (const desktop of [{}, { codexDesktop: undefined }]) {
+    const events: string[] = [];
+    runInNewContext(source, {
+      URL,
+      setTimeout: () => 1,
+      window: {
+        ...desktop,
+        location: { href: "https://studio.example/" },
+        isSecureContext: true,
+        addEventListener: (name: string) => events.push(name),
+      },
+      document: { querySelector: () => ({}) },
+      navigator: { serviceWorker: {} },
+    });
+    assert.ok(events.includes("load"));
+  }
+});
 
 test("native fixture preserves identity refusal, byte replies, and draft tombstones", async () => {
   const fixture = await createFixture("/fixture/state");

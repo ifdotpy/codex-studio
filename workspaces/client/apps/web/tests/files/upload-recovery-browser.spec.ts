@@ -13,14 +13,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { apiSchemaHeaders, test, expect } from "../playwright.ts";
 
-// Capture the iterable DOM overload so apply does not depend on declaration order.
-type FixtureTransaction = (
-  this: IDBDatabase,
-  storeNames: string | Iterable<string>,
-  mode?: IDBTransactionMode,
-  options?: IDBTransactionOptions,
-) => IDBTransaction;
-
 test("upload recovery browser", async ({ browser }) => {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
@@ -138,7 +130,7 @@ test("upload recovery browser", async ({ browser }) => {
     await mount();
     // A failed local commit must leave the selected File objects in the input.
     await page.evaluate(() => {
-      const original: FixtureTransaction = IDBDatabase.prototype.transaction;
+      const original = IDBDatabase.prototype.transaction;
       window.uploadRecoveryBrowserRestoreTransactions = () =>
         (IDBDatabase.prototype.transaction = original);
       IDBDatabase.prototype.transaction = function (...args) {
@@ -147,7 +139,7 @@ test("upload recovery browser", async ({ browser }) => {
             "Upload storage is full",
             "QuotaExceededError",
           );
-        return original.apply(this, args);
+        return original.bind(this)(...args);
       };
     });
     const input = page.getByLabel("Choose attachments");
@@ -333,11 +325,11 @@ test("upload recovery browser", async ({ browser }) => {
     await wait(() => held.length === 1);
     const cancelled = required(required(posts.at(-1)).id);
     await page.evaluate(async (id) => {
-      const original: FixtureTransaction = IDBDatabase.prototype.transaction;
+      const original = IDBDatabase.prototype.transaction;
       IDBDatabase.prototype.transaction = function (...args) {
         if (this.name === "codex-studio-uploads" && args[1] === "readwrite")
           throw new Error("Deletion interrupted");
-        return original.apply(this, args);
+        return original.bind(this)(...args);
       };
       try {
         await window.uploadRecoveryBrowserFixture.recovery.remove(id);

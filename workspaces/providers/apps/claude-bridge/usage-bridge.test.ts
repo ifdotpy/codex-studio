@@ -407,6 +407,28 @@ test("shutdown never spends the full CLI exit timeout on a stuck consumer", asyn
   expect(timing.params.durationMs).toBeLessThanOrEqual(2000);
 });
 
+test("scripted Rust SDK deduplicates identical rate snapshots while retaining changed snapshots", async () => {
+  const b = await startBridge(
+    new URL(
+      "../../../runtime/apps/runtime-server/tests/fixtures/claude-sdk.mts",
+      import.meta.url,
+    ),
+    "claude-usage-snapshot-",
+  );
+  bridges.push(b);
+  await done(b, await start(b, "rate-usage"));
+  const texts = b.notes.flatMap((n) =>
+    n.method === "item/completed" && n.params.item.id === "rate-1"
+      ? [n.params.item.text]
+      : [],
+  );
+  expect(texts).toEqual([
+    "Rate answer",
+    "Rate answer",
+    "Rate answer\nRate answer",
+  ]);
+});
+
 test("scripted Rust SDK close ends an aborted wait without inventing a successful response", async () => {
   const fixture = new URL(
     "../../../runtime/apps/runtime-server/tests/fixtures/claude-sdk.mts",
