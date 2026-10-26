@@ -146,7 +146,7 @@ it("keeps a native initial transfer larger than the queue bound while its consum
     const response = await nativeEventResponse(request, "/api/sync/stream");
     const getReader = response.body!.getReader.bind(
       response.body,
-    ) as () => ReadableStreamDefaultReader<Uint8Array>;
+    ) as () => ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>>;
     vi.spyOn(response.body!, "getReader").mockImplementation(() => {
       const reader = getReader();
       const read = reader.read.bind(reader);
