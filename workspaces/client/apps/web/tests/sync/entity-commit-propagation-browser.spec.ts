@@ -476,8 +476,6 @@ test("committed entities propagate between renderer tabs @sync", async ({
         `${params.operation} must not pull more times than it publishes state`,
       );
       if (params.operation === "chat") {
-        const persisterDoneAt = reply.persisterDoneAt!;
-        const responseDecodedAt = reply.responseDecodedAt!;
         const responseSequences = new Set(reply.deliveredSequences);
         const actorFramesAfterMutation = operationFrames[0];
         const actorPullTimings = pulls[0]
@@ -505,10 +503,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
             pull.documents.some((row) => responseSequences.has(row.seq)),
           );
         const actorPrePersisterPulls = actorDuplicatePulls.filter(
-          (pull) => pull.startedAt <= persisterDoneAt!,
+          (pull) => pull.startedAt <= reply.persisterDoneAt!,
         );
         const actorPostPersisterPulls = actorDuplicatePulls.filter(
-          (pull) => pull.startedAt > persisterDoneAt!,
+          (pull) => pull.startedAt > reply.persisterDoneAt!,
         );
         const duplicateCauses = actorDuplicatePulls.map((pull) => {
           const precedingStateFrame = actorFramesAfterMutation
@@ -547,10 +545,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
             beforePersisterDone: actorPrePersisterPulls.length,
             afterPersisterDone: actorPostPersisterPulls.length,
             beforeResponseDecode: actorDuplicatePulls.filter(
-              (pull) => pull.startedAt <= responseDecodedAt!,
+              (pull) => pull.startedAt <= reply.responseDecodedAt!,
             ).length,
             afterResponseDecode: actorDuplicatePulls.filter(
-              (pull) => pull.startedAt > responseDecodedAt!,
+              (pull) => pull.startedAt > reply.responseDecodedAt!,
             ).length,
             causes: duplicateCauses,
             responseDecodedAt: reply.responseDecodedAt,
@@ -571,7 +569,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
                   frame.resources.some((resource) => resource.kind === "state"),
               )
               .at(-1);
-            return !!precedingFrame && precedingFrame.at < responseDecodedAt!;
+            return (
+              !!precedingFrame && precedingFrame.at < reply.responseDecodedAt!
+            );
           }),
           `every remaining duplicate must be triggered by a frame handled before response decoding: ${JSON.stringify(duplicateCauses)}`,
         );

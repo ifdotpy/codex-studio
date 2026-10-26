@@ -126,14 +126,13 @@ test("entity fixture contract matches the real sync backend", async () => {
     ),
   );
 
-  const realMaxSeq = realPull.maxSeq!;
   const stubPull = pullPage(
     entityPullFixture(snapshot, {
       scope: "state:entities:v1",
       after: 0,
       limit: 500,
       fresh: true,
-      maxSeq: realMaxSeq!,
+      maxSeq: realPull.maxSeq!,
     }),
   );
   const realById = new Map(
@@ -240,7 +239,7 @@ test("entity fixture contract matches the real sync backend", async () => {
   const stubHead = pullPage(
     entityPullFixture(snapshot, {
       scope: "state:entities:v1",
-      after: realMaxSeq,
+      after: realPull.maxSeq!,
       limit: 500,
       documents:
         capturedServerHead.documents as import("../playwright.ts").EntityPullFixtureOptions["documents"],
@@ -350,7 +349,6 @@ test("entity fixture contract matches the real sync backend", async () => {
     new URL("/api/sync/pull?scope=state%3Aentities%3Av1&fresh=1", stubOrigin),
   ).then((response) => response.json());
 
-  const nodeInitialMax = nodeInitial.maxSeq;
   const removedNodeProject = nodeSnapshot.runtime.projects[0];
 
   nodeSnapshot.runtime.tasksHistoryLimit!++;
@@ -366,7 +364,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       (document) =>
         document.collection === "workspace" &&
         document.id === "current" &&
-        document.seq > nodeInitialMax!,
+        document.seq > nodeInitial.maxSeq!,
     ),
     "Node fixture assigns a new sequence to an in-place entity change",
   );
@@ -376,7 +374,7 @@ test("entity fixture contract matches the real sync backend", async () => {
         document.collection === "project" &&
         document.id === removedNodeProject.id &&
         document.op === "delete" &&
-        document.seq > nodeInitialMax!,
+        document.seq > nodeInitial.maxSeq!,
     ),
     "Node fixture emits a sequenced tombstone for an in-place removal",
   );
@@ -515,12 +513,10 @@ test("entity fixture contract matches the real sync backend", async () => {
       stubTranscript.documents.length,
       realTranscript.documents.length,
     );
-    const stubDocument = stubTranscript.documents[0];
-    const realDocument = realTranscript.documents[0];
 
     assert.deepEqual(
-      JSON.parse(stubDocument.payload),
-      JSON.parse(realDocument.payload),
+      JSON.parse(stubTranscript.documents[0].payload),
+      JSON.parse(realTranscript.documents[0].payload),
     );
   }
 });

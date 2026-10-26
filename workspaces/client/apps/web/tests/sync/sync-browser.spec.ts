@@ -224,12 +224,11 @@ test("Sync Browser", async ({
     for (let i = 0; i < 100 && !draftPushes.length; i++)
       await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(draftPushes.length, 1);
-    const pushedDraft = draftPushes[0];
     assert.equal(
-      JSON.parse(pushedDraft!.newDocumentState.payload).text,
+      JSON.parse(draftPushes[0].newDocumentState.payload).text,
       "draft",
     );
-    assert.equal(pushedDraft.newForkState, undefined);
+    assert.equal(draftPushes[0].newForkState, undefined);
     const result = await page.evaluate(async () =>
       (await import("/src/sync/send.ts")).durableSend({
         id: "intent-one",
@@ -243,8 +242,9 @@ test("Sync Browser", async ({
     await page.reload();
     const stored = await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
-      const row = await db.outbox.findOne("intent-one").exec();
-      return JSON.parse(row!.payload);
+      return JSON.parse(
+        (await db.outbox.findOne("intent-one").exec())!.payload,
+      );
     });
     assert.equal(stored.status, "queued");
     failSend = false;
