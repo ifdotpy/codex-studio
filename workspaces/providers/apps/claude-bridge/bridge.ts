@@ -20,6 +20,8 @@ import type {
   Options,
   SDKResultMessage,
   SDKUserMessage,
+  SDKMessage,
+  ModelInfo,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Session,
@@ -31,6 +33,10 @@ import type {
 import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
 import type { Stall, ToolClock } from "./stall-watch.ts";
 
+type TaskMessage = Extract<SDKMessage, { subtype: `task_${string}` }>;
+function isTaskMessage(message: SDKMessage): message is TaskMessage {
+  return message.type === "system" && message.subtype.startsWith("task_");
+}
 type AssistantBlock = { text: string; complete: boolean; position?: number };
 type AssistantBlockState = {
   blocks: AssistantBlock[];
@@ -200,7 +206,21 @@ import {
 
 const externalConfigs = new Map();
 
-const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
+type BridgeProviderOptions = Pick<
+  import("./runtime-contract.generated.ts").ClaudeSessionSettings,
+  "autoCompactWindow" | "customModels"
+> &
+  Pick<Options, "extraArgs">;
+function readProviderOptions(text: string): BridgeProviderOptions {
+  const value: unknown = JSON.parse(text);
+  if (!isRecord(value)) throw new Error("Invalid Claude bridge options");
+  // Rust bridge_options owns this same-program configuration envelope; field
+  // types come from its generated settings and the SDK extra-argument owner.
+  return value as BridgeProviderOptions;
+}
+const providerOptions = readProviderOptions(
+  process.env.STUDIO_CLAUDE_OPTIONS || "{}",
+);
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
 function nativeUserMessageId(id: string): NonNullable<SDKUserMessage["uuid"]> {
   if (
@@ -276,7 +296,7 @@ function streamText(item: Item, state: AssistantBlockState) {
   });
 }
 let lastLimits: ReturnType<typeof usageLimits> | undefined;
-const root = process.argv[2];
+const root = process.argv[2] || "";
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
 const queries = new Map<string, ActiveQuery>(),
@@ -329,7 +349,7 @@ async function boundedPreparation<T>(
       }),
     ]);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer ?? undefined);
   }
 }
 const sessionStore = createSessionStore(root, {
@@ -584,7 +604,7 @@ async function verifiedAccount(
         "organization_metadata",
         "provider_metadata",
         "subscription_metadata",
-      ].includes(errorData(error).claudeAccountFailure) ||
+      ].some((reason) => reason === errorData(error).claudeAccountFailure) ||
       typeof q.reinitialize !== "function" ||
       (account?.apiProvider && account.apiProvider !== "firstParty") ||
       (account?.apiKeySource && account.apiKeySource !== "none")
@@ -798,12 +818,42 @@ async function permissions(
   if (name.startsWith("mcp__studio__"))
     return { behavior: "allow", updatedInput: input };
   if (name === "AskUserQuestion") {
-    const questions = (input.questions || []).map((q, i) => ({
-      ...q,
-      id: String(i),
-      isOther: true,
-      isSecret: false,
-    }));
+    const rawQuestions = input.questions || [];
+    if (!Array.isArray(rawQuestions))
+      throw new Error("Invalid Claude question list");
+    const questions = rawQuestions.map((q: unknown, i) => {
+      if (!isRecord(q)) throw new Error("Invalid Claude question");
+      // The native tool schema owns this payload; fields are narrowed before Studio receives it.
+      const { question, header, options } = q;
+      if (
+        typeof question !== "string" ||
+        typeof header !== "string" ||
+        !Array.isArray(options)
+      )
+        throw new Error("Invalid Claude question");
+      const choices = options.map((option: unknown) => {
+        if (
+          !isRecord(option) ||
+          typeof option.label !== "string" ||
+          typeof option.description !== "string"
+        )
+          throw new Error("Invalid Claude question option");
+        return {
+          ...option,
+          label: option.label,
+          description: option.description,
+        };
+      });
+      return {
+        ...q,
+        question,
+        header,
+        options: choices,
+        id: String(i),
+        isOther: true,
+        isSecret: false,
+      } as const;
+    });
     let result;
     try {
       result = await request(
@@ -822,7 +872,7 @@ async function permissions(
         "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."
       )
         throw error;
-      return { behavior: "deny", message: errorText(error) };
+      return { behavior: "deny", message: errorText(error) ?? "" };
     }
     const answers = Object.fromEntries(
       questions.map((q) => [
@@ -864,7 +914,9 @@ async function permissions(
         itemId: options.toolUseID,
         command:
           name === "Bash"
-            ? input.command
+            ? typeof input.command === "string"
+              ? input.command
+              : JSON.stringify(input.command)
             : JSON.stringify({ tool: name, input }),
         cwd: s.cwd,
         reason:
@@ -901,7 +953,7 @@ async function permissions(
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", cancel);
   }
-  return ["accept", "acceptForSession"].includes(result.decision)
+  return result.decision === "accept" || result.decision === "acceptForSession"
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user declined this action." };
 }
@@ -911,6 +963,8 @@ function studioTools(s: Session, getTurn: () => Turn | null) {
     version: "1.0.0",
     tools: (s.dynamicTools || []).map((definition) => {
       const schema = z.fromJSONSchema(definition.inputSchema);
+      if (!(schema instanceof z.ZodObject))
+        throw new Error("Studio dynamic tool requires an object schema");
       return tool(
         definition.name,
         definition.description,
@@ -925,7 +979,9 @@ function studioTools(s: Session, getTurn: () => Turn | null) {
               tool: definition.name,
               arguments: args,
             },
-            extra?.signal,
+            isRecord(extra) && extra.signal instanceof AbortSignal
+              ? extra.signal
+              : undefined,
           );
           return {
             isError: result.success === false,
@@ -1081,7 +1137,8 @@ async function content(
           data: image.bytes.toString("base64"),
         },
       });
-    } else throw new Error("Unsupported Claude input: " + item.type);
+    } else
+      throw new Error("Unsupported Claude input: " + errorField(item, "type"));
   }
   return result;
 }
@@ -1168,8 +1225,10 @@ async function flags(
   s: Session,
   p: Partial<BridgeTurnParams> = {},
   live = false,
-) {
+): Promise<Parameters<Query["applyFlagSettings"]>[0]> {
   const native = await catalog();
+  const autoCompactWindow =
+    s.claude?.autoCompactWindow || providerOptions.autoCompactWindow;
   return {
     // Studio owns the durable idle timer. Disable the CLI's private timer.
     idleCompaction: false,
@@ -1181,12 +1240,7 @@ async function flags(
       s.claude?.thinking,
       live,
     ),
-    ...(s.claude?.autoCompactWindow || providerOptions.autoCompactWindow
-      ? {
-          autoCompactWindow:
-            s.claude?.autoCompactWindow || providerOptions.autoCompactWindow,
-        }
-      : {}),
+    ...(autoCompactWindow ? { autoCompactWindow } : {}),
   };
 }
 // A turn whose end is being recorded. active.turn still names it until
@@ -1194,13 +1248,13 @@ async function flags(
 // finishTurn has cleared the turn, or when recording its end failed.
 const finishingTurns = new WeakMap<Turn, Promise<void>>();
 function clearDeferredResult(active: ActiveQuery) {
-  clearTimeout(active.resultTimer);
+  clearTimeout(active.resultTimer ?? undefined);
   active.resultTimer = null;
   active.deferredResult = null;
 }
 function clearTurnTimers(active: ActiveQuery) {
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer);
+  clearTimeout(active.stopTimer ?? undefined);
   active.stopTimer = null;
 }
 function lifecycleFailure(s: Session, active: ActiveQuery, error: unknown) {
@@ -1227,8 +1281,8 @@ function deferResult(
   const turn = active.turn;
   active.resultTimer = setTimeout(() => {
     if (active.turn !== turn || !active.deferredResult) return;
-    void finishTurn(s, active, active.deferredResult).catch((error) =>
-      lifecycleFailure(s, active, error),
+    void finishTurn(s, active, active.deferredResult).catch(
+      (error) => s && lifecycleFailure(s, active, error),
     );
   }, limits.steerEchoGraceMs);
   active.resultTimer.unref();
@@ -1318,7 +1372,7 @@ async function finalizeTurn(
   let closeError = stall?.closeError;
   error ||= closeError;
   let closed = (state.closed = Boolean(stall?.closed));
-  if (closed) await stall.closed;
+  if (closed) await stall?.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
   // this CLI. Stop it before finishing; only its final native history can
   // prove whether the server may redeliver that exact input.
@@ -1338,7 +1392,7 @@ async function finalizeTurn(
     await new Promise((resolve) => setTimeout(resolve, limits.exitWaitMs));
   }
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer);
+  clearTimeout(active.stopTimer ?? undefined);
   active.stopTimer = null;
   active.toolClocks.clear();
   if (
@@ -1371,11 +1425,12 @@ async function finalizeTurn(
   armStallWatch();
   const errorMessage =
     errorText(error) ||
-    result?.errors?.join("\n") ||
-    result?.result ||
+    (result && "errors" in result ? result.errors.join("\n") : undefined) ||
+    (result && "result" in result ? result.result : undefined) ||
     "Claude turn failed";
   const errorInfo =
-    turn.apiErrorInfo || claudeErrorInfo(error?.error, errorMessage);
+    turn.apiErrorInfo ||
+    claudeErrorInfo(errorField(error, "error"), errorMessage);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
@@ -1417,7 +1472,7 @@ async function finalizeTurn(
         !i.nativeSubagent &&
         !i.studioNotice &&
         !i.thinking &&
-        !i.id.endsWith(":thinking"),
+        !i.id?.endsWith(":thinking"),
     )
     .at(-1);
   if (answer) finishItem(s, turn, { ...answer, phase: "final_answer" });
@@ -1508,7 +1563,7 @@ async function reconcileClosedSteers(
 async function recoverStall(
   s: Session | undefined,
   active: ActiveQuery,
-  found: Stall & { stop?: boolean },
+  found: (Stall & { stop?: false }) | { stop: true; id: string },
 ) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
@@ -1654,7 +1709,8 @@ async function startSession(
   try {
     const externalMcpServers = await movedExternalConfigs(s);
     const titleOptions = ephemeralSessionOptions(s);
-    const mode = titleOptions.permissionMode || permissionMode(s, p);
+    const mode: Options["permissionMode"] =
+      titleOptions.permissionMode || permissionMode(s, p);
     await guardNativeSessionStart(
       s,
       persist,
@@ -1683,15 +1739,17 @@ async function startSession(
         ...((s.moveProof ? s.moveProof.options.effort : p.effort)
           ? { effort: s.moveProof ? s.moveProof.options.effort : p.effort }
           : {}),
-        settings: await boundedPreparation(
-          () =>
-            s.moveProof
-              ? Promise.resolve(s.moveProof.options.settings)
-              : flags(s, p),
-          deadline,
-          () => {},
-          "catalog_flags",
-          startedAt,
+        settings: JSON.stringify(
+          await boundedPreparation(
+            () =>
+              s.moveProof
+                ? Promise.resolve(s.moveProof.options.settings)
+                : flags(s, p),
+            deadline,
+            () => {},
+            "catalog_flags",
+            startedAt,
+          ),
         ),
         extraArgs: {
           ...providerOptions.extraArgs,
@@ -1745,7 +1803,11 @@ async function startSession(
             },
             { ...options, toolUseID: value.toolUseID || options.requestId },
           );
-          const selected = answer.updatedInput?.answers?.[question];
+          const updated =
+            answer?.behavior === "allow" ? answer.updatedInput : undefined;
+          const answers =
+            updated && isRecord(updated.answers) ? updated.answers : undefined;
+          const selected = answers?.[question];
           return selected
             ? {
                 behavior: "completed",
@@ -1764,7 +1826,6 @@ async function startSession(
             {
               threadId: s.id,
               turnId: active.turn?.id,
-              serverName: value.serverName,
               request: value,
               ...value,
             },
@@ -1808,6 +1869,8 @@ async function startSession(
     admit();
     active.readyResolve();
     for await (const m of q) {
+      const parentToolUseId =
+        "parent_tool_use_id" in m ? m.parent_tool_use_id : undefined;
       const room = stdoutRoom();
       if (room) await room;
       // A grace timer can finish a turn during the backpressure wait. Process
@@ -1838,23 +1901,24 @@ async function startSession(
         catalogCache.activityChanged();
         continue;
       }
-      if (m.type === "user" && m.isReplay) {
-        const item = active.turn?.items.find(
+      if (m.type === "user" && "isReplay" in m && m.isReplay) {
+        const activeTurn = active.turn;
+        const item = activeTurn?.items.find(
           (i) =>
             i.type === "userMessage" &&
             (i.nativeId === m.uuid ||
               (i.nativeId == null &&
-                (i.id === m.uuid || active.turn.id === m.uuid))),
+                (i.id === m.uuid || activeTurn.id === m.uuid))),
         );
-        if (item) {
+        if (item && activeTurn) {
           item.nativeId = m.uuid;
           if (
-            item === active.turn.items[0] &&
+            item === activeTurn.items[0] &&
             !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
           ) {
-            active.turn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
-            active.turn.fileCheckpointMessageId = m.uuid;
-            active.turn.fileCheckpointSource = {
+            activeTurn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
+            activeTurn.fileCheckpointMessageId = m.uuid;
+            activeTurn.fileCheckpointSource = {
               nativeId: s.nativeId || s.id,
               cwd: s.cwd,
             };
@@ -1867,7 +1931,7 @@ async function startSession(
         // follow the end of its turn, so earlier turns are searched as well.
         const steer =
           item?.delivery === "steer"
-            ? { turn: active.turn, item }
+            ? { turn: activeTurn, item }
             : submittedSteer(s, m.uuid);
         if (steer?.item.deliveryStatus === "submitted") {
           steer.item.deliveryStatus = "delivered";
@@ -1882,7 +1946,7 @@ async function startSession(
       if (
         !active.turn &&
         ["assistant", "stream_event"].includes(m.type) &&
-        !m.parent_tool_use_id
+        !parentToolUseId
       ) {
         active.turn = {
           id: randomUUID(),
@@ -1897,8 +1961,7 @@ async function startSession(
           turn: { id: active.turn.id, status: "inProgress" },
         });
       }
-      const turn =
-        active.turn || (m.parent_tool_use_id ? s.turns.at(-1) : null);
+      const turn = active.turn || (parentToolUseId ? s.turns.at(-1) : null);
       if (m.type === "rate_limit_event") {
         const next = limitEvent(lastLimits, m.rate_limit_info || {});
         if (next) {
@@ -1920,7 +1983,7 @@ async function startSession(
         if (
           m.subtype === "status" &&
           m.status === "requesting" &&
-          !m.parent_tool_use_id
+          !parentToolUseId
         ) {
           active.idleRequestStartedAt = Date.now();
         }
@@ -1948,12 +2011,20 @@ async function startSession(
           notice(
             s,
             turn,
-            m.content || m.output || "Claude command completed.",
+            m.content ||
+              ("output" in m && typeof m.output === "string"
+                ? m.output
+                : undefined) ||
+              "Claude command completed.",
             m.uuid,
           );
-        } else if (m.subtype?.startsWith("task_")) {
+        } else if (isTaskMessage(m)) {
           const id = m.task_id || m.uuid;
-          const task = { ...active.tasks.get(id), ...m, ...m.patch };
+          const task = {
+            ...active.tasks.get(id),
+            ...m,
+            ...("patch" in m ? m.patch : {}),
+          };
           const command = foregroundCommandUpdate(active, task, m);
           if (command && turn) turnEvent(s, turn, "item/started", command);
           // A terminal patch can arrive before the notification's final output.
@@ -1981,10 +2052,10 @@ async function startSession(
                   {
                     type: "text",
                     text:
-                      m.summary ||
-                      m.last_tool_name ||
-                      m.description ||
-                      m.status ||
+                      ("summary" in m ? m.summary : undefined) ||
+                      ("last_tool_name" in m ? m.last_tool_name : undefined) ||
+                      ("description" in m ? m.description : undefined) ||
+                      ("status" in m ? m.status : undefined) ||
                       "Running",
                   },
                 ],
@@ -2002,7 +2073,7 @@ async function startSession(
           }
           persistLater(s, active);
         } else if (turn && providerNotice(m)) {
-          notice(s, turn, providerNotice(m), m.uuid);
+          notice(s, turn, providerNotice(m) ?? "", m.uuid);
           persistLater(s, active);
         } else if (
           turn &&
@@ -2015,14 +2086,25 @@ async function startSession(
             ].includes(m.subtype) ||
             (m.subtype === "informational" && m.level === "warning"))
         )
-          notice(s, turn, m.text || m.content || m.error || m.subtype, m.uuid);
+          notice(
+            s,
+            turn,
+            ("text" in m ? m.text : undefined) ||
+              ("content" in m ? m.content : undefined) ||
+              ("error" in m ? m.error : undefined) ||
+              m.subtype,
+            m.uuid,
+          );
         continue;
       }
       if (m.type === "result") {
         active.usage.recordModels(m.modelUsage);
         const studioUsage = cumulativeUsage(m, turn?.id);
         if (studioUsage) {
-          if (studioUsage.modelContextWindow)
+          if (
+            "modelContextWindow" in studioUsage &&
+            studioUsage.modelContextWindow
+          )
             s.contextWindow = studioUsage.modelContextWindow;
           emit("thread/tokenUsage/updated", {
             threadId: s.id,
@@ -2046,9 +2128,9 @@ async function startSession(
           if (block.type === "tool_use")
             active.usage.registerTool(
               block.id,
-              active.usage.turnFor(m.parent_tool_use_id, turn.id),
+              active.usage.turnFor(parentToolUseId, turn.id),
             );
-      if (m.parent_tool_use_id) {
+      if (parentToolUseId) {
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
             const text =
@@ -2083,7 +2165,9 @@ async function startSession(
           active.idleRequest = {
             id: e.message.id,
             at:
-              Number.isFinite(m.ttft_ms) && m.ttft_ms >= 0
+              typeof m.ttft_ms === "number" &&
+              Number.isFinite(m.ttft_ms) &&
+              m.ttft_ms >= 0
                 ? Date.now() - m.ttft_ms
                 : active.idleRequestStartedAt || Date.now(),
           };
@@ -2095,14 +2179,16 @@ async function startSession(
         }
         if (
           e.type === "content_block_delta" &&
-          ["text_delta", "thinking_delta"].includes(e.delta.type)
+          (e.delta.type === "text_delta" || e.delta.type === "thinking_delta")
         ) {
           const thinking = e.delta.type === "thinking_delta";
           const id = active.messageId + (thinking ? ":thinking" : "");
-          const delta = e.delta.text || e.delta.thinking || "";
+          const delta =
+            (e.delta.type === "text_delta" ? e.delta.text : e.delta.thinking) ||
+            "";
           const state = assistantBlockState(
             active,
-            active.messageId,
+            active.messageId ?? "undefined",
             thinking ? "thinking" : "text",
           );
           const index = Number.isInteger(e.index) ? e.index : 0;
@@ -2116,7 +2202,8 @@ async function startSession(
             state.streams.set(index, block);
             state.blocks.push(block);
           }
-          const separator = block.text === "" && block.position > 0 ? "\n" : "";
+          const separator =
+            block.text === "" && (block.position ?? 0) > 0 ? "\n" : "";
           if (!block.complete) {
             block.text += delta;
             state.dirty = true;
@@ -2139,6 +2226,7 @@ async function startSession(
             }
           }
           const item = turn.items[state.itemIndex];
+          if (!item) throw new Error("Streaming assistant item is missing");
           if (!block.complete) {
             if (!streamingItems.has(item)) {
               streamingItems.add(item);
@@ -2153,19 +2241,26 @@ async function startSession(
           }
         }
       } else if (m.type === "assistant") {
+        const assistantMessage = m.message;
         if (m.error) {
           const errorText = (m.message.content || [])
             .filter((b) => b.type === "text")
             .map((b) => b.text)
             .join("\n");
-          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
+          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText) ?? undefined;
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
-          const info = m.api_error_params?.rate_limit_info;
+          const params =
+            "api_error_params" in m && isRecord(m.api_error_params)
+              ? m.api_error_params
+              : {};
+          const info = isRecord(params.rate_limit_info)
+            ? params.rate_limit_info
+            : undefined;
           if (
             m.error === "rate_limit" &&
             info?.status === "rejected" &&
-            !m.parent_tool_use_id &&
+            !parentToolUseId &&
             !turn.limitError
           )
             limitReached(s, turn, info);
@@ -2174,13 +2269,13 @@ async function startSession(
         if (
           turn &&
           !turn.idleCompaction &&
-          !m.parent_tool_use_id &&
+          !parentToolUseId &&
           m.message.id &&
           m.message.usage
         ) {
           const { effective } = await resolveSettings({
             cwd: s.cwd,
-            settingSources: settings(s).settingSources,
+            settingSources: settings(s).settingSources ?? [],
           });
           s.idleCache = cacheReport(
             s,
@@ -2198,19 +2293,30 @@ async function startSession(
           });
           persistLater(s, active);
         }
-        const mergeBlocks = (kind, field) => {
+        const mergeBlocks = (
+          kind: "text" | "thinking",
+          field: "text" | "thinking",
+        ) => {
           const state = assistantBlockState(active, m.message.id, kind);
           for (const [index, block] of m.message.content.entries()) {
-            if (block.type !== kind || !block[field]) continue;
-            const frame = (m.uuid || JSON.stringify(m.message)) + ":" + index;
+            if (block.type !== kind) continue;
+            const text =
+              field === "text" && block.type === "text"
+                ? block.text
+                : field === "thinking" && block.type === "thinking"
+                  ? block.thinking
+                  : undefined;
+            if (!text) continue;
+            const frame =
+              (m.uuid || JSON.stringify(assistantMessage)) + ":" + index;
             if (state.frames.has(frame)) continue;
             state.frames.add(frame);
             const pending = state.blocks.find(
-              (old) => !old.complete && old.text === block[field],
+              (old) => !old.complete && old.text === text,
             );
             if (pending) pending.complete = true;
             else {
-              state.blocks.push({ text: block[field], complete: true });
+              state.blocks.push({ text, complete: true });
               state.dirty = true;
             }
           }
@@ -2237,12 +2343,14 @@ async function startSession(
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_use",
         )) {
-          const item = nativeItem(b, s.cwd);
+          if (!isRecord(b.input)) throw new Error("Invalid Claude tool input");
+          const input = b.input;
+          const item = nativeItem({ ...b, input }, s.cwd);
           active.tools.set(b.id, item);
           active.toolClocks.set(b.id, {
             tool: b.name,
             startedAt: Date.now(),
-            timeoutMs: declaredTimeoutMs(b),
+            timeoutMs: declaredTimeoutMs({ ...b, input }),
           });
           armStallWatch();
           turn.items.push(item);
@@ -2251,11 +2359,12 @@ async function startSession(
             emit("turn/plan/updated", {
               threadId: s.id,
               turnId: turn.id,
-              plan:
-                b.input.todos?.map((t) => ({
-                  step: t.content,
-                  status: t.status,
-                })) || [],
+              plan: Array.isArray(input.todos)
+                ? input.todos.map((t: unknown) => ({
+                    step: isRecord(t) ? t.content : undefined,
+                    status: isRecord(t) ? t.status : undefined,
+                  }))
+                : [],
             });
         }
         persistLater(s, active);
@@ -2415,6 +2524,7 @@ function userMessage(
 ): StudioInputMessage {
   turn.nativeSessionId = s.nativeId || s.id;
   const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  if (!item) throw new Error("Claude input has no owning item");
   guardNativeSessionInput(s, groups, newNativeInputAttempt(turn, item));
   const messages = sdkInputMessages(
     s.nativeId || s.id,
@@ -2423,7 +2533,10 @@ function userMessage(
     nativeUserMessageId,
   );
   const message = messages.at(-1);
-  if (item === turn.items[0]) turn.nativeMessageId = messages[0].uuid;
+  const first = messages[0];
+  if (!message || !first)
+    throw new Error("Claude input has no native messages");
+  if (item === turn.items[0]) turn.nativeMessageId = first.uuid;
   if (messages.length > 1) {
     item.nativeIds = messages.map((part) => part.uuid);
     // The queue removes this whole submission before yielding its first part.
@@ -2439,6 +2552,8 @@ function handle<M extends BridgeMethod>(
 async function handle(request: BridgeRequest): Promise<unknown> {
   const { method, params: p } = request;
   if (
+    isRecord(p) &&
+    typeof p.threadId === "string" &&
     isRecord(p) &&
     typeof p.threadId === "string" &&
     p.threadId &&
@@ -2487,7 +2602,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
   if (method === "initialized") return {};
   if (method === "model/list") {
     const native = await catalog();
-    const models = [
+    const models: ModelInfo[] = [
       ...native.models,
       ...(providerOptions.customModels || [])
         .filter((m) => !native.models.some((n) => n.value === m.id))
@@ -2603,8 +2718,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         s,
       ),
     );
-    const moveProof = { ...proof };
-    delete moveProof.session;
+    const { session: _sessionProof, ...moveProof } = proof;
     return {
       path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
       session: {
@@ -2630,7 +2744,8 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       throw new Error(
         "The destination Claude session has a different native identity",
       );
-    let s = exactSession({ ...p.session, cwd: p.cwd });
+    let s: Session = exactSession({ ...p.session, cwd: p.cwd });
+    if (!s.moveProof) throw new Error("Claude move proof is missing");
     s.moveProof = exactProof(s.moveProof);
     const saved = await savedPromptProof(p.path, s);
     if (saved.snapshotHash !== s.moveProof?.snapshotHash)
@@ -2650,7 +2765,8 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     );
     if (existing) {
       const cached = await session(s.id);
-      for (const key of Object.keys(cached)) delete cached[key];
+      for (const key of Object.keys(cached))
+        Reflect.deleteProperty(cached, key);
       Object.assign(cached, s);
       s = cached;
     } else sessions.set(s.id, s);
@@ -3142,7 +3258,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         const error = new Error("Claude stopped before accepting the new turn");
         turn.status = "failed";
         turn.startOutcome = "not_applied";
-        turn.error = { message: errorText(error) };
+        turn.error = { message: error.message };
         cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
         pendingTurnReceipts.delete(turn.id);
         await persistLive(s);
@@ -3154,7 +3270,9 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       active = newActive(turn);
       queries.set(s.id, active);
       active.consumer = new Promise((resolve, reject) => {
-        setImmediate(() => startSession(s, active, p).then(resolve, reject));
+        const owned = active;
+        if (!owned) return reject(new Error("Claude query is missing"));
+        setImmediate(() => startSession(s, owned, p).then(resolve, reject));
       });
       active.consumer.catch((error) =>
         process.stderr.write("Claude consumer: " + errorText(error) + "\n"),
@@ -3283,7 +3401,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     if (!active?.turn) throw new Error("no active turn to interrupt");
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
-    const s = sessions.get(p.threadId);
+    const s = await session(p.threadId);
     const turn = active.turn;
     turn.interrupted = true;
     const reservingInput = active.reservingInput;
@@ -3297,7 +3415,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     const stopTasks = p.stopBackgroundTasks !== false && active.tasks.size;
     if (stopTasks && typeof active.q?.stopTask !== "function")
       throw new Error("Claude does not support stopping background tasks");
-    let results = [];
+    let results: PromiseSettledResult<void>[] = [];
     if (!reservingInput && !finishingTurns.has(turn) && !active.stopTimer) {
       const timer = setTimeout(() => {
         if (active.stopTimer !== timer) return;
@@ -3318,7 +3436,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         ? async () => {
             results = await Promise.allSettled(
               [...active.tasks.keys()].map((taskId) =>
-                active.q.stopTask(taskId),
+                active.q?.stopTask(taskId),
               ),
             );
           }

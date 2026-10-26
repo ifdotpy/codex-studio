@@ -26,7 +26,7 @@ function writePathScript(file: string, folder: string) {
 // process keeps its own environment, so its launch identity does not change.
 export function browserEnvironment(
   root: string,
-  sessionId: string,
+  sessionId: string | undefined,
   environment = process.env,
 ): NodeJS.ProcessEnv {
   let value;
