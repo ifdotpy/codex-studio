@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
 import { firstValueFrom, filter } from "rxjs";
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 import type {
   ResourceChangeEvent,
   ResourceVersion,

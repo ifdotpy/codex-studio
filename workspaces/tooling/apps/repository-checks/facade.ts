@@ -175,14 +175,14 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-agents-desktop",
     file: "profile-export-test.mjs",
-    specifier: "../web/src/native/importBrowserProfile.mjs",
+    specifier: "../web/src/native/importBrowserProfile.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
   {
     importer: "codex-agents-desktop",
     file: "profile-export-test.mjs",
-    specifier: "../web/src/native/combineBrowserProfiles.mjs",
+    specifier: "../web/src/native/combineBrowserProfiles.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
@@ -821,16 +821,16 @@ export function gateSteps(root, name) {
       lane: "js",
     })),
     nodeTest("retained-helpers", "retained Python helper boundaries", [
-      "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
     ]),
     nodeTest("mac-sync", "Mac sync chunk read witness", [
-      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
+      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
     ]),
     nodeTest("native-fixture", "native WebView fixture", [
-      "workspaces/client/apps/native/check-native.test.mjs",
+      "workspaces/client/apps/native/check-native.test.ts",
     ]),
     nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
-      "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
     ]),
     nodeTest("retired-server", "retired server action witness", [
       "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
@@ -866,10 +866,10 @@ export function gateSteps(root, name) {
           "node",
           [
             "--test",
-            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mjs",
+            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
           ],
         ],
-        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mjs"]],
+        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mts"]],
       ],
     },
     ...(name === "test-comprehensive"
