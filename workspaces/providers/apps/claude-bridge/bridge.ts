@@ -1017,7 +1017,7 @@ function studioTools(
 
 async function currentExternalProof(
   s: Pick<Session, "cwd" | "moveProof"> & Partial<Pick<Session, "id">>,
-  proof: import("./move.ts").MoveProof &
+  proof: Omit<import("./move.ts").MoveProof, "session"> &
     Partial<Pick<BridgeMoveProof, "externalCatalog" | "externalTransports">>,
 ) {
   const expected = proof.externalCatalog || s.moveProof?.externalCatalog;
@@ -1062,10 +1062,12 @@ async function movedExternalConfigs(s: Session) {
   if (!externalConfigs.has(key)) await proofOptions(s, s.moveProof);
   return externalConfigs.get(key);
 }
-async function proofOptions(
+async function proofOptions<
+  P extends Omit<import("./move.ts").MoveProof, "session">,
+>(
   s: SessionContext,
-  proof: import("./move.ts").MoveProof,
-): Promise<BridgeMoveProof> {
+  proof: P,
+): Promise<P & Omit<BridgeMoveProof, keyof import("./move.ts").MoveProof>> {
   const compiled = await studioToolCatalog(
     studioTools(s, () => null),
     (s.dynamicTools || []).length,
@@ -2589,6 +2591,7 @@ type HandlerResult<M extends BridgeMethod> =
 function handle<M extends BridgeMethod>(
   request: BridgeRequest<M>,
 ): Promise<BridgeResult<M>>;
+// Each return checks its narrowed method with satisfies HandlerResult<typeof method>.
 async function handle(
   request: BridgeRequest,
 ): Promise<BridgeResult<BridgeMethod>> {
