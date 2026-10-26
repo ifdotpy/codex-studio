@@ -39,6 +39,7 @@ function outcome(
   let lastBlocks: Record<string, unknown>[] = [];
   let lastStopReason: unknown;
   for (const row of rows.slice(rows.indexOf(anchor))) {
+    const rowId = row.uuid;
     if (row.isSidechain === true) continue;
     if (
       row.isCompactSummary ||
@@ -58,9 +59,9 @@ function outcome(
       continue;
     if (
       !["assistant", "user"].includes(row.type) ||
-      !nativeUuid(row.uuid) ||
-      seen.has(row.uuid) ||
-      counts.get(row.uuid) !== 1 ||
+      !nativeUuid(rowId) ||
+      seen.has(rowId) ||
+      counts.get(rowId) !== 1 ||
       row.sessionId !== (session.nativeId || session.id) ||
       row.cwd !== (session.nativeHistoryCwd || session.cwd) ||
       row.isSidechain !== false ||
@@ -68,14 +69,14 @@ function outcome(
         !turn.items.some(
           (item) =>
             item.type === "userMessage" &&
-            nativeInputIds(item)?.includes(row.uuid),
+            nativeInputIds(item)?.includes(rowId),
         )) ||
       row.isVisibleInTranscriptOnly ||
       (previous && row.parentUuid !== previous)
     )
       return null;
-    seen.add(row.uuid);
-    previous = row.uuid;
+    seen.add(rowId);
+    previous = rowId;
     last = row;
     if (row === anchor) {
       continue;
@@ -96,8 +97,7 @@ function outcome(
       // A later input must belong to this turn (tool receipts or saved steers).
       const steer = turn.items.some(
         (item) =>
-          item.type === "userMessage" &&
-          nativeInputIds(item)?.includes(row.uuid),
+          item.type === "userMessage" && nativeInputIds(item)?.includes(rowId),
       );
       if (
         !steer &&
