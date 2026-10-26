@@ -43,8 +43,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
     const second = await context.newPage();
     const url = `http://127.0.0.1:${address.port}/transfer-check`;
     await Promise.all([first.goto(url), second.goto(url)]);
-    const module = `/@fs${fileURLToPath(new URL("../../src/sync/entityTransfer.ts", import.meta.url))}`;
-    const owner = await first.evaluate(async (_module) => {
+    const owner = await first.evaluate(async () => {
       const { IndexedTransferStorage } =
         await import("/src/sync/entityTransfer.ts");
       const storage = new IndexedTransferStorage();
@@ -63,10 +62,11 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
         request.onerror = () => reject(request.error);
       });
       return name;
-    }, module);
+    });
     const status = await second.evaluate(
-      async ({ module, owner }) => {
-        const { IndexedTransferStorage } = await import(module);
+      async ({ owner }) => {
+        const { IndexedTransferStorage } =
+          await import("/src/sync/entityTransfer.ts");
         const storage = new IndexedTransferStorage();
         await storage.put("second", "active");
         // Wait for the once-per-owner cleanup's exclusive lock callback rather
@@ -86,7 +86,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
           value,
         };
       },
-      { module, owner },
+      { owner },
     );
     expect(status).toEqual({
       ownerPresent: true,
