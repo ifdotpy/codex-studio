@@ -8,7 +8,11 @@ import type {
   RewindFilesResult,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Session, Turn, FileRestorePlan } from "./session-state.ts";
-import type { BridgeParams, BridgeSessionParams } from "./bridge-protocol.ts";
+import type {
+  BridgeCommand,
+  BridgeParams,
+  BridgeSessionParams,
+} from "./bridge-protocol.ts";
 export interface ControlDependencies {
   persist(session: Session): Promise<unknown>;
   getSessionMessages(
@@ -43,7 +47,7 @@ import { randomUUID } from "node:crypto";
 
 // Initialization is the CLI's authoritative list after native skill policy.
 export function commandCatalog(commands: readonly Command[] = []) {
-  const named = new Map<string, SlashCommand & { aliases: string[] }>();
+  const named = new Map<string, BridgeCommand>();
   for (const row of commands) {
     if (!row || !/^[\w:.-]+$/.test(row.name || "")) continue;
     if (!named.has(row.name) || row.builtin)

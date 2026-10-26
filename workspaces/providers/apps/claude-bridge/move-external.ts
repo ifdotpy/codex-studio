@@ -3,10 +3,22 @@ import type {
   McpServerStatus,
   McpServerStatusConfig,
   McpClaudeAIProxyServerConfig,
+  McpServerConfig,
+  Options,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolProof, ProofTool } from "./move.ts";
 export type ExternalConfig = Exclude<McpServerStatusConfig, { type: "sdk" }>;
+
+// The pinned SDK's sdk.mjs:155 documents claudeai-proxy through mcpServers,
+// and sdk.mjs:163 forwards every non-sdk config unchanged into --mcp-config.
+// Its declared McpServerConfig union omits that supported SDK-owned type.
+// Preserve the same object for both query options and setMcpServers.
+export function sdkMcpServers(
+  configs: Record<string, McpServerConfig | McpClaudeAIProxyServerConfig>,
+): NonNullable<Options["mcpServers"]> {
+  return configs as NonNullable<Options["mcpServers"]>;
+}
 type LocalConfig = Exclude<ExternalConfig, McpClaudeAIProxyServerConfig>;
 export type ExternalServer = {
   name: string;
@@ -29,7 +41,7 @@ export type CatalogDependencies = {
 };
 type CatalogResult = {
   catalogs: ExternalServer[];
-  configs: Record<string, ExternalConfig>;
+  configs: ReturnType<typeof sdkMcpServers>;
   transports: Record<string, LocalConfig>;
   accountConnectors?: boolean;
 };
@@ -435,8 +447,10 @@ export async function externalCatalog(
   );
   return {
     catalogs,
-    configs: Object.fromEntries(
-      selected.map((server) => [server.name, server.config]),
+    configs: sdkMcpServers(
+      Object.fromEntries(
+        selected.map((server) => [server.name, server.config]),
+      ),
     ),
     // What a move carries so that the target starts the same servers.
     transports: Object.fromEntries(
@@ -501,7 +515,7 @@ export async function targetExternalCatalog(
         ? structuredClone(server)
         : (read.catalogs.find((row) => row.name === server.name) ?? server),
     );
-    const configs = { ...read.configs };
+    const configs: Parameters<typeof sdkMcpServers>[0] = { ...read.configs };
     for (const server of expected.filter((row) => row.claudeAI))
       configs[server.name] = {
         type: "claudeai-proxy",
@@ -510,7 +524,7 @@ export async function targetExternalCatalog(
       };
     return {
       catalogs,
-      configs,
+      configs: sdkMcpServers(configs),
       transports: read.transports,
       accountConnectors: true,
     };

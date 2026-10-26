@@ -1,4 +1,10 @@
 import { fileURLToPath } from "node:url";
+import type {
+  McpServerConfig,
+  McpClaudeAIProxyServerConfig,
+  Options,
+  Query,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { ExternalConfig, ExternalServer } from "./move-external.ts";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { test } from "vitest";
@@ -7,6 +13,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
+  sdkMcpServers,
   externalAliases,
   externalCatalog,
   verifyExternalCatalog,
@@ -14,6 +21,26 @@ import {
   listExternalTools,
   readExternalInstructions,
 } from "./move-external.ts";
+
+test("SDK boundary preserves local and proxy configurations for both callers", () => {
+  const configs = {
+    local: { type: "stdio", command: "node", args: ["catalog.mjs"] },
+    proxy: {
+      type: "claudeai-proxy",
+      id: "mcpsrv_fixture",
+      url: "https://proxy.example.test/mcp",
+    },
+  } satisfies Record<string, McpServerConfig | McpClaudeAIProxyServerConfig>;
+  const options: Pick<Options, "mcpServers"> = {
+    mcpServers: sdkMcpServers(configs),
+  };
+  const parameters: Parameters<Query["setMcpServers"]> = [
+    sdkMcpServers(configs),
+  ];
+  assert.equal(options.mcpServers, configs);
+  assert.equal(parameters[0], configs);
+  assert.equal(configs.proxy.type, "claudeai-proxy");
+});
 
 const status = {
   name: "anarlog",
