@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assertStoredScaleProfile } from "./scaleVerifierHelpers.mjs";
+import { assertStoredScaleProfile } from "./scaleVerifierHelpers.ts";
 import { auditSummaryLines } from "./uiTeamScaleAudit.mjs";
 
 // Helpers of verify-ui-team-scale.mjs. Every value below has one owner:

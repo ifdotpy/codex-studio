@@ -1097,6 +1097,30 @@ mod tests {
     }
 
     #[test]
+    fn stored_attempt_contract_exposes_provider_request_correlation() {
+        let document = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        for (field, kind) in [
+            ("requestTicket", "string"),
+            ("connectionGeneration", "integer"),
+        ] {
+            assert_eq!(
+                document.pointer(&format!(
+                    "/components/schemas/StartAttemptRecordResponse/properties/{field}/type"
+                )),
+                Some(&serde_json::json!(kind))
+            );
+            assert_eq!(
+                document.pointer(&format!(
+                    "/components/schemas/ExecutionAttempt/properties/{field}/anyOf/0/$ref"
+                )),
+                Some(&serde_json::json!(format!(
+                    "#/components/schemas/StartAttemptRecordResponse/properties/{field}"
+                )))
+            );
+        }
+    }
+
+    #[test]
     fn markdown_output_matches_rust_owned_schema() {
         use studio_client_domain::{markdown::MarkdownBlock, protocol::Request};
         let schema = schemars::generate::SchemaSettings::draft2020_12()
