@@ -789,6 +789,8 @@ export function gateSteps(root, name) {
       // Keep its startup deadline without competing with our nextest workers.
       lane: "rust",
       requires: "workspace",
+      // The web app, its WASM client crates, generated contracts and the Rust draft server.
+      inputs: ["workspaces/client", "workspaces/runtime"],
     },
     ...["studio-claude-bridge", "codex-agents-desktop"].map((packageName) => ({
       ...script(
@@ -853,6 +855,8 @@ export function gateSteps(root, name) {
       id: "guest",
       label: "VM guest Python suite",
       lane: "guest",
+      // The guest suite and the Rust supervisor binary it starts.
+      inputs: ["workspaces/runtime"],
       requires: "workspace",
       item: tooling,
       commands: [
