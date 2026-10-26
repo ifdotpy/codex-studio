@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import { ApiError } from "../api";
@@ -82,6 +83,7 @@ describe("project locations", () => {
     };
     const groups = logicalProjects(navigation);
     expect(groups).toHaveLength(1);
+    assert.ok(groups[0] != null);
     expect(groups[0].owner).toBe("local");
     expect(groups[0].deleteTarget).toBe(project.id);
     expect(groups[0].compact).toBe(false);
@@ -103,6 +105,7 @@ describe("project locations", () => {
     ).toHaveLength(2);
   });
   it("finds the actual local server identity and a remote-only location", () => {
+    assert.ok(project.locations[1]);
     expect(
       projectLocationOn(project, {
         id: "local",
@@ -125,7 +128,9 @@ describe("project locations", () => {
       ],
       { mbp: "offline" },
     );
+    assert.ok(choices[0] != null);
     expect(choices[0].disabled).toBe(false);
+    assert.ok(choices[1] != null);
     expect(choices[1].disabled).toBe(true);
   });
   it("keeps an unresolved request identity across dialog reloads", () => {
@@ -179,7 +184,9 @@ describe("project locations", () => {
     } as never);
     try {
       const choices = await readProjectServers();
+      assert.ok(choices[0] != null);
       expect(choices[0].label).toBe("Lumina Mac");
+      assert.ok(choices[1] != null);
       expect(choices[1].disabled).toBe(true);
     } finally {
       get.mockRestore();
@@ -216,14 +223,17 @@ describe("project locations", () => {
         "Invalid peer reply",
       );
       await saveProjectLocation({ ...body, request_id: "new-modal" });
+      assert.ok(post.mock.calls[1] != null);
       expect(post.mock.calls[1][1]).toMatchObject({ request_id: "original" });
       await expect(
         saveProjectLocation({ ...body, request_id: "final-refusal" }),
       ).rejects.toBeInstanceOf(ProjectReceiptRefused);
       await saveProjectLocation({ ...body, request_id: "after-final" });
+      assert.ok(post.mock.calls[2] != null);
       expect(post.mock.calls[2][1]).toMatchObject({
         request_id: "final-refusal",
       });
+      assert.ok(post.mock.calls[3] != null);
       expect(post.mock.calls[3][1]).toMatchObject({
         request_id: "after-final",
       });

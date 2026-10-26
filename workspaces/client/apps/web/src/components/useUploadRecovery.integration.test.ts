@@ -1,3 +1,4 @@
+import { required } from "./componentTestFixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -130,7 +131,7 @@ describe("useUploadRecovery", () => {
     const unmount = mount();
     await flushMicrotasks();
     expect(mocks.pendingUploads).toHaveBeenCalledTimes(1);
-    const changedInAnotherTab = [...mocks.uploadListeners][0];
+    const changedInAnotherTab = required([...mocks.uploadListeners][0]);
 
     changedInAnotherTab();
     await flushMicrotasks();

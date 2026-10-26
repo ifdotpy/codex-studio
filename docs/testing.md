@@ -18,7 +18,7 @@ model request or a real reset-credit redemption.
 `just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop
 recovery and retained-helper boundaries, web API/type witnesses, tooling tests,
 generated-contract and dependency guards, and the VM guest Python suite through its
-[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses five
+[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mts). The facade uses five
 bounded concurrent lanes: Rust preparation and tests, type checks, web tests,
 independent tooling/provider/desktop checks, and the guest suite. Independent
 checks start immediately; artifact consumers wait only for their preparation. Cargo compilation stays in the Rust lane with four build jobs. WASM is
@@ -26,7 +26,7 @@ generated once; the renderer is built once before the native crate embeds it.
 Type checks wait for WASM; web tests wait for the workspace build's debug
 `examples/draft-server`, and the guest waits for its debug supervisor. The gate
 passes both binary paths explicitly. These checks overlap the Rust build or test run. The
-[WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs) requires
+[WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.ts) requires
 the exact binding generator version pinned by the client-wasm crate; its error
 gives the installation command. Cold builds are outside the warm short-tier
 target. The nextest configuration also owns the failure deadline; its CI profile
@@ -109,7 +109,11 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 
 The repository checks add three focused commands: `just contracts-check` runs
 the generated API and persisted-state checks in read-only mode; `just boundaries-check`
-checks manifest-declared imports and workspace direction; and
+checks manifest-declared imports and workspace direction. Type-only imports may cross
+workspace boundaries for generated contracts and the shared type owners listed with
+their purposes in the [facade](../workspaces/tooling/apps/repository-checks/facade.ts);
+runtime imports retain the declared-dependency and documented-exception rules.
+
 `just check-affected <base>` checks changed packages and reverse dependents
 discovered from workspace manifests. It widens to all packages for root policy
 or unowned-file changes and prints the reason per selected package.
@@ -127,7 +131,7 @@ and `summary.json` in declaration order, including per-step wall times and every
 independent failure. A failed preparation skips its consumers; the first declared
 failure is `failedStep`. Interrupts stop and reap only the run's owned process groups.
 Gate test children and bridge Vitest workers discard ambient `CLAUDE*`, `STUDIO_*`
-and `AI_AGENT` settings using `scrubAgentEnvironment` in `gate-config.mjs`;
+and `AI_AGENT` settings using `scrubAgentEnvironment` in `gate-config.ts`;
 fixtures and the gate supply their explicit binary paths afterward.
 
 `just test-fast-rest` runs the comprehensive remainder without browser smoke.

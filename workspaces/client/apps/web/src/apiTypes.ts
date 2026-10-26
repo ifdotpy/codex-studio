@@ -15,15 +15,15 @@ export type JsonInput =
   | { [key: string]: JsonInput | undefined };
 export type Json = Record<string, JsonInput | undefined>;
 // Preserve generated field types for renderer values assembled before serialization.
-export type JsonInputOf<T> = T extends (infer Item)[]
-  ? JsonInputOf<Item>[]
-  : T extends object
-    ? {
-        [Key in keyof T]:
-          | JsonInputOf<T[Key]>
-          | (string extends Key ? undefined : never);
-      }
-    : T;
+export type JsonInputOf<T> = unknown extends T
+  ? T
+  : JsonValue extends T
+    ? JsonInput | Extract<T, undefined>
+    : T extends (infer Item)[]
+      ? JsonInputOf<Item>[]
+      : T extends object
+        ? { [Key in keyof T]: JsonInputOf<T[Key]> }
+        : T;
 
 // Transcript records retain typed JSON extension fields on the wire. UI state
 // consumes their declared API fields; strip only the generated index signature

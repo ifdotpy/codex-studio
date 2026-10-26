@@ -1,4 +1,4 @@
-import type { DraftVersion } from "../generated/rustOwned.ts";
+import type { DraftView as GeneratedDraftView } from "../generated/rustOwned.ts";
 
 export type HttpResponse = {
   status: number;
@@ -6,9 +6,7 @@ export type HttpResponse = {
   base64: string;
 };
 
-export type DraftView = {
-  drafts: Record<string, string>;
-  conflicts: DraftVersion[];
+export type DraftView = GeneratedDraftView & {
   workspaceId: string;
   revision: number;
   error?: string;
