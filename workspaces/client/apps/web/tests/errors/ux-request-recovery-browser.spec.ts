@@ -1,3 +1,8 @@
+import { fixtureSnapshot } from "../fixtures/snapshot.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { required } from "../teams/helpers.ts";
+import { createServer } from "vite";
+import type {} from "./ux-request-recovery-browser.fixture.tsx";
 import {
   apiSchemaHandshakeSse,
   apiSchemaHeaders,
@@ -9,7 +14,6 @@ import {
 } from "../playwright.ts";
 // Real UI components with isolated HTTP responses. No model or user state.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,39 +24,8 @@ test("Ux request recovery browser", async ({
 }) => {
   test.setTimeout(180_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "studio-ux-request-recovery-"));
-  const entry = join(root, "workspaces/client/apps/web/__request-recovery.jsx");
-  const source = `
-  import React from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import Picker from '/src/components/ProjectDirectoryPicker.tsx';
-  import {ClaudeSettings} from '/src/components/ClaudeSettings.tsx';
-  import {ProjectNameForm,MoveChatForm} from '/src/components/ProjectOrganization.tsx';
-  import ProjectAccount from '/src/components/ProjectAccount.tsx';
-  import {useAccounts,AccountTransferStatus} from '/src/components/Accounts.tsx';
-  const mode=new URLSearchParams(location.search).get('case');
-  const project={id:'/project',path:'/project',name:'Project',accountKey:'ready',accountKeys:['ready','expired'],folders:[{id:'review',name:'Review'}]};
-  const agent={id:'lead',rootId:'lead',name:'Lead',provider:'claude',accountKey:'ready',status:'idle',model:'claude-opus-4-6',projectFolder:null,projectFolderRevision:0};
-  const account = (id,label,status) => ({id,label,status,home:'/home/fixture/'+id,source:'Codex CLI'});
-  const accounts={accounts:[account('ready','Ready account','ready'),account('expired','Expired account','signedOut')],archivedAccounts:[],logins:[],supportsDisconnect:true,supportsDelete:true,defaultAccountKey:'ready'};
-  window.selected=[];window.saves=0;window.failRefresh=mode==='confirmed';
-  const saved=async()=>{window.saves++;if(window.failRefresh){window.failRefresh=false;throw Error('Snapshot unavailable');}};
-  function AccountsFixture(){const state=useAccounts('/fixture');return <><button onClick={()=>state.refresh()}>Refresh accounts</button><button onClick={()=>state.setData({accounts:[account('ready','New account','ready')],archivedAccounts:[],logins:[],supportsDisconnect:true,supportsDelete:true,defaultAccountKey:'ready'})}>Use saved accounts</button><output>{state.data.accounts.map(a=>a.label).join(',')}</output></>;}
-  let body=mode==='picker'?<Picker initialPath='/project' onSelect={async path=>window.selected.push(path)}/>:
-  mode==='claude'||mode==='deadline'?<ClaudeSettings agent={agent}/>:
-  mode.startsWith('accounts')?<AccountsFixture/>:
-  ['name','confirmed','rejected','project-deadline'].includes(mode)?<ProjectNameForm project={project} folder='new' saved={saved}/>:
-  mode==='move'?<MoveChatForm project={project} agent={agent} saved={saved}/>:
-  mode==='project-account'||mode==='unready'?<ProjectAccount path={project.path} project={mode==='unready'?{...project,accountKey:'expired'}:project} defaultAccountKey='ready' accounts={accounts} saved={saved}/>:
-  <AccountTransferStatus transfer={{status:'pending',moved:1,total:1,waitingCount:0,nativeHistoryPending:1}} targetLabel='Ready account' onAction={()=>{}}/>;
-  createRoot(document.getElementById('root')).render(<MantineProvider>{body}</MantineProvider>);
-  `;
+
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
@@ -61,19 +34,13 @@ test("Ux request recovery browser", async ({
     plugins: [
       {
         name: "request-recovery-fixture",
-        resolveId(id) {
-          if (id === "/__request-recovery.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
-            if (new URL(req.url, "http://fixture").pathname !== "/")
+            if (new URL(req.url || "/", "http://fixture").pathname !== "/")
               return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/__request-recovery.jsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/errors/ux-request-recovery-browser.fixture.tsx"></script>',
             );
           });
         },
@@ -81,13 +48,17 @@ test("Ux request recovery browser", async ({
     ],
   });
   const results = [];
-  const selectedCases = [];
+  const selectedCases: string[] = [];
   const syncIdentity = syncIdentityFixture();
   const syncSnapshot = {
-    stateDir: "fixture",
-    runtime: {},
-    chats: [],
-    edges: [],
+    ...fixtureSnapshot([]),
+    runtime: {
+      ...fixtureSnapshot([]).runtime,
+      nativeNotices: [],
+      sidebarOrder: { groups: null, revision: 0 },
+      rateLimits: null,
+      rateLimitsByAccount: {},
+    },
   };
   try {
     await server.listen();
@@ -111,16 +82,22 @@ test("Ux request recovery browser", async ({
       const page = await runnerContext.newPage();
       await page.setViewportSize({ width: 390, height: 844 });
       page.setDefaultTimeout(3000);
-      const writes = [],
-        errors = [];
+      const writes: Extract<
+          PostBody<"/api/projects">,
+          { folder_id?: unknown }
+        >[] = [],
+        errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       let reads = 0,
-        releaseOld;
+        releaseOld: (() => void) | undefined;
       if (mode.endsWith("deadline"))
         await page.addInitScript(() => {
           const original = window.setTimeout;
-          window.setTimeout = (callback, delay, ...args) =>
-            original(callback, delay === 15000 ? 100 : delay, ...args);
+          window.setTimeout = Object.assign(
+            (callback: TimerHandler, delay?: number, ...args: unknown[]) =>
+              original(callback, delay === 15000 ? 100 : delay, ...args),
+            original,
+          );
         });
       await page.route("**/api/**", async (route) => {
         const request = route.request(),
@@ -137,9 +114,8 @@ test("Ux request recovery browser", async ({
             headers: apiSchemaHeaders(),
           });
         if (path === "/api/sync/stream") {
-          const resources = JSON.parse(
-            url.searchParams.get("resources") || "[]",
-          );
+          const resources: import("../playwright.ts").ResourceRef[] =
+            JSON.parse(url.searchParams.get("resources") || "[]");
           const baseline = {
             protocol: 4,
             workspaceId: syncIdentity.workspaceId,
@@ -204,7 +180,7 @@ test("Ux request recovery browser", async ({
         if (path === "/api/accounts") {
           const sequence = ++reads;
           if (sequence === 1)
-            await new Promise((resolve) => {
+            await new Promise<void>((resolve) => {
               releaseOld = resolve;
             });
           return route.fulfill({
@@ -263,14 +239,19 @@ test("Ux request recovery browser", async ({
         });
       });
       try {
-        await page.goto(`${server.resolvedUrls.local[0]}?case=${mode}`);
+        await page.goto(
+          `${required(server.resolvedUrls?.local[0])}?case=${mode}`,
+        );
         if (mode === "picker") {
           const use = page.getByRole("button", {
             name: "Add project",
             exact: true,
           });
           await page.waitForFunction(
-            () => !document.querySelector(".directory-footer button")?.disabled,
+            () =>
+              !document.querySelector<HTMLButtonElement>(
+                ".directory-footer button",
+              )?.disabled,
           );
           await page.getByLabel("Folder path").fill("/other");
           assert.equal(
@@ -282,12 +263,16 @@ test("Ux request recovery browser", async ({
             .getByRole("button", { name: "Open path", exact: true })
             .click();
           await page.waitForFunction(
-            () => !document.querySelector(".directory-footer button")?.disabled,
+            () =>
+              !document.querySelector<HTMLButtonElement>(
+                ".directory-footer button",
+              )?.disabled,
           );
           await use.click();
-          assert.deepEqual(await page.evaluate(() => window.selected), [
-            "/other",
-          ]);
+          assert.deepEqual(
+            await page.evaluate(() => window.uxRequestRecoveryBrowserSelected),
+            ["/other"],
+          );
           await page.getByLabel("Folder path").fill("~/work");
           await page
             .getByRole("button", { name: "Open path", exact: true })
@@ -366,7 +351,7 @@ test("Ux request recovery browser", async ({
           const oldResponse = page.waitForResponse((response) =>
             response.url().endsWith("/api/accounts"),
           );
-          releaseOld();
+          required(releaseOld)();
           await oldResponse;
           await page.evaluate(
             () =>
@@ -452,10 +437,15 @@ test("Ux request recovery browser", async ({
             await page
               .getByRole("button", { name: "Create folder", exact: true })
               .click();
-            await page.waitForFunction(() => window.saves === 1);
+            await page.waitForFunction(
+              () => window.uxRequestRecoveryBrowserSaves === 1,
+            );
             assert.equal(writes.length, 2);
-            assert.equal(writes[0].folder_id, writes[1].folder_id);
-            assert.equal(writes[1].name, "Different name");
+            assert.equal(
+              required(writes[0]).folder_id,
+              required(writes[1]).folder_id,
+            );
+            assert.equal(required(writes[1]).name, "Different name");
             assert.deepEqual(errors, []);
             results.push({ mode, passed: true });
             continue;
@@ -484,7 +474,7 @@ test("Ux request recovery browser", async ({
             .click();
           await page.waitForFunction(
             () =>
-              window.saves ===
+              window.uxRequestRecoveryBrowserSaves ===
               (window.location.search.includes("confirmed") ? 2 : 1),
           );
           assert.equal(writes.length, mode === "confirmed" ? 1 : 2);
@@ -497,7 +487,10 @@ test("Ux request recovery browser", async ({
         results.push({
           mode,
           passed: false,
-          error: String(error.message).slice(0, 400),
+          error: String(error instanceof Error ? error.message : error).slice(
+            0,
+            400,
+          ),
         });
       } finally {
         releaseOld?.();

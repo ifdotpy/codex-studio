@@ -1,6 +1,8 @@
+import { fixtureSnapshot } from "../fixtures/snapshot.ts";
+import { required } from "../teams/helpers.ts";
+import { createServer } from "vite";
+import type {} from "./background-current-browser.fixture.tsx";
 // Current activity lifecycle through the real component. HTTP calls use fixtures.
-import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,42 +20,26 @@ test("Background Current Browser", async ({
   page: testPage,
 }, testInfo) => {
   const assert = {
-    equal: (actual, expected, message) =>
+    equal: (actual: unknown, expected: unknown, message?: string) =>
       expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
+    notEqual: (actual: unknown, expected: unknown, message?: string) =>
       expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
+    deepEqual: (actual: unknown, expected: unknown, message?: string) =>
       expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
+    ok: (actual: unknown, message?: string) =>
+      expect(actual, message).toBeTruthy(),
+    match: (actual: string, expected: RegExp, message?: string) =>
       expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
+    doesNotMatch: (actual: string, expected: RegExp, message?: string) =>
       expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
+    fail: (message: string) => {
       throw new Error(message);
     },
   };
 
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-current-background-"));
-  const harness = `
-import React from 'react';
-import {createRoot} from 'react-dom/client';
-import {MantineProvider} from '@mantine/core';
-import '@mantine/core/styles.css';
-import '/src/style.css';
-import BackgroundTasks from '/src/components/shell/BackgroundTasks.tsx';
-const root=createRoot(document.getElementById('root'));
-window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
- React.createElement(MantineProvider,{defaultColorScheme:"dark"},React.createElement(BackgroundTasks,{
-  opened:true,close:()=>{},data,leadId,initialFocus,
-  openAgent:()=>{},refresh:async()=>{window.refreshCalls=(window.refreshCalls||0)+1;if(window.holdRefresh)await new Promise((resolve,reject)=>{window.resolveRefresh=resolve;window.rejectRefresh=reject;});},notify:error=>(window.notifications??=[]).push(error)
- })));
-`;
+
   const server = await createServer({
     configFile: false,
     root: join(root, "workspaces/client/apps/web"),
@@ -61,28 +47,6 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
     plugins: [
       {
         name: "current-background-fixture",
-        resolveId(id) {
-          if (id === "virtual:current-background") return "\0" + id;
-        },
-        load(id) {
-          if (
-            process.env.BASELINE_SYNC_WAIT === "1" &&
-            id ===
-              join(
-                root,
-                "workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
-              )
-          )
-            return execFileSync(
-              "git",
-              [
-                "show",
-                "HEAD:workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
-              ],
-              { cwd: root, encoding: "utf8" },
-            );
-          if (id === "\0virtual:current-background") return harness;
-        },
       },
     ],
     server: { host: "127.0.0.1", port: 0, hmr: false },
@@ -91,17 +55,17 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
   try {
     const page = testPage;
     await page.setViewportSize({ width: 1440, height: 900 });
-    const errors = [],
-      calls = [];
+    const errors: string[] = [],
+      calls: { method: string; path: string; id: string | null }[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/fixture", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:current-background";</script>',
+        body: '<!doctype html><div id="root"></div><script type="module">import "/tests/background/background-current-browser.fixture.tsx";</script>',
       }),
     );
     let holdAnswer = false,
-      releaseAnswer;
+      releaseAnswer: (() => void) | undefined;
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
@@ -124,7 +88,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
             responseTarget: null,
             processes: data.runtime.monitors
               .filter((task) =>
-                ["approval", "running", "starting"].includes(task.status),
+                ["approval", "running", "starting"].includes(task.status || ""),
               )
               .map((task) => ({
                 ...task,
@@ -152,21 +116,29 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
         url.pathname === "/api/answer" &&
         holdAnswer
       )
-        await new Promise((resolve) => {
+        await new Promise<void>((resolve) => {
           releaseAnswer = resolve;
         });
       return route.fulfill({
         json: { id: url.searchParams.get("id"), tail: "Live fixture output" },
       });
     });
-    await page.goto(server.resolvedUrls.local[0] + "fixture");
-    await page.waitForFunction(() => !!window.renderFixture);
-    const agents = [
+    await page.goto(required(server.resolvedUrls?.local[0]) + "fixture");
+    await page.waitForFunction(
+      () => !!window.backgroundCurrentBrowserRenderFixture,
+    );
+    const agents: import("../../src/types.ts").Agent[] = [
       { id: "lead", rootId: "lead", name: "Lead" },
       { id: "worker", rootId: "lead", name: "Worker" },
       { id: "other", rootId: "other", name: "Other" },
     ];
-    const task = (id, status, agent = "lead") => ({
+    const task = (
+      id: string,
+      status: NonNullable<
+        import("../../src/types.ts").BackgroundTask["status"]
+      >,
+      agent = "lead",
+    ): import("../../src/types.ts").BackgroundTask => ({
       id,
       status,
       agent,
@@ -176,10 +148,12 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
       created: Date.now() / 1000 - 30,
       processId: "123",
     });
-    const data = {
+    const data: import("../../src/types.ts").Snapshot = {
+      ...fixtureSnapshot(agents),
       token: "fixture",
       threads: agents,
       runtime: {
+        ...fixtureSnapshot(agents).runtime,
         requests: [
           {
             id: "approve-id",
@@ -187,7 +161,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
             params: { monitorId: "approval" },
           },
         ],
-        monitors: [{ ...task("approval", "approval"), kind: "monitor" }],
+        monitors: [task("approval", "approval")],
         tasks: [
           task("active", "running"),
           {
@@ -198,19 +172,31 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
           },
           task("child", "running", "worker"),
           task("other-active", "running", "other"),
-          ...["completed", "failed", "cancelled", "interrupted", "lost"].map(
-            (status) => task(status, status),
-          ),
+          ...(
+            ["completed", "failed", "cancelled", "interrupted", "lost"] as const
+          ).map((status) => task(status, status)),
           task("starting", "starting"),
+          // @ts-expect-error pending is a deliberately legacy task status.
           task("pending", "pending"),
+          // @ts-expect-error stopping is a deliberately legacy task status.
           task("stopping", "stopping"),
         ],
       },
     };
-    const render = async (leadId = "lead", focus) => {
+    const render = async (
+      leadId = "lead",
+      focus?: React.ComponentProps<
+        typeof import("../../src/components/shell/BackgroundTasks.tsx").default
+      >["initialFocus"],
+    ) => {
       await page.evaluate(
-        ({ data, leadId, focus }) => window.renderFixture(data, leadId, focus),
-        { data, leadId, focus },
+        ({ serialized, leadId, focus }) =>
+          window.backgroundCurrentBrowserRenderFixture(
+            serialized,
+            leadId,
+            focus,
+          ),
+        { serialized: JSON.stringify(data), leadId, focus },
       );
     };
     const rows = () => page.locator("[data-task]");
@@ -253,29 +239,29 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
     const activeCommand = data.runtime.tasks.find(
       (task) => task.id === "active",
     );
-    activeCommand.turnId = "original-turn";
-    agents[0].inFlight = true;
-    agents[0].turnId = "original-turn";
+    required(activeCommand).turnId = "original-turn";
+    required(agents[0]).inFlight = true;
+    required(agents[0]).turnId = "original-turn";
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
       .getByText("Command", { exact: true })
       .waitFor();
-    agents[0].turnId = "next-turn";
+    required(agents[0]).turnId = "next-turn";
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
       .getByText("Background command", { exact: true })
       .waitFor();
-    agents[0].turnId = "original-turn";
-    agents[0].inFlight = false;
+    required(agents[0]).turnId = "original-turn";
+    required(agents[0]).inFlight = false;
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
       .getByText("Background command", { exact: true })
       .waitFor();
-    delete agents[0].inFlight;
-    delete agents[0].turnId;
+    delete required(agents[0]).inFlight;
+    delete required(agents[0]).turnId;
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
@@ -291,7 +277,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
       .locator(".task-output")
       .getByText("Summary output active", { exact: true })
       .waitFor();
-    activeCommand.tail = "Updated summary output";
+    required(activeCommand).tail = "Updated summary output";
     await render();
     await page
       .locator(".task-output")
@@ -302,7 +288,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
       0,
       "streamed task summaries issue zero idle GETs",
     );
-    data.runtime.tasks.find((task) => task.id === "active").status =
+    required(data.runtime.tasks.find((task) => task.id === "active")).status =
       "completed";
     await render();
     await page.locator('[data-task="active"]').waitFor({ state: "detached" });
@@ -338,8 +324,8 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
       .getByRole("button", { name: "Cancel monitor", exact: true })
       .waitFor();
     await page.evaluate(() => {
-      window.holdRefresh = true;
-      window.refreshCalls = 0;
+      window.backgroundCurrentBrowserHoldRefresh = true;
+      window.backgroundCurrentBrowserRefreshCalls = 0;
     });
     holdAnswer = true;
     const approve = page.getByRole("button", {
@@ -354,23 +340,34 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
     await expect
       .poll(async () => ({
         release: typeof releaseAnswer,
-        notifications: await page.evaluate(() => window.notifications || []),
+        notifications: await page.evaluate(
+          () => window.backgroundCurrentBrowserNotifications || [],
+        ),
       }))
       .toMatchObject({ release: "function" });
     await expect(pendingControl).toBeDisabled();
-    assert.equal(await page.evaluate(() => window.refreshCalls), 0);
+    assert.equal(
+      await page.evaluate(() => window.backgroundCurrentBrowserRefreshCalls),
+      0,
+    );
     holdAnswer = false;
-    releaseAnswer();
+    required(releaseAnswer)();
     await expect(pendingControl).toBeEnabled({ timeout: 2000 });
     await page.waitForFunction(
-      () => window.refreshCalls === 1 && !!window.rejectRefresh,
+      () =>
+        window.backgroundCurrentBrowserRefreshCalls === 1 &&
+        !!window.backgroundCurrentBrowserRejectRefresh,
     );
     await page.evaluate(() => {
-      window.holdRefresh = false;
-      window.rejectRefresh(new Error("Credential refresh unavailable"));
+      window.backgroundCurrentBrowserHoldRefresh = false;
+      window.backgroundCurrentBrowserRejectRefresh(
+        new Error("Credential refresh unavailable"),
+      );
     });
     await page.waitForFunction(() =>
-      window.notifications?.includes("Credential refresh unavailable"),
+      window.backgroundCurrentBrowserNotifications?.includes(
+        "Credential refresh unavailable",
+      ),
     );
     assert.equal(
       calls.filter(
@@ -416,13 +413,14 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
       await page.screenshot({
         path: testInfo.outputPath("studio-current-activity-" + width + ".png"),
       });
-      data.runtime.tasks.find((task) => task.id === "child").status =
+      required(data.runtime.tasks.find((task) => task.id === "child")).status =
         "completed";
       await render("lead");
       await page
         .locator('[data-task-detail="child"]')
         .waitFor({ state: "detached" });
-      data.runtime.tasks.find((task) => task.id === "child").status = "running";
+      required(data.runtime.tasks.find((task) => task.id === "child")).status =
+        "running";
     }
     data.runtime.tasks = data.runtime.tasks.map((task) => ({
       ...task,

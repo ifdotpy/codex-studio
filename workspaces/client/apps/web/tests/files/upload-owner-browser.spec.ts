@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,18 +30,28 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
         body: "<!doctype html><title>Owner check</title>",
       }),
     );
-    await page.goto(`${server.resolvedUrls.local[0]}owner-check`);
+    await page.goto(`${required(server.resolvedUrls?.local[0])}owner-check`);
     const result = await page.evaluate(async () => {
       const { createUploads } = await import("/src/sync/uploads.ts");
       const { scopedStorage } = await import("/src/servers/storage.ts");
       const { createLocalDraftStorage } =
         await import("/src/sync/localDraft.ts");
-      const sent = [];
-      let finishA, startedA;
-      const started = new Promise((resolve) => {
+      const sent: {
+        owner: string;
+        path: string;
+        body: import("../../src/apiTypes.ts").PostBody<"/api/assets">;
+        options: Parameters<typeof import("../../src/api.ts").syncPost>[2];
+      }[] = [];
+      let finishA: () => void = () => {
+          throw new Error("Upload A not started");
+        },
+        startedA: () => void = () => {
+          throw new Error("Upload gate not ready");
+        };
+      const started = new Promise<void>((resolve) => {
         startedA = resolve;
       });
-      const make = (owner) => {
+      const make = (owner: string) => {
         const storage = scopedStorage(() => localStorage, `${owner}:`);
         return createUploads({
           databaseName: `uploads-${owner}`,
@@ -61,7 +72,7 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
             };
             if (owner === "a") {
               startedA();
-              return new Promise((resolve) => {
+              return new Promise<typeof asset>((resolve) => {
                 finishA = () => resolve(asset);
               });
             }
@@ -74,6 +85,7 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
       const uuid = crypto.randomUUID;
       let rowA, rowB;
       try {
+        // @ts-expect-error Deliberately use a non-UUID id to detect accidental identity regeneration.
         crypto.randomUUID = () => "same-file-id";
         [rowA] = await a.queueUploads(
           "same-state",
@@ -90,6 +102,8 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
       } finally {
         crypto.randomUUID = uuid;
       }
+      if (!rowA || !rowB)
+        throw new Error("Upload queue did not retain both owners");
       const pendingA = a.deliverUpload(rowA);
       await started;
       const assetB = await b.deliverUpload(rowB);
@@ -111,13 +125,15 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
     expect(result.cancelledB).toBe(false);
     expect(result.rowsA).toEqual([]);
     expect(result.rowsB).toHaveLength(1);
-    expect(result.assetB.path).toBe("/b/asset");
+    expect(
+      result.assetB && "path" in result.assetB ? result.assetB.path : undefined,
+    ).toBe("/b/asset");
     expect(
       result.sent.map((row) => [
         row.owner,
         row.body.id,
         row.body.base64,
-        row.options.sessionToken,
+        row.options?.sessionToken,
       ]),
     ).toEqual([
       ["a", "same-file-id", "QUFB", "a"],

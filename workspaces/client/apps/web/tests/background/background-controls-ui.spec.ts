@@ -1,3 +1,16 @@
+import { required } from "../teams/helpers.ts";
+import { fixtureSnapshot } from "../fixtures/snapshot.ts";
+import type { Agent, Monitor, BackgroundTask } from "../../src/types.ts";
+import type { PostBody, PostResult, GetResult } from "../../src/apiTypes.ts";
+type FixtureSync = Parameters<typeof handleEntitySyncFixtureRequest>[2];
+type RecordedBody = Partial<
+  PostBody<"/api/processes/action"> & PostBody<"/api/monitor/input">
+>;
+declare global {
+  interface Window {
+    backgroundControlsSchemaHandshakeEvents: string[];
+  }
+}
 import {
   handleEntitySyncFixtureRequest,
   readFixtureSyncContract,
@@ -22,11 +35,13 @@ test("Background controls", async ({ context }, testInfo) => {
   // Browser contract for process controls. The HTTP transport is a deterministic fixture.
   const skill = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-background-controls-"));
-  let syncFixture;
-  const streamListeners = new Set();
+  let syncFixture: FixtureSync | undefined;
+  const streamListeners = new Set<
+    Parameters<NonNullable<FixtureSync["onStreamReady"]>>[0]
+  >();
   const server = createServer(async (req, res) => {
     try {
-      const url = new URL(req.url, "http://localhost");
+      const url = new URL(req.url || "/", "http://localhost");
       if (req.method === "POST" && url.pathname === "/api/monitor/cancel") {
         for await (const _chunk of req) {
           // The fixture action has no body fields beyond its id.
@@ -41,7 +56,8 @@ test("Background controls", async ({ context }, testInfo) => {
       if (req.method === "POST" && url.pathname === "/api/sync/notify") {
         let body = "";
         for await (const chunk of req) body += chunk;
-        const notification = JSON.parse(body);
+        // This fixture reads the notification written by the renderer generated client.
+        const notification: PostBody<"/api/sync/notify"> = JSON.parse(body);
         for (const publish of streamListeners) publish([{ kind: "state" }]);
         res.setHeader("Content-Type", "application/json");
         res.end(
@@ -51,7 +67,7 @@ test("Background controls", async ({ context }, testInfo) => {
       }
       if (syncFixture && handleEntitySyncFixtureRequest(req, res, syncFixture))
         return;
-      const name = new URL(req.url, "http://localhost").pathname;
+      const name = new URL(req.url || "/", "http://localhost").pathname;
       const path = join(
         skill,
         "workspaces/client/apps/web/dist",
@@ -69,8 +85,8 @@ test("Background controls", async ({ context }, testInfo) => {
       res.end();
     }
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const agent = {
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const agent: Agent = {
     id: "lead",
     rootId: "lead",
     isLead: true,
@@ -86,7 +102,7 @@ test("Background controls", async ({ context }, testInfo) => {
     created: Date.now() / 1000 - 30,
     canSend: true,
   };
-  const native = {
+  const native: BackgroundTask = {
     id: "native-task",
     agent: "lead",
     kind: "command",
@@ -97,7 +113,9 @@ test("Background controls", async ({ context }, testInfo) => {
     created: Date.now() / 1000 - 20,
     tail: "Waiting for input",
   };
-  const responseTarget = {
+  const responseTarget: NonNullable<
+    GetResult<"/api/processes">["responseTarget"]
+  > = {
     agent: "lead",
     accountKey: "default",
     epoch: 4,
@@ -121,7 +139,7 @@ test("Background controls", async ({ context }, testInfo) => {
       stop: true,
     },
   };
-  const monitor = {
+  const monitor: Monitor & Pick<BackgroundTask, "kind"> = {
     id: "6f2ed4dd-f6ab-4d46-94a5-8a774333876a",
     agent: "lead",
     kind: "monitor",
@@ -135,11 +153,17 @@ test("Background controls", async ({ context }, testInfo) => {
     log: "/fixture/monitor.log",
   };
   const state = {
+    ...fixtureSnapshot([agent]),
     token: "fixture-token",
     stateDir: root,
     threads: [agent],
     chats: [],
     runtime: {
+      ...fixtureSnapshot([agent]).runtime,
+      nativeNotices: [],
+      sidebarOrder: { groups: null, revision: 0 },
+      rateLimits: null,
+      rateLimitsByAccount: {},
       agents: [agent],
       rooms: [],
       complaints: [],
@@ -153,10 +177,15 @@ test("Background controls", async ({ context }, testInfo) => {
   syncFixture = {
     snapshot: state,
     workspaceId,
-    onStreamReady: (publish) => streamListeners.add(publish),
+    onStreamReady: (publish) => {
+      streamListeners.add(publish);
+    },
   };
-  const writes = [];
-  const processReceipts = new Map();
+  const writes: { path: string; body: RecordedBody }[] = [];
+  const processReceipts = new Map<
+    string,
+    PostResult<"/api/processes/action">
+  >();
   let selectedStopDispatches = 0;
   let dropNextSelectedStopReply = false;
   let rejectNextResponseStop = false;
@@ -169,38 +198,30 @@ test("Background controls", async ({ context }, testInfo) => {
     page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 980 });
     await page.addInitScript(() => {
-      window.__schemaHandshakeEvents = [];
-      const add = EventSource.prototype.addEventListener;
-      EventSource.prototype.addEventListener = function (
-        type,
-        listener,
-        options,
-      ) {
-        if (type !== "api-schema")
-          return add.call(this, type, listener, options);
-        return add.call(
-          this,
-          type,
-          (event) => {
-            window.__schemaHandshakeEvents.push(event.data);
-            return listener.call(this, event);
-          },
-          options,
-        );
+      window.backgroundControlsSchemaHandshakeEvents = [];
+      window.EventSource = class extends EventSource {
+        constructor(url: string | URL, config?: EventSourceInit) {
+          super(url, config);
+          this.addEventListener("api-schema", (event) =>
+            window.backgroundControlsSchemaHandshakeEvents.push(
+              String(event.data),
+            ),
+          );
+        }
       };
     });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.route("**/api/**", async (route) => {
       const req = route.request(),
         path = new URL(req.url()).pathname;
-      let body = {};
+      let body: RecordedBody = {};
       if (req.method() === "POST") {
         body = req.postDataJSON();
         assert.equal(req.headers()["x-canvas-token"], "fixture-token", path);
         writes.push({ path, body });
       }
-      let value = {};
+      let value: unknown = {};
       if (path.startsWith("/api/sync/")) return route.continue();
       if (path === "/api/session") value = { token: "fixture-token" };
       else if (path === "/api/accounts")
@@ -286,7 +307,7 @@ test("Background controls", async ({ context }, testInfo) => {
             });
           }
           const requestId = new URL(req.url()).searchParams.get("requestId");
-          const result = processReceipts.get(requestId);
+          const result = processReceipts.get(required(requestId));
           return route.fulfill({
             json: { found: !!result, result: result || null },
           });
@@ -298,27 +319,28 @@ test("Background controls", async ({ context }, testInfo) => {
             json: { error: "Response changed. Refresh the process list" },
           });
         }
-        value = processReceipts.get(body.requestId);
+        value = processReceipts.get(required(body.requestId));
         if (!value) {
           if (body.action === "stop_selected") {
             selectedStopDispatches++;
             monitor.cancelRequested = true;
           }
-          value = {
-            requestId: body.requestId,
+          const result: PostResult<"/api/processes/action"> = {
+            requestId: required(body.requestId),
             status: "completed",
             processes:
               body.action === "stop_selected"
                 ? [
                     {
-                      key: body.process.key,
-                      agent: body.process.agent,
+                      key: required(body.process).key,
+                      agent: required(body.process).agent,
                       status: "requested",
                     },
                   ]
                 : [],
           };
-          processReceipts.set(body.requestId, value);
+          value = result;
+          processReceipts.set(required(body.requestId), result);
           if (body.action === "stop_selected" && dropNextSelectedStopReply) {
             dropNextSelectedStopReply = false;
             return route.abort();
@@ -373,7 +395,10 @@ test("Background controls", async ({ context }, testInfo) => {
       }
       await route.fulfill({ json: value });
     });
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("Missing fixture TCP address");
+    const origin = `http://127.0.0.1:${address.port}`;
     const entityState = await stubEntityState(
       page,
       state,
@@ -381,12 +406,14 @@ test("Background controls", async ({ context }, testInfo) => {
     );
     await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 15000 });
     await page.waitForFunction(
-      () => window.__schemaHandshakeEvents?.length > 0,
+      () => window.backgroundControlsSchemaHandshakeEvents?.length > 0,
       undefined,
       { timeout: 5000 },
     );
     const handshakes = await page.evaluate(() =>
-      window.__schemaHandshakeEvents.map((data) => JSON.parse(data)),
+      window.backgroundControlsSchemaHandshakeEvents.map((data) =>
+        JSON.parse(data),
+      ),
     );
     assert.equal(handshakes[0].hash, readApiSchemaHash());
     await page
@@ -405,16 +432,22 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Stop response", exact: true })
       .click();
-    assert.equal(writes.at(-1).path, "/api/processes/action");
-    assert.equal(writes.at(-1).body.action, "stop_response");
-    assert.deepEqual(writes.at(-1).body.responseTarget, responseTarget);
+    assert.equal(required(writes.at(-1)).path, "/api/processes/action");
+    assert.equal(required(writes.at(-1)).body.action, "stop_response");
+    assert.deepEqual(
+      required(writes.at(-1)).body.responseTarget,
+      responseTarget,
+    );
     await page
       .getByText("Response changed. Refresh the process list", { exact: true })
       .waitFor();
     await drawer
       .getByRole("button", { name: "Stop response", exact: true })
       .click();
-    assert.deepEqual(writes.at(-1).body.responseTarget, responseTarget);
+    assert.deepEqual(
+      required(writes.at(-1)).body.responseTarget,
+      responseTarget,
+    );
     assert.equal(
       monitor.status,
       "running",
@@ -443,16 +476,21 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Stop response", exact: true })
       .click();
-    assert.deepEqual(writes.at(-1).body.responseTarget, responseTarget);
+    assert.deepEqual(
+      required(writes.at(-1)).body.responseTarget,
+      responseTarget,
+    );
     assert.equal(state.runtime.monitors, unchangedMonitors);
     assert.equal(state.runtime.tasks, unchangedTasks);
     await drawer
       .getByRole("button", { name: "Stop owned processes", exact: true })
       .click();
-    assert.equal(writes.at(-1).body.action, "stop_owned");
-    assert.equal(writes.at(-1).body.includeDescendants, false);
+    assert.equal(required(writes.at(-1)).body.action, "stop_owned");
+    assert.equal(required(writes.at(-1)).body.includeDescendants, false);
     assert.deepEqual(
-      writes.at(-1).body.processes.map((process) => process.key),
+      required(required(writes.at(-1)).body.processes).map(
+        (process) => process.key,
+      ),
       ["monitor-key", "claude-task-key", "native-key"],
     );
     await drawer
@@ -492,7 +530,9 @@ test("Background controls", async ({ context }, testInfo) => {
       .click();
     await page.waitForFunction(
       () =>
-        document.querySelector('[aria-label="Terminal input"]').value === "",
+        document.querySelector<HTMLTextAreaElement>(
+          '[aria-label="Terminal input"]',
+        )?.value === "",
     );
     assert.deepEqual(writes.at(-1), {
       path: "/api/monitor/input",
@@ -508,12 +548,12 @@ test("Background controls", async ({ context }, testInfo) => {
       .waitFor();
     assert.equal(await input.inputValue(), "keep this input");
     await drawer.getByRole("button", { name: "Ctrl+C", exact: true }).click();
-    assert.equal(writes.at(-1).body.text, "\u0003");
+    assert.equal(required(writes.at(-1)).body.text, "\u0003");
     await drawer.locator(".process-resize summary").click();
     await drawer.getByLabel("Rows", { exact: true }).fill("30");
     await drawer.getByLabel("Columns", { exact: true }).fill("100");
     await drawer.getByRole("button", { name: "Resize", exact: true }).click();
-    assert.deepEqual(writes.at(-1).body, {
+    assert.deepEqual(required(writes.at(-1)).body, {
       id: created.id,
       rows: 30,
       cols: 100,
@@ -545,21 +585,21 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Input closed", exact: true })
       .waitFor();
-    assert.equal(writes.at(-1).body.closeStdin, true);
+    assert.equal(required(writes.at(-1)).body.closeStdin, true);
     assert.equal(await input.isDisabled(), true);
     dropNextSelectedStopReply = true;
     await drawer
       .getByRole("button", { name: "Stop selected process", exact: true })
       .click();
-    assert.equal(writes.at(-1).path, "/api/processes/action");
-    assert.equal(writes.at(-1).body.action, "stop_selected");
-    assert.equal(writes.at(-1).body.process.key, "monitor-key");
+    assert.equal(required(writes.at(-1)).path, "/api/processes/action");
+    assert.equal(required(writes.at(-1)).body.action, "stop_selected");
+    assert.equal(required(writes.at(-1)).body.process?.key, "monitor-key");
     assert.equal(
       monitor.status,
       "running",
       "The stop request does not claim that the process exited",
     );
-    const lostReply = writes.at(-1).body;
+    const lostReply = required(writes.at(-1)).body;
     await page
       .getByText(
         "The stop reply is unknown. Check its receipt before another stop.",
@@ -608,9 +648,9 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Stop selected process", exact: true })
       .click();
-    assert.equal(writes.at(-1).path, "/api/processes/action");
-    assert.equal(writes.at(-1).body.action, "stop_selected");
-    assert.equal(writes.at(-1).body.process.key, "native-key");
+    assert.equal(required(writes.at(-1)).path, "/api/processes/action");
+    assert.equal(required(writes.at(-1)).body.action, "stop_selected");
+    assert.equal(required(writes.at(-1)).body.process?.key, "native-key");
     await page.screenshot({
       path: testInfo.outputPath("native-command-controls.png"),
     });
@@ -636,8 +676,8 @@ test("Background controls", async ({ context }, testInfo) => {
     agent.startAttempt = {
       prepareError: "Thread preparation acknowledgement pending",
     };
-    agent.error = agent.startAttempt.prepareError;
-    const failedWorker = {
+    agent.error = "Thread preparation acknowledgement pending";
+    const failedWorker: Agent = {
       ...agent,
       id: "pending-review",
       parentId: agent.id,
@@ -671,6 +711,6 @@ test("Background controls", async ({ context }, testInfo) => {
   } finally {
     server.closeAllConnections();
     await page?.close();
-    await new Promise((r) => server.close(r));
+    await new Promise<void>((r) => server.close(() => r()));
   }
 });

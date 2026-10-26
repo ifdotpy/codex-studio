@@ -1,5 +1,7 @@
+import { required } from "../teams/helpers.ts";
+import { createServer } from "vite";
+import type {} from "./file-viewers-browser.fixture.tsx";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +10,8 @@ import { test, expect } from "../playwright.ts";
 
 test("file-viewers-browser", async ({ browser, page }) => {
   test.setTimeout(120_000);
-  const root = join(import.meta.dirname, "../../"),
-    require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const root = join(import.meta.dirname, "../../");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-file-viewers-"));
-  const entry = join(root, "file-viewers-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -37,24 +36,17 @@ test("file-viewers-browser", async ({ browser, page }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/file-viewers-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/files/file-viewers-browser.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/file-viewers-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import FilePreview from '/src/components/FilePreview.tsx';import StreamingText from '/src/components/conversation/transcript/StreamingText.tsx';import {parseDelimited,safeSvg} from '/src/components/filePreviewFormats.ts';window.parseDelimited=parseDelimited;window.safeSvg=safeSvg;window.actions=[];window.codexDesktop={fileAction:async value=>{window.actions.push(value);return true},saveFile:async value=>{window.saved={name:value.name,bytes:Array.from(new Uint8Array(value.data))};return true}};function App(){const [target,setTarget]=useState(null);window.show=(path,line)=>setTarget({agent:'agent-a',path,line});return <MantineProvider><StreamingText agentId="agent-a" text="[Open document](/docs/readme.md)"/><FilePreview target={target} onClose={()=>setTarget(null)}/></MantineProvider>}createRoot(document.getElementById('root')).render(<App/>);`;
         },
       },
     ],
   });
   try {
     await server.listen();
-    const errors = [],
-      requests = [];
+    const errors: string[] = [],
+      requests: (string | null)[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const fixtures = {
       "/docs/readme.md": [
@@ -64,7 +56,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
       "/docs/chapter.md": ["text/markdown", "first\nsecond\nthird"],
       "/docs/image.svg": [
         "image/svg+xml",
-        `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" onload="window.svgExecuted=true">
+        `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" onload="window.fileViewersBrowserSvgExecuted=true">
   <style>@import url('https://blocked.invalid/import.css'); @font-face {font-family:external;src:url('https://blocked.invalid/font.woff2')} .red {fill:rgb(255,0,0)} .gradient {fill:url('#gradient')} .external {fill:url('https://blocked.invalid/external.svg#paint')}</style>
   <defs><linearGradient id="gradient"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs>
   <rect width="960" height="640" fill="white"/>
@@ -74,7 +66,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
   <rect x="400" width="200" height="100" class="gradient"/>
   <rect x="600" width="200" height="100" style="fill:url(&quot;#gradient&quot;)"/>
   <rect class="external" x="800" width="100" height="100"/><text y="200" style="font-family:external">External font must not load</text>
-  <script>window.svgExecuted=true</script><image href="https://blocked.invalid/x"/><foreignObject><p>Bad</p></foreignObject></svg>`,
+  <script>window.fileViewersBrowserSvgExecuted=true</script><image href="https://blocked.invalid/x"/><foreignObject><p>Bad</p></foreignObject></svg>`,
       ],
       "/docs/table.csv": ["text/csv", "nested,table\n1,2"],
       "/data.csv": [
@@ -99,7 +91,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
         "binary",
       ],
     };
-    let delayed;
+    let delayed: import("@playwright/test").Route | undefined;
     await page.route("**/api/file?*", async (route) => {
       const url = new URL(route.request().url()),
         path = url.searchParams.get("path");
@@ -115,7 +107,7 @@ test("file-viewers-browser", async ({ browser, page }) => {
         });
         return;
       }
-      const value = fixtures[path];
+      const value = Object.entries(fixtures).find(([key]) => key === path)?.[1];
       if (!value) {
         await route.fulfill({
           status: 404,
@@ -125,23 +117,21 @@ test("file-viewers-browser", async ({ browser, page }) => {
       }
       await route.fulfill({
         json: {
-          name: path.split("/").at(-1),
+          name: required(path).split("/").at(-1),
           mime: value[0],
-          base64: Buffer.from(value[1]).toString("base64"),
+          base64: Buffer.from(required(value[1])).toString("base64"),
         },
       });
     });
-    const externalRequests = [];
+    const externalRequests: string[] = [];
     await page.route("https://blocked.invalid/**", async (route) => {
       externalRequests.push(route.request().url());
       await route.abort();
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.waitForFunction(() => window.show);
-    const show = async (path) => {
-      await page.evaluate((path) => window.show(path), path);
+    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.waitForFunction(() => window.fileViewersBrowserShow);
+    const show = async (path: string) => {
+      await page.evaluate((path) => window.fileViewersBrowserShow(path), path);
       await page.waitForFunction(
         (name) =>
           document.querySelector(".mantine-Modal-title")?.textContent === name,
@@ -260,9 +250,9 @@ test("file-viewers-browser", async ({ browser, page }) => {
 
     await page.getByRole("button", { name: "Source", exact: true }).click();
     assert(
-      (await page.locator(".file-preview-source").textContent()).includes(
-        "# Title",
-      ),
+      (
+        (await page.locator(".file-preview-source").textContent()) || ""
+      ).includes("# Title"),
     );
     await page.getByRole("button", { name: "Preview", exact: true }).click();
     await page.getByRole("link", { name: "next", exact: true }).click();
@@ -285,16 +275,16 @@ test("file-viewers-browser", async ({ browser, page }) => {
       .getByRole("button", { name: "Save a copy", exact: true })
       .click();
     assert.deepEqual(
-      await page.evaluate(() => window.saved.bytes),
-      Array.from(Buffer.from(fixtures["/data.csv"][1])),
+      await page.evaluate(() => window.fileViewersBrowserSaved.bytes),
+      Array.from(Buffer.from(required(fixtures["/data.csv"][1]))),
     );
     await show("/data.tsv");
     assert.equal(await page.locator("td").nth(2).textContent(), "c\td");
     await show("/data.json");
     assert(
-      (await page.locator(".file-preview-source").textContent()).includes(
-        '\n  "object": {',
-      ),
+      (
+        (await page.locator(".file-preview-source").textContent()) || ""
+      ).includes('\n  "object": {'),
     );
     await page.getByRole("button", { name: "Source", exact: true }).click();
     assert.equal(
@@ -307,18 +297,24 @@ test("file-viewers-browser", async ({ browser, page }) => {
       .waitFor();
     await show("/docs/image.svg");
     await page.waitForFunction(
-      () => document.querySelector(".image-viewer img")?.naturalWidth === 960,
+      () =>
+        document.querySelector<HTMLImageElement>(".image-viewer img")
+          ?.naturalWidth === 960,
     );
     const pixels = await page.evaluate(async () => {
       // Use the displayed image bytes at their intrinsic size. WebKit couples SVG
       // rasterization to an img element's fitted CSS dimensions.
       const image = new Image();
-      image.src = document.querySelector(".image-viewer img").src;
+      const displayed =
+        document.querySelector<HTMLImageElement>(".image-viewer img");
+      if (!displayed) throw new Error("Missing preview image");
+      image.src = displayed.src;
       await image.decode();
       const canvas = document.createElement("canvas");
       canvas.width = image.naturalWidth;
       canvas.height = image.naturalHeight;
       const context = canvas.getContext("2d");
+      if (!context) throw new Error("Missing canvas context");
       context.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight);
       return [50, 150, 220, 380, 420, 580, 620, 780].map((x) =>
         Array.from(context.getImageData(x, 50, 1, 1).data),
@@ -328,11 +324,13 @@ test("file-viewers-browser", async ({ browser, page }) => {
     assert.deepEqual(pixels[1], [0, 128, 0, 255], "SVG inline style survives");
     for (let i = 2; i < pixels.length; i += 2) {
       assert(
-        pixels[i][0] > 200 && pixels[i][2] < 55,
+        required(required(pixels[i])[0]) > 200 &&
+          required(required(pixels[i])[2]) < 55,
         "Quoted local gradient starts red",
       );
       assert(
-        pixels[i + 1][2] > 200 && pixels[i + 1][0] < 55,
+        required(required(pixels[i + 1])[2]) > 200 &&
+          required(required(pixels[i + 1])[0]) < 55,
         "Quoted local gradient ends blue",
       );
     }
@@ -359,7 +357,10 @@ test("file-viewers-browser", async ({ browser, page }) => {
       await page.getByLabel("Image zoom", { exact: true }).textContent(),
       "100%",
     );
-    assert.equal(await page.evaluate(() => window.svgExecuted), undefined);
+    assert.equal(
+      await page.evaluate(() => window.fileViewersBrowserSvgExecuted),
+      undefined,
+    );
     await show("/sound.wav");
     assert.equal(await page.locator("audio[controls]").count(), 1);
     await page
@@ -379,33 +380,38 @@ test("file-viewers-browser", async ({ browser, page }) => {
     await show("/page.html");
     assert.equal(await page.locator("iframe").getAttribute("sandbox"), "");
     assert(
-      !(await page.locator("iframe").getAttribute("srcdoc")).includes(
+      !((await page.locator("iframe").getAttribute("srcdoc")) || "").includes(
         "<script>",
       ),
     );
     await show("/document.pdf");
     assert(
-      (await page.locator("iframe").getAttribute("src")).startsWith("blob:"),
+      ((await page.locator("iframe").getAttribute("src")) || "").startsWith(
+        "blob:",
+      ),
     );
     await show("/other.docx");
     await page
       .getByText("No preview for this file type.", { exact: true })
       .waitFor();
-    await page.evaluate(() => window.show("/large.docx"));
+    await page.evaluate(() => window.fileViewersBrowserShow("/large.docx"));
     await page
       .getByText("File exceeds preview limit", { exact: true })
       .waitFor();
     await page.getByRole("button", { name: "Preview", exact: true }).click();
-    assert.deepEqual((await page.evaluate(() => window.actions)).at(-1), {
-      action: "preview",
-      target: { agent: "agent-a", path: "/large.docx" },
-    });
-    await page.evaluate(() => window.show("/late.md"));
+    assert.deepEqual(
+      (await page.evaluate(() => window.fileViewersBrowserActions)).at(-1),
+      {
+        action: "preview",
+        target: { agent: "agent-a", path: "/large.docx" },
+      },
+    );
+    await page.evaluate(() => window.fileViewersBrowserShow("/late.md"));
     await page.waitForFunction(() =>
       document.querySelector('[aria-label="Load file"]'),
     );
     await show("/data.json");
-    await delayed.fulfill({
+    await required(delayed).fulfill({
       json: {
         name: "late.md",
         mime: "text/markdown",
@@ -418,10 +424,10 @@ test("file-viewers-browser", async ({ browser, page }) => {
       0,
     );
     const parser = await page.evaluate(() => ({
-      limit: window.parseDelimited("a\n".repeat(250), ","),
-      broken: window.parseDelimited('"missing', ","),
-      columns: window.parseDelimited("a,b,c", ",", 200, 2),
-      svg: window.safeSvg(
+      limit: window.fileViewersBrowserParseDelimited("a\n".repeat(250), ","),
+      broken: window.fileViewersBrowserParseDelimited('"missing', ","),
+      columns: window.fileViewersBrowserParseDelimited("a,b,c", ",", 200, 2),
+      svg: window.fileViewersBrowserSafeSvg(
         '<svg xmlns="http://www.w3.org/2000/svg"><style>*{fill:url(https://bad/x)}</style><rect onclick="evil()" fill="url(https://bad/x)"/></svg>',
       ),
     }));

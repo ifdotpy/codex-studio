@@ -1,15 +1,21 @@
+import type { components } from "../../src/generated/api.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
 import { mkdir } from "node:fs/promises";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
 for (const width of [1440, 390, 320]) {
-  for (const colorScheme of ["light", "dark"]) {
+  for (const colorScheme of ["light", "dark"] as const) {
     test(`App errors in sidebar warnings ${width} ${colorScheme}`, async ({
       page,
     }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.emulateMedia({ colorScheme });
-      let items = ["one", "two", "three"].map((id) => ({
+      let items: components["schemas"]["StudioError"][] = [
+        "one",
+        "two",
+        "three",
+      ].map((id) => ({
         id: `monitor:${id}`,
         kind: "monitor_outcome_lost",
         reason: "Studio lost the command result.",
@@ -22,7 +28,7 @@ for (const width of [1440, 390, 320]) {
         subject: "cargo test",
         at: 1792700000,
       }));
-      const dismissed = [];
+      const dismissed: string[][] = [];
       const server = await fixture("Local", false, {
         handle({ url, body, json }) {
           if (url.pathname === "/api/studio-errors") {
@@ -30,9 +36,12 @@ for (const width of [1440, 390, 320]) {
             return true;
           }
           if (url.pathname === "/api/studio-errors/dismiss") {
-            dismissed.push(body.ids);
-            items = items.filter((item) => !body.ids.includes(item.id));
-            json({ items, dismissedIds: body.ids, unknownIds: [] });
+            // The renderer writes this request through its generated route contract.
+            const payload = body as PostBody<"/api/studio-errors/dismiss">;
+            const ids = payload.ids || [];
+            dismissed.push(ids);
+            items = items.filter((item) => !ids.includes(item.id));
+            json({ items, dismissedIds: payload.ids, unknownIds: [] });
             return true;
           }
         },
@@ -45,6 +54,8 @@ for (const width of [1440, 390, 320]) {
           provider: "codex",
           message: "A newer Codex version is available.",
           level: "info",
+          baseline: "fixture",
+          version: "fixture",
           at: 1,
         },
       ];
