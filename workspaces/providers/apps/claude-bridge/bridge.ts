@@ -2160,6 +2160,8 @@ async function startSession(
               active.usage.turnFor(parentToolUseId, turn.id),
             );
       if (parentToolUseId) {
+        const subagentMessageId =
+          m.type === "assistant" ? m.message.id : undefined;
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
             const text =
@@ -2170,7 +2172,12 @@ async function startSession(
                   : null;
             if (text)
               finishItem(s, turn, {
-                id: (m.uuid || m.message.id) + ":" + block.type + ":" + index,
+                id:
+                  (m.uuid || subagentMessageId) +
+                  ":" +
+                  block.type +
+                  ":" +
+                  index,
                 type: "agentMessage",
                 phase: "commentary",
                 nativeSubagent: true,
