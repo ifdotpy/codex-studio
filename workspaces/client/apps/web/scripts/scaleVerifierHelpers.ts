@@ -21,11 +21,28 @@ export type RetainedInput = Required<{
     Schema["EventEntityDto"][K]
   >;
 }>;
-type StateDocument = Schema["SyncDocument"];
+type StateDocument = Schema["SyncPullResponse"]["documents"][number];
 export type EntityPage = Pick<
   Schema["SyncPullResponse"],
-  "workspaceId" | "checkpoint" | "reset"
-> & { documents: StateDocument[] };
+  "workspaceId" | "checkpoint" | "reset" | "documents"
+>;
+// The verifier still decodes the legacy JSON payload envelope. Current entity
+// documents deliberately remain unhandled here; their generated union stays visible.
+// The legacy payload is a Rust-owned SyncEntityPayload; callers own parse failures.
+export function decodeLegacyAgentDocument(
+  document: StateDocument | undefined,
+): Extract<Schema["SyncEntityPayload"], { collection: "agent" }> | null {
+  if (
+    !document ||
+    !("payload" in document) ||
+    document._deleted ||
+    typeof document.payload !== "string"
+  )
+    return null;
+  const entity: Schema["SyncEntityPayload"] = JSON.parse(document.payload);
+  return entity.collection === "agent" ? entity : null;
+}
+
 export type StateFrame = Pick<
   Schema["ResourceChangeEvent"],
   "resources" | "resourceVersions" | "workspaceId" | "reason"
