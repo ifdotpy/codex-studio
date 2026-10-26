@@ -875,6 +875,7 @@ it.each(["overflow", "inline removal", "staged removal"])(
     const source = mocks.sources[0];
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     let finish!: () => void;
+    vi.mocked(api.post).mockResolvedValue(undefined as never);
     source.emit("session", { sessionId: "quiet-work-discard-session" });
     const gate = new Promise<void>((resolve) => {
       finish = resolve;
@@ -979,7 +980,30 @@ it.each(["overflow", "inline removal", "staged removal"])(
               },
             ],
           });
-      } else stopOthers[0]();
+      } else {
+        stopOthers[0]();
+        // Removing another subscription keeps the stream. The still-active
+        // resource is subscribed again on it, from no cursor.
+        finish();
+        await held.mock.results[0].value;
+        for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(500);
+        expect(source.closed).toBe(false);
+        expect(mocks.sources).toHaveLength(1);
+        const readd = vi
+          .mocked(api.post)
+          .mock.calls.find(
+            ([path, body]) =>
+              path === "/api/sync/subscriptions" &&
+              (body as { add: { resource: unknown }[] }).add.some(
+                (entry) =>
+                  JSON.stringify(entry.resource) === JSON.stringify(ref),
+              ),
+          );
+        expect(readd?.[1]).toMatchObject({
+          add: [{ resource: ref, since: undefined }],
+        });
+        return;
+      }
       expect(source.closed).toBe(true);
       finish();
       // A replacement stream must not race the canceled write still owning RxDB.

@@ -885,6 +885,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
   }
 
+  // Set while a subscription removal discards unapplied frames.
+  let discardingForRemoval = false;
   function recoverResourceApplication(
     refs: ResourceRef[],
     error: unknown,
@@ -899,6 +901,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           (ref.kind === "room" && !ref.legacy)),
     );
     if (!resources.length || !coordinatorActive) return false;
+    if (discardingForRemoval && source && sessionId && (owner || independent)) {
+      // The UI removed another subscription. Subscribe the still-active
+      // resources again on this stream instead of reopening it: a reopen
+      // during startup meets the next removal and repeats.
+      for (const ref of resources) acceptedResources.delete(resourceKey(ref));
+      return true;
+    }
     if (owner || independent) frameFailed(error);
     else {
       setStatus("degraded");
@@ -1398,8 +1407,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (removed) {
       blockedSelectors = [...blockedResources.values()];
-      entityDelivery.invalidate(true);
-      cancelEntityTransfers(true);
+      discardingForRemoval = true;
+      try {
+        entityDelivery.invalidate(true);
+        cancelEntityTransfers(true);
+      } finally {
+        discardingForRemoval = false;
+      }
       if (!source && reconnectTimer !== undefined) return;
     }
     const generation = ++streamUpdateGeneration;
