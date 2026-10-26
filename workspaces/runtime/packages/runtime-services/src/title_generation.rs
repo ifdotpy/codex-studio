@@ -1118,7 +1118,7 @@ fn migrate_title_fingerprint_2026_10_26(
     snapshot: &Snapshot,
     fingerprint: &str,
 ) -> Result<(), TitleError> {
-    use studio_runtime_store::provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
+    use studio_runtime_store::migrations::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 
     let agent_id = snapshot.agent["id"]
         .as_str()

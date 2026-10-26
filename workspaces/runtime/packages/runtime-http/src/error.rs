@@ -143,6 +143,7 @@ impl ApiError {
         let cause = store_error_kind(&error);
         let causes = store_causes(&error);
         let mut result = match error {
+            StoreError::Migration { source, .. } => Self::stored(*source),
             StoreError::InvalidSyncObject { scope, id } => Self::invalid_stored(&scope, &id),
             StoreError::InvalidStoredObject { table, id }
             | StoreError::InvalidStoredRecord { object: table, id } => {

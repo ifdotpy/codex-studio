@@ -179,6 +179,7 @@ impl From<StoreError> for NotificationDispatchError {
             error @ StoreError::StateDirectory(_)
             | error @ StoreError::AlreadyOwned
             | error @ StoreError::MissingDatabase(_)
+            | error @ StoreError::Migration { .. }
             | error @ StoreError::UnsafeStateDirectory
             | error @ StoreError::SchemaMismatch(_)
             | error @ StoreError::InvalidSyncObjectField { .. }

@@ -114,6 +114,7 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
             StoreError::StateDirectory(_)
             | StoreError::AlreadyOwned
             | StoreError::MissingDatabase(_)
+            | StoreError::Migration { .. }
             | StoreError::UnsafeStateDirectory
             | StoreError::SchemaMismatch(_)
             | StoreError::SchemaObjectMismatch { .. }

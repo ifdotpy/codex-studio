@@ -1,7 +1,6 @@
 //! Dated provider identity migration; ordinary readers accept only explicit providers.
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -11,7 +10,7 @@ use studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE;
 
 use crate::{StoreError, StoreResult};
 
-type Accounts = BTreeMap<String, ProviderKind>;
+pub(super) type Accounts = BTreeMap<String, ProviderKind>;
 type Patches = Vec<(String, ProviderKind)>;
 
 /// Existing analytics metadata key proving provider identity migration completed; format tag.
@@ -74,38 +73,10 @@ pub fn migrate_registry_2026_10_26(value: &mut Value) -> StoreResult<bool> {
     Ok(legacy)
 }
 
-fn registry_accounts(root: &Path) -> StoreResult<Accounts> {
-    let path = root.join("accounts/registry.json");
-    let canonical = match crate::path_identity::CanonicalPath::existing(&path) {
-        Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Accounts::new()),
-        Err(error) => return Err(error.into()),
-    };
-    if !canonical.starts_with(root) {
-        return Err(invalid("registry is outside state directory"));
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(canonical)?
-        .take((crate::account_state::MAX_PERSISTED_DOCUMENT_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > crate::account_state::MAX_PERSISTED_DOCUMENT_BYTES
-        || !crate::account_state::persisted_document_within_bounds(&bytes)
-    {
-        return Err(invalid("registry exceeds resource bounds"));
-    }
-    let mut value: Value = serde_json::from_slice(&bytes)?;
-    migrate_registry_2026_10_26(&mut value)?;
-    value["accounts"]
-        .as_object()
-        .ok_or_else(|| invalid("registry accounts"))?
-        .iter()
-        .map(|(key, account)| {
-            Ok((
-                key.clone(),
-                ProviderKind::of_record(account).map_err(|_| invalid("account provider"))?,
-            ))
-        })
-        .collect()
+#[derive(Clone, Copy)]
+enum ProviderFormat {
+    Historical,
+    Current,
 }
 
 fn provider_patch(
@@ -114,11 +85,16 @@ fn provider_patch(
     field: &str,
     fallback: ProviderKind,
     patches: &mut Patches,
+    format: ProviderFormat,
 ) -> StoreResult<()> {
     let object = value
         .as_object()
         .ok_or_else(|| invalid(&format!("{path} must be an object")))?;
-    let provider = historical_provider(object.get(field), fallback)?;
+    let provider = match format {
+        ProviderFormat::Historical => historical_provider(object.get(field), fallback)?,
+        ProviderFormat::Current => ProviderKind::of_field(object.get(field))
+            .map_err(|_| invalid("current identity requires an explicit known provider"))?,
+    };
     if object.get(field).is_none_or(Value::is_null) {
         patches.push((format!("{path}.{field}"), provider));
     }
@@ -130,8 +106,16 @@ fn agent_patches(
     path: &str,
     accounts: &Accounts,
     patches: &mut Patches,
+    format: ProviderFormat,
 ) -> StoreResult<()> {
-    provider_patch(value, path, "provider", ProviderKind::Codex, patches)?;
+    provider_patch(
+        value,
+        path,
+        "provider",
+        ProviderKind::Codex,
+        patches,
+        format,
+    )?;
     if let Some(history) = value.get("accountHistory").filter(|v| !v.is_null()) {
         let history = history
             .as_array()
@@ -149,6 +133,7 @@ fn agent_patches(
                 "provider",
                 owner,
                 patches,
+                format,
             )?;
         }
     }
@@ -161,15 +146,23 @@ fn agent_patches(
             "provider",
             ProviderKind::Codex,
             patches,
+            format,
         )?;
     }
     Ok(())
 }
 
-fn patches(table: &str, value: &Value, accounts: &Accounts) -> StoreResult<Patches> {
+fn patches(
+    table: &str,
+    value: &Value,
+    accounts: &Accounts,
+    format: ProviderFormat,
+) -> StoreResult<Patches> {
     let mut patches = Vec::new();
     match table {
-        "runtime_agents" | "analytics_agents" => agent_patches(value, "$", accounts, &mut patches)?,
+        "runtime_agents" | "analytics_agents" => {
+            agent_patches(value, "$", accounts, &mut patches, format)?
+        }
         "runtime_account_transfers" => {
             let target = value
                 .get("targetAccountKey")
@@ -177,14 +170,21 @@ fn patches(table: &str, value: &Value, accounts: &Accounts) -> StoreResult<Patch
                 .and_then(|key| accounts.get(key))
                 .copied()
                 .unwrap_or(ProviderKind::Codex);
-            provider_patch(value, "$", "targetProvider", target, &mut patches)?;
+            provider_patch(value, "$", "targetProvider", target, &mut patches, format)?;
             let members = value
                 .get("members")
                 .and_then(Value::as_object)
                 .ok_or_else(|| invalid("transfer members"))?;
             for (id, member) in members {
                 let path = format!("$.members.{}", serde_json::to_string(id)?);
-                provider_patch(member, &path, "provider", ProviderKind::Codex, &mut patches)?;
+                provider_patch(
+                    member,
+                    &path,
+                    "provider",
+                    ProviderKind::Codex,
+                    &mut patches,
+                    format,
+                )?;
                 if let Some(settings) = member.get("settings").filter(|v| !v.is_null()) {
                     provider_patch(
                         settings,
@@ -192,6 +192,7 @@ fn patches(table: &str, value: &Value, accounts: &Accounts) -> StoreResult<Patch
                         "provider",
                         ProviderKind::Codex,
                         &mut patches,
+                        format,
                     )?;
                 }
             }
@@ -208,7 +209,7 @@ fn patches(table: &str, value: &Value, accounts: &Accounts) -> StoreResult<Patch
                     } else {
                         format!("$.{kind}.agent")
                     };
-                    agent_patches(agent, &path, accounts, &mut patches)?;
+                    agent_patches(agent, &path, accounts, &mut patches, format)?;
                 }
             }
         }
@@ -233,7 +234,7 @@ fn table_updates(
     for row in rows {
         let (id, mut raw) = row?;
         let value: Value = serde_json::from_str(&raw)?;
-        let changes = patches(table, &value, accounts)
+        let changes = patches(table, &value, accounts, ProviderFormat::Historical)
             .map_err(|error| invalid(&format!("{table} rowid {id}: {error}")))?;
         if changes.is_empty() {
             continue;
@@ -249,6 +250,32 @@ fn table_updates(
         updates.push((id, raw));
     }
     Ok(updates)
+}
+
+/// Stream only the affected identity families. Current data never enters the
+/// historical defaulting branch and malformed identity stops startup unchanged.
+fn validate_current_table(
+    db: &Connection,
+    table: &'static str,
+    accounts: &Accounts,
+) -> StoreResult<()> {
+    if !crate::schema::table_exists(db, table)? {
+        return Ok(());
+    }
+    let mut statement = db.prepare(&format!("SELECT rowid,record FROM {table} ORDER BY rowid"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let raw: String = row.get(1)?;
+        let value = serde_json::from_str(&raw)?;
+        patches(table, &value, accounts, ProviderFormat::Current).map_err(|_| {
+            StoreError::InvalidStoredRecord {
+                object: table,
+                id: id.to_string(),
+            }
+        })?;
+    }
+    Ok(())
 }
 
 fn legacy_orphan_usage_updates(db: &Connection) -> StoreResult<Vec<(i64, String)>> {
@@ -301,30 +328,58 @@ const CANVAS_TABLES: [&str; 3] = [
 ];
 
 /// Validate all sources before startup performs migration or recovery writes.
-pub(crate) fn validate_2026_10_26(root: &Path) -> StoreResult<Accounts> {
-    let accounts = registry_accounts(root)?;
-    for (database, tables) in [
-        ("canvas.sqlite3", CANVAS_TABLES.as_slice()),
-        ("analytics.sqlite3", &["analytics_agents"][..]),
+pub(crate) fn validate_2026_10_26(root: &Path, accounts: &Accounts) -> StoreResult<()> {
+    use studio_runtime_schema::studio_errors::{
+        MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
+    };
+    for (database, tables, target) in [
+        (
+            "canvas.sqlite3",
+            CANVAS_TABLES.as_slice(),
+            MigrationTarget::Canvas,
+        ),
+        (
+            "analytics.sqlite3",
+            &["analytics_agents"][..],
+            MigrationTarget::Analytics,
+        ),
     ] {
-        let db =
-            Connection::open_with_flags(root.join(database), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let legacy = if database == "canvas.sqlite3" {
-            !crate::agent_columns::has_explicit_provider_column(&db)?
-        } else {
-            analytics_needs_migration(&db)?
-        };
-        if !legacy {
-            continue;
-        }
-        for table in tables {
-            table_updates(&db, table, &accounts)?;
-        }
-        if database == "analytics.sqlite3" {
-            legacy_orphan_usage_updates(&db)?;
-        }
+        let definition = super::catalog()
+            .find(|entry| entry.target == target)
+            .ok_or(StoreError::RecordContract(
+                "provider target missing from migration catalog",
+            ))?;
+        let result = (|| -> StoreResult<()> {
+            let db =
+                Connection::open_with_flags(root.join(database), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let legacy = if target == MigrationTarget::Canvas {
+                !crate::agent_columns::has_explicit_provider_column(&db)?
+            } else {
+                analytics_needs_migration(&db)?
+            };
+            for table in tables {
+                if legacy {
+                    table_updates(&db, table, accounts)?;
+                } else {
+                    validate_current_table(&db, table, accounts)?;
+                }
+            }
+            if legacy && target == MigrationTarget::Analytics {
+                legacy_orphan_usage_updates(&db)?;
+            }
+            Ok(())
+        })();
+        result.map_err(|source| {
+            super::failure(
+                definition.id,
+                target,
+                MigrationPhase::Validate,
+                MigrationRollbackOutcome::NotRequired,
+                source,
+            )
+        })?;
     }
-    Ok(accounts)
+    Ok(())
 }
 
 /// 2026-10-26 upgrade in the existing Canvas startup transaction, before strict columns.
@@ -361,7 +416,7 @@ pub fn migrate_canvas_2026_10_26(tx: &Transaction<'_>, accounts: &Accounts) -> S
         )?;
     }
     let mut preserved = Vec::new();
-    for table in crate::agent_volatile::MIGRATION_PRESERVED_TABLES {
+    for table in super::m2026_10_20_agents::MIGRATION_PRESERVED_TABLES {
         if crate::schema::table_exists(tx, table)? {
             tx.execute_batch(&format!(
                 "CREATE TEMP TABLE migration_2026_10_26_{table} AS SELECT * FROM main.{table};"
@@ -729,13 +784,29 @@ mod tests {
             Ok::<_,StoreError>(())
         }).await.is_err(), "explicit provider column rejects new missing identity");
         drop(store);
-        let store = RuntimeStore::open(Some(root.path()))
+        let analytics =
+            crate::Connection::open(root.path().join("analytics.sqlite3")).expect("analytics");
+        let canvas = crate::Connection::open(root.path().join("canvas.sqlite3")).expect("canvas");
+        let analytics_before: i64 = analytics
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .expect("revision");
+        let canvas_before: i64 = canvas
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .expect("revision");
+        let error = RuntimeStore::open(Some(root.path()))
             .await
-            .expect("no historic rescan");
-        let raw: String = store
-            .analytics
-            .lock()
-            .expect("analytics")
+            .err()
+            .expect("current identity refused");
+        assert!(matches!(
+            error,
+            StoreError::Migration {
+                id: "2026-10-26-analytics-provider",
+                target: studio_runtime_schema::studio_errors::MigrationTarget::Analytics,
+                phase: studio_runtime_schema::studio_errors::MigrationPhase::Validate,
+                ..
+            }
+        ));
+        let raw: String = analytics
             .query_row(
                 "SELECT record FROM analytics_agents WHERE id='new-invalid'",
                 [],
@@ -743,11 +814,23 @@ mod tests {
             )
             .expect("record");
         assert_eq!(raw, "{\"id\":\"new-invalid\",\"provider\":null}");
-        assert!(
-            studio_runtime_schema::ProviderKind::of_record(
-                &serde_json::from_str(&raw).expect("record JSON")
-            )
-            .is_err()
+        assert_eq!(
+            analytics
+                .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
+                .expect("revision"),
+            analytics_before
+        );
+        assert_eq!(
+            canvas
+                .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
+                .expect("revision"),
+            canvas_before
+        );
+        analytics.execute("UPDATE analytics_agents SET record='{\"id\":\"new-invalid\",\"provider\":\"codex\"}' WHERE id='new-invalid'",[]).expect("valid fixture identity");
+        drop(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("valid current reopen"),
         );
     }
 

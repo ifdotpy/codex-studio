@@ -1,6 +1,6 @@
 //! Volatile agent fields, stored apart from the indexed agent record.
 //!
-//! Storage format of 2026-10-20 ([`migrate_2026_10_20`]). Provider
+//! Storage format of 2026-10-20. Provider
 //! notifications change the fields in [`AGENT_VOLATILE_FIELDS`] many times per
 //! turn. They live in [`AGENT_VOLATILE_TABLE`]: one row per agent and one
 //! column per field, each holding that field's JSON value. A notification that
@@ -58,7 +58,7 @@ pub(crate) fn columns(prefix: &str) -> String {
         .join(",")
 }
 
-static TABLE_SQL: LazyLock<String> = LazyLock::new(|| {
+pub(crate) static TABLE_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "CREATE TABLE IF NOT EXISTS {AGENT_VOLATILE_TABLE}(id TEXT PRIMARY KEY,{});",
         AGENT_VOLATILE_FIELDS
@@ -222,16 +222,11 @@ pub fn agent_volatile_table_sql() -> &'static str {
 }
 
 /// Create the table and its triggers. A state without the table gets it
-/// through [`migrate_2026_10_20`], in the caller's startup transaction.
+/// through the dated agent-state migration, in the caller's startup transaction.
 /// `RuntimeStore::open` calls it; so does a test that opens a Python-created
 /// database directly.
 pub fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
-    let created = !crate::schema::table_exists(transaction, AGENT_VOLATILE_TABLE)?;
     transaction.execute_batch(&TABLE_SQL)?;
-    if created {
-        // Before the triggers exist: the move changes no agent's content.
-        migrate_2026_10_20(transaction)?;
-    }
     let transcript = crate::schema::table_exists(transaction, "runtime_transcript_revisions")?;
     // A schema-only database without the change journal (a test fixture)
     // gets only the owner trigger; a state always has the journal.
@@ -249,71 +244,6 @@ pub fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     {
         transaction.execute_batch(&format!(
             "CREATE TRIGGER IF NOT EXISTS {name} {event} ON {table} BEGIN {body} END;"
-        ))?;
-    }
-    Ok(())
-}
-
-/// Tables that `runtime_agents` triggers advance on every record change. The
-/// 2026-10-20 move changes no agent's content, so it restores them: no change
-/// journal entry, transcript revision or sync projection follows from it.
-pub(crate) const MIGRATION_PRESERVED_TABLES: [&str; 4] = [
-    "runtime_agent_record_generation",
-    "runtime_scheduler_agent_change_state",
-    "runtime_scheduler_agent_changes",
-    "runtime_transcript_revisions",
-];
-
-/// Data migration of 2026-10-20: move the volatile fields of every valid
-/// agent record into [`AGENT_VOLATILE_TABLE`] and remove them from the record.
-/// It runs once, in the transaction that creates the table, so a crash leaves
-/// either the old format or the complete new one; a test oracle that writes
-/// old-format records into a migrated state runs it again. Delete it once
-/// every state has opened with a build of 2026-10-20 or later.
-pub fn migrate_2026_10_20(transaction: &Transaction<'_>) -> StoreResult<()> {
-    let present = AGENT_VOLATILE_FIELDS
-        .iter()
-        .map(|field| format!("json_type(record,'$.{field}') IS NOT NULL"))
-        .collect::<Vec<_>>()
-        .join(" OR ");
-    let values = AGENT_VOLATILE_FIELDS
-        .iter()
-        .map(|field| format!("record->'$.{field}'"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let paths = AGENT_VOLATILE_FIELDS
-        .iter()
-        .map(|field| format!("'$.{field}'"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let moved = format!("json_valid(record) AND json_type(record)='object' AND ({present})");
-    let mut preserved = Vec::new();
-    for table in MIGRATION_PRESERVED_TABLES {
-        if crate::schema::table_exists(transaction, table)? {
-            transaction.execute_batch(&format!(
-                "CREATE TEMP TABLE migration_2026_10_20_{table} AS SELECT * FROM main.{table};"
-            ))?;
-            preserved.push(table);
-        }
-    }
-    // A field still in a record is newer than its volatile column: only a
-    // writer without this format (a test oracle) puts it there.
-    let newer = AGENT_VOLATILE_FIELDS
-        .iter()
-        .map(|field| format!("\"{field}\"=COALESCE(excluded.\"{field}\",\"{field}\")"))
-        .collect::<Vec<_>>()
-        .join(",");
-    transaction.execute_batch(&format!(
-        "INSERT INTO {AGENT_VOLATILE_TABLE}(id,{}) SELECT id,{values} FROM runtime_agents WHERE {moved}
-         ON CONFLICT(id) DO UPDATE SET {newer};
-         UPDATE runtime_agents SET record=json_remove(record,{paths}) WHERE {moved};",
-        columns("")
-    ))?;
-    for table in preserved {
-        transaction.execute_batch(&format!(
-            "DELETE FROM main.{table};
-             INSERT INTO main.{table} SELECT * FROM temp.migration_2026_10_20_{table};
-             DROP TABLE temp.migration_2026_10_20_{table};"
         ))?;
     }
     Ok(())
@@ -553,6 +483,7 @@ pub fn update(connection: &Connection, id: &str, agent: &Value) -> StoreResult<b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migrations::m2026_10_20_agents::MIGRATION_PRESERVED_TABLES;
     use crate::{AgentId, AgentRepository, RuntimeStore, system_reads};
     use serde_json::json;
 

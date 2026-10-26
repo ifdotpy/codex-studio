@@ -143,6 +143,7 @@ fn map_store_error(error: studio_runtime_store::StoreError) -> ApiError {
         studio_runtime_store::StoreError::StateDirectory(_)
         | studio_runtime_store::StoreError::AlreadyOwned
         | studio_runtime_store::StoreError::MissingDatabase(_)
+        | studio_runtime_store::StoreError::Migration { .. }
         | studio_runtime_store::StoreError::UnsafeStateDirectory
         | studio_runtime_store::StoreError::SchemaMismatch(_)
         | studio_runtime_store::StoreError::InvalidSyncObject { .. }

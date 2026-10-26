@@ -1310,6 +1310,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         | error @ StoreError::WriterActorInitialization(_)
         | error @ StoreError::WriterActorControl(_)
         | error @ StoreError::CommitActorOutcomeUnknown(_)
+        | error @ StoreError::Migration { .. }
         | error @ StoreError::ReadTaskFailed => panic!("unexpected malformed-agent error: {error}"),
     };
 
@@ -1392,7 +1393,7 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                         StoreError::InvalidSyncObjectField {
                             pointer, reason, ..
                         } => Ok((pointer, reason)),
-                        error @ StoreError::StateDirectory(_) | error @ StoreError::AlreadyOwned | error @ StoreError::MissingDatabase(_) | error @ StoreError::UnsafeStateDirectory | error @ StoreError::SchemaMismatch(_) | error @ StoreError::InvalidSyncObject { .. } | error @ StoreError::InvalidStoredRecord { .. } | error @ StoreError::SchemaObjectMismatch { .. } | error @ StoreError::Sqlite(_) | error @ StoreError::CommitOutcomeUnknown(_) | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::ReadTaskFailed => Err(error),
+                        error @ StoreError::StateDirectory(_) | error @ StoreError::AlreadyOwned | error @ StoreError::MissingDatabase(_) | error @ StoreError::UnsafeStateDirectory | error @ StoreError::SchemaMismatch(_) | error @ StoreError::InvalidSyncObject { .. } | error @ StoreError::InvalidStoredRecord { .. } | error @ StoreError::SchemaObjectMismatch { .. } | error @ StoreError::Sqlite(_) | error @ StoreError::CommitOutcomeUnknown(_) | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::Migration { .. } | error @ StoreError::ReadTaskFailed => Err(error),
                     }
                 }).await?;
                 store::hold_invalid_agent_record(

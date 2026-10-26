@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 studio-runtime-schema = { path = "../runtime-schema" }
 studio-runtime-providers = { path = "../runtime-providers" }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio-rusqlite = { workspace = true }
 tokio = { workspace = true }

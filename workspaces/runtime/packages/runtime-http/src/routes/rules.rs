@@ -367,6 +367,7 @@ fn store_api_error(error: StoreError) -> ApiError {
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)
+        | StoreError::Migration { .. }
         | StoreError::UnsafeStateDirectory
         | StoreError::SchemaMismatch(_)
         | StoreError::SchemaObjectMismatch { .. }

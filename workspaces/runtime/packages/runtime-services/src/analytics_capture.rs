@@ -1398,12 +1398,7 @@ fn limit_content(p: &Value) -> Value {
         None => p.clone(),
     }
 }
-pub(crate) fn number(v: &Value) -> Option<f64> {
-    v.as_f64().filter(|n| n.is_finite() && *n >= 0.)
-}
-pub(crate) fn text(v: &Value) -> &str {
-    v.as_str().unwrap_or("None")
-}
+pub(crate) use studio_runtime_store::analytics_capture::{number, text};
 pub(crate) fn first(values: &[&Value]) -> Value {
     values
         .iter()

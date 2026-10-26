@@ -586,6 +586,7 @@ fn map_store_error(error: crate::StoreError) -> TranscriptStoreError {
         | other @ crate::StoreError::AlreadyOwned
         | other @ crate::StoreError::MissingDatabase(_)
         | other @ crate::StoreError::UnsafeStateDirectory
+        | other @ crate::StoreError::Migration { .. }
         | other @ crate::StoreError::SchemaMismatch(_)
         | other @ crate::StoreError::InvalidSyncObject { .. }
         | other @ crate::StoreError::InvalidSyncObjectField { .. }

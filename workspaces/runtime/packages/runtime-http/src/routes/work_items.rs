@@ -53,6 +53,7 @@ pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result
             studio_runtime_store::StoreError::StateDirectory(_)
             | studio_runtime_store::StoreError::AlreadyOwned
             | studio_runtime_store::StoreError::MissingDatabase(_)
+            | studio_runtime_store::StoreError::Migration { .. }
             | studio_runtime_store::StoreError::UnsafeStateDirectory
             | studio_runtime_store::StoreError::SchemaMismatch(_)
             | studio_runtime_store::StoreError::InvalidSyncObject { .. }
@@ -126,6 +127,7 @@ pub(crate) async fn plan(
                 studio_runtime_store::StoreError::StateDirectory(_)
                 | studio_runtime_store::StoreError::AlreadyOwned
                 | studio_runtime_store::StoreError::MissingDatabase(_)
+                | studio_runtime_store::StoreError::Migration { .. }
                 | studio_runtime_store::StoreError::UnsafeStateDirectory
                 | studio_runtime_store::StoreError::SchemaMismatch(_)
                 | studio_runtime_store::StoreError::InvalidSyncObject { .. }

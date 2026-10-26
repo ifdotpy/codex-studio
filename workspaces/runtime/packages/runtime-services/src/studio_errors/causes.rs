@@ -9,6 +9,7 @@ pub fn store_error_kind(error: &studio_runtime_store::StoreError) -> InternalErr
     use InternalErrorKind as K;
     use studio_runtime_store::StoreError;
     match error {
+        StoreError::Migration { source, .. } => store_error_kind(source),
         StoreError::StateDirectory(_) => K::StoreIo,
         StoreError::AlreadyOwned => K::StoreOwnership,
         StoreError::MissingDatabase(_) | StoreError::UnsafeStateDirectory => K::StoreConfiguration,
@@ -47,6 +48,29 @@ pub fn json_cause(error: &serde_json::Error) -> Cause {
 pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
     use studio_runtime_store::StoreError;
     let detail = match error {
+        StoreError::Migration {
+            id,
+            target,
+            phase,
+            rollback,
+            source,
+            rollback_error,
+        } => {
+            let mut causes = vec![Cause::Migration {
+                id: (*id).into(),
+                target: *target,
+                phase: *phase,
+                rollback: *rollback,
+            }];
+            causes.extend(store_causes(source));
+            if let Some(rusqlite::Error::SqliteFailure(code, _)) = rollback_error {
+                causes.push(Cause::Sqlite {
+                    primary_code: code.extended_code & SQLITE_PRIMARY_CODE_MASK,
+                    extended_code: code.extended_code,
+                });
+            }
+            return causes;
+        }
         StoreError::InvalidSyncObject { scope, id } => Some(Cause::StoredRecord {
             object: scope.clone(),
             id: id.clone(),
@@ -109,6 +133,47 @@ pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
 mod tests {
     use super::*;
     use studio_runtime_store::StoreError;
+
+    #[test]
+    fn migration_causes_preserve_original_location_and_failed_rollback_code() {
+        use studio_runtime_schema::studio_errors::{
+            MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
+        };
+        let error = StoreError::Migration {
+            id: "2026-10-26-workspace-limits",
+            target: MigrationTarget::Canvas,
+            phase: MigrationPhase::Rollback,
+            rollback: MigrationRollbackOutcome::Unknown,
+            source: Box::new(StoreError::InvalidSyncObjectField {
+                scope: "workspace".into(),
+                id: "current".into(),
+                pointer: "/rateLimitsByAccount".into(),
+                reason: "source-canary".into(),
+            }),
+            rollback_error: Some(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+                Some("rollback-canary".into()),
+            )),
+        };
+        let causes = store_causes(&error);
+        assert!(matches!(
+            causes[0],
+            Cause::Migration {
+                phase: MigrationPhase::Rollback,
+                rollback: MigrationRollbackOutcome::Unknown,
+                ..
+            }
+        ));
+        assert!(
+            matches!(&causes[1], Cause::StoredRecord { pointer:Some(pointer), .. } if pointer=="/rateLimitsByAccount")
+        );
+        assert!(
+            matches!(causes.last(), Some(Cause::Sqlite { primary_code, .. }) if *primary_code==rusqlite::ffi::SQLITE_IOERR)
+        );
+        let encoded = serde_json::to_string(&causes).expect("safe diagnostic");
+        assert!(!encoded.contains("source-canary"));
+        assert!(!encoded.contains("rollback-canary"));
+    }
 
     #[test]
     fn typed_store_causes_keep_locations_and_codes_without_private_messages() {

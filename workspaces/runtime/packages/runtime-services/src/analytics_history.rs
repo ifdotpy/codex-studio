@@ -552,7 +552,6 @@ async fn collect_path(
         agent["accountKey"].as_str().unwrap_or("default"),
         text(&agent["threadId"])
     );
-    crate::analytics_history_repair::repair_terminal_errors(store).await?;
     let budget_advanced =
         crate::analytics_history_repair::migrate_budget(store, agent.clone(), budget, now).await?;
     let previous = read_history_checkpoint(store, &key, &agent).await?;
@@ -1539,7 +1538,6 @@ impl HistoryCollector {
         )
         .await
         .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
-        crate::analytics_history_repair::repair_terminal_errors(store).await?;
         let budget_advanced = crate::analytics_history_repair::migrate_budget(
             store,
             agent.clone(),

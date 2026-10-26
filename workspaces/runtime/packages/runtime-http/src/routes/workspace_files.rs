@@ -220,6 +220,7 @@ fn map_store_error(error: StoreError) -> ApiError {
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)
+        | StoreError::Migration { .. }
         | StoreError::UnsafeStateDirectory
         | StoreError::SchemaMismatch(_)
         | StoreError::InvalidSyncObject { .. }

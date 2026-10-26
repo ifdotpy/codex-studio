@@ -107,6 +107,7 @@ pub async fn push_drafts(
             error @ StoreError::StateDirectory(_)
             | error @ StoreError::AlreadyOwned
             | error @ StoreError::MissingDatabase(_)
+            | error @ StoreError::Migration { .. }
             | error @ StoreError::UnsafeStateDirectory
             | error @ StoreError::SchemaMismatch(_)
             | error @ StoreError::InvalidSyncObject { .. }

@@ -81,6 +81,7 @@ impl From<StoreError> for TranscriptError {
             StoreError::StateDirectory(_)
             | StoreError::AlreadyOwned
             | StoreError::MissingDatabase(_)
+            | StoreError::Migration { .. }
             | StoreError::UnsafeStateDirectory
             | StoreError::SchemaMismatch(_)
             | StoreError::InvalidSyncObjectField { .. }
@@ -637,6 +638,7 @@ pub(crate) fn search_work_in_transaction(
                 StoreError::StateDirectory(_)
                 | StoreError::AlreadyOwned
                 | StoreError::MissingDatabase(_)
+                | StoreError::Migration { .. }
                 | StoreError::UnsafeStateDirectory
                 | StoreError::SchemaMismatch(_)
                 | StoreError::InvalidSyncObject { .. }

@@ -301,8 +301,6 @@ fn project_changed_agents(
 pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
     Ok(lifecycle_transaction(store, move |transaction| {
         studio_runtime_store::agent_management::settle_orphaned_inputs(transaction)?;
-        migrate_auth_probe_waits(transaction)?;
-        release_capacity_start_attempts(transaction, unix_now())?;
         let mut recovery_complete = true;
         let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
             Ok(recovered) => recovered,
@@ -346,105 +344,6 @@ pub async fn recover_on_startup(store: &RuntimeStore) -> Result<usize, Scheduler
         Ok(unsubmitted + submitted)
     })
     .await?)
-}
-
-/// Status of a retired Claude auth probe wait in `runtime_usage_resumes`.
-const RETIRED_AUTH_PROBE_WAIT: &str = "auth_probe_wait";
-
-/// One-time move of the retired Claude auth probe waits into the account auth
-/// gate's held state: the row is removed, and its still waiting agent becomes
-/// a held turn that `account_auth_gate` releases after an account change. Its
-/// input already returned to `pending` when the wait was recorded.
-fn migrate_auth_probe_waits(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
-    let exists: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_usage_resumes')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Ok(());
-    }
-    let agents = transaction
-        .prepare(
-            "DELETE FROM runtime_usage_resumes WHERE json_extract(record,'$.status')=?1 \
-             RETURNING agent",
-        )?
-        .query_map([RETIRED_AUTH_PROBE_WAIT], |row| row.get::<_, String>(0))?
-        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    for id in agents {
-        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(id.as_str()))?
-        else {
-            continue;
-        };
-        if agent.status != AgentStatus::Waiting {
-            continue;
-        }
-        agent.status = AgentStatus::Failed;
-        agent.extra.insert(
-            "error".into(),
-            json!(
-                crate::provider_adapter::adapter(studio_runtime_providers::ProviderKind::Claude)
-                    .sign_in_message()
-            ),
-        );
-        AgentRepository::put(transaction, &agent)?;
-    }
-    Ok(())
-}
-
-/// One-time release of the retired capacity start attempts. Before capacity
-/// retries queued a follow-up input, a claim parked its agent `starting` with an
-/// unsent `capacity` start attempt that no worker ever claimed (the 512-agent
-/// run of 21 October 2026). Such a retry becomes due again at `now`, and its
-/// agent returns to its failed, held state, so the continuation tick claims it
-/// through the follow-up path. A submitted attempt is left to restart recovery.
-fn release_capacity_start_attempts(
-    transaction: &rusqlite::Transaction<'_>,
-    now: f64,
-) -> Result<(), StoreError> {
-    let ids = transaction
-        .prepare(
-            "SELECT id FROM runtime_agents WHERE json_extract(record,'$.startAttempt.action')='capacity' \
-             AND json_extract(record,'$.startAttempt.submitted')=0",
-        )?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    for id in ids {
-        let Some(row) = AgentRepository::get(transaction, &AgentId::from(id.as_str()))? else {
-            continue;
-        };
-        let mut agent = row.value();
-        let retry_id = agent["startAttempt"]["capacityRetryId"].clone();
-        let mut retry = agent["capacityRetry"].clone();
-        if retry["id"] == retry_id && retry["status"] == "starting" {
-            if let Some(record) = retry.as_object_mut() {
-                record.remove("claimedAt");
-            }
-            retry["status"] = json!("scheduled");
-            retry["dueAt"] = json!(now);
-            retry["updatedAt"] = json!(now);
-            studio_runtime_store::ContinuationRepository::put_record(
-                transaction,
-                studio_runtime_store::ContinuationTable::Capacity,
-                &id,
-                &retry,
-            )?;
-            agent["capacityRetry"] = retry;
-        }
-        if let Some(record) = agent.as_object_mut() {
-            record.remove("startAttempt");
-        }
-        agent["status"] = json!("failed");
-        agent["inFlight"] = json!(false);
-        studio_runtime_store::ContinuationRepository::put_agent(transaction, &agent)?;
-    }
-    Ok(())
-}
-
-fn unix_now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |elapsed| elapsed.as_secs_f64())
 }
 
 /// Mirror Python's final per-agent startup cleanup after both recovery scans.
@@ -1716,7 +1615,7 @@ mod child_turn_parent_tests {
     #[tokio::test]
     async fn startup_releases_a_parked_capacity_claim_to_the_followup_path() {
         for provider in ["codex", "claude"] {
-            let (_directory, store, intent) = seeded(provider).await;
+            let (directory, store, intent) = seeded(provider).await;
             let turn = json!({"id":TURN,"status":"failed",
                 "error":{"message":"429 Too Many Requests","codexErrorInfo":TOO_MANY_ATTEMPTS}});
             assert!(
@@ -1760,7 +1659,13 @@ mod child_turn_parent_tests {
                 .await
                 .expect("parked claim writes");
 
-            recover_on_startup(&store).await.expect("startup recovery");
+            drop(store);
+            let store = RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("dated startup conversion");
+            recover_on_startup(&store)
+                .await
+                .expect("recurring startup recovery");
             let released = child(&store);
             assert_eq!(released["status"], "failed", "{provider}: {released}");
             assert_eq!(released["inFlight"], false, "{provider}");

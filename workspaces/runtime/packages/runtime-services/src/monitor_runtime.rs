@@ -71,6 +71,7 @@ pub async fn recover_on_startup(
                     error @ studio_runtime_store::StoreError::StateDirectory(_)
                     | error @ studio_runtime_store::StoreError::AlreadyOwned
                     | error @ studio_runtime_store::StoreError::MissingDatabase(_)
+                    | error @ studio_runtime_store::StoreError::Migration { .. }
                     | error @ studio_runtime_store::StoreError::UnsafeStateDirectory
                     | error @ studio_runtime_store::StoreError::SchemaMismatch(_)
                     | error @ studio_runtime_store::StoreError::InvalidSyncObject { .. }

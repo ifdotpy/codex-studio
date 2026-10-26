@@ -2568,6 +2568,7 @@ pub async fn push_preferences(
             other @ StoreError::StateDirectory(_)
             | other @ StoreError::AlreadyOwned
             | other @ StoreError::MissingDatabase(_)
+            | other @ StoreError::Migration { .. }
             | other @ StoreError::UnsafeStateDirectory
             | other @ StoreError::SchemaMismatch(_)
             | other @ StoreError::InvalidSyncObjectField { .. }

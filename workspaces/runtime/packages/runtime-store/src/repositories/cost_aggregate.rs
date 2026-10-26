@@ -25,16 +25,19 @@ use studio_runtime_schema::provider_kind::ProviderKind;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+#[cfg(test)]
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
+#[cfg(test)]
+use rusqlite::OpenFlags;
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Deserialize;
 use studio_runtime_schema::usage::{UsageEvidence, UsageObservation, UsageTokens};
 
 use crate::{CachedSql, StoreError, StoreResult};
 
-/// Tables of the aggregate; created by [`ensure_cost_aggregate`].
-const TABLES: &str = "
+/// Current tables of the aggregate, installed during the analytics startup transaction.
+pub(crate) const TABLES: &str = "
 CREATE TABLE analytics_cost_rows (
     id TEXT PRIMARY KEY, root TEXT NOT NULL, agent TEXT NOT NULL, thread TEXT, turn TEXT,
     seq INTEGER NOT NULL, at REAL NOT NULL, model TEXT, account_key TEXT, response TEXT,
@@ -597,34 +600,19 @@ fn contributions(
 
 /// Create the aggregate on first open and fill it from the existing usage
 /// rows, in one transaction.
-pub(crate) fn ensure_cost_aggregate(path: &Path) -> StoreResult<()> {
+#[cfg(test)]
+fn ensure_cost_aggregate(path: &Path) -> StoreResult<()> {
     let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     let tx = db.transaction()?;
-    migrate_2026_10_22_drop_python_cost_projection(&tx)?;
+    crate::migrations::m2026_10_22_analytics::migrate_2026_10_22_drop_python_cost_projection(&tx)?;
+    crate::migrations::m2026_10_22_analytics::aggregate_columns(&tx)?;
     install(&tx)?;
     tx.commit()?;
     Ok(())
 }
 
-/// Retire the Python JSON projection after Rust took ownership of cost writes.
-/// The projection table owns its three triggers and index; the six usage
-/// triggers must go first because SQLite does not remove cross-table triggers.
-/// IF EXISTS makes a retry after a committed open perform no schema changes.
-fn migrate_2026_10_22_drop_python_cost_projection(db: &Transaction<'_>) -> StoreResult<()> {
-    db.execute_batch(
-        "DROP TRIGGER IF EXISTS analytics_cost_usage_before_insert_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_before_update_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_before_delete_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_insert_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_update_v1;
-         DROP TRIGGER IF EXISTS analytics_cost_usage_delete_v1;
-         DROP TABLE IF EXISTS analytics_cost_projection_v1;",
-    )?;
-    Ok(())
-}
-
-/// Create a missing aggregate, or add compatibility markers without reading usage
-/// records or changing existing derived groups.
+/// Install the current derived aggregate. Historical layouts are upgraded only
+/// by the dated migration before this current-format owner runs.
 pub fn install(db: &Connection) -> StoreResult<()> {
     let exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_rows')",
@@ -634,30 +622,6 @@ pub fn install(db: &Connection) -> StoreResult<()> {
     if !exists {
         db.execute_batch(TABLES)?;
         backfill(db)?;
-    } else {
-        let columns = db
-            .prepare("PRAGMA table_info(analytics_cost_rows)")?
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<Result<HashSet<_>, _>>()?;
-        if !columns.contains("eligible") {
-            db.execute_batch("ALTER TABLE analytics_cost_rows ADD COLUMN eligible INTEGER")?;
-        }
-        if !columns.contains("final_evidence") {
-            db.execute_batch("ALTER TABLE analytics_cost_rows ADD COLUMN final_evidence INTEGER NOT NULL DEFAULT 0")?;
-        }
-        // Nullable columns are metadata-only additions: preserve every old fact/group.
-        for table in ["analytics_cost_rows", "analytics_cost_groups"] {
-            let has_split = db
-                .prepare(&format!("PRAGMA table_info({table})"))?
-                .query_map([], |row| row.get::<_, String>(1))?
-                .collect::<Result<HashSet<_>, _>>()?
-                .contains("cache_write_1h");
-            if !has_split {
-                db.execute_batch(&format!(
-                    "ALTER TABLE {table} ADD COLUMN cache_write_1h REAL"
-                ))?;
-            }
-        }
     }
     db.execute_batch(SCOPE_INDEXES)?;
     Ok(())
@@ -1482,7 +1446,9 @@ mod tests {
             _ => Authorization::Allow,
         }))
         .expect("usage-read guard");
-        super::install(&db).expect("bounded additive migration does not inspect usage records");
+        crate::migrations::m2026_10_22_analytics::aggregate_columns(&db)
+            .expect("bounded additive migration does not inspect usage records");
+        super::install(&db).expect("current aggregate");
         let scope_indexes: Vec<String> = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name IN ('analytics_cost_rows_unmodeled','analytics_cost_rows_eligible_unmodeled') ORDER BY name")
             .expect("index migration").query_map([], |row| row.get(0)).expect("index names")
             .collect::<Result<_, _>>().expect("indexes");
@@ -1496,7 +1462,9 @@ mod tests {
         assert_eq!(groups[0].tokens.output_tokens, Some(2.0));
         assert_eq!(groups[0].count, 1);
         assert_eq!(groups[0].tokens.cache_write_input_1h_tokens, None);
-        super::install(&db).expect("migration is idempotent");
+        crate::migrations::m2026_10_22_analytics::aggregate_columns(&db)
+            .expect("migration is idempotent");
+        super::install(&db).expect("current aggregate");
         assert_eq!(
             super::cost_groups(&db, "root", &Default::default()).expect("groups"),
             groups

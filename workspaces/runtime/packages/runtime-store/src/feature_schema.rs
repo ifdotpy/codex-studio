@@ -179,7 +179,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS voice_speech_requests (
                 id TEXT PRIMARY KEY, session TEXT NOT NULL, record_id TEXT NOT NULL,
                 state TEXT NOT NULL, error TEXT);
-            CREATE TABLE IF NOT EXISTS user_terminals (id TEXT PRIMARY KEY, record TEXT NOT NULL, output TEXT NOT NULL, offset INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS user_terminals (id TEXT PRIMARY KEY, record TEXT NOT NULL, output TEXT NOT NULL, offset INTEGER NOT NULL, output_generation INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS user_terminal_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS user_terminal_output (terminal TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY (terminal,start));
             CREATE INDEX IF NOT EXISTS user_terminal_output_end ON user_terminal_output (terminal,end);
@@ -282,31 +282,6 @@ const FEATURE_SCHEMA: &str = r#"
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
     crate::entity_publication::prepare_work_change_journal(transaction)?;
-    let has_terminal_generation: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('user_terminals') WHERE name='output_generation')",
-        [], |row| row.get(0),
-    )?;
-    if !has_terminal_generation {
-        transaction.execute_batch(
-            "ALTER TABLE user_terminals ADD COLUMN output_generation INTEGER NOT NULL DEFAULT 0",
-        )?;
-    }
-
-    let has_breakdown: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='breakdown')",
-        [], |row| row.get(0),
-    )?;
-    if !has_breakdown {
-        // NULL preserves total-only replay comparison for every existing response.
-        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN breakdown TEXT")?;
-    }
-    let has_details: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='details')", [], |row| row.get(0),
-    )?;
-    if !has_details {
-        // O(1): old receipts retain their existing interpretation, without a rebuild.
-        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN details TEXT")?;
-    }
     transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
     // A deleted row is no longer readable by the writer journal. Its source
     // trigger owns the corresponding summary tombstone in the same transaction.
@@ -389,8 +364,10 @@ mod tests {
         )
         .expect("legacy output");
         let tx = db.transaction().expect("upgrade");
-        super::prepare(&tx).expect("additive upgrade");
-        super::prepare(&tx).expect("idempotent upgrade");
+        crate::migrations::m2026_10_26_canvas::feature_columns(&tx).expect("additive transition");
+        super::prepare(&tx).expect("current schema");
+        crate::migrations::m2026_10_26_canvas::feature_columns(&tx).expect("idempotent transition");
+        super::prepare(&tx).expect("current schema");
         let row = TerminalsRepository::get(&tx, "terminal")
             .expect("read")
             .expect("terminal");
@@ -429,7 +406,8 @@ mod tests {
             )
             .expect("root page");
         let tx = db.transaction().expect("upgrade transaction");
-        super::prepare(&tx).expect("additive upgrade");
+        crate::migrations::m2026_10_26_canvas::feature_columns(&tx).expect("additive transition");
+        super::prepare(&tx).expect("current schema");
         tx.commit().expect("commit upgrade");
         let legacy: (i64, String, i64, Option<String>, Option<String>) = db
             .query_row(
@@ -456,7 +434,8 @@ mod tests {
             .pragma_query_value(None, "schema_version", |row| row.get(0))
             .expect("schema cookie");
         let tx = db.transaction().expect("second prepare");
-        super::prepare(&tx).expect("idempotent upgrade");
+        crate::migrations::m2026_10_26_canvas::feature_columns(&tx).expect("idempotent transition");
+        super::prepare(&tx).expect("current schema");
         tx.commit().expect("second commit");
         assert_eq!(
             db.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))
