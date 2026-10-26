@@ -180,7 +180,7 @@ export async function startBridge(
     });
     createInterface({ input: child.stdout! }).on("line", (line) => {
       const value: unknown = JSON.parse(line);
-      const message = parseBridgeMessage(value);
+      const message = value as BridgeNote | BridgeResponse;
       if ("method" in message) notes.push(message);
       else waiting.get(message.id)?.resolve(message);
       for (const notify of notifications) notify();
