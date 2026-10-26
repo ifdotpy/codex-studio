@@ -1,5 +1,5 @@
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "../servers/multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "../servers/multi-server-fixture.ts";
 
 for (const [theme, viewport] of [
   ["light", { width: 1440, height: 900 }],

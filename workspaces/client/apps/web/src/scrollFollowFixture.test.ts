@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { streamTranscriptFixture } from "../tests/fixtures/streaming-transcript.mjs";
+import { streamTranscriptFixture } from "../tests/fixtures/streaming-transcript.ts";
 
 test("the scroll fixture publishes only when the witness requests a commit", async () => {
   const publish = vi.fn(async () => "first delta");

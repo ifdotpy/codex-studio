@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { delimiter, join } from "node:path";
 import test from "node:test";
-import { startRustBackend } from "./rust-ui-fixture.mjs";
+import { startRustBackend } from "./rust-ui-fixture.ts";
 
-async function withBackendScript(body, check) {
+async function withBackendScript(
+  body: string,
+  check: (state: string) => Promise<void>,
+) {
   const root = await mkdtemp(join(tmpdir(), "rust-startup-exit-"));
   const binary = join(root, "backend");
   const previous = process.env.CODEX_STUDIO_RUNTIME_SERVER;

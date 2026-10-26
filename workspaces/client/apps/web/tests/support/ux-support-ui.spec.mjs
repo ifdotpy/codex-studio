@@ -7,7 +7,7 @@ import {
   handleEntitySyncFixtureRequest,
   syncIdentityFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("ux support ui", async ({ page: runnerPage }) => {
   const server = await createFixtureViteServer({

@@ -1,7 +1,7 @@
 // Real React and storage, simulated browser speech. No audio or service requests.
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { createFixtureViteServer, test, expect } from "../playwright.mjs";
+import { createFixtureViteServer, test, expect } from "../playwright.ts";
 
 test("browser dictation ux", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");

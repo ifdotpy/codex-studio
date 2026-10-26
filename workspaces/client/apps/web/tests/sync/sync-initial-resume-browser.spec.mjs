@@ -1,11 +1,11 @@
 // A saved partial first-page marker reconstructs its original baseline.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test } from "../playwright.ts";
 
 test("sync initial resume browser", async ({ page }) => {
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     optimizeDeps: { noDiscovery: true },

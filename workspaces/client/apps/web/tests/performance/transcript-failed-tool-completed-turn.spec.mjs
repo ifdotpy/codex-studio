@@ -8,7 +8,7 @@ import {
   browserExecutablePath,
   installApiSchemaFixtureHeaders,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("failed tool limit remains visible in a completed turn @performance", async () => {
   test.fail(
@@ -20,7 +20,7 @@ test("failed tool limit remains visible in a completed turn @performance", async
   const require = createRequire(join(root, "package.json"));
   const { chromium } = require("playwright-core");
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-turn-limit-"));
   const entry = join(root, "transcript-audit.tsx");
   const server = await createServer({

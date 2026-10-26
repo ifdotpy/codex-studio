@@ -7,8 +7,8 @@ import {
   spawnFixture,
   rustUiFixture,
   readTestState,
-} from "../playwright.mjs";
-import { waitForFixturePort } from "../fixture-readiness.mjs";
+} from "../playwright.ts";
+import { waitForFixturePort } from "../fixture-readiness.ts";
 
 for (const provider of ["codex", "claude"])
   test(`${provider} Team eligibility keeps five long accounts within provider rows`, async ({

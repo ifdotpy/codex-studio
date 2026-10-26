@@ -1,5 +1,5 @@
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "./multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "./multi-server-fixture.ts";
 async function settings(page) {
   await page
     .getByRole("button", { name: "Studio settings", exact: true })

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 for (const width of [1440, 390]) {
   test(`execution settings preserve nested Escape and focus at ${width}px`, async ({

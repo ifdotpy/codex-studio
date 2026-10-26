@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { measuredFixtureScratchBytes } from "../playwright-workers.mjs";
+import { measuredFixtureScratchBytes } from "../playwright-workers.ts";
 
 const maximumProbeBytes = 256 * 1024 * 1024;
 const minimumHeadroomBytes = 256 * 1024 * 1024;
@@ -39,8 +39,8 @@ function memoryMounts() {
 }
 
 function probeCandidate(
-  candidate,
-  probeBytes,
+  candidate: string,
+  probeBytes: number,
   { requireMemoryMount = false } = {},
 ) {
   let probeDirectory;
@@ -77,12 +77,12 @@ function probeCandidate(
       memoryBacked,
       mount,
       writeFsyncMs,
-      passed: true,
+      passed: true as const,
     };
   } catch (error) {
     return {
       parent: candidate,
-      passed: false,
+      passed: false as const,
       reason:
         error instanceof Error
           ? `${error.name}: ${error.message}`
@@ -119,7 +119,7 @@ export function choosePlaywrightScratchRoot(
       memoryBacked: mount !== undefined,
       mount,
       writeFsyncMs: 0,
-      passed: true,
+      passed: true as const,
       inheritedProbe: true,
     };
     return createScratchRoot(inherited, [inherited], probeBytes, {
@@ -151,10 +151,10 @@ export function choosePlaywrightScratchRoot(
 }
 
 function createScratchRoot(
-  chosen,
-  tested = [chosen],
-  probeBytes,
-  options = {},
+  chosen: Extract<ReturnType<typeof probeCandidate>, { passed: true }>,
+  tested: ReturnType<typeof probeCandidate>[] = [chosen],
+  probeBytes: number,
+  options: { root?: string; ownedRoot?: boolean } = {},
 ) {
   const root = options.root ?? mkdtempSync(join(chosen.parent, "pw-"));
   return Object.freeze({
@@ -165,7 +165,8 @@ function createScratchRoot(
     availableBytes: chosen.availableBytes,
     probeBytes,
     writeFsyncMs: chosen.writeFsyncMs,
-    inheritedProbe: chosen.inheritedProbe ?? false,
+    inheritedProbe:
+      "inheritedProbe" in chosen ? chosen.inheritedProbe === true : false,
     tested,
   });
 }

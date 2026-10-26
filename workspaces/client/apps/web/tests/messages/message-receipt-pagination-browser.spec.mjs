@@ -1,5 +1,5 @@
 import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../../src/generated/sharedValues.ts";
-import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -8,7 +8,7 @@ import {
   spawnFixture as spawn,
   rustUiFixture,
   rustFixtureStateDirectory,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Built App and a private runtime fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -28,7 +28,7 @@ async function runMessageReceiptScenario(
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const dist =
     process.env.RECEIPTS_DIST || join(repo, "workspaces/client/apps/web/dist");
   const index = await readFile(join(dist, "index.html"));

@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "./multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "./multi-server-fixture.ts";
 
 function waitForPost(page, pathname, matches = () => true) {
   return page.waitForResponse((response) => {

@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { rm, mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 test("rendering ux ui", async ({ page: runnerPage }) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const name = `.rendering-check-${process.pid}`;
   const entry = join(root, "workspaces/client/apps/web", `${name}.tsx`);
   const artifacts = await mkdtemp(join(tmpdir(), "studio-rendering-theme-"));

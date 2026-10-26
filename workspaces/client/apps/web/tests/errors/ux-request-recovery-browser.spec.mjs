@@ -6,7 +6,7 @@ import {
   syncIdentityFixture,
   syncProtocolFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real UI components with isolated HTTP responses. No model or user state.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";

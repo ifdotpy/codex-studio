@@ -2,13 +2,13 @@ import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   apiSchemaHandshakeSse,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect } from "../playwright.mjs";
-import { chooseSetupValue } from "../fixtures/setup-controls.mjs";
+import { test, expect } from "../playwright.ts";
+import { chooseSetupValue } from "../fixtures/setup-controls.ts";
 
 // Production components with isolated HTTP responses. No live account or model request.
 test("unified agent picker roles, accounts and project/shared flows", async ({
@@ -18,7 +18,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
   const root = join(import.meta.dirname, "../../../web");
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-unified-picker-vite-"));
   const output =
     process.env.PICKER_SCREENSHOTS ||

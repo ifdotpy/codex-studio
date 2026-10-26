@@ -5,7 +5,7 @@ import {
   spawnFixture as spawn,
   installApiSchemaFixtureHeaders,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production UI and isolated HTTP fixture. Requests deliberately finish out of order.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";

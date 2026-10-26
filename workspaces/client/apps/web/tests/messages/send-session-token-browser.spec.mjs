@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 // Real RxDB and send callers with controlled session and claim delays.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";

@@ -4,7 +4,7 @@ import {
   expect,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production client and an isolated fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";

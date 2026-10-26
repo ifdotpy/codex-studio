@@ -7,7 +7,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:net";
-import { readTestState } from "../web/tests/playwright.mjs";
+import { readTestState } from "../web/tests/playwright.ts";
 import { ensureBackend, identity } from "./backend.ts";
 declare module "electron" {
   interface App {

@@ -2,7 +2,7 @@ import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   apiSchemaHandshakeSse,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -13,9 +13,9 @@ import {
   modelOptions,
   modelValue,
   selectModel,
-} from "../fixtures/model-picker.mjs";
-import { test } from "../playwright.mjs";
-import { setupControl, setupToggle } from "../fixtures/setup-controls.mjs";
+} from "../fixtures/model-picker.ts";
+import { test } from "../playwright.ts";
+import { setupControl, setupToggle } from "../fixtures/setup-controls.ts";
 
 test("Daybreak settings", async ({ context }) => {
   test.setTimeout(60_000);
@@ -24,7 +24,7 @@ test("Daybreak settings", async ({ context }) => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-daybreak-settings-"));
   const entry = join(root, "daybreak-settings-fixture.tsx");
   const schemaHeaders = JSON.stringify({
