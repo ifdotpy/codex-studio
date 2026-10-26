@@ -78,7 +78,17 @@ function optionalPropertyInputs(generated: string) {
   );
   const insertions: { position: number; text: string }[] = [];
   const visit = (node: ts.Node) => {
-    if (ts.isPropertySignature(node) && node.questionToken && node.type) {
+    const extensionMap =
+      ts.isIndexSignatureDeclaration(node) &&
+      node.type &&
+      ts.isIndexedAccessTypeNode(node.type) &&
+      ts.isLiteralTypeNode(node.type.indexType) &&
+      ts.isStringLiteral(node.type.indexType.literal) &&
+      node.type.indexType.literal.text === "JsonValue";
+    if (
+      ((ts.isPropertySignature(node) && node.questionToken) || extensionMap) &&
+      node.type
+    ) {
       const type = node.type;
       const types = ts.isUnionTypeNode(type) ? type.types : [type];
       if (
