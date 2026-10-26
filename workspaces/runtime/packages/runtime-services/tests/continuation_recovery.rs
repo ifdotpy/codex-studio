@@ -12,7 +12,7 @@ async fn seeded(kind: &str) -> (tempfile::TempDir, RuntimeStore) {
     let store = RuntimeStore::open(Some(dir.path()))
         .await
         .expect("fresh state opens");
-    let mut agent = json!({"id":"a","rootId":"a","epoch":1,"status":"failed","accountKey":"default",
+    let mut agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"a","rootId":"a","epoch":1,"status":"failed","accountKey":"default",
         "threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,
         "cwd":"/fixture","isLead":true});
     let resume = json!({"id":"resume","accountKey":"default","threadId":"thread","epoch":1,
@@ -212,7 +212,7 @@ async fn changed_task_cancels_resume_and_notifies_parent_atomically() {
         let mut a:Value=serde_json::from_str(&tx.query_row("SELECT record FROM runtime_agents WHERE id='a'",[],|r|r.get::<_,String>(0))?)?;
         a["isLead"]=json!(false);a["parentId"]=json!("parent");a["rootId"]=json!("parent");
         tx.execute("UPDATE runtime_agents SET record=?1 WHERE id='a'",[a.to_string()])?;
-        let parent=json!({"id":"parent","rootId":"parent","epoch":1,"status":"waiting","autoWake":true});
+        let parent=json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"parent","rootId":"parent","epoch":1,"status":"waiting","autoWake":true});
         tx.execute("INSERT INTO runtime_agents VALUES('parent',?1)",[parent.to_string()])?;
         let work=json!({"id":"new","rootId":"parent","owner":"a","status":"running"});tx.execute("INSERT INTO runtime_work VALUES('new',?1)",[work.to_string()])?;Ok(())
     }).await.expect("changed ownership fixture");

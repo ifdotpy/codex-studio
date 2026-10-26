@@ -1,7 +1,6 @@
 import type { Page } from "@playwright/test";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import {
-  required,
   fixtureUrl,
   fixtureAccount,
   fixtureAccounts,
@@ -144,22 +143,20 @@ async function fixture(page: Page) {
     if (route.request().method() === "POST") {
       const request = fixtureRequest(path, route.request().postDataJSON());
       bodies.push(request);
-      const accountKey =
-        "account_key" in request.body ? request.body.account_key : undefined;
+      const accountKey = fixtureRequest("/api/accounts/default", request.body)
+        .body.account_key;
       const account = accounts.find((account) => account.id === accountKey);
       if (request.path === "/api/accounts/default")
-        defaultAccountKey = required(request.body.account_key);
+        defaultAccountKey = request.body.account_key!;
       if (path === "/api/accounts/disconnect") {
-        required(account).disconnected = true;
-        if (defaultAccountKey === required(account).id)
-          defaultAccountKey = "personal";
+        account!.disconnected = true;
+        if (defaultAccountKey === account!.id) defaultAccountKey = "personal";
       }
-      if (path === "/api/accounts/reconnect")
-        required(account).disconnected = false;
+      if (path === "/api/accounts/reconnect") account!.disconnected = false;
       if (request.path === "/api/accounts/delete") {
         const body = request.body;
         if (!deleted.has(body.request_id)) {
-          accounts.splice(accounts.indexOf(required(account)), 1);
+          accounts.splice(accounts.indexOf(account!), 1);
           deleted.add(body.request_id);
         }
         if (loseDeleteResponse) {
@@ -169,7 +166,7 @@ async function fixture(page: Page) {
       }
     }
     if (path === "/api/limits") {
-      const key = required(url.searchParams.get("account_key"));
+      const key = url.searchParams.get("account_key")!;
       const usedPercent =
         (
           {
@@ -309,16 +306,13 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       ["dark", 390],
     ] as const) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.evaluate(
-        (color) => window.accountsCardsFixture.setTheme(color),
-        color,
-      );
+      await page.evaluate((color) => window.setTheme(color), color);
       await expect(page.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
         color,
       );
-      const a = required(await personal.boundingBox());
-      const b = required(await work.boundingBox());
+      const a = (await personal.boundingBox())!;
+      const b = (await work.boundingBox())!;
       expect(b.y).toBeGreaterThan(a.y);
       expect(b.x).toBe(a.x);
       expect(a.height).toBeLessThanOrEqual(80);
@@ -499,7 +493,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
     );
     expect(deletes).toHaveLength(2);
     expect(deletes[0]).toEqual(deletes[1]);
-    expect(required(deletes[0]).body.request_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(deletes[0]!.body.request_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(errors).toEqual([]);
     console.log(`Accounts card screenshots: ${f.evidence}`);
   } finally {

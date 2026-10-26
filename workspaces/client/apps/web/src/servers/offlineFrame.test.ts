@@ -1,5 +1,6 @@
-/// <reference lib="webworker" />
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
+/// <reference lib="webworker" />
 import { expect, test } from "vitest";
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
@@ -55,8 +56,7 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
     },
   );
   let result: Promise<Response> | undefined;
-  assert.ok(handlers.fetch);
-  handlers.fetch({
+  required(handlers.fetch)({
     request: {
       method: "GET",
       mode: "navigate",
@@ -77,14 +77,14 @@ test("offline server navigation has frame CSP and cannot replace the root shell 
 });
 test("a network server-view response never overwrites the root cached HTML", async () => {
   const handlers: Record<
-    string,
-    (event: {
-      request: Pick<Request, "method" | "mode" | "url">;
-      respondWith(value: Promise<Response>): void;
-      waitUntil(): void;
-    }) => void
-  > = {};
-  const writes: string[] = [];
+      string,
+      (event: {
+        request: Pick<Request, "method" | "mode" | "url">;
+        respondWith(value: Promise<Response>): void;
+        waitUntil(): void;
+      }) => void
+    > = {},
+    writes: string[] = [];
   const html = '<meta name="studio-build" content="test" />';
   const response = () =>
     new Response(html, {
@@ -119,8 +119,7 @@ test("a network server-view response never overwrites the root cached HTML", asy
     },
   );
   let result: Promise<Response> | undefined;
-  assert.ok(handlers.fetch);
-  handlers.fetch({
+  required(handlers.fetch)({
     request: {
       method: "GET",
       mode: "navigate",

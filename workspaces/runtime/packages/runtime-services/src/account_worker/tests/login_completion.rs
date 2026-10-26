@@ -27,7 +27,7 @@ fn pending_reauth(state: &State) -> (Arc<AccountDriver>, PathBuf) {
     credentials(&home, EXPECTED);
     std::fs::write(
         &registry,
-        json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{
+        json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{
             "id":"default","home":home,"label":"Fixture","source":"Codex CLI",
             "status":"ready","provider":"codex","accountId":EXPECTED}},
             "logins":{},"deleteReceipts":{}})

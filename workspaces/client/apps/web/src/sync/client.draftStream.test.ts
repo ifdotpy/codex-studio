@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
@@ -225,7 +226,7 @@ it("recovers an accepted draft from the durable RxDB checkpoint after persistenc
   expect((await db.drafts.findOne("phone:chat").exec())?.payload).toContain(
     "recovered",
   );
-  expect(pulls()[1]?.[1]).toMatchObject({
+  expect(required(pulls()[1])[1]).toMatchObject({
     query: { scope: "drafts", after: 1 },
   });
   write.mockRestore();
@@ -300,10 +301,9 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
   expect(merged.payload).toContain("local-unsent");
   // A successful merged push publishes its own newer draft sequence.
   const confirmed = event(2, 3);
-  const confirmedDocument =
-    confirmed.resourceVersions[0]?.draftChanges?.documents[0];
-  assert.ok(confirmedDocument);
-  confirmedDocument.payload = merged.payload;
+  required(
+    required(confirmed.resourceVersions[0]).draftChanges!.documents[0],
+  ).payload = merged.payload;
   const confirmedWrite = firstValueFrom(
     db.drafts
       .findOne("phone:chat")

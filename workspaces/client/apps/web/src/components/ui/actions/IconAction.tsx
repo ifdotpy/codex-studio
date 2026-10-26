@@ -16,14 +16,14 @@ export interface IconActionProps extends Omit<
 /** An icon-only action always has a visible-to-assistive-technology name. */
 export function IconAction({
   label,
-  title = label,
   color,
+  title = label,
   ...props
 }: IconActionProps) {
   return (
     <MantineActionIcon
       {...props}
-      {...(color === undefined ? {} : { color })}
+      {...(color !== undefined ? { color } : {})}
       aria-label={label}
       title={title}
     />

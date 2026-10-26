@@ -599,3 +599,31 @@ test("concurrent admissions respect the count bound and refuse symbolic backup p
       "user a.txt",
     );
   }));
+
+test("an array of tracked backups refuses rollback before any SDK write", async () =>
+  fixture(async (f) => {
+    await fs.writeFile(
+      f.history,
+      JSON.stringify({
+        type: "file-history-snapshot",
+        messageId: f.request.turnId,
+        snapshot: { messageId: f.request.turnId, trackedFileBackups: [] },
+      }) + "\n",
+    );
+    let rewinds = 0;
+    f.deps.rewindFiles = async (_native, _message, { dryRun }) => {
+      if (!dryRun) rewinds++;
+      return { canRewind: true };
+    };
+    await assert.rejects(
+      rollbackSession(f.session, f.request, f.deps),
+      /cannot be verified/,
+    );
+    assert.equal(rewinds, 0);
+    assert.equal(f.session.controlRequests?.restore, undefined);
+    assert.equal(f.session.turns.length, 1);
+    assert.equal(
+      await fs.readFile(path.join(f.cwd, "a.txt"), "utf8"),
+      "user a.txt",
+    );
+  }));

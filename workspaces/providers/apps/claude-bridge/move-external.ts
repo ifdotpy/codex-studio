@@ -4,11 +4,16 @@ import type {
   McpServerStatusConfig,
   McpClaudeAIProxyServerConfig,
   McpServerConfig,
+  McpHttpServerConfig,
   Options,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolProof, ProofTool } from "./move.ts";
-export type ExternalConfig = Exclude<McpServerStatusConfig, { type: "sdk" }>;
+export type ExternalConfig = Exclude<McpServerStatusConfig, { type: "sdk" }> &
+  Partial<
+    Pick<ConstructorParameters<typeof StdioClientTransport>[0], "env" | "cwd"> &
+      Pick<McpHttpServerConfig, "headers" | "url">
+  >;
 
 // The pinned SDK's sdk.mjs:155 documents claudeai-proxy through mcpServers,
 // and sdk.mjs:163 forwards every non-sdk config unchanged into --mcp-config.
@@ -99,7 +104,7 @@ export function externalAliases(proof: ToolProof) {
       ? proof.surfacedExternal
         ? (proof.deferredTools || []).map((tool) => tool.name)
         : proof.activeDeferredNames || []
-      : (proof.tools ?? []).map((tool) => tool.name);
+      : proof.tools!.map((tool) => tool.name);
   return [
     ...new Set(
       names
@@ -218,23 +223,32 @@ async function proxyToken() {
     ),
     "utf8",
   );
-  const credentials: unknown = JSON.parse(bytes);
-  const token = isRecord(credentials) ? credentials.claudeAiOauth : undefined;
+  const credentials: {
+    claudeAiOauth?: { accessToken?: string; expiresAt?: number };
+  } = JSON.parse(bytes);
+  const token = credentials.claudeAiOauth;
   if (
-    !isRecord(token) ||
-    typeof token.accessToken !== "string" ||
-    !token.accessToken ||
-    typeof token.expiresAt !== "number" ||
+    !token?.accessToken ||
     !Number.isFinite(token.expiresAt) ||
-    token.expiresAt <= Date.now() + 30000
+    token.expiresAt! <= Date.now() + 30000
   )
     throw new Error("The local Claude proxy credential is unavailable");
   return token.accessToken;
 }
+// MCP client/stdio.js forwards env to cross-spawn; Node child_process.spawn
+// ignores undefined environment values. Preserve that runtime contract here.
+function stdioEnvironment(
+  env: NodeJS.ProcessEnv,
+): NonNullable<ConstructorParameters<typeof StdioClientTransport>[0]["env"]> {
+  return env as NonNullable<
+    ConstructorParameters<typeof StdioClientTransport>[0]["env"]
+  >;
+}
 async function readExternalServer(
-  config: ExternalConfig,
+  value: ExternalConfig,
   initializeOnly = false,
 ) {
+  const config = parseExternalConfig(value);
   const client = new Client({ name: "studio-teleport-catalog", version: "1" });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
@@ -245,14 +259,8 @@ async function readExternalServer(
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args || [],
-        env: Object.fromEntries(
-          Object.entries({ ...process.env, ...config.env }).filter(
-            (entry): entry is [string, string] => typeof entry[1] === "string",
-          ),
-        ),
-        ...("cwd" in config && typeof config.cwd === "string"
-          ? { cwd: config.cwd }
-          : {}),
+        env: stdioEnvironment({ ...process.env, ...config.env }),
+        ...(config.cwd === undefined ? {} : { cwd: config.cwd }),
         stderr: "ignore",
       });
     } else {
@@ -264,9 +272,7 @@ async function readExternalServer(
       const url = new URL(
         proxy
           ? "https://mcp-proxy.anthropic.com/v1/mcp/" + config.id
-          : "url" in config
-            ? config.url
-            : "",
+          : config.url!,
       );
       const headers = proxy
         ? {
@@ -274,9 +280,7 @@ async function readExternalServer(
             "Accept-Encoding": "identity",
             "X-Mcp-Client-Session-Id": randomUUID(),
           }
-        : "headers" in config
-          ? config.headers
-          : undefined;
+        : config.headers;
       const options = {
         requestInit: headers === undefined ? {} : { headers },
         fetch: (url: string | URL | Request, init?: RequestInit) =>
@@ -348,15 +352,22 @@ export function transportIdentity(
       ? ["type", "id"]
       : ["type", "command", "args", "url"]
     )
-      .filter((key) => Reflect.get(config, key) !== undefined)
-      .map((key) => [key, Reflect.get(config, key)]),
+      .filter(
+        (key) =>
+          (config as ExternalConfig & Record<string, unknown>)[key] !==
+          undefined,
+      )
+      .map((key) => [
+        key,
+        (config as ExternalConfig & Record<string, unknown>)[key],
+      ]),
   );
 }
 
 const credentialFree = (config: ExternalConfig): config is LocalConfig =>
   config.type !== "claudeai-proxy" &&
-  !Object.keys("env" in config ? config.env || {} : {}).length &&
-  !Object.keys("headers" in config ? config.headers || {} : {}).length;
+  !Object.keys(config.env || {}).length &&
+  !Object.keys(config.headers || {}).length;
 // A moved chat keeps the MCP servers of its source. The target's own entry serves when it has
 // the same transport; otherwise the source's transport, which carries no credential, starts
 // the same server on the target.
@@ -445,8 +456,8 @@ export async function externalCatalog(
   );
   const failed = results.find((result) => result.status === "rejected");
   if (failed) throw failed.reason;
-  const catalogs = results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
+  const catalogs = results.map(
+    (result) => (result as PromiseFulfilledResult<ExternalServer>).value,
   );
   return {
     catalogs,
@@ -457,11 +468,12 @@ export async function externalCatalog(
     ),
     // What a move carries so that the target starts the same servers.
     transports: Object.fromEntries(
-      selected.flatMap((server) =>
-        credentialFree(server.config)
-          ? [[server.name, transportIdentity(server.config)]]
-          : [],
-      ),
+      selected
+        .filter((server) => credentialFree(server.config))
+        .map((server) => [
+          server.name,
+          transportIdentity(server.config as LocalConfig),
+        ]),
     ),
   };
 }
@@ -516,13 +528,13 @@ export async function targetExternalCatalog(
     const catalogs = expected.map((server) =>
       server.claudeAI
         ? structuredClone(server)
-        : (read.catalogs.find((row) => row.name === server.name) ?? server),
+        : read.catalogs.find((row) => row.name === server.name)!,
     );
     const configs: Parameters<typeof sdkMcpServers>[0] = { ...read.configs };
     for (const server of expected.filter((row) => row.claudeAI))
       configs[server.name] = {
         type: "claudeai-proxy",
-        id: server.proxyId ?? "",
+        id: server.proxyId!,
         url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
       };
     return {
@@ -545,7 +557,7 @@ export async function targetExternalCatalog(
     const config: ExternalConfig | undefined = server.claudeAI
       ? {
           type: "claudeai-proxy",
-          id: server.proxyId ?? "",
+          id: server.proxyId!,
           url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
         }
       : configured[server.name]

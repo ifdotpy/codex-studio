@@ -221,7 +221,7 @@ pub async fn request(
 ) -> Result<Value, TransferError> {
     uuid::Uuid::parse_str(id)
         .map_err(|_| TransferError::Refused("Supply a transfer request id"))?;
-    if !matches!(scope, "team" | "subagents") || !matches!(target_provider, "codex" | "claude") {
+    if !matches!(scope, "team" | "subagents") {
         return Err(TransferError::Refused(
             "Choose a valid transfer scope and destination provider",
         ));
@@ -230,10 +230,12 @@ pub async fn request(
     let lead = lead.to_owned();
     let target = target.to_owned();
     let scope = scope.to_owned();
-    target_provider
+    let target_provider = target_provider
         .parse::<studio_runtime_providers::ProviderKind>()
-        .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
-    let target_provider = target_provider.to_owned();
+        .map_err(|_| {
+            TransferError::Refused("Choose a valid transfer scope and destination provider")
+        })?;
+    let target_provider = target_provider.key().to_owned();
     store
         .transaction_with_error(move |tx| {
             if !Repository::available(tx)? {

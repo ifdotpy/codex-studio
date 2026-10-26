@@ -1,5 +1,6 @@
 use super::*;
 use crate::CachedSql;
+use studio_runtime_schema::provider_errors::{KnownCodexErrorKind, known_error_kind};
 use studio_runtime_schema::shared_values::{
     PROVIDER_START_NOT_SENT_ERROR as NOT_SENT_ERROR,
     PROVIDER_START_UNKNOWN_ERROR as UNKNOWN_START_ERROR,
@@ -1711,7 +1712,7 @@ impl SchedulerRepository {
             agent.extra.remove(field);
         }
         if let Some(error) = error.as_ref()
-            && error["codexErrorInfo"] == "misalignmentPolicyViolation"
+            && known_error_kind(error) == Some(KnownCodexErrorKind::MisalignmentPolicyViolation)
         {
             agent.extra.insert(
                 "nativeThreadBlock".into(),
@@ -2631,10 +2632,9 @@ pub(super) fn continuation_allowed(agent: &AgentRecord) -> bool {
         && !agent.extra.get("nativeThreadBlock").is_some_and(|block| {
             block["threadId"].is_string() && block.get("threadId") == agent.extra.get("threadId")
         })
-        && !agent
-            .extra
-            .get("error")
-            .is_some_and(|error| error["codexErrorInfo"] == "misalignmentPolicyViolation")
+        && !agent.extra.get("error").is_some_and(|error| {
+            known_error_kind(error) == Some(KnownCodexErrorKind::MisalignmentPolicyViolation)
+        })
 }
 pub(super) fn load_agent(db: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {
     db.query_row_cached("SELECT record FROM runtime_agents WHERE id=?1", [id], |r| {

@@ -37,37 +37,8 @@ type CommandReply = Partial<
 > & { method?: string; params?: unknown };
 
 function readCommandReply(line: string): CommandReply {
-  const value: unknown = JSON.parse(line);
-  if (!value || typeof value !== "object")
-    throw new Error("Invalid command executor envelope");
-  if (
-    "id" in value &&
-    value.id !== undefined &&
-    typeof value.id !== "string" &&
-    typeof value.id !== "number"
-  )
-    throw new Error("Invalid command executor identity");
-  if (
-    "method" in value &&
-    value.method !== undefined &&
-    typeof value.method !== "string"
-  )
-    throw new Error("Invalid command executor method");
-  if ("error" in value && value.error !== undefined) {
-    const error = value.error;
-    if (
-      !error ||
-      typeof error !== "object" ||
-      !("message" in error) ||
-      typeof error.message !== "string" ||
-      !("code" in error) ||
-      typeof error.code !== "number"
-    )
-      throw new Error("Invalid command executor error");
-  }
-  // The checked envelope uses the bridge's shared JSON-RPC owner. Native
-  // command results and output payloads intentionally remain opaque.
-  return value as CommandReply;
+  // The native executor owns this JSON-RPC envelope; results remain opaque.
+  return JSON.parse(line);
 }
 function nativeError(value: NativeFailure) {
   return Object.assign(new Error(value.message), value);
@@ -134,21 +105,9 @@ export function createCommandTransport({
         "SIGKILL",
       );
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "EPERM"
-      )
+      if ((error as NodeJS.ErrnoException).code === "EPERM")
         child.kill("SIGKILL");
-      else if (
-        !(
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === "ESRCH"
-        )
-      )
+      else if ((error as NodeJS.ErrnoException).code !== "ESRCH")
         stderr(String(error) + "\n");
     }
   }
@@ -166,7 +125,7 @@ export function createCommandTransport({
   }
 
   function write(value: unknown) {
-    return new Promise<unknown>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         const error = new Error(
           "Command executor input timed out; outcome unknown",
@@ -184,12 +143,12 @@ export function createCommandTransport({
             ),
           );
           reject(closed);
-        } else resolve(undefined);
+        } else resolve();
       };
       try {
-        child?.stdin.write(JSON.stringify(value) + "\n", complete);
+        child!.stdin.write(JSON.stringify(value) + "\n", complete);
       } catch (error) {
-        complete(error instanceof Error ? error : new Error(String(error)));
+        complete(error as Error);
       }
     });
   }
@@ -197,7 +156,7 @@ export function createCommandTransport({
   function call(method: CommandMethod | "initialize", params: CommandParams) {
     if (closed) return Promise.reject(closed);
     const id = "studio-command:" + randomUUID();
-    return new Promise((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
       write({ id, method, params }).catch(() => {});
     });
@@ -224,9 +183,7 @@ export function createCommandTransport({
       },
     );
     child.stderr.on("data", stderr);
-    exited = new Promise<void>((resolve) =>
-      child?.once("exit", () => resolve()),
-    );
+    exited = new Promise<void>((resolve) => child!.once("exit", resolve));
     child.on("error", (error) =>
       fail(
         new Error("Command executor failed; outcome unknown: " + error.message),
@@ -321,13 +278,11 @@ export function createCommandTransport({
     if (closed || closing)
       throw closed || new Error("Command executor is closing");
     if (method !== "command/exec") return call(method, params);
-    const processId = params.processId;
-    if (typeof processId !== "string")
-      throw new Error("Studio commands require a processId");
+
     // Reserve before submission. A crash or lost reply never permits a replay.
     const file = path.join(
       reservations,
-      createHash("sha256").update(processId).digest("hex") + ".json",
+      createHash("sha256").update(params.processId!).digest("hex") + ".json",
     );
     try {
       const reservation = await fs.open(file, "wx", 0o600);
@@ -346,12 +301,7 @@ export function createCommandTransport({
         await directory.close();
       }
     } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "EEXIST"
-      )
+      if ((error as NodeJS.ErrnoException).code === "EEXIST")
         throw new Error(
           "This command processId was already submitted or reserved; do not replay it",
         );
@@ -362,11 +312,11 @@ export function createCommandTransport({
         closed ||
         new Error("Command executor is closing; command was not submitted")
       );
-    active.add(processId);
+    active.add(params.processId!);
     try {
       return await call(method, params);
     } finally {
-      active.delete(processId);
+      active.delete(params.processId!);
     }
   }
 

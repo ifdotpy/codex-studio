@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   entityPullFixtureForRequest,
@@ -6,7 +7,7 @@ import {
   readTestState,
   test,
 } from "../playwright.ts";
-import type { TranscriptPageResponse } from "../playwright.ts";
+import type { EntityPullFixtureOptions } from "../playwright.ts";
 import assert from "node:assert/strict";
 
 test("transcript paging returns from the oldest row to the newest", async ({
@@ -47,27 +48,20 @@ test("transcript paging returns from the oldest row to the newest", async ({
     key: `codex-desktop-opened:${state.stateDir}`,
     id: JSON.stringify(other.id),
   });
-  const contextUsage = (() => {
-    const value = lead.contextUsage;
-    if (!value) return value;
-    if (typeof value.at !== "number")
-      throw new Error("Fixture context usage has no timestamp");
-    return { ...value, at: value.at };
-  })();
   const initialTranscript = {
     agent: {
       ...lead,
-      contextUsage,
       status: "completed",
       inFlight: false,
+      turnId: null,
     },
     items: items.slice(-240),
     truncated: true,
-    nextCursor: items.at(-240)?.id ?? null,
+    nextCursor: items.at(-240)!.id,
     nextAfterCursor: null,
     historyVersion: "forward-paging-fixture",
-    tail: items.at(-1)?.id ?? null,
-  } satisfies TranscriptPageResponse;
+    tail: items.at(-1)!.id,
+  } satisfies NonNullable<EntityPullFixtureOptions["transcript"]>;
   await page.route("**/api/sync/pull**", async (route) => {
     const url = new URL(route.request().url());
     const scope = url.searchParams.get("scope");
@@ -107,10 +101,10 @@ test("transcript paging returns from the oldest row to the newest", async ({
       headers: schemaHeaders,
       json: {
         items: selected,
-        nextCursor: before && first > 0 ? (items[first]?.id ?? null) : null,
+        nextCursor: before && first > 0 ? required(items[first]).id : null,
         nextAfterCursor:
           last >= 0 && last < items.length - 1
-            ? (items[last]?.id ?? null)
+            ? required(items[last]).id
             : null,
         historyVersion: "forward-paging-fixture",
       },

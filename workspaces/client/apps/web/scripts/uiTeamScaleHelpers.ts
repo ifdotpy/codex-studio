@@ -1,3 +1,4 @@
+import { providerLabel } from "../src/generated/providerKind.ts";
 import type {
   components,
   AgentEntityDto,
@@ -55,11 +56,13 @@ export type RoleSettings = {
   model: string;
 };
 // Recursive locator view: only operations used by this dialog driver are
-// required of its fixture; argument and result types stay owned by Playwright.
+// required of its fixture. Arguments come from Playwright; the driver discards
+// the setChecked result, including the original fixture's numeric result.
 export type DialogControl<Selector = Pick<Locator, "click">> = Pick<
   Locator,
-  "getAttribute" | "count" | "setChecked" | "click" | "waitFor"
+  "getAttribute" | "count" | "click" | "waitFor"
 > & {
+  setChecked(...args: Parameters<Locator["setChecked"]>): Promise<unknown>;
   getByRole(...args: Parameters<Locator["getByRole"]>): DialogControl<Selector>;
   locator(
     ...args: Parameters<Locator["locator"]>
@@ -585,7 +588,7 @@ export async function configureNewChat<Selector>(
     await chooseSegment(
       dialog,
       `${accountLabel} provider`,
-      settings.profile.provider === "claude" ? "Claude" : "Codex",
+      providerLabel(settings.profile.provider),
     );
     const accounts = dialog.getByRole("group", {
       name: accountLabel,

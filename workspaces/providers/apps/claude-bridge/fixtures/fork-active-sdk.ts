@@ -1,3 +1,4 @@
+import { inputText } from "../sdk-fixtures.ts";
 export interface ForkQueryEvent {
   id: string;
   start?: boolean;
@@ -9,7 +10,7 @@ function parseNativeFixtureRow(text: string): SessionStoreEntry {
 }
 export { resolveSettings } from "../sdk-fixtures.ts";
 import type {
-  SessionFixtureQuery,
+  SessionFixtureTextQuery as SessionFixtureQuery,
   SessionFixtureMessage,
 } from "./session-sdk-types.ts";
 import type { SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
@@ -33,17 +34,17 @@ export function query({ prompt, options }: SessionFixtureQuery) {
   const abort = new AbortController(),
     id = options.resume || options.sessionId;
   const history = path.join(
-    process.env.CLAUDE_CONFIG_DIR || "",
+    process.env.CLAUDE_CONFIG_DIR!,
     "projects",
     options.cwd.replace(/[^a-zA-Z0-9]/g, "-"),
     id + ".jsonl",
   );
   fs.mkdirSync(path.dirname(history), { recursive: true });
-  let parent: string | undefined | null = null;
-  if (fs.existsSync(history)) {
-    const last = fs.readFileSync(history, "utf8").trim().split("\n").at(-1);
-    if (last) parent = parseNativeFixtureRow(last).uuid;
-  }
+  let parent = fs.existsSync(history)
+    ? parseNativeFixtureRow(
+        fs.readFileSync(history, "utf8").trim().split("\n").at(-1)!,
+      ).uuid
+    : null;
   const record = (row: SessionStoreEntry) => {
     fs.appendFileSync(
       history,
@@ -92,11 +93,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
       while (!abort.signal.aborted) {
         const input = await prompt.next();
         if (input.done) return;
-        const content = input.value.message.content;
-        const first = Array.isArray(content) ? content[0] : undefined;
-        if (!first || first.type !== "text")
-          throw new Error("Expected fixture text input");
-        const text = first.text;
+        const text = inputText(input.value);
         const messages = histories.get(id) || [];
         histories.set(id, messages);
         const user: SessionStoreEntry = {
@@ -114,8 +111,8 @@ export function query({ prompt, options }: SessionFixtureQuery) {
           session_id: options.resume || options.sessionId,
         };
         if (text === "running") {
-          await new Promise<void>((resolve) =>
-            abort.signal.addEventListener("abort", () => resolve(), {
+          await new Promise<unknown>((resolve) =>
+            abort.signal.addEventListener("abort", resolve, {
               once: true,
             }),
           );
@@ -143,6 +140,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
         yield {
           type: "result",
           subtype: "success",
+          is_error: false,
           usage: { input_tokens: 10, output_tokens: 2 },
           result: "reply",
         };

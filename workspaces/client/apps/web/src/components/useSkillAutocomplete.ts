@@ -45,11 +45,8 @@ function catalogFor(key: string, agentId: string): Promise<SkillCatalog> {
   entry.pending = pending;
   skillCatalogCache.delete(key);
   skillCatalogCache.set(key, entry);
-  while (skillCatalogCache.size > CACHE_MAX_ENTRIES) {
-    const first = skillCatalogCache.keys().next();
-    if (first.done) throw new Error("Skill cache is unexpectedly empty");
-    skillCatalogCache.delete(first.value);
-  }
+  while (skillCatalogCache.size > CACHE_MAX_ENTRIES)
+    skillCatalogCache.delete(skillCatalogCache.keys().next().value!);
   return pending;
 }
 
@@ -64,10 +61,9 @@ interface TokenRange {
 function tokenAtCaret(value: string, caret: number): TokenRange | null {
   const before = value.slice(0, caret);
   const match = /(^|[^\p{L}\p{N}_])\$([\p{L}\p{N}_:-]*)$/u.exec(before);
-  if (!match) return null;
-  const [, , query] = match;
-  if (query === undefined) throw new Error("Missing skill token query");
-  const start = before.length - query.length - 1;
+  if (!match || match[2] === undefined) return null;
+  const start = before.length - match[2].length - 1;
+  const query = match[2];
   if (/^\d/.test(query)) return null;
   let end = caret;
   while (end < value.length && /[\p{L}\p{N}_:-]/u.test(value.charAt(end)))

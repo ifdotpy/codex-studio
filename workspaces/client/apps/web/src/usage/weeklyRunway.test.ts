@@ -1,4 +1,6 @@
+import { required } from "../components/componentTestFixtures.ts";
 import type { components } from "../generated/api";
+import type { JsonInputOf } from "../types";
 import assert from "node:assert/strict";
 import { it as test } from "vitest";
 import { weeklyRunway } from "./weeklyRunway.ts";
@@ -6,33 +8,28 @@ import { weeklyRunway } from "./weeklyRunway.ts";
 const now = 1800000000;
 const day = 86400;
 const snapshot = (
-  usedPercent: Exclude<
-    components["schemas"]["RateLimitWindow"]["usedPercent"],
-    undefined
-  >,
+  usedPercent: components["schemas"]["RateLimitWindow"]["usedPercent"],
   elapsed = 1,
-) =>
-  ({
-    at: now,
-    data: {
-      rateLimits: {
-        limitId: "codex",
-        primary: {
-          usedPercent: 100,
-          windowDurationMins: 300,
-          resetsAt: now + 3600,
-        },
-        secondary: {
-          usedPercent,
-          windowDurationMins: 10080,
-          resetsAt: now + (7 - elapsed) * day,
-        },
+): JsonInputOf<
+  Pick<components["schemas"]["UsageLimitsResponse"], "at" | "data">
+> => ({
+  at: now,
+  data: {
+    rateLimits: {
+      limitId: "codex",
+      primary: {
+        usedPercent: 100,
+        windowDurationMins: 300,
+        resetsAt: now + 3600,
+      },
+      secondary: {
+        usedPercent,
+        windowDurationMins: 10080,
+        resetsAt: now + (7 - elapsed) * day,
       },
     },
-  }) satisfies Pick<
-    components["schemas"]["UsageLimitsResponse"],
-    "at" | "data"
-  >;
+  },
+});
 
 test("weekly consumption controls all three bands; the exhausted short window is ignored", () => {
   assert.equal(weeklyRunway(snapshot(10), now).color, "green");
@@ -80,32 +77,29 @@ test("unknown observations and signed-out accounts stay gray", () => {
   );
   assert.equal(signedOut.windows[0]?.days, null);
   const stale = snapshot(20);
-  stale.data.rateLimits.secondary.resetsAt = now - 1;
+  stale.data!.rateLimits!.secondary!.resetsAt = now - 1;
   assert.equal(weeklyRunway(stale, now).color, "green");
-  assert.equal(weeklyRunway(stale, now).windows[0]?.remaining, 100);
-  stale.data.rateLimits.secondary.usedPercent = null;
+  assert.equal(required(weeklyRunway(stale, now).windows[0]).remaining, 100);
+  stale.data!.rateLimits!.secondary!.usedPercent = null;
   assert.equal(weeklyRunway(stale, now).color, "green");
   const missingTime = snapshot(20);
-  Reflect.deleteProperty(missingTime, "at");
+  delete missingTime.at;
   assert.equal(weeklyRunway(missingTime, now).color, "red");
-  assert.equal(weeklyRunway(missingTime, now).windows[0]?.days, null);
+  assert.equal(required(weeklyRunway(missingTime, now).windows[0]).days, null);
   const zeroWithoutTime = snapshot(0);
-  Reflect.deleteProperty(zeroWithoutTime, "at");
+  delete zeroWithoutTime.at;
   assert.equal(weeklyRunway(zeroWithoutTime, now).color, "green");
   const zeroWithoutReset = snapshot(0);
-  Reflect.deleteProperty(
-    zeroWithoutReset.data.rateLimits.secondary,
-    "resetsAt",
-  );
+  delete zeroWithoutReset.data!.rateLimits!.secondary!.resetsAt;
   assert.equal(
-    weeklyRunway(zeroWithoutReset, now).windows[0]?.resetFirst,
+    required(weeklyRunway(zeroWithoutReset, now).windows[0]).resetFirst,
     false,
   );
   const missingWeekly = snapshot(20);
-  Reflect.deleteProperty(missingWeekly.data.rateLimits, "secondary");
+  delete missingWeekly.data!.rateLimits!.secondary;
   assert.equal(weeklyRunway(missingWeekly, now).color, "green");
   const exhausted = snapshot(100);
-  Reflect.deleteProperty(exhausted.data.rateLimits.secondary, "resetsAt");
+  delete exhausted.data!.rateLimits!.secondary!.resetsAt;
   const noResetExhaustion = weeklyRunway(exhausted, now);
   assert.equal(noResetExhaustion.color, "red");
   assert.equal(noResetExhaustion.days, 0);
@@ -148,29 +142,29 @@ test("the least sustainable weekly pool controls a Claude account", () => {
       rateLimitsByLimitId: {
         claude: {
           limitName: "Claude",
-          secondary: snapshot(80, 6).data.rateLimits.secondary,
+          secondary: snapshot(80, 6).data!.rateLimits!.secondary!,
         },
         "claude-sonnet": {
           limitName: "Claude Sonnet",
-          secondary: snapshot(20).data.rateLimits.secondary,
+          secondary: snapshot(20).data!.rateLimits!.secondary!,
         },
       },
     },
   };
   assert.equal(weeklyRunway(limits, now).color, "red");
-  limits.data.rateLimitsByLimitId["claude-sonnet"].secondary =
-    snapshot(15).data.rateLimits.secondary;
+  limits.data!.rateLimitsByLimitId!["claude-sonnet"].secondary =
+    snapshot(15).data!.rateLimits!.secondary!;
   assert.equal(weeklyRunway(limits, now).color, "yellow");
 });
 
 test("the consumption rate uses the observation time, not time since a stale snapshot", () => {
   const limits = snapshot(20);
-  assert.equal(weeklyRunway(limits, now + day).windows[0]?.days, 4);
+  assert.equal(required(weeklyRunway(limits, now + day).windows[0]).days, 4);
 });
 
 test("legacy and provider-specific limits preserve account and window labels", () => {
   const legacy = structuredClone(snapshot(20));
-  Reflect.deleteProperty(legacy.data.rateLimits, "limitId");
+  delete legacy.data!.rateLimits!.limitId;
   const legacyResult = weeklyRunway(legacy, now);
   assert.ok(legacyResult);
   assert.ok(
@@ -178,25 +172,26 @@ test("legacy and provider-specific limits preserve account and window labels", (
   );
   assert.equal(legacyResult.windows[0]?.name, "Codex");
 
-  const emptyIndex = {
-    ...structuredClone(legacy),
-    data: { ...legacy.data, rateLimitsByLimitId: {} },
-  };
-  assert.equal(weeklyRunway(emptyIndex, now).windows[0]?.name, "Codex");
+  const emptyIndex = structuredClone(legacy);
+  emptyIndex.data!.rateLimitsByLimitId! = {};
+  assert.equal(
+    required(weeklyRunway(emptyIndex, now).windows[0]).name,
+    "Codex",
+  );
 
   const indexed = {
     at: now,
     data: {
       rateLimitsByLimitId: {
         claude: {
-          secondary: snapshot(20).data.rateLimits.secondary,
+          secondary: snapshot(20).data!.rateLimits!.secondary!,
         },
         custom: {
           limitName: "Named pool",
-          secondary: snapshot(20).data.rateLimits.secondary,
+          secondary: snapshot(20).data!.rateLimits!.secondary!,
         },
       },
-      rateLimits: snapshot(90).data.rateLimits,
+      rateLimits: snapshot(90).data!.rateLimits!,
     },
   };
   assert.deepEqual(
@@ -233,15 +228,9 @@ test("only weekly windows with valid percentage and reset values contribute", ()
   assert.equal(result.windows[0]?.remaining, 80);
 
   for (const usedPercent of [-1, 101, "20", Infinity]) {
-    const invalidUsage = {
-      ...limits,
-      data: {
-        rateLimits: {
-          ...limits.data.rateLimits,
-          secondary: { ...limits.data.rateLimits.secondary, usedPercent },
-        },
-      },
-    };
+    const invalidUsage = structuredClone(limits);
+    // @ts-expect-error usedPercent deliberately includes a nonnumeric value.
+    invalidUsage.data!.rateLimits!.secondary!.usedPercent = usedPercent;
     const invalidResult = weeklyRunway(invalidUsage, now);
     assert.ok(invalidResult);
     assert.ok(
@@ -259,15 +248,9 @@ test("only weekly windows with valid percentage and reset values contribute", ()
   }
 
   for (const resetsAt of [-1, "later", Infinity]) {
-    const invalidReset = {
-      ...limits,
-      data: {
-        rateLimits: {
-          ...limits.data.rateLimits,
-          secondary: { ...limits.data.rateLimits.secondary, resetsAt },
-        },
-      },
-    };
+    const invalidReset = structuredClone(limits);
+    // @ts-expect-error resetsAt deliberately includes a nonnumeric value.
+    invalidReset.data!.rateLimits!.secondary!.resetsAt = resetsAt;
     const invalidResult = weeklyRunway(invalidReset, now);
     assert.ok(invalidResult);
     assert.ok(
@@ -291,15 +274,13 @@ test("only weekly windows with valid percentage and reset values contribute", ()
     assert.equal(invalidResult.windows[0]?.resetFirst, false);
   }
   const zeroReset = structuredClone(limits);
-  zeroReset.data.rateLimits.secondary.resetsAt = 0;
-  assert.equal(weeklyRunway(zeroReset, now).windows[0]?.reset, null);
+  zeroReset.data!.rateLimits!.secondary!.resetsAt = 0;
+  assert.equal(required(weeklyRunway(zeroReset, now).windows[0]).reset, null);
 
   const missingResetAtEpoch = structuredClone(limits);
   missingResetAtEpoch.at = 0;
-  Reflect.deleteProperty(
-    missingResetAtEpoch.data.rateLimits.secondary,
-    "resetsAt",
-  );
+  // @ts-expect-error resetsAt is deliberately absent in this malformed observation.
+  missingResetAtEpoch.data.rateLimits.secondary.resetsAt = undefined;
   const invalidAtEpoch = weeklyRunway(missingResetAtEpoch, 0);
   assert.ok(invalidAtEpoch);
   assert.ok(
@@ -311,7 +292,7 @@ test("only weekly windows with valid percentage and reset values contribute", ()
 
 test("weekly reset and observation boundaries determine expiry and projection validity", () => {
   const atReset = snapshot(20);
-  atReset.data.rateLimits.secondary.resetsAt = now;
+  atReset.data!.rateLimits!.secondary!.resetsAt = now;
   const expired = weeklyRunway(atReset, now);
   assert.ok(expired);
   assert.ok(expired.windows[0] !== null && expired.windows[0] !== undefined);
@@ -324,32 +305,38 @@ test("weekly reset and observation boundaries determine expiry and projection va
   const nearFuture = snapshot(20);
   nearFuture.at = now + 5;
   assert.ok(
-    Math.abs((weeklyRunway(nearFuture, now).windows[0]?.days ?? NaN) - 4) <
+    Math.abs(required(weeklyRunway(nearFuture, now).windows[0]).days! - 4) <
       0.001,
   );
   const tooFarFuture = snapshot(20);
   tooFarFuture.at = now + 6;
-  assert.equal(weeklyRunway(tooFarFuture, now).windows[0]?.days, null);
+  assert.equal(required(weeklyRunway(tooFarFuture, now).windows[0]).days, null);
   const beyondWindow = snapshot(20);
   beyondWindow.at = now + 5;
-  beyondWindow.data.rateLimits.secondary.resetsAt = now + 1;
-  assert.equal(weeklyRunway(beyondWindow, now).windows[0]?.days, null);
+  beyondWindow.data!.rateLimits!.secondary!.resetsAt = now + 1;
+  assert.equal(required(weeklyRunway(beyondWindow, now).windows[0]).days, null);
 
   const atWindowStart = snapshot(20, 0);
-  assert.equal(weeklyRunway(atWindowStart, now).windows[0]?.days, null);
+  assert.equal(
+    required(weeklyRunway(atWindowStart, now).windows[0]).days,
+    null,
+  );
   const atWindowEnd = snapshot(20);
   atWindowEnd.at = now + 1;
-  atWindowEnd.data.rateLimits.secondary.resetsAt = now + 1;
-  assert.equal(weeklyRunway(atWindowEnd, now).windows[0]?.days, 28);
+  atWindowEnd.data!.rateLimits!.secondary!.resetsAt = now + 1;
+  assert.equal(required(weeklyRunway(atWindowEnd, now).windows[0]).days, 28);
 
   const resetEqualsExhaustion = snapshot(50, 3.5);
   assert.equal(
-    weeklyRunway(resetEqualsExhaustion, now).windows[0]?.resetFirst,
+    required(weeklyRunway(resetEqualsExhaustion, now).windows[0]).resetFirst,
     false,
   );
   const resetMissing = snapshot(20);
-  Reflect.deleteProperty(resetMissing.data.rateLimits.secondary, "resetsAt");
-  assert.equal(weeklyRunway(resetMissing, now).windows[0]?.resetFirst, false);
+  delete resetMissing.data!.rateLimits!.secondary!.resetsAt;
+  assert.equal(
+    required(weeklyRunway(resetMissing, now).windows[0]).resetFirst,
+    false,
+  );
 });
 
 test("each weekly allowance reports its own remaining amount, projection and reset ordering", () => {
@@ -359,15 +346,15 @@ test("each weekly allowance reports its own remaining amount, projection and res
       rateLimitsByLimitId: {
         fast: {
           limitName: "Fast",
-          secondary: snapshot(20, 1).data.rateLimits.secondary,
+          secondary: snapshot(20, 1).data!.rateLimits!.secondary!,
         },
         resetFirst: {
           limitName: "Reset first",
-          secondary: snapshot(80, 6).data.rateLimits.secondary,
+          secondary: snapshot(80, 6).data!.rateLimits!.secondary!,
         },
         zero: {
           limitName: "Zero",
-          secondary: snapshot(100, 1).data.rateLimits.secondary,
+          secondary: snapshot(100, 1).data!.rateLimits!.secondary!,
         },
       },
     },
@@ -397,7 +384,7 @@ test("each weekly allowance reports its own remaining amount, projection and res
     data: {
       rateLimitsByLimitId: {
         exhausted: {
-          secondary: snapshot(100).data.rateLimits.secondary,
+          secondary: snapshot(100).data!.rateLimits!.secondary!,
         },
         unknown: {
           secondary: { windowDurationMins: 10080, usedPercent: 10 },
@@ -444,7 +431,7 @@ test("empty and unknown weekly data return the states shown by the account allow
     data: {
       rateLimitsByLimitId: {
         unknown: { secondary: { windowDurationMins: 10080, usedPercent: 110 } },
-        known: { secondary: snapshot(20).data.rateLimits.secondary },
+        known: { secondary: snapshot(20).data!.rateLimits!.secondary! },
       },
     },
   };
@@ -453,7 +440,7 @@ test("empty and unknown weekly data return the states shown by the account allow
   assert.equal(mixedResult.days, null);
 
   const missingWeekly = snapshot(20);
-  Reflect.deleteProperty(missingWeekly.data.rateLimits, "secondary");
+  delete missingWeekly.data!.rateLimits!.secondary;
   assert.deepEqual(weeklyRunway(missingWeekly, now), {
     color: "green",
     days: Infinity,

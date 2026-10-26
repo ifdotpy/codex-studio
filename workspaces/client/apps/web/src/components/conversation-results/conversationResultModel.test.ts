@@ -1,9 +1,17 @@
-import { required, componentAttachment } from "../componentTestFixtures";
+import { required } from "../componentTestFixtures";
+import type { ConversationResult } from "./conversationResultModel";
+import { componentAttachment } from "../componentTestFixtures";
 import type { Message, JsonValue } from "../../types";
 import assert from "node:assert/strict";
 import { conversationResults } from "./conversationResultModel.ts";
 
 import { it } from "vitest";
+
+type AssetResult = Extract<ConversationResult, Record<"asset", unknown>>;
+type ImageResult = Extract<ConversationResult, Record<"image", unknown>>;
+type PatchResult = Extract<ConversationResult, { kind: "patch" }>;
+type SourceResult = Extract<ConversationResult, Record<"source", unknown>>;
+type FileResult = Extract<ConversationResult, { kind: "file" }>;
 
 const assistant = (text: string, extra: Partial<Message> = {}): Message => ({
   id: "answer",
@@ -25,17 +33,16 @@ check("linked paths preserve labels, line numbers and local images", () => {
       "[Build report](</work/my report.md:12>) ![Preview](/work/view.png) [Again](/work/my%20report.md#L30)",
     ),
   ]);
-  const result0 = required(results[0]);
-  assert.ok("path" in result0);
-  assert.ok(result0.kind === "file");
-  const result1 = required(results[1]);
-  assert.ok("image" in result1);
   assert.equal(results.length, 2);
   assert.deepEqual(
-    { label: result0.label, path: result0.path, line: result0.line },
+    {
+      label: required(results[0]).label,
+      path: (results[0] as FileResult).path,
+      line: (results[0] as FileResult).line,
+    },
     { label: "Build report", path: "/work/my report.md", line: 12 },
   );
-  assert.equal(result1.image, true);
+  assert.equal((results[1] as ImageResult).image, true);
 });
 check(
   "links in nested lists and reference links use the Markdown lexer",
@@ -45,10 +52,8 @@ check(
         "- **See [report][r]**\n\n[r]: docs/report.md\n\n`[fake](secret.txt)`",
       ),
     ]);
-    const result0 = required(results[0]);
-    assert.ok("path" in result0);
     assert.equal(results.length, 1);
-    assert.equal(result0.path, "docs/report.md");
+    assert.equal((results[0] as FileResult).path, "docs/report.md");
   },
 );
 check(
@@ -77,9 +82,8 @@ check(
       { id: "user", role: "user", text: "Input", assets },
       { id: "user-link", role: "user", text: "[Input](private.md)" },
     ]);
-    const result0 = required(results[0]);
     assert.equal(results.length, 1);
-    assert.equal(result0.kind, "asset");
+    assert.equal(required(results[0]).kind, "asset");
   },
 );
 check("missing assistant text still exposes recorded attachments", () => {
@@ -119,13 +123,10 @@ check(
         changes: [{ path: "src/old.ts", diff }],
       }),
     ]);
-    const result0 = required(results[0]);
-    assert.ok("source" in result0);
-    assert.ok("paths" in result0);
-    assert.equal(result0.source, diff);
-    assert.equal(result0.label, "old.ts");
-    assert.deepEqual(result0.paths, ["src/old.ts"]);
-    assert.equal(result0.kind, "patch");
+    assert.equal((results[0] as SourceResult).source, diff);
+    assert.equal(required(results[0]).label, "old.ts");
+    assert.deepEqual((results[0] as PatchResult).paths, ["src/old.ts"]);
+    assert.equal(required(results[0]).kind, "patch");
   },
 );
 check(
@@ -158,13 +159,12 @@ check(
     const results = conversationResults([
       output({ turnId: "turn-7", diff }, { title: "Changes", truncated: true }),
     ]);
-    const result0 = required(results[0]);
-    assert.ok("paths" in result0);
-    assert.ok("source" in result0);
-    assert.ok("truncated" in result0);
-    assert.deepEqual(result0.paths, ["deleted.txt", "new file.txt"]);
-    assert.equal(result0.source, diff);
-    assert.equal(result0.truncated, true);
+    assert.deepEqual((results[0] as PatchResult).paths, [
+      "deleted.txt",
+      "new file.txt",
+    ]);
+    assert.equal((results[0] as SourceResult).source, diff);
+    assert.equal((results[0] as PatchResult).truncated, true);
   },
 );
 check(
@@ -175,15 +175,14 @@ check(
         "```mermaid\ngraph TD; A-->B\n```\n\n<style>p{color:red}</style>\n\n<div>Preview</div>\n\n```html\n<p>Unfinished",
       ),
     ]);
-    const result0 = required(results[0]);
-    assert.ok("source" in result0);
-    const result1 = required(results[1]);
-    assert.ok("source" in result1);
     assert.equal(results.length, 2);
-    assert.equal(result0.kind, "mermaid");
-    assert.equal(result0.source, "graph TD; A-->B");
-    assert.equal(result1.kind, "html");
-    assert.match(result1.source, /<style>.*<\/style>[\s\S]*<div>/);
+    assert.equal(required(results[0]).kind, "mermaid");
+    assert.equal((results[0] as SourceResult).source, "graph TD; A-->B");
+    assert.equal(required(results[1]).kind, "html");
+    assert.match(
+      (results[1] as SourceResult).source,
+      /<style>.*<\/style>[\s\S]*<div>/,
+    );
   },
 );
 check(
@@ -196,9 +195,8 @@ check(
       }),
       assistant("```html\n<p>Two</p>\n```", { id: "answer-3" }),
     ]);
-    const result2 = required(results[2]);
     assert.equal(results.length, 3);
-    assert.equal(result2.messageId, "answer-3");
+    assert.equal(required(results[2]).messageId, "answer-3");
   },
 );
 check("turn diffs collapse against the same recorded file-change patch", () => {
@@ -211,19 +209,18 @@ check("turn diffs collapse against the same recorded file-change patch", () => {
     }),
     output({ diff }, { id: "turn/diff/updated", title: "Changes" }),
   ]);
-  const result0 = required(results[0]);
-  assert.ok("source" in result0);
-  assert.ok(result0.kind === "patch");
   assert.equal(results.length, 1);
-  assert.equal(result0.kind, "patch");
-  assert.equal(result0.source, diff);
-  assert.equal(result0.messageId, "tool");
-  assert.ok(
-    result0.change &&
-      typeof result0.change === "object" &&
-      "path" in result0.change,
+  assert.equal(required(results[0]).kind, "patch");
+  assert.equal((results[0] as SourceResult).source, diff);
+  assert.equal(required(results[0]).messageId, "tool");
+  assert.equal(
+    (
+      (results[0] as PatchResult).change as {
+        path: string;
+      }
+    ).path,
+    "src/shared.ts",
   );
-  assert.equal(result0.change.path, "src/shared.ts");
 });
 check(
   "multi-file turn diffs retain distinct identity from one file change",
@@ -252,15 +249,13 @@ check(
         { id: "turn/diff/updated:without-paths", title: "Changes" },
       ),
     ]);
-    const result0 = required(results[0]);
-    const result2 = required(results[2]);
-    assert.ok("paths" in result2);
-    const result3 = required(results[3]);
-    assert.ok("paths" in result3);
     assert.equal(results.length, 4);
-    assert.equal(result0.kind, "patch");
-    assert.deepEqual(result2.paths, ["first.ts", "second.ts"]);
-    assert.deepEqual(result3.paths, []);
+    assert.equal(required(results[0]).kind, "patch");
+    assert.deepEqual((results[2] as PatchResult).paths, [
+      "first.ts",
+      "second.ts",
+    ]);
+    assert.deepEqual((results[3] as PatchResult).paths, []);
   },
 );
 
@@ -273,18 +268,16 @@ check(
       ),
     ]);
     assert.deepEqual(
-      results.map((result) => {
-        assert.ok(result.kind === "file");
-        const { id, label, kind, path, line, image } = result;
-        return {
+      (results as FileResult[]).map(
+        ({ id, label, kind, path, line, image }) => ({
           id,
           label,
           kind,
           path,
           line,
           image,
-        };
-      }),
+        }),
+      ),
       [
         {
           id: "answer:result:0",
@@ -387,11 +380,11 @@ check("only closed supported fences become previews", () => {
     assistant("```html\n```", { id: "answer-10" }),
   ]);
   assert.deepEqual(
-    results.map((result) => {
-      assert.ok("source" in result);
-      const { kind, label, source } = result;
-      return { kind, label, source };
-    }),
+    (results as SourceResult[]).map(({ kind, label, source }) => ({
+      kind,
+      label,
+      source,
+    })),
     [
       { kind: "html", label: "HTML preview", source: "Valid markup" },
       {
@@ -416,11 +409,11 @@ check(
       ),
     ]);
     assert.deepEqual(
-      results.map((result) => {
-        assert.ok("source" in result);
-        const { label, kind, source } = result;
-        return { label, kind, source };
-      }),
+      (results as SourceResult[]).map(({ label, kind, source }) => ({
+        label,
+        kind,
+        source,
+      })),
       [
         {
           label: "HTML preview",
@@ -456,17 +449,13 @@ check(
       }),
     ]);
     assert.deepEqual(
-      results.map((result) => {
-        assert.ok(result.kind === "asset");
-        const { id, label, kind, asset, image } = result;
-        return {
-          id,
-          label,
-          kind,
-          asset,
-          image,
-        };
-      }),
+      (results as AssetResult[]).map(({ id, label, kind, asset, image }) => ({
+        id,
+        label,
+        kind,
+        asset,
+        image,
+      })),
       [
         {
           id: "answer:result:0",
@@ -524,17 +513,15 @@ check(
     ]);
     assert.equal(results.length, 2);
     assert.deepEqual(
-      results.map((result) => {
-        assert.ok(result.kind === "patch");
-        const { label, kind, paths, source, truncated } = result;
-        return {
+      (results as PatchResult[]).map(
+        ({ label, kind, paths, source, truncated }) => ({
           label,
           kind,
           paths,
           source,
           truncated,
-        };
-      }),
+        }),
+      ),
       [
         {
           label: "dir/",
@@ -637,14 +624,14 @@ check(
     );
     assert.ok(result.kind === "patch");
     assert.equal(result.label, "Changes · 4 files");
-    assert.deepEqual(result.paths, [
+    assert.deepEqual((result as PatchResult).paths, [
       "name with spaces.txt",
       "repeated.ts",
       "x/ab/nested.ts",
       "another.ts",
     ]);
-    assert.equal(result.source, diff);
-    assert.equal(result.truncated, false);
+    assert.equal((result as SourceResult).source, diff);
+    assert.equal((result as PatchResult).truncated, false);
   },
 );
 
@@ -661,16 +648,12 @@ check(
       output({ diff: noPaths }, { id: "worker:turn/diff/updated" }),
     ]);
     assert.deepEqual(
-      results.map((result) => {
-        assert.ok(result.kind === "patch");
-        const { label, kind, paths, truncated } = result;
-        return {
-          label,
-          kind,
-          paths,
-          truncated,
-        };
-      }),
+      (results as PatchResult[]).map(({ label, kind, paths, truncated }) => ({
+        label,
+        kind,
+        paths,
+        truncated,
+      })),
       [
         {
           label: "fresh.ts",

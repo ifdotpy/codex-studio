@@ -31,7 +31,7 @@ async function nativeDocumentPolicy() {
     (Array.isArray(disabled) ? !disabled.includes("style-src") : !disabled) &&
     /<style[\s>]/i.test(index);
   const nonce = String(randomInt(1, 2 ** 47));
-  if (typeof security.csp !== "string") throw new Error("Missing native CSP");
+
   const policy = security.csp
     .split(";")
     .map((part: string) => part.trim())
@@ -50,9 +50,10 @@ async function nativeDocumentPolicy() {
 // lines and a dotted edge.
 import { diagram } from "./RichPreview.browser.data.ts";
 const labels = (pattern: RegExp) =>
-  [...diagram.matchAll(pattern)].map((match) =>
-    (match[1] ?? "").split("<br/>"),
-  );
+  [...diagram.matchAll(pattern)].map((match) => {
+    assert.ok(match[1] !== undefined);
+    return match[1].split("<br/>");
+  });
 const nodeLabels = labels(/(?<!subgraph )\b\w+\["([^"]+)"\]/g);
 const clusterLabels = labels(/subgraph \w+\["([^"]+)"\]/g).flat();
 const edgeLabels = labels(/\|"([^"]+)"\|/g);
@@ -62,15 +63,16 @@ const channel = (value: number) => {
   return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 };
 const luminance = (rgb: string) => {
-  const [r = 0, g = 0, b = 0] = (rgb.match(/\d+(\.\d+)?/g) ?? [])
+  const [r, g, b] = rgb
+    .match(/\d+(\.\d+)?/g)!
     .slice(0, 3)
     .map(Number);
+  assert.ok(r !== undefined && g !== undefined && b !== undefined);
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
 };
 const contrast = (a: string, b: string) => {
-  const [high = 0, low = 0] = [luminance(a), luminance(b)].sort(
-    (x, y) => y - x,
-  );
+  const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  assert.ok(high !== undefined && low !== undefined);
   return (high + 0.05) / (low + 0.05);
 };
 
@@ -127,26 +129,21 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
         await frame.locator("svg .node").first().waitFor({ state: "attached" });
         const report = await frame.locator("svg").evaluate((svg) => {
           const color = (element: Element | null) => {
-            if (!element) throw new Error("Missing preview color element");
-            return getComputedStyle(element).color;
+            return getComputedStyle(element!).color;
           };
           const fill = (element: Element | null) => {
-            if (!element) throw new Error("Missing preview fill element");
-            return getComputedStyle(element).fill;
+            return getComputedStyle(element!).fill;
           };
           const lines = (element: Element) =>
-            (element instanceof HTMLElement
-              ? element.innerText
-              : (element.textContent ?? "")
-            )
+            (element as HTMLElement).innerText
               .split("\n")
               .map((line) => line.trim())
               .filter(Boolean);
           // A label fits when its text box stays inside its foreignObject.
           const fits = (label: Element) => {
             const parent = label.closest("foreignObject");
-            if (!parent) throw new Error("Missing preview foreign object");
-            const box = parent.getBoundingClientRect();
+
+            const box = parent!.getBoundingClientRect();
             const text = label.getBoundingClientRect();
             return text.width <= box.width + 1 && text.height <= box.height + 1;
           };
@@ -154,20 +151,21 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
             const label = group.querySelector(
               `${selector} foreignObject > div`,
             );
-            if (!label) throw new Error("Missing preview label");
+
             return {
               fill: fill(group.querySelector("rect, polygon, path")),
-              color: color(label.querySelector(".nodeLabel, .edgeLabel")),
-              lines: lines(label),
-              fits: fits(label),
+              color: color(label!.querySelector(".nodeLabel, .edgeLabel")),
+              lines: lines(label!),
+              fits: fits(label!),
             };
           };
           const view = svg.ownerDocument.defaultView;
-          if (!view) throw new Error("Missing preview window");
+
           return {
             // The frame is tall enough to show the whole diagram.
             overflow:
-              svg.ownerDocument.documentElement.scrollHeight - view.innerHeight,
+              svg.ownerDocument.documentElement.scrollHeight -
+              view!.innerHeight,
             clusters: [...svg.querySelectorAll(".cluster")].map((group) =>
               shape(group, ".cluster-label"),
             ),
@@ -223,7 +221,7 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
         assert.equal(
           await htmlFrame
             .locator(".card")
-            .evaluate((element) => getComputedStyle(element).backgroundColor),
+            .evaluate((element) => getComputedStyle(element!).backgroundColor),
           "rgb(12, 85, 60)",
           `${scheme}: HTML preview styles apply`,
         );

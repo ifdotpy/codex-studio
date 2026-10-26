@@ -1,7 +1,7 @@
+import { required } from "./helpers.ts";
 import type { TranscriptPageResponse } from "../playwright.ts";
 import type { Message } from "../../src/types.ts";
 import { responseJson } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../../src/generated/sharedValues.ts";
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import {
@@ -232,7 +232,7 @@ async function runMessageReceiptScenario(
           value,
         });
         const seq = required(
-          required(db)
+          db
             .prepare(
               "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
             )
@@ -250,13 +250,9 @@ async function runMessageReceiptScenario(
       // This external writer also owns its queue summary; a notification does
       // not ask the server to reconstruct values from an event hint.
       const epoch = JSON.parse(
-        String(
-          required(
-            db
-              .prepare("SELECT record FROM runtime_agents WHERE id=?")
-              .get(agent),
-          ).record,
-        ),
+        required(
+          db.prepare("SELECT record FROM runtime_agents WHERE id=?").get(agent),
+        ).record as string,
       ).epoch;
       const queueItems = db
         .prepare(
@@ -283,7 +279,7 @@ async function runMessageReceiptScenario(
         value: queueValue,
       });
       const queueSeq = required(
-        required(db)
+        db
           .prepare(
             "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
           )
@@ -426,12 +422,12 @@ async function runMessageReceiptScenario(
       },
     });
     await server.listen();
-    const origin = required(server.resolvedUrls).local[0];
+    const origin = required(required(server.resolvedUrls).local[0]);
     const context = await testBrowser.newContext({
       viewport: { width: 1440, height: 960 },
       serviceWorkers: "block",
     });
-    await context.route(required(origin), (route) =>
+    await context.route(origin, (route) =>
       route.fulfill({ contentType: "text/html", body: index }),
     );
     await context.route(origin + "assets/**", async (route) => {
@@ -516,7 +512,7 @@ async function runMessageReceiptScenario(
 
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (
@@ -527,10 +523,10 @@ async function runMessageReceiptScenario(
       if (url.pathname === "/api/messages/receipts")
         receiptRequests.push({
           agent: url.searchParams.get("agent"),
-          ids: JSON.parse(url.searchParams.get("ids") ?? "null"),
+          ids: JSON.parse(url.searchParams.get("ids")!),
         });
     });
-    await page.goto(required(origin));
+    await page.goto(origin);
     await page.locator("#message").waitFor();
     const bubble = (message: string) =>
       page.locator("#messages .message.user").filter({ hasText: message });
@@ -699,9 +695,8 @@ async function runMessageReceiptScenario(
       }, "The exact delivered receipt did not reconcile an accepted message outside the latest 120 items");
     } catch (error) {
       const status = await bubble(text).getByRole("status").allTextContents();
-      if (!(error instanceof Error)) throw error;
       throw new Error(
-        `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts, outboxReceipt: await readOutboxReceipt(id), durable: await storage.evaluate(async (key) => (await window.receiptFixtureDb.outbox.storageInstance.findDocumentsById([key], false)).map((doc) => JSON.parse(doc.payload)), id) })}`,
+        `${(error as Error).message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts, outboxReceipt: await readOutboxReceipt(id), durable: await storage.evaluate(async (key) => (await window.receiptFixtureDb.outbox.storageInstance.findDocumentsById([key], false)).map((doc) => JSON.parse(doc.payload)), id) })}`,
       );
     }
 
@@ -764,8 +759,9 @@ async function runMessageReceiptScenario(
     {
       await page.goto(origin + "check");
       await storage.evaluate(async (rows) => {
-        for (const row of [...rows.slice(1), rows[0]]) {
-          if (!row) throw new Error("Missing saved transcript row");
+        const first = rows[0];
+        if (!first) throw new Error("Missing cached transcript row");
+        for (const row of [...rows.slice(1), first]) {
           await window.receiptFixtureDb.projections.incrementalUpsert(row);
         }
       }, shortCachedTranscript);
@@ -782,7 +778,7 @@ async function runMessageReceiptScenario(
           await freshTranscriptGate;
         await route.continue();
       });
-      await page.goto(required(origin));
+      await page.goto(origin);
       await bubble(text).waitFor();
       assert.equal(
         await page

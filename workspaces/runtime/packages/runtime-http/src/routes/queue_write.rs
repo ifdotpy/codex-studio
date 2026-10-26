@@ -160,7 +160,7 @@ mod tests {
                 .expect("store"),
         );
         store.transaction(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"workspace","rootId":"workspace","epoch":0,"status":"idle"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"workspace","rootId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('a','workspace','user','A','pending',1,0),('b','workspace','user','B','pending',2,0),('c','workspace','followup','C','pending',3,0)", [])?;
             Ok(())
         }).await.expect("seed queue");

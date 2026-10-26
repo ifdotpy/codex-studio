@@ -2046,7 +2046,7 @@ fn has_image_workspace_recovery(
             AND json_extract(a.record,'$.deletedAt') IS NULL
             AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
             AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
-            AND ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
+            AND ((json_extract(a.record,'$.provider')='codex'
                   AND json_extract(a.record,'$.startAttempt.submitted')=1
                   AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
                   AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
@@ -2111,6 +2111,10 @@ mod bounded_reconcile_tests {
                         epoch: 1,
                         status: AgentStatus::Queued,
                         extra: BTreeMap::from([
+                            (
+                                "provider".to_owned(),
+                                serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+                            ),
                             ("accountKey".to_owned(), serde_json::json!("account-a")),
                             ("workspaceMode".to_owned(), serde_json::json!("image")),
                             ("autoWake".to_owned(), serde_json::json!(true)),
@@ -2178,6 +2182,7 @@ mod bounded_reconcile_tests {
                         epoch: 1,
                         status: AgentStatus::Queued,
                         extra: BTreeMap::from([
+                            ("provider".to_owned(), serde_json::json!(studio_runtime_schema::ProviderKind::Codex)),
                             ("accountKey".to_owned(), serde_json::json!("default")),
                             ("workspaceMode".to_owned(), serde_json::json!("image")),
                             ("autoWake".to_owned(), serde_json::json!(true)),
@@ -2214,8 +2219,13 @@ mod bounded_reconcile_tests {
                     ("lead", None, AgentStatus::Queued),
                     ("worker", Some("lead"), AgentStatus::Running),
                 ] {
-                    let mut extra =
-                        BTreeMap::from([("accountKey".to_owned(), serde_json::json!("default"))]);
+                    let mut extra = BTreeMap::from([
+                        (
+                            "provider".to_owned(),
+                            serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+                        ),
+                        ("accountKey".to_owned(), serde_json::json!("default")),
+                    ]);
                     if let Some(parent) = parent {
                         extra.insert("parentId".to_owned(), serde_json::json!(parent));
                     }

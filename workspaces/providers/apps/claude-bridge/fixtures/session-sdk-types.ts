@@ -1,3 +1,4 @@
+import type { FixtureTextInput } from "../sdk-fixtures.ts";
 import type {
   SDKMessage,
   SDKUserMessage,
@@ -12,7 +13,11 @@ type FixtureValue<T> = T extends readonly (infer V)[]
   : T extends object
     ? { [K in keyof T]?: FixtureValue<T[K]> | undefined }
     : T;
-export type SessionFixtureMessage = FixtureValue<SDKMessage>;
+// Result lifecycle fields remain mandatory even in partial scripted messages.
+type FixtureMessage<T extends SDKMessage> = T extends { type: "result" }
+  ? FixtureValue<T> & Pick<T, "type" | "subtype" | "is_error">
+  : FixtureValue<T>;
+export type SessionFixtureMessage = FixtureMessage<SDKMessage>;
 export type SessionFixtureQuery = Omit<
   Parameters<typeof query>[0],
   "prompt" | "options"
@@ -23,6 +28,19 @@ export type SessionFixtureQuery = Omit<
   options: Options & { cwd: string };
 };
 
+export type SessionFixtureTextQuery = Omit<SessionFixtureQuery, "prompt"> & {
+  prompt: AsyncGenerator<
+    FixtureTextInput & Required<Pick<SDKUserMessage, "uuid" | "session_id">>
+  >;
+};
+
 export type SessionFixtureStreamEvent = NonNullable<
   Extract<SessionFixtureMessage, { type?: "stream_event" | undefined }>["event"]
 >;
+
+// Legacy scripted messages use short UUID labels; their SDK payloads stay typed.
+export type SessionFixtureLegacyMessage = SessionFixtureMessage extends infer T
+  ? T extends unknown
+    ? Omit<T, "uuid"> & { uuid?: string | undefined }
+    : never
+  : never;

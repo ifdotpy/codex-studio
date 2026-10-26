@@ -1,9 +1,7 @@
-import { NativeSelect, Switch } from "@mantine/core";
+import { Button, NativeSelect, Switch, Textarea } from "@mantine/core";
 import type { PostBody } from "../../apiTypes";
-import type { ComponentHookCell } from "../componentTestFixtures";
+import { required, type ComponentHookCell } from "../componentTestFixtures";
 import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
-import assert from "node:assert/strict";
-import { required } from "../componentTestFixtures";
 import {
   createElement,
   isValidElement,
@@ -45,6 +43,7 @@ const h = vi.hoisted(() => ({
   effects: [] as Array<() => unknown>,
   post: vi.fn(),
   refresh: vi.fn(async () => {}),
+  emptyCatalog: false,
 }));
 vi.mock("react", async (load) => ({
   ...(await load<typeof import("react")>()),
@@ -72,7 +71,7 @@ vi.mock("react", async (load) => ({
     const cells = h.cells.get(h.scope)!;
     const index = h.cursor++;
     const previous = cells[index];
-    if (!previous || deps.some((value, i) => value !== previous.deps?.[i]))
+    if (!previous || deps.some((value, i) => value !== previous.deps![i]))
       cells[index] = { deps, value: compute() };
     return required(cells[index]).value;
   },
@@ -86,10 +85,10 @@ vi.mock("react", async (load) => ({
       deps.some((value, i) => value !== previous.deps?.[i])
     ) {
       previous?.cleanup?.();
-      const cell: ComponentHookCell = { deps };
+      const cell: ComponentHookCell = { deps, cleanup: undefined };
       cells[index] = cell;
       h.effects.push(() => {
-        cell.cleanup = effect() || undefined;
+        cell.cleanup = effect() as ComponentHookCell["cleanup"];
       });
     }
   },
@@ -108,6 +107,10 @@ vi.mock("../../servers/ServerServicesContext", () => ({
     save: (key: string, value: unknown) => h.storage.set(key, value),
   }),
 }));
+vi.mock("@mantine/hooks", async (load) => ({
+  ...(await load<typeof import("@mantine/hooks")>()),
+  useMediaQuery: () => false,
+}));
 vi.mock("../models/modelWhitelist", () => ({
   useModelWhitelist: () => null,
   isModelWhitelisted: () => true,
@@ -116,11 +119,13 @@ vi.mock("./WorkerModelPicker", async (load) => ({
   ...(await load<typeof import("./WorkerModelPicker")>()),
   useModelCatalogReader: () => ({}),
   useWorkerModels: () => ({
-    models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
-      model,
-      serviceTiers: [{ id: "priority" }],
-      supportedReasoningEfforts: [{ reasoningEffort: "high" }],
-    })),
+    models: (h.emptyCatalog ? [] : ["gpt-6-astra", "gpt-6-luna"]).map(
+      (model) => ({
+        model,
+        serviceTiers: [{ id: "priority" }],
+        supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+      }),
+    ),
     loading: false,
     error: "",
     retry: vi.fn(),
@@ -130,6 +135,13 @@ import { AgentSetupPicker } from "./AgentSetupPicker";
 import { ExecutionSettings, ExecutionPermissions } from "./ExecutionSettings";
 import { ClaudeSettings } from "../ClaudeSettings";
 import { ExecutionSummaryTrigger } from "./ExecutionSummaryTrigger";
+import { ChatSettingsDialog } from "./ChatSettingsDialog";
+import {
+  WorkerLaunchDialog,
+  type WorkerLaunch,
+} from "../shell/WorkerLaunchDialog";
+import { componentSnapshot } from "../componentTestFixtures";
+import { WorkerPermissions } from "../shell/WorkerPermissions";
 
 function children(
   node: ReactNode,
@@ -139,18 +151,18 @@ function children(
   return [node, ...children(node.props.children)];
 }
 function invoke(element: ReactElement<unknown>) {
-  const component: unknown = element.type;
-  assert.ok(typeof component === "function");
+  const component = element.type as (
+    props: typeof element.props,
+  ) => ReactElement<PropsWithChildren<Record<string, unknown>>>;
   h.scope = component.name + (element.key || "");
   h.cursor = 0;
   if (!h.cells.has(h.scope)) h.cells.set(h.scope, []);
-  const result: unknown = component(element.props);
-  assert.ok(isValidElement<PropsWithChildren<Record<string, unknown>>>(result));
-  return result;
+  return component(element.props);
 }
 const initial: Agent = {
   id: "lead",
   isLead: true,
+  provider: "codex",
   source: "managed",
   accountKey: "default",
   model: "gpt-6-astra",
@@ -234,16 +246,12 @@ function render(
     (node) =>
       typeof node.type === "function" && node.type.name === "AgentSetupPicker",
   )!;
-  assert.ok(
-    isValidElement<ComponentProps<typeof ExecutionSummaryTrigger>>(
-      menu.props.trigger,
-    ),
+
+  const trigger = invoke(
+    menu.props.trigger as ReactElement<
+      ComponentProps<typeof ExecutionSummaryTrigger>
+    >,
   );
-  assert.ok(
-    isValidElement<ComponentProps<typeof AgentSetupPicker>>(picker) &&
-      picker.type === AgentSetupPicker,
-  );
-  const trigger = invoke(menu.props.trigger);
   const model = children(trigger).find(
     (node) => node.props.className === "execution-model",
   )!.props.children;
@@ -252,8 +260,12 @@ function render(
     controls,
     model,
     label: trigger.props["aria-label"],
-    picker: picker.props,
-    triggerAgent: menu.props.trigger.props.agent,
+    picker: picker.props as ComponentProps<typeof AgentSetupPicker>,
+    triggerAgent: (
+      menu.props.trigger as ReactElement<
+        ComponentProps<typeof ExecutionSummaryTrigger>
+      >
+    ).props.agent,
   };
 }
 afterEach(() => {
@@ -265,7 +277,251 @@ afterEach(() => {
   h.effects = [];
   h.post.mockReset();
   h.refresh.mockClear();
+  h.emptyCatalog = false;
 });
+
+for (const provider of ["Future Provider", "codex", "claude"]) {
+  test(`a cold execution summary preserves the explicit ${provider} identity`, () => {
+    h.emptyCatalog = true;
+    const agent: Agent = {
+      ...initial,
+      // @ts-expect-error Future identities may arrive at the display boundary.
+      provider,
+    };
+    const trigger = invoke(
+      createElement(ExecutionSummaryTrigger, {
+        agent,
+        team: [],
+        onOpen: () => {},
+      }),
+    );
+    expect(trigger.props["aria-label"]).toContain(
+      `Lead Astra 6 Medium (${provider})`,
+    );
+    expect(trigger.props.title).toBe(trigger.props["aria-label"]);
+  });
+}
+
+const unsupportedAgents: Agent[] = [
+  { ...initial, id: "missing-provider", provider: undefined, yoloMode: false },
+  { ...initial, id: "null-provider", provider: null, yoloMode: false },
+  {
+    ...initial,
+    id: "unknown-provider",
+    yoloMode: false,
+    // @ts-expect-error A future wire identity must not gain Codex permission actions.
+    provider: "future-provider",
+  },
+];
+
+for (const agent of unsupportedAgents) {
+  test(`${agent.id} cannot supply permissions for a known worker provider`, () => {
+    for (const provider of ["codex", "claude"]) {
+      expect(
+        invoke(
+          createElement(WorkerPermissions, {
+            lead: agent,
+            provider,
+            reviewer: false,
+            value: undefined,
+            onChange: () => {},
+          }),
+        ),
+      ).toBeNull();
+    }
+  });
+  test(`${agent.id} cannot enable Daybreak through the model picker or extras`, () => {
+    const result = render({ ...agent, daybreakEnabled: true });
+    expect(result.picker.daybreakAvailable).toBe(false);
+    expect(
+      children(result.controls).some(
+        (node) => node.props["aria-label"] === "Daybreak",
+      ),
+    ).toBe(false);
+    result.picker.onDaybreak?.();
+    expect(h.post).not.toHaveBeenCalled();
+  });
+}
+
+test("Daybreak remains available for a Codex main agent and absent for Claude", () => {
+  expect(
+    render({ ...initial, daybreakEnabled: true }).picker.daybreakAvailable,
+  ).toBe(true);
+  expect(
+    render({ ...initial, provider: "claude", daybreakEnabled: true }).picker
+      .daybreakAvailable,
+  ).toBe(false);
+});
+
+function chatSettings(agent: Agent) {
+  return invoke(
+    createElement(ChatSettingsDialog, {
+      settingsOpen: true,
+      accountModalOpen: false,
+      setSettingsOpen: () => {},
+      agent,
+      accounts: {
+        data: {
+          accounts: [],
+          archivedAccounts: [],
+          defaultAccountKey: "default",
+          defaultAccountGroups: [],
+          logins: [],
+          supportsDelete: true,
+          supportsDisconnect: true,
+        },
+        setData: () => {},
+        error: "",
+        refresh: async () => null,
+        scope: "fixture",
+      },
+      notify: () => {},
+      agentModels: { models: [], loading: false, error: "", retry: () => {} },
+      data: componentSnapshot([agent]),
+      refresh: h.refresh,
+      workspaceId: "workspace",
+      creating: false,
+      newChat: () => {},
+      project: () => {},
+      setClaudeLoginKey: () => {},
+    }),
+  );
+}
+
+for (const agent of unsupportedAgents) {
+  test(`${agent.id} cannot receive a Codex permission control through chat settings`, () => {
+    expect(
+      children(chatSettings(agent)).filter(
+        (node) => node.type === ExecutionPermissions,
+      ),
+    ).toEqual([]);
+  });
+  test(`${agent.id} cannot post Full access from the actual permissions consumer`, async () => {
+    h.post.mockResolvedValue({ ...agent, yoloMode: true });
+    const permission = children(render(agent, true).controls).find(
+      (node): node is ReactElement<SwitchFixtureProps> =>
+        node.props["aria-label"] === "Full access without approval",
+    );
+    permission?.props.onChange({ currentTarget: { checked: true } });
+    await Promise.resolve();
+    expect(h.post).not.toHaveBeenCalled();
+    expect(permission).toBeUndefined();
+  });
+}
+
+test("chat settings retains the known Codex permission caller and the Claude settings branch", () => {
+  expect(
+    children(chatSettings({ ...initial, yoloMode: false })).some(
+      (node) => node.type === ExecutionPermissions,
+    ),
+  ).toBe(true);
+  const claude = children(chatSettings({ ...initial, provider: "claude" }));
+  expect(claude.some((node) => node.type === ExecutionPermissions)).toBe(false);
+  expect(
+    claude.some(
+      (node) => typeof node.type === "object" && node.props.agent !== undefined,
+    ),
+  ).toBe(true);
+});
+
+type TaskInputProps = Omit<ComponentProps<typeof Textarea>, "onChange"> & {
+  onChange(event: {
+    target: Pick<
+      Parameters<
+        NonNullable<ComponentProps<typeof Textarea>["onChange"]>
+      >[0]["target"],
+      "value"
+    >;
+  }): void;
+};
+type LaunchFormProps = {
+  onSubmit(event: { preventDefault(): void }): Promise<void>;
+};
+
+async function submitWorker(launch: WorkerLaunch, lead: Agent) {
+  const onStart = vi.fn(async (_body: PostBody<"/api/agents">) => {});
+  const renderDialog = () =>
+    invoke(
+      createElement(WorkerLaunchDialog, {
+        launch,
+        lead,
+        busy: false,
+        onClose: () => {},
+        onStart,
+      }),
+    );
+  const input = children(renderDialog()).find(
+    (node): node is ReactElement<TaskInputProps> => node.type === Textarea,
+  );
+  expect(input).toBeDefined();
+  input?.props.onChange({ target: { value: "Read the project and report." } });
+  const nodes = children(renderDialog());
+  const button = nodes.find(
+    (node) => node.type === Button && node.props.type === "submit",
+  );
+  const form = nodes.find(
+    (node): node is ReactElement<LaunchFormProps> => node.type === "form",
+  );
+  expect(form).toBeDefined();
+  await form?.props.onSubmit({ preventDefault: () => {} });
+  return { onStart, button };
+}
+
+for (const provider of ["", "future-provider"]) {
+  test(`an unresolved ${provider || "blank"} worker profile cannot submit its form`, async () => {
+    const { onStart, button } = await submitWorker(
+      {
+        id: "worker",
+        profile_id: "profile",
+        name: "Worker",
+        provider,
+        reviewer: false,
+      },
+      initial,
+    );
+    expect(onStart).not.toHaveBeenCalled();
+    expect(button?.props.disabled).toBe(true);
+  });
+}
+for (const agent of unsupportedAgents) {
+  test(`a Codex worker cannot submit with ${agent.id} lead identity`, async () => {
+    const { onStart, button } = await submitWorker(
+      {
+        id: "worker",
+        profile_id: "profile",
+        name: "Worker",
+        provider: "codex",
+        reviewer: false,
+      },
+      agent,
+    );
+    expect(onStart).not.toHaveBeenCalled();
+    expect(button?.props.disabled).toBe(true);
+  });
+}
+for (const provider of ["codex", "claude"]) {
+  test(`a supported ${provider} worker preserves its submitted parent and profile`, async () => {
+    const { onStart, button } = await submitWorker(
+      {
+        id: "worker",
+        profile_id: "profile",
+        name: "Worker",
+        provider,
+        reviewer: false,
+      },
+      initial,
+    );
+    expect(button?.props.disabled).toBe(false);
+    expect(onStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "worker",
+        profile_id: "profile",
+        parent: initial.id,
+        prompt: "Read the project and report.",
+      }),
+    );
+  });
+}
 
 test("the composer trigger uses the confirmed model before SSE and yields to remote settings", async () => {
   h.post.mockResolvedValue({ ...initial, model: "gpt-6-luna" });

@@ -210,9 +210,11 @@ impl Fixture {
         let actor_json = include_str!("workspace_operations/actor.json");
         let encoded = serde_json::to_string(&repo).expect("encode repository path");
         let encoded = &encoded[1..encoded.len() - 1];
-        let actor: Value =
+        let mut actor: Value =
             serde_json::from_str(&actor_json.replace("/FROZEN_WORKSPACE_REPO", encoded))
                 .expect("frozen workspace actor");
+        // This historical workspace actor uses the Codex thread/fork protocol.
+        actor["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
         let canvas = include_str!("workspace_operations/canvas.sql")
             .replace("/FROZEN_WORKSPACE_REPO", &encoded.replace("'", "''"));
         crate::recovery_fixtures::state(

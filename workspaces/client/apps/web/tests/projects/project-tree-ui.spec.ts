@@ -1,8 +1,4 @@
-declare global {
-  interface Window {
-    projectTreeFixture: { originalSetItem: Storage["setItem"] };
-  }
-}
+import { required } from "../../src/components/componentTestFixtures.ts";
 import {
   test,
   expect,
@@ -20,7 +16,6 @@ import type { ElectronApplication, Page } from "@playwright/test";
 import type { PostBody, PostResult } from "../../src/api.ts";
 import type { ApiPostPath } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
-import { required } from "../../src/components/componentTestFixtures.ts";
 import { waitForFixturePort } from "../fixture-readiness.ts";
 test("project pointer and keyboard order persist, and a click collapses the project", async ({
   page: runnerPage,
@@ -75,7 +70,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
   });
   let browser: ElectronApplication | undefined;
   let log = "";
-  proc.stderr?.on("data", (d) => (log += d));
+  proc.stderr!.on("data", (d) => (log += d));
   try {
     const port = await waitForFixturePort(proc, { diagnostics: () => log });
     const url = `http://127.0.0.1:${port}`;
@@ -281,7 +276,8 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     const beforeProjects = await projectOrder();
     await waitFor(
       async () =>
-        (await readTestState(url)).runtime.sidebarOrder?.groups !== null,
+        required((await readTestState(url)).runtime.sidebarOrder)?.groups !==
+        null,
     );
     await waitFor(async () => sidebarMigrations.length > 0);
     assert.ok(sidebarMigrations.length > 0, "Sidebar migration was sent");
@@ -451,13 +447,11 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await waitForOrderReceipt();
     const beforeFailure = await chatOrder();
     await page.evaluate(() => {
-      window.projectTreeFixture = {
-        originalSetItem: Storage.prototype.setItem,
-      };
+      window.originalSetItem = Storage.prototype.setItem;
       Storage.prototype.setItem = function (key, value) {
         if (key.startsWith("codex-sidebar-order:"))
           throw new Error("Storage full fixture");
-        return window.projectTreeFixture.originalSetItem.call(this, key, value);
+        return window.originalSetItem.call(this, key, value);
       };
     });
     await chatButton(keyboardId).press("Alt+ArrowDown");
@@ -470,7 +464,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       .getByText(/Could not save sidebar order:.*Storage full fixture/)
       .waitFor();
     await page.evaluate(() => {
-      Storage.prototype.setItem = window.projectTreeFixture.originalSetItem;
+      Storage.prototype.setItem = window.originalSetItem;
     });
     const savedChatOrder = await chatOrder();
     // Cross-project drags cannot change an agent's working directory.

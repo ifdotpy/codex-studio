@@ -233,6 +233,9 @@ importers:
       '@xterm/xterm':
         specifier: 6.0.0
         version: 6.0.0
+      codex-agents-desktop:
+        specifier: workspace:*
+        version: link:../desktop
       dompurify:
         specifier: 3.4.17
         version: 3.4.17

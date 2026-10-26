@@ -57,7 +57,24 @@ fn registry_login_writes_match_python_and_replay_without_writes() {
         serde_json::from_str(include_str!("wave7_p18_registry_corpus.json"))
             .expect("frozen registry corpus");
     assert_eq!(cases.len(), 6);
-    for case in cases {
+    for mut case in cases {
+        // This frozen login corpus contains only Codex CLI/Agents accounts.
+        // Adapt both inputs and the independent oracle to the current format.
+        for registry in [&mut case.initial, &mut case.stored] {
+            registry["version"] =
+                json!(studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION);
+            for account in registry["accounts"]
+                .as_object_mut()
+                .expect("accounts")
+                .values_mut()
+            {
+                assert!(matches!(
+                    account["source"].as_str(),
+                    Some("Codex CLI" | "Codex Agents")
+                ));
+                account["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            }
+        }
         let root = tempfile::tempdir().expect("state");
         let path = root.path().join("registry.json");
         std::fs::write(&path, case.initial.to_string()).expect("Python-written registry");
@@ -102,7 +119,7 @@ fn registry_login_writes_match_python_and_replay_without_writes() {
 fn restart_and_cancellation_latch_never_authorize_another_send() {
     let root = tempfile::tempdir().expect("state");
     let path = root.path().join("registry.json");
-    let initial = json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root.path(),"source":"Fixture","label":"Default","status":"signedOut"}},"logins":{}});
+    let initial = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root.path(),"source":"Fixture","label":"Default","status":"signedOut"}},"logins":{}});
     std::fs::write(&path, initial.to_string()).expect("state");
     let driver = AccountDriver::open(&path).expect("open");
     driver
@@ -151,7 +168,7 @@ fn early_completion_and_foreign_notification_preserve_exact_identity() {
     use studio_runtime_services::account_driver::{AuthMetadata, AuthStatus};
     let root = tempfile::tempdir().expect("state");
     let path = root.path().join("registry.json");
-    std::fs::write(&path,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"ready","accountId":"subscription"}},"logins":{}}).to_string()).expect("registry");
+    std::fs::write(&path,json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"ready","accountId":"subscription"}},"logins":{}}).to_string()).expect("registry");
     let driver = AccountDriver::open(&path).expect("open");
     driver
         .reserve_codex_login(&request(true), root.path(), 1.0)
@@ -195,7 +212,7 @@ fn registry_failpoints_before_every_login_write_leave_a_recoverable_receipt() {
     ] {
         let root = tempfile::tempdir().expect("state");
         let path = root.path().join("registry.json");
-        std::fs::write(&path,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
+        std::fs::write(&path,json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
         let driver = AccountDriver::open(&path).expect("open");
         let account = format!("login-{REQUEST}");
         if boundary != "start_intent" {
@@ -269,7 +286,7 @@ fn local_auth_reconciliation_only_commits_a_terminal_result() {
     for ready in [false, true] {
         let root = tempfile::tempdir().expect("state");
         let path = root.path().join("registry.json");
-        std::fs::write(&path,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
+        std::fs::write(&path,json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
         let driver = AccountDriver::open_with_reader(
             &path,
             Reader(AuthMetadata {
@@ -331,6 +348,17 @@ fn discovery_and_settings_registry_rows_match_python() {
                 initial, expected, ..
             } => (initial, expected),
         };
+        let mut initial = initial.clone();
+        let mut expected = expected.clone();
+        // Claude rows already have identity; only the historical Codex CLI row
+        // lacks it. Preserve every other field of the captured snapshots.
+        for registry in [&mut initial, &mut expected] {
+            registry["version"] =
+                json!(studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION);
+            let codex = &mut registry["accounts"]["default"];
+            assert_eq!(codex["source"], "Codex CLI");
+            codex["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        }
         std::fs::write(&path, initial.to_string()).expect("initial");
         let driver = AccountDriver::open(&path).expect("driver");
         match &case {
@@ -357,6 +385,6 @@ fn discovery_and_settings_registry_rows_match_python() {
                     .expect("update");
             }
         }
-        assert_eq!(read(&path), *expected);
+        assert_eq!(read(&path), expected);
     }
 }

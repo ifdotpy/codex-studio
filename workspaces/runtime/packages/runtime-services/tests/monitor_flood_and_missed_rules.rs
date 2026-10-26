@@ -183,7 +183,7 @@ fn monitor_payload_has_first_line_excerpt_and_exact_log_offset_across_streams() 
 fn once() -> (Value, Value) {
     (
         json!({"id":"once","agent":"owner","epoch":1,"name":"Once","kind":"once","status":"active","intervalSeconds":60,"nextAt":2000.0,"at":2000.0,"created":1900.0,"command":"echo should-run-only-on-time","text":"Check result"}),
-        json!({"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
+        json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
     )
 }
 

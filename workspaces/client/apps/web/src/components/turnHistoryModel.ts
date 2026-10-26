@@ -76,11 +76,13 @@ export function historyPresentationGroups(
       continue;
     }
     const turns = [...priorTurns, group];
-    const [first, ...rest] = turns.flatMap((turn) => turn.items);
-    if (!first) throw new Error("History presentation group has no messages");
-    const items: HistoryGroup["items"] = [first, ...rest];
+    const items: HistoryGroup["items"] = [
+      previous.items[0],
+      ...previous.items.slice(1),
+      ...group.items,
+    ];
     result[result.length - 1] = {
-      id: first.id,
+      id: items[0].id,
       items,
       outcome: turns.at(-1)?.outcome,
       result: turns.at(-1)?.result,
@@ -118,7 +120,7 @@ export function historyGroups(
       .map((item) => item.turnId),
   );
   for (const group of groups) {
-    const [first] = group.items;
+    const first = group.items[0];
     if (
       first.role === "user" &&
       first.turnId &&
@@ -225,9 +227,7 @@ export function incrementalHistoryGroups(
   let prefixGroups = 0;
   let prefixItems = 0;
   while (prefixGroups < prior.groups.length) {
-    const group = prior.groups[prefixGroups];
-    if (!group) throw new Error("Missing history prefix group");
-    const length = group.items.length;
+    const length = prior.groups[prefixGroups]!.items.length;
     if (prefixItems + length > shared) break;
     prefixItems += length;
     prefixGroups++;
@@ -241,10 +241,9 @@ export function incrementalHistoryGroups(
   let oldOffset = 0;
   const suffixStart = prior.items.length - sharedSuffix;
   for (let index = 0; index < prior.groups.length; index++) {
-    const boundary = prior.groups[index];
-    if (!boundary) throw new Error("Missing history boundary group");
-    oldOffset += boundary.items.length;
+    oldOffset += prior.groups[index]!.items.length;
     if (oldOffset > suffixStart) {
+      const boundary = prior.groups[index]!;
       const boundaryStart = oldOffset - boundary.items.length;
       // User rows always start a group and cannot join an adjacent group.
       suffixGroups =

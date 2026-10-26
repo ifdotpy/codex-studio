@@ -161,7 +161,7 @@ impl Fixture {
     }
 }
 fn agent(id: &str, parent: Option<&str>, path: &str) -> Value {
-    json!({"id":id,"rootId":if parent.is_some(){"lead"}else{id},"parentId":parent,"epoch":1,"status":"idle","isLead":parent.is_none(),"autoWake":true,"cwd":path})
+    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":if parent.is_some(){"lead"}else{id},"parentId":parent,"epoch":1,"status":"idle","isLead":parent.is_none(),"autoWake":true,"cwd":path})
 }
 
 #[tokio::test]

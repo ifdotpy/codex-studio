@@ -31,28 +31,28 @@ function memory(pid: number | undefined) {
         }
       );
     })
-    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+    .filter(Boolean);
   const descendants = new Set([pid]);
   let changed = true;
   while (changed) {
     changed = false;
     for (const row of rows)
-      if (descendants.has(row.parent) && !descendants.has(row.pid)) {
-        descendants.add(row.pid);
+      if (descendants.has(row!.parent) && !descendants.has(row!.pid)) {
+        descendants.add(row!.pid);
         changed = true;
       }
   }
   const helpers = rows.filter(
-    (row) => row.pid !== pid && descendants.has(row.pid),
+    (row) => row!.pid !== pid && descendants.has(row!.pid),
   );
   return {
-    helperResidentBytes: helpers.reduce((sum, row) => sum + row.bytes, 0),
+    helperResidentBytes: helpers.reduce((sum, row) => sum + row!.bytes, 0),
     rendererResidentBytes: helpers
-      .filter((row) => row.args.includes("--type=renderer"))
-      .reduce((sum, row) => sum + row.bytes, 0),
+      .filter((row) => row!.args.includes("--type=renderer"))
+      .reduce((sum, row) => sum + row!.bytes, 0),
     helperProcesses: helpers.length,
     rendererProcesses: helpers.filter((row) =>
-      row.args.includes("--type=renderer"),
+      row!.args.includes("--type=renderer"),
     ).length,
   };
 }
@@ -161,14 +161,13 @@ try {
       ...memory(desktop.process().pid),
     };
     assert.equal(
-      await desktop.evaluate(
-        ({ BrowserWindow }) =>
-          Object.keys(
-            BrowserWindow.getAllWindows()
-              .at(0)
-              ?.webContents.session.serviceWorkers.getAllRunning() ?? {},
-          ).length,
-      ),
+      await desktop.evaluate(({ BrowserWindow }) => {
+        const [window] = BrowserWindow.getAllWindows();
+        if (!window) throw new Error("Expected the hidden desktop window.");
+        return Object.keys(
+          window.webContents.session.serviceWorkers.getAllRunning(),
+        ).length;
+      }),
       0,
     );
     await page.clock.fastForward(5 * 60 * 1000 + 30000);

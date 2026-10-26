@@ -1,5 +1,4 @@
 import type { Agent, Snapshot } from "../types.ts";
-import { snapshotFixture } from "../snapshotFixture.ts";
 import type { SidebarBackend, SidebarServices } from "./sidebar/services.tsx";
 import type { PostBody, PostResult } from "../api.ts";
 import {
@@ -8,19 +7,16 @@ import {
 } from "../../tests/misc-fixture.ts";
 declare global {
   interface Window {
-    projectDeleteFixture: {
-      posts: { path: string; body: PostBody<"/api/projects/delete"> }[];
-      finished: string[][];
-      suspended: string[];
-      fail: boolean;
-      retire: () => void;
-      notice?: string;
-      owner?: string;
-    };
+    posts: { path: string; body: PostBody<"/api/projects/delete"> }[];
+    finished: string[][];
+    suspended: string[];
+    fail: boolean;
+    retire: () => void;
+    notice: string | undefined;
+    owner: string | undefined;
   }
 }
 const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing project deletion root");
 
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -51,9 +47,11 @@ const agent: Agent = {
   projectId: "project",
   projectServerId: "home",
 };
-const initial: Snapshot = {
-  ...snapshotFixture([agent]),
-  token: "fixture",
+// This one-off sidebar fixture omits the server token and unrelated runtime fields.
+type ProjectDeleteFixtureSnapshot = Partial<Omit<Snapshot, "runtime">> & {
+  runtime: Partial<Snapshot["runtime"]>;
+};
+const partialInitial: ProjectDeleteFixtureSnapshot = {
   stateDir: "fixture",
   entityWorkspaceId: "workspace",
   entitiesComplete: true,
@@ -62,7 +60,6 @@ const initial: Snapshot = {
   nodes: [agent],
   edges: [],
   runtime: {
-    ...snapshotFixture().runtime,
     projectSequences: { project: 12 },
     agents: [agent],
     projects: [project],
@@ -79,13 +76,13 @@ const initial: Snapshot = {
     peerTeamsVersion: 1,
   },
 };
-window.projectDeleteFixture = {
-  posts: [],
-  finished: [],
-  suspended: [],
-  fail: false,
-  retire: () => {},
-};
+const initial = partialInitial as Snapshot;
+
+window.posts = [];
+window.finished = [];
+window.suspended = [];
+window.fail = false;
+window.retire = () => {};
 const store = new Map<string, string>();
 const backend: SidebarBackend = {
   ownerId: "owner",
@@ -102,11 +99,9 @@ const backend: SidebarBackend = {
   editPreference: (_key, _before, after) => after,
   subscribePreference: () => () => {},
   post: async (path, body) => {
-    if (path !== "/api/projects/delete")
-      throw new Error(`Unexpected fixture post: ${path}`);
     const request = fixturePostBody<"/api/projects/delete">(body);
-    window.projectDeleteFixture.posts.push({ path, body: request });
-    if (window.projectDeleteFixture.fail) throw new TypeError("response lost");
+    window.posts.push({ path, body: request });
+    if (window.fail) throw new TypeError("response lost");
     const response = {
       id: request.id,
       request_id: request.request_id,
@@ -135,7 +130,7 @@ function Fixture() {
       : initial,
   );
   const [, setScope] = useState<ReadonlySet<string>>(new Set());
-  window.projectDeleteFixture.retire = () =>
+  window.retire = () =>
     setData({
       ...initial,
       threads: [],
@@ -147,16 +142,16 @@ function Fixture() {
     workspaceId: "workspace",
     services,
     onSuspend: (scope) => {
-      window.projectDeleteFixture.suspended = [...scope];
+      window.suspended = [...scope];
       setScope(scope);
     },
     onResume: () => setScope(new Set()),
     onFinish: (ids) => {
-      window.projectDeleteFixture.finished.push(ids);
+      window.finished.push(ids);
       setScope(new Set());
     },
     notify: (message) => {
-      window.projectDeleteFixture.notice = message;
+      window.notice = message;
     },
   });
   const logical = location.search.includes("logical");
@@ -171,19 +166,17 @@ function Fixture() {
               projects: data.runtime.projects.map((project) => ({
                 ...project,
                 ...(location.search.includes("legacy") ? { id: "" } : {}),
-                name: project.name ?? "",
-                path: project.path ?? "",
-              })),
+              })) as React.ComponentProps<
+                typeof ProjectGroupsSidebar
+              >["navigation"][string]["projects"],
+              // The source fixture intentionally omits the unrelated unread field.
               chats: data.threads.map((chat) => ({
-                id: chat.id,
-                projectId: chat.projectId,
-                projectServerId: chat.projectServerId,
-                name: chat.name ?? "",
-                path: chat.cwd ?? "",
-                status: chat.status ?? "",
-                unread: false,
+                ...chat,
+                path: chat.cwd,
                 archived: false,
-              })),
+              })) as React.ComponentProps<
+                typeof ProjectGroupsSidebar
+              >["navigation"][string]["chats"],
               ready: true,
               opened: "lead",
               alerts: [],
@@ -196,7 +189,7 @@ function Fixture() {
           query: "",
           hideOldChatsThreshold: 20,
           send: (owner, command) => {
-            window.projectDeleteFixture.owner = owner;
+            window.owner = owner;
             if (command.action === "delete-project")
               deletion.open(command.projectId);
           },
@@ -228,7 +221,7 @@ function Fixture() {
     React.createElement(ProjectDeleteDialog, deletion.dialog),
   );
 }
-createRoot(rootElement).render(
+createRoot(rootElement!).render(
   React.createElement(
     React.StrictMode,
     null,

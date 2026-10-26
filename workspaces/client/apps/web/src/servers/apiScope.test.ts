@@ -1,3 +1,6 @@
+import { required } from "../components/componentTestFixtures.ts";
+import type { TranscriptWireItem } from "../types";
+// Cache separation fixtures omit role; they exercise only item identity and text.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiScope, ApiSchemaMismatchError } from "../api";
 import {
@@ -145,20 +148,26 @@ it("separates transcript and sequence caches even when server object IDs collide
   a.cacheTranscriptValue(
     "same-workspace",
     "same-chat",
-    { items: [{ id: "same-message", role: "assistant", text: "A" }] },
+    { items: [{ id: "same-message", text: "A" } as TranscriptWireItem] },
     10,
   );
   b.cacheTranscriptValue(
     "same-workspace",
     "same-chat",
-    { items: [{ id: "same-message", role: "assistant", text: "B" }] },
+    { items: [{ id: "same-message", text: "B" } as TranscriptWireItem] },
     1,
   );
   expect(
-    a.peekTranscript("same-workspace", "same-chat")?.payload?.items[0]?.text,
+    required(
+      required(a.peekTranscript("same-workspace", "same-chat")).payload!
+        .items[0],
+    ).text,
   ).toBe("A");
   expect(
-    b.peekTranscript("same-workspace", "same-chat")?.payload?.items[0]?.text,
+    required(
+      required(b.peekTranscript("same-workspace", "same-chat")).payload!
+        .items[0],
+    ).text,
   ).toBe("B");
   a.clearTranscript("same-workspace", "same-chat");
   expect(b.peekTranscript("same-workspace", "same-chat")?.seq).toBe(1);

@@ -75,9 +75,8 @@ export interface BridgePageParams {
   cursor?: string | null | undefined;
   limit?: number | undefined;
 }
-export interface BridgeThreadParams {
-  threadId: string;
-}
+export type BridgeThreadParams =
+  import("./runtime-contract.generated.ts").ThreadIdentity;
 export type BridgeSessionParams = Partial<
   Pick<
     Session,
@@ -478,6 +477,13 @@ export interface BridgeItemEvent extends BridgeThreadParams {
   item: FreshItem;
   startedAtMs?: number | undefined;
   completedAtMs?: number | undefined;
+}
+// Existing rows can be re-emitted unchanged without claiming fresh guarantees.
+export interface BridgeHistoricalItemEvent extends Omit<
+  BridgeItemEvent,
+  "item"
+> {
+  item: Item & { id: string; type: string };
 }
 export interface BridgeNotifications {
   "item/started": BridgeItemEvent;

@@ -755,7 +755,7 @@ mod tests {
         store
             .transaction_with_error(move |tx| {
                 let agent =
-                    AgentRecord::from_value(json!({"id":"worker", "rootId":"worker", "epoch":1,
+                    AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker", "rootId":"worker", "epoch":1,
                     "status":"queued", "role":"implementer", "autoWake":true, "cwd":cwd}))?;
                 AgentRepository::put(tx, &agent)?;
                 crate::event_write::enqueue_event(

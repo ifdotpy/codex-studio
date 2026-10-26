@@ -1,5 +1,5 @@
 import { queueUiFixture } from "./queue-ui.fixture.ts";
-import { required, requestBody, responseJson } from "../messages/helpers.ts";
+import { requestBody, responseJson } from "../messages/helpers.ts";
 import type {
   PostBody,
   GetResult,
@@ -97,15 +97,13 @@ test("idle send queue ui", async ({ browser }) => {
     const composer = page.locator("#message"),
       panel = page.getByTestId("message-queue");
     const bubble = (text: string) =>
-      required(page)
-        .locator("#messages .message.user")
-        .filter({ hasText: text });
+      page!.locator("#messages .message.user").filter({ hasText: text });
     assert(!lead.inFlight && !lead.turnId, "Fixture chat has no active turn");
     await composer.fill("Normal idle send");
     await composer.press("Enter");
     await wait(async () => sent.length === 1, "Idle Send reaches scheduler");
     assert.equal(sent.length, 1);
-    assert.equal(required(sent[0]).delivery, "current_turn");
+    assert.equal(sent[0]!.delivery, "current_turn");
     // A message for after the current tool call is never queued. It stays in
     // the chat while it waits, also after a reload.
     await bubble("Normal idle send").waitFor();
@@ -113,7 +111,7 @@ test("idle send queue ui", async ({ browser }) => {
     await composer.fill("Tab queues this draft");
     await composer.press("Tab");
     await wait(async () => sent.length === 2, "Tab input reaches scheduler");
-    assert.equal(required(sent[1]).delivery, "next_turn");
+    assert.equal(sent[1]!.delivery, "next_turn");
     assert.equal(await composer.inputValue(), "");
     await panel.getByText("Tab queues this draft", { exact: true }).waitFor();
     assert.equal(await bubble("Tab queues this draft").count(), 0);

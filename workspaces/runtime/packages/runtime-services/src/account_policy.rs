@@ -5,6 +5,7 @@ use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use studio_runtime_providers::ProviderKind;
 use thiserror::Error;
 
 pub const AUTHENTICATION_RECOVERY_MESSAGE: &str =
@@ -53,6 +54,14 @@ pub(crate) fn decode_registry(bytes: &[u8]) -> Result<(Value, RegistryOrder), (S
         }
         Err(()) => return Err(("/".to_owned(), "schema validation failed".to_owned())),
         Ok(None) => {}
+    }
+    for (key, account) in value["accounts"].as_object().into_iter().flatten() {
+        studio_runtime_schema::ProviderKind::of_record(account).map_err(|_| {
+            (
+                format!("/accounts/{key}/provider"),
+                "unknown provider".to_owned(),
+            )
+        })?;
     }
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let order = RegistryOrder::deserialize(&mut deserializer)
@@ -394,7 +403,7 @@ pub(crate) fn project_registry_value(
             })?;
         row.insert("provider".into(), Value::String(provider.key().into()));
         known.insert(key.clone());
-        if provider.key() == "claude"
+        if provider == ProviderKind::Claude
             && let Some(organization) = crate::account_driver::claude_identity::organization(
                 row.get("_credentialIdentity").and_then(Value::as_str),
                 row.get("_organizationName").and_then(Value::as_str),
@@ -449,7 +458,7 @@ fn listed_account(key: &str, row: &Map<String, Value>) -> bool {
 pub(crate) fn can_attempt_native_proof(stored: Option<&Map<String, Value>>) -> bool {
     let Some(row) = stored else { return false };
     let email = row.get("email").and_then(Value::as_str).unwrap_or_default();
-    row.get("provider").and_then(Value::as_str) == Some("claude")
+    row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Claude.key())
         && row.get("status").and_then(Value::as_str) == Some("error")
         && row.get("_authErrorKind").and_then(Value::as_str) == Some("keychain")
         && row.get("deleted") != Some(&Value::Bool(true))
@@ -477,7 +486,7 @@ mod tests {
     use super::{AccountPolicyError, AccountPolicyState};
     use serde_json::{Value, json};
 
-    const REGISTRY: &[u8] = br#"{"version":1,"defaultAccountKey":"default","accounts":{"z":{"id":"z","home":"/z","label":"Z","source":"Codex CLI","status":"ready"},"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{"login-r":{"requestId":"login-r","accountKey":"z","status":"ready","createdAt":1.0}}}"#;
+    const REGISTRY: &[u8] = br#"{"version":2,"defaultAccountKey":"default","accounts":{"z":{"id":"z","provider":"codex","home":"/z","label":"Z","source":"Codex CLI","status":"ready"},"default":{"id":"default","provider":"codex","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{"login-r":{"requestId":"login-r","accountKey":"z","status":"ready","createdAt":1.0}}}"#;
 
     #[test]
     fn startup_projects_registry_in_file_order_and_never_reads_auth() {
@@ -494,7 +503,7 @@ mod tests {
     fn invalid_registry_fails_closed_with_location_and_no_input_values() {
         let marker = "DO_NOT_ECHO";
         let bytes = format!(
-            r#"{{"version":1,"defaultAccountKey":"default","accounts":{{"default":{{"id":"default","unexpected":"{marker}"}}}},"logins":{{}}}}"#
+            r#"{{"version":2,"defaultAccountKey":"default","accounts":{{"default":{{"id":"default","unexpected":"{marker}"}}}},"logins":{{}}}}"#
         );
         let error = AccountPolicyState::from_startup(Some(bytes.as_bytes()), [])
             .expect_err("unknown fields rejected");
@@ -539,9 +548,16 @@ mod tests {
     #[test]
     fn debug_summaries_do_not_print_registry_or_limit_values_or_numeric_bytes() {
         let marker = "PRIVATE_ACCOUNT_MARKER_49371";
-        let registry = format!(
-            r#"{{"version":1,"defaultAccountKey":"default","accounts":{{"default":{{"id":"default","home":"/tmp","label":"{marker}","source":"Codex CLI","status":"error","error":"{marker}"}}}},"logins":{{}}}}"#
-        );
+        let registry = json!({
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+            "defaultAccountKey": "default",
+            "accounts": {"default": {
+                "id": "default", "provider": "codex", "home": std::env::temp_dir(),
+                "label": marker, "source": "Codex CLI", "status": "error", "error": marker
+            }},
+            "logins": {}
+        })
+        .to_string();
         let limits = json!({
             "accountKey":"default", "at": 1.0, "data":{"extra":marker}, "error":marker
         });

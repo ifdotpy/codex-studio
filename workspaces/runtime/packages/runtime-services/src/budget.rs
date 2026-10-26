@@ -225,7 +225,7 @@ pub struct BudgetSnapshot {
     initialized: bool,
     live_only: bool,
     live_usage: Option<u64>,
-    provider: studio_runtime_schema::usage::UsageProvider,
+    provider: studio_runtime_schema::provider_kind::ProviderKind,
 }
 impl BudgetSnapshot {
     pub fn from_records(
@@ -258,6 +258,15 @@ impl BudgetSnapshot {
     ) -> Result<Self, BudgetError> {
         validate("PersistedBudgetAgent", agent, "runtime_agents")?;
         validate("PersistedBudgetAgent", durable_agent, "runtime_agents")?;
+        let provider = ProviderKind::of_record(durable_agent)
+            .map_err(|_| invalid("runtime_agents/provider"))?;
+        if let Some(asserted) = agent.get("provider")
+            && ProviderKind::of_field(Some(asserted))
+                .map_err(|_| invalid("runtime_agents/provider"))?
+                != provider
+        {
+            return Err(invalid("runtime_agents/provider/identity"));
+        }
         if let Some(state) = state {
             validate("PersistedBudgetState", state, "runtime_budget")?;
         }
@@ -332,14 +341,9 @@ impl BudgetSnapshot {
             agent: durable,
             state,
             initialized,
-            live_only: uses_live_usage(durable_agent),
+            live_only: uses_live_usage(provider),
             live_usage: None,
-            provider: match ProviderKind::of_record(durable_agent)
-                .map_err(|_| invalid("runtime_agents/provider"))?
-            {
-                ProviderKind::Claude => studio_runtime_schema::usage::UsageProvider::Claude,
-                ProviderKind::Codex => studio_runtime_schema::usage::UsageProvider::Codex,
-            },
+            provider,
         })
     }
     pub fn state(&self) -> &BudgetState {
@@ -359,12 +363,10 @@ impl BudgetSnapshot {
     }
 }
 
-fn uses_live_usage(agent: &Value) -> bool {
-    ProviderKind::of_record(agent).is_ok_and(|provider| {
-        !provider_adapter::adapter(provider)
-            .capabilities()
-            .native_history
-    })
+fn uses_live_usage(provider: ProviderKind) -> bool {
+    !provider_adapter::adapter(provider)
+        .capabilities()
+        .native_history
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1045,6 +1047,8 @@ impl HistoryObservation {
         file: Option<&HistoryFileObservation>,
     ) -> Result<Self, BudgetError> {
         validate("PersistedBudgetAgent", agent, "runtime_agents")?;
+        let provider =
+            ProviderKind::of_record(agent).map_err(|_| invalid("runtime_agents/provider"))?;
         if let Some(history) = history {
             validate("BudgetHistory", history, "analytics_history")?;
         }
@@ -1059,7 +1063,7 @@ impl HistoryObservation {
         };
         // These providers have no rollout to import. Admission checks their
         // durable response rows against the ledger in the caller's transaction.
-        if uses_live_usage(agent) {
+        if uses_live_usage(provider) {
             if history.is_some_and(|history| history["coverage"] == "partial") {
                 observation.reason = Some("Live usage history is incomplete".into());
             }
@@ -1331,6 +1335,30 @@ pub fn team_status(
 #[cfg(test)]
 mod typed_usage_tests {
     use super::*;
+    #[test]
+    fn provider_identity_budget_refuses_unknown_and_mismatched_owner() {
+        let durable = json!({"id":"a","provider":"codex","threadId":"t","turnId":"u","created":0});
+        for provider in [
+            json!("future"),
+            json!(""),
+            json!(7),
+            json!({}),
+            Value::Null,
+            json!("claude"),
+        ] {
+            let mut supplied = durable.clone();
+            supplied["provider"] = provider;
+            assert!(BudgetSnapshot::from_records(&supplied, &durable, None, 100.).is_err());
+            if supplied["provider"] != "claude" {
+                assert!(HistoryObservation::from_records(&supplied, None, None).is_err());
+            }
+        }
+        let mut missing = durable.clone();
+        missing.as_object_mut().expect("agent").remove("provider");
+        assert!(BudgetSnapshot::from_records(&durable, &missing, None, 100.).is_err());
+        assert!(BudgetSnapshot::from_records(&missing, &durable, None, 100.).is_ok());
+        assert!(HistoryObservation::from_records(&missing, None, None).is_err());
+    }
     fn snapshot() -> BudgetSnapshot {
         let agent = json!({"id":"a","provider":"claude","threadId":"t","turnId":"u","created":0});
         BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot")

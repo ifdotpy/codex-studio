@@ -115,17 +115,19 @@ type FixtureMessage = Omit<Partial<Message>, "content" | "usage"> & {
   usage?: Partial<Message["usage"]>;
 };
 type Result = Extract<SDKMessage, { type: "result"; subtype: "success" }>;
+type FailureResult = Exclude<Extract<SDKMessage, { type: "result" }>, Result>;
 type FixtureFrame =
   | (Omit<Partial<Assistant>, "type" | "message"> & {
       type: "assistant";
       message: FixtureMessage;
     })
-  | (Omit<Partial<Result>, "type" | "subtype" | "usage"> & {
+  | (Omit<Partial<Result>, "type" | "subtype" | "usage" | "is_error"> & {
       type: "result";
       subtype: "success";
+      is_error: Result["is_error"];
       usage?: Partial<Result["usage"]>;
     })
-  | { type: "result"; subtype: "error"; errors: string[] }
+  | Pick<FailureResult, "type" | "subtype" | "is_error" | "errors">
   | (Partial<Extract<SDKMessage, { type: "system"; subtype: "init" }>> & {
       type: "system";
       subtype: "init";
@@ -410,6 +412,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             num_turns: 0,
             user_message_uuid: uuid,
           };
@@ -430,6 +433,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "Before steer",
           };
@@ -636,6 +640,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 1, output_tokens: 0 },
             result: "",
           };
@@ -654,7 +659,8 @@ export function query({
           };
           yield {
             type: "result",
-            subtype: "error",
+            subtype: "error_during_execution",
+            is_error: true,
             errors: [
               "Claude usage limit reached (five_hour). Resets at " +
                 new Date(resetsAt * 1000).toISOString() +
@@ -772,6 +778,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "First text block. Second text block.",
           };
@@ -822,6 +829,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 3000, output_tokens: outputTotal },
             result: "Second answer",
           };
@@ -869,6 +877,7 @@ export function query({
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "First stream block. Second stream block.",
           };
@@ -902,6 +911,7 @@ export function query({
         yield {
           type: "result",
           subtype: "success",
+          is_error: false,
           usage: { input_tokens: 10, output_tokens: 2 },
           result: "Visible answer",
         };

@@ -1,5 +1,8 @@
-import type { TestAgent } from "../playwright.ts";
 import assert from "node:assert/strict";
+import type { BrowserRectangle } from "../chat/browser.ts";
+import type { TestAgent } from "../playwright.ts";
+// The base settings fixture omits workerDefaults.fastMode.
+type PartialSettingsFixture = Partial<TestAgent>;
 import type { GetResult } from "../../src/apiTypes.ts";
 import {
   test,
@@ -38,19 +41,18 @@ test("phone composer keeps the lead model name and discloses other roles", async
       const snapshot = structuredClone(base);
       const lead = snapshot.threads.find(
         (agent) => agent.name === "Release lead",
-      );
-      assert.ok(lead);
+      )!;
+
       Object.assign(lead, {
         provider,
         model,
         effort: "medium",
         workerDefaults: {
-          fastMode: false,
           model: "gpt-6-luna",
           effort: "high",
           accountKey: "default",
         },
-      } satisfies Partial<TestAgent>);
+      } as PartialSettingsFixture);
       snapshot.runtime.agents = snapshot.threads.filter(
         (agent) => agent.source === "managed",
       );
@@ -121,23 +123,26 @@ test("phone composer keeps the lead model name and discloses other roles", async
           .evaluateAll((nodes) =>
             nodes
               .filter((node) => node.getClientRects().length)
-              .map((node) => {
-                const { left, right, top } = node.getBoundingClientRect();
-                return { left, right, top };
-              }),
+              .map((node): BrowserRectangle =>
+                node.getBoundingClientRect().toJSON(),
+              ),
           );
         expect(geometry).toHaveLength(1);
-        const triggerBox = await trigger.boundingBox();
-        assert.ok(triggerBox);
+        const triggerBox = (await trigger.boundingBox())!;
+
         const first = geometry[0];
         assert.ok(first);
+
         for (const [index, box] of geometry.entries()) {
           expect(box.left).toBeGreaterThanOrEqual(triggerBox.x);
           expect(box.right).toBeLessThanOrEqual(
             triggerBox.x + triggerBox.width,
           );
           const previous = geometry[index - 1];
-          if (previous) expect(box.left).toBeGreaterThanOrEqual(previous.right);
+          if (index) {
+            assert.ok(previous);
+            expect(box.left).toBeGreaterThanOrEqual(previous.right);
+          }
           expect(box.top).toBe(first.top);
         }
         await expect(

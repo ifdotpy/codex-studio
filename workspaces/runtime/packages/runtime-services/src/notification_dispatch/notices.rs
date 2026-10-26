@@ -1,5 +1,6 @@
 //! Pure native notice decisions. The adapter supplies checked stored records and time.
 use serde_json::{Value, json};
+use studio_runtime_schema::provider_errors::{KnownCodexErrorKind, known_error_kind};
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::sha256_hex;
 
@@ -238,13 +239,19 @@ pub(super) fn decide(
                 .get("error")
                 .filter(|v| !v.is_null() && **v != json!({}))
                 .unwrap_or(&fallback);
-            let error_kind = error_kind(error);
-            let policy = matches!(error_kind, "cyberPolicy" | "misalignmentPolicyViolation");
+            let error_kind = known_error_kind(error);
+            let policy = matches!(
+                error_kind,
+                Some(
+                    KnownCodexErrorKind::CyberPolicy
+                        | KnownCodexErrorKind::MisalignmentPolicyViolation
+                )
+            );
             if params["willRetry"] == true && !policy {
                 agent["nativeStatus"] =
                     json!({"phase":"retrying","error":error,"turnId":turn,"at":at});
                 agent["activity"] = json!({"phase":"retrying","at":at});
-            } else if error_kind == "activeTurnNotSteerable" {
+            } else if error_kind == Some(KnownCodexErrorKind::ActiveTurnNotSteerable) {
                 decision.item = Some(notice(
                     format!("steer:{}", turn.as_str().unwrap_or_default()),
                     error_message(error, label),
@@ -257,12 +264,17 @@ pub(super) fn decide(
                 }
                 remove(&mut agent, "nativeStatus");
                 remove(&mut agent, "nativeSafetyBuffering");
-                if error["codexErrorInfo"] == "misalignmentPolicyViolation" {
+                if error_kind == Some(KnownCodexErrorKind::MisalignmentPolicyViolation) {
                     agent["nativeThreadBlock"] =
                         json!({"threadId":agent["threadId"],"error":error});
                 }
-                decision.refresh_limits =
-                    matches!(error_kind, "usageLimitExceeded" | "rateLimitExceeded");
+                decision.refresh_limits = matches!(
+                    error_kind,
+                    Some(
+                        KnownCodexErrorKind::UsageLimitExceeded
+                            | KnownCodexErrorKind::RateLimitExceeded
+                    )
+                );
                 agent["nativeTurnError"] = json!({"turnId":turn,"error":error});
                 agent["error"] = error.clone();
                 agent["activity"] = json!({"phase":"error","at":at});
@@ -428,32 +440,21 @@ pub(super) fn remove(value: &mut Value, key: &str) {
         fields.remove(key);
     }
 }
-fn error_kind(error: &Value) -> &str {
-    error["codexErrorInfo"]
-        .as_str()
-        .or_else(|| {
-            error["codexErrorInfo"]
-                .as_object()
-                .and_then(|v| v.keys().next())
-                .map(String::as_str)
-        })
-        .unwrap_or("")
-}
-const ERROR_MESSAGES: &[(&str, &str)] = &[
+const ERROR_MESSAGES: &[(KnownCodexErrorKind, &str)] = &[
     (
-        "cyberPolicy",
+        KnownCodexErrorKind::CyberPolicy,
         "Codex refused this turn under its cybersecurity policy.",
     ),
     (
-        "misalignmentPolicyViolation",
+        KnownCodexErrorKind::MisalignmentPolicyViolation,
         "Codex refused this turn under its safety policy.",
     ),
     (
-        "tooManyDenials",
+        KnownCodexErrorKind::TooManyDenials,
         "Codex stopped this turn after too many denied actions. Review the request and approval settings before trying again.",
     ),
     (
-        "flexUnavailable",
+        KnownCodexErrorKind::FlexUnavailable,
         "The selected model is temporarily unavailable on the flexible processing tier. Try again later or choose another model.",
     ),
 ];
@@ -462,8 +463,8 @@ pub(crate) fn error_message(error: &Value, label: &str) -> String {
     if crate::disk_space::is_disk_full_error(error) {
         return crate::disk_space::ERROR_MESSAGE.into();
     }
-    let kind = error_kind(error);
-    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| *k == kind) {
+    let kind = known_error_kind(error);
+    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| Some(*k) == kind) {
         return (*message).into();
     }
     error["message"]
@@ -473,12 +474,10 @@ pub(crate) fn error_message(error: &Value, label: &str) -> String {
         .map_or_else(|| format!("{label} reported an error."), str::to_owned)
 }
 
-/// Display name of the agent's provider in notices (Codex for an unknown one,
-/// whose turn the runtime refuses before it can produce a notice).
-pub(super) fn provider_label(agent: &Value) -> &'static str {
-    studio_runtime_providers::ProviderKind::of_record(agent)
-        .unwrap_or(studio_runtime_providers::ProviderKind::Codex)
-        .label()
+/// Display a known identity, or a generic label for an invalid stored provider.
+pub(crate) fn provider_label(agent: &Value) -> &'static str {
+    studio_runtime_schema::ProviderKind::of_record(agent)
+        .map_or("Provider", studio_runtime_schema::ProviderKind::label)
 }
 
 pub(super) use studio_runtime_store::python_json_utf8 as json_text;
@@ -660,9 +659,31 @@ mod provider_label_tests {
     use serde_json::json;
 
     #[test]
+    fn provider_identity_unknown_notice_uses_generic_label() {
+        for agent in [
+            json!({}),
+            json!({"provider":null}),
+            json!({"provider":"future"}),
+            json!({"provider":7}),
+        ] {
+            assert_eq!(provider_label(&agent), "Provider", "{agent}");
+            assert_eq!(
+                error_message(&json!({}), provider_label(&agent)),
+                "Provider reported an error."
+            );
+        }
+        assert_eq!(provider_label(&json!({"provider":"codex"})), "Codex");
+        assert_eq!(provider_label(&json!({"provider":"claude"})), "Claude");
+    }
+
+    #[test]
     fn error_notices_name_the_agents_provider() {
+        let extension = json!({"message":"Provider detail","codexErrorInfo":{"cyberPolicy":{},"futureCode":{"opaque":[1,null]}},"vendorExtension":{"id":42}});
+        let original = extension.clone();
+        assert_eq!(error_message(&extension, "Codex"), "Provider detail");
+        assert_eq!(extension, original);
         assert_eq!(provider_label(&json!({"provider": "claude"})), "Claude");
-        assert_eq!(provider_label(&json!({})), "Codex");
+        assert_eq!(provider_label(&json!({"provider":"codex"})), "Codex");
         assert_eq!(
             error_message(&json!({}), "Claude"),
             "Claude reported an error."

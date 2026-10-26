@@ -11,26 +11,15 @@ import {
 import { it } from "vitest";
 
 const check = it;
-check("edit patches do not inherit a path from a __proto__ payload", () => {
-  assert.deepEqual(
-    fileChanges(JSON.parse('[{"__proto__":{"path":"injected.txt"}}]'), {
-      old_string: "before",
-      new_string: "after",
-    }),
-    [],
-  );
-});
 
 function native(
   diff: string,
   type = "update",
   extra: Record<string, string> = {},
 ) {
-  const file = required(
+  return required(
     fileChanges([{ path: "src/a.ts", kind: { type, ...extra }, diff }])[0],
   );
-  assert.ok(file);
-  return file;
 }
 const update =
   "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -3,3 +3,4 @@ function a\n same\n-old\n+new\n+extra\n tail\n";

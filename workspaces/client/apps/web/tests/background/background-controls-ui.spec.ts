@@ -8,7 +8,7 @@ type RecordedBody = Partial<
 >;
 declare global {
   interface Window {
-    backgroundControlsSchemaHandshakeEvents: string[];
+    __schemaHandshakeEvents: string[];
   }
 }
 import {
@@ -47,7 +47,7 @@ test("Background controls", async ({ context }, testInfo) => {
   >();
   const server = createServer(async (req, res) => {
     try {
-      const url = new URL(req.url || "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       if (req.method === "POST" && url.pathname === "/api/monitor/cancel") {
         for await (const _chunk of req) {
           // The fixture action has no body fields beyond its id.
@@ -73,7 +73,7 @@ test("Background controls", async ({ context }, testInfo) => {
       }
       if (syncFixture && handleEntitySyncFixtureRequest(req, res, syncFixture))
         return;
-      const name = new URL(req.url || "/", "http://localhost").pathname;
+      const name = new URL(req.url!, "http://localhost").pathname;
       const path = join(
         skill,
         "workspaces/client/apps/web/dist",
@@ -166,10 +166,6 @@ test("Background controls", async ({ context }, testInfo) => {
     chats: [],
     runtime: {
       ...fixtureSnapshot([agent]).runtime,
-      nativeNotices: [],
-      sidebarOrder: { groups: null, revision: 0 },
-      rateLimits: null,
-      rateLimitsByAccount: {},
       agents: [agent],
       rooms: [],
       complaints: [],
@@ -204,16 +200,26 @@ test("Background controls", async ({ context }, testInfo) => {
     page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 980 });
     await page.addInitScript(() => {
-      window.backgroundControlsSchemaHandshakeEvents = [];
-      window.EventSource = class extends EventSource {
-        constructor(url: string | URL, config?: EventSourceInit) {
-          super(url, config);
-          this.addEventListener("api-schema", (event) =>
-            window.backgroundControlsSchemaHandshakeEvents.push(
-              String(event.data),
-            ),
-          );
-        }
+      window.__schemaHandshakeEvents = [];
+      const add = EventSource.prototype.addEventListener;
+      EventSource.prototype.addEventListener = function (
+        type: string,
+        listener:
+          | EventListenerOrEventListenerObject
+          | ((event: MessageEvent) => unknown),
+        options?: boolean | AddEventListenerOptions,
+      ) {
+        if (type !== "api-schema")
+          return add.call(this, type, listener as EventListener, options);
+        return add.call(
+          this,
+          type,
+          (event) => {
+            window.__schemaHandshakeEvents.push((event as MessageEvent).data);
+            return (listener as EventListener).call(this, event);
+          },
+          options,
+        );
       };
     });
     const errors: string[] = [];
@@ -401,10 +407,7 @@ test("Background controls", async ({ context }, testInfo) => {
       }
       await route.fulfill({ json: value });
     });
-    const address = server.address();
-    if (!address || typeof address === "string")
-      throw new Error("Missing fixture TCP address");
-    const origin = `http://127.0.0.1:${address.port}`;
+    const origin = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
     const entityState = await stubEntityState(
       page,
       state,
@@ -412,14 +415,12 @@ test("Background controls", async ({ context }, testInfo) => {
     );
     await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 15000 });
     await page.waitForFunction(
-      () => window.backgroundControlsSchemaHandshakeEvents?.length > 0,
+      () => window.__schemaHandshakeEvents?.length > 0,
       undefined,
       { timeout: 5000 },
     );
     const handshakes = await page.evaluate(() =>
-      window.backgroundControlsSchemaHandshakeEvents.map((data) =>
-        JSON.parse(data),
-      ),
+      window.__schemaHandshakeEvents.map((data) => JSON.parse(data)),
     );
     assert.equal(handshakes[0].hash, readApiSchemaHash());
     await page
@@ -538,9 +539,9 @@ test("Background controls", async ({ context }, testInfo) => {
       () =>
         document.querySelector<HTMLTextAreaElement>(
           '[aria-label="Terminal input"]',
-        )?.value === "",
+        )!.value === "",
     );
-    assert.deepEqual(writes.at(-1), {
+    assert.deepEqual(required(writes.at(-1)), {
       path: "/api/monitor/input",
       body: { id: created.id, text: "hello\n" },
     });
@@ -599,7 +600,7 @@ test("Background controls", async ({ context }, testInfo) => {
       .click();
     assert.equal(required(writes.at(-1)).path, "/api/processes/action");
     assert.equal(required(writes.at(-1)).body.action, "stop_selected");
-    assert.equal(required(writes.at(-1)).body.process?.key, "monitor-key");
+    assert.equal(required(writes.at(-1)).body.process!.key, "monitor-key");
     assert.equal(
       monitor.status,
       "running",
@@ -647,7 +648,7 @@ test("Background controls", async ({ context }, testInfo) => {
     await drawer
       .getByRole("button", { name: "Send via agent", exact: true })
       .click();
-    assert.deepEqual(writes.at(-1), {
+    assert.deepEqual(required(writes.at(-1)), {
       path: "/api/native-command",
       body: { id: "native-task", text: "continue\n", action: "input" },
     });
@@ -656,7 +657,7 @@ test("Background controls", async ({ context }, testInfo) => {
       .click();
     assert.equal(required(writes.at(-1)).path, "/api/processes/action");
     assert.equal(required(writes.at(-1)).body.action, "stop_selected");
-    assert.equal(required(writes.at(-1)).body.process?.key, "native-key");
+    assert.equal(required(writes.at(-1)).body.process!.key, "native-key");
     await page.screenshot({
       path: testInfo.outputPath("native-command-controls.png"),
     });
@@ -682,7 +683,7 @@ test("Background controls", async ({ context }, testInfo) => {
     agent.startAttempt = {
       prepareError: "Thread preparation acknowledgement pending",
     };
-    agent.error = "Thread preparation acknowledgement pending";
+    agent.error = agent.startAttempt!.prepareError;
     const failedWorker: Agent = {
       ...agent,
       id: "pending-review",
@@ -717,6 +718,6 @@ test("Background controls", async ({ context }, testInfo) => {
   } finally {
     server.closeAllConnections();
     await page?.close();
-    await new Promise<void>((r) => server.close(() => r()));
+    await new Promise<void>((r) => server.close(r as (error?: Error) => void));
   }
 });

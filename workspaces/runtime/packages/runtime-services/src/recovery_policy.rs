@@ -3,6 +3,7 @@ use crate::event_write::truthy;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR;
 use studio_runtime_store::{
     BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -181,11 +182,10 @@ fn account_equal(a: &Value, b: &Value) -> bool {
 fn thread_block(a: &Value) -> bool {
     (has(a, "threadId") && a["nativeThreadBlock"]["threadId"] == a["threadId"])
         || (has(a, "threadId")
-            && (a["error"]["codexErrorInfo"] == "misalignmentPolicyViolation"
+            && (is_misalignment_policy_violation(&a["error"])
                 || (has(&a["nativeTurnError"], "turnId")
                     && a["nativeTurnError"]["turnId"] == a["turnId"]
-                    && a["nativeTurnError"]["error"]["codexErrorInfo"]
-                        == "misalignmentPolicyViolation")))
+                    && is_misalignment_policy_violation(&a["nativeTurnError"]["error"]))))
 }
 fn clear(a: &Value) -> bool {
     ![
@@ -532,7 +532,7 @@ mod unbounded_batch_tests {
     fn recovery_batch_eligibility_keeps_identity_checks_above_the_former_cap() {
         for count in [1, 1000] {
             let ids: Vec<_> = (0..count).map(|index| format!("event-{index}")).collect();
-            let mut agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
+            let mut agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
                 "threadId":"thread","status":"interrupted","inFlight":false,"autoWake":false,
                 "error":PROVIDER_DISCONNECTED_TURN_ERROR,"disconnectRecovery":{"autoWake":true,
                     "epoch":1,"accountKey":"default","threadId":"thread",

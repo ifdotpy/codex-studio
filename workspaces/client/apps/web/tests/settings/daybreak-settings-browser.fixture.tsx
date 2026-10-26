@@ -1,12 +1,7 @@
-import { required } from "./fixture-helpers.ts";
 import type { Agent } from "../../src/types.ts";
 import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPicker.tsx";
 import type { PostBody } from "../../src/apiTypes.ts";
-import {
-  fixtureNotReady,
-  fixtureFetchInput,
-  fixturePostBody,
-} from "./fixture-helpers.ts";
+import { fixtureFetchInput, fixturePostBody } from "./fixture-helpers.ts";
 export type DaybreakReset = {
   agent?: Partial<
     Pick<
@@ -25,29 +20,28 @@ export type DaybreakReset = {
   models?: WorkerModelInfo[];
   defaults?: boolean;
 };
-type DaybreakHarness = {
-  ready: boolean;
-  required: typeof required;
-  calls: PostBody<"/api/conversation">[];
-  fail: "network" | "rejected" | null;
-  reply: Agent | null;
-  refreshCount: number;
-  retries: number;
-  models: WorkerModelInfo[];
-  agent: Agent;
-  setAgent: (agent: Agent) => void;
-  setModels: (models: WorkerModelInfo[]) => void;
-  reset: (options?: DaybreakReset) => void;
-  hold: boolean;
-  release: () => void;
-};
+
 declare global {
   interface Window {
-    daybreakFixture: DaybreakHarness;
+    // Renamed from calls: chat/chat-read-client-browser.fixture.tsx declares read-state writes.
+    settingsCalls: PostBody<"/api/conversation">[];
+    // Renamed from fail: chat/chat-read-client-browser.fixture.tsx declares a boolean.
+    daybreakFail: "network" | "rejected" | null;
+    reply: Agent | null;
+    refreshCount: number;
+    retries: number;
+    models: WorkerModelInfo[];
+    agent: Agent;
+    setAgent: (agent: Agent) => void;
+    setModels: (models: WorkerModelInfo[]) => void;
+    reset: (options?: DaybreakReset) => void;
+    hold: boolean;
+    release: () => void;
   }
 }
 const fixtureRoot = document.getElementById("root");
 if (!fixtureRoot) throw new Error("Missing fixture root");
+
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -104,49 +98,30 @@ const initialModels = [
   row("gpt-daybreak-blue-latest", ["daybreakBlue"]),
   row("gpt-daybreak-red-latest", ["daybreakRed"]),
 ];
-window.daybreakFixture = {
-  ready: false,
-  required,
-  calls: [],
-  fail: null,
-  reply: null,
-  refreshCount: 0,
-  retries: 0,
-  models: initialModels,
-  agent: initial,
-  setAgent: fixtureNotReady,
-  setModels: fixtureNotReady,
-  reset: fixtureNotReady,
-  hold: false,
-  release: fixtureNotReady,
-};
-window.daybreakFixture.fail = null;
-window.daybreakFixture.reply = null;
-window.daybreakFixture.refreshCount = 0;
-window.daybreakFixture.retries = 0;
+window.settingsCalls = [];
+window.daybreakFail = null;
+window.reply = null;
+window.refreshCount = 0;
+window.retries = 0;
+
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(
     input,
     options,
+    true,
   );
   if (url.startsWith("/api/models"))
-    return new Response(
-      JSON.stringify({ data: window.daybreakFixture.models }),
-      {
-        headers: fixtureSchemaHeaders,
-      },
-    );
+    return new Response(JSON.stringify({ data: window.models }), {
+      headers: fixtureSchemaHeaders,
+    });
   if (url != "/api/conversation") return nativeFetch(url, requestOptions);
   const request = fixturePostBody<"/api/conversation">(requestOptions?.body);
-  window.daybreakFixture.calls.push(request);
-  if (window.daybreakFixture.hold)
-    await new Promise<void>(
-      (resolve) => (window.daybreakFixture.release = resolve),
-    );
-  if (window.daybreakFixture.fail === "network")
-    throw new TypeError("Connection lost");
-  if (window.daybreakFixture.fail === "rejected")
+  window.settingsCalls.push(request);
+  if (window.hold)
+    await new Promise<void>((resolve) => (window.release = resolve));
+  if (window.daybreakFail === "network") throw new TypeError("Connection lost");
+  if (window.daybreakFail === "rejected")
     return new Response(JSON.stringify({ error: "Mode not supported" }), {
       status: 422,
       headers: fixtureSchemaHeaders,
@@ -158,14 +133,14 @@ window.fetch = async (input, options) => {
     fastMode: values.fast_mode,
     daybreakEnabled: values.daybreak_enabled,
   };
-  const canonical = window.daybreakFixture.reply || {
-    ...window.daybreakFixture.agent,
+  const canonical = window.reply || {
+    ...window.agent,
     ...(request.worker_defaults
       ? { workerDefaults: settings }
       : request.next_turn
         ? {
             pendingSettings: settings,
-            pendingSettingsAccountKey: window.daybreakFixture.agent.accountKey,
+            pendingSettingsAccountKey: window.agent.accountKey,
           }
         : settings),
   };
@@ -175,28 +150,26 @@ window.fetch = async (input, options) => {
   });
 };
 function Fixture() {
-  window.daybreakFixture.ready = true;
   const [agent, setAgent] = useState<Agent>(initial),
     [models, setModels] = useState(initialModels),
     [mount, setMount] = useState(0),
     [defaults, setDefaults] = useState(false);
-  window.daybreakFixture.models = models;
-  window.daybreakFixture.agent = agent;
-  window.daybreakFixture.setAgent = (value) => flushSync(() => setAgent(value));
-  window.daybreakFixture.setModels = (value) =>
-    flushSync(() => setModels(value));
-  window.daybreakFixture.reset = (options) =>
+  window.models = models;
+  window.agent = agent;
+  window.setAgent = (value) => flushSync(() => setAgent(value));
+  window.setModels = (value) => flushSync(() => setModels(value));
+  window.reset = (options) =>
     flushSync(() => {
-      setAgent(Object.assign(structuredClone(initial), options?.agent));
+      setAgent({ ...initial, ...options?.agent });
       setModels(options?.models || initialModels);
       setDefaults(!!options?.defaults);
       setMount((value) => value + 1);
-      window.daybreakFixture.calls = [];
-      window.daybreakFixture.fail = null;
-      window.daybreakFixture.reply = null;
-      window.daybreakFixture.hold = false;
-      window.daybreakFixture.refreshCount = 0;
-      window.daybreakFixture.retries = 0;
+      window.settingsCalls = [];
+      window.daybreakFail = null;
+      window.reply = null;
+      window.hold = false;
+      window.refreshCount = 0;
+      window.retries = 0;
     });
   return (
     <MantineProvider>
@@ -208,13 +181,13 @@ function Fixture() {
           models,
           loading: false,
           error: "",
-          retry: () => window.daybreakFixture.retries++,
+          retry: () => window.retries++,
         }}
         refresh={async () => {
-          window.daybreakFixture.refreshCount++;
+          window.refreshCount++;
         }}
       />
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

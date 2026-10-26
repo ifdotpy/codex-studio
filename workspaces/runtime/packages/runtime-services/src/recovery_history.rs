@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
+use studio_runtime_providers::Method;
+use studio_runtime_schema::provider_lifecycle::{CodexTurnItemsView, ThreadLifecycle};
 
 pub const READ_DEADLINE: Duration = Duration::from_secs(20);
 const MAX_PAGES: usize = 128;
@@ -26,11 +28,12 @@ pub enum HistoryMethod {
 impl HistoryMethod {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Thread => "thread/read",
-            Self::Turns => "thread/turns/list",
-            Self::Items => "thread/items/list",
-            Self::BackgroundTerminals => "thread/backgroundTerminals/list",
+            Self::Thread => Method::ThreadRead,
+            Self::Turns => Method::ThreadTurnsList,
+            Self::Items => Method::ThreadItemsList,
+            Self::BackgroundTerminals => Method::ThreadBackgroundTerminalsList,
         }
+        .as_str()
     }
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -188,7 +191,9 @@ impl<'a> HistoryRead<'a> {
                 json!({"threadId":thread,"includeTurns":false}),
             )
             .await?;
-        if result["thread"]["id"] != thread {
+        if ThreadLifecycle::observe(&result["thread"])
+            .is_none_or(|observation| observation.thread_id != thread)
+        {
             return Err(HistoryError::Identity);
         }
         Ok(result["thread"].clone())
@@ -201,13 +206,16 @@ impl<'a> HistoryRead<'a> {
         let mut cursor: Option<String> = None;
         let mut seen = BTreeSet::new();
         loop {
-            let mut params = json!({"threadId":thread,"limit":10,"sortDirection":"desc","itemsView":"notLoaded"});
+            let mut params = json!({"threadId":thread,"limit":10,"sortDirection":"desc","itemsView":CodexTurnItemsView::NotLoaded.as_str()});
             if let Some(c) = &cursor {
                 params["cursor"] = Value::String(c.clone());
             }
             let page = self.turn_page(params.clone(), thread).await?;
             if let Some(found) = data(&page)?.iter().find(|t| t["id"] == turn) {
-                if found.get("itemsView").is_none_or(|v| v == "full") {
+                if found
+                    .get("itemsView")
+                    .is_none_or(|v| v == CodexTurnItemsView::Full.as_str())
+                {
                     return checked_full(found, thread, turn).map(Some);
                 }
                 let mut items = Vec::new();
@@ -222,7 +230,7 @@ impl<'a> HistoryRead<'a> {
                     }
                     let item_page = match self.call(HistoryMethod::Items, ip).await {
                         Err(HistoryError::Unsupported) => {
-                            params["itemsView"] = json!("full");
+                            params["itemsView"] = json!(CodexTurnItemsView::Full.as_str());
                             let fallback = self.turn_page(params, thread).await?;
                             let exact = data(&fallback)?
                                 .iter()
@@ -260,7 +268,7 @@ impl<'a> HistoryRead<'a> {
                 }
                 let mut result = confirmed.clone();
                 result["items"] = json!(items);
-                result["itemsView"] = json!("full");
+                result["itemsView"] = json!(CodexTurnItemsView::Full.as_str());
                 return Ok(Some(result));
             }
             cursor = next_cursor(&page, &mut seen)?;
@@ -317,8 +325,7 @@ impl<'a> HistoryRead<'a> {
         let mut seen = BTreeSet::new();
         let mut found: Option<Value> = None;
         loop {
-            let mut params =
-                json!({"threadId":thread,"limit":10,"sortDirection":"desc","itemsView":"full"});
+            let mut params = json!({"threadId":thread,"limit":10,"sortDirection":"desc","itemsView":CodexTurnItemsView::Full.as_str()});
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
@@ -372,8 +379,7 @@ impl<'a> HistoryRead<'a> {
         let mut found: Option<Value> = None;
         let mut not_applied = false;
         loop {
-            let mut params =
-                json!({"threadId":thread,"limit":10,"sortDirection":"desc","itemsView":"full"});
+            let mut params = json!({"threadId":thread,"limit":10,"sortDirection":"desc","itemsView":CodexTurnItemsView::Full.as_str()});
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
@@ -444,9 +450,9 @@ impl<'a> HistoryRead<'a> {
             if !ids.insert(id)
                 || turn.get("threadId").is_some_and(|v| v != thread)
                 || !turn["items"].is_array()
-                || turn
-                    .get("itemsView")
-                    .is_some_and(|v| !matches!(v.as_str(), Some("full" | "summary" | "notLoaded")))
+                || turn.get("itemsView").is_some_and(|v| {
+                    serde_json::from_value::<CodexTurnItemsView>(v.clone()).is_err()
+                })
             {
                 return Err(HistoryError::Invalid("turn"));
             }
@@ -473,7 +479,10 @@ fn next_cursor(page: &Value, seen: &mut BTreeSet<String>) -> Result<Option<Strin
     Ok(Some(cursor))
 }
 fn checked_full(turn: &Value, thread: &str, id: &str) -> Result<Value, HistoryError> {
-    if turn.get("itemsView").is_some_and(|v| v != "full") {
+    if turn
+        .get("itemsView")
+        .is_some_and(|v| v != CodexTurnItemsView::Full.as_str())
+    {
         return Err(HistoryError::Invalid("itemsView"));
     }
     let mut items = Vec::new();

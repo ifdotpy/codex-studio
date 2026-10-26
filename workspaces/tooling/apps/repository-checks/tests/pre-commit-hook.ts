@@ -68,6 +68,10 @@ function fixture() {
     path.join(path.dirname(checkSource), "javascript-policy.ts"),
     path.join(path.dirname(checkerPath), "javascript-policy.ts"),
   );
+  copyFileSync(
+    path.join(path.dirname(checkSource), "javascript-exceptions.json"),
+    path.join(path.dirname(checkerPath), "javascript-exceptions.json"),
+  );
   for (const config of [".oxlintrc.json", ".oxfmtrc.json"]) {
     copyFileSync(path.join(repositoryRoot, config), path.join(root, config));
   }
@@ -87,7 +91,14 @@ function fixture() {
   git(root, "init", "--quiet");
   git(root, "config", "user.name", "Hook Fixture");
   git(root, "config", "user.email", "hook-fixture@example.invalid");
-  git(root, "add", "--", ".oxlintrc.json", ".oxfmtrc.json");
+  git(
+    root,
+    "add",
+    "--",
+    ".oxlintrc.json",
+    ".oxfmtrc.json",
+    "workspaces/tooling/apps/repository-checks/javascript-exceptions.json",
+  );
   git(root, "commit", "--quiet", "-m", "fixture tooling baseline");
   return root;
 }
@@ -113,6 +124,40 @@ function commitFixture(root: string) {
 }
 
 try {
+  {
+    const root = fixture();
+    stage(root, "unlisted.js", "// @ts-check\nexport {};\n");
+    stage(
+      root,
+      "tsconfig.json",
+      '{\n  "compilerOptions": {\n    "allowJs": true\n  },\n  "include": ["*.js"]\n}\n',
+    );
+    const policy = path.join(
+      root,
+      "workspaces/tooling/apps/repository-checks/javascript-exceptions.json",
+    );
+    const exceptions: { file: string; purpose: string }[] = JSON.parse(
+      readFileSync(policy, "utf8"),
+    );
+    writeFileSync(
+      policy,
+      JSON.stringify(
+        [...exceptions, { file: "unlisted.js", purpose: "unstaged bypass" }],
+        null,
+        2,
+      ) + "\n",
+    );
+    const result = runHook(root);
+    assert.notEqual(
+      result.status,
+      0,
+      "working-tree exception changes must not authorize staged JavaScript",
+    );
+    assert.match(
+      result.stderr + result.stdout,
+      /not a documented runtime exception/,
+    );
+  }
   {
     const root = fixture();
     stage(root, "unlisted.js", "// @ts-check\nexport {};\n");

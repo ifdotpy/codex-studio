@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { Page } from "@playwright/test";
 import type {
   ApiGetPath,
@@ -7,7 +8,6 @@ import type {
   GetResult,
 } from "../../src/apiTypes.ts";
 import type { TestAgent } from "../playwright.ts";
-import { required } from "../teams/helpers.ts";
 import {
   apiSchemaHeaders,
   readTestState,
@@ -55,9 +55,9 @@ test("workspace ui", async ({ page: testPage }) => {
     env: { ...process.env, FIXTURE_HOLD: "lead" },
   });
   let log = "";
-  const page: Page = testPage;
+  let page!: Page;
   required(proc.stderr).on("data", (d) => (log += d));
-  const poll = async (fn: () => boolean | Promise<boolean>, label: string) => {
+  const poll = async (fn: () => unknown, label: string) => {
     for (let i = 0; i < 180; i++) {
       if (await fn()) return;
       await new Promise((r) => setTimeout(r, 50));
@@ -112,6 +112,7 @@ test("workspace ui", async ({ page: testPage }) => {
       });
       assert.equal(response.status, 200, await response.text());
     };
+    page = testPage;
     await page.setViewportSize({ width: 1440, height: 980 });
     const errors: string[] = [];
     const resourceRequests: string[] = [];
@@ -189,10 +190,12 @@ test("workspace ui", async ({ page: testPage }) => {
     assert.equal(await drawer.getByText(legacyPlan.text).count(), 0);
     let planAgent: TestAgent | undefined;
     await poll(async () => {
-      planAgent = (await readTestState(origin)).runtime.agents.find(
-        (agent) => agent.id === lead.id,
+      planAgent = required(
+        (await readTestState(origin)).runtime.agents.find(
+          (agent) => agent.id === lead.id,
+        ),
       );
-      return !!planAgent?.threadId;
+      return !!planAgent.threadId;
     }, "plan agent has a native thread");
     required(proc.stdin).write(
       JSON.stringify({
@@ -280,7 +283,8 @@ test("workspace ui", async ({ page: testPage }) => {
     );
     await drawer.getByRole("button", { name: "Pause", exact: true }).click();
     await poll(
-      async () => (await get("/api/rules")).rules[0]?.status === "paused",
+      async () =>
+        required((await get("/api/rules")).rules[0]).status === "paused",
       "rule paused",
     );
     await drawer.getByRole("button", { name: "Delete", exact: true }).click();
@@ -364,12 +368,14 @@ test("workspace ui", async ({ page: testPage }) => {
       .waitFor();
     await drawer.getByRole("button", { name: "Pause", exact: true }).click();
     await poll(
-      async () => (await get("/api/rules")).rules[0]?.status === "paused",
+      async () =>
+        required((await get("/api/rules")).rules[0]).status === "paused",
       "low worker alert paused",
     );
     await drawer.getByRole("button", { name: "Resume", exact: true }).click();
     await poll(
-      async () => (await get("/api/rules")).rules[0]?.status === "active",
+      async () =>
+        required((await get("/api/rules")).rules[0]).status === "active",
       "low worker alert resumed",
     );
     await drawer.getByRole("button", { name: "Delete", exact: true }).click();
@@ -490,7 +496,7 @@ test("workspace ui", async ({ page: testPage }) => {
       async () =>
         (
           await get("/api/changes", "?agent=" + lead.id + "&scope=chat")
-        ).diff?.includes("Verified report") === true,
+        ).diff?.includes("Verified report"),
       "chat diff recorded",
     );
     await section("Changes");
@@ -520,7 +526,7 @@ test("workspace ui", async ({ page: testPage }) => {
     await poll(
       async () =>
         (await get("/api/workspace", "?agent=" + lead.id + "&view=annotations"))
-          .annotations?.length === 1,
+          .annotations!.length === 1,
       "line comment stored",
     );
     assert.deepEqual(
@@ -656,6 +662,6 @@ test("workspace ui", async ({ page: testPage }) => {
     console.error("Evidence:", root);
     throw error;
   } finally {
-    proc.stdin?.end();
+    required(proc.stdin)?.end();
   }
 });

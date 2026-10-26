@@ -16,8 +16,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
 import type { BrowserProfileRecord } from "../web/src/native/importBrowserProfile.ts";
-const electron: unknown = createRequire(import.meta.url)("electron");
-assert.ok(typeof electron === "string");
+const electron: string = createRequire(import.meta.url)("electron");
 // The exporter in this process writes this archive; this boundary reads its own fixture output.
 function readArchive(text: string): BrowserProfileArchive {
   return JSON.parse(text);
@@ -73,13 +72,14 @@ assert.match(
 const archive = readArchive(await readFile(output, "utf8"));
 assert.equal(archive.version, 2);
 assert.equal(archive.snapshots.length, 2);
-assert.ok(archive.snapshots[1]);
-assert.equal(archive.snapshots[1].topLevelOrigin, "http://127.0.0.1:4620");
+const [, frameSnapshot] = archive.snapshots;
+assert.ok(frameSnapshot);
+assert.equal(frameSnapshot.topLevelOrigin, "http://127.0.0.1:4620");
 assert.equal(
-  archive.snapshots[1].databases[0]?.stores[0]?.chunks?.[0]?.records,
+  frameSnapshot.databases.at(0)?.stores.at(0)?.chunks?.at(0)?.records,
   1,
 );
-assert.deepEqual(archive.snapshots[1].preferences, {
+assert.deepEqual(frameSnapshot.preferences, {
   "frame-only": "partitioned",
 });
 const snapshot = combineBrowserProfiles(
@@ -89,39 +89,35 @@ const snapshot = combineBrowserProfiles(
   })),
 );
 assert.equal(snapshot.preferences["unexpected-app-run"], undefined);
+const draft = snapshot.preferences["codex-drafts:workspace"];
+assert.ok(draft);
 assert.equal(
   // The seed writes this exact preference immediately before export.
-  (
-    JSON.parse(
-      snapshot.preferences["codex-drafts:workspace"] ?? "null",
-    ) as Record<string, unknown>
-  ).room,
+  (JSON.parse(draft) as Record<string, unknown>).room,
   "Сохранить 🦀",
 );
 const store = snapshot.databases
-  .find((db) => db.name === "studio-fixture")
-  ?.stores.find((store) => store.name === "records");
-assert.ok(store);
+  .find((db) => db.name === "studio-fixture")!
+  .stores.find((store) => store.name === "records");
 assert.equal(
   snapshot.databases
-    .find((db) => db.name === "studio-fixture")
-    ?.stores.find((store) => store.name === "changes")?.nextKey,
+    .find((db) => db.name === "studio-fixture")!
+    .stores.find((store) => store.name === "changes")!.nextKey,
   101,
 );
 assert.equal(
   snapshot.databases
-    .find((db) => db.name === "studio-fixture")
-    ?.stores.find((store) => store.name === "nested")?.nextKey,
+    .find((db) => db.name === "studio-fixture")!
+    .stores.find((store) => store.name === "nested")!.nextKey,
   51,
 );
-assert.equal(store.keyPath, "id");
-assert.ok(store.chunks);
-assert.ok(store.chunks.length > 1);
+assert.equal(store!.keyPath, "id");
+assert.ok(store!.chunks!.length > 1);
 assert.equal(
-  store.chunks.reduce((sum, chunk) => sum + chunk.records, 0),
+  store!.chunks!.reduce((sum, chunk) => sum + chunk.records, 0),
   71,
 );
-assert.deepEqual(store.indexes, [
+assert.deepEqual(store!.indexes, [
   { name: "session", keyPath: "session", unique: false, multiEntry: false },
 ]);
 const chunks: Record<string, BrowserProfileRecord[]> = {};
@@ -129,29 +125,34 @@ const materialized = structuredClone(snapshot.databases);
 for (const db of materialized)
   for (const savedStore of db.stores) {
     savedStore.records = [];
-    assert.ok(savedStore.chunks);
-    for (const chunk of savedStore.chunks) {
+    for (const chunk of savedStore.chunks!) {
       const chunkPath = path.join(
         fixture,
-        archive.parts ?? "",
+        archive.parts!,
         chunk.sha256 + ".json",
       );
       assert.equal((await stat(chunkPath)).mode & 0o777, 0o600);
       const bytes = await readFile(chunkPath);
       assert.equal(bytes.length, chunk.bytes);
-      chunks[chunk.sha256] = readRecords(bytes.toString());
-      savedStore.records.push(...readRecords(bytes.toString()));
+      const chunkRecords = readRecords(bytes.toString());
+      chunks[chunk.sha256] = chunkRecords;
+      savedStore.records.push(...chunkRecords);
     }
     delete savedStore.chunks;
   }
 const records = materialized
-  .find((db) => db.name === "studio-fixture")
-  ?.stores.find((s) => s.name === "records");
-assert.ok(records?.records?.[0]);
-assert.equal(records.records[0][1][0], "object");
-const encoded = records.records[0][1];
-assert.ok(encoded[0] === "object");
-const value = Object.fromEntries(encoded[1]);
+  .find((db) => db.name === "studio-fixture")!
+  .stores.find((s) => s.name === "records");
+const firstRecord = records?.records?.at(0);
+assert.ok(firstRecord);
+const value = Object.fromEntries(
+  (
+    firstRecord[1] as Extract<
+      import("../web/src/native/importBrowserProfile.ts").EncodedProfileValue,
+      { 0: "object" }
+    >
+  )[1],
+);
 assert.deepEqual(value.pcm, ["view", "Int16Array", ["bytes", "AIAAAP9/"]]);
 assert.deepEqual(value.file, [
   "file",

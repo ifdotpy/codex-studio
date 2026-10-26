@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{Method, RequestId};
 use studio_runtime_store::{
     AgentRecord, AgentRepository, ContextRepairRepository, RuntimeStore, StoreError,
@@ -214,7 +215,9 @@ pub fn reserve(
         return Err(NativeError::Invalid("agent.status"));
     }
     if request.action == Action::Review
-        && (agent.get("provider").is_some_and(|v| v != "codex")
+        && (agent
+            .get("provider")
+            .is_some_and(|v| v != ProviderKind::Codex.key())
             || crate::event_write::truthy(agent.get("daybreakEnabled")))
     {
         return Err(NativeError::Invalid("agent.provider"));

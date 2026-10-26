@@ -97,6 +97,25 @@ async fn read(replies: Vec<Result<Value, HistoryError>>) -> Result<Option<Value>
         .await
 }
 #[tokio::test]
+async fn thread_observation_preserves_unknown_status_and_external_fields() {
+    let thread = json!({"id":"thread","status":{"type":"future","opaque":[1,2]},"nativeId":"native-session"});
+    let mut reader = Reader {
+        replies: vec![Ok(json!({"thread":thread}))].into(),
+        ..Default::default()
+    };
+    let observed = HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+        .thread_document("thread")
+        .await
+        .expect("unknown external state remains readable");
+    assert_eq!(observed, thread);
+    assert!(
+        studio_runtime_schema::provider_lifecycle::ThreadLifecycle::observe(&observed)
+            .expect("thread identity")
+            .activity
+            .is_none()
+    );
+}
+#[tokio::test]
 async fn exact_turn_keeps_complete_text_and_coalesces_identical_items() {
     let mut t = turn();
     let duplicate = t["items"][0].clone();
@@ -223,7 +242,7 @@ impl RecoveryEffects for Effects {
     }
 }
 fn agent() -> RecoverySnapshot {
-    RecoverySnapshot::from_record(json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true})).expect("valid recovery fixture")
+    RecoverySnapshot::from_record(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true})).expect("valid recovery fixture")
 }
 #[tokio::test]
 async fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() {
@@ -446,7 +465,7 @@ fn unknown_start_snapshot(held: bool) -> RecoverySnapshot {
     let attempt = json!({"id":"attempt","epoch":0,"accountKey":"default",
         "threadId":"thread","connectionId":"connection","events":["event"],
         "submitted":true,"executionOutcome":"unknown"});
-    let mut record = json!({"id":"agent","rootId":"agent","epoch":0,
+    let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,
         "status":"queued","accountKey":"default","threadId":"thread",
         "autoWake":true,"inFlight":!held});
     if held {
@@ -479,7 +498,7 @@ async fn recover_exact_status(held: bool, status: &str) -> (RecoveryOutcome, Rea
 
 #[tokio::test]
 async fn held_restart_start_keeps_nonterminal_history_uncertain() {
-    for status in ["inProgress", "running", "uncertain"] {
+    for status in ["inProgress", "running", "uncertain", "futureStatus"] {
         let (outcome, reader, effects) = recover_exact_status(true, status).await;
         assert!(matches!(outcome, RecoveryOutcome::Unconfirmed), "{status}");
         assert!(

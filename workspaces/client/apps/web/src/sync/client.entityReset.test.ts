@@ -1,6 +1,8 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptWireItem } from "../types";
+// Cache reset fixtures omit message role/text when only item identity/status is exercised.
 import type { CachedTranscript } from "./transcriptCache";
 import type { RxDocumentData } from "rxdb";
 import type { EntityRow } from "./entityProjection";
@@ -10,7 +12,7 @@ import { READ_RECOVERY_MAX_ATTEMPTS, readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
   ApiError: class extends Error {
-    public status: number;
+    declare status: number;
     constructor(message: string, status: number) {
       super(message);
       this.status = status;
@@ -140,9 +142,9 @@ describe("entity pull reset wiring", () => {
       }),
     });
     for (const [id, item] of [
-      ["first", { id: "first", role: "user", text: "" }],
-      ["second", { id: "second", role: "assistant", text: "" }],
-      ["tool", { id: "tool", role: "tool", text: "", toolStatus: "running" }],
+      ["first", { id: "first", role: "user" }],
+      ["second", { id: "second", role: "assistant" }],
+      ["tool", { id: "tool", toolStatus: "running" } as TranscriptWireItem],
     ] as const)
       rows.set(`transcript:item:agent:${id}`, {
         id: `transcript:item:agent:${id}`,
@@ -193,10 +195,10 @@ describe("entity pull reset wiring", () => {
     });
     const client = await import("./client");
     const cache = await import("./transcriptCache");
-    const stored: TranscriptWireItem[] = [
-      { id: "first", role: "user", text: "" },
-      { id: "second", role: "assistant", text: "" },
-    ];
+    const stored = [
+      { id: "first", role: "user" },
+      { id: "second", role: "assistant" },
+    ] as TranscriptWireItem[];
     cache.cacheTranscriptValue(
       workspaceId,
       "agent",
@@ -204,7 +206,7 @@ describe("entity pull reset wiring", () => {
         truncated: false,
         items: [
           ...stored,
-          { id: "tool", role: "tool", text: "", toolStatus: "running" },
+          { id: "tool", toolStatus: "running" } as TranscriptWireItem,
         ],
       },
       1,
@@ -268,7 +270,7 @@ describe("entity pull reset wiring", () => {
     await settle();
     expect(fullReads()).toBe(1);
     expect(cache.peekTranscript(workspaceId, "agent")?.seq).toBe(3);
-    expect(cache.peekTranscript(workspaceId, "agent")?.payload?.items).toEqual([
+    expect(cache.peekTranscript(workspaceId, "agent")?.payload!.items).toEqual([
       ...stored,
       { id: "tool", toolStatus: "failed" },
     ]);
@@ -654,10 +656,8 @@ describe("entity pull reset wiring", () => {
       seq: 1,
       payload: JSON.stringify({
         id: "tool",
-        role: "tool",
-        text: "",
         toolStatus: "running",
-      }),
+      } as TranscriptWireItem),
     });
     const storageInstance = {
       findDocumentsById: vi.fn(async (ids: string[]) =>
@@ -696,7 +696,7 @@ describe("entity pull reset wiring", () => {
       "agent",
       {
         truncated: false,
-        items: [{ id: "tool", role: "tool", text: "", toolStatus: "running" }],
+        items: [{ id: "tool", toolStatus: "running" } as TranscriptWireItem],
       },
       1,
     );
@@ -1399,9 +1399,7 @@ describe("entity pull reset wiring", () => {
       let current = true;
       storageInstance.findDocumentsById.mockImplementationOnce(async () => {
         current = false;
-        const currentVersion = emptyDelta.resourceVersions?.[0];
-        assert.ok(currentVersion);
-        delete currentVersion.cursor;
+        delete required(emptyDelta.resourceVersions![0]).cursor;
         return [];
       });
       await expect(

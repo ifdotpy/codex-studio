@@ -82,9 +82,8 @@ test("sync required browser", async ({ page: runnerPage }) => {
     );
     await page.waitForFunction(
       () =>
-        JSON.parse(
-          localStorage.getItem("codex-chat-draft:unassigned:lead") ?? "null",
-        )?.text === "Saved local draft",
+        JSON.parse(localStorage.getItem("codex-chat-draft:unassigned:lead")!)
+          ?.text === "Saved local draft",
     );
     await expect.poll(() => probes).toBeGreaterThan(0);
     assert.equal(
@@ -93,7 +92,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     );
     await page.waitForFunction(
       () =>
-        window.syncRequiredBrowserFixtureState.outbox?.error &&
+        window.syncRequiredBrowserFixtureState.outbox!.error &&
         window.syncRequiredBrowserFixtureState.drafts.error,
     );
     const sendError = await page.evaluate(async () => {
@@ -102,12 +101,12 @@ test("sync required browser", async ({ page: runnerPage }) => {
           await import("/src/sync/send.ts")
         ).durableSend({ id: "missing-sync", room: "lead", text: "message" });
       } catch (error) {
-        return error instanceof Error ? error.message : String(error);
+        return (error as Error).message;
       }
       return undefined;
     });
-    assert.ok(sendError);
-    assert.match(sendError, /Identity unavailable/);
+
+    assert.match(sendError!, /Identity unavailable/);
     assert.equal(sends, 0);
     await page.reload();
     await mount();
@@ -122,7 +121,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     await page.waitForFunction(
       () =>
         window.syncRequiredBrowserFixtureState?.drafts.error &&
-        window.syncRequiredBrowserFixtureState?.outbox?.error,
+        window.syncRequiredBrowserFixtureState?.outbox!.error,
     );
     assert.equal(
       await page.evaluate(
@@ -157,7 +156,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const original = db.drafts.incrementalUpsert;
-      window.syncRequiredBrowserFixtureRestoreDraftWrites = () => {
+      window.restoreDraftWrites = () => {
         db.drafts.incrementalUpsert = original;
       };
       db.drafts.incrementalUpsert = async () => {
@@ -180,7 +179,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
       /could not be saved/,
     );
     await page.evaluate(() => {
-      window.syncRequiredBrowserFixtureRestoreDraftWrites();
+      window.restoreDraftWrites();
       window.syncRequiredBrowserFixtureState.drafts.setDrafts({
         lead: "Recovered local edit",
       });
@@ -229,7 +228,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const json = (value: unknown, status = 200) => {
         res.writeHead(
           status,
@@ -337,9 +336,8 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
     assert.equal(
       await page.evaluate(
         () =>
-          JSON.parse(
-            localStorage.getItem("codex-chat-draft:unassigned:lead") ?? "null",
-          )?.text,
+          JSON.parse(localStorage.getItem("codex-chat-draft:unassigned:lead")!)
+            ?.text,
       ),
       "Retained while identity is unavailable",
       "Manual retry keeps the local journal copy while the identity request fails",

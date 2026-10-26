@@ -1,5 +1,5 @@
+import { required } from "../componentTestFixtures";
 import {
-  required,
   componentMessage,
   componentAttachment,
 } from "../componentTestFixtures";
@@ -19,13 +19,14 @@ import {
 } from "./messageDelivery.ts";
 import { it } from "vitest";
 
-const receipt: OutgoingMessage = {
+// The saved receipt fixture omits body.id and receipt.id.
+const receipt = {
   id: "one",
-  body: { id: "one", room: "lead", text: "Same text" },
+  body: { room: "lead", text: "Same text" },
   created: 1,
   status: "accepted",
-  receipt: { id: "one", status: "queued" },
-};
+  receipt: { status: "queued" },
+} as OutgoingMessage;
 const pending: Message = {
   id: "lead:one",
   role: "user",
@@ -59,18 +60,16 @@ it("matches transcript rows by receipt identity and retains edited text and atta
   assert.equal(
     required(
       required(
-        required(
-          outgoingTranscript(
-            [pending],
-            [
-              {
-                ...receipt,
-                attachments: [componentAttachment({ id: "asset-one" })],
-              },
-            ],
-          ).items[0],
-        ).assets,
-      )?.[0],
+        outgoingTranscript(
+          [pending],
+          [
+            {
+              ...receipt,
+              attachments: [componentAttachment({ id: "asset-one" })],
+            },
+          ],
+        ).items[0],
+      ).assets?.[0],
     ).id,
     "asset-one",
   );
@@ -226,19 +225,17 @@ it("keeps explicit delivery modes queued until a message is dispatched", () => {
       ...receipt,
       body: { ...receipt.body, delivery },
     };
-    for (const source of [[], [pending]] as const) {
-      const message = required(
-        outgoingTranscript([...source], [local]).items[0],
-      );
-      assert.equal(message.requestedDelivery, "current_turn");
+    for (const source of [[], [pending]] satisfies Message[][]) {
+      const message = outgoingTranscript(source, [local]).items[0];
+      assert.equal(required(message).requestedDelivery, "current_turn");
       assert.equal(
         local.body.delivery,
         delivery,
         "Original retry payload remains unchanged",
       );
-      assert.equal(explicitQueue(message), true);
-      assert.equal(deliveryLabel(message), "Queued");
-      assert.equal(dispatchedMessage(message), false);
+      assert.equal(explicitQueue(required(message)), true);
+      assert.equal(deliveryLabel(required(message)), "Queued");
+      assert.equal(dispatchedMessage(required(message)), false);
     }
   }
   assert.equal(explicitQueue({}), false);
@@ -314,7 +311,14 @@ it("keeps explicit delivery modes queued until a message is dispatched", () => {
     required(
       outgoingTranscript(
         [],
-        [{ ...receipt, receipt: { id: "one", status: "pending" } }],
+        [
+          {
+            ...receipt,
+            receipt: { status: "pending" } as NonNullable<
+              OutgoingMessage["receipt"]
+            >,
+          },
+        ],
       ).items[0],
     ).deliveryStatus,
     "pending",
@@ -419,9 +423,7 @@ it("updates a matching receipt without replacing existing transcript content", (
   const entry: OutgoingMessage = {
     ...receipt,
     body: { ...receipt.body, delivery: "after_tool" },
-    attachments: [
-      componentAttachment(componentAttachment({ id: "outbox-asset" })),
-    ],
+    attachments: [componentAttachment({ id: "outbox-asset" })],
     status: "failed",
     error: "late receipt error",
   };
@@ -540,18 +542,17 @@ it("shows failed and uncertain receipts until the transcript confirms their outc
 it("creates local receipt rows with display content and accepted queue status", () => {
   const missingReceipt: OutgoingMessage = {
     ...receipt,
-    receipt: undefined,
-    attachments: undefined,
     status: "accepted",
+    receipt: undefined,
     displayText: "Edited draft",
+    attachments: undefined,
     created: 1234,
     error: "receipt unavailable",
     body: {
-      id: "one",
       room: "lead",
       text: "Original text",
       delivery: "after_turn",
-    },
+    } as OutgoingMessage["body"],
   };
   const row = required(outgoingTranscript([], [missingReceipt]).items[0]);
   assert.equal(row.id, "lead:one");
@@ -566,53 +567,66 @@ it("creates local receipt rows with display content and accepted queue status", 
   assert.equal(row.localDelivery, true);
   assert.equal(row.requestedDelivery, "next_turn");
 
-  const queued = required(
-    outgoingTranscript(
-      [],
-      [{ ...receipt, receipt: { id: "one", status: "reserved" } }],
-    ).items[0],
-  );
-  assert.equal(queued.deliveryStatus, "accepted");
-  const waiting = required(
-    outgoingTranscript(
-      [],
-      [{ ...receipt, receipt: { id: "one", status: "pending" } }],
-    ).items[0],
-  );
-  assert.equal(waiting.deliveryStatus, "pending");
+  const queued = outgoingTranscript(
+    [],
+    [
+      {
+        ...receipt,
+        receipt: { status: "reserved" } as NonNullable<
+          OutgoingMessage["receipt"]
+        >,
+      },
+    ],
+  ).items[0];
+  assert.equal(required(queued).deliveryStatus, "accepted");
+  const waiting = outgoingTranscript(
+    [],
+    [
+      {
+        ...receipt,
+        receipt: { status: "pending" } as NonNullable<
+          OutgoingMessage["receipt"]
+        >,
+      },
+    ],
+  ).items[0];
+  assert.equal(required(waiting).deliveryStatus, "pending");
   const missing = required(
     outgoingTranscript([], [{ ...receipt, receipt: undefined }]).items[0],
   );
   assert.equal(missing.deliveryStatus, "accepted");
-  const nonAccepted = required(
-    outgoingTranscript(
-      [],
-      [
-        {
-          ...receipt,
-          status: "queued",
-          receipt: { id: "one", status: "pending" },
-        },
-      ],
-    ).items[0],
-  );
-  assert.equal(nonAccepted.deliveryStatus, "queued");
+  const nonAccepted = outgoingTranscript(
+    [],
+    [
+      {
+        ...receipt,
+        status: "queued",
+        receipt: { status: "pending" } as NonNullable<
+          OutgoingMessage["receipt"]
+        >,
+      },
+    ],
+  ).items[0];
+  assert.equal(required(nonAccepted).deliveryStatus, "queued");
 });
 
 it("labels every delivery state used by the chat and hides unknown states", () => {
-  const labels = [
-    ["sending", "Sending…"],
-    ["reserved", "Starting…"],
-    ["dispatching", "Sending…"],
-    ["pending", "Queued"],
-    ["queued", "Waiting to send"],
-    ["paused", "Retries paused"],
-    ["uncertain", "Delivery unconfirmed"],
-    ["failed", "Not sent"],
-    ["accepted", "Sent"],
-    ["cancelled", "Cancelled"],
-  ] satisfies [NonNullable<Message["deliveryStatus"]>, string][];
-  for (const [status, label] of labels)
+  const labels = {
+    sending: "Sending…",
+    reserved: "Starting…",
+    dispatching: "Sending…",
+    pending: "Queued",
+    queued: "Waiting to send",
+    paused: "Retries paused",
+    uncertain: "Delivery unconfirmed",
+    failed: "Not sent",
+    accepted: "Sent",
+    cancelled: "Cancelled",
+  } satisfies Partial<Record<NonNullable<Message["deliveryStatus"]>, string>>;
+  for (const [status, label] of Object.entries(labels) as [
+    keyof typeof labels,
+    string,
+  ][])
     assert.equal(
       deliveryLabel(componentMessage({ deliveryStatus: status })),
       label,
@@ -655,7 +669,8 @@ function localCards(
     .map((item) => ({
       label: deliveryLabel(item),
       retryControls: ["queued", "paused"].includes(
-        shown.find((entry) => entry.id === item.clientMessageId)?.status ?? "",
+        shown.find((entry) => entry.id === item.clientMessageId)
+          ?.status as string,
       ),
     }));
 }

@@ -1,9 +1,8 @@
 import type { Agent, Room, Snapshot } from "../../src/types.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
-import { required } from "./helpers.ts";
 declare global {
   interface Window {
-    showRoomBounds: () => void;
+    showCurrent: () => void;
   }
 }
 
@@ -60,8 +59,8 @@ const data: Snapshot = {
     peerTeams: [],
   },
 };
-const app = createRoot(required(document.getElementById("root")));
-window.showRoomBounds = () =>
+const app = createRoot(document.getElementById("root")!);
+window.showCurrent = () =>
   app.render(
     <MantineProvider theme={theme} defaultColorScheme="dark">
       <TeamChats
@@ -72,4 +71,4 @@ window.showRoomBounds = () =>
       />
     </MantineProvider>,
   );
-window.showRoomBounds();
+window.showCurrent();

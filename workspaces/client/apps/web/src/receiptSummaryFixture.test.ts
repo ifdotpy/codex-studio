@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import { required } from "./components/componentTestFixtures.ts";
 import type { components } from "./generated/api";
 import { afterEach, expect, it, vi } from "vitest";
 import { readEntities } from "../tests/fixtures/rust-ui-fixture.ts";
@@ -31,18 +31,18 @@ it("reads scoped fixture baselines from fragmented SSE and closes the stream", a
     cancel,
   });
   const fetch = vi
-    .fn<typeof globalThis.fetch>()
+    .fn<(url: string) => Promise<Response>>()
     .mockResolvedValue(new Response(stream));
   vi.stubGlobal("fetch", fetch);
   expect(
     await readResourceBaselines("http://fixture.test", [resource]),
   ).toEqual([entry]);
 
-  const input = fetch.mock.calls[0]?.[0];
-  assert.ok(typeof input === "string" || input instanceof URL);
-  const resources = new URL(input).searchParams.get("resources");
-  assert.ok(resources);
-  expect(JSON.parse(resources)).toEqual([resource]);
+  expect(
+    JSON.parse(
+      new URL(required(fetch.mock.calls[0])[0]).searchParams.get("resources")!,
+    ),
+  ).toEqual([resource]);
   expect(cancel).toHaveBeenCalledOnce();
 });
 it("fixture recovery retries a projection race and consumes an explicit reset", async () => {

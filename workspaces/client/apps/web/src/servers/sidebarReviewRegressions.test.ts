@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
 import {
@@ -115,9 +116,7 @@ it("a reorder with shared chats on each server round-trips the sidebar order", (
     model.projectKey("local", "/local"),
     null,
   ]);
-  const order = model.order[group];
-  assert.ok(order);
-  const desired = [...order].reverse();
+  const desired = [...required(model.order[group])].reverse();
   const payload = sidebarOrderWrite(model, "local", {
     ...model.order,
     [group]: desired,
@@ -192,17 +191,13 @@ it("an explicit reorder converts legacy combined ranks without changing unknown 
     initial.projectKey("local", "/local"),
     null,
   ]);
-  const order = initial.order[group];
-  assert.ok(order);
-  const oldOrder = [...order].reverse();
+  const oldOrder = [...required(initial.order[group])].reverse();
   const legacyKey = JSON.stringify(["combined-sidebar", group]);
-  const savedGroups = a.sidebar.sidebarOrder?.groups;
-  assert.ok(savedGroups);
-  savedGroups[legacyKey] = oldOrder;
+  a.sidebar.sidebarOrder!.groups![legacyKey] = oldOrder;
   const nativeGroup = JSON.stringify(["items", "/local", null]);
-  const nativeOrder = savedGroups[nativeGroup];
-  assert.ok(nativeOrder);
-  nativeOrder.push("unknown-native-id");
+  required(required(a.sidebar.sidebarOrder).groups![nativeGroup]).push(
+    "unknown-native-id",
+  );
   const model = mergeSidebar([a, b]);
   assert.ok(model.order[group] != null);
   expect(model.order[group].slice(0, 4)).toEqual(oldOrder);

@@ -143,11 +143,8 @@ function ContextChart({
         No context-window measurements in this period.
       </div>
     );
-  const first = points[0],
-    last = points.at(-1);
-  if (!first || !last) throw new Error("Missing analytics context points");
-  const start = first.at,
-    end = last.at;
+  const start = points[0]!.at,
+    end = points.at(-1)!.at;
   const groups = new Map<string, AnalyticsContextPoint[]>();
   points.forEach((p) => {
     const id = aggregate ? "Selected agents" : p.agentId;

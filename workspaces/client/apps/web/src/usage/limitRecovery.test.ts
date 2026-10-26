@@ -48,6 +48,21 @@ const limits = (
     ...overrides,
   }) satisfies RecoveryLimits;
 
+test("future and ambiguous vendor error records cannot enable limit recovery", () => {
+  for (const codexErrorInfo of [
+    "futureLimit",
+    { futureLimit: { opaque: [1, null] } },
+    { rateLimitExceeded: {}, futureLimit: { id: 42 } },
+  ]) {
+    const error = { message: "Provider extension", codexErrorInfo };
+    const original = JSON.stringify(error);
+    const current = { ...agent, error } satisfies Agent;
+    assert.equal(limitRecovered(current, limits(), now), false);
+    assert.equal(limitRecovery(current, limits(), now), null);
+    assert.equal(JSON.stringify(error), original);
+  }
+});
+
 test("recovery consumes the Rust decision and validates its identity and validity", () => {
   const available = limits(
     { primary: { usedPercent: 100 } },
@@ -139,18 +154,15 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
       }),
       now,
     );
-    assert.ok(recovery);
-    assert.equal(recovery.title, title);
 
-    assert.equal(recovery.action?.label, action);
+    assert.equal(recovery!.title, title);
 
-    if (owner) {
-      assert.ok(recovery.ownerRequest);
-      assert.ok(recovery.ownerRequest.includes(owner));
-    }
+    assert.equal(recovery!.action?.label, action);
+
+    if (owner) assert.ok(recovery!.ownerRequest!.includes(owner));
 
     assert.equal(
-      recovery.resetAt,
+      recovery!.resetAt,
       now + 90,
       "the Rust policy owns which reset applies",
     );
@@ -159,8 +171,8 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
       limits({ rateLimitReachedType: reason }),
       now,
     );
-    assert.ok(usage);
-    assert.match(usage.title, /usage limit/);
+
+    assert.match(usage!.title, /usage limit/);
   }
   for (const [plan, label] of [
     ["pro", "View credits in ChatGPT"],
@@ -170,17 +182,17 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
     ["go", "View ChatGPT usage"],
   ]) {
     assert.equal(
-      limitRecovery(agent, limits({ planType: plan }), now)?.action?.label,
+      limitRecovery(agent, limits({ planType: plan }), now)!.action!.label,
       label,
     );
   }
-  assert.ok(limitRecovery);
+
   assert.equal(
     limitRecovery(
       agent,
       limits({ rateLimitReachedType: "future", planType: "pro" }),
       now,
-    )?.action,
+    )!.action,
     undefined,
   );
   for (const snapshot of [
@@ -191,9 +203,29 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
     limits({}, { at: now - 301 }),
   ]) {
     assert.match(
-      limitRecovery(agent, snapshot, now)?.message ?? "",
+      limitRecovery(agent, snapshot, now)!.message,
       /^View account limits/,
     );
+  }
+});
+
+test("unsupported provider identities retain generic recovery without Codex billing actions", () => {
+  for (const provider of [undefined, null, "future-provider"]) {
+    const unknown: Agent = {
+      ...agent,
+      // @ts-expect-error An unknown wire provider must not authorize billing actions.
+      provider,
+    };
+    for (const data of [
+      { rateLimitReachedType: "workspace_owner_credits_depleted" },
+      { rateLimitReachedType: "workspace_member_credits_depleted" },
+      { planType: "pro" },
+    ]) {
+      const recovery = limitRecovery(unknown, limits(data), now);
+      assert.equal(recovery?.action, undefined);
+      assert.equal(recovery?.ownerRequest, undefined);
+      assert.match(recovery!.message, /^View account limits/);
+    }
   }
 });
 
@@ -210,10 +242,10 @@ test("Claude notices show model reset and overage without Codex purchase actions
     limits({ planType: "pro" }, { eligibility }),
     now,
   );
-  assert.ok(recovery);
-  assert.equal(recovery.eligibility, eligibility);
 
-  assert.equal(recovery.resetAt, now + 180);
+  assert.equal(recovery!.eligibility, eligibility);
 
-  assert.equal(recovery.action, undefined);
+  assert.equal(recovery!.resetAt, now + 180);
+
+  assert.equal(recovery!.action, undefined);
 });

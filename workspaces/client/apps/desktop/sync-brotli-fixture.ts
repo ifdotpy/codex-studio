@@ -6,7 +6,7 @@ declare global {
 }
 globalThis.syncTestCredentials = credentials;
 const profile = process.argv[2];
-if (!profile) throw new Error("Supply the fixture profile.");
+if (profile === undefined) throw new Error("Supply the fixture profile.");
 app.setPath("userData", profile);
 app.whenReady().then(() => {
   const window = new BrowserWindow({ show: false });

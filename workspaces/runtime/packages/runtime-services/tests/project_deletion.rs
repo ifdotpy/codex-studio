@@ -47,11 +47,11 @@ impl CreationCatalog for Catalog {
     }
 }
 fn accounts() -> AccountPolicyState {
-    AccountPolicyState::from_startup(Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture-provider-home","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}"#),[]).expect("accounts")
+    AccountPolicyState::from_startup(Some(&serde_json::to_vec(&json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":studio_runtime_schema::ProviderKind::Codex,"home":"/fixture-provider-home","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}})).expect("current registry JSON")),[]).expect("accounts")
 }
 fn driver(root: &std::path::Path) -> Arc<studio_runtime_services::account_driver::AccountDriver> {
     let registry = root.join("accounts.json");
-    std::fs::write(&registry,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root,"label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).expect("registry");
+    std::fs::write(&registry,json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root,"label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).expect("registry");
     Arc::new(
         studio_runtime_services::account_driver::AccountDriver::open(&registry).expect("driver"),
     )
@@ -473,7 +473,7 @@ async fn project_deletion_orders_archive_restore_with_its_writer() {
             .1;
         let epoch = parent["epoch"].as_i64().expect("epoch");
         let mut worker = parent.clone();
-        for(k,v)in json!({"id":"archived","rootId":"new-lead","parentId":"new-lead","isLead":false,"role":"implementer","epoch":1,"status":"paused","autoWake":false,"deletedAt":1,"agentArchive":{"at":1,"epoch":1,"cleanupPending":false},"worktree":false,"worktreeReady":false,"workspaceMode":"shared"}).as_object().expect("patch"){worker[k]=v.clone();}
+        for(k,v)in json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"archived","rootId":"new-lead","parentId":"new-lead","isLead":false,"role":"implementer","epoch":1,"status":"paused","autoWake":false,"deletedAt":1,"agentArchive":{"at":1,"epoch":1,"cleanupPending":false},"worktree":false,"worktreeReady":false,"workspaceMode":"shared"}).as_object().expect("patch"){worker[k]=v.clone();}
         store
             .transaction(move |tx| AgentRepository::put(tx, &AgentRecord::from_value(worker)?))
             .await

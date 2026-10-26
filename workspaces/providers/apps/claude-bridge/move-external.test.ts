@@ -8,13 +8,14 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ExternalConfig, ExternalServer } from "./move-external.ts";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   sdkMcpServers,
+  externalRefusal,
   externalAliases,
   externalCatalog,
   verifyExternalCatalog,
@@ -89,25 +90,27 @@ test("external proof lists only current server aliases and never transfers crede
     },
   });
   assert.equal(called, 1);
+  assert.ok(result.catalogs[0]);
   assert.deepEqual(
-    result.catalogs[0]?.tools.map((tool) => tool.name),
+    result.catalogs[0].tools.map((tool) => tool.name),
     ["mcp__anarlog__first", "mcp__anarlog__second"],
   );
   assert.ok(!JSON.stringify(result.catalogs).includes("credential-secret"));
-  assert.ok(result.configs.anarlog && "env" in result.configs.anarlog);
-  assert.equal(result.configs.anarlog.env?.PRIVATE_TOKEN, "credential-secret");
+  const localConfig = result.configs.anarlog as typeof config;
+  assert.equal(localConfig.env.PRIVATE_TOKEN, "credential-secret");
   verifyExternalCatalog(result.catalogs, structuredClone(result.catalogs));
   for (const mutate of [
-    (catalog: ExternalServer[]) => catalog[0]?.tools.reverse(),
     (catalog: ExternalServer[]) => {
-      const tool = catalog[0]?.tools[0];
-      assert.ok(tool);
-      tool.description = "Changed";
+      assert.ok(catalog[0]);
+      catalog[0].tools.reverse();
     },
     (catalog: ExternalServer[]) => {
-      const schema = catalog[0]?.tools[0]?.input_schema;
-      assert.ok(schema && typeof schema === "object" && "type" in schema);
-      schema.type = "array";
+      assert.ok(catalog[0]?.tools[0]);
+      catalog[0].tools[0].description = "Changed";
+    },
+    (catalog: ExternalServer[]) => {
+      // @ts-expect-error type intentionally violates MCP's object schema contract.
+      (catalog[0].tools[0].input_schema as Tool["inputSchema"]).type = "array";
     },
     (catalog: ExternalServer[]) => {
       assert.ok(catalog[0]);
@@ -144,10 +147,10 @@ test("external server failure and missing schemas return only safe names", async
         listTools: listing,
       }),
       (error) => {
-        assert.ok(error instanceof Error && "data" in error);
+        const refusal = error as ReturnType<typeof externalRefusal>;
         return (
-          !JSON.stringify(error.data).includes("credential-secret") &&
-          !error.message.includes("credential-secret")
+          !JSON.stringify(refusal.data).includes("credential-secret") &&
+          !refusal.message.includes("credential-secret")
         );
       },
     );
@@ -176,30 +179,33 @@ test("every disconnected SDK status refuses external proof before listing tools"
   }
 });
 
-test("stdio proof sends initialize and tools/list without tool calls or model input", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-mcp-list-"));
-  const script = fileURLToPath(
-    new URL("./move-external.fixture.ts", import.meta.url),
-  );
-  const log = path.join(root, "requests.jsonl");
-  try {
-    assert.deepEqual(
-      await listExternalTools({
-        type: "stdio",
-        command: process.execPath,
-        args: [script, log, "catalog", JSON.stringify(tools)],
-      }),
-      tools,
+test.each([{ type: "stdio" }, {}] satisfies Pick<ExternalConfig, "type">[])(
+  "stdio proof %# sends initialize and tools/list without tool calls or model input",
+  async (transport) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-mcp-list-"));
+    const script = fileURLToPath(
+      new URL("./move-external.fixture.ts", import.meta.url),
     );
-    assert.deepEqual((await fs.readFile(log, "utf8")).trim().split("\n"), [
-      "initialize",
-      "notifications/initialized",
-      "tools/list",
-    ]);
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
+    const log = path.join(root, "requests.jsonl");
+    try {
+      assert.deepEqual(
+        await listExternalTools({
+          ...transport,
+          command: process.execPath,
+          args: [script, log, "catalog", JSON.stringify(tools)],
+        }),
+        tools,
+      );
+      assert.deepEqual((await fs.readFile(log, "utf8")).trim().split("\n"), [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+      ]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("Codex instruction proof initializes without listing resources or calling tools", async () => {
   const root = await fs.mkdtemp(
@@ -373,3 +379,73 @@ test("a server with credentials sends no transport, and only the proved transpor
   });
   assert.deepEqual(own.catalogs, withSecret.catalogs);
 });
+
+test.each([null, false, "", 0])(
+  "a configured transport type %j cannot launch a stdio server",
+  async (type) => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "claude-mcp-boundary-"),
+    );
+    const log = path.join(root, "requests.jsonl");
+    const script = fileURLToPath(
+      new URL("./move-external.fixture.ts", import.meta.url),
+    );
+    vi.stubEnv("CLAUDE_CONFIG_DIR", root);
+    try {
+      await fs.writeFile(
+        path.join(root, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            anarlog: {
+              type,
+              command: process.execPath,
+              args: [script, log, "catalog", JSON.stringify(tools)],
+            },
+          },
+        }),
+      );
+      await assert.rejects(
+        externalCatalog(statuses, root, ["anarlog"]),
+        /Unsupported MCP transport/,
+      );
+      await assert.rejects(fs.stat(log), { code: "ENOENT" });
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each([
+  { type: "stdio", command: 42 },
+  { command: "fixture", args: [42] },
+  { command: "fixture", env: { TOKEN: 42 } },
+  { type: "http", url: 42 },
+  { type: "sse", url: "https://example.test", headers: { TOKEN: 42 } },
+])(
+  "a malformed MCP config refuses before listing tools: %j",
+  async (invalidConfig) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-mcp-fields-"));
+    vi.stubEnv("CLAUDE_CONFIG_DIR", root);
+    let reads = 0;
+    try {
+      await fs.writeFile(
+        path.join(root, ".mcp.json"),
+        JSON.stringify({ mcpServers: { anarlog: invalidConfig } }),
+      );
+      await assert.rejects(
+        externalCatalog(statuses, root, ["anarlog"], {
+          listTools: async () => {
+            reads++;
+            return tools;
+          },
+        }),
+        /Unsupported MCP transport/,
+      );
+      assert.equal(reads, 0);
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);

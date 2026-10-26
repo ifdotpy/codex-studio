@@ -1,10 +1,9 @@
-import type { FixtureQuery } from "./sdk-fixtures.ts";
 import { inputText } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { StopActive } from "./stop-inputs.ts";
-import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
+import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import fsp from "node:fs/promises";
-import { randomUUID } from "node:crypto";
 export interface SteerFixtureOptions {
   markInterrupt?: boolean;
   ignoreInterruptMarker?: boolean;
@@ -94,7 +93,7 @@ export function fixtureQuery(
   const abort = new AbortController(),
     cwd = options.cwd;
   const nativeQueue: SDKUserMessage[] = [];
-  let stopTurn = () => {};
+  let stopTurn: (() => void) | null = null;
   let queueMode = false,
     survive = false,
     idle = false;
@@ -152,11 +151,11 @@ export function fixtureQuery(
       !input.done &&
       inputText(input.value) === "/clear"
     ) {
-      await new Promise<void>((resolve) =>
+      await new Promise<unknown>((resolve) =>
         process.stdout.write(
           JSON.stringify({ method: "fixture/consumed-clear", params: {} }) +
             "\n",
-          () => resolve(),
+          resolve,
         ),
       );
       process.kill(process.pid, "SIGKILL");
@@ -231,7 +230,7 @@ export function fixtureQuery(
         cwd + "/.native-interrupt-receipt",
         JSON.stringify(receipt),
       );
-      stopTurn();
+      stopTurn!();
       return receipt;
     },
     async *[Symbol.asyncIterator](): AsyncGenerator<
@@ -242,8 +241,6 @@ export function fixtureQuery(
         const input = await read();
         if (input.done) return;
         const text = inputText(input.value);
-        if (text === undefined)
-          throw new Error("Fixture requires a text input");
         yield { type: "user", isReplay: true, uuid: input.value.uuid };
         if (input.value.shouldQuery === false) {
           const fail = text === "prefix-fail";
@@ -280,9 +277,11 @@ export function fixtureQuery(
           const stopped = new Promise<void>((r) => (stopTurn = r));
           for (;;) {
             const next = await read();
-            if (next.done) return;
-            nativeQueue.push(next.value);
-            if (text !== "native-split-all" || next.value.shouldQuery !== false)
+            nativeQueue.push(next.value!);
+            if (
+              text !== "native-split-all" ||
+              next.value!.shouldQuery !== false
+            )
               break;
           }
           mark(cwd + "/.native-queued");
@@ -305,14 +304,14 @@ export function fixtureQuery(
         if (text === "ack") {
           for (;;) {
             const next = await read();
-            if (next.done) return;
-            yield { type: "user", isReplay: true, uuid: next.value.uuid };
-            if (next.value.shouldQuery !== false) break;
+            yield { type: "user", isReplay: true, uuid: next.value!.uuid };
+            if (next.value!.shouldQuery !== false) break;
             yield {
               type: "result",
               subtype: "success",
+              is_error: false,
               num_turns: 0,
-              user_message_uuid: next.value.uuid,
+              user_message_uuid: next.value!.uuid,
               usage,
             };
           }
@@ -320,13 +319,13 @@ export function fixtureQuery(
         if (text === "pulled") {
           const prefix = await read();
           if (config.echoPulledPrefix) {
-            if (prefix.done) return;
-            yield { type: "user", isReplay: true, uuid: prefix.value.uuid };
+            yield { type: "user", isReplay: true, uuid: prefix.value!.uuid };
             yield {
               type: "result",
               subtype: "success",
+              is_error: false,
               num_turns: 0,
-              user_message_uuid: prefix.value.uuid,
+              user_message_uuid: prefix.value!.uuid,
               usage,
             };
           }
@@ -352,7 +351,13 @@ export function fixtureQuery(
             errors: ["Claude failed"],
           };
         else
-          yield { type: "result", subtype: "success", usage, result: "done" };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            usage,
+            result: "done",
+          };
         if (config.holdPulledTail && text === "pulled")
           await until(cwd + "/.allow-tail", abort.signal);
         idle = true;
@@ -363,7 +368,7 @@ export function fixtureQuery(
             if (abort.signal.aborted) return;
             yield {
               type: "assistant",
-              uuid: randomUUID(),
+              uuid: "backpressure-answer",
               message: {
                 id: "after",
                 content: [{ type: "text", text: "after final save" }],
@@ -373,21 +378,20 @@ export function fixtureQuery(
             yield {
               type: "result",
               subtype: "success",
+              is_error: false,
               usage,
               result: "continued",
             };
           }
         }
         if (late && text === "late") {
-          if (late.done) return;
-          yield { type: "user", isReplay: true, uuid: late.value.uuid };
+          yield { type: "user", isReplay: true, uuid: late.value!.uuid };
           late = null;
         }
         if (late) {
-          if (late.done) return;
           await until(cwd + "/.echo", abort.signal);
           if (abort.signal.aborted) return;
-          yield { type: "user", isReplay: true, uuid: late.value.uuid };
+          yield { type: "user", isReplay: true, uuid: late.value!.uuid };
           yield {
             type: "stream_event",
             event: { type: "message_start", message: { id: "continued" } },
@@ -397,6 +401,7 @@ export function fixtureQuery(
           yield {
             type: "result",
             subtype: "success",
+            is_error: false,
             usage,
             result: "continued",
           };

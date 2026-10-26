@@ -77,7 +77,7 @@ test("failed tool limit remains visible in a completed turn @performance", async
     await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
     await page.goto(`${fixtureOrigin(server)}/audit`);
     await page.locator('[data-turn="complete-turn"]').waitFor();
-    await page.evaluate(() => window.failedToolFailCompletedTurnTool());
+    await page.evaluate(() => window.failCompletedTurnTool());
     await page.getByText("Account limit reached", { exact: false }).waitFor();
     assert.match(
       await page.locator('[data-turn="complete-turn"]').innerText(),

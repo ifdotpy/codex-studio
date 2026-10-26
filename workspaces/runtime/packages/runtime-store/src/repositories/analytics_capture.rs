@@ -6,6 +6,7 @@ use rusqlite::{
     types::ValueRef,
 };
 use serde_json::Value;
+use studio_runtime_schema::provider_kind::ProviderKind;
 
 /// Indexed capture record lookup template; the table name comes only from CaptureTable.
 pub const CAPTURE_RECORD_BY_ID_SQL: &str = "SELECT record FROM {table} WHERE id=?";
@@ -75,6 +76,22 @@ pub const PROJECTION_CURSOR_KEY: &str = "canvasProjectionSeq";
 
 pub struct AnalyticsCaptureRepository;
 impl AnalyticsCaptureRepository {
+    /// Resolve legacy usage's explicit provenance or its referenced agent identity.
+    /// Missing owners and malformed explicit provenance never select a provider.
+    pub(crate) fn legacy_usage_provider(db: &Connection, row: &Value) -> StoreResult<ProviderKind> {
+        if let Some(provider) = row.get("provider") {
+            return ProviderKind::of_field(Some(provider))
+                .map_err(|error| StoreError::SchemaValidation(error.to_string()));
+        }
+        let owner = Self::read(
+            db,
+            CaptureTable::Agents,
+            row["agentId"].as_str().unwrap_or_default(),
+        )?
+        .ok_or_else(|| StoreError::SchemaValidation("unknown analytics usage provider".into()))?;
+        ProviderKind::of_record(&owner)
+            .map_err(|error| StoreError::SchemaValidation(error.to_string()))
+    }
     /// Append one analytics projection record (`NotificationPostCommit` JSON) in
     /// the caller's Canvas transaction, so it commits with the provider event.
     pub fn append_projection(canvas: &Connection, record: &str) -> StoreResult<()> {
@@ -194,20 +211,21 @@ impl AnalyticsCaptureRepository {
             return Ok(None);
         };
         let value: Value = serde_json::from_str(raw)?;
-        Ok(
-            studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(
-                studio_runtime_schema::usage::UsageProvider::Codex,
-                &value,
-            )
+        let ledger = if value.get("studioUsage").is_some() {
+            studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(&value)
+        } else {
+            let provider = Self::legacy_usage_provider(db, &value)?;
+            studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(provider, &value)
+        };
+        Ok(ledger
             .ok()
-            .map(|ledger| (ledger, value["timestampSource"] == "fileModifiedEstimate")),
-        )
+            .map(|ledger| (ledger, value["timestampSource"] == "fileModifiedEstimate")))
     }
 
     /// Read at most the owner's examination bound through the agent/sequence index.
     /// Reserve the final source row as lookahead before interpreting any usage kind.
     pub fn usage_inventory(db: &Connection, agent: &str) -> StoreResult<UsageInventory> {
-        use studio_runtime_schema::usage::{UsageProvider, ledger::UsageLedgerRow};
+        use studio_runtime_schema::usage::ledger::UsageLedgerRow;
         let limit = studio_runtime_schema::usage::ledger::LEGACY_GAP_COVERAGE_ROWS;
         let mut statement=db.prepare_cached("SELECT record FROM analytics_usage INDEXED BY analytics_usage_migration WHERE agent=?1 ORDER BY seq DESC LIMIT ?2")?;
         let mut source = statement.query(rusqlite::params![agent, limit as i64])?;
@@ -223,7 +241,13 @@ impl AnalyticsCaptureRepository {
                 break;
             }
             let value: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
-            match UsageLedgerRow::from_analytics(UsageProvider::Codex, &value) {
+            let ledger = if value.get("studioUsage").is_some() {
+                UsageLedgerRow::from_typed_analytics(&value)
+            } else {
+                let provider = Self::legacy_usage_provider(db, &value)?;
+                UsageLedgerRow::from_analytics(provider, &value)
+            };
+            match ledger {
                 Ok(ledger) => {
                     let legacy_keys =
                         studio_runtime_schema::usage::ledger::legacy_analytics_receipt_keys(
@@ -757,6 +781,45 @@ mod cost_hint_tests {
     use crate::ChangedRoots;
     use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn provider_identity_usage_inventory_uses_stored_provider() {
+        use serde_json::json;
+        use studio_runtime_schema::usage::{UsageObservation, UsageScope};
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":"codex"}))?;
+            let legacy = json!({"id":"counter","agentId":"agent","rootId":"agent","threadId":"thread","at":1,"total":{"inputTokens":12,"cachedInputTokens":3,"cacheWriteInputTokens":2,"outputTokens":7},"last":{}});
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &legacy)?;
+            for (provider, expected) in [(json!("codex"), UsageScope::CodexThread), (json!("claude"), UsageScope::ClaudeQuery)] {
+                AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":provider}))?;
+                let inventory = AnalyticsCaptureRepository::usage_inventory(tx, "agent")?;
+                assert!(matches!(&inventory.rows[0].ledger.studio_usage, UsageObservation::Cumulative { scope, .. } if *scope == expected));
+            }
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({"id":"legacy-response","agentId":"agent","rootId":"agent","threadId":"thread","at":1,"responseId":"response","last":{"inputTokens":12,"cachedInputTokens":3,"cacheWriteInputTokens":2,"outputTokens":7},"total":{}}))?;
+            for provider in [json!("future"), json!(""), Value::Null] {
+                tx.execute("UPDATE analytics_agents SET record=?1 WHERE id='agent'", [json!({"id":"agent","provider":provider}).to_string()])?;
+                assert!(AnalyticsCaptureRepository::usage_inventory(tx, "agent").is_err());
+                assert!(AnalyticsCaptureRepository::usage_provenance(tx, "agent", Some("thread"), "response").is_err());
+            }
+            Ok(())
+        }).await.expect("provider inventory");
+    }
+
+    #[tokio::test]
+    async fn provider_identity_typed_inventory_preserves_facts_without_valid_owner() {
+        use serde_json::json;
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","provider":"future"}).to_string()])?;
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({"id":"response","agentId":"agent","rootId":"agent","threadId":"thread","at":1,"responseId":"response","last":{},"total":{},"studioUsage":{"kind":"response","responseId":"response","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}}}))?;
+            assert_eq!(AnalyticsCaptureRepository::usage_inventory(tx, "agent")?.rows.len(), 1);
+            assert!(AnalyticsCaptureRepository::usage_provenance(tx, "agent", Some("thread"), "response")?.is_some());
+            Ok(())
+        }).await.expect("provider-neutral facts");
+    }
 
     #[tokio::test]
     async fn neutral_commits_enqueue_no_cost_roots() {

@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { Page } from "@playwright/test";
 import type { ServerResponse } from "node:http";
 import type { components } from "../../src/generated/api.ts";
@@ -86,7 +87,7 @@ test.describe("legacy schema mismatch", () => {
       env: { ...process.env },
     });
     let fixtureLog = "";
-    fixture.stderr?.on("data", (chunk) => {
+    fixture.stderr!.on("data", (chunk) => {
       fixtureLog += chunk;
     });
     let activeHash = oldHash;
@@ -141,8 +142,8 @@ test.describe("legacy schema mismatch", () => {
     // Inline baselines are persisted asynchronously. A fulfilled finite body
     // immediately disconnects and cancels those writes, unlike a real stream.
     const streamServer = createServer((request, response) => {
-      const frame = streamFrames.get(request.url || "");
-      streamFrames.delete(request.url || "");
+      const frame = streamFrames.get(request.url!);
+      streamFrames.delete(request.url!);
       if (!frame) {
         response.writeHead(404).end();
         return;
@@ -184,9 +185,10 @@ test.describe("legacy schema mismatch", () => {
     await new Promise<void>((resolve) =>
       streamServer.listen(0, "127.0.0.1", resolve),
     );
-    const streamAddress = streamServer.address();
-    assert.ok(streamAddress && typeof streamAddress !== "string");
-    const streamOrigin = `http://127.0.0.1:${streamAddress.port}`;
+    const streamAddress =
+      streamServer.address() as import("node:net").AddressInfo;
+
+    const streamOrigin = `http://127.0.0.1:${streamAddress!.port}`;
     await context.route("**/api/**", async (route) => {
       const requestUrl = new URL(route.request().url());
       apiRequests.push(
@@ -250,7 +252,7 @@ test.describe("legacy schema mismatch", () => {
           stream.write(
             protocol3SseEvent("resources", {
               protocol: 4,
-              workspaceId,
+              workspaceId: workspaceId!,
               epoch: "schema-cache-test",
               revision: 1,
               reason: "initial",
@@ -308,7 +310,7 @@ test.describe("legacy schema mismatch", () => {
               await identity.json();
             workspaceId = value.workspaceId;
           }
-          assert.ok(workspaceId !== undefined);
+
           const details = initialResources.filter(
             (resource) =>
               resource.kind === "agentDetail" ||
@@ -350,7 +352,7 @@ test.describe("legacy schema mismatch", () => {
           });
           body = protocol3SseEvent("resources", {
             protocol: 4,
-            workspaceId,
+            workspaceId: workspaceId!,
             epoch: "schema-cache-test",
             revision: 1,
             reason: "initial",
@@ -365,15 +367,13 @@ test.describe("legacy schema mismatch", () => {
           route.request().frame().page() === newPage &&
           resources.some((resource) => resource.kind === "state") &&
           pendingEntitySequence !== undefined &&
-          pendingEntityChanges !== undefined &&
-          allowPendingChangeEventPromise !== undefined
+          pendingEntityChanges !== undefined
         ) {
-          assert.ok(workspaceId !== undefined);
           const entityChanges = pendingEntityChanges;
-          const entitySequence = pendingEntitySequence;
+
           const changeBody = protocol3SseEvent("resources", {
             protocol: 4,
-            workspaceId,
+            workspaceId: workspaceId!,
             epoch: "schema-cache-test",
             revision: 2,
             reason: "change",
@@ -382,7 +382,10 @@ test.describe("legacy schema mismatch", () => {
               {
                 resource: { kind: "state" },
                 revision: entityChanges.through,
-                cursor: { workspaceId, seq: entityChanges.through },
+                cursor: {
+                  workspaceId: workspaceId!,
+                  seq: entityChanges.through,
+                },
                 replyKind: "delta",
                 entityChanges,
               },
@@ -390,10 +393,10 @@ test.describe("legacy schema mismatch", () => {
           } satisfies components["schemas"]["ResourceChangeEvent"]);
           pendingChange = {
             body: changeBody,
-            sequence: entitySequence,
+            sequence: pendingEntitySequence,
             page: newPage,
             cursor: stateCursor,
-            release: allowPendingChangeEventPromise,
+            release: allowPendingChangeEventPromise!,
           };
         }
         const streamPath = `/stream/${randomUUID()}`;
@@ -587,10 +590,7 @@ test.describe("legacy schema mismatch", () => {
         }
         fresh = false;
         cachedRows.push(...pull.documents);
-        if (
-          pull.checkpoint.seq <= after ||
-          (pull.maxSeq != null && pull.checkpoint.seq >= pull.maxSeq)
-        )
+        if (pull.checkpoint.seq <= after || pull.checkpoint.seq >= pull.maxSeq!)
           break;
         after = pull.checkpoint.seq;
       }
@@ -690,12 +690,12 @@ test.describe("legacy schema mismatch", () => {
             .map(({ name }) => name)
             .filter(
               (name): name is string =>
-                !!name?.includes(
+                name!.includes(
                   `entity-projection-${workspaceId}-${schemaHash}`,
-                ) && name.endsWith(`--${cacheVersion}--projections`),
+                ) && name!.endsWith(`--${cacheVersion}--projections`),
             ),
         {
-          workspaceId,
+          workspaceId: workspaceId!,
           schemaHash: nextHash,
           cacheVersion: ENTITY_PROJECTION_CACHE_VERSION,
         },
@@ -704,9 +704,8 @@ test.describe("legacy schema mismatch", () => {
         validProjectionDatabaseNames.length > 0,
         "the valid new-build tab has a populated projection cache",
       );
-      const activeNewPage = newPage;
       const readNewPageStateCheckpoint = () =>
-        activeNewPage.evaluate(async (names) => {
+        newPage!.evaluate(async (names) => {
           const name = names.find((databaseName) =>
             databaseName.endsWith("--projections"),
           );
@@ -749,7 +748,7 @@ test.describe("legacy schema mismatch", () => {
       );
       await expect
         .poll(() =>
-          activeNewPage.evaluate(async (names) => {
+          newPage!.evaluate(async (names) => {
             const existing = new Set(
               (await indexedDB.databases()).map(({ name }) => name),
             );
@@ -758,7 +757,7 @@ test.describe("legacy schema mismatch", () => {
         )
         .toEqual([]);
       assert.ok(
-        await activeNewPage.evaluate(async (names) => {
+        await newPage!.evaluate(async (names) => {
           const existing = new Set(
             (await indexedDB.databases()).map(({ name }) => name),
           );
@@ -775,7 +774,7 @@ test.describe("legacy schema mismatch", () => {
       // below). Cleanup deletes it and keeps the drafts and outbox.
       await expect
         .poll(() =>
-          activeNewPage.evaluate(
+          newPage!.evaluate(
             async (name) =>
               (await indexedDB.databases()).some(
                 (database) => database.name === name,
@@ -785,7 +784,7 @@ test.describe("legacy schema mismatch", () => {
         )
         .toBe(false);
       assert.ok(
-        await activeNewPage.evaluate(
+        await newPage!.evaluate(
           async (names) => {
             const existing = new Set(
               (await indexedDB.databases()).map(({ name }) => name),
@@ -810,7 +809,7 @@ test.describe("legacy schema mismatch", () => {
       ).toBeVisible({ timeout: 20_000 });
       await expect
         .poll(() =>
-          activeNewPage.evaluate(async (expected) => {
+          newPage!.evaluate(async (expected) => {
             const names = new Set(
               (await indexedDB.databases()).map(({ name }) => name),
             );
@@ -824,9 +823,8 @@ test.describe("legacy schema mismatch", () => {
       const newPageStateCheckpoint = await readNewPageStateCheckpoint();
       const beforeMutationPullCount = statePullCount();
       assert.ok(
-        newPageStateCheckpoint.checkpoint !== undefined &&
-          Number.isSafeInteger(newPageStateCheckpoint.checkpoint) &&
-          newPageStateCheckpoint.checkpoint > 0,
+        Number.isSafeInteger(newPageStateCheckpoint.checkpoint) &&
+          newPageStateCheckpoint.checkpoint! > 0,
         `the valid tab has a durable nonzero checkpoint: ${JSON.stringify(newPageStateCheckpoint)}`,
       );
 
@@ -849,7 +847,7 @@ test.describe("legacy schema mismatch", () => {
       });
       assert.equal(mutation.status, 200);
       const entityChangeDocuments: EntityChangeBatch["documents"] = [];
-      let entityChangeCursor = newPageStateCheckpoint.checkpoint;
+      let entityChangeCursor = newPageStateCheckpoint.checkpoint!;
       let mutationEntity: EntityChangeBatch["documents"][number] | undefined;
       while (!mutationEntity) {
         const pageResponse = await fetch(
@@ -862,16 +860,13 @@ test.describe("legacy schema mismatch", () => {
           },
         );
         assert.equal(pageResponse.status, 200);
-        const entityPage: components["schemas"]["SyncPullResponse"] =
+        const entityPage: Omit<
+          components["schemas"]["SyncPullResponse"],
+          "documents"
+        > & { documents: EntityChangeBatch["documents"] } =
           await pageResponse.json();
         assert.notEqual(entityPage.reset, true);
-        for (const document of entityPage.documents) {
-          assert.ok(
-            "op" in document,
-            "Entity scope returns entity change records",
-          );
-          entityChangeDocuments.push(document);
-        }
+        entityChangeDocuments.push(...entityPage.documents);
         assert.ok(entityPage.checkpoint.seq > entityChangeCursor);
         entityChangeCursor = entityPage.checkpoint.seq;
         mutationEntity = entityChangeDocuments.find(
@@ -882,14 +877,16 @@ test.describe("legacy schema mismatch", () => {
         );
       }
       assert.ok(Number.isSafeInteger(Number(mutationEntity.seq)));
-      assert.ok(Number(mutationEntity.seq) > newPageStateCheckpoint.checkpoint);
+      assert.ok(
+        Number(mutationEntity.seq) > newPageStateCheckpoint.checkpoint!,
+      );
       pendingEntitySequence = Number(mutationEntity.seq);
-      const entitySequence = pendingEntitySequence;
+
       const orderedEntityChangeDocuments = entityChangeDocuments.filter(
-        (document) => Number(document.seq) <= entitySequence,
+        (document) => Number(document.seq) <= pendingEntitySequence!,
       );
       pendingEntityChanges = {
-        after: newPageStateCheckpoint.checkpoint,
+        after: newPageStateCheckpoint.checkpoint!,
         through: pendingEntitySequence,
         documents: orderedEntityChangeDocuments,
       };
@@ -899,7 +896,7 @@ test.describe("legacy schema mismatch", () => {
       await newPage.reload();
       const mutationReconnectCursor = await pendingChangeStreamOpened.promise;
       assert.deepEqual(mutationReconnectCursor, {
-        workspaceId,
+        workspaceId: workspaceId!,
         seq: newPageStateCheckpoint.checkpoint,
       });
       await expect(leadChat(newPage)).toBeVisible();
@@ -978,9 +975,7 @@ test.describe("legacy schema mismatch", () => {
       await context.close();
       fixture.kill();
       streamServer.closeAllConnections();
-      await new Promise<void>((resolve, reject) =>
-        streamServer.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise<void>((resolve) => streamServer.close(() => resolve()));
       const distAssetsAfter = await hashAssets();
       assert.deepEqual(
         distAssetsAfter,
@@ -1047,8 +1042,6 @@ test("different build collection sets share only drafts and outbox", async ({
   const oldPage = await context.newPage();
   const newPage = await context.newPage();
 
-  const firstLegacyRow = legacyRows[0];
-  assert.ok(firstLegacyRow);
   const fixtureModule = `/@fs${fileURLToPath(new URL("./fixtures/schemaCacheBrowserFixture.ts", import.meta.url))}`;
   const databaseName = `studio${workspaceId}`;
   const origin = fixtureOrigin(server);
@@ -1073,7 +1066,7 @@ test("different build collection sets share only drafts and outbox", async ({
           payload: "queued",
           seq: 1,
         });
-        window.schemaCacheOldBuildDatabase = db;
+        window.oldBuildDatabase = db;
       },
       { name: databaseName, rows: legacyRows, fixtureModule },
     );
@@ -1113,31 +1106,28 @@ test("different build collection sets share only drafts and outbox", async ({
         );
         if (await otherHash.projections.findOne("entity:new-build").exec())
           throw new Error("Different build caches were shared");
-        window.schemaCacheNewBuildDatabase = db;
+
+        if (await otherHash.projections.findOne("entity:new-build").exec())
+          throw new Error("Different build caches were shared");
+        window.newBuildDatabase = db;
       },
       { name: databaseName, fixtureModule },
     );
     const oldData = await oldPage.evaluate(
       async (legacyRowId) => ({
         draft: (
-          await window.schemaCacheOldBuildDatabase.drafts
-            .findOne("draft-from-new")
-            .exec()
+          await window.oldBuildDatabase.drafts.findOne("draft-from-new").exec()
         )?.payload,
         message: (
-          await window.schemaCacheOldBuildDatabase.outbox
+          await window.oldBuildDatabase.outbox
             .findOne("message-from-new")
             .exec()
         )?.payload,
         projection: (
-          await window.schemaCacheOldBuildDatabase.projections
-            .findOne(legacyRowId)
-            .exec()
+          await window.oldBuildDatabase.projections.findOne(legacyRowId).exec()
         )?.payload,
         legacyProjectionStats: await (async () => {
-          const rows = await window.schemaCacheOldBuildDatabase.projections
-            .find()
-            .exec();
+          const rows = await window.oldBuildDatabase.projections.find().exec();
           const serialized = rows.map((row) => row.toJSON());
           return {
             rows: serialized.length,
@@ -1145,13 +1135,13 @@ test("different build collection sets share only drafts and outbox", async ({
           };
         })(),
       }),
-      firstLegacyRow.id,
+      required(legacyRows[0]).id,
     );
     const { legacyProjectionStats, ...sharedData } = oldData;
     assert.deepEqual(sharedData, {
       draft: "new draft",
       message: "new queued",
-      projection: firstLegacyRow.payload,
+      projection: required(legacyRows[0]).payload,
     });
     assert.equal(legacyProjectionStats.rows, legacyRows.length);
     assert.ok(legacyProjectionStats.bytes > 200_000);

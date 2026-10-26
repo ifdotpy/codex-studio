@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ProviderKind } from "../src/generated/providerKind.ts";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import type { Page, Response, Locator } from "playwright";
@@ -62,7 +63,7 @@ type Journal = JournalBase & {
   };
 };
 
-const LEAD_PROVIDER = "claude";
+const LEAD_PROVIDER = ProviderKind.Claude;
 const LEAD_MODEL = "default";
 const DEFAULT_WORKER_ACCOUNT_KEY = "default";
 const WORKER_MODEL = "gpt-6-luna";
@@ -923,11 +924,15 @@ async function main() {
       .locator("label")
       .filter({ hasText: "Codex" });
     await codexReviewProvider.waitFor({ state: "visible" });
-    await reviewProvider.locator('input[value="codex"]').waitFor({
-      state: "attached",
-    });
+    await reviewProvider
+      .locator(`input[value="${ProviderKind.Codex}"]`)
+      .waitFor({
+        state: "attached",
+      });
     assert.equal(
-      await reviewProvider.locator('input[value="codex"]').isChecked(),
+      await reviewProvider
+        .locator(`input[value="${ProviderKind.Codex}"]`)
+        .isChecked(),
       true,
       "Review provider is not Codex.",
     );

@@ -1,3 +1,4 @@
+import { isProviderKind } from "../generated/providerKind.ts";
 import { ScreenContext } from "./ScreenContext";
 import {
   createScreenChannel,
@@ -697,7 +698,7 @@ function MultiServerShell({
       for (const row of data.accounts) {
         if (
           !row ||
-          (row.provider !== "codex" && row.provider !== "claude") ||
+          !isProviderKind(row.provider) ||
           (row.email !== null && typeof row.email !== "string") ||
           (row.plan !== null && typeof row.plan !== "string") ||
           typeof row.status !== "string" ||

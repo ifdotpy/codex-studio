@@ -1,7 +1,8 @@
 import type { TaskReviewFrames } from "./task-review-stream.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { JsonInputOf, PostBody } from "../../src/apiTypes.ts";
-import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
+import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -128,6 +129,9 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       dependencies: ["ready-task"],
     },
   ];
+  const [reviewTask, readyTask] = tasks;
+  assert.ok(reviewTask);
+  assert.ok(readyTask);
   const writes: PostBody<"/api/work">[] = [];
   let taskDefaultGate: components["schemas"]["TaskAcceptanceGate"] = gate;
   const frames = (): TaskReviewFrames => ({
@@ -174,9 +178,10 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
             json: { error: "The reply was lost. Retry the same action." },
           });
         }
-        required(tasks[0]).status = "accepted";
-        required(tasks[0]).version++;
-        required(required(tasks[0]).decisions).push({
+        reviewTask.status = "accepted";
+        reviewTask.version++;
+        assert.ok(reviewTask.decisions);
+        reviewTask.decisions.push({
           decision: "accept",
           reason:
             typeof body.result === "string"
@@ -195,35 +200,37 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
             status: 400,
             json: { error: "Invalid result_schema at /type: unknown type" },
           });
-        Object.assign(required(tasks[1]), {
+        Object.assign(readyTask, {
           title: body.title,
           description: body.description,
           resultSchema: fixtureResultSchema(body.result_schema),
           gate: body.gate,
-          version: required(tasks[1]).version + 1,
+          version: readyTask.version + 1,
         });
       } else if (body.action === "set_default_gate") {
-        if (body.gate === undefined) throw new Error("Missing default gate");
+        assert.ok(body.gate !== undefined);
         taskDefaultGate = body.gate;
       } else if (body.action === "create") {
         const resultSchema = fixtureResultSchema(body.result_schema);
+        assert.ok(body.title);
+        assert.ok(body.status);
         const created = {
           ...common,
           ...body,
           id: "created-task",
-          title: required(body.title),
+          title: body.title,
           description: body.description ?? undefined,
           dependencies: body.dependencies ?? undefined,
           version: body.version ?? common.version,
-          status: required(body.status),
+          status: body.status,
           gate: body.gate,
           result_schema: resultSchema,
           resultSchema,
         } satisfies JsonInputOf<components["schemas"]["WorkItem"]>;
         tasks.push(JSON.parse(JSON.stringify(created)));
       } else if (body.action === "reject") {
-        required(tasks[0]).status = "ready";
-        required(tasks[0]).version++;
+        reviewTask.status = "ready";
+        reviewTask.version++;
       }
       await page.evaluate((json) => {
         const value: TaskReviewFrames = JSON.parse(json);
@@ -233,7 +240,9 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       return route.fulfill({ json: { ok: true } });
     });
     await page.setViewportSize({ width: 320, height: 800 });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    const origin = server.resolvedUrls?.local[0];
+    assert.ok(origin);
+    await page.goto(origin + "check");
     await page.getByRole("button", { name: /Review the release/ }).click();
     const detail = page.getByRole("article", { name: "Task detail" });
     await expect(detail).toContainText("Gate status: failed");
@@ -305,7 +314,9 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       override_reason:
         "The check needs the staging service. I verified the release locally.",
     });
-    expect(required(accepts[0]).id).toBeTruthy();
+    const [firstAccept] = accepts;
+    assert.ok(firstAccept);
+    expect(firstAccept.id).toBeTruthy();
 
     await page.getByLabel("Filter by status").selectOption("blocked");
     await expect(

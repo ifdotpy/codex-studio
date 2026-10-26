@@ -1,6 +1,8 @@
-import type { components } from "../../src/generated/api.ts";
 import { required } from "../../src/components/componentTestFixtures.ts";
+import { radioSnapshot } from "./radio-fixture.ts";
+import type { components } from "../../src/generated/api.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type { PostBody } from "../../src/api.ts";
 import type { Snapshot } from "../../src/types.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
 import { fixtureOrigin } from "../misc-fixture.ts";
@@ -35,28 +37,11 @@ test("radio create browser", async ({ page: runnerPage }) => {
             if (
               handleEntitySyncFixtureRequest(req, res, {
                 workspaceId: "1234567890abcdef1234567890abcdef",
-                snapshot: {
+                snapshot: radioSnapshot({
                   stateDir: "create-test",
-                  chats: [],
-                  edges: [],
-                  runtime: {
-                    agents: [],
-                    rooms: [],
-                    tasks: [],
-                    monitors: [],
-                    complaints: [],
-                    projects: [],
-                    events: [],
-                    peerTeams: [],
-                    requests: [],
-                    rules: [],
-                    work: [],
-                    nativeNotices: [],
-                    sidebarOrder: null,
-                    rateLimits: null,
-                    rateLimitsByAccount: {},
-                  },
-                },
+                  threads: [],
+                  runtime: { rooms: [], projects: [], requests: [] },
+                }),
                 onStreamReady: (notify) =>
                   notify([
                     { kind: "models" },
@@ -137,22 +122,21 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.route("**/api/peer-teams", async (r) => {
       const body = fixturePostBody<"/api/peer-teams">(
         r.request().postDataJSON(),
-      );
-      if (!("radio_action" in body) || body.radio_action !== "create")
-        throw new Error("Expected shared creation request");
+      ) as Extract<PostBody<"/api/peer-teams">, { radio_action: "create" }>;
+
       requests.push(body);
-      if (!identities.has(body.request_id ?? ""))
+      if (!identities.has(body.request_id))
         identities.set(
-          body.request_id ?? "",
+          body.request_id,
           identities.size ? "radio:second" : "radio:direct",
         );
-      const roomId = identities.get(body.request_id ?? "");
-      if (!roomId) throw new Error("Missing shared chat identity");
+      const roomId = identities.get(body.request_id)!;
+
       assert.equal(body.radio_action, "create");
-      assert.equal(body.participants?.length, 2);
+      assert.equal(body.participants.length, 2);
       state = {
         ...state,
-        threads: (body.participants ?? []).map((p, i) => ({
+        threads: body.participants.map((p, i) => ({
           id: "agent" + i,
           name: "Internal " + i,
           cwd: "/p",
@@ -191,8 +175,8 @@ test("radio create browser", async ({ page: runnerPage }) => {
       return r.fulfill({ json: { room: state.runtime.rooms[0] } });
     });
     await page.goto(`${fixtureOrigin(server)}/check`);
-    await page.waitForFunction(() => window.radioCreateFixture.fixture);
-    state = await page.evaluate(() => window.radioCreateFixture.fixture);
+    await page.waitForFunction(() => window.radioCreateSnapshot);
+    state = await page.evaluate(() => window.radioCreateSnapshot);
     const form = page.getByRole("form", { name: "Create shared chat" });
     const create = form.getByRole("button", {
       name: "Create",
@@ -323,18 +307,13 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.setViewportSize({ width: 1100, height: 950 });
     await create.click();
     await page.getByRole("button", { name: "Retry creation" }).waitFor();
-    assert.equal(
-      await page.evaluate(() => window.radioCreateFixture.opened),
-      null,
-    );
+    assert.equal(await page.evaluate(() => window.radioOpened), null);
     assert.equal(await form.getByLabel("Chat name").isDisabled(), true);
     await page.reload();
     await page.getByRole("button", { name: "Retry creation" }).click();
-    await page.waitForFunction(
-      () => window.radioCreateFixture.opened === "radio:direct",
-    );
+    await page.waitForFunction(() => window.radioOpened === "radio:direct");
     assert.equal(requests.length, 2);
-    assert.deepEqual(requests[0], requests[1]);
+    assert.deepEqual(required(requests[0]), requests[1]);
     const { request_id, ...body } = required(requests[0]);
     assert.match(request_id, /^[0-9a-f-]{36}$/);
     assert.deepEqual(body, {
@@ -358,10 +337,7 @@ test("radio create browser", async ({ page: runnerPage }) => {
       "Architecture discussion",
     );
     await page.getByRole("button", { name: "New chat", exact: true }).click();
-    assert.equal(
-      await page.evaluate(() => window.radioCreateFixture.ordinary),
-      true,
-    );
+    assert.equal(await page.evaluate(() => window.ordinary), true);
     await page
       .getByRole("button", { name: "New shared chat", exact: true })
       .click();
@@ -370,11 +346,11 @@ test("radio create browser", async ({ page: runnerPage }) => {
         document.querySelector<HTMLButtonElement>("form button[type=submit]")
           ?.disabled === false,
     );
-    await page.evaluate(() => (window.radioCreateFixture.failRefresh = true));
+    await page.evaluate(() => (window.failRefresh = true));
     await create.click();
     await page.getByRole("button", { name: "Refresh", exact: true }).waitFor();
     const posted = requests.length;
-    await page.evaluate(() => (window.radioCreateFixture.failRefresh = false));
+    await page.evaluate(() => (window.failRefresh = false));
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await form.waitFor({ state: "detached" });
     assert.equal(requests.length, posted);

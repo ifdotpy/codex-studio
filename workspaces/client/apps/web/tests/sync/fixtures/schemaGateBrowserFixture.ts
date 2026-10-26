@@ -87,15 +87,15 @@ export function installSchemaGateFixture(
     static CONNECTING = 0 as const;
     static OPEN = 1 as const;
     static CLOSED = 2 as const;
-    readonly CONNECTING = TestEventSource.CONNECTING;
-    readonly OPEN = TestEventSource.OPEN;
-    readonly CLOSED = TestEventSource.CLOSED;
+    declare readonly CONNECTING: 0;
+    declare readonly OPEN: 1;
+    declare readonly CLOSED: 2;
     readyState: number = TestEventSource.CONNECTING;
     withCredentials = false;
     onopen: EventSource["onopen"] = null;
-    onmessage: EventSource["onmessage"] = null;
+    declare onmessage: EventSource["onmessage"];
     onerror: EventSource["onerror"] = null;
-    url;
+    declare url: string;
     #closed = false;
 
     constructor(url: string | URL) {
@@ -127,10 +127,7 @@ export function installSchemaGateFixture(
 
     override dispatchEvent(event: Event) {
       const dispatched = super.dispatchEvent(event);
-      if (event.type === "open") this.onopen?.call(this, event);
-      if (event.type === "error") this.onerror?.call(this, event);
-      if (event.type === "message" && event instanceof MessageEvent)
-        this.onmessage?.call(this, event);
+      this[`on${event.type}` as "onopen" | "onerror"]?.call(this, event);
       return dispatched;
     }
 

@@ -1,5 +1,5 @@
-import { visibleBounds } from "./mobile-ui-fixture.ts";
 import assert from "node:assert/strict";
+import type { EntityFixtureState, TestStateView } from "../playwright.ts";
 import {
   test,
   expect,
@@ -20,9 +20,9 @@ test("phone conversation gives the transcript its viewport budget", async ({
   console.log("Conversation space evidence:", evidence);
   const results = [];
   const origin = readOnlyRust.origin;
-  const snapshot = await readTestState(origin);
-  const agent = snapshot.threads.find((row) => row.name === "Other project");
-  assert.ok(agent);
+  const snapshot: EntityFixtureState & Pick<TestStateView, "threads"> =
+    await readTestState(origin);
+  const agent = snapshot.threads.find((row) => row.name === "Other project")!;
   agent.status = "waiting";
   agent.inFlight = false;
   snapshot.runtime.sessionCostsByAgent = {
@@ -30,12 +30,6 @@ test("phone conversation gives the transcript its viewport budget", async ({
       rootId: agent.id,
       totalUSD: 0,
       pricingState: "ready",
-      breakdown: { models: {}, providers: {} },
-      cacheAgeSeconds: 0,
-      estimated: false,
-      pricedSamples: 0,
-      refreshing: false,
-      unknownModels: [],
     },
   };
   // One deterministic active monitor exercises the real activity-strip caller.
@@ -67,8 +61,9 @@ test("phone conversation gives the transcript its viewport budget", async ({
       try {
         const view = structuredClone(snapshot);
         assert.ok(view.runtime.desktop);
+
         view.runtime.desktop = {
-          ...view.runtime.desktop,
+          ...view.runtime.desktop!,
           diskSpace: warning
             ? {
                 level: "warning",
@@ -87,11 +82,19 @@ test("phone conversation gives the transcript its viewport budget", async ({
         );
         await readOnlyRust.open(page);
         await page
-          .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
+          .getByLabel(
+            page.viewportSize()!.width <= 760
+              ? "Back to chats"
+              : "Toggle conversations",
+          )
           .waitFor();
         if (!(await page.locator("#sidebar").isVisible()))
           await page
-            .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
+            .getByLabel(
+              page.viewportSize()!.width <= 760
+                ? "Back to chats"
+                : "Toggle conversations",
+            )
             .click();
         await page
           .locator("[data-chat]")
@@ -143,7 +146,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             page.locator(".composer-tools-disclosure > summary"),
             page.locator("#composer .execution-summary-trigger"),
           ]) {
-            const box = await visibleBounds(target);
+            const box = (await target.boundingBox())!;
             expect(box.width).toBeGreaterThanOrEqual(44);
             expect(box.height).toBeGreaterThanOrEqual(44);
           }
@@ -153,7 +156,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             page.getByRole("button", { name: "Account limits", exact: true }),
             ...(await page.locator(".account-limits-dot-target").all()),
           ]) {
-            const box = await visibleBounds(target);
+            const box = (await target.boundingBox())!;
             expect(box.width).toBeGreaterThanOrEqual(24);
             expect(box.height).toBeGreaterThanOrEqual(24);
           }
@@ -173,22 +176,25 @@ test("phone conversation gives the transcript its viewport budget", async ({
                 ".context-use",
                 ".session-cost-summary",
                 ".account-limits-toggle",
-              ].map((s) => {
-                const element = e.querySelector(s);
-                if (!element) throw new Error(`Missing footer ${s}`);
-                const { left, right } = element.getBoundingClientRect();
-                return { left, right };
-              }),
+              ].map(
+                (s) =>
+                  e
+                    .querySelector(s)!
+                    .getBoundingClientRect()
+                    .toJSON() as DOMRect,
+              ),
             );
-          for (let i = 1; i < footerFacts.length; i++)
-            expect(
-              (footerFacts[i]?.left ?? 0) - (footerFacts[i - 1]?.right ?? 0),
-            ).toBeGreaterThanOrEqual(8);
+          for (let i = 1; i < footerFacts.length; i++) {
+            const current = footerFacts[i],
+              previous = footerFacts[i - 1];
+            assert.ok(current && previous);
+            expect(current.left - previous.right).toBeGreaterThanOrEqual(8);
+          }
         }
         if (warning) {
           const notice = page.locator(".supervisor-recovery-notice");
           await expect(notice).toHaveAttribute("title", /13 GB free/);
-          expect((await visibleBounds(notice)).height).toBeLessThanOrEqual(44);
+          expect((await notice.boundingBox())!.height).toBeLessThanOrEqual(44);
         } else
           await expect(page.locator(".supervisor-recovery-notice")).toHaveCount(
             0,
@@ -201,7 +207,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
           });
           await expect(attach).toHaveCount(1);
           await expect(attach).toBeVisible();
-          const attachBox = await visibleBounds(attach);
+          const attachBox = (await attach.boundingBox())!;
           expect(attachBox.width).toBeGreaterThanOrEqual(44);
           expect(attachBox.height).toBeGreaterThanOrEqual(44);
           // Only the lead provider remains beside its name on phones.
@@ -228,9 +234,9 @@ test("phone conversation gives the transcript its viewport budget", async ({
             ".composer-tools-disclosure > summary",
           );
           await disclosure.click();
-          const toolsBounds = await visibleBounds(
-            page.locator(".composer-tools-popover"),
-          );
+          const toolsBounds = (await page
+            .locator(".composer-tools-popover")
+            .boundingBox())!;
           expect(toolsBounds.x).toBeGreaterThanOrEqual(0);
           expect(toolsBounds.x + toolsBounds.width).toBeLessThanOrEqual(width);
 
@@ -240,7 +246,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               name: label,
               exact: true,
             });
-            const bounds = await visibleBounds(button);
+            const bounds = (await button.boundingBox())!;
             expect(bounds.width).toBeGreaterThanOrEqual(44);
             expect(bounds.height).toBeGreaterThanOrEqual(44);
           }
@@ -250,14 +256,14 @@ test("phone conversation gives the transcript its viewport budget", async ({
           ).toBeVisible();
           await disclosure.click();
           // The lead name remains visible and stays inside the trigger.
-          const model = await visibleBounds(
-            page.locator(
+          const model = (await page
+            .locator(
               '.execution-summary-segment[data-role="lead"] .execution-model',
-            ),
-          );
-          const execution = await visibleBounds(
-            page.locator(".execution-summary-trigger"),
-          );
+            )
+            .boundingBox())!;
+          const execution = (await page
+            .locator(".execution-summary-trigger")
+            .boundingBox())!;
           expect(model).not.toBeNull();
           expect(model.x + model.width).toBeLessThanOrEqual(
             execution.x + execution.width,
@@ -298,14 +304,11 @@ test("phone conversation gives the transcript its viewport budget", async ({
           ).toBeVisible();
         }
         const geometry = await page.evaluate(() => {
-          const rect = (selector: string) => {
-            const element = document.querySelector(selector);
-            if (!element)
-              throw new Error(`Missing geometry element ${selector}`);
-            const { x, y, width, height, top, right, bottom, left } =
-              element.getBoundingClientRect();
-            return { x, y, width, height, top, right, bottom, left };
-          };
+          const rect = (selector: string) =>
+            document
+              .querySelector(selector)!
+              .getBoundingClientRect()
+              .toJSON() as DOMRect;
           return {
             header: rect(".simple-workspace-header"),
             messages: rect("#messages"),

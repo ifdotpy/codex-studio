@@ -1,7 +1,6 @@
-import type { components } from "../../src/generated/api.ts";
+import { required } from "../teams/helpers.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
-import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 // Real components, isolated Vite server, mocked requests. No model or user state.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -46,7 +45,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     page.on("pageerror", (e) => pageErrors.push(e.message));
     let directoryReads = 0,
       detailReads = 0,
-      releaseSend = () => {};
+      releaseSend: () => void;
     const sent: PostBody<"/api/complaints">[] = [];
     const waitForSent = async (count: number) => {
       for (let attempt = 0; attempt < 100 && sent.length < count; attempt++)
@@ -70,9 +69,8 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
         return route.fulfill({
           json: {
             path: "/project",
-            parent: null,
             directories: [],
-          } satisfies components["schemas"]["DirectoriesResponse"],
+          },
         });
       }
       if (path === "/api/complaint") {
@@ -87,6 +85,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       if (path === "/api/complaints") {
         const body = requestBody<PostBody<"/api/complaints">>(route);
         if (!body.status) throw new Error("Expected response status");
+
         sent.push(body);
         if (sent.length === 1)
           return route.fulfill({
@@ -99,14 +98,14 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
         message = {
           ...message,
           version: message.version + 1,
-          status: body.status,
+          status: body.status!,
           responses: [
             ...message.responses,
             {
               id: body.id,
               author: "user",
               text: body.text,
-              status: body.status,
+              status: body.status!,
               at: 1,
             },
           ],
@@ -115,7 +114,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       }
       return route.fulfill({ json: {} });
     });
-    await page.goto(fixtureOrigin(server));
+    await page.goto(required(required(server.resolvedUrls).local[0]));
     await page
       .locator("[data-missing-date]")
       .getByText("Date unavailable", { exact: true })
@@ -182,8 +181,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     );
     await page.evaluate(() => {
       const original = Storage.prototype.setItem;
-      window.dialogDraft_restoreStorage = () =>
-        (Storage.prototype.setItem = original);
+      window.restoreStorage = () => (Storage.prototype.setItem = original);
       Storage.prototype.setItem = function (key, value) {
         if (key.startsWith("studio-answer-draft:"))
           throw new DOMException("Full", "QuotaExceededError");
@@ -198,10 +196,10 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       "Unsaved answer remains visible",
     );
     assert.match(
-      await page.evaluate(() => window.dialogDraft_notices.at(-1) ?? ""),
+      await page.evaluate(() => window.notices.at(-1)!),
       /could not be saved/,
     );
-    await page.evaluate(() => window.dialogDraft_restoreStorage());
+    await page.evaluate(() => window.restoreStorage());
     const toggle = () =>
       page
         .getByRole("button", { name: "Toggle messages", exact: true })
@@ -300,10 +298,10 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     await waitForSent(2);
     assert.deepEqual(
       sent[1],
-      sent[0],
+      required(sent[0]),
       "Retry after reload retains the exact message identity and payload",
     );
-    releaseSend();
+    releaseSend!();
     await page.waitForFunction(
       () =>
         !document.querySelector<HTMLTextAreaElement>(
@@ -321,17 +319,17 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       .click();
     await waitForSent(3);
     assert.equal(await reply.isDisabled(), true);
-    releaseSend();
+    releaseSend!();
     await detail
       .locator(".complaint-response")
       .getByText("New reply")
       .waitFor();
-    assert.equal(sent[2]?.text, "New reply");
-    assert.equal(sent[0]?.action, "respond");
-    assert.equal(sent[0]?.complaint_id, "complaint");
-    assert.equal(sent[0]?.version, 1);
-    assert.equal(sent[2]?.version, 2);
-    assert.notEqual(sent[0]?.id, sent[2]?.id);
+    assert.equal(required(sent[2]).text, "New reply");
+    assert.equal(required(sent[0]).action, "respond");
+    assert.equal(required(sent[0]).complaint_id, "complaint");
+    assert.equal(required(sent[0]).version, 1);
+    assert.equal(required(sent[2]).version, 2);
+    assert.notEqual(required(sent[0]).id, required(sent[2]).id);
     assert.deepEqual(pageErrors, []);
     console.log(
       JSON.stringify({

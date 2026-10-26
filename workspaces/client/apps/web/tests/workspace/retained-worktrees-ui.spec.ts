@@ -1,4 +1,3 @@
-import { required } from "../teams/helpers.ts";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -70,7 +69,7 @@ test("retained folders of live and deleted workers show at both widths", async (
       }),
     );
     await page.setViewportSize({ width: 320, height: 900 });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
     await expect(
       page.getByText("Worktree retained", { exact: true }),
     ).toHaveCount(1);
@@ -79,7 +78,7 @@ test("retained folders of live and deleted workers show at both widths", async (
       0,
     );
     cleanupComplete = true;
-    await page.evaluate(() => window.retainedWorktreesRefresh());
+    await page.evaluate(() => window.refreshRetained());
     for (const text of ["Deleted worker", "Cleanup outcome unconfirmed"])
       await expect(page.getByText(text, { exact: true })).toBeVisible();
     await expect(page.getByText("Live worker", { exact: true })).toHaveCount(0);
@@ -99,9 +98,7 @@ test("retained folders of live and deleted workers show at both widths", async (
       .getByRole("button", { name: "Open folder", exact: true })
       .first()
       .click();
-    expect(
-      await page.evaluate(() => window.retainedWorktreesOpenedFolder),
-    ).toBe(
+    expect(await page.evaluate(() => window.openedFolder)).toBe(
       "/Users/example/Projects/studio/.worktrees/codex-agents/deleted-worker",
     );
     expect(errors).toEqual([]);

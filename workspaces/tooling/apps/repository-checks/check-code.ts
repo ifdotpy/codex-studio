@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import {
-  JAVASCRIPT_EXCEPTIONS,
+  JAVASCRIPT_EXCEPTIONS_FILE,
+  type JavaScriptException,
   isJavaScript,
   isTypeScriptProject,
   javascriptFindings,
@@ -99,7 +100,10 @@ function main() {
     git(["diff", "--cached", "--name-only", "-z"]),
   );
   const projectsChanged = changedPaths.some(
-    (file) => isTypeScriptProject(file) || file === "tsconfig.base.json",
+    (file) =>
+      isTypeScriptProject(file) ||
+      file === "tsconfig.base.json" ||
+      file === JAVASCRIPT_EXCEPTIONS_FILE,
   );
   const lintPaths = selectedPaths.filter((relativePath) =>
     isCheckable(relativePath, codeExtensions),
@@ -125,14 +129,15 @@ function main() {
   );
   try {
     const indexPaths = getIndexPaths();
+    const exceptions: JavaScriptException[] = JSON.parse(
+      git(["cat-file", "blob", ":" + JAVASCRIPT_EXCEPTIONS_FILE]).toString(
+        "utf8",
+      ),
+    );
     const policyPaths = [
       ...new Set([
         ...selectedPaths.filter(isJavaScript),
-        ...(projectsChanged
-          ? JAVASCRIPT_EXCEPTIONS.map((entry) => entry.file).filter((file) =>
-              indexPaths.has(file),
-            )
-          : []),
+        ...(projectsChanged ? [...indexPaths].filter(isJavaScript) : []),
       ]),
     ];
     for (const relativePath of new Set([
@@ -160,6 +165,7 @@ function main() {
       temporaryRoot,
       [...indexPaths],
       policyPaths,
+      exceptions,
     );
     if (policyFindings.length) {
       for (const finding of policyFindings)

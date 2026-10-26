@@ -21,7 +21,7 @@ export function installResponsivenessFixture({
         ),
       ),
     );
-  window.responsivenessFixtureStreams = [];
+  window.fixtureStreams = [];
   const NativeEventSource = window.EventSource;
   window.EventSource = new Proxy(NativeEventSource, {
     construct(target, args) {
@@ -29,23 +29,22 @@ export function installResponsivenessFixture({
       if (new URL(url, location.href).pathname === "/api/sync/stream")
         return Reflect.construct(target, args);
       class TranscriptFixtureStream extends EventTarget {
-        url: string;
+        declare url: string;
         constructor() {
           super();
           this.url = url;
-          window.responsivenessFixtureStreams.push(this);
+          window.fixtureStreams.push(this);
         }
         close() {
-          window.responsivenessFixtureStreams =
-            window.responsivenessFixtureStreams.filter(
-              (stream) => stream !== this,
-            );
+          window.fixtureStreams = window.fixtureStreams.filter(
+            (stream) => stream !== this,
+          );
         }
       }
       return new TranscriptFixtureStream();
     },
   });
-  const metrics = {
+  window.metrics = {
     phase: "startup",
     inputSequence: 0,
     lastInputAt: -Infinity,
@@ -67,67 +66,62 @@ export function installResponsivenessFixture({
     switches: [] as { phase: string; duration: number; expected: string }[],
     stream: [] as { phase: string; revision: number; duration: number }[],
   };
-  window.responsivenessMetrics = metrics;
   window.__studioPromptComposerRenderProbe = (component) =>
-    window.responsivenessMetrics.renderProbe.push({
+    window.metrics.renderProbe.push({
       component,
-      phase: window.responsivenessMetrics.phase,
-      inputSequence: window.responsivenessMetrics.inputSequence,
-      inputAgeMs: performance.now() - window.responsivenessMetrics.lastInputAt,
+      phase: window.metrics.phase,
+      inputSequence: window.metrics.inputSequence,
+      inputAgeMs: performance.now() - window.metrics.lastInputAt,
     });
   document.addEventListener(
     "input",
     () => {
-      window.responsivenessMetrics.inputSequence++;
-      window.responsivenessMetrics.lastInputAt = performance.now();
+      window.metrics.inputSequence++;
+      window.metrics.lastInputAt = performance.now();
     },
     true,
   );
   const rectangle = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function (...args) {
-    const key = `${window.responsivenessMetrics.phase}:${this.tagName}`;
-    window.responsivenessMetrics.layoutReads[key] =
-      (window.responsivenessMetrics.layoutReads[key] || 0) + 1;
+    const key = `${window.metrics.phase}:${this.tagName}`;
+    window.metrics.layoutReads[key] =
+      (window.metrics.layoutReads[key] || 0) + 1;
     return rectangle.apply(this, args);
   };
   new PerformanceObserver((list) =>
-    window.responsivenessMetrics.longTasks.push(
+    window.metrics.longTasks.push(
       ...list.getEntries().map((entry) => ({
-        phase: window.responsivenessMetrics.phase,
+        phase: window.metrics.phase,
         start: entry.startTime,
         duration: entry.duration,
       })),
     ),
   ).observe({ type: "longtask", buffered: true });
-  const eventOptions = { type: "event", buffered: true, durationThreshold: 16 };
   new PerformanceObserver((list) =>
-    window.responsivenessMetrics.events.push(
+    window.metrics.events.push(
       ...list.getEntries().map((entry) => ({
-        phase: window.responsivenessMetrics.phase,
+        phase: window.metrics.phase,
         type: entry.name,
         duration: entry.duration,
         inputDelay:
-          ("processingStart" in entry &&
-          typeof entry.processingStart === "number"
-            ? entry.processingStart
-            : 0) - entry.startTime,
+          (entry as PerformanceEventTiming).processingStart - entry.startTime,
       })),
     ),
-  ).observe(eventOptions);
+  ).observe({
+    type: "event",
+    buffered: true,
+    durationThreshold: 16,
+  } as PerformanceObserverInit & { durationThreshold: number });
   document.addEventListener(
     "input",
     (event) => {
-      if (
-        !(event.target instanceof HTMLTextAreaElement) ||
-        event.target.id !== "message"
-      )
-        return;
+      if ((event.target as HTMLTextAreaElement).id !== "message") return;
       const started = event.timeStamp,
-        value = event.target.value;
+        value = (event.target as HTMLTextAreaElement).value;
       requestAnimationFrame(() =>
         requestAnimationFrame(() =>
-          window.responsivenessMetrics.input.push({
-            phase: window.responsivenessMetrics.phase,
+          window.metrics.input.push({
+            phase: window.metrics.phase,
             duration: performance.now() - started,
             value,
           }),
@@ -139,17 +133,16 @@ export function installResponsivenessFixture({
   document.addEventListener(
     "pointerdown",
     (event) => {
-      const chat =
-        event.target instanceof Element && event.target.closest("[data-chat]");
-      if (!chat || !window.responsivenessSwitchExpected) return;
+      const chat = (event.target as Element).closest("[data-chat]");
+      if (!chat || !window.switchExpected) return;
       const started = event.timeStamp,
-        expected = window.responsivenessSwitchExpected;
+        expected = window.switchExpected;
       const inspect = () => {
         if (!document.querySelector(`[data-message="${expected}"]`))
           return requestAnimationFrame(inspect);
         requestAnimationFrame(() =>
-          window.responsivenessMetrics.switches.push({
-            phase: window.responsivenessMetrics.phase,
+          window.metrics.switches.push({
+            phase: window.metrics.phase,
             duration: performance.now() - started,
             expected,
           }),
@@ -160,7 +153,7 @@ export function installResponsivenessFixture({
     },
     true,
   );
-  window.responsivenessEmitFixture = async (id: string, revision: number) => {
+  window.emitFixture = async (id: string, revision: number) => {
     const started = performance.now();
     await window.__notifyTranscriptFixture(id);
     await new Promise<void>((resolve) => {
@@ -168,12 +161,12 @@ export function installResponsivenessFixture({
         if (
           !document
             .querySelector('[data-message="a-live"]')
-            ?.textContent?.includes(`Stream revision ${revision}.`)
+            ?.textContent!.includes(`Stream revision ${revision}.`)
         )
           return requestAnimationFrame(inspect);
         requestAnimationFrame(() => {
-          window.responsivenessMetrics.stream.push({
-            phase: window.responsivenessMetrics.phase,
+          window.metrics.stream.push({
+            phase: window.metrics.phase,
             revision,
             duration: performance.now() - started,
           });
@@ -184,17 +177,39 @@ export function installResponsivenessFixture({
       requestAnimationFrame(inspect);
     });
   };
-  return metrics;
 }
 declare global {
   interface Window {
-    responsivenessFixtureStreams: (EventTarget & {
+    fixtureStreams: (EventTarget & {
       url: string;
       close: () => void;
     })[];
-    responsivenessMetrics: ReturnType<typeof installResponsivenessFixture>;
-    responsivenessSwitchExpected: string;
-    responsivenessEmitFixture: (id: string, revision: number) => Promise<void>;
+    metrics: ResponsivenessMetrics;
+    switchExpected: string;
+    emitFixture: (id: string, revision: number) => Promise<void>;
     __notifyTranscriptFixture: (id: string) => Promise<void>;
   }
 }
+
+type ResponsivenessMetrics = {
+  phase: string;
+  inputSequence: number;
+  lastInputAt: number;
+  input: { phase: string; duration: number; value: string }[];
+  layoutReads: Record<string, number>;
+  longTasks: { phase: string; start: number; duration: number }[];
+  events: {
+    phase: string;
+    type: string;
+    duration: number;
+    inputDelay: number;
+  }[];
+  renderProbe: {
+    component: string;
+    phase: string;
+    inputSequence: number;
+    inputAgeMs: number;
+  }[];
+  switches: { phase: string; duration: number; expected: string }[];
+  stream: { phase: string; revision: number; duration: number }[];
+};

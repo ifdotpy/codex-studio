@@ -1,4 +1,3 @@
-import { required } from "../componentTestFixtures";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -94,7 +93,7 @@ const chosen = (markup: string) =>
     ...markup.matchAll(
       /data-chosen="true"[\s\S]*?class="question-card-label">([^<]*)</g,
     ),
-  ].map((match) => required(match[1]));
+  ].map((match) => match[1]);
 
 describe("question card", () => {
   it("keeps one editor when a tool and message refer to the same request", () => {

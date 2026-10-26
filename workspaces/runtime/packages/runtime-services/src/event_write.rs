@@ -738,7 +738,13 @@ mod tests {
             root_id: AgentId::from("a"),
             epoch: 3,
             status: AgentStatus::Idle,
-            extra: BTreeMap::from([("autoWake".to_owned(), json!(true))]),
+            extra: BTreeMap::from([
+                ("autoWake".to_owned(), json!(true)),
+                (
+                    "provider".to_owned(),
+                    json!(studio_runtime_schema::ProviderKind::Codex),
+                ),
+            ]),
         };
         AgentRepository::put(&connection, &agent).expect("agent writes");
         connection

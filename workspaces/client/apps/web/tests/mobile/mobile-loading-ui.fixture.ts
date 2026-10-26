@@ -6,8 +6,7 @@ declare const self: ServiceWorkerGlobalScope & { STUDIO_SHELL: ShellManifest };
 /** The renderer build writes this manifest from the shared shell contract. */
 export function readShellManifest(worker: string): ShellManifest {
   const serialized = worker.match(/^self\.STUDIO_SHELL = (.*);/)?.[1];
-  if (!serialized)
-    throw new Error("Built service worker must declare its shell manifest");
+  if (!serialized) throw new Error("Missing shell manifest");
   return JSON.parse(serialized);
 }
 
@@ -35,6 +34,6 @@ export function installLoadingWorker() {
 
 declare global {
   interface Window {
-    mobileLoadingUiBootstrap?: string;
+    studioTestBootstrap?: string;
   }
 }

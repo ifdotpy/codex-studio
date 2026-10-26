@@ -21,6 +21,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use studio_runtime_providers::ProviderKind;
 
 use process_wrap::std::CommandWrap;
 use regex::Regex;
@@ -39,19 +40,19 @@ const MAX_RELEASE_BYTES: usize = 1024 * 1024;
 const REGISTRY_ACCEPT: &str = "application/vnd.npm.install-v1+json";
 const RELEASES: [(&str, &str, &str); 2] = [
     (
-        "claude",
+        ProviderKind::Claude.key(),
         "@anthropic-ai/claude-code",
         "https://registry.npmjs.org/@anthropic-ai%2fclaude-code",
     ),
     (
-        "codex",
+        ProviderKind::Codex.key(),
         "@openai/codex",
         "https://registry.npmjs.org/@openai%2fcodex",
     ),
 ];
 const BASELINES: [(&str, &str, &str); 2] = [
-    ("codex", "0.153.4", "Codex CLI"),
-    ("claude", "2.1.278", "Claude Code"),
+    (ProviderKind::Codex.key(), "0.153.4", "Codex CLI"),
+    (ProviderKind::Claude.key(), "2.1.278", "Claude Code"),
 ];
 
 /// Reads the named preference from merged sync fields; missing values default to enabled.
@@ -356,20 +357,25 @@ impl VersionProbe for SystemVersionProbe {
         profile: &ProviderProfile,
         deadline: Instant,
     ) -> Result<VersionFacts, ProviderPortError> {
-        if profile.provider == "claude" {
-            let launched_binary = profile
-                .launched_binary
-                .as_deref()
-                .ok_or(ProviderPortError)?;
-            let (installed_version, launched_error) =
-                match read_cli_version(launched_binary, deadline) {
-                    Ok(version) => (Some(version), None),
-                    Err(_) => (
-                        None,
-                        Some("Could not read the Claude Code executable version.".to_owned()),
-                    ),
-                };
-            let (configured_version, configured_error) = match profile.configured_binary.as_deref()
+        match profile
+            .provider
+            .parse::<studio_runtime_schema::ProviderKind>()
+            .map_err(|_| ProviderPortError)?
+        {
+            studio_runtime_schema::ProviderKind::Claude => {
+                let launched_binary = profile
+                    .launched_binary
+                    .as_deref()
+                    .ok_or(ProviderPortError)?;
+                let (installed_version, launched_error) =
+                    match read_cli_version(launched_binary, deadline) {
+                        Ok(version) => (Some(version), None),
+                        Err(_) => (
+                            None,
+                            Some("Could not read the Claude Code executable version.".to_owned()),
+                        ),
+                    };
+                let (configured_version, configured_error) = match profile.configured_binary.as_deref()
             {
                 Some(binary) => match read_cli_version(binary, deadline) {
                     Ok(version) => (Some(version), None),
@@ -386,33 +392,36 @@ impl VersionProbe for SystemVersionProbe {
                     Some("Claude Code executable was not found for this profile.".to_owned()),
                 ),
             };
-            let available_version = configured_version.clone();
-            return Ok(VersionFacts {
-                running_version: None,
-                installed_version,
-                configured_version,
-                available_version,
-                error: launched_error.or(configured_error),
-                running_note: Some(
-                    "The exact version already running in Claude sessions is unknown.".into(),
-                ),
-            });
+                let available_version = configured_version.clone();
+                Ok(VersionFacts {
+                    running_version: None,
+                    installed_version,
+                    configured_version,
+                    available_version,
+                    error: launched_error.or(configured_error),
+                    running_note: Some(
+                        "The exact version already running in Claude sessions is unknown.".into(),
+                    ),
+                })
+            }
+            studio_runtime_schema::ProviderKind::Codex => {
+                let default_binary = "codex";
+                let launched_binary = profile
+                    .launched_binary
+                    .as_deref()
+                    .or(profile.configured_binary.as_deref())
+                    .unwrap_or(default_binary);
+                let version = read_cli_version(launched_binary, deadline)?;
+                Ok(VersionFacts {
+                    running_version: Some(version.clone()),
+                    installed_version: Some(version),
+                    configured_version: None,
+                    available_version: None,
+                    error: None,
+                    running_note: None,
+                })
+            }
         }
-        let default_binary = "codex";
-        let launched_binary = profile
-            .launched_binary
-            .as_deref()
-            .or(profile.configured_binary.as_deref())
-            .unwrap_or(default_binary);
-        let version = read_cli_version(launched_binary, deadline)?;
-        Ok(VersionFacts {
-            running_version: Some(version.clone()),
-            installed_version: Some(version),
-            configured_version: None,
-            available_version: None,
-            error: None,
-            running_note: None,
-        })
     }
 }
 
@@ -879,7 +888,11 @@ impl ProviderVersionMonitor {
             if !self.connection_is_current(&profiles) {
                 return CheckOutcome { retry: false };
             }
-            if !matches!(profile.provider.as_str(), "codex" | "claude") {
+            if profile
+                .provider
+                .parse::<studio_runtime_schema::ProviderKind>()
+                .is_err()
+            {
                 providers.push(unknown_row(profile, now));
                 continue;
             }
@@ -1246,7 +1259,7 @@ fn update_warnings(provider: &Value, upstream_enabled: bool) -> Vec<Value> {
         if source == "upstream" && !upstream_enabled { return None; }
         let message = if source == "upstream" {
             format!("A newer {label} release is available upstream than the version currently in use. Current: {current} · Available: {available}.")
-        } else if name == "codex" {
+        } else if name == ProviderKind::Codex.key() {
             format!("A newer installed {label} version is selected for runtime updates, but this connection is still using {current}. Available: {available}.")
         } else {
             format!("A newer installed {label} version is not in use on this connection yet. Current: {current} · Available: {available}.")

@@ -29,7 +29,7 @@ export function browserEnvironment(
   sessionId: string | undefined,
   environment = process.env,
 ): NodeJS.ProcessEnv {
-  let value: unknown;
+  let value: NodeJS.ProcessEnv | null;
   try {
     value = JSON.parse(
       readFileSync(path.join(root, "studio-browser.json"), "utf8"),
@@ -38,12 +38,8 @@ export function browserEnvironment(
     return {};
   }
   if (
-    value === null ||
-    typeof value !== "object" ||
-    !("BROWSER" in value) ||
-    typeof value.BROWSER !== "string" ||
-    !("STUDIO_BROWSER_SOCKET" in value) ||
-    typeof value.STUDIO_BROWSER_SOCKET !== "string"
+    typeof value?.BROWSER !== "string" ||
+    typeof value?.STUDIO_BROWSER_SOCKET !== "string"
   )
     return {};
   const result: NodeJS.ProcessEnv = {
@@ -53,7 +49,6 @@ export function browserEnvironment(
   };
   // Tools that search PATH for xdg-open (or `open` on macOS) find Studio's launcher links first.
   if (
-    "STUDIO_BROWSER_PATH" in value &&
     typeof value.STUDIO_BROWSER_PATH === "string" &&
     path.isAbsolute(value.STUDIO_BROWSER_PATH)
   ) {

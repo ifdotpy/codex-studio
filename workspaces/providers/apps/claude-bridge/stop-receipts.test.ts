@@ -50,9 +50,12 @@ test("Stop replies before a reserved input save completes and the rejection surv
   const warm = await start(bridge, "warm");
   assert.equal((await completed(bridge, warm.turn.id)).status, "completed");
   await fs.writeFile(path.join(bridge.root, ".hold-save"), "");
-  const pending = start(bridge, "blocked-save").then(
+  const pending: Promise<{
+    value?: Awaited<ReturnType<typeof start>>;
+    error?: Error;
+  }> = start(bridge, "blocked-save").then(
     (value) => ({ value }),
-    (error: unknown) => ({ error }),
+    (error: unknown) => ({ error: error as Error }),
   );
   await marker(bridge, ".save-held");
   const receipt = await bridge.call("turn/interrupt", {
@@ -63,14 +66,13 @@ test("Stop replies before a reserved input save completes and the rejection surv
   assert.equal((await admissions(bridge)).length, 1);
   await fs.writeFile(path.join(bridge.root, ".release-save"), "");
   const result = await pending;
-  assert.ok("error" in result && result.error instanceof Error);
-  assert.match(result.error.message, /stopped before accepting/);
+  assert.match(result.error?.message ?? "", /stopped before accepting/);
   const history = await bridge.call("thread/turns/list", {
     threadId: bridge.thread,
   });
   assert.equal(
-    history.data.find((turn) => turn.clientUserMessageId === "blocked-save")
-      ?.startOutcome,
+    history.data.find((turn) => turn.clientUserMessageId === "blocked-save")!
+      .startOutcome,
     "not_applied",
   );
   await bridge.restart();
@@ -97,7 +99,7 @@ test("Stop preserves a rejected pre-admission receipt and permits one exact retr
   const stopped = await completed(bridge, original.turn.id);
   assert.equal(stopped.status, "interrupted");
   assert.equal(stopped.startOutcome, "not_applied");
-  assert.equal(stopped.error?.data?.turnStartOutcome, "not_applied");
+  assert.equal(stopped.error!.data!.turnStartOutcome, "not_applied");
   assert.deepEqual(await admissions(bridge), []);
   await fs.rm(path.join(bridge.root, ".hold-account"));
   await bridge.restart();
@@ -120,9 +122,12 @@ test("Stop before initial clear admission permits a live exact retry", async () 
   const warm = await start(bridge, "warm");
   assert.equal((await completed(bridge, warm.turn.id)).status, "completed");
   await fs.writeFile(path.join(bridge.root, ".hold-save"), "");
-  const pending = start(bridge, "blocked-save").then(
+  const pending: Promise<{
+    value?: Awaited<ReturnType<typeof start>>;
+    error?: Error;
+  }> = start(bridge, "blocked-save").then(
     (value) => ({ value }),
-    (error: unknown) => ({ error }),
+    (error: unknown) => ({ error: error as Error }),
   );
   await marker(bridge, ".save-held");
   const receipt = await bridge.call("turn/interrupt", {
@@ -133,14 +138,13 @@ test("Stop before initial clear admission permits a live exact retry", async () 
   assert.equal((await admissions(bridge)).length, 1);
   await fs.writeFile(path.join(bridge.root, ".release-save"), "");
   const result = await pending;
-  assert.ok("error" in result && result.error instanceof Error);
-  assert.match(result.error.message, /stopped before accepting/);
+  assert.match(result.error?.message ?? "", /stopped before accepting/);
   const history = await bridge.call("thread/turns/list", {
     threadId: bridge.thread,
   });
   assert.equal(
-    history.data.find((turn) => turn.clientUserMessageId === "blocked-save")
-      ?.startOutcome,
+    history.data.find((turn) => turn.clientUserMessageId === "blocked-save")!
+      .startOutcome,
     "not_applied",
   );
   const retry = await start(bridge, "blocked-save");

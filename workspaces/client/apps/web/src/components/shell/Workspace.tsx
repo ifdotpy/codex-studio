@@ -1,3 +1,4 @@
+import { ProviderKind } from "../../generated/providerKind.ts";
 import { McpInventory } from "./McpInventory";
 import {
   isModelWhitelisted,
@@ -737,7 +738,7 @@ function Plan(c: Context) {
 
 function Checkpoints(c: Context) {
   if (
-    c.selected?.provider === "claude" &&
+    c.selected?.provider === ProviderKind.Claude &&
     (c.selected.imageWorkspace ||
       c.selected.workspaceMode === "shared" ||
       (!c.selected.worktree && c.selected.workspaceMode !== "worktree"))
@@ -1087,7 +1088,7 @@ function Profiles(c: Context) {
     profileModels.unshift({
       value: draftModel,
       label: modelDisplayName(draftModel),
-      provider: "codex",
+      provider: modelProvider(draftModel) ?? lead?.provider ?? "",
       badges: ["current"],
     });
   return (
@@ -1130,7 +1131,7 @@ function Profiles(c: Context) {
                     id: crypto.randomUUID(),
                     profile_id: profile.id,
                     provider:
-                      modelProvider(profile.model) ?? lead?.provider ?? "codex",
+                      modelProvider(profile.model) ?? lead?.provider ?? "",
                     reviewer: profile.role === "reviewer",
                     name: profile.name,
                   })

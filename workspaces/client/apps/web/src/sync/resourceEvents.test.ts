@@ -31,6 +31,7 @@ vi.mock("./resume", () => ({
 }));
 
 class Source {
+  readonly url: string;
   static instances: Source[] = [];
   static skipNextAutoHandshake = false;
   listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
@@ -40,7 +41,6 @@ class Source {
   closed = false;
   schemaEmitted = false;
   autoHandshake: boolean;
-  readonly url: string;
   constructor(url: string) {
     this.url = url;
 
@@ -105,10 +105,10 @@ class Source {
 }
 
 class Channel {
+  readonly name: string;
   static instances: Channel[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
   messages: OutgoingTabMessage[] = [];
-  readonly name: string;
   constructor(name: string) {
     this.name = name;
 

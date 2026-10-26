@@ -61,17 +61,15 @@ async function loadSharp() {
 function dimensions(metadata: ImageMetadata) {
   const { width, height } = metadata;
   if (
-    typeof width !== "number" ||
     !Number.isSafeInteger(width) ||
-    typeof height !== "number" ||
     !Number.isSafeInteger(height) ||
-    width < 1 ||
-    height < 1
+    width! < 1 ||
+    height! < 1
   )
     throw new ImagePreparationError(
       "the image dimensions cannot be verified. Use a valid PNG, JPEG, GIF, or WebP image.",
     );
-  return { width, height };
+  return { width, height } as Required<Pick<ImageMetadata, "width" | "height">>;
 }
 
 function targetDimensions({ width, height }: ReturnType<typeof dimensions>) {
@@ -176,7 +174,7 @@ export async function prepareClaudeImage(
       throw new ImagePreparationError("the image file is empty.");
     const sharp = await codecLoader();
     const metadata = await sharp(bytes).metadata();
-    if (!MEDIA_TYPES.has(metadata.format ?? ""))
+    if (!MEDIA_TYPES.has(metadata.format!))
       throw new ImagePreparationError(
         "the image format is unsupported. Use PNG, JPEG, GIF, or WebP.",
       );
@@ -186,7 +184,7 @@ export async function prepareClaudeImage(
     );
     const final = await sharp(result).metadata();
     const { width, height } = dimensions(final);
-    const mediaType = MEDIA_TYPES.get(final.format ?? "");
+    const mediaType = MEDIA_TYPES.get(final.format!);
     // Validate the actual final bytes, including base64 padding, after every encode.
     if (
       !mediaType ||

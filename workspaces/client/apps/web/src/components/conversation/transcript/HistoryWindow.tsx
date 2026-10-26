@@ -449,20 +449,14 @@ export default function HistoryWindow({
         ))}
       </div>
     );
-  let previousOffset = 0;
-  const totalOffset = offsets[rows.length];
-  if (totalOffset === undefined)
-    throw new Error("Missing total history offset");
+  let previous = 0;
   return (
     <div ref={body} className="history-window" data-history-window>
       {indices.map((index) => {
-        const row = rows[index],
-          offset = offsets[index],
-          nextOffset = offsets[index + 1];
-        if (!row || offset === undefined || nextOffset === undefined)
-          throw new Error("Missing history window row or offset");
-        const gap = offset - previousOffset;
-        previousOffset = nextOffset;
+        // Indices come from rows; offsets contains each row boundary plus its end.
+        const row = rows[index]!;
+        const gap = offsets[index]! - offsets[previous]!;
+        previous = index + 1;
         return (
           <Fragment key={row.id}>
             {gap > 0 && (
@@ -480,7 +474,7 @@ export default function HistoryWindow({
       })}
       <div
         className="history-window-spacer"
-        style={{ height: totalOffset - previousOffset }}
+        style={{ height: offsets[rows.length]! - offsets[previous]! }}
         aria-hidden="true"
       />
     </div>

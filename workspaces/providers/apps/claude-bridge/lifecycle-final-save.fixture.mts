@@ -1,7 +1,6 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
 const scenario = process.env.STUDIO_FIXTURE_FINAL_SAVE;
-import type { FixtureQuery } from "./sdk-fixtures.ts";
-import { inputText } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 
 import fs from "node:fs/promises";
@@ -58,12 +57,15 @@ export function query({ prompt, options }: FixtureQuery) {
       };
       if (scenario === "timer") {
         const steer = await prompt.next();
-        if (steer.done) return;
-        await fs.appendFile(cwd + "/inputs", inputText(steer.value) + "\n");
+        await fs.appendFile(
+          cwd + "/inputs",
+          steer.value!.message.content[0].text + "\n",
+        );
       }
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         result: "done",
         usage: { input_tokens: 1, output_tokens: 1 },
         modelUsage: {

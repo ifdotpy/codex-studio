@@ -3,11 +3,11 @@ import { createAccountCheck } from "./account-identity.ts";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "node:readline";
 
-let release = () => {};
+let release: () => void;
 const held = new Promise<void>((resolve) => (release = resolve));
+// oxlint-disable-next-line require-yield -- The base iterable intentionally yields no model input.
 async function* prompt(): AsyncGenerator<never> {
   await held;
-  yield* [];
 }
 const controller = new AbortController();
 let timer;
@@ -31,15 +31,19 @@ const q = query({
 });
 const verify = createAccountCheck({
   requireSubscription: false,
-  expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
-  expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
+  ...(process.env.STUDIO_CLAUDE_ACCOUNT === undefined
+    ? {}
+    : { expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT }),
+  ...(process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY === undefined
+    ? {}
+    : { expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY }),
 });
 const lines = createInterface({ input: process.stdin });
 timer = setTimeout(() => {
   process.exitCode = 1;
   controller.abort();
   lines.close();
-  release();
+  release!();
   q.close();
 }, 120000);
 try {
@@ -57,7 +61,7 @@ try {
   process.exitCode = 1;
 } finally {
   clearTimeout(timer);
-  release();
+  release!();
   lines.close();
   q.close();
 }

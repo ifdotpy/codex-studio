@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ProviderKind } from "../src/generated/providerKind.ts";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import type { Page, Response } from "playwright";
@@ -61,7 +62,7 @@ type Journal = JournalBase & {
   };
 };
 
-const LEAD_PROVIDER = "claude";
+const LEAD_PROVIDER = ProviderKind.Claude;
 const WORKER_MODEL = "gpt-6-luna";
 const WORKER_EFFORT = "high";
 const ACTION_TIMEOUT_MS = 15_000;

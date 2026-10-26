@@ -10,6 +10,10 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::usage::{
+    ledger::UsageLedgerRow, persisted::parse_analytics_cost_usage_row,
+};
 use studio_runtime_services::costs::session_cost_with_account_profiles;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository, CaptureTable};
 use studio_runtime_store::{RuntimeStore, StoreError};
@@ -30,6 +34,7 @@ fn agent(id: &str, root: &str, provider: &str, account: &str, extra: Value) -> V
 /// One usage row; `tokens` is `[input, cached, write, output]`.
 #[allow(clippy::too_many_arguments)]
 fn usage(
+    provider: ProviderKind,
     id: &str,
     agent: &str,
     root: &str,
@@ -49,6 +54,21 @@ fn usage(
         "last":counts,"total":counts});
     if let (Some(record), Some(extra)) = (record.as_object_mut(), extra.as_object()) {
         record.extend(extra.clone());
+    }
+    // Complete facts retain their token conventions without needing an owner.
+    // Sparse legacy facts keep unknown categories and remain unpriced.
+    if let Some(observation) =
+        parse_analytics_cost_usage_row(provider, &record).expect("fixture usage")
+    {
+        let ledger = UsageLedgerRow::capture(agent, record["threadId"].as_str(), observation);
+        record.as_object_mut().expect("usage row").extend(
+            serde_json::to_value(ledger)
+                .expect("typed fixture usage")
+                .as_object()
+                .expect("ledger fields")
+                .clone(),
+        );
+        UsageLedgerRow::from_typed_analytics(&record).expect("fixture receipt identity");
     }
     record
 }
@@ -130,6 +150,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         // Lead: an answered turn with a provisional row (suppressed) and a
         // provisional-only turn (counted).
         usage(
+            ProviderKind::Codex,
             "u1",
             "lead",
             "lead",
@@ -142,6 +163,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "u2",
             "lead",
             "lead",
@@ -154,6 +176,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "u3",
             "lead",
             "lead",
@@ -167,6 +190,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         ),
         // Same token tuple twice: one group of two.
         usage(
+            ProviderKind::Codex,
             "u4",
             "lead",
             "lead",
@@ -182,6 +206,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         // cache-write category keeps u5 unpriced under the typed contract;
         // the old scanner invented zero and charged (40*1.25 + 4*10)/1e6 = $0.000090.
         usage(
+            ProviderKind::Codex,
             "u5",
             "lead",
             "lead",
@@ -195,6 +220,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         ),
         // Codex worker: model-less rows inherit from the turn, else the thread.
         usage(
+            ProviderKind::Codex,
             "w1",
             "codex-worker",
             "lead",
@@ -207,6 +233,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "w2",
             "codex-worker",
             "lead",
@@ -219,6 +246,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "w3",
             "codex-worker",
             "lead",
@@ -231,6 +259,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "w4",
             "codex-worker",
             "lead",
@@ -243,6 +272,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "w5",
             "codex-worker",
             "lead",
@@ -255,6 +285,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({"inputTokensAreUncached":true}),
         ),
         usage(
+            ProviderKind::Codex,
             "w6",
             "codex-worker",
             "lead",
@@ -271,6 +302,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         // The old scanner revived c1p after replacing c1 with its journal receipt,
         // adding (10*3 + 1*15)/1e6 = $0.000045. Typed accounting excludes it.
         usage(
+            ProviderKind::Claude,
             "c1",
             "claude-worker",
             "lead",
@@ -283,6 +315,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({"inputTokensAreUncached":true}),
         ),
         usage(
+            ProviderKind::Claude,
             "c1p",
             "claude-worker",
             "lead",
@@ -295,6 +328,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Claude,
             "c2",
             "claude-worker",
             "lead",
@@ -308,6 +342,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         ),
         // Deleted worker and an agent without a record still count.
         usage(
+            ProviderKind::Codex,
             "d1",
             "deleted-worker",
             "lead",
@@ -320,6 +355,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "g1",
             "ghost-worker",
             "lead",
@@ -332,6 +368,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         usage(
+            ProviderKind::Codex,
             "g2",
             "ghost-worker",
             "lead",
@@ -345,6 +382,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         ),
         // Another root is not counted.
         usage(
+            ProviderKind::Codex,
             "o1",
             "other-root",
             "other",
@@ -358,6 +396,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         ),
         // Moves out of the lead tree, then back into turn t2 of the lead.
         usage(
+            ProviderKind::Codex,
             "m1",
             "lead",
             "other",
@@ -371,6 +410,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
         ),
     ];
     rows.push(usage(
+        ProviderKind::Codex,
         "m1",
         "lead",
         "lead",
@@ -384,6 +424,7 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
     ));
     // Answer the provisional-only turn t2 of the lead: u3 is now suppressed.
     rows.push(usage(
+        ProviderKind::Codex,
         "u6",
         "lead",
         "lead",
@@ -414,8 +455,11 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             .expect("usage row");
     }
     let accounts = BTreeMap::from([
-        ("default".to_owned(), json!({"provider":"openai"})),
-        ("second".to_owned(), json!({})),
+        (
+            "default".to_owned(),
+            json!({"provider":ProviderKind::Codex}),
+        ),
+        ("second".to_owned(), json!({"provider":ProviderKind::Codex})),
         (
             "claude-acct".to_owned(),
             json!({"provider":"claude","claudeOptions":{"configDir":profile}}),

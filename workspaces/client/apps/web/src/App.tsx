@@ -1,4 +1,5 @@
 import { useSubscription } from "./sync/subscriptions";
+import { ProviderKind } from "./generated/providerKind.ts";
 import { submitRename, watchRenameResult } from "./renameRequest";
 import {
   StudioErrorsScope,
@@ -958,10 +959,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const publicAccounts = useMemo(
     () =>
       accounts.data.accounts.map((account) => ({
-        provider:
-          account.provider === "claude"
-            ? ("claude" as const)
-            : ("codex" as const),
+        provider: account.provider,
         email: account.email || null,
         plan: account.plan || null,
         status: account.disconnected ? "signedOut" : account.status,
@@ -2895,9 +2893,12 @@ export default function App({ active = true }: { active?: boolean }) {
                     (value): value is string => typeof value === "string",
                   )}
                 onSignIn={
-                  account.provider === "claude"
-                    ? setClaudeLoginKey
-                    : setCodexLoginKey
+                  (
+                    {
+                      [ProviderKind.Codex]: setCodexLoginKey,
+                      [ProviderKind.Claude]: setClaudeLoginKey,
+                    } satisfies Record<ProviderKind, (key: string) => void>
+                  )[account.provider]
                 }
               />
             ))}

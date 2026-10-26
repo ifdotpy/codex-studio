@@ -1,5 +1,6 @@
-import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import { required } from "../teams/helpers.ts";
+import { execFileSync } from "node:child_process";
+import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import { createServer } from "vite";
 import type {} from "./background-current-browser.fixture.tsx";
 // Current activity lifecycle through the real component. HTTP calls use fixtures.
@@ -47,6 +48,25 @@ test("Background Current Browser", async ({
     plugins: [
       {
         name: "current-background-fixture",
+        load(id) {
+          if (
+            process.env.BASELINE_SYNC_WAIT === "1" &&
+            id ===
+              join(
+                root,
+                "workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+              )
+          )
+            return execFileSync(
+              "git",
+              [
+                "show",
+                "HEAD:workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+              ],
+              { cwd: root, encoding: "utf8" },
+            );
+          return undefined;
+        },
       },
     ],
     server: { host: "127.0.0.1", port: 0, hmr: false },
@@ -88,7 +108,7 @@ test("Background Current Browser", async ({
             responseTarget: null,
             processes: data.runtime.monitors
               .filter((task) =>
-                ["approval", "running", "starting"].includes(task.status || ""),
+                ["approval", "running", "starting"].includes(task.status!),
               )
               .map((task) => ({
                 ...task,
@@ -123,10 +143,8 @@ test("Background Current Browser", async ({
         json: { id: url.searchParams.get("id"), tail: "Live fixture output" },
       });
     });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "fixture");
-    await page.waitForFunction(
-      () => !!window.backgroundCurrentBrowserRenderFixture,
-    );
+    await page.goto(server.resolvedUrls!.local[0]! + "fixture");
+    await page.waitForFunction(() => !!window.renderFixture);
     const agents: import("../../src/types.ts").Agent[] = [
       { id: "lead", rootId: "lead", name: "Lead" },
       { id: "worker", rootId: "lead", name: "Worker" },
@@ -161,7 +179,12 @@ test("Background Current Browser", async ({
             params: { monitorId: "approval" },
           },
         ],
-        monitors: [task("approval", "approval")],
+        monitors: [
+          {
+            ...task("approval", "approval"),
+            kind: "monitor",
+          } as import("../../src/types.ts").Monitor,
+        ],
         tasks: [
           task("active", "running"),
           {
@@ -189,14 +212,16 @@ test("Background Current Browser", async ({
         typeof import("../../src/components/shell/BackgroundTasks.tsx").default
       >["initialFocus"],
     ) => {
-      await page.evaluate(
-        ({ serialized, leadId, focus }) =>
-          window.backgroundCurrentBrowserRenderFixture(
-            serialized,
-            leadId,
-            focus,
-          ),
-        { serialized: JSON.stringify(data), leadId, focus },
+      await page.evaluate<void, unknown>(
+        (value) => {
+          const args = value as {
+            data: Parameters<Window["renderFixture"]>[0];
+            leadId: string;
+            focus: Parameters<Window["renderFixture"]>[2];
+          };
+          window.renderFixture(args.data, args.leadId, args.focus);
+        },
+        { data, leadId, focus },
       );
     };
     const rows = () => page.locator("[data-task]");
@@ -236,25 +261,25 @@ test("Background Current Browser", async ({
       await page.getByText("Current activity", { exact: true }).count(),
       1,
     );
-    const activeCommand = data.runtime.tasks.find(
-      (task) => task.id === "active",
+    const activeCommand = required(
+      data.runtime.tasks.find((task) => task.id === "active"),
     );
-    required(activeCommand).turnId = "original-turn";
-    required(agents[0]).inFlight = true;
-    required(agents[0]).turnId = "original-turn";
+    activeCommand!.turnId = "original-turn";
+    agents[0]!.inFlight = true;
+    agents[0]!.turnId = "original-turn";
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
       .getByText("Command", { exact: true })
       .waitFor();
-    required(agents[0]).turnId = "next-turn";
+    agents[0]!.turnId = "next-turn";
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
       .getByText("Background command", { exact: true })
       .waitFor();
-    required(agents[0]).turnId = "original-turn";
-    required(agents[0]).inFlight = false;
+    agents[0]!.turnId = "original-turn";
+    agents[0]!.inFlight = false;
     await render();
     await page
       .locator('[data-task="active"] .task-row-kind')
@@ -277,7 +302,7 @@ test("Background Current Browser", async ({
       .locator(".task-output")
       .getByText("Summary output active", { exact: true })
       .waitFor();
-    required(activeCommand).tail = "Updated summary output";
+    activeCommand!.tail = "Updated summary output";
     await render();
     await page
       .locator(".task-output")
@@ -288,7 +313,7 @@ test("Background Current Browser", async ({
       0,
       "streamed task summaries issue zero idle GETs",
     );
-    required(data.runtime.tasks.find((task) => task.id === "active")).status =
+    data.runtime.tasks.find((task) => task.id === "active")!.status =
       "completed";
     await render();
     await page.locator('[data-task="active"]').waitFor({ state: "detached" });
@@ -324,8 +349,8 @@ test("Background Current Browser", async ({
       .getByRole("button", { name: "Cancel monitor", exact: true })
       .waitFor();
     await page.evaluate(() => {
-      window.backgroundCurrentBrowserHoldRefresh = true;
-      window.backgroundCurrentBrowserRefreshCalls = 0;
+      window.holdRefresh = true;
+      window.refreshCalls = 0;
     });
     holdAnswer = true;
     const approve = page.getByRole("button", {
@@ -340,34 +365,23 @@ test("Background Current Browser", async ({
     await expect
       .poll(async () => ({
         release: typeof releaseAnswer,
-        notifications: await page.evaluate(
-          () => window.backgroundCurrentBrowserNotifications || [],
-        ),
+        notifications: await page.evaluate(() => window.notifications || []),
       }))
       .toMatchObject({ release: "function" });
     await expect(pendingControl).toBeDisabled();
-    assert.equal(
-      await page.evaluate(() => window.backgroundCurrentBrowserRefreshCalls),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.refreshCalls), 0);
     holdAnswer = false;
     required(releaseAnswer)();
     await expect(pendingControl).toBeEnabled({ timeout: 2000 });
     await page.waitForFunction(
-      () =>
-        window.backgroundCurrentBrowserRefreshCalls === 1 &&
-        !!window.backgroundCurrentBrowserRejectRefresh,
+      () => window.refreshCalls === 1 && !!window.rejectRefresh,
     );
     await page.evaluate(() => {
-      window.backgroundCurrentBrowserHoldRefresh = false;
-      window.backgroundCurrentBrowserRejectRefresh(
-        new Error("Credential refresh unavailable"),
-      );
+      window.holdRefresh = false;
+      window.rejectRefresh(new Error("Credential refresh unavailable"));
     });
     await page.waitForFunction(() =>
-      window.backgroundCurrentBrowserNotifications?.includes(
-        "Credential refresh unavailable",
-      ),
+      window.notifications?.includes("Credential refresh unavailable"),
     );
     assert.equal(
       calls.filter(
@@ -413,13 +427,13 @@ test("Background Current Browser", async ({
       await page.screenshot({
         path: testInfo.outputPath("studio-current-activity-" + width + ".png"),
       });
-      required(data.runtime.tasks.find((task) => task.id === "child")).status =
+      data.runtime.tasks.find((task) => task.id === "child")!.status =
         "completed";
       await render("lead");
       await page
         .locator('[data-task-detail="child"]')
         .waitFor({ state: "detached" });
-      required(data.runtime.tasks.find((task) => task.id === "child")).status =
+      data.runtime.tasks.find((task) => task.id === "child")!.status =
         "running";
     }
     data.runtime.tasks = data.runtime.tasks.map((task) => ({

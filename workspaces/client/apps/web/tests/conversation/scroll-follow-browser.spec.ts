@@ -1,3 +1,29 @@
+import { required } from "../teams/helpers.ts";
+import type {
+  EntityFixtureState,
+  TestStateView,
+  EntityPullFixtureOptions,
+} from "../playwright.ts";
+type FixtureTranscript = NonNullable<EntityPullFixtureOptions["transcript"]>;
+type FixtureDelta = Omit<
+  components["schemas"]["TranscriptStreamDelta"],
+  "agent"
+> &
+  Pick<FixtureTranscript, "agent">;
+type FixtureBatch = Omit<
+  components["schemas"]["TranscriptChangeBatch"],
+  "delta"
+> & { delta: FixtureDelta };
+type FixtureResourceEvent = Omit<ResourceChangeEvent, "resourceVersions"> & {
+  resourceVersions: (Omit<
+    ResourceChangeEvent["resourceVersions"][number],
+    "transcriptSnapshot" | "transcriptChanges"
+  > & {
+    transcriptSnapshot?: FixtureTranscript;
+    transcriptChanges?: FixtureBatch;
+  })[];
+};
+import type { AddressInfo } from "node:net";
 import { waitForFixturePort } from "../playwright.ts";
 import type { Page } from "@playwright/test";
 import type { ServerResponse } from "node:http";
@@ -96,14 +122,12 @@ async function scrollFollow(page: Page, full: boolean) {
     env: { FIXTURE_WORKER_COUNT: "0" },
   });
   let log = "";
-  assert.ok(proc.stderr && proc.stdout);
-  proc.stderr.on("data", (d) => (log += d));
+  proc.stderr!.on("data", (d) => (log += d));
   const port = await waitForFixturePort(proc, { diagnostics: () => log });
   const origin = `http://127.0.0.1:${port}`;
   const state = await readTestState(origin);
   const syncContract = await readFixtureSyncContract(origin);
-  const chat = state.threads.find((a) => a.name === "Other project");
-  assert.ok(chat, "fixture chat exists");
+  const chat = state.threads.find((a) => a.name === "Other project")!;
   const passes = full
     ? [
         { width: 1440, height: 900 },
@@ -113,9 +137,10 @@ async function scrollFollow(page: Page, full: boolean) {
   const reset = () => ({
     items: history(),
     agent: {
-      id: chat.id,
-      status: "running",
+      ...chat,
+      status: "running" as const,
       inFlight: true,
+      turnId: "live-turn",
       activity: { phase: "writing" },
     },
   });
@@ -123,17 +148,15 @@ async function scrollFollow(page: Page, full: boolean) {
   const transcript = (
     id: string,
     limit: number = SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS,
-  ): TranscriptPageResponse => {
-    const value = transcripts.get(id);
-    assert.ok(value, "fixture transcript exists");
-    const { agent, items } = value;
+  ): FixtureTranscript => {
+    const { agent, items } = transcripts.get(id)!;
     const selected = items.slice(-limit);
     return {
       agent,
       items: selected,
       truncated: selected.length < items.length,
       nextCursor:
-        selected.length < items.length ? (selected[0]?.id ?? null) : null,
+        selected.length < items.length ? required(selected[0]).id : null,
       nextAfterCursor: null,
       historyVersion: "scroll-follow",
     };
@@ -150,8 +173,8 @@ async function scrollFollow(page: Page, full: boolean) {
   const streamFrame = (
     resources: ResourceRef[],
     reason: ResourceChangeEvent["reason"],
-    batch?: components["schemas"]["TranscriptChangeBatch"],
-  ): ResourceChangeEvent => ({
+    batch?: FixtureBatch,
+  ): FixtureResourceEvent => ({
     protocol: 4,
     workspaceId: syncContract.identity.workspaceId,
     epoch: "scroll-follow-transcripts",
@@ -194,8 +217,7 @@ async function scrollFollow(page: Page, full: boolean) {
         return;
       }
       subscriptionUpdates++;
-      const resources = syncStreams.get(stream);
-      assert.ok(resources, "subscription stream exists");
+      const resources = syncStreams.get(stream)!;
       const removed = new Set(
         update.remove.map((resource) => JSON.stringify(resource)),
       );
@@ -228,9 +250,8 @@ async function scrollFollow(page: Page, full: boolean) {
       return;
     }
     const resources = fixtureResourceRefs(
-      new URL(request.url ?? "/", "http://fixture").searchParams.get(
-        "resources",
-      ) || "[]",
+      new URL(request.url!, "http://fixture").searchParams.get("resources") ||
+        "[]",
     );
     response.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -264,11 +285,6 @@ async function scrollFollow(page: Page, full: boolean) {
   await new Promise<void>((resolve) =>
     streamServer.listen(0, "127.0.0.1", resolve),
   );
-  const streamAddress = streamServer.address();
-  assert.ok(
-    streamAddress && typeof streamAddress !== "string",
-    "stream TCP address exists",
-  );
   stopStreamFixture = async () => {
     for (const response of syncStreams.keys()) response.end();
     await new Promise((resolve) => streamServer.close(resolve));
@@ -280,18 +296,19 @@ async function scrollFollow(page: Page, full: boolean) {
     page,
     {
       ...state,
+      threads: state.threads.map((a) => transcripts.get(a.id)?.agent || a),
       runtime: { ...state.runtime, requests: [] },
-    },
+    } as EntityFixtureState & Pick<TestStateView, "threads">,
     syncContract,
   );
   await page.route("**/api/sync/stream?*", (route) => {
     const url = new URL(route.request().url());
-    url.port = String(streamAddress.port);
+    url.port = String((streamServer.address() as AddressInfo).port);
     return route.continue({ url: url.href });
   });
   await page.route("**/api/sync/subscriptions", (route) => {
     const url = new URL(route.request().url());
-    url.port = String(streamAddress.port);
+    url.port = String((streamServer.address() as AddressInfo).port);
     return route.continue({ url: url.href });
   });
   await page.route("**/api/sync/pull?*", (route) => {
@@ -312,14 +329,14 @@ async function scrollFollow(page: Page, full: boolean) {
     });
   });
   await page.route("**/api/transcript?*", (r) => {
-    const id = new URL(r.request().url()).searchParams.get("id") ?? "";
+    const id = new URL(r.request().url()).searchParams.get("id")!;
     return r.fulfill({
       json: transcripts.has(id) ? transcript(id) : { items: [] },
     });
   });
   await page.route("**/api/transcript/page?*", (route) => {
     const query = new URL(route.request().url()).searchParams;
-    const live = transcripts.get(query.get("id") ?? "");
+    const live = transcripts.get(query.get("id")!);
     if (!live) return route.continue();
     const end = live.items.findIndex((item) => item.id === query.get("before"));
     const start = Math.max(0, end - Number(query.get("limit")));
@@ -327,7 +344,7 @@ async function scrollFollow(page: Page, full: boolean) {
       json: {
         items: live.items.slice(start, end),
         truncated: start > 0,
-        nextCursor: start > 0 ? (live.items[start]?.id ?? null) : null,
+        nextCursor: start > 0 ? required(live.items[start]).id : null,
         nextAfterCursor: live.items[end - 1]?.id || null,
         historyVersion: "scroll-follow",
       },
@@ -336,8 +353,7 @@ async function scrollFollow(page: Page, full: boolean) {
   const publishedItems = new Map<string, Map<string, string>>();
   const notify = async (id: string) => {
     const after = transcriptSeq++;
-    const live = transcripts.get(id);
-    assert.ok(live, "fixture transcript exists");
+    const live = transcripts.get(id)!;
     const previous = publishedItems.get(id) || new Map<string, string>();
     const current = new Map(
       live.items.map((item) => [item.id, JSON.stringify(item)]),
@@ -352,7 +368,7 @@ async function scrollFollow(page: Page, full: boolean) {
       order: live.items.map((item) => item.id),
       truncated: false,
       agent: live.agent,
-    } satisfies components["schemas"]["TranscriptStreamDelta"];
+    } satisfies FixtureDelta;
     publishedItems.set(id, current);
     for (const [response, resources] of syncStreams) {
       if (
@@ -409,9 +425,7 @@ async function scrollFollow(page: Page, full: boolean) {
       gap: e.scrollHeight - e.scrollTop - e.clientHeight,
     }));
 
-  let publishUpdate: () => Promise<unknown> = async () => {
-    throw new Error("Stream publisher not initialized");
-  };
+  let publishUpdate!: () => Promise<unknown>;
   await page.exposeFunction("publishScrollUpdate", () => publishUpdate());
 
   for (const viewport of passes) {
@@ -500,14 +514,13 @@ async function scrollFollow(page: Page, full: boolean) {
       chat.id,
       new Map(
         transcripts
-          .get(chat.id)
-          ?.items.map((item) => [item.id, JSON.stringify(item)]),
+          .get(chat.id)!
+          .items.map((item) => [item.id, JSON.stringify(item)]),
       ),
     );
     // One growing reply plus agent activity changes, as a running turn sends.
     let streamed = 0;
-    const live = transcripts.get(chat.id);
-    assert.ok(live, "live transcript exists");
+    const live = transcripts.get(chat.id)!;
     const renderSentence = (sentence: string) =>
       page.waitForFunction(
         (sentence) =>
@@ -541,9 +554,7 @@ async function scrollFollow(page: Page, full: boolean) {
         await notify(chat.id);
         return `Streamed ${width} sentence ${streamed - 1} `;
       },
-      rendered: async (sentence) => {
-        await renderSentence(sentence);
-      },
+      rendered: renderSentence,
     });
     publishUpdate = nextRender;
     // The first paragraph whose top is inside the transcript viewport, else
@@ -579,8 +590,8 @@ async function scrollFollow(page: Page, full: boolean) {
           gap: element.scrollHeight - element.scrollTop - element.clientHeight,
           message: message?.dataset.message,
           index: message
-            ? [...message.querySelectorAll("p")].findIndex(
-                (node) => node === paragraph,
+            ? [...message.querySelectorAll("p")].indexOf(
+                paragraph as HTMLParagraphElement,
               )
             : -1,
           top: paragraph
@@ -697,7 +708,7 @@ async function scrollFollow(page: Page, full: boolean) {
                 const current = element.querySelector(
                   '[data-message="reply-live"]',
                 );
-                if (during || !current?.textContent?.includes(sentence)) return;
+                if (during || !current?.textContent!.includes(sentence)) return;
                 during = {
                   top: element.scrollTop,
                   gap:
@@ -783,7 +794,11 @@ async function scrollFollow(page: Page, full: boolean) {
         // Trackpad-sized wheel steps, then more stream updates.
         const box = await root.boundingBox();
         assert.ok(box, "transcript bounds exist");
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+
+        await page.mouse.move(
+          box!.x + box!.width / 2,
+          box!.y + box!.height / 2,
+        );
         for (let step = 0; step < 20; step++) {
           await page.mouse.wheel(0, -30);
           await page.evaluate(() => new Promise(requestAnimationFrame));
@@ -836,7 +851,8 @@ async function scrollFollow(page: Page, full: boolean) {
                     (node) => node.getBoundingClientRect().bottom < top,
                   );
                 if (!above) throw new Error("No row above reader");
-                above.style.paddingTop = "240px";
+
+                above!.style.paddingTop = "240px";
                 const observer = new MutationObserver(() => {
                   const current = element.querySelector(
                     '[data-message="reply-live"]',

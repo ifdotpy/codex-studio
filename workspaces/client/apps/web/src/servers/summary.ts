@@ -1,3 +1,4 @@
+import { isProviderKind } from "../generated/providerKind.ts";
 import { createServerTransport } from "./serverTransport";
 import { hasNativeClient } from "../native/client";
 import { nativeFetch } from "../native/http";
@@ -92,7 +93,7 @@ export async function fetchServerSummary(
   for (const account of value.accounts) {
     if (
       !account ||
-      (account.provider !== "codex" && account.provider !== "claude") ||
+      !isProviderKind(account.provider) ||
       (account.email !== null && typeof account.email !== "string") ||
       (account.plan !== null && typeof account.plan !== "string") ||
       typeof account.status !== "string" ||

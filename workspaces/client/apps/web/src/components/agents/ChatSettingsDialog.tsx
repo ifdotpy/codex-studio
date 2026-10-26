@@ -1,3 +1,4 @@
+import { ProviderKind } from "../../generated/providerKind.ts";
 import { lazy, Suspense } from "react";
 import { Button, Group, Modal, Stack } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
@@ -82,7 +83,7 @@ export function ChatSettingsDialog(p: Props) {
           <section aria-label="Permissions">
             <Stack gap="sm" id="chat-settings-permissions">
               {p.agent?.source === "managed" &&
-                p.agent.provider !== "claude" && (
+                p.agent.provider === ProviderKind.Codex && (
                   <ExecutionPermissions
                     settingsRow
                     agent={p.agent}
@@ -90,7 +91,7 @@ export function ChatSettingsDialog(p: Props) {
                     refresh={p.refresh}
                   />
                 )}
-              {p.agent?.provider === "claude" && (
+              {p.agent?.provider === ProviderKind.Claude && (
                 <Suspense fallback={null}>
                   <ClaudeSettings
                     key={p.agent.id}

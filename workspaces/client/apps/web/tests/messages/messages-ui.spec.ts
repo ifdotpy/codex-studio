@@ -1,6 +1,6 @@
+import { required } from "./helpers.ts";
 import { responseJson } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import type { ComplaintBody } from "./helpers.ts";
 import { assert } from "../chat/assertions.ts";
 import {
@@ -65,7 +65,7 @@ test("Messages Ui", async ({
     await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
     const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.locator("#message").fill("Keep my main conversation draft.");
@@ -138,7 +138,7 @@ test("Messages Ui", async ({
     assert.equal(attempts.length, 2);
     assert.deepEqual(
       attempts[1],
-      attempts[0],
+      required(attempts[0]),
       "retry preserves the request after drawer unmount",
     );
     const saved = await responseJson<import("./helpers.ts").ComplaintDetail>(

@@ -1,6 +1,5 @@
 export function fixtureRoot(): HTMLElement {
-  const root = document.getElementById("root");
-  if (!root) throw new Error("Fixture root is missing");
+  const root = document.getElementById("root")!;
   return root;
 }
 

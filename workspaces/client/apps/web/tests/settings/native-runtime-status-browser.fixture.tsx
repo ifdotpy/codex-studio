@@ -1,34 +1,19 @@
-import { required } from "./fixture-helpers.ts";
 import type { components } from "../../src/generated/api.ts";
 import { emitRuntimeChange } from "./native-runtime-resource-events.fixture.ts";
-import { fixtureAccount, fixtureNotReady } from "./fixture-helpers.ts";
-import type { AccountsState } from "../../src/components/Accounts.tsx";
+import { fixtureAccount } from "./fixture-helpers.ts";
 import type { ResourceRef } from "../../src/sync/resourceEvents.ts";
-type NativeRuntimeHarness = {
-  ready: boolean;
-  required: typeof required;
-  setRuntimeOpen: (opened: boolean) => void;
-  setWarningAccount: (key: string) => void;
-  emitRuntimeChange: (kind: ResourceRef["kind"]) => void;
-  delayedRuntimeSignal: AbortSignal;
-  finishOldRuntimeRead: ((response: Response) => void) | null;
-};
+
 declare global {
   interface Window {
-    nativeRuntimeFixture: NativeRuntimeHarness;
+    setRuntimeOpen: (opened: boolean) => void;
+    setWarningAccount: (key: string) => void;
+    emitRuntimeChange: (kind: ResourceRef["kind"]) => void;
+    delayedRuntimeSignal: AbortSignal;
+    finishOldRuntimeRead: ((response: Response) => void) | null;
   }
 }
-window.nativeRuntimeFixture = {
-  ready: false,
-  required,
-  setRuntimeOpen: fixtureNotReady,
-  setWarningAccount: fixtureNotReady,
-  emitRuntimeChange,
-  delayedRuntimeSignal: new AbortController().signal,
-  finishOldRuntimeRead: null,
-};
+window.emitRuntimeChange = emitRuntimeChange;
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, Modal, Button } from "@mantine/core";
@@ -53,38 +38,35 @@ const accounts = [
     status: "ready" as const,
   },
 ].map((account) => fixtureAccount(account));
-const notices: components["schemas"]["NativeNoticeRecord"][] = [
+// Partial fixture view: these notices omit transport-only at and connectionId.
+const notices = [
   {
     id: "codex-warning",
     accountKey: "default",
     message: "Codex account version warning",
-    at: 0,
-    connectionId: "fixture",
   },
   {
     id: "claude-warning",
     accountKey: "claude",
     message: "Claude account version warning",
-    at: 0,
-    connectionId: "fixture",
   },
-];
-const accountsData = {
-  accounts,
-  defaultAccountKey: "default",
-  archivedAccounts: [],
-  defaultAccountGroups: [],
-  logins: [],
-  supportsDelete: false,
-  supportsDisconnect: false,
-} satisfies AccountsState;
+] as components["schemas"]["NativeNoticeRecord"][];
+// Partial fixture view: base data omits archives/groups/logins/support flags; refresh returns no data.
+const accountsState: Partial<
+  Record<keyof React.ComponentProps<typeof Accounts>["state"], unknown>
+> = {
+  data: { accounts, defaultAccountKey: "default" },
+  setData: () => {},
+  refresh: async () => {},
+  error: "",
+  scope: "fixture",
+};
 function Fixture() {
-  window.nativeRuntimeFixture.ready = true;
   const [opened, setOpened] = useState(false);
   const [integrated, setIntegrated] = useState(false);
   const [warningAccount, setWarningAccount] = useState("default");
-  window.nativeRuntimeFixture.setRuntimeOpen = setOpened;
-  window.nativeRuntimeFixture.setWarningAccount = setWarningAccount;
+  window.setRuntimeOpen = setOpened;
+  window.setWarningAccount = setWarningAccount;
   return (
     <MantineProvider>
       <main style={{ maxWidth: 600, padding: 12 }}>
@@ -100,13 +82,9 @@ function Fixture() {
         >
           <Accounts
             managerOnly
-            state={{
-              data: accountsData,
-              setData: () => {},
-              refresh: async () => accountsData,
-              error: "",
-              scope: "fixture",
-            }}
+            state={
+              accountsState as React.ComponentProps<typeof Accounts>["state"]
+            }
             onError={() => {}}
           />
         </Modal>
@@ -122,4 +100,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

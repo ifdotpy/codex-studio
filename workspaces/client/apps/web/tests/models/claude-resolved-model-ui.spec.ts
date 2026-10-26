@@ -25,7 +25,7 @@ for (const provider of ["claude", "codex"] as const)
       stdio: ["pipe", "pipe", "pipe"],
     });
     let log = "";
-    server.stderr?.on("data", (chunk) => {
+    server.stderr!.on("data", (chunk) => {
       log += chunk;
     });
     try {
@@ -34,7 +34,7 @@ for (const provider of ["claude", "codex"] as const)
       const lead = (await readTestState(origin)).runtime.agents.find(
         (agent) => agent.name === "Release lead",
       );
-      if (!lead) throw new Error("Missing release lead");
+
       const currentModel =
         provider === "claude" ? "claude-opus-5-5" : "gpt-6-astra";
       const selectedAlias = provider === "claude" ? "opus" : currentModel;
@@ -102,14 +102,20 @@ for (const provider of ["claude", "codex"] as const)
       const measurements = [];
       await page.route("**/api/accounts", async (route) => {
         const response = await route.fetch();
-        const data = fixtureGetResult<"/api/accounts">(await response.json());
-        for (const account of data.accounts)
-          Object.assign(account, {
-            ...account,
-            provider,
-            label: `${provider} work`,
-            status: "ready",
-          });
+        const data = fixtureGetResult<"/api/accounts">(
+          await response.json(),
+        ) as {
+          accounts: Pick<
+            import("../../src/generated/api.ts").components["schemas"]["Account"],
+            keyof import("../../src/generated/api.ts").components["schemas"]["Account"]
+          >[];
+        };
+        data.accounts = data.accounts.map((account) => ({
+          ...account,
+          provider,
+          label: `${provider} work`,
+          status: "ready",
+        }));
         await route.fulfill({ response, json: data });
       });
       await page.route("**/api/limits?**", (route) =>
@@ -145,13 +151,23 @@ for (const provider of ["claude", "codex"] as const)
       );
       await page.route("**/api/sync/pull*", async (route) => {
         const response = await route.fetch();
-        const data = fixtureGetResult<"/api/sync/pull">(await response.json());
-        for (const document of "documents" in data ? data.documents : []) {
-          if (!("payload" in document))
-            throw new Error("Fixture expects legacy sync payloads");
+        const data = fixtureGetResult<"/api/sync/pull">(
+          await response.json(),
+        ) as {
+          documents?: Extract<
+            NonNullable<
+              Extract<
+                GetResult<"/api/sync/pull">,
+                { documents: unknown }
+              >["documents"]
+            >[number],
+            { payload: string }
+          >[];
+        };
+        for (const document of data.documents || []) {
           if (document._deleted) continue;
           const entity = JSON.parse(document.payload);
-          if (entity.collection === "agent" && entity.id === lead.id) {
+          if (entity.collection === "agent" && entity.id === lead!.id) {
             Object.assign(entity.value, {
               provider,
               model: currentModel,
@@ -168,7 +184,7 @@ for (const provider of ["claude", "codex"] as const)
         await route.fulfill({ response, json: data });
       });
       await page.goto(origin);
-      await page.locator(`[data-chat="${lead.id}"]`).click();
+      await page.locator(`[data-chat="${lead!.id}"]`).click();
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
@@ -247,15 +263,13 @@ for (const provider of ["claude", "codex"] as const)
                     const indicatorElement = node.querySelector(
                       ".mantine-SegmentedControl-indicator",
                     );
-                    if (!indicatorElement)
-                      throw new Error("Missing settings indicator");
-                    const indicator = indicatorElement.getBoundingClientRect();
+
+                    const indicator = indicatorElement!.getBoundingClientRect();
                     const checkedElement = node.querySelector(
                       ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
                     );
-                    if (!checkedElement)
-                      throw new Error("Missing checked settings control");
-                    const checked = checkedElement.getBoundingClientRect();
+
+                    const checked = checkedElement!.getBoundingClientRect();
                     return Math.max(
                       ...(["x", "y", "width", "height"] as const).map((key) =>
                         Math.abs(indicator[key] - checked[key]),
@@ -266,7 +280,7 @@ for (const provider of ["claude", "codex"] as const)
                 .toBeLessThan(2);
             const geometry = await dialog.evaluate((node) => {
               const body = node.querySelector(".mantine-Modal-body");
-              if (!body) throw new Error("Missing settings body");
+
               const tabs = [...node.querySelectorAll('[role="tab"]')].map(
                 (el) => el.getBoundingClientRect().top,
               );
@@ -286,8 +300,8 @@ for (const provider of ["claude", "codex"] as const)
                   node.querySelector(".setup-models")?.scrollHeight || 0,
                 dialogContent: node.scrollHeight,
                 dialogHeight: node.clientHeight,
-                bodyContent: body.scrollHeight,
-                bodyHeight: body.clientHeight,
+                bodyContent: body!.scrollHeight,
+                bodyHeight: body!.clientHeight,
                 tabRows: new Set(tabs).size,
                 modelRows: new Set(boxes.map((box) => Math.round(box.top)))
                   .size,
@@ -335,15 +349,13 @@ for (const provider of ["claude", "codex"] as const)
                     const indicatorElement = node.querySelector(
                       ".mantine-SegmentedControl-indicator",
                     );
-                    if (!indicatorElement)
-                      throw new Error("Missing settings indicator");
-                    const indicator = indicatorElement.getBoundingClientRect();
+
+                    const indicator = indicatorElement!.getBoundingClientRect();
                     const checkedElement = node.querySelector(
                       ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
                     );
-                    if (!checkedElement)
-                      throw new Error("Missing checked settings control");
-                    const checked = checkedElement.getBoundingClientRect();
+
+                    const checked = checkedElement!.getBoundingClientRect();
                     return Math.max(
                       ...(["x", "y", "width", "height"] as const).map((key) =>
                         Math.abs(indicator[key] - checked[key]),

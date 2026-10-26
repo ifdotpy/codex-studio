@@ -2,7 +2,6 @@ import type { Page } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 import type { LocalDraftRecord } from "../../src/sync/draftStorage.ts";
 import { fixtureOrigin } from "./performance-fixture.ts";
-import assert from "node:assert/strict";
 import type {} from "./draft-render-performance.fixture.tsx";
 // Real draft hook, local durability, and consumer commits with 500 saved chats.
 import { fileURLToPath } from "node:url";
@@ -11,6 +10,7 @@ import {
   apiSchemaHandshakeSse,
   readApiSchemaHash,
   test,
+  expect,
 } from "../playwright.ts";
 
 test("Draft Render Performance Browser @performance", async ({
@@ -18,6 +18,23 @@ test("Draft Render Performance Browser @performance", async ({
   context: _testContext,
   page: _testPage,
 }) => {
+  const assert = {
+    equal: (actual: unknown, expected: unknown, message?: string) =>
+      expect(actual, message).toBe(expected),
+    notEqual: (actual: unknown, expected: unknown, message?: string) =>
+      expect(actual, message).not.toBe(expected),
+    deepEqual: (actual: unknown, expected: unknown, message?: string) =>
+      expect(actual, message).toEqual(expected),
+    ok: (actual: unknown, message?: string) =>
+      expect(actual, message).toBeTruthy(),
+    match: (actual: string, expected: RegExp, message?: string) =>
+      expect(actual, message).toMatch(expected),
+    doesNotMatch: (actual: string, expected: RegExp, message?: string) =>
+      expect(actual, message).not.toMatch(expected),
+    fail: (message: string) => {
+      throw new Error(message);
+    },
+  };
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const { createServer } = await import("vite");
   const server = await createServer({
@@ -70,8 +87,7 @@ test("Draft Render Performance Browser @performance", async ({
         { count, workspaceId },
       );
       await page.waitForFunction(
-        () =>
-          window.draftPerformanceDraft?.drafts["chat-0"] === "x".repeat(2000),
+        () => window.draft?.drafts["chat-0"] === "x".repeat(2000),
       );
       await page.waitForTimeout(1200);
       if (browser.browserType().name() === "chromium") {
@@ -82,16 +98,14 @@ test("Draft Render Performance Browser @performance", async ({
         async ({ workspaceId }) => {
           // These records are written by this fixture and the draft store under test.
           const readPersistedText = (raw: string | null) => {
-            const record: Pick<LocalDraftRecord, "text"> = JSON.parse(
-              raw ?? "null",
-            );
+            const record: Pick<LocalDraftRecord, "text"> = JSON.parse(raw!);
             return record.text;
           };
-          const baseCommits = window.draftPerformanceCommits,
-            baseRenders = window.draftPerformanceRenders,
-            baseComposerCommits = window.draftPerformanceComposerCommits,
-            baseSidebarRenders = window.draftPerformanceSidebarRenders,
-            baseTranscriptRenders = window.draftPerformanceTranscriptRenders;
+          const baseCommits = window.commits,
+            baseRenders = window.renders,
+            baseComposerCommits = window.composerCommits,
+            baseSidebarRenders = window.sidebarRenders,
+            baseTranscriptRenders = window.transcriptRenders;
           let chatWrites = 0,
             chatBytes = 0,
             journalWrites = 0;
@@ -108,7 +122,7 @@ test("Draft Render Performance Browser @performance", async ({
           const setTimes = [];
           for (let i = 0; i < 20; i++) {
             const at = performance.now();
-            window.draftPerformanceDraft.setDrafts((old) => ({
+            window.draft.setDrafts((old) => ({
               ...old,
               "chat-0": "typed " + i,
             }));
@@ -137,21 +151,17 @@ test("Draft Render Performance Browser @performance", async ({
           const migrationChatBytes = Object.keys(localStorage)
             .filter((key) => key.startsWith("codex-chat-draft:"))
             .reduce(
-              (bytes, key) =>
-                bytes + (localStorage.getItem(key)?.length ?? 0) * 2,
+              (bytes, key) => bytes + localStorage.getItem(key)!.length * 2,
               0,
             );
           return {
             setMedianMs: sorted[10],
             setMaxMs: Math.max(...setTimes),
-            commits: window.draftPerformanceCommits - baseCommits,
-            renders: window.draftPerformanceRenders - baseRenders,
-            composerCommits:
-              window.draftPerformanceComposerCommits - baseComposerCommits,
-            sidebarRenders:
-              window.draftPerformanceSidebarRenders - baseSidebarRenders,
-            transcriptRenders:
-              window.draftPerformanceTranscriptRenders - baseTranscriptRenders,
+            commits: window.commits - baseCommits,
+            renders: window.renders - baseRenders,
+            composerCommits: window.composerCommits - baseComposerCommits,
+            sidebarRenders: window.sidebarRenders - baseSidebarRenders,
+            transcriptRenders: window.transcriptRenders - baseTranscriptRenders,
             chatWrites,
             chatBytes,
             migrationChatBytes,
@@ -201,7 +211,7 @@ test("Draft Render Performance Browser @performance", async ({
       );
       assert.ok(result.chatBytes < 400_000, "Per-chat edits stay below 400 KB");
       const noOp = await page.evaluate(async () => {
-        const before = window.draftPerformanceCommits;
+        const before = window.commits;
         const original = Storage.prototype.setItem;
         let writes = 0;
         Storage.prototype.setItem = function (k, v) {
@@ -212,14 +222,11 @@ test("Draft Render Performance Browser @performance", async ({
             writes++;
           return original.call(this, k, v);
         };
-        const doc = await window.draftPerformanceDb.drafts
-          .findOne("fixture:chat-10")
-          .exec();
-        if (!doc) throw new Error("Missing draft fixture document");
-        await doc.incrementalPatch({ seq: 100 });
+        const doc = await window.db.drafts.findOne("fixture:chat-10").exec();
+        await doc!.incrementalPatch({ seq: 100 });
         await new Promise((r) => setTimeout(r, 300));
         Storage.prototype.setItem = original;
-        return { commits: window.draftPerformanceCommits - before, writes };
+        return { commits: window.commits - before, writes };
       });
       assert.deepEqual(
         noOp,
@@ -227,7 +234,7 @@ test("Draft Render Performance Browser @performance", async ({
         "Unchanged remote text preserves consumer state and local storage",
       );
       await page.evaluate(async () => {
-        await window.draftPerformanceDb.drafts.incrementalUpsert({
+        await window.db.drafts.incrementalUpsert({
           id: "remote:chat-0",
           seq: 200,
           payload: JSON.stringify({
@@ -244,40 +251,33 @@ test("Draft Render Performance Browser @performance", async ({
       // setDraft with the selected version, so exercise that public hook path.
       await page.waitForFunction(
         () =>
-          window.draftPerformanceDraft.drafts["chat-0"] === "typed 19" &&
-          window.draftPerformanceDraft.conflicts.some(
+          window.draft.drafts["chat-0"] === "typed 19" &&
+          window.draft.conflicts.some(
             (version) => version.text === "Concurrent remote text",
           ),
       );
       const remote = await page.evaluate(
         () =>
-          window.draftPerformanceDraft.conflicts.find(
+          window.draft.conflicts.find(
             (version) => version.text === "Concurrent remote text",
-          )?.text ?? "",
+          )!.text,
       );
       await page.evaluate((text) => {
-        window.draftPerformanceDraft.setDrafts((current) => ({
+        window.draft.setDrafts((current) => ({
           ...current,
           "chat-0": text,
         }));
       }, remote);
       await page.waitForFunction(
-        () =>
-          window.draftPerformanceDraft.drafts["chat-0"] ===
-          "Concurrent remote text",
+        () => window.draft.drafts["chat-0"] === "Concurrent remote text",
       );
       await page.waitForFunction(
         () =>
-          window.draftPerformanceDraft.drafts["chat-0"] ===
-            "Concurrent remote text" &&
-          !window.draftPerformanceDraft.conflicts.some(
-            (v) => v.text === "typed 19",
-          ),
+          window.draft.drafts["chat-0"] === "Concurrent remote text" &&
+          !window.draft.conflicts.some((v) => v.text === "typed 19"),
       );
       assert.equal(
-        await page.evaluate(
-          () => window.draftPerformanceDraft.drafts["chat-499"],
-        ),
+        await page.evaluate(() => window.draft.drafts["chat-499"]),
         "x".repeat(2000),
         "Unrelated drafts remain exact",
       );
@@ -298,33 +298,25 @@ test("Draft Render Performance Browser @performance", async ({
         ).mountOtherDraftFixture(),
       );
       await other.waitForFunction(
-        () =>
-          window.draftPerformanceDraft?.drafts["chat-0"] ===
-          "Concurrent remote text",
+        () => window.draft?.drafts["chat-0"] === "Concurrent remote text",
       );
       await other.evaluate(() =>
-        window.draftPerformanceDraft.setDrafts((old) => ({
+        window.draft.setDrafts((old) => ({
           ...old,
           "chat-1": "Exact second tab edit",
         })),
       );
       await page.waitForFunction(
-        () =>
-          window.draftPerformanceDraft.drafts["chat-1"] ===
-          "Exact second tab edit",
+        () => window.draft.drafts["chat-1"] === "Exact second tab edit",
       );
       assert.equal(
-        await page.evaluate(
-          () => window.draftPerformanceDraft.drafts["chat-0"],
-        ),
+        await page.evaluate(() => window.draft.drafts["chat-0"]),
         "Concurrent remote text",
         "A second tab edit does not replace another chat",
       );
       assert.equal(
         await other.evaluate(() =>
-          window.draftPerformanceDraft.conflicts.some(
-            (version) => version.text === "typed 19",
-          ),
+          window.draft.conflicts.some((version) => version.text === "typed 19"),
         ),
         false,
         "The replaced local alternative does not return in a new tab",

@@ -6,6 +6,19 @@ export type FixtureQuery = {
   prompt: AsyncGenerator<SDKUserMessage>;
   options: Options & { cwd: string };
 };
+// Text-only scripted scenarios preserve the SDK input fields and text blocks.
+export type FixtureTextInput = SDKUserMessage & {
+  message: SDKUserMessage["message"] & {
+    content: Extract<
+      Extract<SDKUserMessage["message"]["content"], unknown[]>[number],
+      { type: "text" }
+    >[];
+  };
+};
+export type FixtureTextQuery = Omit<FixtureQuery, "prompt"> & {
+  prompt: AsyncGenerator<FixtureTextInput>;
+};
+
 export const tool = (
   name: string,
   description: string,
@@ -21,8 +34,10 @@ export const forkSession = async () => ({
 export const getSessionMessages = async () => [];
 export function inputText(input: SDKUserMessage) {
   const content = input.message.content;
-  const first = typeof content === "string" ? undefined : content[0];
-  return first?.type === "text" ? first.text : undefined;
+  const first = Array.isArray(content) ? content[0] : undefined;
+  if (!first || first.type !== "text")
+    throw new Error("Expected fixture text input");
+  return first.text;
 }
 
 // Scripted SDK waits keep the child IPC channel alive until their signal settles.

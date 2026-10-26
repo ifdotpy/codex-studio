@@ -1,3 +1,4 @@
+import type { FixtureToolResult } from "./testing/bridge-harness.ts";
 import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
@@ -39,18 +40,25 @@ test.each([
     const taskEvents = () =>
       bridge.notes.filter(
         (n): n is BridgeNoteFor<"item/started" | "item/completed"> =>
-          (n.method === "item/started" || n.method === "item/completed") &&
-          n.params.item.id === "task:native-1",
+          (
+            n.params as
+              | Partial<import("./bridge-protocol.ts").BridgeItemEvent>
+              | undefined
+          )?.item?.id === "task:native-1",
       );
     assert.deepEqual(
       taskEvents().map((n) => [n.method, n.params.item.status]),
       Array(3).fill(["item/started", "inProgress"]),
     );
-    assert.deepEqual(taskEvents()[1]?.params.item.result, {
-      content: [{ type: "text", text: "Build still running" }],
-    });
+    const progress = taskEvents()[1];
+    const update = taskEvents()[2];
+    assert.ok(progress && update);
     assert.equal(
-      taskEvents()[2]?.params.item.arguments?.description,
+      (progress.params.item.result as FixtureToolResult).content[0]?.text,
+      "Build still running",
+    );
+    assert.equal(
+      update.params.item.arguments!.description,
       "Build almost done",
     );
     // Publish the marker only after its status is complete.
@@ -71,20 +79,19 @@ test.each([
       ],
     );
     const terminal = events.at(-1);
-    assert.ok(terminal);
-    assert.equal(terminal.params.turnId, turn);
-    assert.equal(terminal.params.item.tool, "local_bash");
+
+    assert.equal(terminal!.params.turnId, turn);
+    assert.equal(terminal!.params.item.tool, "local_bash");
     assert.equal(
-      terminal.params.item.outputFile,
+      terminal!.params.item.outputFile,
       path.join(bridge.root, "native-1.output"),
     );
-    assert.deepEqual(terminal.params.item.result, {
-      content: [{ type: "text", text: "Task " + status }],
-    });
     assert.equal(
-      bridge.notes.filter(
-        (n): n is BridgeNoteFor<"turn/started"> => n.method === "turn/started",
-      ).length,
+      (terminal!.params.item.result as FixtureToolResult).content[0]?.text,
+      "Task " + status,
+    );
+    assert.equal(
+      bridge.notes.filter((n) => n.method === "turn/started").length,
       2,
     );
   },

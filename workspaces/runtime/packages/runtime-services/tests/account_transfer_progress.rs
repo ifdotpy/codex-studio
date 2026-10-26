@@ -381,7 +381,11 @@ async fn lazy_history_receipt_is_adopted_before_ordinary_preparation_returns() {
         .set_account_session(Some(session.clone()));
     let _catalog = resources
         .model_catalog
-        .wait_for_admission_catalog("target", &resources.account_home, "codex")
+        .wait_for_admission_catalog(
+            "target",
+            &resources.account_home,
+            studio_runtime_providers::ProviderKind::Codex,
+        )
         .await;
     preparation::prepare_native_thread(store.clone(), &resources, "lead", "ordinary", 1)
         .await

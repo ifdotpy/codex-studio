@@ -2,6 +2,7 @@ import type { components } from "../web/src/generated/api.ts";
 import type {
   BrowserWindow as ElectronWindow,
   MediaAccessPermissionRequest,
+  PermissionRequest,
   MenuItem,
   WebContents,
   WebFrameMain,
@@ -1136,7 +1137,12 @@ async function start() {
       ? microphoneOwner === undefined
       : new URL(url!).searchParams.get("studio-server") === microphoneOwner);
   win.webContents.session.setPermissionRequestHandler(
-    (contents, permission, callback, details) =>
+    (
+      contents,
+      permission,
+      callback,
+      details: PermissionRequest & Partial<MediaAccessPermissionRequest>,
+    ) =>
       callback(
         contents === win.webContents &&
           ((permission === "clipboard-sanitized-write" &&

@@ -3,7 +3,7 @@
 //   0. signing check: fail in seconds, before the build
 //   1. dev-profile native host check (skip: --hosted-ci-passed)
 //   2. Rust release binaries for HEAD, reused when the manifest verifies
-//   3. package.mjs (signs with the configured identity)
+//   3. package.ts (signs with the configured identity)
 //   4. check-package.ts and check-package-start.ts
 //
 // Step 0 runs the same check as `just signing-check`. See the "Signing setup"
@@ -36,11 +36,12 @@ export function parseFlowArguments(argv: string[]) {
     else if (flags.has(argument)) hostedCiPassed = true;
     else throw new Error(`Unknown flag: ${argument}`);
   }
-  if (positional.length !== 1)
+  const [out] = positional;
+  if (positional.length !== 1 || out === undefined)
     throw new Error(
       "Usage: package-flow.ts <new output directory> [--hosted-ci-passed]",
     );
-  return { out: path.resolve(positional[0] ?? ""), hostedCiPassed };
+  return { out: path.resolve(out), hostedCiPassed };
 }
 
 // Ordered steps of the flow. Each step is data, so a test can check the plan
@@ -105,9 +106,7 @@ async function ensureReleaseBinaries(directory: string, commit: string) {
     await verifyReleaseBinaries({ directory, commit });
     console.log(`Reusing release binaries for ${commit} in ${directory}`);
   } catch (error) {
-    console.log(
-      `Building release binaries: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    console.log(`Building release binaries: ${(error as Error).message}`);
     await buildReleaseBinaries({ repository, directory });
   }
 }
@@ -129,8 +128,7 @@ async function main(argv: string[]) {
     }
     const env: NodeJS.ProcessEnv = { ...process.env, ...step.environment };
     for (const name of step.withoutEnvironment ?? []) delete env[name];
-    if (!step.command) throw new Error("A package step needs a command.");
-    execFileSync(step.command, step.args, {
+    execFileSync(step.command!, step.args, {
       cwd: repository,
       stdio: "inherit",
       env,

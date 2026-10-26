@@ -1,7 +1,7 @@
+import { required } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
 import type { Page, Route } from "@playwright/test";
 import type { MessageRequest } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import type {} from "./mobile-send-reliability-browser.fixture.tsx";
 import { createFixtureViteServer } from "../playwright.ts";
 import { assert } from "../chat/assertions.ts";
@@ -100,7 +100,7 @@ test("Mobile Send Reliability Browser", async ({
       return undefined;
     });
     const mount = async (page: Page) => {
-      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("pageerror", (error) => errors.push((error as Error).message));
       page.setDefaultTimeout(10000);
       await page.goto(origin + "check");
       await page.addScriptTag({
@@ -129,16 +129,14 @@ test("Mobile Send Reliability Browser", async ({
       }
     };
     const stored = (page: Page, id: string) =>
-      page.evaluate((id) => window.mobileSendRead(id), id);
+      page.evaluate((id) => window.read(id), id);
     const start = (page: Page, value: MessageRequest) =>
       page.evaluate((value) => window.mobileSendStart(value), value);
     const settle = (page: Page) => page.evaluate(() => window.mobileSendResult);
     const reply = (
       route: Route,
       id: string,
-      status: Awaited<
-        ReturnType<Window["mobileSendSend"]["durableSend"]>
-      >["status"],
+      status: Awaited<ReturnType<Window["send"]["durableSend"]>>["status"],
       code = 200,
     ) =>
       route.fulfill({
@@ -152,18 +150,15 @@ test("Mobile Send Reliability Browser", async ({
     await start(first, body("offline-first"));
     assert.equal((await settle(first)).queued, true);
     assert.ok(Date.now() - offlineStart < 1000);
-    assert.equal(await first.evaluate(() => window.mobileSendFetchCount), 0);
-    assert.deepEqual(
-      await first.evaluate(() => window.mobileSendPersistedRecord),
-      {
-        body: body("offline-first"),
-        status: "queued",
-        attempted: false,
-        created: required(await stored(first, "offline-first")).created,
-        displayPending: true,
-        attachments: [],
-      },
-    );
+    assert.equal(await first.evaluate(() => window.fetchCount), 0);
+    assert.deepEqual(await first.evaluate(() => window.persistedRecord), {
+      body: body("offline-first"),
+      status: "queued",
+      attempted: false,
+      created: required(await stored(first, "offline-first")).created,
+      displayPending: true,
+      attachments: [],
+    });
     assert.equal(posts.length, 0);
     await context.setOffline(false);
     await first.evaluate(async () => {
@@ -180,8 +175,8 @@ test("Mobile Send Reliability Browser", async ({
         posts,
         page: await first.evaluate(() => ({
           online: navigator.onLine,
-          outbox: window.mobileSendOutbox,
-          fetchCount: window.mobileSendFetchCount,
+          outbox: window.outbox,
+          fetchCount: window.fetchCount,
         })),
       });
       throw error;
@@ -194,15 +189,14 @@ test("Mobile Send Reliability Browser", async ({
     holdSession = true;
     await start(first, body("cancel-before-post"));
     await until(() => sessions.length === 1);
-    assert.equal(await first.evaluate(() => window.mobileSendPersisted), true);
-    assert.equal(await first.evaluate(() => window.mobileSendSettled), false);
+    assert.equal(await first.evaluate(() => window.persisted), true);
+    assert.equal(await first.evaluate(() => window.settled), false);
     assert.equal(
-      required(await first.evaluate(() => window.mobileSendPersistedRecord))
-        .attempted,
+      (await first.evaluate(() => window.persistedRecord))!.attempted,
       false,
     );
     await second.evaluate(() =>
-      window.mobileSendSend.changeOutbox("cancel-before-post", "cancel"),
+      window.send.changeOutbox("cancel-before-post", "cancel"),
     );
     holdSession = false;
     await required(sessions.shift()).fulfill({
@@ -279,13 +273,12 @@ test("Mobile Send Reliability Browser", async ({
       async (value) => {
         let persisted = false;
         try {
-          await window.mobileSendSend.durableSend(value, [], () => {
+          await window.send.durableSend(value, [], () => {
             persisted = true;
           });
           return { persisted };
         } catch (error) {
-          if (!(error instanceof Error)) throw error;
-          return { persisted, error: error.message };
+          return { persisted, error: (error as Error).message };
         }
       },
       { ...body("hold-locked"), text: "Changed body" },
@@ -293,7 +286,7 @@ test("Mobile Send Reliability Browser", async ({
     assert.equal(mismatch.persisted, false);
     assert.match(mismatch.error, /different content/);
     await first.evaluate(async () => {
-      await window.mobileSendStorage.db.outbox.insert({
+      await window.storage.db.outbox.insert({
         id: "failed-before-send",
         seq: 0,
         payload: JSON.stringify({
@@ -311,7 +304,7 @@ test("Mobile Send Reliability Browser", async ({
     const failed = await first.evaluate(async () => {
       let persisted = false;
       try {
-        await window.mobileSendSend.durableSend(
+        await window.send.durableSend(
           { id: "failed-before-send", room: "mobile-chat", text: "Rejected" },
           [],
           () => {
@@ -320,8 +313,7 @@ test("Mobile Send Reliability Browser", async ({
         );
         return { persisted };
       } catch (error) {
-        if (!(error instanceof Error)) throw error;
-        return { persisted, error: error.message };
+        return { persisted, error: (error as Error).message };
       }
     });
     assert.deepEqual(failed, {
@@ -396,17 +388,16 @@ test("Mobile Send Reliability Browser", async ({
     );
     await until(
       async () =>
-        required(await stored(first, orderedSecond.id)).status === "accepted",
+        (await stored(first, orderedSecond.id))?.status === "accepted",
     );
     await first.evaluate(() => window.mobileSendReactRoot.unmount());
     // A missing current endpoint cannot silently obtain credentials elsewhere.
     missingSession = true;
     const failure = await first.evaluate(async (value) => {
       try {
-        await window.mobileSendSend.durableSend(value);
+        await window.send.durableSend(value);
       } catch (error) {
-        if (!(error instanceof Error)) throw error;
-        return error.message;
+        return (error as Error).message;
       }
       return undefined;
     }, body("missing-session-send"));

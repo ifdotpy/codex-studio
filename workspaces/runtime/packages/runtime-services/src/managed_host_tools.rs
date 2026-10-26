@@ -44,6 +44,7 @@ use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::WorkItemsRepository;
 use thiserror::Error;
 
@@ -674,7 +675,11 @@ pub(crate) fn execute(
         ManagedHostTool::Watch => ports.watch(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Monitor => ports.monitor(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Review => {
-            if !matches!(actor.provider.as_deref(), None | Some("codex")) {
+            if actor
+                .provider
+                .as_deref()
+                .is_some_and(|provider| provider != ProviderKind::Codex.key())
+            {
                 return Err(Error::Invalid("Native review requires a Codex agent"));
             }
             if truthy(actor.record.extra.get("nativeReview")) {
@@ -1065,7 +1070,7 @@ mod tests {
 
     #[test]
     fn actor_snapshot_binds_id_and_epoch() {
-        let value = json!({"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
+        let value = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
         let actor = Actor::from_record(&value, "lead", 3).unwrap();
         assert_eq!(actor.id, "lead");
         assert_eq!(actor.root_id, "lead");
@@ -1115,7 +1120,7 @@ mod tests {
     #[test]
     fn remote_local_reads_are_allowed_and_cross_server_calls_name_the_dependency() {
         let actor = Actor::from_record(
-            &json!({"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
+            &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
             "worker",
             5,
         )

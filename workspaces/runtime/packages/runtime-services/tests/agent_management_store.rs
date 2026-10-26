@@ -60,7 +60,7 @@ fn template(root: &Path) {
 const NOW: f64 = 1_234_567.5;
 
 fn seed_records() -> Value {
-    let mut lead = json!({"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
+    let mut lead = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
     let mut worker = lead.clone();
     worker["id"] = json!("worker");
     worker["parentId"] = json!("lead");
@@ -366,15 +366,15 @@ fn input_states(deleted_worker: bool) -> Connection {
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
-    let worker = if deleted_worker {
-        r#"{"epoch":1,"deletedAt":5.0}"#
-    } else {
-        r#"{"epoch":1}"#
-    };
+    let mut worker = json!({"epoch":1,"provider":studio_runtime_schema::ProviderKind::Codex});
+    if deleted_worker {
+        worker["deletedAt"] = json!(5.0);
+    }
+    let other = json!({"epoch":1,"provider":studio_runtime_schema::ProviderKind::Codex});
     connection
         .execute(
-            "INSERT INTO runtime_agents VALUES('worker',?1),('other','{\"epoch\":1}')",
-            [worker],
+            "INSERT INTO runtime_agents VALUES('worker',?1),('other',?2)",
+            [worker.to_string(), other.to_string()],
         )
         .expect("agents");
     connection
@@ -693,7 +693,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
             for lead in 0..leads {
                 let root_id = format!("lead-{lead:04}");
                 agents.push(root_id.clone());
-                let lead_record = json!({"id":root_id,"rootId":root_id,"epoch":1,"status":"idle",
+                let lead_record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":root_id,"rootId":root_id,"epoch":1,"status":"idle",
                     "isLead":true,"autoWake":true,"name":format!("Lead {lead}"),"cwd":cwd,"threadId":format!("thread-{root_id}")});
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -702,7 +702,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 for worker in 0..WORKERS_PER_TEAM_ROWS {
                     let id = format!("worker-{lead:04}-{worker}");
                     agents.push(id.clone());
-                    let record = json!({"id":id,"rootId":root_id,"parentId":root_id,"epoch":1,
+                    let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root_id,"parentId":root_id,"epoch":1,
                         "status":"idle","name":format!("Worker {lead}.{worker}"),"cwd":cwd});
                     tx.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",

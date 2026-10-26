@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 /// <reference lib="es2024.promise" />
 import { expect, it, vi } from "vitest";
@@ -24,21 +25,22 @@ const server = {
   label: "Remote",
   credentialId: "ui-key",
 };
-const discovered = {
-  id: "remote",
-  label: "Remote",
-  origin: invitation.origin,
-  paired: true,
-  status: "paired",
-  lastSeen: 1,
-  publicKey: invitation.publicKey,
-  generation: "generation1",
-} satisfies DiscoverySnapshot["servers"][number];
 const snapshot: DiscoverySnapshot = {
   localServerId: "home",
   autoPair: true,
   autoUpdate: true,
-  servers: [discovered],
+  servers: [
+    {
+      id: "remote",
+      label: "Remote",
+      origin: invitation.origin,
+      paired: true,
+      status: "paired",
+      lastSeen: 1,
+      publicKey: invitation.publicKey,
+      generation: "generation1",
+    },
+  ],
 };
 function setup() {
   const records = new Map<string, AutomaticAccessAttempt>();
@@ -125,7 +127,9 @@ it("never requests or adds a revoked server", async () => {
   const s = setup();
   await s.controller.reconcile({
     ...snapshot,
-    servers: [{ ...discovered, status: "revoked", paired: false }],
+    servers: [
+      { ...required(snapshot.servers[0]), status: "revoked", paired: false },
+    ],
   });
   expect(s.adapter.invite).not.toHaveBeenCalled();
   expect(s.adapter.pair).not.toHaveBeenCalled();
@@ -192,7 +196,13 @@ it("rechecks revocation before pairing an invitation returned late", async () =>
   await entered.promise;
   const revoked = {
     ...snapshot,
-    servers: [{ ...discovered, status: "revoked" as const, paired: false }],
+    servers: [
+      {
+        ...required(snapshot.servers[0]),
+        status: "revoked" as const,
+        paired: false,
+      },
+    ],
   };
   const update = s.controller.reconcile(revoked);
   finish(invitation);
@@ -255,7 +265,13 @@ it("reads authoritative peer state before pairing and before registration", asyn
   const s = setup();
   const current = vi.fn(async () => ({
     ...snapshot,
-    servers: [{ ...discovered, status: "revoked" as const, paired: false }],
+    servers: [
+      {
+        ...required(snapshot.servers[0]),
+        status: "revoked" as const,
+        paired: false,
+      },
+    ],
   }));
   await new AutomaticUiAccess(
     s.store,
@@ -270,7 +286,9 @@ it("does not add a peer revoked while pairing was in flight", async () => {
   const s = setup();
   s.adapter.current.mockResolvedValueOnce(snapshot).mockResolvedValueOnce({
     ...snapshot,
-    servers: [{ ...discovered, status: "revoked", paired: false }],
+    servers: [
+      { ...required(snapshot.servers[0]), status: "revoked", paired: false },
+    ],
   });
   await s.controller.reconcile(snapshot);
   expect(s.adapter.pair).toHaveBeenCalledOnce();
@@ -378,7 +396,7 @@ it("does not mark pairing as uncertain when its final peer check fails before th
     "Home server offline",
   );
   expect(s.adapter.pair).not.toHaveBeenCalled();
-  expect([...s.records.values()][0]?.pairStarted).toBe(false);
+  expect(required([...s.records.values()][0]).pairStarted).toBe(false);
 });
 
 it("renews an invitation that expires during its final peer check without sending a pair", async () => {

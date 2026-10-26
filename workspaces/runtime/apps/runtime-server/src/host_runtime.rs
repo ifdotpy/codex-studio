@@ -699,7 +699,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 return Ok(());
             };
             if actors.iter().any(|actor| {
-                actor.provider != "claude"
+                actor.provider != ProviderKind::Claude.key()
                     || actor.account_key != first.account_key
                     || actor.agent_id.is_empty()
                     || actor.epoch < 0
@@ -729,7 +729,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                             &actor.agent_id,
                             actor.epoch,
                             &actor.account_key,
-                            Some("claude"),
+                            Some(ProviderKind::Claude.key()),
                         )
                         .map_err(|_| WorkerError::TaskFailed)?
                         {
@@ -762,7 +762,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                         studio_runtime_services::linux_vm_provider::GuestCredentialTarget {
                             agent_id: &actor.agent_id,
                             actor_epoch: actor.epoch,
-                            provider: "claude",
+                            provider: ProviderKind::Claude.key(),
                             account_key: &actor.account_key,
                             relative_path: &credential_path,
                         },
@@ -1201,7 +1201,7 @@ async fn read_vm_codex_bootstrap(
         let still_same = current.accounts.iter().any(|row| {
             row.get("id").and_then(Value::as_str) == Some(account_key)
                 && row.get("accountId") == account.get("accountId")
-                && row.get("provider").and_then(Value::as_str) == Some("codex")
+                && row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Codex.key())
                 && row.get("status").and_then(Value::as_str) == Some("ready")
         });
         if !still_same {
@@ -1247,7 +1247,7 @@ async fn refresh_vm_codex_token(
                         &actor_id,
                         actor_epoch,
                         &account_key,
-                        Some("codex"),
+                        Some(ProviderKind::Codex.key()),
                     )
                     .map_err(|_| WorkerError::TaskFailed)
                 })
@@ -1272,7 +1272,7 @@ async fn refresh_vm_codex_token(
         .iter()
         .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
         .ok_or_else(|| WorkerError::PreparationRefused("vm-auth/account-unavailable".into()))?;
-    if account.get("provider").and_then(Value::as_str) != Some("codex")
+    if account.get("provider").and_then(Value::as_str) != Some(ProviderKind::Codex.key())
         || account.get("status").and_then(Value::as_str) != Some("ready")
         || account.get("accountId").and_then(Value::as_str) != Some(previous_account_id)
     {
@@ -1724,7 +1724,7 @@ fn verify_vm_claude_account(
     }
     let expected_account_id = format!("{CLAUDE_ACCOUNT_ID_PREFIX}{email}");
     if current.get("status").and_then(Value::as_str) != Some("ready")
-        || current.get("provider").and_then(Value::as_str) != Some("claude")
+        || current.get("provider").and_then(Value::as_str) != Some(ProviderKind::Claude.key())
         || current.get("email").and_then(Value::as_str) != Some(email)
         || current.get("accountId").and_then(Value::as_str) != Some(expected_account_id.as_str())
     {
@@ -2205,7 +2205,7 @@ mod install_root_tests {
             .expect("account registry directory creates");
         fs::write(
             &registry_path,
-            r#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}"#,
+            serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}).to_string().as_bytes(),
         )
         .expect("empty account registry writes");
         let registry_bytes = fs::read(&registry_path).expect("account registry reads");
@@ -2558,7 +2558,7 @@ mod voice_composition_tests {
             account_home: String::new(),
             shared_home: String::new(),
             filesystem_inputs: None,
-            claude_account_pin: serde_json::Value::Null,
+            claude_account_pin: json!({"provider":studio_runtime_schema::ProviderKind::Codex}),
             account_driver: None,
             account_session: None,
             guest_rpc: None,
@@ -2597,8 +2597,8 @@ mod voice_composition_tests {
             fs::write(
                 &registry_path,
                 json!({
-                    "version":1,"defaultAccountKey":"voice-account",
-                    "accounts":{"voice-account":{"id":"voice-account","home":directory,"label":"voice","source":"test","status":"signedOut"}},
+                    "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"voice-account",
+                    "accounts":{"voice-account":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-account","home":directory,"label":"voice","source":"test","status":"signedOut"}},
                     "logins":{},"deleteReceipts":{}
                 })
                 .to_string(),
@@ -2628,7 +2628,7 @@ mod voice_composition_tests {
     async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let agent_record = json!({
+        let agent_record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"voice-composed-agent", "rootId":"voice-composed-agent", "epoch":3,
             "status":"idle", "isLead":true, "threadId":"voice-thread", "accountKey":"voice-account"
         })
@@ -2872,7 +2872,9 @@ pub fn account_home<R: ProviderAuthReader>(
         .iter()
         .find(|profile| profile["id"] == key)
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(initial_profile) != Some("codex") {
+    if studio_runtime_providers::ProviderKind::key_of(initial_profile)
+        != Some(ProviderKind::Codex.key())
+    {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
@@ -2894,7 +2896,7 @@ pub fn account_home<R: ProviderAuthReader>(
         .iter()
         .find(|profile| profile["id"] == key)
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
-    if studio_runtime_providers::ProviderKind::key_of(profile) != Some("codex") {
+    if studio_runtime_providers::ProviderKind::key_of(profile) != Some(ProviderKind::Codex.key()) {
         return Err(WorkerError::PreparationRefused(
             "provider-session/claude-runtime-launch".into(),
         ));
@@ -3094,7 +3096,7 @@ IFS= read -r release
         fs::write(
             &registry,
             json!({
-                "version": 1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey": "claude-test",
                 "accounts": {"claude-test": account},
                 "logins": {},

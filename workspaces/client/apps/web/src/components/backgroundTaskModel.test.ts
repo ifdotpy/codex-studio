@@ -1,4 +1,4 @@
-import { componentSnapshot, required } from "./componentTestFixtures";
+import { componentSnapshot } from "./componentTestFixtures";
 import type { BackgroundTask, Monitor } from "../types";
 import type { components } from "../generated/api";
 import assert from "node:assert/strict";
@@ -37,9 +37,12 @@ it("projects generated monitor and task payloads for renderer use", () => {
       ],
     }),
   );
-  assert.equal(required(tasks[0]).kind, "monitor");
-  assert.equal(activeTask(required(tasks[0])), false);
-  assert.equal(activeTask(required(tasks[1])), true);
+  const [monitor, task] = tasks;
+  assert.ok(monitor);
+  assert.ok(task);
+  assert.equal(monitor.kind, "monitor");
+  assert.equal(activeTask(monitor), false);
+  assert.equal(activeTask(task), true);
 });
 
 it("keeps generated process identity, capabilities, and open status through every source", () => {

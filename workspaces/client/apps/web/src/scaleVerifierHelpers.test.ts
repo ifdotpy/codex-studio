@@ -1,4 +1,6 @@
+import { required } from "./components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
+import type { components } from "./generated/api";
 import type {
   RetainedInput,
   EntityPage,
@@ -170,6 +172,17 @@ afterEach(async () => {
   );
 });
 
+const cursorDocument = (
+  id: components["schemas"]["SyncDocument"]["id"],
+  seq: components["schemas"]["SyncDocument"]["seq"],
+  payload: components["schemas"]["SyncDocument"]["payload"],
+): components["schemas"]["SyncDocument"] => ({
+  id,
+  seq,
+  payload,
+  _deleted: false,
+});
+
 describe("scale verifier helpers", () => {
   it("flags upstream limits but not ids that contain 429", () => {
     expect(showsUpstreamLimit("HTTP 429 Too Many Requests")).toBe(true);
@@ -247,11 +260,11 @@ describe("scale verifier helpers", () => {
   });
   it("spreads Codex workers over ready accounts and keeps defaults unpinned", () => {
     const accounts: Parameters<typeof scaleAccountKeys>[0] = [
-      { id: "login-b", status: "ready" },
+      { id: "login-b", status: "ready", provider: "codex" },
       { id: "claude-local", status: "ready", provider: "claude" },
-      { id: "default", status: "ready" },
+      { id: "default", status: "ready", provider: "codex" },
       // @ts-expect-error The fixture exercises an unknown non-ready account status.
-      { id: "login-c", status: "needs-login" },
+      { id: "login-c", status: "needs-login", provider: "codex" },
     ];
     const codex = scaleProfile("codex-luna");
     const keys = scaleAccountKeys(accounts, codex);
@@ -403,9 +416,9 @@ describe("scale verifier helpers", () => {
       p95Ms: 300,
       maxMs: 300,
     });
-    expect(result.byAccountAndMethod["account:b thread/resume"]?.maxMs).toBe(
-      50,
-    );
+    expect(
+      required(result.byAccountAndMethod["account:b thread/resume"]).maxMs,
+    ).toBe(50);
     expect(result.writesWithoutReply).toBe(1);
     expect(result.unmatchedReplies).toBe(1);
     // A thread/start line never becomes a turn/start timing gap or witness.
@@ -485,31 +498,14 @@ describe("scale verifier helpers", () => {
       {
         workspaceId: "workspace-a",
         checkpoint: { seq: 2 },
-        documents: [
-          {
-            id: "entity:agent:worker-a",
-            seq: 1,
-            payload: "running",
-            _deleted: false,
-          },
-        ],
+        documents: [cursorDocument("entity:agent:worker-a", 1, "running")],
       },
       {
         workspaceId: "workspace-a",
         checkpoint: { seq: 4 },
         documents: [
-          {
-            id: "entity:agent:worker-a",
-            seq: 4,
-            payload: "completed",
-            _deleted: false,
-          },
-          {
-            id: "entity:agent:worker-b",
-            seq: 3,
-            payload: "running",
-            _deleted: false,
-          },
+          cursorDocument("entity:agent:worker-a", 4, "completed"),
+          cursorDocument("entity:agent:worker-b", 3, "running"),
         ],
       },
     ];
@@ -528,18 +524,8 @@ describe("scale verifier helpers", () => {
     expect(requests).toEqual([0, 2]);
     expect(observation).toMatchObject({ after: 0, through: 4 });
     expect(observation.documents).toEqual([
-      {
-        id: "entity:agent:worker-b",
-        seq: 3,
-        payload: "running",
-        _deleted: false,
-      },
-      {
-        id: "entity:agent:worker-a",
-        seq: 4,
-        payload: "completed",
-        _deleted: false,
-      },
+      cursorDocument("entity:agent:worker-b", 3, "running"),
+      cursorDocument("entity:agent:worker-a", 4, "completed"),
     ]);
   });
 
@@ -553,14 +539,7 @@ describe("scale verifier helpers", () => {
         return {
           workspaceId: "workspace-a",
           checkpoint: { seq: 8 },
-          documents: [
-            {
-              id: "entity:agent:worker-a",
-              seq: 8,
-              payload: "cleaned",
-              _deleted: false,
-            },
-          ],
+          documents: [cursorDocument("entity:agent:worker-a", 8, "cleaned")],
         };
       },
     );
@@ -570,12 +549,7 @@ describe("scale verifier helpers", () => {
     expect(requests).toEqual([7]);
     expect(observation.through).toBe(8);
     expect(observation.documents).toEqual([
-      {
-        id: "entity:agent:worker-a",
-        seq: 8,
-        payload: "cleaned",
-        _deleted: false,
-      },
+      cursorDocument("entity:agent:worker-a", 8, "cleaned"),
     ]);
   });
 
@@ -586,31 +560,14 @@ describe("scale verifier helpers", () => {
         workspaceId: "workspace-a",
         checkpoint: { seq: 8 },
         documents: [
-          {
-            id: "entity:agent:worker-a",
-            seq: 8,
-            payload: "ready",
-            _deleted: false,
-          },
-          {
-            id: "entity:agent:foreign",
-            seq: 8,
-            payload: "ignored",
-            _deleted: false,
-          },
+          cursorDocument("entity:agent:worker-a", 8, "ready"),
+          cursorDocument("entity:agent:foreign", 8, "ignored"),
         ],
       },
       {
         workspaceId: "workspace-a",
         checkpoint: { seq: 9 },
-        documents: [
-          {
-            id: "entity:agent:worker-a",
-            seq: 9,
-            payload: "deleted",
-            _deleted: false,
-          },
-        ],
+        documents: [cursorDocument("entity:agent:worker-a", 9, "deleted")],
       },
     ];
     const observe = createStateResourceAdapter(
@@ -636,21 +593,11 @@ describe("scale verifier helpers", () => {
 
     expect(requests).toEqual([7, 8]);
     expect(baseline.stateDocuments).toEqual([
-      {
-        id: "entity:agent:worker-a",
-        seq: 8,
-        payload: "ready",
-        _deleted: false,
-      },
+      cursorDocument("entity:agent:worker-a", 8, "ready"),
     ]);
     expect(unchanged).toMatchObject({ sequence: 9 });
     expect(unchanged.stateDocuments).toEqual([
-      {
-        id: "entity:agent:worker-a",
-        seq: 9,
-        payload: "deleted",
-        _deleted: false,
-      },
+      cursorDocument("entity:agent:worker-a", 9, "deleted"),
     ]);
   });
 
@@ -710,11 +657,10 @@ describe("scale verifier helpers", () => {
       );
       await Promise.all(roots.map((root) => mkdir(root)));
       const releasePaths = roots.map((root) => join(root, "release.fifo"));
-      const workers = tokens.map((token, index) => {
-        const path = releasePaths[index];
-        assert.ok(path);
-        return { path, token };
-      });
+      const workers = tokens.map((token, index) => ({
+        path: required(releasePaths[index]),
+        token,
+      }));
       const created = spawnSync("mkfifo", releasePaths, { timeout: 5_000 });
       expect(created.status).toBe(0);
       const children = releasePaths.map((releasePath, index) =>
@@ -728,7 +674,7 @@ describe("scale verifier helpers", () => {
               ),
             ),
             releasePath,
-            tokens[index] ?? "",
+            required(tokens[index]),
           ],
           { stdio: ["ignore", "pipe", "pipe"] },
         ),
@@ -848,14 +794,16 @@ describe("scale verifier readiness markers", () => {
       const directory = await createReadinessMarkerDirectory(join(root, "m"));
       const tokens = [randomUUID()];
       let notify: Parameters<WatchDirectory>[1] | undefined;
-      const watcher = Object.assign(new EventEmitter(), { close: vi.fn() });
+      const watcher = new EventEmitter() as EventEmitter &
+        Partial<ReturnType<WatchDirectory>>;
+      watcher.close = vi.fn();
       const watch = await watchReadinessMarkers(
         directory,
         tokens,
         null,
         (_path, listener) => {
           notify = listener;
-          return watcher;
+          return watcher as ReturnType<WatchDirectory>;
         },
       );
       try {
@@ -863,10 +811,8 @@ describe("scale verifier readiness markers", () => {
           /Timed out/,
         );
         await publish(directory, 0, `${tokens[0]}\n`);
-        if (notification === "temporary") {
-          assert.ok(notify);
-          notify("rename", "worker-0.ready.tmp");
-        }
+        if (notification === "temporary")
+          notify!("rename", "worker-0.ready.tmp");
         expect(await watch.next(performance.now() + 500)).toBe(0);
       } finally {
         watch.close();
@@ -1225,7 +1171,7 @@ describe("scale verifier cleanup and served-model witnesses", () => {
       performance.now() + 5000,
     );
     expect([...records.keys()]).toEqual(["owned"]);
-    expect(records.get("owned")?.map((row) => row.turnId)).toEqual([
+    expect(records.get("owned")!.map((row) => row.turnId)).toEqual([
       "first",
       "second",
       "response",
@@ -1233,15 +1179,15 @@ describe("scale verifier cleanup and served-model witnesses", () => {
     ]);
     expect(
       records
-        .get("owned")
-        ?.slice(2)
+        .get("owned")!
+        .slice(2)
         .map((row) => [row.responseId, row.model]),
     ).toEqual([
       ["typed-response", "claude-haiku-fixture"],
       ["canonical-response", "claude-haiku-fixture"],
     ]);
     expect(() =>
-      assertServedModelEvidence(records.get("owned") ?? [], "owned", 2),
+      assertServedModelEvidence(records.get("owned")!, "owned", 2),
     ).not.toThrow();
     // Codex usage rows carry no Claude response source.
     const codex = readServedModelRecords(
@@ -1252,7 +1198,7 @@ describe("scale verifier cleanup and served-model witnesses", () => {
       null,
     );
     expect([...codex.keys()]).toEqual(["codex-owned"]);
-    expect(codex.get("codex-owned")?.map((row) => row.model)).toEqual([
+    expect(codex.get("codex-owned")!.map((row) => row.model)).toEqual([
       "gpt-6-luna",
       "gpt-6-luna",
     ]);
@@ -1674,8 +1620,8 @@ describe("scale verifier retained-input audit", () => {
             .run(`new-${index}`, "event", "delivered");
       }
       expect(
-        canvas.prepare("SELECT count(*) AS count FROM sync_entities").get()
-          ?.count,
+        canvas.prepare("SELECT count(*) AS count FROM sync_entities").get()!
+          .count,
       ).toBe(200);
       expect(
         canvas
@@ -1819,7 +1765,9 @@ describe("staged run controls", () => {
     const path = join(directory, "release.fifo");
     spawnSync("mkfifo", [path]);
     const token = randomUUID();
-    expect(releaseBarriersNow([{ path, token }])[0]?.outcome).toBe("gone");
+    expect(required(releaseBarriersNow([{ path, token }])[0]).outcome).toBe(
+      "gone",
+    );
     const reader = spawn(
       "sh",
       ["-c", 'exec 3<>"$1"; echo READY; read r <&3; echo "$r"', "sh", path],
@@ -1843,14 +1791,15 @@ describe("staged run controls", () => {
         }),
       ]);
       expect(output).toBe("READY\n");
-      expect(releaseBarriersNow([{ path, token }])[0]?.outcome).toBe(
+      expect(required(releaseBarriersNow([{ path, token }])[0]).outcome).toBe(
         "released",
       );
       await closed;
       expect(output.trim()).toBe(`READY\n${token}`);
       expect(
-        releaseBarriersNow([{ path: join(directory, "missing"), token }])[0]
-          ?.outcome,
+        required(
+          releaseBarriersNow([{ path: join(directory, "missing"), token }])[0],
+        ).outcome,
       ).toBe("gone");
     } finally {
       if (reader.exitCode === null) reader.kill("SIGKILL");
@@ -1898,7 +1847,7 @@ describe("staged run controls", () => {
       totalRssBytes: 40 * 4096,
       totalCpuMs: 2_000,
     });
-    expect(sample.rssBytes?.max).toBe(30 * 4096);
+    expect(sample.rssBytes!.max).toBe(30 * 4096);
   });
 });
 
@@ -1951,7 +1900,7 @@ describe("scale verifier shared-workspace concurrency criterion", () => {
     await addFd(300, 0, "/dev/null");
     await mkdir(join(proc, "self"), { recursive: true });
     const holders = findFifoHolders([fifoA, fifoB], proc);
-    expect(holders.get(fifoA)?.sort()).toEqual([100, 200]);
+    expect(holders.get(fifoA)!.sort()).toEqual([100, 200]);
     expect(holders.get(fifoB)).toEqual([]);
   });
 

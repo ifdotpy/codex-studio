@@ -199,9 +199,7 @@ async fn radio_model_lists(
         }) else {
             continue;
         };
-        let Ok(provider) =
-            studio_runtime_providers::ProviderKind::of_record(row).map(|kind| kind.key())
-        else {
+        let Ok(provider) = studio_runtime_providers::ProviderKind::of_record(row) else {
             continue;
         };
         if let Ok(value) = studio_runtime_services::model_catalog::ModelListPort::list(
@@ -1402,7 +1400,7 @@ mod local_registration_tests {
         let project_path = root.path().join("project");
         std::fs::create_dir_all(&project_path).expect("project directory");
         let policy = AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
+            Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes()),
             [],
         )
         .expect("account snapshot");
@@ -1478,7 +1476,7 @@ mod local_registration_tests {
             Arc::new(NoEffects),
         ));
         let policy = AccountPolicyState::from_startup(
-            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
+            Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes()),
             [],
         )
         .expect("account snapshot");

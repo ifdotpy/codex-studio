@@ -600,7 +600,7 @@ fn default_false() -> Option<bool> {
 pub struct CatalogIdentity {
     pub account_key: String,
     pub home: String,
-    pub provider: String,
+    pub provider: studio_runtime_providers::ProviderKind,
     pub generation: u64,
 }
 
@@ -995,8 +995,8 @@ mod tests {
     fn peer_pair_requires_distinct_checked_leads() {
         let records: AuthorizationRecords = serde_json::from_value(json!({
             "recipient_id":"left", "agents": {
-                "left":json!({"id":"left","rootId":"left","isLead":true,"cwd":"/project"}).to_string(),
-                "right":json!({"id":"right","rootId":"right","isLead":true,"cwd":"/project"}).to_string()
+                "left":json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"left","rootId":"left","isLead":true,"cwd":"/project"}).to_string(),
+                "right":json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"right","rootId":"right","isLead":true,"cwd":"/project"}).to_string()
             }, "projects":{"/project":json!({"path":"/project","peerTeams":[{"id":"peers","name":"Peers","members":["left","right"]}]}).to_string()},
             "rooms":{},"complaints":{},"event_meta":{},"events":[],"resolved_paths":{"/project":"/project"}
         })).expect("raw rows");

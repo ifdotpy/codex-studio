@@ -1,3 +1,4 @@
+import { ProviderKind } from "../src/generated/providerKind.ts";
 import type {
   StdinTimingDiagnostic,
   ReplyTimingDiagnostic,
@@ -97,7 +98,7 @@ import { fileURLToPath } from "node:url";
 // the first); `accountKey` is only the fallback when discovery is off.
 export const SCALE_PROFILES = Object.freeze({
   "claude-haiku": Object.freeze({
-    provider: "claude",
+    provider: ProviderKind.Claude,
     accountKey: "claude-local",
     model: "haiku",
     effort: "low",
@@ -107,7 +108,7 @@ export const SCALE_PROFILES = Object.freeze({
     processName: "claude",
   }),
   "claude-sonnet": Object.freeze({
-    provider: "claude",
+    provider: ProviderKind.Claude,
     accountKey: "claude-local",
     model: "sonnet",
     effort: "low",
@@ -117,7 +118,7 @@ export const SCALE_PROFILES = Object.freeze({
     processName: "claude",
   }),
   "codex-luna": Object.freeze({
-    provider: "codex",
+    provider: ProviderKind.Codex,
     accountKey: "default",
     model: "gpt-6-luna",
     effort: "low",
@@ -148,18 +149,14 @@ export function scaleProfile(name: string): ScaleProfile {
   return profile;
 }
 
-// Ready accounts of the profile's provider. The accounts route reports Codex
-// accounts without a provider field.
+// Ready accounts must identify the requested provider explicitly.
 export function scaleAccountKeys(
-  accounts: (Pick<Schema["Account"], "id" | "status"> &
-    Partial<Pick<Schema["Account"], "provider">>)[],
+  accounts: Pick<Schema["Account"], "id" | "status" | "provider">[],
   profile: ScaleProfile,
 ): [string, ...string[]] {
   const keys = accounts
     .filter(
-      (row) =>
-        row.status === "ready" &&
-        (row.provider ?? "codex") === profile.provider,
+      (row) => row.status === "ready" && row.provider === profile.provider,
     )
     .map((row) => row.id)
     .sort();

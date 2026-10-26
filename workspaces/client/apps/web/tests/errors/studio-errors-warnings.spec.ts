@@ -43,7 +43,7 @@ for (const width of [1440, 390, 320]) {
           }
           if (url.pathname === "/api/studio-errors/dismiss") {
             const payload = fixtureDismissBody(body);
-            const ids = payload.ids || [];
+            const ids = payload.ids!;
             dismissed.push(ids);
             items = items.filter((item) => !ids.includes(item.id));
             json({ items, dismissedIds: payload.ids, unknownIds: [] });
@@ -53,18 +53,22 @@ for (const width of [1440, 390, 320]) {
         },
       });
       server.snapshot.runtime.studioErrors = items;
-      server.snapshot.runtime.nativeNotices = [
+      // Base notice omits baseline and version metadata unused by this sidebar fixture.
+      const nativeNotices: Partial<
+        NonNullable<typeof server.snapshot.runtime.nativeNotices>[number]
+      >[] = [
         {
           id: "provider-update:default",
           accountKey: "default",
           provider: "codex",
           message: "A newer Codex version is available.",
           level: "info",
-          baseline: "fixture",
-          version: "fixture",
           at: 1,
         },
       ];
+      server.snapshot.runtime.nativeNotices = nativeNotices as NonNullable<
+        typeof server.snapshot.runtime.nativeNotices
+      >;
       try {
         await page.goto(server.origin);
         const header = page.locator("#sidebar .sidebar-header");

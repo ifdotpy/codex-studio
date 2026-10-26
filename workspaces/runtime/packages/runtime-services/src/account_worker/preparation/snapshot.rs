@@ -8,6 +8,7 @@ use serde_json::Map;
 use std::path::{Path, PathBuf};
 use std::{future::Future, pin::Pin};
 use studio_runtime_process::ProviderLaunchSpec;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, Transaction};
 
@@ -884,11 +885,10 @@ pub(super) fn native_thread_blocked(record: &Value) -> bool {
         return false;
     };
     record["nativeThreadBlock"]["threadId"] == thread
-        || record["error"]["codexErrorInfo"] == "misalignmentPolicyViolation"
+        || is_misalignment_policy_violation(&record["error"])
         || (nonempty(&record["nativeTurnError"]["turnId"])
             && record["nativeTurnError"]["turnId"] == record["turnId"]
-            && record["nativeTurnError"]["error"]["codexErrorInfo"]
-                == "misalignmentPolicyViolation")
+            && is_misalignment_policy_violation(&record["nativeTurnError"]["error"]))
 }
 pub(super) fn context_repair_blocked(record: &Value) -> bool {
     nonempty(&record["contextRepairWait"])
@@ -980,7 +980,7 @@ fn host_worktree(
     role: thread::Role,
     lead: bool,
 ) -> Result<Option<thread::HostWorktree>, WorkerError> {
-    if record["provider"] != "claude"
+    if record["provider"] != ProviderKind::Claude.key()
         || lead
         || role != thread::Role::Implementer
         || record["parentId"].as_str().is_none()
@@ -1519,9 +1519,9 @@ mod resource_tests {
             assert!(!spawn.description.contains("Default: gpt-6-luna"));
         }
         for record in [
-            json!({"id":"new", "isLead":true}),
-            json!({"id":"native", "isLead":true, "threadId":"thread", "nativeTeleportTool":"orchestration_teleport"}),
-            json!({"id":"legacy", "isLead":true, "threadId":"thread"}),
+            json!({"id":"new", "isLead":true, "provider":"codex"}),
+            json!({"id":"native", "isLead":true, "threadId":"thread", "nativeTeleportTool":"orchestration_teleport", "provider":"codex"}),
+            json!({"id":"legacy", "isLead":true, "threadId":"thread", "provider":"codex"}),
         ] {
             let text = role_guidance(&resources, &record).expect("emitted role guidance");
             assert!(text.contains("review defaults"), "{text}");
@@ -1571,6 +1571,22 @@ mod resource_tests {
 
     #[test]
     fn native_thread_blocks_follow_the_current_thread_and_turn() {
+        for info in [
+            json!({"misalignmentPolicyViolation":{}}),
+            json!("misalignmentPolicyViolation"),
+        ] {
+            assert!(native_thread_blocked(
+                &json!({"threadId":"current","error":{"codexErrorInfo":info}})
+            ));
+        }
+        for info in [
+            json!({"misalignmentPolicyViolation":{},"futureCode":{"id":42}}),
+            json!({"futureCode":{}}),
+        ] {
+            assert!(!native_thread_blocked(
+                &json!({"threadId":"current","error":{"codexErrorInfo":info}})
+            ));
+        }
         assert!(native_thread_blocked(
             &json!({"threadId":"current","nativeThreadBlock":{"threadId":"current"}})
         ));
@@ -1916,7 +1932,10 @@ mod resource_tests {
             servers(json!({"id":"w", "parentId":"lead", "provider":"codex"})),
             Some(json!({"playwright":{"enabled":false},"aws.mcp":{"enabled":false}}))
         );
-        assert_eq!(servers(json!({"id":"l", "isLead":true})), None);
+        assert_eq!(
+            servers(json!({"id":"l", "isLead":true, "provider":"codex"})),
+            None
+        );
         assert_eq!(servers(json!({"id":"r", "provider":"codex"})), None);
         assert_eq!(
             servers(json!({"id":"c", "parentId":"lead", "provider":"claude"})),
@@ -1935,7 +1954,7 @@ mod resource_tests {
         for lead in [true, false] {
             let vm = guidance(
                 &resources,
-                &json!({"id":"agent", "isLead":lead, "executionMode":"vm"}),
+                &json!({"id":"agent", "isLead":lead, "executionMode":"vm", "provider":"codex"}),
                 Path::new("/state"),
             )
             .expect("layr guidance");
@@ -1954,7 +1973,7 @@ mod resource_tests {
             )));
             let native = guidance(
                 &resources,
-                &json!({"id":"agent", "isLead":lead}),
+                &json!({"id":"agent", "isLead":lead, "provider":"codex"}),
                 Path::new("/state"),
             )
             .expect("native guidance");
@@ -1964,7 +1983,7 @@ mod resource_tests {
         resources.role_guidance.remove(Path::new("layr/SKILL.md"));
         let refused = guidance(
             &resources,
-            &json!({"id":"agent", "isLead":true, "executionMode":"vm"}),
+            &json!({"id":"agent", "isLead":true, "executionMode":"vm", "provider":"codex"}),
             Path::new("/state"),
         );
         assert!(matches!(
@@ -2032,7 +2051,7 @@ mod workspace_fence_tests {
             .expect("resources");
         store.transaction_with(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
-                "status":"running","isLead":true,"cwd":"/project"})).expect("lead"))?;
+                "status":"running","isLead":true,"cwd":"/project","provider":studio_runtime_schema::ProviderKind::Claude})).expect("lead"))?;
             for mode in crate::claude_controls::PERMISSION_MODES {
                 for resumed in [false, true] {
                     let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
@@ -2065,7 +2084,7 @@ mod workspace_fence_tests {
             .expect("resources");
         store.transaction_with(move |tx| {
             let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
-                "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
+                "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout","provider":studio_runtime_schema::ProviderKind::Claude});
             AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
             for (mode, provider, role, ready, fenced, expected_sandbox) in [
                 ("worktree", "claude", "implementer", true, true, "danger-full-access"),

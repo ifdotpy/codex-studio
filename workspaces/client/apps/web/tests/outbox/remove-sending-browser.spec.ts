@@ -1,3 +1,5 @@
+import { required } from "../teams/helpers.ts";
+import type { Agent } from "../../src/types.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { Page } from "playwright";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
@@ -16,6 +18,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// These agent records were written by the isolated Studio runtime.
+function readAgentRecord(payload: string): Agent {
+  return JSON.parse(payload);
+}
+
 async function setupSendingRemovePointer(page: Page) {
   const evidence = await mkdtemp(join(tmpdir(), "studio-remove-hit-test-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
@@ -23,14 +30,14 @@ async function setupSendingRemovePointer(page: Page) {
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => (log += chunk));
+  fixture.stderr!.on("data", (chunk) => (log += chunk));
   let startupTimeout: ReturnType<typeof setTimeout> | undefined;
   const port = await new Promise<number>((resolve, reject) => {
     startupTimeout = setTimeout(
       () => reject(new Error(`Sending-message fixture did not start: ${log}`)),
       10_000,
     );
-    fixture.stdout?.once("data", (chunk) =>
+    fixture.stdout!.once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
@@ -39,6 +46,7 @@ async function setupSendingRemovePointer(page: Page) {
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   assert.ok(lead);
+
   await fetch(`${origin}/api/messages`, {
     method: "POST",
     headers: {
@@ -48,7 +56,7 @@ async function setupSendingRemovePointer(page: Page) {
     },
     body: JSON.stringify({
       id: crypto.randomUUID(),
-      room: lead.id,
+      room: lead!.id,
       text: "Pointer overlap while sending",
       delivery: "current_turn",
     }),
@@ -75,21 +83,24 @@ async function setupSendingRemovePointer(page: Page) {
   await copy.waitFor({ state: "visible", timeout: 10_000 });
   const body = await card.locator(".prose.plain").boundingBox();
   assert.ok(body);
-  await page.mouse.move(body.x + body.width / 2, body.y + body.height / 2, {
+
+  await page.mouse.move(body!.x + body!.width / 2, body!.y + body!.height / 2, {
     steps: 5,
   });
   const removeBox = await remove.boundingBox();
   assert.ok(removeBox);
+
   await page.mouse.move(
-    removeBox.x + removeBox.width / 2,
-    removeBox.y + removeBox.height / 2,
+    removeBox!.x + removeBox!.width / 2,
+    removeBox!.y + removeBox!.height / 2,
     { steps: 5 },
   );
   const hovered = await remove.boundingBox();
   assert.ok(hovered);
+
   const center = {
-    x: hovered.x + hovered.width / 2,
-    y: hovered.y + hovered.height / 2,
+    x: hovered!.x + hovered!.width / 2,
+    y: hovered!.y + hovered!.height / 2,
   };
   const hit = await page.evaluate(({ x, y }) => {
     const target = document.elementFromPoint(x, y);
@@ -130,9 +141,9 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let log = "";
-  fixture.stderr?.on("data", (data) => (log += data));
+  fixture.stderr!.on("data", (data) => (log += data));
   const port = await new Promise<number>((resolve, reject) => {
-    fixture.stdout?.once("data", (data) =>
+    fixture.stdout!.once("data", (data) =>
       resolve(Number(String(data).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
@@ -141,8 +152,10 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   const initial = await readTestState(origin);
   const lead = initial.threads.find((a) => a.name === "Release lead");
   assert.ok(lead);
+
   const other = initial.threads.find((a) => a.name === "Other project");
   assert.ok(other);
+
   const post = async <Path extends "/api/queue" | "/api/stop">(
     path: Path,
     body: PostBody<Path>,
@@ -159,7 +172,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
-  const queue = async (id: string): Promise<GetResult<"/api/queue">> =>
+  const queue = (id: string): Promise<GetResult<"/api/queue">> =>
     fetch(`${origin}/api/queue?agent=${id}`).then((r) => r.json());
   for (const agent of initial.threads.filter((a) => a.source === "managed"))
     for (const item of (await queue(agent.id)).items)
@@ -171,7 +184,8 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
       });
   // Seed persisted pending rows on stopped disposable agents. A held active
   // turn would still accept current-turn input before removal can inspect it.
-  for (const agent of [lead, other]) await post("/api/stop", { id: agent.id });
+  for (const agent of [lead!, other!])
+    await post("/api/stop", { id: agent.id });
   const database = new DatabaseSync(
     join(rustFixtureStateDirectory(evidence), "canvas.sqlite3"),
   );
@@ -187,10 +201,10 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     );
     database.exec("BEGIN IMMEDIATE");
     for (const [agent, text, delivery] of [
-      [lead, "Remove one", "current_turn"],
-      [lead, "Remove two", "current_turn"],
-      [other, "Remove in another chat", "current_turn"],
-      [lead, "Keep after turn", "next_turn"],
+      [lead!, "Remove one", "current_turn"],
+      [lead!, "Remove two", "current_turn"],
+      [other!, "Remove in another chat", "current_turn"],
+      [lead!, "Keep after turn", "next_turn"],
     ] as const) {
       const id = randomUUID();
       const acceptedAt = Date.now() / 1000;
@@ -198,18 +212,13 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
         .prepare("SELECT record FROM runtime_agents WHERE id=?")
         .get(agent.id);
       assert.ok(row && typeof row.record === "string");
-      const record: unknown = JSON.parse(row.record);
-      assert.ok(
-        record &&
-          typeof record === "object" &&
-          "epoch" in record &&
-          typeof record.epoch === "number",
-      );
+
+      const record = readAgentRecord(row!.record as string);
       database
         .prepare(
           "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'user',?,'pending',?,?)",
         )
-        .run(id, agent.id, text, acceptedAt, record.epoch);
+        .run(id, agent.id, text, acceptedAt, record.epoch!);
       database
         .prepare("INSERT INTO runtime_event_meta(id,record) VALUES (?,?)")
         .run(
@@ -250,7 +259,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
       if (localStorage.getItem(key) === null)
         localStorage.setItem(key, "invalid JSON");
     },
-    { stateDir: initial.stateDir, chat: lead.id },
+    { stateDir: initial.stateDir, chat: lead!.id },
   );
   await page.route("**/api/queue", async (route) => {
     if (route.request().method() !== "POST" || !loseResponse)
@@ -283,9 +292,9 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     // These saved commands were written by the renderer under test.
     const readCommand = (payload: string): PostBody<"/api/queue"> =>
       JSON.parse(payload);
-    return keys.map((key) => readCommand(localStorage.getItem(key) ?? "null"));
+    return keys.map((key) => readCommand(localStorage.getItem(key)!));
   });
-  assert.deepEqual(savedCancellation, [mutations[0]]);
+  assert.deepEqual(savedCancellation, [required(mutations[0])]);
   assert.equal(
     await page.evaluate(
       async ({ token, body }) => {
@@ -304,7 +313,10 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     200,
   );
   await card("Remove one").waitFor({ state: "hidden" });
-  assert.equal(mutations[0]?.request_id, mutations[1]?.request_id);
+  assert.equal(
+    required(mutations[0]).request_id,
+    required(mutations[1]).request_id,
+  );
   const removeSecond = card("Remove two").getByRole("button", {
     name: "Remove sending message",
     exact: true,
@@ -314,7 +326,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   await page.keyboard.press("Enter");
   await card("Remove two").waitFor({ state: "hidden" });
   assert.deepEqual(
-    (await queue(lead.id)).items.map((item) => item.text),
+    (await queue(lead!.id)).items.map((item) => item.text),
     ["Keep after turn"],
   );
   await page.reload();
@@ -332,7 +344,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     0,
   );
   assert.deepEqual(
-    (await queue(lead.id)).items.map((item) => item.text),
+    (await queue(lead!.id)).items.map((item) => item.text),
     ["Keep after turn"],
   );
   // A background desktop window may not receive animation frames.
@@ -360,7 +372,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
       { exact: true },
     )
     .waitFor();
-  assert.equal((await queue(other.id)).items.length, 0);
+  assert.equal((await queue(other!.id)).items.length, 0);
   await page.keyboard.press("Escape");
   await page.locator(".chat-row").filter({ hasText: "Other project" }).click();
   assert.equal(await card("Remove in another chat").count(), 0);

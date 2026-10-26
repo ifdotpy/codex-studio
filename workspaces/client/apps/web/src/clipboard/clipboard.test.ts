@@ -20,7 +20,7 @@ function setGlobal(name: string, value: unknown) {
 afterEach(() => {
   for (const [name, descriptor] of originalGlobals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-    else Reflect.deleteProperty(globalThis, name);
+    else delete (globalThis as Partial<Record<typeof name, unknown>>)[name];
   }
 });
 
@@ -61,15 +61,7 @@ test("copyText falls back and restores textarea, selection and focus state", asy
     Parameters<HTMLTextAreaElement["setAttribute"]>[1]
   >();
   const styles: Partial<CSSStyleDeclaration> = {};
-  const textarea = {
-    value: "",
-    style: styles,
-    setAttribute: (name: string, value: string) => attributes.set(name, value),
-    select: () => calls.push(["select", textarea.value]),
-    setSelectionRange: (start: number, end: number) =>
-      calls.push(["setSelectionRange", start, end]),
-    remove: () => calls.push(["remove"]),
-  } satisfies Pick<
+  let textarea: Pick<
     HTMLTextAreaElement,
     "value" | "setAttribute" | "select" | "setSelectionRange" | "remove"
   > & { style: Partial<CSSStyleDeclaration> };
@@ -97,6 +89,16 @@ test("copyText falls back and restores textarea, selection and focus state", asy
     }),
     createElement: (tag: string) => {
       calls.push(["createElement", tag]);
+      textarea = {
+        value: "",
+        style: styles,
+        setAttribute: (name: string, value: string) =>
+          attributes.set(name, value),
+        select: () => calls.push(["select", textarea.value]),
+        setSelectionRange: (start: number, end: number) =>
+          calls.push(["setSelectionRange", start, end]),
+        remove: () => calls.push(["remove"]),
+      };
       return textarea;
     },
     body: {
@@ -111,7 +113,7 @@ test("copyText falls back and restores textarea, selection and focus state", asy
 
   await copyText("secret code");
 
-  assert.equal(textarea.value, "secret code");
+  assert.equal(textarea!.value, "secret code");
   assert.deepEqual([...attributes], [["readonly", ""]]);
   assert.deepEqual(styles, {
     position: "fixed",
@@ -123,7 +125,7 @@ test("copyText falls back and restores textarea, selection and focus state", asy
     ["getRangeAt", 0],
     ["getRangeAt", 1],
     ["createElement", "textarea"],
-    ["append", textarea],
+    ["append", textarea!],
     ["select", "secret code"],
     ["setSelectionRange", 0, "secret code".length],
     ["command", "copy"],

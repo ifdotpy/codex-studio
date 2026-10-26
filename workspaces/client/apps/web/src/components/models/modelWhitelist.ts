@@ -95,7 +95,7 @@ export function modelWhitelistKey(model: {
   value?: string;
   resolvedModel?: string;
 }) {
-  return `${model.provider || "codex"}:${model.resolvedModel || model.model || model.value}`;
+  return `${model.provider || ""}:${model.resolvedModel || model.model || model.value}`;
 }
 export function isModelWhitelisted(
   model: Parameters<typeof modelWhitelistKey>[0],

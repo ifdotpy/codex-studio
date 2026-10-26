@@ -28,7 +28,8 @@ HTTP request validators use `registry_for_document` to prepare references
 against the same OpenAPI document and the persisted-state schema documents.
 This crate owns the shared runtime contracts: `src/shared_values.rs`,
 `src/agent_limits.rs`, `src/api_schema.rs`, `src/multi_server_protocol.rs`,
-`src/sync_protocol.rs`, `src/delivery.rs`, `src/provider_method_policy.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
+`src/sync_protocol.rs`, `src/delivery.rs`, `src/provider_kind.rs`,
+`src/provider_method_policy.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
 binary (`src/contracts.rs`) renders their TypeScript, Swift, and VM guest copies
 and the web API types of `runtime-http/openapi.json`, and holds the committed
 OpenAPI and persisted-state schemas to these owners. Refresh the copies with
@@ -118,3 +119,66 @@ The provider method policy owns per-thread serialization methods and parameter
 predicates. Both the Rust transport and the generated Claude bridge module consume
 this owner; contract drift checks cover the bridge copy. Recovery conservatively
 reserves serialized-capable methods when their parameter predicate is unreadable.
+
+## Provider contract sources
+
+The [provider extensibility contract](../../../providers/README.md#provider-extensibility)
+owns provider-specific policy. The owners below describe implemented, selected
+contracts; they do not replace every vendor or historical document with a fully
+normalized model.
+
+[`provider_kind.rs`](src/provider_kind.rs) owns shared provider identity.
+The contract renderer generates the web identity module and schema references
+from it. The store's
+[dated identity migration](../runtime-store/src/provider_identity.rs) converts
+historical owned representations before strict current readers run.
+
+[`provider_errors.rs`](src/provider_errors.rs) owns the closed classification of
+20 known Codex error tags. The committed
+[`CodexErrorInfo.json`](src/schemas/codex/CodexErrorInfo.json) is the vendor-owned
+error leaf from Codex CLI 0.164.0 experimental schema generation, including its
+structured payloads and open future-value branch. The
+[vendor-error generator](../../../tooling/apps/repository-checks/generate-provider-errors.ts)
+owns extraction and provenance checks; its refresh entrypoint is defined in the
+[root manifest](../../../../package.json). `studio-contracts` renders
+[`provider-errors.generated.ts`](../../../providers/apps/claude-bridge/provider-errors.generated.ts).
+The [assistant error adapter](../../../providers/apps/claude-bridge/features.ts)
+uses the SDK's error type directly with an exhaustive mapping and checks runtime
+tags before indexing it. Unknown or ambiguous errors remain unclassified with
+their raw evidence intact; this is not full error-payload validation.
+
+[`provider_input/items.rs`](src/provider_input/items.rs) owns the six fresh
+Claude bridge item variants: user message, agent message, command execution,
+file change, MCP tool call, and context compaction. `studio-contracts` derives
+their serialized envelope in
+[`runtime-contract.generated.ts`](../../../providers/apps/claude-bridge/runtime-contract.generated.ts).
+The [bridge](../../../providers/apps/claude-bridge/bridge.ts) uses that contract
+for new item emission, preserving true omission of absent native fields rather
+than inventing nulls or strings. SDK tool arguments, results, and compaction
+metadata stay opaque. A separate historical emitter handles only retained old
+records that cannot be losslessly converted into fresh required fields; it does
+not invent identities. This output contract is not an ingress validator.
+
+[`provider_lifecycle.rs`](src/provider_lifecycle.rs) defines shared terminal
+outcomes and read-only thread/turn observations. Selected vendor status leaves
+come from Codex CLI 0.164.0 experimental TypeScript and JSON Schema generation;
+the [lifecycle generator](../../../tooling/apps/repository-checks/generate-provider-lifecycle.ts)
+owns the extraction into
+[`lifecycle.schema.json`](src/schemas/codex/lifecycle.schema.json) and the bridge's
+[`codex-generated`](../../../providers/apps/claude-bridge/codex-generated) modules.
+Its entrypoint is `node workspaces/tooling/apps/repository-checks/generate-provider-lifecycle.ts`
+from the repository root. Rust mirrors have parity witnesses against those
+leaves. The contract renderer adds `TerminalTurn`, `TerminalTurnStatus`, and
+`ThreadIdentity` to the bridge's generated runtime contract. The
+[SDK result adapter](../../../providers/apps/claude-bridge/provider-lifecycle.ts)
+maps the SDK result lifecycle fields and validates those fields at ingress.
+The bridge applies it before terminal finalization; an unrecognized result
+disarms terminal timers and leaves the turn unconfirmed for reconciliation.
+The runtime [scheduler](../runtime-services/src/scheduler.rs),
+[recovery](../runtime-services/src/recovery.rs), and
+[restart recovery](../runtime-services/src/account_worker/restart_recovery.rs)
+consume the typed observations. Unknown or malformed lifecycle evidence cannot
+prove a terminal outcome or idle thread; retained receipts, raw history, and the
+distinction between Studio thread and native session identity remain intact.
+These projections do not validate a complete SDK result or rewrite stored thread
+and turn records.

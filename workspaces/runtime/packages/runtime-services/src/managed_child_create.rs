@@ -10,6 +10,7 @@ use crate::event_write;
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
@@ -1629,7 +1630,7 @@ pub(crate) async fn request_review(
     let mut record = crate::host_worker_create::persisted_record(&prepared)
         .map_err(map_create_error)?
         .value();
-    record["provider"] = json!("codex");
+    record["provider"] = json!(ProviderKind::Codex.key());
     record["yoloMode"] = json!(false);
     record["worktree"] = json!(false);
     record["workspaceMode"] = json!("shared");

@@ -152,7 +152,7 @@ mod tests {
             }
             Ok(())
         }).await.expect("archived analytics");
-        let registry = json!({"version":1,"defaultAccountKey":"claude","logins":{},"accounts":{"claude":{
+        let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"claude","logins":{},"accounts":{"claude":{
             "id":"claude","provider":"claude","home":profile,"label":"Claude","source":"Fixture","status":"ready","deleted":true,
             "claudeOptions":{"configDir":profile}}}});
         let policy = studio_runtime_services::account_policy::AccountPolicyState::from_startup(

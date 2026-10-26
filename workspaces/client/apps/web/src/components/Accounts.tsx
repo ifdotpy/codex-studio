@@ -69,6 +69,11 @@ import {
 } from "./accountDeleteRequests";
 import type { ServerCommand } from "../servers/navigation";
 import {
+  PROVIDER_KINDS,
+  PROVIDER_LABELS,
+  ProviderKind,
+} from "../generated/providerKind.ts";
+import {
   closeMenuFromTriggerOnEscape,
   restoreMenuTriggerFocusAfterClose,
   useMenuEscapeSuppression,
@@ -691,7 +696,7 @@ export function AccountTransferConfirmation({
         Active turns move immediately and continue on the destination. Same
         provider subagents move too; other providers stay on their accounts.
       </p>
-      {target && sourceProvider !== (target.provider || "codex") && (
+      {target && sourceProvider !== target.provider && (
         <p>The destination model uses the saved chat context.</p>
       )}
       <p>Applies to this chat only.</p>
@@ -895,7 +900,7 @@ export default function Accounts({
     ) {
       const account = state.data.accounts.find(
         (candidate) =>
-          candidate.provider === "claude" &&
+          candidate.provider === ProviderKind.Claude &&
           (command.email
             ? candidate.email?.toLocaleLowerCase() ===
               command.email.toLocaleLowerCase()
@@ -917,8 +922,11 @@ export default function Accounts({
       const account = accountForExternalCommand(current.accounts, command);
       if (command.action === "account-sign-in") {
         if (account && !command.forceAdd) {
-          if (account.provider === "claude") setClaudeLogin(account);
-          else setCodexLogin(account);
+          const signIn: Record<ProviderKind, (account: Account) => void> = {
+            [ProviderKind.Codex]: setCodexLogin,
+            [ProviderKind.Claude]: setClaudeLogin,
+          };
+          signIn[account.provider](account);
         } else {
           setAddIntent({
             provider: command.provider,
@@ -971,7 +979,7 @@ export default function Accounts({
       onModalOpenChange?.(true);
       setTransferChoice({
         target: account,
-        sourceProvider: selected?.provider || owner.provider || "codex",
+        sourceProvider: selected?.provider || owner.provider || "",
         agentId: owner.id,
         requestId: crypto.randomUUID(),
         extend: !!extendTransfer,
@@ -1081,19 +1089,19 @@ export default function Accounts({
                 transitionDuration={0}
                 chevronPosition="left"
               >
-                {(["codex", "claude"] as const).map((provider) => {
+                {PROVIDER_KINDS.map((provider) => {
                   const providerAccounts = accounts.filter(
-                    (account) => (account.provider || "codex") === provider,
+                    (account) => account.provider === provider,
                   );
                   return providerAccounts.length ? (
                     <section
                       className="accounts-provider"
                       key={provider}
-                      aria-label={`${provider === "claude" ? "Claude" : "Codex"} accounts`}
+                      aria-label={`${PROVIDER_LABELS[provider]} accounts`}
                     >
                       <h3>
                         <ProviderMark provider={provider} />
-                        {provider === "claude" ? "Claude" : "Codex"}
+                        {PROVIDER_LABELS[provider]}
                       </h3>
                       <div className="accounts-grid">
                         {providerAccounts.map((account) => (
@@ -1111,9 +1119,7 @@ export default function Accounts({
                                 <span className="account-identity">
                                   <span
                                     role="img"
-                                    aria-label={
-                                      provider === "claude" ? "Claude" : "Codex"
-                                    }
+                                    aria-label={PROVIDER_LABELS[provider]}
                                   >
                                     <ProviderMark provider={provider} />
                                   </span>
@@ -1279,7 +1285,7 @@ export default function Accounts({
                                       Set application default
                                     </Menu.Item>
                                   )}
-                                  {account.provider === "claude" && (
+                                  {account.provider === ProviderKind.Claude && (
                                     <>
                                       <Menu.Item
                                         onClick={() => setClaudeLogin(account)}
@@ -1288,7 +1294,7 @@ export default function Accounts({
                                       </Menu.Item>
                                     </>
                                   )}
-                                  {account.provider !== "claude" &&
+                                  {account.provider !== ProviderKind.Claude &&
                                     account.accountId && (
                                       <Menu.Item
                                         onClick={() => setCodexLogin(account)}
@@ -1419,7 +1425,7 @@ export default function Accounts({
                                       onSaved={state.setData}
                                     />
                                   )}
-                                  {account.provider === "claude" && (
+                                  {account.provider === ProviderKind.Claude && (
                                     <ClaudeProfile
                                       account={account}
                                       onSaved={state.setData}
@@ -1557,7 +1563,7 @@ export default function Accounts({
       <AccountTransferConfirmation
         opened={!!transferChoice}
         target={transferChoice?.target || null}
-        sourceProvider={transferChoice?.sourceProvider || "codex"}
+        sourceProvider={transferChoice?.sourceProvider || ""}
         extend={transferChoice?.extend}
         onClose={() => {
           setTransferChoice(null);

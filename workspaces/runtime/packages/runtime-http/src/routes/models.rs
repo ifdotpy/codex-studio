@@ -4,6 +4,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -91,13 +92,13 @@ async fn account_catalog(
         return Err(catalog_pending());
     }
     let account = account_context(snapshot, account_key)?;
-    if account.provider == "claude" && session.is_none() {
+    if account.provider == ProviderKind::Claude && session.is_none() {
         return Err(catalog_pending());
     }
     ensure_session(session, &account.key)
         .await
         .map_err(|error| {
-            if account.provider == "claude"
+            if account.provider == ProviderKind::Claude
                 && matches!(
                     &error,
                     studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
@@ -116,7 +117,7 @@ async fn account_catalog(
             }
         })?;
     match catalog
-        .read_until_ready(&account.key, &account.home, &account.provider, retry)
+        .read_until_ready(&account.key, &account.home, account.provider, retry)
         .await
     {
         CatalogRead::Ready(value) => Ok(value),
@@ -154,7 +155,7 @@ async fn ensure_session(
 struct AccountContext {
     key: String,
     home: String,
-    provider: String,
+    provider: ProviderKind,
 }
 
 fn account_context(
@@ -188,15 +189,12 @@ fn account_context(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        provider: studio_runtime_providers::ProviderKind::of_record(account)
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": ACCOUNT_UNAVAILABLE_MESSAGE}),
-                )
-            })?
-            .key()
-            .to_owned(),
+        provider: studio_runtime_providers::ProviderKind::of_record(account).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                json!({"error": ACCOUNT_UNAVAILABLE_MESSAGE}),
+            )
+        })?,
     })
 }
 
@@ -260,7 +258,7 @@ async fn worker_catalog(
             continue;
         }
         match catalog
-            .read(&account.key, &account.home, &account.provider, retry)
+            .read(&account.key, &account.home, account.provider, retry)
             .await
         {
             CatalogRead::Ready(value) => {
@@ -281,10 +279,7 @@ async fn worker_catalog(
                         let mut row = row.clone();
                         if let Some(row) = row.as_object_mut() {
                             row.insert("accountKey".to_owned(), Value::String(key.clone()));
-                            row.insert(
-                                "provider".to_owned(),
-                                Value::String(account.provider.clone()),
-                            );
+                            row.insert("provider".to_owned(), json!(account.provider));
                         }
                         models.push(row);
                     }
@@ -330,6 +325,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use studio_runtime_providers::ProviderKind;
     use studio_runtime_services::account_policy::AccountsSnapshot;
     use studio_runtime_services::model_catalog::ModelCatalogService;
 
@@ -480,7 +476,9 @@ mod tests {
     #[tokio::test]
     async fn changed_and_error_accounts_are_refused_before_catalog_read() {
         for status in ["changed", "error"] {
-            let snapshot = snapshot(json!({"id":"default", "home":"/missing", "status":status}));
+            let snapshot = snapshot(
+                json!({"id":"default", "home":"/missing", "provider":studio_runtime_schema::ProviderKind::Codex, "status":status}),
+            );
             let error = account_catalog(
                 &ModelCatalogService::new(),
                 &snapshot,
@@ -641,7 +639,7 @@ mod tests {
         let context = account_context(&snapshot, "profile").expect("profile exists");
         assert_eq!(context.key, "profile");
         assert_eq!(context.home, "/profile");
-        assert_eq!(context.provider, "codex");
+        assert_eq!(context.provider, ProviderKind::Codex);
     }
 
     #[test]

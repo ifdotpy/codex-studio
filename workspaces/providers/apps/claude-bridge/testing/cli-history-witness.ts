@@ -7,7 +7,6 @@ import type { Session } from "../session-state.ts";
 import type { ControlDependencies } from "../controls.ts";
 import type { BridgeInput } from "../bridge-protocol.ts";
 import type { SessionFixtureStreamEvent } from "../fixtures/session-sdk-types.ts";
-import { unusedFileControls } from "./control-fixture.ts";
 // Installed CLI + SDK witness. All provider responses come from a local HTTP
 // fixture; no credentials, user settings, real sessions, or model calls are used.
 import assert from "node:assert/strict";
@@ -41,13 +40,8 @@ const server = http.createServer(async (request, response) => {
     response.end("{}");
     return;
   }
-  const body: unknown = JSON.parse(raw);
-  assert(
-    body &&
-      typeof body === "object" &&
-      "model" in body &&
-      typeof body.model === "string",
-  );
+  // The local CLI fixture owns this captured request document.
+  const body: Pick<Options, "model"> = JSON.parse(raw);
   captures.push(body);
   if (request.url.includes("count_tokens")) {
     response.writeHead(200, { "content-type": "application/json" });
@@ -99,9 +93,7 @@ const server = http.createServer(async (request, response) => {
   send("message_stop", {});
   response.end();
 });
-await new Promise<void>((resolve) =>
-  server.listen(0, "127.0.0.1", () => resolve()),
-);
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 assert(address && typeof address === "object");
 const nativeId = (identity: string): ReturnType<typeof randomUUID> => {
@@ -154,10 +146,9 @@ try {
       ];
       if (!serviceFirst) parts.reverse();
       const groups = await inputGroups(parts, async (rows) =>
-        rows.map((row) => {
-          assert(row.type === "text");
-          return { type: row.type, text: row.text };
-        }),
+        (rows as Extract<BridgeInput, { type: "text" }>[]).map(
+          ({ type, text }) => ({ type, text }),
+        ),
       );
       const messages = sdkInputMessages(session.id, identity, groups, nativeId);
       const frames: SDKMessage[] = [];
@@ -188,14 +179,15 @@ try {
         ),
         "installed CLI must finish its fixture response",
       );
+      assert(messages[0]);
       session.turns.push({
         id: identity,
-        nativeMessageId: messages[0]?.uuid,
+        nativeMessageId: messages[0].uuid,
         status: "completed",
         items: [
           {
             type: "userMessage",
-            nativeId: messages.at(-1)?.uuid,
+            nativeId: messages.at(-1)!.uuid,
             nativeIds: messages.map((message) => message.uuid),
           },
         ],
@@ -218,37 +210,39 @@ try {
       );
     }
     const visible = await getSessionMessages(session.id, { dir: cwd });
-    const deps: ControlDependencies = {
-      ...unusedFileControls,
+    const deps = {
       persist: async () => {},
       forkSession,
       getHistoryIndex: (id, options) =>
         verifiedHistoryIndex({
           id,
-          cwd: options?.dir ?? assert.fail("Missing history directory"),
+          cwd: options!.dir!,
         }),
-    };
+    } as Partial<ControlDependencies> as ControlDependencies;
+    assert(session.turns[0] && session.turns[1]);
     const branch = await forkAtTurn(
       session,
-      { lastTurnId: session.turns[0]?.id ?? assert.fail("Missing first turn") },
+      { lastTurnId: session.turns[0].id },
       deps,
     );
-    assert.equal(branch.turns[0]?.items[0]?.nativeIds?.length, 2);
+    assert(branch.turns[0]?.items[0]);
+    assert.equal(branch.turns[0].items[0].nativeIds!.length, 2);
     await rollbackSession(
       session,
       {
         requestId: randomUUID(),
-        turnId: session.turns[1]?.id ?? assert.fail("Missing second turn"),
+        turnId: session.turns[1].id,
       },
       deps,
     );
     assert.equal(session.turns.length, 1);
+    assert(session.turns[0]?.items[0]);
     console.log(
       JSON.stringify({
         order: serviceFirst ? "service/human" : "human/service",
         visibleMessages: visible.length,
-        forkParts: branch.turns[0]?.items[0]?.nativeIds?.length,
-        rollbackParts: session.turns[0]?.items[0]?.nativeIds?.length,
+        forkParts: branch.turns[0].items[0].nativeIds!.length,
+        rollbackParts: session.turns[0].items[0].nativeIds!.length,
         recovery: "delivered/absent verified",
       }),
     );
@@ -257,18 +251,17 @@ try {
   await fs.mkdir(clearCwd);
   process.env.CLAUDE_CONFIG_DIR = path.join(clearCwd, "config");
   const oldId = randomUUID();
-  const session: Session = {
+  // The clear witness only reads checkpoint identity on its partial turn.
+  const session = {
     id: oldId,
     cwd: clearCwd,
     turns: [
       {
-        id: randomUUID(),
-        items: [],
         fileCheckpointMessageId: randomUUID(),
         fileCheckpointSource: { nativeId: oldId, cwd: clearCwd },
       },
     ],
-  };
+  } as Session;
   const persist = () =>
     fs.writeFile(path.join(clearCwd, "session.json"), JSON.stringify(session));
   const queue = new InputQueue<SDKUserMessage>();
@@ -351,15 +344,16 @@ try {
   const stored: Session = JSON.parse(
     await fs.readFile(path.join(clearCwd, "session.json"), "utf8"),
   );
-  assert.notEqual(stored.nativeId, oldId);
-  assert.equal(typeof stored.nativeId, "string");
   assert(stored.nativeId);
+  assert(stored.turns[0]);
+  assert.notEqual(stored.nativeId, oldId);
+
   assert(
     conversationId,
     "installed CLI must emit its distinct conversation reset identity",
   );
   assert.notEqual(stored.nativeId, conversationId);
-  assert.equal(stored.turns[0]?.fileCheckpointMessageId, undefined);
+  assert.equal(stored.turns[0].fileCheckpointMessageId, undefined);
   const resumed: SDKMessage[] = [];
   const resumeInput = randomUUID();
   const resume = query({
@@ -391,24 +385,15 @@ try {
   const clearIndex = await readHistoryIndex(stored);
   assert(clearIndex);
   assert.equal(
-    clearIndex.outcome(
-      [afterClearInput ?? assert.fail("Missing post-clear input")],
-      [afterClearInput ?? assert.fail("Missing post-clear input")],
-    ),
+    clearIndex.outcome([afterClearInput!], [afterClearInput!]),
     "delivered",
   );
   assert.equal(
-    clearIndex.outcome(
-      [originalInput],
-      [afterClearInput ?? assert.fail("Missing post-clear input")],
-    ),
+    clearIndex.outcome([originalInput], [afterClearInput!]),
     "not_applied",
   );
   assert.equal(
-    clearIndex.outcome(
-      [resumeInput],
-      [afterClearInput ?? assert.fail("Missing post-clear input")],
-    ),
+    clearIndex.outcome([resumeInput], [afterClearInput!]),
     "delivered",
   );
   console.log(
@@ -428,7 +413,5 @@ try {
   if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = previousConfig;
   server.closeAllConnections();
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
+  await new Promise<void>((resolve) => server.close(resolve as () => void));
 }

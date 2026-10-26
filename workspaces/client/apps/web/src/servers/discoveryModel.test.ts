@@ -88,7 +88,7 @@ describe("effective discovery aliases", () => {
 
 describe("automatic update setting", () => {
   const state = (
-    settings: ServerAccessState["settings"],
+    settings: NonNullable<ServerAccessState["settings"]>,
   ): ServerAccessState => ({
     protocol: 1,
     identity: {
@@ -99,7 +99,7 @@ describe("automatic update setting", () => {
       tailscaleUser: null,
     },
     clients: [],
-    ...(settings === undefined ? {} : { settings }),
+    settings,
     servers: [],
     invites: [],
   });

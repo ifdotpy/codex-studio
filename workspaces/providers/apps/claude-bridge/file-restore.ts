@@ -1,4 +1,3 @@
-import { isRecord } from "./move.ts";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Session,
@@ -35,7 +34,7 @@ import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { nativeFile } from "./move.ts";
+import { isRecord, nativeFile } from "./move.ts";
 
 // Native file-history retention count, from Claude CLI 2.1.302 (dde/Ejt).
 // Reconstruct the same retained snapshots before selecting tracked files.
@@ -52,12 +51,7 @@ async function identity(file: string) {
   try {
     stat = await fs.lstat(file);
   } catch (error) {
-    if (
-      (error && typeof error === "object" && "code" in error
-        ? error.code
-        : undefined) === "ENOENT"
-    )
-      return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1)
@@ -100,7 +94,7 @@ async function safePath(cwd: string, file: string) {
       if ((await fs.realpath(parent)) !== parent) throw invalid();
       break;
     } catch (error) {
-      if (!isRecord(error) || error.code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       parent = path.dirname(parent);
     }
   }
@@ -115,6 +109,12 @@ function same(a: unknown, b: unknown) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// Claude owns this native document; preserve the existing format checks below.
+function parseNativeFileRecord(line: string): NativeFileRecord {
+  const value: unknown = JSON.parse(line);
+  if (!isRecord(value)) throw invalid();
+  return value as NativeFileRecord;
+}
 async function nativeBackups(
   session: RestoreSession,
   messages: readonly Pick<SessionMessage, "uuid">[],
@@ -126,14 +126,13 @@ async function nativeBackups(
     configDir,
     session.nativeHistoryCwd || session.cwd,
   );
-  const snapshots = new Map<string, Record<string, unknown>>(),
-    deltas = new Map<string, Record<string, unknown>[]>();
+  const snapshots = new Map<string, NativeFileRecord>(),
+    deltas = new Map<string, NativeFileRecord[]>();
   const input = createReadStream(file);
   const lines = createInterface({ input, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
-      const record: unknown = JSON.parse(line);
-      if (!isRecord(record)) throw invalid();
+      const record = parseNativeFileRecord(line);
       if (
         typeof record.type === "string" &&
         record.type.startsWith("file-history-") &&
@@ -164,9 +163,7 @@ async function nativeBackups(
     )
   )
     throw invalid();
-  const ordered: (Omit<NativeSnapshot, "trackedFileBackups"> & {
-      trackedFileBackups: Record<string, unknown>;
-    })[] = [],
+  const ordered: NativeSnapshot[] = [],
     positions = new Map<string, number>();
   for (const message of messages) {
     const record = snapshots.get(message.uuid);
@@ -184,15 +181,8 @@ async function nativeBackups(
         : undefined;
       if (index === undefined) {
         positions.set(snapshot.messageId, ordered.length);
-        ordered.push({
-          messageId: snapshot.messageId,
-          trackedFileBackups: snapshot.trackedFileBackups,
-        });
-      } else
-        ordered[index] = {
-          messageId: snapshot.messageId,
-          trackedFileBackups: snapshot.trackedFileBackups,
-        };
+        ordered.push(snapshot);
+      } else ordered[index] = snapshot;
     }
     for (const delta of deltas.get(message.uuid) || []) {
       if (
@@ -210,8 +200,7 @@ async function nativeBackups(
           trackedFileBackups: { ...ordered.at(-1)?.trackedFileBackups },
         });
       }
-      const snapshot = ordered[index];
-      if (!snapshot) throw invalid();
+      const snapshot = ordered[index]!;
       Object.defineProperty(snapshot.trackedFileBackups, delta.trackingPath, {
         value: delta.backup,
         enumerable: true,
@@ -224,7 +213,8 @@ async function nativeBackups(
   if (!retained.length) throw invalid();
   // Normalize native absolute and relative tracking names before selecting backups.
   for (const snapshot of retained) {
-    const normalized: Record<string, unknown> = Object.create(null);
+    const normalized: NativeSnapshot["trackedFileBackups"] =
+      Object.create(null);
     for (const [name, backup] of Object.entries(snapshot.trackedFileBackups)) {
       const file = path.resolve(session.cwd, name);
       if (own(normalized, file) && !same(normalized[file], backup))
@@ -245,28 +235,16 @@ async function nativeBackups(
       own(target.trackedFileBackups, file) ||
       retained
         .map((snapshot) => own(snapshot.trackedFileBackups, file))
-        .find((value) => isRecord(value) && value.version === 1);
+        .find((value) => value?.version === 1);
     if (
-      !isRecord(backup) ||
+      !backup ||
       !(
         backup.backupFileName === null ||
-        (typeof backup.backupFileName === "string" &&
-          /^[0-9a-f]{16}@v\d+$/.test(backup.backupFileName))
+        /^[0-9a-f]{16}@v\d+$/.test(backup.backupFileName)
       )
     )
       throw invalid();
-    if (backup.realParentDir && typeof backup.realParentDir !== "string")
-      throw invalid();
-    return {
-      file,
-      backup: {
-        backupFileName: backup.backupFileName,
-        realParentDir:
-          typeof backup.realParentDir === "string"
-            ? backup.realParentDir
-            : undefined,
-      },
-    };
+    return { file, backup };
   });
 }
 
@@ -405,7 +383,7 @@ export function fileBackups<S extends Pick<Session, "controlRequests">>(
         await fs.rm(directory, { recursive: true });
         released++;
       } catch (error) {
-        if (!isRecord(error) || error.code !== "ENOENT") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
       for (const { receipt } of refs) receipt.fileBackupReleased = true;
     }
@@ -464,16 +442,15 @@ async function prepareFileRestoreOwned(
     );
     for (const entry of files) {
       if (entry.before) {
-        if (entry.backup === undefined) throw invalid();
-        await fs.copyFile(entry.file, entry.backup, constants.COPYFILE_EXCL);
-        await fs.chmod(entry.backup, entry.before.mode);
-        const handle = await fs.open(entry.backup, "r");
+        await fs.copyFile(entry.file, entry.backup!, constants.COPYFILE_EXCL);
+        await fs.chmod(entry.backup!, entry.before.mode);
+        const handle = await fs.open(entry.backup!, "r");
         try {
           await handle.sync();
         } finally {
           await handle.close();
         }
-        if (!same(await identity(entry.backup), entry.before)) throw invalid();
+        if (!same(await identity(entry.backup!), entry.before)) throw invalid();
       }
     }
     const manifest = await fs.open(

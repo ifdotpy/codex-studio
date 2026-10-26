@@ -7,6 +7,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "../web/tests/servers/multi-server-fixture.ts";
 
+declare global {
+  var __testUnavailableReceived: boolean;
+}
 const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await realpath(
   await mkdtemp(path.join(tmpdir(), "studio-native-access-")),
@@ -83,7 +86,7 @@ try {
           },
         );
         if (url.pathname.endsWith("/pair") && response.status === 403)
-          Reflect.set(globalThis, "__testUnavailableReceived", true);
+          globalThis.__testUnavailableReceived = true;
         return response;
       };
     },
@@ -117,7 +120,7 @@ try {
   let rejected = false;
   for (let i = 0; i < 100; i++) {
     rejected = await desktop.evaluate(
-      () => !!Reflect.get(globalThis, "__testUnavailableReceived"),
+      () => !!globalThis.__testUnavailableReceived,
     );
     if (rejected) break;
     await new Promise((resolve) => setTimeout(resolve, 100));

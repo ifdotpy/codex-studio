@@ -12,9 +12,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const port = await new Promise<number>((resolve) => {
   const server = createServer();
   server.listen(0, "127.0.0.1", () => {
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const port = address.port;
+    const port = (server.address() as import("node:net").AddressInfo).port;
     server.close(() => resolve(port));
   });
 });
@@ -29,7 +27,14 @@ const origin = `http://127.0.0.1:${port}`;
 async function desktopIdentity(): Promise<GetResult<"/api/desktop">> {
   return (await fetch(`${origin}/api/desktop`)).json();
 }
-let desktop: ElectronApplication | null = null;
+// The packaged speech helper writes this check document.
+function readSpeechCheck(text: string): {
+  helperReady: boolean;
+  onDeviceOnly: boolean;
+} {
+  return JSON.parse(text);
+}
+let desktop: ElectronApplication | null | undefined;
 let pid;
 const temp = await mkdtemp(path.join(tmpdir(), "studio-pkg-"));
 const state = path.join(temp, "state");
@@ -53,31 +58,22 @@ try {
     () => !!window.codexDesktop && !!document.querySelector("textarea"),
   );
   assert.equal(
-    await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      return [
-        "requestMicrophone",
-        "prepareTranscription",
-        "transcribeAudio",
-      ].every(
-        (method) => typeof Reflect.get(bridge ?? {}, method) === "function",
-      );
-    }),
+    await page.evaluate(() =>
+      ["requestMicrophone", "prepareTranscription", "transcribeAudio"].every(
+        (method) =>
+          typeof window.codexDesktop![
+            method as keyof NonNullable<typeof window.codexDesktop>
+          ] === "function",
+      ),
+    ),
     true,
   );
-  const speech: unknown = JSON.parse(
+  const speech = readSpeechCheck(
     execFileSync(
       path.join(path.dirname(executable), "../Resources/studio-speech"),
       ["--check"],
       { encoding: "utf8" },
     ),
-  );
-  assert.ok(
-    speech &&
-      typeof speech === "object" &&
-      "helperReady" in speech &&
-      "onDeviceOnly" in speech,
   );
   assert.equal(speech.helperReady, true);
   assert.equal(speech.onDeviceOnly, true);

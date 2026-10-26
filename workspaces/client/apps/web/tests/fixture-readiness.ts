@@ -62,7 +62,7 @@ export function waitForFixturePort(
         ),
       timeoutMs,
     );
-    child.stdout?.on("data", onData);
+    child.stdout!.on("data", onData);
     child.once("error", onError);
     child.once("close", onClose);
   });

@@ -30,6 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 use studio_runtime_providers::Method;
+use studio_runtime_providers::ProviderKind;
 #[cfg(test)]
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, Transaction};
@@ -53,9 +54,7 @@ pub fn claimable(record: &Value) -> bool {
         && !truthy(record.get("inFlight"))
         && !truthy(record.get("deletedAt"))
         && !truthy(record.get("nativeFailureHold"))
-        && record
-            .get("provider")
-            .is_none_or(|provider| provider == "codex")
+        && ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
         && (attempt.is_null()
             || (attempt["submitted"] == false
                 && !truthy(attempt.get("turnId"))
@@ -150,7 +149,7 @@ pub(crate) async fn run(
                     .to_owned();
                 resources
                     .model_catalog
-                    .refreshed(&account, &resources.account_home, "codex")
+                    .refreshed(&account, &resources.account_home, ProviderKind::Codex)
                     .await;
             }
             result => return result,
@@ -602,6 +601,32 @@ pub(crate) mod tests {
     use crate::account_session_runtime::{AccountSessionFuture, SessionReceipt};
     use std::sync::Mutex;
     use studio_runtime_providers::{RequestId, RequestTicket};
+
+    #[test]
+    fn claim_requires_a_known_codex_provider() {
+        let mut record = json!({
+            "nativeReview":{"status":"pending"}, "status":"queued", "autoWake":true,
+            "provider":ProviderKind::Codex
+        });
+        assert!(claimable(&record));
+        for provider in [
+            json!(ProviderKind::Claude),
+            json!("future"),
+            Value::Null,
+            json!(0),
+        ] {
+            record["provider"] = provider;
+            assert!(!claimable(&record));
+        }
+        record
+            .as_object_mut()
+            .expect("review record")
+            .remove("provider");
+        assert!(
+            !claimable(&record),
+            "missing identity must not claim a native review"
+        );
+    }
 
     /// The provider outcome the fake session gives one method.
     #[derive(Clone, Copy, PartialEq)]

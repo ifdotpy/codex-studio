@@ -10,7 +10,7 @@
 
 use serde_json::Value;
 use std::sync::LazyLock;
-use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::ProviderKind;
 use studio_runtime_schema::shared_values::{
     ACCOUNT_GROUP_PATTERN, ACCOUNT_GROUPS_MAX, DEFAULT_CLAUDE_LEAD_EFFORT,
     DEFAULT_CLAUDE_LEAD_MODEL,
@@ -172,14 +172,15 @@ fn flag(account: &Value, field: &str) -> bool {
     account.get(field).and_then(Value::as_bool) == Some(true)
 }
 
-fn provider(account: &Value) -> &'static str {
-    ProviderKind::key_of(account).unwrap_or(ProviderKind::Codex.key())
+fn provider(account: &Value) -> Option<ProviderKind> {
+    ProviderKind::of_record(account).ok()
 }
 
 /// Whether a new chat can start on this public account row.
 #[must_use]
 pub fn can_start(account: &Value) -> bool {
-    !flag(account, "disconnected")
+    provider(account).is_some()
+        && !flag(account, "disconnected")
         && !flag(account, "deleted")
         && account
             .get("duplicateOf")
@@ -230,20 +231,20 @@ pub fn new_chat_default(
         )
     });
     let wanted = match model.filter(|model| !model.is_empty()) {
-        Some(model) => crate::provider_adapter::model_provider(model).map(ProviderKind::key),
+        Some(model) => crate::provider_adapter::model_provider(model),
         None => candidates
             .iter()
-            .any(|(_, _, row)| provider(row) == ProviderKind::Claude.key())
-            .then_some(ProviderKind::Claude.key()),
+            .any(|(_, _, row)| provider(row) == Some(ProviderKind::Claude))
+            .then_some(ProviderKind::Claude),
     };
     let chosen = candidates
         .iter()
-        .find(|(_, _, row)| wanted.is_none_or(|wanted| provider(row) == wanted))
+        .find(|(_, _, row)| wanted.is_none_or(|wanted| provider(row) == Some(wanted)))
         .map(|(_, key, _)| (*key).to_owned())
         .unwrap_or_else(|| project_account.unwrap_or(default_account_key).to_owned());
     let claude = accounts.iter().any(|row| {
         row.get("id").and_then(Value::as_str) == Some(chosen.as_str())
-            && provider(row) == ProviderKind::Claude.key()
+            && provider(row) == Some(ProviderKind::Claude)
     });
     let defaults = model.is_none() && claude;
     NewChatDefault {
@@ -256,6 +257,36 @@ pub fn new_chat_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_identity_unknown_accounts_cannot_be_selected() {
+        use serde_json::json;
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!(7)),
+        ] {
+            let mut unknown = json!({"id":"unknown","status":"ready"});
+            if let Some(provider) = provider {
+                unknown["provider"] = provider;
+            }
+            assert!(!can_start(&unknown), "{unknown}");
+            let accounts = [
+                unknown,
+                json!({"id":"known","provider":"codex","status":"ready"}),
+            ];
+            assert_eq!(
+                new_chat_default(&accounts, "unknown", &[], None, Some("gpt-mini")).account_key,
+                "known"
+            );
+        }
+        for provider in ProviderKind::ALL {
+            assert!(can_start(
+                &json!({"provider":provider.key(),"status":"ready"})
+            ));
+        }
+    }
 
     #[test]
     fn every_shared_decision_case_holds() {

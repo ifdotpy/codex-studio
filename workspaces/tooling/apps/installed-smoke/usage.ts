@@ -4,18 +4,21 @@ import path from "node:path";
 import os from "node:os";
 import { isDeepStrictEqual } from "node:util";
 import { execFileSync } from "node:child_process";
+import {
+  ProviderKind,
+  isProviderKind,
+} from "../../../client/apps/web/src/generated/providerKind.ts";
 
+import type { Session } from "../../../providers/apps/claude-bridge/session-state.ts";
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
 import type {
   PricingArtifact,
   RawCost,
-  RawProvider,
 } from "../../../client/apps/web/src/generated/pricing.ts";
 
 /** A sparse saved view permits explicit clearing as well as absent properties. */
 export type Optional<T> = { [K in keyof T]?: T[K] | undefined };
 export type Schema = components["schemas"];
-export type Provider = Schema["Account"]["provider"];
 export type Tokens = {
   [K in keyof Schema["UsageTokens"]]: Schema["UsageTokens"][K] | null;
 };
@@ -49,6 +52,7 @@ export type Analytics = Omit<
 > & {
   timeline?: LegacyUsageRow[] | null | undefined;
   source?: string;
+  usageGeneration?: Schema["JsonValue"];
 };
 export type Cost = Omit<Optional<Schema["SessionCostResponse"]>, "rootId"> &
   Optional<Pick<Schema["AgentSummaryEntityDto"], "rootId">>;
@@ -105,7 +109,7 @@ export type Steer = {
   association?: string;
 };
 export type SavedProvider = {
-  provider: Provider;
+  provider: ProviderKind;
   agentId: string;
   truth: {
     tokens: Optional<Tokens>;
@@ -168,12 +172,22 @@ export type Evidence = {
 
 /** Saved checkpoints are written by this smoke; optional fields cover older versions. */
 export function readEvidence(file: string): Evidence {
-  return JSON.parse(fs.readFileSync(file, "utf8"));
+  const evidence: Evidence = JSON.parse(fs.readFileSync(file, "utf8"));
+  for (const row of evidence.providers)
+    if (!isProviderKind(row.provider))
+      throw new Error(`Unsupported provider for saved agent ${row.agentId}`);
+  return evidence;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+/** models.dev namespace for each application provider; these are pricing keys. */
+export const PRICING_PROVIDERS = {
+  [ProviderKind.Codex]: "openai",
+  [ProviderKind.Claude]: "anthropic",
+} as const satisfies Record<ProviderKind, string>;
 
 // Owner: runtime-services/src/pricing.rs; parity checked by installed-smoke tests.
 // Ratio of one-hour cache-write USD/million to the selected input USD/million.
@@ -190,12 +204,42 @@ export const TOKEN_CATEGORIES = [
   "reasoningOutput",
 ] as const;
 
+type ClaudeUsage = Parameters<
+  typeof import("../../../providers/apps/claude-bridge/usage.ts").responseTokens
+>[0];
+type NativeUsageDocument = Partial<Omit<ClaudeUsage, "cache_creation">> & {
+  cache_creation?: Partial<NonNullable<ClaudeUsage["cache_creation"]>> | null;
+} & Partial<
+    Record<
+      | "inputTokens"
+      | "cached_input_tokens"
+      | "cachedInputTokens"
+      | "cache_write_input_tokens"
+      | "cacheWriteInputTokens"
+      | "outputTokens"
+      | "reasoning_output_tokens"
+      | "reasoningOutputTokens",
+      ClaudeUsage["input_tokens"]
+    >
+  >;
+type JsonString = Extract<Schema["JsonValue"], string | null>;
+type NativeJournalDocument = Partial<Record<"type", JsonString>> & {
+  message?: Partial<Record<"id" | "model", JsonString>> & {
+    usage?: NativeUsageDocument;
+  };
+  payload?: Partial<Record<"model" | "response_id" | "turn_id", JsonString>> & {
+    usage?: NativeUsageDocument;
+  };
+};
+
 /** Codex includes cache reads in input; Claude reports uncached input separately. */
 export function nativeTokens(
-  usage: unknown,
-  provider: Provider,
+  rawUsage: unknown,
+  provider: ProviderKind,
 ): Schema["UsageTokens"] {
-  if (!isRecord(usage)) throw new Error("Native usage is not an object");
+  if (!isRecord(rawUsage)) throw new Error("Native usage is not an object");
+  // Sparse SDK usage plus legacy journal aliases; validate counts before arithmetic.
+  const usage = rawUsage as NativeUsageDocument;
   const number = (value: unknown) => {
     if (typeof value !== "number")
       throw new Error("Native token count is not numeric");
@@ -208,15 +252,7 @@ export function nativeTokens(
       usage.cachedInputTokens ??
       0,
   );
-  return {
-    uncachedInput:
-      provider === "claude"
-        ? input
-        : input -
-          cacheReadInput -
-          number(
-            usage.cache_write_input_tokens ?? usage.cacheWriteInputTokens ?? 0,
-          ),
+  const tokens = {
     cacheReadInput,
     cacheWriteInput: number(
       usage.cache_creation_input_tokens ??
@@ -224,64 +260,79 @@ export function nativeTokens(
         usage.cacheWriteInputTokens ??
         0,
     ),
-    ...(provider === "claude"
-      ? {
-          cacheWriteInput1h: Math.min(
-            number(
-              isRecord(usage.cache_creation)
-                ? (usage.cache_creation.ephemeral_1h_input_tokens ?? 0)
-                : 0,
-            ),
-            number(usage.cache_creation_input_tokens ?? 0),
-          ),
-        }
-      : {}),
     output: number(usage.output_tokens ?? usage.outputTokens ?? 0),
     reasoningOutput: number(
       usage.reasoning_output_tokens ?? usage.reasoningOutputTokens ?? 0,
     ),
   };
+  switch (provider) {
+    case ProviderKind.Codex:
+      return {
+        ...tokens,
+        uncachedInput:
+          input -
+          cacheReadInput -
+          number(
+            usage.cache_write_input_tokens ?? usage.cacheWriteInputTokens ?? 0,
+          ),
+      };
+    case ProviderKind.Claude:
+      return {
+        ...tokens,
+        uncachedInput: input,
+        cacheWriteInput1h: Math.min(
+          number(
+            isRecord(usage.cache_creation)
+              ? (usage.cache_creation.ephemeral_1h_input_tokens ?? 0)
+              : 0,
+          ),
+          number(usage.cache_creation_input_tokens ?? 0),
+        ),
+      };
+  }
+  throw new Error(`Unsupported provider: ${provider satisfies never}`);
 }
 
 export function sumTokens(rows: readonly TokenRow[]): Tokens {
-  const sum = (key: (typeof TOKEN_CATEGORIES)[number]) =>
-    rows.some((row) => row.tokens[key] == null)
-      ? null
-      : rows.reduce((sum, row) => sum + (row.tokens[key] ?? 0), 0);
   return {
-    uncachedInput: sum("uncachedInput"),
-    cacheReadInput: sum("cacheReadInput"),
-    cacheWriteInput: sum("cacheWriteInput"),
-    output: sum("output"),
-    reasoningOutput: sum("reasoningOutput"),
+    ...Object.fromEntries(
+      TOKEN_CATEGORIES.map((key) => [
+        key,
+        rows.some((row) => row.tokens[key] == null)
+          ? null
+          : rows.reduce((sum, row) => sum + row.tokens[key]!, 0),
+      ]),
+    ),
     // Contract v4: an absent lifetime split contributes zero one-hour writes.
     cacheWriteInput1h: rows.reduce(
       (sum, row) => sum + (row.tokens.cacheWriteInput1h ?? 0),
       0,
     ),
-  };
+  } as Tokens;
 }
 
 export function totalTokens(tokens: Optional<Tokens>) {
   if (TOKEN_CATEGORIES.slice(0, 4).some((key) => tokens[key] == null))
     return null;
   return (
-    (tokens.uncachedInput ?? 0) +
-    (tokens.cacheReadInput ?? 0) +
-    (tokens.cacheWriteInput ?? 0) +
-    (tokens.output ?? 0)
+    tokens.uncachedInput! +
+    tokens.cacheReadInput! +
+    tokens.cacheWriteInput! +
+    tokens.output!
   );
 }
 
 /** Final journal entry wins per Claude message id; partial content blocks repeat that id. */
 export function nativeResponses(
-  records: unknown[],
-  provider: Schema["AnalyticsAgentRecord"]["provider"],
+  rawRecords: unknown[],
+  provider: ProviderKind,
 ): Response[] {
+  const records = rawRecords;
   const responses = new Map<string, Response>();
   let model: string | null | undefined;
-  for (const row of records) {
-    if (!isRecord(row)) continue;
+  for (const raw of records) {
+    if (!isRecord(raw)) continue;
+    const row = raw as NativeJournalDocument;
     const payload = isRecord(row.payload) ? row.payload : {};
     const message = isRecord(row.message) ? row.message : {};
     if (row.type === "turn_context")
@@ -289,41 +340,46 @@ export function nativeResponses(
         typeof payload.model === "string" || payload.model === null
           ? payload.model
           : undefined;
-    if (
-      provider === "claude" &&
-      row.type === "assistant" &&
-      typeof message.id === "string" &&
-      message.id &&
-      message.usage &&
-      message.model !== "<synthetic>"
-    ) {
-      responses.set(message.id, {
-        responseId: message.id,
-        model:
-          typeof message.model === "string" || message.model === null
-            ? message.model
-            : undefined,
-        tokens: nativeTokens(message.usage, provider),
-        rawUsage: message.usage,
-      });
+    switch (provider) {
+      case ProviderKind.Claude:
+        if (
+          row.type === "assistant" &&
+          typeof message.id === "string" &&
+          message.id &&
+          message.usage &&
+          message.model !== "<synthetic>"
+        ) {
+          responses.set(message.id, {
+            responseId: message.id,
+            model:
+              typeof message.model === "string" || message.model === null
+                ? message.model
+                : undefined,
+            tokens: nativeTokens(message.usage, provider),
+            rawUsage: message.usage,
+          });
+        }
+        continue;
+      case ProviderKind.Codex:
+        if (
+          row.type === "token_usage_record" &&
+          typeof payload.response_id === "string" &&
+          payload.response_id
+        ) {
+          responses.set(payload.response_id, {
+            responseId: payload.response_id,
+            turnId:
+              typeof payload.turn_id === "string" || payload.turn_id === null
+                ? payload.turn_id
+                : undefined,
+            model: typeof payload.model === "string" ? payload.model : model,
+            tokens: nativeTokens(payload.usage, provider),
+            rawUsage: payload.usage,
+          });
+        }
+        continue;
     }
-    if (
-      provider === "codex" &&
-      row.type === "token_usage_record" &&
-      typeof payload.response_id === "string" &&
-      payload.response_id
-    ) {
-      responses.set(payload.response_id, {
-        responseId: payload.response_id,
-        turnId:
-          typeof payload.turn_id === "string" || payload.turn_id === null
-            ? payload.turn_id
-            : undefined,
-        model: typeof payload.model === "string" ? payload.model : model,
-        tokens: nativeTokens(payload.usage, provider),
-        rawUsage: payload.usage,
-      });
-    }
+    throw new Error(`Unsupported provider: ${provider satisfies never}`);
   }
   return [...responses.values()];
 }
@@ -337,6 +393,85 @@ function jsonLines(file: string): unknown[] {
 }
 
 /** Discover only this thread's files. Never scan or copy other chats' contents. */
+function nativeFiles(
+  state: string,
+  agent: Optional<
+    Pick<Schema["AnalyticsAgentRecord"], "id" | "provider" | "threadId">
+  >,
+  account: Pick<Schema["Account"], "id" | "home" | "claudeOptions">,
+  history: Schema["AnalyticsHistoryRecord"][],
+  provider: ProviderKind,
+) {
+  const files = new Set<string>();
+  switch (provider) {
+    case ProviderKind.Claude: {
+      const serverRoot =
+        account.id === "default"
+          ? state
+          : path.join(state, "account-servers", account.id);
+      const snapshot = path.join(
+        serverRoot,
+        "sessions",
+        `${agent.threadId}.json`,
+      );
+      const saved: unknown = JSON.parse(fs.readFileSync(snapshot, "utf8"));
+      if (!isRecord(saved))
+        throw new Error("Native session snapshot is not an object");
+      const document = saved.session ?? saved;
+      if (!isRecord(document))
+        throw new Error("Native session is not an object");
+      const session = document as Partial<Session>;
+      const ids = new Set<unknown>([agent.threadId, session.nativeId]);
+      if (Array.isArray(session.historyBranches))
+        for (const branch of session.historyBranches)
+          if (isRecord(branch)) ids.add(branch.nativeId);
+      const config =
+        account.claudeOptions?.configDir ??
+        account.home ??
+        path.join(os.homedir(), ".claude");
+      const projects = path.join(
+        config.replace(/^~(?=\/|$)/, os.homedir()),
+        "projects",
+      );
+      for (const project of fs.readdirSync(projects, { withFileTypes: true })) {
+        if (!project.isDirectory()) continue;
+        for (const id of ids) {
+          if (typeof id !== "string" || !id || path.basename(id) !== id)
+            continue;
+          const file = path.join(projects, project.name, `${id}.jsonl`);
+          if (fs.existsSync(file)) files.add(file);
+        }
+      }
+      return files;
+    }
+    case ProviderKind.Codex: {
+      for (const entry of history)
+        if (
+          entry.threadId === agent.threadId &&
+          typeof entry.path === "string" &&
+          entry.path
+        )
+          files.add(entry.path);
+      if (!files.size) {
+        const sessions = path.join(account.home, "sessions");
+        const walk = (folder: string, depth: number) => {
+          if (depth < 0 || !fs.existsSync(folder)) return;
+          for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+            const file = path.join(folder, entry.name);
+            if (entry.isDirectory()) walk(file, depth - 1);
+            else if (entry.name.endsWith(`-${agent.threadId}.jsonl`))
+              files.add(file);
+          }
+        };
+        walk(sessions, 3);
+      }
+      return files;
+    }
+  }
+  throw new Error(`Unsupported provider: ${provider satisfies never}`);
+}
+
+/** Discover only this thread's files. Never scan or copy other chats' contents. */
 export function nativeEvidence(
   state: string,
   agent: Optional<
@@ -345,72 +480,15 @@ export function nativeEvidence(
   account: Pick<Schema["Account"], "id" | "home" | "claudeOptions">,
   history: Schema["AnalyticsHistoryRecord"][],
 ) {
-  const files = new Set<string>();
-  if (agent.provider === "claude") {
-    const serverRoot =
-      account.id === "default"
-        ? state
-        : path.join(state, "account-servers", account.id);
-    const snapshot = path.join(
-      serverRoot,
-      "sessions",
-      `${agent.threadId}.json`,
-    );
-    const saved: unknown = JSON.parse(fs.readFileSync(snapshot, "utf8"));
-    if (!isRecord(saved))
-      throw new Error("Native session snapshot is not an object");
-    const session = saved.session ?? saved;
-    if (!isRecord(session)) throw new Error("Native session is not an object");
-    const ids = new Set<unknown>([agent.threadId, session.nativeId]);
-    if (Array.isArray(session.historyBranches))
-      for (const branch of session.historyBranches)
-        if (isRecord(branch)) ids.add(branch.nativeId);
-    const config =
-      account.claudeOptions?.configDir ??
-      account.home ??
-      path.join(os.homedir(), ".claude");
-    const projects = path.join(
-      config.replace(/^~(?=\/|$)/, os.homedir()),
-      "projects",
-    );
-    for (const project of fs.readdirSync(projects, { withFileTypes: true })) {
-      if (!project.isDirectory()) continue;
-      for (const id of ids) {
-        if (typeof id !== "string" || !id || path.basename(id) !== id) continue;
-        const file = path.join(projects, project.name, `${id}.jsonl`);
-        if (fs.existsSync(file)) files.add(file);
-      }
-    }
-  } else {
-    for (const entry of history)
-      if (
-        entry.threadId === agent.threadId &&
-        typeof entry.path === "string" &&
-        entry.path
-      )
-        files.add(entry.path);
-    if (!files.size) {
-      const sessions = path.join(account.home, "sessions");
-      const walk = (folder: string, depth: number) => {
-        if (depth < 0 || !fs.existsSync(folder)) return;
-        for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
-          const file = path.join(folder, entry.name);
-          if (entry.isDirectory()) walk(file, depth - 1);
-          else if (entry.name.endsWith(`-${agent.threadId}.jsonl`))
-            files.add(file);
-        }
-      };
-      walk(sessions, 3);
-    }
-  }
+  const provider = agent.provider;
+  if (!isProviderKind(provider))
+    throw new Error(`Unsupported provider for agent ${agent.id}`);
+  const files = nativeFiles(state, agent, account, history, provider);
   if (!files.size)
     throw new Error(
       `No native usage evidence found for ${agent.id} thread ${agent.threadId}`,
     );
-  const responses = nativeResponses(
-    [...files].flatMap(jsonLines),
-    agent.provider,
-  );
+  const responses = nativeResponses([...files].flatMap(jsonLines), provider);
   if (!responses.length)
     throw new Error(
       `No final native response usage found in ${[...files].join(", ")}`,
@@ -419,7 +497,7 @@ export function nativeEvidence(
 }
 
 /** Canonical observations take precedence, including identity and non-response kinds. */
-export function recordedUsage(analytics: Analytics, _provider?: Provider) {
+export function recordedUsage(analytics: Analytics) {
   const responses = [];
   const gaps = [];
   for (const row of analytics.timeline ?? []) {
@@ -437,27 +515,33 @@ export function recordedUsage(analytics: Analytics, _provider?: Provider) {
     if (
       !row.responseId ||
       ["nativeNotice", "codexThread", "claudeQuery"].includes(
-        row.counterDomain ?? "",
+        row.counterDomain!,
       )
     )
       continue;
-    const known = (key: keyof Schema["AnalyticsProviderTokens"]) => {
-      const value = selected?.[key];
-      return typeof value === "number" &&
-        Number.isSafeInteger(value) &&
-        value >= 0
-        ? value
-        : null;
-    };
+    const known = (
+      key: keyof Pick<
+        Schema["AnalyticsProviderTokens"],
+        | "inputTokens"
+        | "cachedInputTokens"
+        | "cacheWriteInputTokens"
+        | "outputTokens"
+        | "reasoningOutputTokens"
+      >,
+    ) => Number.isSafeInteger(selected?.[key]) && selected![key]! >= 0;
     const selected =
       row.delta?.inputTokens != null && row.delta?.outputTokens != null
         ? row.delta
         : row.requestUsage && typeof row.requestUsage === "object"
           ? row.requestUsage
           : row.last;
-    const input = known("inputTokens");
-    const read = known("cachedInputTokens");
-    const write = known("cacheWriteInputTokens");
+    const input = known("inputTokens") ? selected!.inputTokens! : null;
+    const read = known("cachedInputTokens")
+      ? selected!.cachedInputTokens!
+      : null;
+    const write = known("cacheWriteInputTokens")
+      ? selected!.cacheWriteInputTokens!
+      : null;
     const uncached =
       row.inputTokensAreUncached === true ||
       row.usageSource === "claudeResponse";
@@ -474,13 +558,15 @@ export function recordedUsage(analytics: Analytics, _provider?: Provider) {
       tokens: {
         uncachedInput: uncached
           ? input
-          : input == null || cacheReadInput == null || cacheWriteInput == null
+          : [input, cacheReadInput, cacheWriteInput].includes(null)
             ? null
-            : input - cacheReadInput - cacheWriteInput,
+            : input! - cacheReadInput! - cacheWriteInput!,
         cacheReadInput,
         cacheWriteInput,
-        output: known("outputTokens"),
-        reasoningOutput: known("reasoningOutputTokens"),
+        output: known("outputTokens") ? selected!.outputTokens! : null,
+        reasoningOutput: known("reasoningOutputTokens")
+          ? selected!.reasoningOutputTokens!
+          : null,
       },
       evidence: "legacy",
       record: row,
@@ -489,7 +575,7 @@ export function recordedUsage(analytics: Analytics, _provider?: Provider) {
   return { responses, gaps };
 }
 
-export function recordedResponses(analytics: Analytics, _provider?: Provider) {
+export function recordedResponses(analytics: Analytics) {
   return recordedUsage(analytics).responses;
 }
 
@@ -520,8 +606,7 @@ export function usageTable(evidence: Evidence, label: string) {
       totalTokens(row.recorded.tokens) == null ||
       !totalTokens(row.truth.tokens)
         ? null
-        : Number(totalTokens(row.recorded.tokens)) /
-          Number(totalTokens(row.truth.tokens)),
+        : totalTokens(row.recorded.tokens)! / totalTokens(row.truth.tokens)!,
     "unpriced gaps": row.recorded.gaps?.length ?? null,
     "recorded projection": row.recorded.projection ?? "persisted-usage-v3",
     "budget tokens": row.budget.tokensUsed,
@@ -532,7 +617,7 @@ export function usageTable(evidence: Evidence, label: string) {
     "truth USD": row.truth.recomputedCostUsd ?? null,
     "saved truth USD": row.truth.costUsd ?? null,
     "CLI provider USD":
-      row.provider === "claude"
+      row.provider === ProviderKind.Claude
         ? (row.reconciliation?.providerCosts?.reduce(
             (sum, model) => sum + model.providerCostUsd,
             0,
@@ -557,7 +642,7 @@ export function usageTable(evidence: Evidence, label: string) {
 export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
   // One common basis for both runs: OLD's saved per-response rates, joined to
   // their native models. Missing or inconsistent rates cannot produce a price.
-  const modelsByProvider = new Map<Provider, Map<string, RawCost | null>>();
+  const modelsByProvider = new Map<ProviderKind, Map<string, RawCost | null>>();
   for (const row of oldEvidence.providers) {
     const models = modelsByProvider.get(row.provider) ?? new Map();
     modelsByProvider.set(row.provider, models);
@@ -574,14 +659,16 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
       else if (!models.has(model)) models.set(model, price.rates);
     }
   }
-  const reprice = (responses: Response[] | undefined, provider: Provider) => {
+  const reprice = (
+    responses: Response[] | undefined,
+    provider: ProviderKind,
+  ) => {
     if (
       !Array.isArray(responses) ||
       responses.some((row) =>
         TOKEN_CATEGORIES.slice(0, 4).some(
           (key) =>
-            !Number.isSafeInteger(row.tokens?.[key]) ||
-            Number(row.tokens[key]) < 0,
+            !Number.isSafeInteger(row.tokens?.[key]) || row.tokens[key]! < 0,
         ),
       )
     )
@@ -598,7 +685,7 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
         {
           catalog: {
             providers: {
-              [provider === "claude" ? "anthropic" : "openai"]: { models },
+              [PRICING_PROVIDERS[provider]]: { models },
             },
           },
         },
@@ -615,7 +702,7 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
       "OLD truth.prices rates by native model; USD per million tokens; base tiers only; missing/conflicting rates or incomplete usage = null",
     providers: evidence.providers.map((row) => {
       const available = Array.isArray(row.analytics?.timeline);
-      const recorded = available ? recordedUsage(row.analytics ?? {}) : null;
+      const recorded = available ? recordedUsage(row.analytics!) : null;
       return {
         ...row,
         truth: {
@@ -639,13 +726,9 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
                 : reprice(recorded.responses, row.provider),
             }
           : {
-              tokens: {
-                uncachedInput: null,
-                cacheReadInput: null,
-                cacheWriteInput: null,
-                output: null,
-                reasoningOutput: null,
-              },
+              tokens: Object.fromEntries(
+                TOKEN_CATEGORIES.map((key) => [key, null]),
+              ) as Tokens,
               projection: `unknown: raw analytics unavailable (saved format ${evidence.format ?? "unversioned"})`,
             },
       };
@@ -658,49 +741,34 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
 }
 
 /** Independent base-rate arithmetic; refuse tiered requests rather than guess. */
-export function pricingModels(
-  catalog: Pick<PricingArtifact, "catalog">,
-  provider: Provider,
-): RawProvider["models"] {
-  return (
-    catalog.catalog.providers[provider === "claude" ? "anthropic" : "openai"]
-      ?.models ?? {}
-  );
-}
-
 export function priceResponses(
   responses: Response[],
   catalog: Pick<PricingArtifact, "catalog">,
-  provider: Provider,
+  provider: ProviderKind,
 ) {
-  const models = pricingModels(catalog, provider);
+  const models = catalog.catalog.providers[PRICING_PROVIDERS[provider]]!.models;
   const rows = responses.map((response) => {
-    const cost = models[String(response.model)]?.cost;
+    const cost = models[response.model!]?.cost;
     if (!cost) throw new Error(`No price for native model ${response.model}`);
     const tokens = response.tokens;
     const context =
-      Number(tokens.uncachedInput) +
-      Number(tokens.cacheReadInput) +
-      Number(tokens.cacheWriteInput);
-    const thresholds = (cost.tiers ?? []).flatMap((entry) =>
-      entry.tier?.type === "context" &&
-      typeof entry.tier.size === "number" &&
-      Number.isFinite(entry.tier.size)
-        ? [entry.tier.size]
-        : [],
-    );
+      tokens.uncachedInput! + tokens.cacheReadInput! + tokens.cacheWriteInput!;
+    const thresholds = (cost.tiers ?? [])
+      .filter((tier) => tier.tier?.type === "context")
+      .map((tier) => tier.tier!.size!)
+      .filter(Number.isFinite);
     if (
       (cost.context_over_200k && !thresholds.length) ||
-      thresholds.some((threshold) => context >= threshold)
+      thresholds.some((threshold) => context >= threshold!)
     )
       throw new Error("Usage smoke exceeds base-rate pricing scope");
     const hour = tokens.cacheWriteInput1h ?? 0;
     const parts: [number, number | null | undefined][] = [
-      [Number(tokens.uncachedInput), cost.input],
-      [Number(tokens.cacheReadInput), cost.cache_read],
-      [Number(tokens.cacheWriteInput) - hour, cost.cache_write],
-      [hour, Number(cost.input) * CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER],
-      [Number(tokens.output), cost.output],
+      [tokens.uncachedInput!, cost.input],
+      [tokens.cacheReadInput!, cost.cache_read],
+      [tokens.cacheWriteInput! - hour, cost.cache_write],
+      [hour, cost.input! * CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER],
+      [tokens.output!, cost.output],
     ];
     if (parts.some(([tokens, rate]) => tokens > 0 && !Number.isFinite(rate)))
       throw new Error(`Missing price category for ${response.model}`);
@@ -709,7 +777,7 @@ export function priceResponses(
       rates: cost,
       costUsd:
         parts.reduce(
-          (total, [tokens, rate]) => total + tokens * Number(rate ?? 0),
+          (total, [tokens, rate]) => total + tokens * (rate ?? 0),
           0,
         ) / 1000000,
     };
@@ -741,10 +809,18 @@ else:
   );
 }
 
+type ToolEvidence = Record<string, Schema["JsonValue"] | undefined> &
+  Partial<
+    Record<
+      "command" | "cwd" | "aggregatedOutput",
+      Extract<Schema["JsonValue"], string>
+    >
+  > & { arguments?: Record<string, Schema["JsonValue"]> };
+
 /** Transcript proof of three turns, two long-turn responses, pwd and Claude steer. */
 export function scenarioEvidence(
   items: Transcript[],
-  provider: Provider,
+  provider: ProviderKind,
   root: string,
 ): {
   longTurnId: Transcript["turnId"];
@@ -769,28 +845,32 @@ export function scenarioEvidence(
       item.role === "user" &&
       item.text?.startsWith("Turn 3: reply with exactly"),
   );
-  if (second < 0 || third <= second)
+  const secondItem = items[second];
+  if (!secondItem || third <= second)
     throw new Error("Usage scenario is missing turn 2 or turn 3");
   const long = items.slice(second + 1, third);
   const answers = long.filter(
     (item) => item.role === "assistant" && item.text?.trim(),
   );
-  const tools: (Record<string, unknown> &
-    Pick<Transcript, "id" | "turnId" | "toolStatus">)[] = long
+  const tools = long
     .filter((item) => item.role === "output")
-    .map((item) => {
-      const value: unknown = JSON.parse(item.text ?? "");
-      if (!isRecord(value)) throw new Error("Tool evidence is not an object");
-      return {
-        id: item.id,
-        turnId: item.turnId,
-        toolStatus: item.toolStatus,
-        ...value,
-      };
-    });
+    .map(
+      (
+        item,
+      ): ToolEvidence & Pick<Transcript, "id" | "turnId" | "toolStatus"> => {
+        const value: unknown = JSON.parse(item.text ?? "");
+        if (!isRecord(value)) throw new Error("Tool evidence is not an object");
+        return {
+          id: item.id,
+          turnId: item.turnId,
+          toolStatus: item.toolStatus,
+          ...(value as ToolEvidence),
+        };
+      },
+    );
   if (answers.length < 2)
     throw new Error("Long turn has fewer than two assistant responses");
-  const readOnlyNote = items[second]?.text?.includes(NOTES_FILE);
+  const readOnlyNote = secondItem.text!.includes(NOTES_FILE);
   const tool = tools[0];
   const file = path.join(root, NOTES_FILE);
   const bareCat = /^[A-Za-z0-9_./-]+$/.test(file) ? `cat ${file}` : null;
@@ -805,7 +885,7 @@ export function scenarioEvidence(
   const wrapped =
     /^'([^']*)'$/.exec(shellWrapper?.[1] ?? "")?.[1] ?? shellWrapper?.[1];
   const codexCat =
-    provider === "codex" &&
+    provider === ProviderKind.Codex &&
     tool?.type === "commandExecution" &&
     tool.cwd === root &&
     (plainCat || (bareCat && wrapped === bareCat)) &&
@@ -813,7 +893,7 @@ export function scenarioEvidence(
     typeof tool.aggregatedOutput === "string" &&
     tool.aggregatedOutput.trim() === NOTES_MARKER;
   const claudeRead =
-    provider === "claude" &&
+    provider === ProviderKind.Claude &&
     tool?.tool === "Read" &&
     isRecord(tool.arguments) &&
     tool.arguments.file_path === file &&
@@ -822,8 +902,8 @@ export function scenarioEvidence(
     ) &&
     JSON.stringify(tool.result ?? tool.output ?? "").includes(NOTES_MARKER);
   const validTool =
+    tool !== undefined &&
     tools.length === 1 &&
-    tool &&
     (readOnlyNote
       ? tool.toolStatus === "completed" && (codexCat || claudeRead)
       : tool.exitCode === 0 &&
@@ -838,10 +918,10 @@ export function scenarioEvidence(
   const steer = long.find(
     (item) => item.role === "user" && item.text?.includes("usage-check steer"),
   );
-  if (provider === "claude" && !steer)
+  if (provider === ProviderKind.Claude && !steer)
     throw new Error("Claude steer is absent from the transcript");
   return {
-    longTurnId: tool?.turnId,
+    longTurnId: tool.turnId,
     assistantResponses: answers.length,
     words: answers
       .map((item) => item.text)
@@ -859,11 +939,11 @@ export function publicationReady(
   current: Cost | null | undefined,
   analytics: Analytics,
   finalTurnId: string | null | undefined,
-) {
+): displayed is Cost {
   const ready = (cost: Cost | null | undefined): cost is Cost =>
     cost?.pricingState === "ready" &&
     Number.isFinite(cost.totalUSD) &&
-    (cost.pricedSamples ?? 0) > 0 &&
+    cost.pricedSamples! > 0 &&
     !cost.refreshing &&
     !cost.unknownModels?.length;
   return Boolean(
@@ -874,8 +954,7 @@ export function publicationReady(
     displayed.totalUSD === current.totalUSD &&
     displayed.pricedSamples === current.pricedSamples &&
     analytics.timeline?.some((row) => row.turnId === finalTurnId) &&
-    (!("usageGeneration" in analytics) ||
-      analytics.usageGeneration == null ||
+    (analytics.usageGeneration == null ||
       analytics.usageGeneration === current.generation),
   );
 }
@@ -892,10 +971,10 @@ export function bridgeProcessMatches(
   const owned = (row: ProcessRow) => {
     const seen = new Set();
     let parent: number | undefined = row.ppid;
-    while (parent != null && parent > 1 && !seen.has(parent)) {
+    while (parent! > 1 && !seen.has(parent!)) {
       if (parent === serverPid) return true;
-      seen.add(parent);
-      parent = parents.get(parent);
+      seen.add(parent!);
+      parent = parents.get(parent!);
     }
     return false;
   };
@@ -938,7 +1017,7 @@ export function validateSteer(
   item: Transcript | undefined,
   receipt: Optional<Schema["MessageReceiptEntityDto"]> | undefined,
   submitted:
-    | { id?: string | undefined; turnId?: string | null | undefined }
+    | { id?: string | null | undefined; turnId?: string | null | undefined }
     | undefined,
   longTurnId: string | null | undefined,
   startedAt: Transcript["at"],
@@ -962,7 +1041,13 @@ export function validateSteer(
     Number(item.at) > endedAt
   )
     throw new Error("Steer is not associated with turn 2");
-  return { id: submitted.id, turnId: longTurnId, receipt, input, at: item.at };
+  return {
+    id: submitted.id,
+    turnId: longTurnId,
+    receipt,
+    input,
+    at: item.at,
+  };
 }
 
 /** Persist a complete sibling, then replace the checkpoint in one rename. */
@@ -1020,7 +1105,7 @@ export type PermissionRecord = Optional<
 
 export function verifiedPermissions(
   record: PermissionRecord,
-  provider: Provider,
+  provider: ProviderKind,
   root: string,
   expected: DirectoryIdentity | undefined,
 ) {
@@ -1036,24 +1121,29 @@ export function verifiedPermissions(
   const identity = directoryIdentity(root);
   if (
     !same(identity, expected) ||
-    typeof record.cwd !== "string" ||
-    !same(directoryIdentity(record.cwd), expected)
+    !same(directoryIdentity(record.cwd!), expected)
   )
     throw new Error("Run folder identity changed");
   if (record.yoloMode !== false || record.role !== "orchestrator")
     throw new Error("Unsafe usage permissions: expected a non-YOLO lead");
   if (record.approvalPolicy != null && record.approvalPolicy !== "on-request")
     throw new Error("Unsafe usage approval policy");
-  const supplied = [record.sandboxPolicy, record.sandbox].filter(
-    (policy) => policy != null,
-  );
+  const supplied = (
+    [record.sandboxPolicy, record.sandbox] as (
+      | string
+      | Record<string, Schema["JsonValue"]>
+      | null
+      | undefined
+    )[]
+  ).filter((policy) => policy != null);
   const roots: unknown[] = [record.cwd];
   for (const policy of supplied) {
     if (typeof policy === "string") {
       if (policy !== "workspace-write")
         throw new Error("Unsafe or unknown sandbox policy");
     } else if (
-      isRecord(policy) &&
+      typeof policy === "object" &&
+      !Array.isArray(policy) &&
       policy.type === "workspaceWrite" &&
       (policy.networkAccess == null || policy.networkAccess === false)
     ) {
@@ -1071,7 +1161,7 @@ export function verifiedPermissions(
   )
     throw new Error("Unsafe usage permissions write outside the run folder");
   const permissionMode = record.claudeOptions?.permissionMode ?? "default";
-  if (provider === "claude" && permissionMode !== "default")
+  if (provider === ProviderKind.Claude && permissionMode !== "default")
     throw new Error("Claude usage permissions must use default mode");
   return {
     verified: true,
@@ -1090,7 +1180,7 @@ export function verifiedPermissions(
     rawSandbox: record.sandbox ?? null,
     rawSandboxPolicy: record.sandboxPolicy ?? null,
     policyDerivedForIdleThread: supplied.length === 0,
-    ...(provider === "claude" ? { permissionMode } : {}),
+    ...(provider === ProviderKind.Claude ? { permissionMode } : {}),
     policyOwner:
       "runtime-services/src/thread_prepare.rs and claude-bridge/bridge.mjs permissionMode",
   };
@@ -1151,7 +1241,7 @@ if not a.get('name','').startswith('Studio smoke '+run+' '): raise RuntimeError(
 permissions={k:a.get(k) for k in ['yoloMode','cwd','role','sandbox','sandboxPolicy','approvalPolicy','claudeOptions']}
 result={'permissions':permissions}
 if analytics=='1':
- if a.get('provider')!='claude' or a.get('rootId',agent)!=agent: raise RuntimeError('SQLite analytics fallback is limited to the owned Claude lead')
+ if a.get('provider')!=${JSON.stringify(ProviderKind.Claude)} or a.get('rootId',agent)!=agent: raise RuntimeError('SQLite analytics fallback is limited to the owned Claude lead')
  d=db('analytics')
  rows=d.execute("SELECT record FROM analytics_usage WHERE agent=? AND NULLIF(json_extract(record,'$.responseId'),'') IS NOT NULL ORDER BY at DESC,seq DESC LIMIT 129",(agent,)).fetchall()
  history=d.execute('SELECT record FROM analytics_history WHERE agent=? LIMIT 9',(agent,)).fetchall()

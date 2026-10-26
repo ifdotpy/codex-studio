@@ -1,6 +1,6 @@
+import { required } from "./helpers.ts";
 import { responseJson } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import type { ComplaintBody } from "./helpers.ts";
 import type { TestInfo, BrowserContext } from "@playwright/test";
 import {
@@ -75,7 +75,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
     page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     page.setDefaultTimeout(10000);
     const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.goto(origin);
     const leadChat = page.locator(`[data-chat="${lead.id}"]`);
     await leadChat.click();
@@ -153,7 +153,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
     assert.equal(attempts.length, 2);
     assert.deepEqual(
       attempts[1],
-      attempts[0],
+      required(attempts[0]),
       "retry preserves the request after drawer unmount",
     );
     const saved = await responseJson<import("./helpers.ts").ComplaintDetail>(
@@ -247,7 +247,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
     const stable = await browser.newPage({
       viewport: { width: 1280, height: 900 },
     });
-    stable.on("pageerror", (error) => errors.push(error.message));
+    stable.on("pageerror", (error) => errors.push((error as Error).message));
     const quietState = structuredClone(state);
     quietState.runtime.requests = [];
     quietState.runtime.complaints = [];
@@ -284,19 +284,18 @@ test("messages focused ui", async ({ browser: _browser }) => {
     });
     await empty.waitFor();
     await stable.evaluate(() => {
-      const empty = document.querySelector(".team-chat-empty");
-      if (!empty) throw new Error("Missing empty messages fixture");
-      window.messagesFocusedStability = { empty, failures: [] };
-      window.messagesFocusedObserver = new MutationObserver(() => {
-        if (!empty.isConnected)
-          window.messagesFocusedStability.failures.push("empty removed");
+      const empty = document.querySelector(".team-chat-empty")!;
+      window.stability = { empty, failures: [] };
+      window.observer = new MutationObserver(() => {
+        if (!empty.isConnected) window.stability.failures.push("empty removed");
       });
-      const body = document.querySelector(".workspace-message-body");
-      if (!body) throw new Error("Missing message body");
-      window.messagesFocusedObserver.observe(body, {
-        childList: true,
-        subtree: true,
-      });
+      window.observer.observe(
+        document.querySelector(".workspace-message-body")!,
+        {
+          childList: true,
+          subtree: true,
+        },
+      );
     });
     await stable.waitForTimeout(5500);
     assert.equal(
@@ -305,10 +304,10 @@ test("messages focused ui", async ({ browser: _browser }) => {
       "Messages uses the existing snapshot, not the full workspace API",
     );
     assert.deepEqual(
-      await stable.evaluate(() => window.messagesFocusedStability.failures),
+      await stable.evaluate(() => window.stability.failures),
       [],
     );
-    await stable.evaluate(() => window.messagesFocusedObserver.disconnect());
+    await stable.evaluate(() => window.observer.disconnect());
     quietState.runtime.requests = [
       {
         id: "stability-request",
@@ -431,13 +430,12 @@ test("messages focused ui", async ({ browser: _browser }) => {
     console.error("Evidence:", root, error);
     throw error;
   } finally {
-    fixture.stdin?.end();
+    required(fixture.stdin)?.end();
   }
 });
 
 declare global {
   interface Window {
-    messagesFocusedStability: { empty: Element | null; failures: string[] };
-    messagesFocusedObserver: MutationObserver;
+    stability: { empty: Element | null; failures: string[] };
   }
 }

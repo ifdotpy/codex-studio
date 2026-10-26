@@ -24,7 +24,7 @@ test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", a
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "";
-  child.stderr?.on("data", (chunk) => {
+  child.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
@@ -36,10 +36,12 @@ test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", a
       .map((agent) => agent.id);
     const firstAgent = state.runtime.agents[0];
     if (!firstAgent) throw new Error("Missing first fixture agent");
+
     const project = state.runtime.projects.find(
       (project) => project.path === firstAgent.cwd,
     );
     if (!project) throw new Error("Missing fixture project");
+
     let deletes = 0;
     await page.route("**/api/projects/delete", async (route) => {
       deletes++;
@@ -61,7 +63,7 @@ test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", a
     await page.goto(origin);
     await expect(page.locator("#message")).toBeVisible();
     const options = page.getByRole("button", {
-      name: `Options for project ${project.name || project.path}`,
+      name: `Options for project ${project!.name || project!.path}`,
     });
     await options.focus();
     await page.keyboard.press("Enter");

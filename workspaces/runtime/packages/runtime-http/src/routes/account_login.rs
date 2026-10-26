@@ -611,7 +611,7 @@ mod tests {
         let path = directory.join("registry.json");
         std::fs::write(
             &path,
-            br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture","label":"Codex","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#,
+            serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/fixture","label":"Codex","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string().as_bytes(),
         )
         .expect("fixture registry");
         let driver = Arc::new(AccountDriver::open(path).expect("validated registry"));

@@ -1537,8 +1537,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         <ActionIcon
                           className="project-tree-action"
                           aria-label={`New chat in ${group.name}`}
-                          aria-description={blocked || undefined}
-                          aria-disabled={blocked ? true : undefined}
+                          {...(blocked ? { "aria-description": blocked } : {})}
+                          {...(blocked ? { "aria-disabled": true } : {})}
                           {...(blocked ? { "data-disabled": true } : {})}
                           onClick={() => {
                             if (!blocked) p.newChat(group.path || undefined);

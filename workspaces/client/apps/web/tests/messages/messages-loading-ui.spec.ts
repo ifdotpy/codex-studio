@@ -1,5 +1,4 @@
 import { responseJson } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import {
   readTestState,
   entityPullFixtureForRequest,
@@ -31,26 +30,24 @@ test("Messages loading", async ({ browser }) => {
   });
   let page,
     log = "";
-  required(fixture.stderr).on("data", (value) => {
+  fixture.stderr!.on("data", (value) => {
     log += value;
   });
   const pause = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
   try {
     const port = await new Promise((resolve, reject) => {
-      required(fixture.stdout).once("data", (value) =>
+      fixture.stdout!.once("data", (value) =>
         resolve(Number(String(value).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
-    const lead = required(
-      state.threads.find((agent) => agent.name === "Release lead"),
-    );
-    const complaint = required(
-      state.runtime.complaints.find((item) => item.author === lead.id),
-    );
+    const lead = state.threads.find((agent) => agent.name === "Release lead")!;
+    const complaint = state.runtime.complaints.find(
+      (item) => item.author === lead.id,
+    )!;
     const detail = await responseJson<import("./helpers.ts").ComplaintDetail>(
       await fetch(
         `${origin}/api/complaint?id=${encodeURIComponent(complaint.id)}`,
@@ -58,32 +55,27 @@ test("Messages loading", async ({ browser }) => {
     );
     const inboxComplaint = { ...complaint };
     state.runtime.complaints = [inboxComplaint];
-    const direct = required(
-      state.runtime.rooms.find(
-        (room) =>
-          room.kind === "private" && required(room.members).includes(lead.id),
-      ),
-    );
-    const broadcast = required(
-      state.runtime.rooms.find(
-        (room) => room.kind === "broadcast" && room.rootId === lead.id,
-      ),
-    );
+    const direct = state.runtime.rooms.find(
+      (room) => room.kind === "private" && room.members!.includes(lead.id),
+    )!;
+    const broadcast = state.runtime.rooms.find(
+      (room) => room.kind === "broadcast" && room.rootId === lead.id,
+    )!;
     direct.updated = 100;
     direct.lastMessage = {
-      ...required(direct.lastMessage),
+      ...direct.lastMessage!,
       created: 100,
     };
     broadcast.updated = 200;
     broadcast.lastMessage = {
-      ...required(broadcast.lastMessage),
+      ...broadcast.lastMessage!,
       created: 200,
     };
     state.runtime.rooms = [direct, broadcast];
     state.runtime.requests = [];
     state.runtime.monitors = [];
     state.runtime.tasks = [];
-    state.runtime.work = [];
+    delete (state.runtime as Partial<typeof state.runtime>).work;
     const review = {
       id: "pending-work-review",
       rootId: lead.id,
@@ -136,7 +128,7 @@ test("Messages loading", async ({ browser }) => {
         {
           id: `message-${room.id}`,
           seq: 1,
-          sender: required(room.members)[0],
+          sender: room.members![0],
           senderName: "Reviewer",
           text: markdown,
           created: 100,
@@ -159,7 +151,7 @@ test("Messages loading", async ({ browser }) => {
       });
       installApiSchemaFixtureHeaders(next);
       next.setDefaultTimeout(12000);
-      next.on("pageerror", (error) => errors.push(error.message));
+      next.on("pageerror", (error) => errors.push((error as Error).message));
       const backendIdentity = await responseJson<
         import("../playwright.ts").SyncIdentityResponse
       >(await fetch(`${origin}/api/sync/identity`));
@@ -170,31 +162,37 @@ test("Messages loading", async ({ browser }) => {
       await next.route("**/api/sync/pull?*", (route) => {
         stateReads++;
         const current = structuredClone(state);
-        const leadEntity = required(
-          current.runtime.agents.find((agent) => agent.id === lead.id),
-        );
+        const leadEntity = current.runtime.agents.find(
+          (agent) => agent.id === lead.id,
+        )!;
         if (leadEntity) leadEntity.updated = 100 + stateReads;
         const requestUrl = route.request().url();
-        const projection = entityPullFixtureForRequest(current, requestUrl);
+        const projection = entityPullFixtureForRequest(
+          current,
+          requestUrl,
+        ) as Extract<
+          ReturnType<typeof entityPullFixtureForRequest>,
+          { documents: unknown }
+        >;
         const parsedUrl = new URL(requestUrl);
         const after = Number(parsedUrl.searchParams.get("after") || 0);
         if (
           parsedUrl.searchParams.get("scope") === "state:entities:v1" &&
-          "documents" in projection &&
           projection.documents.length === 0 &&
-          after >= required(projection.maxSeq)
+          after >= projection.maxSeq!
         ) {
           const initial = entityPullFixture(current, {
             scope: "state:entities:v1",
             fresh: true,
-          });
-          if (!("documents" in initial))
-            throw new Error("Expected initial documents");
+          }) as Extract<
+            ReturnType<typeof entityPullFixture>,
+            { documents: unknown }
+          >;
           const update = initial.documents.find(
             (document) => document.id === `entity:agent:${lead.id}`,
           );
           if (update) {
-            const seq = Math.max(required(projection.maxSeq), after) + 1;
+            const seq = Math.max(projection.maxSeq!, after) + 1;
             projection.documents.push({ ...update, seq });
             projection.checkpoint.seq = seq;
             projection.maxSeq = seq;
@@ -257,7 +255,7 @@ test("Messages loading", async ({ browser }) => {
       await next.goto(origin);
       await next
         .locator("#conversation-title")
-        .filter({ hasText: required(lead.name) })
+        .filter({ hasText: lead.name! })
         .waitFor();
       return next;
     };
@@ -364,7 +362,7 @@ test("Messages loading", async ({ browser }) => {
       "state refresh does not wait for or replace the held complaint detail",
     );
     assert.equal(typeof releaseComplaintDetail, "function");
-    required(releaseComplaintDetail)();
+    releaseComplaintDetail!();
     await complaintCard.getByText(detail.text, { exact: true }).waitFor();
     const roomDetail = drawer.locator(".team-room-detail");
     await drawer.locator(`[data-room="${broadcast.id}"]`).click();
@@ -449,11 +447,11 @@ test("Messages loading", async ({ browser }) => {
       JSON.stringify(mobileLayout, null, 2),
     );
     assert.ok(
-      required(mobileLayout[".team-room-detail"]).bottom >= 896,
+      mobileLayout[".team-room-detail"]!.bottom >= 896,
       "the room detail fills the mobile window to its bottom edge",
     );
     assert.ok(
-      required(mobileLayout[".team-room-detail"]).bottom <= 901,
+      mobileLayout[".team-room-detail"]!.bottom <= 901,
       "the room detail stays inside the mobile window",
     );
     await mobileDrawer

@@ -568,7 +568,9 @@ mod tests {
     ) {
         let cases: Value = serde_json::from_str(include_str!("../tests/budget/cases.json"))
             .expect("budget fixture");
-        let agent = cases[0]["agents"][0].clone();
+        let mut agent = cases[0]["agents"][0].clone();
+        // The frozen budget snapshot belongs to the Codex account/thread.
+        agent["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
         let checkpoint_id = "a:account:thread".to_owned();
         let raw = json!({"id":checkpoint_id,"agent":"a","status":"current"}).to_string();
         let mut history = HistoryObservation::from_records(&agent, None, None).expect("history");

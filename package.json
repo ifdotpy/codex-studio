@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "contracts:vendor-errors": "node workspaces/tooling/apps/repository-checks/generate-provider-errors.ts",
     "contracts:generate": "cargo run --quiet --locked -p studio-runtime-schema --bin studio-contracts -- --write",
     "contracts:check": "cargo run --quiet --locked -p studio-runtime-schema --bin studio-contracts -- --check",
     "test:client": "pnpm run typecheck:client-helper && pnpm --filter codex-agents-web test",

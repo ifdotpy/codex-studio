@@ -3,6 +3,7 @@
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 
 use crate::event_write::truthy;
 
@@ -528,8 +529,7 @@ pub fn native_thread_block(record: &Value) -> Option<Value> {
         return Some(Value::Object(block?.clone()));
     }
     let blocked = |error: &Value| {
-        (error.get("codexErrorInfo").and_then(Value::as_str) == Some("misalignmentPolicyViolation"))
-            .then(|| json!({"threadId":thread_id,"error":error}))
+        is_misalignment_policy_violation(error).then(|| json!({"threadId":thread_id,"error":error}))
     };
     if let Some(block) = record.get("error").and_then(blocked) {
         return Some(block);
@@ -863,7 +863,7 @@ mod projection_plan_tests {
         for budget in [json!(null), json!(100)] {
             let view = project_persisted_record(
                 "agent",
-                &json!({"id":"lead","rootId":"lead","isLead":true,"tokenBudget":budget,
+                &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"tokenBudget":budget,
                         "budgetBlocked":"usage accounting incomplete",
                         "completedWorkerTurns":2,"terminalReason":"worker_max_turns"}),
             )
@@ -895,13 +895,13 @@ mod projection_plan_tests {
 
     #[test]
     fn invalid_agent_view_preserves_valid_root_and_lead_identity() {
-        let record = json!({"id":"child","rootId":"lead","epoch":4,"isLead":true});
+        let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","epoch":4,"isLead":true});
         let view = invalid_agent_view("child", &record, "invalid field /prompt");
         assert_eq!(view["rootId"], "lead");
         assert_eq!(view["isLead"], true);
         assert_eq!(view["status"], "failed");
 
-        let malformed_root = json!({"id":"child","rootId":17,"epoch":4,"isLead":false});
+        let malformed_root = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":17,"epoch":4,"isLead":false});
         let fallback = invalid_agent_view("child", &malformed_root, "invalid field /rootId");
         assert_eq!(fallback["rootId"], "child");
         assert_eq!(fallback["isLead"], false);

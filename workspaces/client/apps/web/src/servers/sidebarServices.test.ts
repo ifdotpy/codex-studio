@@ -374,11 +374,10 @@ describe("owner sidebar services", () => {
       {},
     );
     const group = itemGroup(model.projectKey("local", "/local"));
-    const previous = model.order[group];
-    assert.ok(previous);
+    assert.ok(model.order[group] !== undefined);
     const order = {
       ...model.order,
-      [group]: [...previous].reverse(),
+      [group]: [...model.order[group]].reverse(),
     };
     const result = await services
       .owner({ kind: "order", group })

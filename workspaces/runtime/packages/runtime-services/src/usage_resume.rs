@@ -5,6 +5,10 @@ use crate::continuation::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::provider_errors::{
+    KnownCodexErrorKind, known_error_kind, raw_error_kind,
+};
 
 const RESET_GRACE: f64 = 5.0;
 const RESUME_MIN: f64 = 60.0;
@@ -146,7 +150,7 @@ fn claude_policy() -> &'static ClaudeUsagePolicy {
     })
 }
 fn model_family(agent: &Value) -> Option<&'static str> {
-    if text(agent, "provider") != "claude" {
+    if text(agent, "provider") != ProviderKind::Claude.key() {
         return None;
     }
     let model = text(agent, "model");
@@ -182,7 +186,7 @@ fn buckets<'a>(data: &'a Value, agent: &'a Value) -> impl Iterator<Item = (&'a s
         .filter(|(id, _)| relevant_bucket(id, agent))
 }
 fn overage_allowed(data: &Value, agent: &Value, id: &str) -> bool {
-    if text(agent, "provider") != "claude" {
+    if text(agent, "provider") != ProviderKind::Claude.key() {
         return false;
     }
     let info = &data["claudeRateLimit"];
@@ -643,16 +647,14 @@ pub fn completed_proof(s: &Snapshot, account_key: &str, now: f64) -> Result<Deci
 }
 
 fn recoverable_error(error: &Value, provider: &str) -> Result<bool> {
-    let info = error.get("codexErrorInfo");
-    let kind = info
-        .and_then(Value::as_str)
-        .or_else(|| {
-            info.and_then(Value::as_object)
-                .and_then(|m| m.keys().next().map(String::as_str))
-        })
-        .unwrap_or("");
-    if matches!(kind, "usageLimitExceeded" | "rateLimitExceeded")
-        || kind.to_ascii_lowercase().contains("auth")
+    if matches!(
+        known_error_kind(error),
+        Some(
+            KnownCodexErrorKind::UsageLimitExceeded
+                | KnownCodexErrorKind::RateLimitExceeded
+                | KnownCodexErrorKind::Unauthorized
+        )
+    ) || raw_error_kind(error).is_some_and(|kind| kind.to_ascii_lowercase().contains("auth"))
     {
         return Ok(true);
     }
@@ -661,7 +663,7 @@ fn recoverable_error(error: &Value, provider: &str) -> Result<bool> {
     let validator=VALIDATOR.get_or_init(||jsonschema::validator_for(&json!({"type":"object","anyOf":[
       {"properties":{"message":{"pattern":r"(?i)\b401\b"}},"required":["message"]},
       {"properties":{"message":{"allOf":[{"pattern":r"(?i)\b403\b"},{"pattern":r"(?i)\b(?:invalid|expired|revoked).{0,32}\b(?:token|key)\b|\b(?:token|key)\b.{0,32}\b(?:invalid|expired|revoked)\b|\bsign[ -]?in\b|\bauthentication required\b|\bunauthorized\b"}]}},"required":["message"]},
-      {"properties":{"provider":{"const":"claude"},"message":{"pattern":"(?i)oauth session expired|failed to authenticate"}},"required":["provider","message"]}
+      {"properties":{"provider":{"const":ProviderKind::Claude.key()},"message":{"pattern":"(?i)oauth session expired|failed to authenticate"}},"required":["provider","message"]}
     ]})).map_err(|e|e.to_string())).as_ref().map_err(|_|ContinuationError::Invalid("/error/schema".into()))?;
     Ok(validator.is_valid(&json!({"message":text(error,"message"),"provider":provider})))
 }

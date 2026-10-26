@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use studio_runtime_process::provider_seam::Shutdown;
+use studio_runtime_schema::ProviderKind;
 use studio_runtime_schema::shared_values::{
     MODEL_CATALOG_ADMISSION_WAIT_SECONDS, MODEL_CATALOG_CACHE_TTL_SECONDS,
     MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES,
@@ -26,7 +27,8 @@ const CATALOG_ADMISSION_WAIT: Duration = Duration::from_secs(MODEL_CATALOG_ADMIS
 const MAX_CATALOG_PAGE_BYTES: usize = MODEL_CATALOG_MAX_FRAME_BYTES;
 const MAX_CATALOG_RESPONSE_BYTES: usize = MODEL_CATALOG_MAX_RESPONSE_BYTES;
 const MAX_CATALOG_PAGES: usize = MODEL_CATALOG_MAX_PAGES;
-pub type ChangeCallback = Arc<dyn Fn(&str, &str, &str, Option<Value>) + Send + Sync + 'static>;
+pub type ChangeCallback =
+    Arc<dyn Fn(&str, &str, ProviderKind, Option<Value>) + Send + Sync + 'static>;
 
 /// Dependency name reported when no fresh model catalog can be read for an
 /// admission decision. The condition is transient: a later read can succeed.
@@ -51,7 +53,7 @@ pub trait ModelListPort: Send + Sync {
     fn list<'a>(
         &'a self,
         account_key: &'a str,
-        provider: &'a str,
+        provider: ProviderKind,
         params: Value,
     ) -> Pin<Box<dyn Future<Output = Result<Value, ModelListError>> + Send + 'a>>;
 }
@@ -60,7 +62,7 @@ impl ModelListPort for ModelCatalogService {
     fn list<'a>(
         &'a self,
         account_key: &'a str,
-        provider: &'a str,
+        provider: ProviderKind,
         params: Value,
     ) -> Pin<Box<dyn Future<Output = Result<Value, ModelListError>> + Send + 'a>> {
         Box::pin(self.list_models(account_key, provider, params))
@@ -77,12 +79,9 @@ pub enum CatalogRead {
 async fn read_account_session_catalog(
     session: Arc<dyn crate::account_session_runtime::AccountSessionPort>,
     account: String,
-    provider: String,
+    _provider: ProviderKind,
     stop: Shutdown,
 ) -> Result<Value, ()> {
-    if !matches!(provider.as_str(), "codex" | "claude") {
-        return Err(());
-    }
     let mut shutdown = stop.subscribe();
     let mut rows = Vec::new();
     // A refresh is a new durable provider read. Page retries within this refresh
@@ -208,7 +207,7 @@ pub enum AdmissionCatalogRead {
         value: Value,
         account_key: String,
         home: String,
-        provider: String,
+        provider: ProviderKind,
         generation: u64,
         expires_at: std::time::Instant,
     },
@@ -227,13 +226,13 @@ struct CacheEntry {
 /// Cache entries and their generation sequence advance under the same lock.
 #[derive(Default)]
 struct CatalogState {
-    entries: HashMap<(String, String, String), CacheEntry>,
+    entries: HashMap<(String, String, ProviderKind), CacheEntry>,
     next_generation: u64,
 }
 
 struct CatalogInner {
     state: Mutex<CatalogState>,
-    accounts: Mutex<HashMap<String, (String, String)>>,
+    accounts: Mutex<HashMap<String, (String, ProviderKind)>>,
     accounts_initialized: AtomicBool,
     account_session: Mutex<Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>>,
     on_change: ChangeCallback,
@@ -255,12 +254,9 @@ impl ModelCatalogService {
         &self,
         account_key: &str,
         home: &str,
-        provider: &str,
+        provider: ProviderKind,
     ) -> AdmissionCatalogRead {
-        let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
-        if !matches!(provider, "codex" | "claude") {
-            return AdmissionCatalogRead::Unavailable;
-        }
+        let key = (account_key.to_owned(), home.to_owned(), provider);
         let Ok(cache) = self.0.state.lock() else {
             return AdmissionCatalogRead::Unavailable;
         };
@@ -294,7 +290,7 @@ impl ModelCatalogService {
         &self,
         account_key: &str,
         home: &str,
-        provider: &str,
+        provider: ProviderKind,
     ) -> AdmissionCatalogRead {
         let deadline = Instant::now() + CATALOG_ADMISSION_WAIT;
         if tokio::time::timeout_at(deadline, self.read(account_key, home, provider, false))
@@ -320,7 +316,7 @@ impl ModelCatalogService {
     /// Wait until admission can make progress on this catalog: start or join a
     /// refresh now and wait for a published result; after a cached failure,
     /// wait for its retry deadline (or any earlier published result).
-    pub async fn refreshed(&self, account_key: &str, home: &str, provider: &str) {
+    pub async fn refreshed(&self, account_key: &str, home: &str, provider: ProviderKind) {
         let notified = self.0.refresh_changed.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
@@ -331,7 +327,7 @@ impl ModelCatalogService {
         ) {
             return;
         }
-        let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
+        let key = (account_key.to_owned(), home.to_owned(), provider);
         let retry_at = self.0.state.lock().ok().and_then(|cache| {
             cache
                 .entries
@@ -373,10 +369,10 @@ impl ModelCatalogService {
         &self,
         account_key: &str,
         home: &str,
-        provider: &str,
+        provider: ProviderKind,
         retry: bool,
     ) -> CatalogRead {
-        // Both providers read the catalog over the account's retained session;
+        // Providers read the catalog over the account's retained session;
         // without that port there is no catalog source.
         let no_session = self
             .0
@@ -384,14 +380,11 @@ impl ModelCatalogService {
             .lock()
             .ok()
             .is_none_or(|session| session.is_none());
-        if !matches!(provider, "codex" | "claude")
-            || *self.0.stop.subscribe().borrow()
-            || no_session
-        {
+        if *self.0.stop.subscribe().borrow() || no_session {
             return CatalogRead::Unavailable;
         }
 
-        let cache_key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
+        let cache_key = (account_key.to_owned(), home.to_owned(), provider);
         // Own task-slot registration before marking the cache pending. If this
         // future is cancelled while waiting for the registry, no orphaned
         // pending entry can suppress future refresh attempts.
@@ -491,7 +484,6 @@ impl ModelCatalogService {
             .lock()
             .ok()
             .and_then(|session| session.clone());
-        let provider = provider.to_owned();
         let stop = self.0.stop.clone();
         let account = account_key.to_owned();
         tasks.push(tokio::spawn(async move {
@@ -515,7 +507,7 @@ impl ModelCatalogService {
         &self,
         account_key: &str,
         home: &str,
-        provider: &str,
+        provider: ProviderKind,
         retry: bool,
     ) -> CatalogRead {
         match self
@@ -529,11 +521,11 @@ impl ModelCatalogService {
         }
     }
 
-    fn last_known(&self, account_key: &str, home: &str, provider: &str) -> Option<Value> {
+    fn last_known(&self, account_key: &str, home: &str, provider: ProviderKind) -> Option<Value> {
         if !self.account_identity_is_current(account_key, home, provider) {
             return None;
         }
-        let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
+        let key = (account_key.to_owned(), home.to_owned(), provider);
         self.0.state.lock().ok()?.entries.get(&key)?.value.clone()
     }
 
@@ -541,7 +533,7 @@ impl ModelCatalogService {
         &self,
         account_key: &str,
         home: &str,
-        provider: &str,
+        provider: ProviderKind,
         retry: bool,
     ) -> CatalogRead {
         let deadline = Instant::now() + CATALOG_TIMEOUT;
@@ -583,7 +575,12 @@ impl ModelCatalogService {
         }
     }
 
-    fn account_identity_is_current(&self, account_key: &str, home: &str, provider: &str) -> bool {
+    fn account_identity_is_current(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: ProviderKind,
+    ) -> bool {
         if !self.0.accounts_initialized.load(Ordering::Acquire) {
             return true;
         }
@@ -601,9 +598,9 @@ impl ModelCatalogService {
         &self,
         account_key: &str,
         home: &str,
-        provider: &str,
+        provider: ProviderKind,
     ) -> CatalogRead {
-        if provider != "codex" {
+        if provider != ProviderKind::Codex {
             return CatalogRead::Unavailable;
         }
         let wait_for_result = async {
@@ -645,10 +642,7 @@ impl ModelCatalogService {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
-                    let provider = studio_runtime_providers::ProviderKind::of_record(account)
-                        .ok()?
-                        .key()
-                        .to_owned();
+                    let provider = ProviderKind::of_record(account).ok()?;
                     Some((id, (home, provider)))
                 })
                 .collect::<HashMap<_, _>>();
@@ -656,9 +650,9 @@ impl ModelCatalogService {
                 profiles
                     .iter()
                     .filter(|&(id, (home, provider))| {
-                        retained.get(id) != Some(&(home.clone(), provider.clone()))
+                        retained.get(id) != Some(&(home.clone(), *provider))
                     })
-                    .map(|(id, (home, provider))| (id.clone(), home.clone(), provider.clone())),
+                    .map(|(id, (home, provider))| (id.clone(), home.clone(), *provider)),
             );
             profiles.clear();
             profiles.extend(retained);
@@ -673,19 +667,18 @@ impl ModelCatalogService {
                 accounts.iter().any(|account| {
                     account["id"].as_str() == Some(key.0.as_str())
                         && account["home"].as_str().unwrap_or("") == key.1
-                        && studio_runtime_providers::ProviderKind::key_of(account)
-                            == Some(key.2.as_str())
+                        && ProviderKind::of_record(account).ok() == Some(key.2)
                 })
             });
         self.0.refresh_changed.notify_waiters();
         for (account, home, provider) in retired {
-            (self.0.on_change)(&account, &home, &provider, None);
+            (self.0.on_change)(&account, &home, provider, None);
         }
     }
 
     /// Return the registered provider/home identity for transfer validation.
     #[must_use]
-    pub fn account_profile(&self, account: &str) -> Option<(String, String)> {
+    pub fn account_profile(&self, account: &str) -> Option<(String, ProviderKind)> {
         self.0.accounts.lock().ok()?.get(account).cloned()
     }
     /// Attach the account registry's retained provider session. Model reads
@@ -704,11 +697,11 @@ impl ModelCatalogService {
         &self,
         account_key: &str,
         home: &str,
-        provider: &str,
+        provider: ProviderKind,
         value: Value,
     ) {
         self.0.state.lock().expect("catalog cache").entries.insert(
-            (account_key.to_owned(), home.to_owned(), provider.to_owned()),
+            (account_key.to_owned(), home.to_owned(), provider),
             CacheEntry {
                 generation: 1,
                 value: Some(value),
@@ -726,7 +719,7 @@ impl ModelCatalogService {
     async fn list_models(
         &self,
         account: &str,
-        provider: &str,
+        provider: ProviderKind,
         params: Value,
     ) -> Result<Value, ModelListError> {
         if params != json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE}) {
@@ -788,7 +781,7 @@ impl Drop for CatalogInner {
 
 fn store_result(
     inner: &CatalogInner,
-    key: &(String, String, String),
+    key: &(String, String, ProviderKind),
     generation: u64,
     result: Result<Value, ()>,
 ) -> bool {
@@ -819,7 +812,7 @@ fn store_result(
             .lock()
             .ok()
             .and_then(|cache| cache.entries.get(key).and_then(|entry| entry.value.clone()));
-        (inner.on_change)(&key.0, &key.1, &key.2, value);
+        (inner.on_change)(&key.0, &key.1, key.2, value);
         inner.refresh_changed.notify_waiters();
     }
     stored
@@ -877,7 +870,7 @@ pub(crate) mod tests {
         read_account_session_catalog(
             Arc::new(AccountSessionPages::new(pages)),
             "account".into(),
-            "codex".into(),
+            ProviderKind::Codex,
             Shutdown::default(),
         )
         .await
@@ -947,7 +940,7 @@ pub(crate) mod tests {
         let result = read_account_session_catalog(
             session.clone(),
             "account".into(),
-            "claude".into(),
+            ProviderKind::Claude,
             Shutdown::default(),
         )
         .await
@@ -1026,7 +1019,7 @@ pub(crate) mod tests {
         let result = read_account_session_catalog(
             session.clone(),
             "codex2".into(),
-            "codex".into(),
+            ProviderKind::Codex,
             Shutdown::default(),
         )
         .await
@@ -1042,7 +1035,7 @@ pub(crate) mod tests {
             read_account_session_catalog(
                 session,
                 "codex2".into(),
-                "codex".into(),
+                ProviderKind::Codex,
                 Shutdown::default(),
             )
             .await
@@ -1060,7 +1053,7 @@ pub(crate) mod tests {
             read_account_session_catalog(
                 session.clone(),
                 "account".into(),
-                "claude".into(),
+                ProviderKind::Claude,
                 Shutdown::default(),
             )
             .await
@@ -1088,7 +1081,7 @@ pub(crate) mod tests {
         assert_eq!(
             port.list(
                 "missing",
-                "claude",
+                ProviderKind::Claude,
                 json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE})
             )
             .await,
@@ -1097,15 +1090,19 @@ pub(crate) mod tests {
         assert_eq!(
             port.list(
                 "claude-account",
-                "codex",
+                ProviderKind::Codex,
                 json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE})
             )
             .await,
             Err(ModelListError::ProviderMismatch)
         );
         assert_eq!(
-            port.list("claude-account", "claude", json!({"cursor":"caller-owned"}))
-                .await,
+            port.list(
+                "claude-account",
+                ProviderKind::Claude,
+                json!({"cursor":"caller-owned"})
+            )
+            .await,
             Err(ModelListError::InvalidParams)
         );
     }
@@ -1121,7 +1118,7 @@ pub(crate) mod tests {
         home: &str,
         value: Value,
     ) {
-        let key = (account.to_owned(), home.to_owned(), "codex".to_owned());
+        let key = (account.to_owned(), home.to_owned(), ProviderKind::Codex);
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
@@ -1139,7 +1136,11 @@ pub(crate) mod tests {
     async fn read_until_fresh_waits_for_catalog_change_notification() {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
-        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let key = (
+            "account".to_owned(),
+            "/home".to_owned(),
+            ProviderKind::Codex,
+        );
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
@@ -1151,10 +1152,11 @@ pub(crate) mod tests {
             },
         );
         let waiting = service.clone();
-        let read =
-            tokio::spawn(
-                async move { waiting.read_until_fresh("account", "/home", "codex").await },
-            );
+        let read = tokio::spawn(async move {
+            waiting
+                .read_until_fresh("account", "/home", ProviderKind::Codex)
+                .await
+        });
         tokio::task::yield_now().await;
         let value = json!({"data":[{"model":"fixture"}]});
         assert!(store_result(&service.0, &key, 7, Ok(value.clone())));
@@ -1173,8 +1175,8 @@ pub(crate) mod tests {
         );
 
         let (first, second) = tokio::join!(
-            service.read_until_ready("account", "/home", "codex", false),
-            service.read_until_ready("account", "/home", "codex", false),
+            service.read_until_ready("account", "/home", ProviderKind::Codex, false),
+            service.read_until_ready("account", "/home", ProviderKind::Codex, false),
         );
         let ready = CatalogRead::Ready(json!({
             "data":[{"model":"fixture"}],
@@ -1189,7 +1191,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn cold_display_read_reports_failed_refresh_as_unavailable() {
         let service = ModelCatalogService::new();
-        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let key = (
+            "account".to_owned(),
+            "/home".to_owned(),
+            ProviderKind::Codex,
+        );
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
@@ -1203,7 +1209,7 @@ pub(crate) mod tests {
         let waiting = service.clone();
         let read = tokio::spawn(async move {
             waiting
-                .read_until_ready("account", "/home", "codex", false)
+                .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await
         });
         tokio::task::yield_now().await;
@@ -1217,7 +1223,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn failed_refresh_serves_last_known_display_catalog_but_not_admission() {
         let service = ModelCatalogService::new();
-        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let key = (
+            "account".to_owned(),
+            "/home".to_owned(),
+            ProviderKind::Codex,
+        );
         let known = json!({"data":[{"model":"known"}],"nextCursor":null});
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
@@ -1232,16 +1242,18 @@ pub(crate) mod tests {
         assert!(store_result(&service.0, &key, 7, Err(())));
 
         assert_eq!(
-            service.read_for_admission(&key.0, &key.1, &key.2),
+            service.read_for_admission(&key.0, &key.1, key.2),
             super::AdmissionCatalogRead::Unavailable
         );
         assert_eq!(
-            service.read("account", "/home", "codex", false).await,
+            service
+                .read("account", "/home", ProviderKind::Codex, false)
+                .await,
             CatalogRead::Unavailable
         );
         assert_eq!(
             service
-                .read_until_ready("account", "/home", "codex", false)
+                .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await,
             CatalogRead::Ready(known)
         );
@@ -1251,7 +1263,11 @@ pub(crate) mod tests {
     async fn failed_refresh_is_retried_after_the_failure_backoff_not_the_ttl() {
         assert!(CATALOG_FAILURE_RETRY < CATALOG_TTL);
         let service = ModelCatalogService::new();
-        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let key = (
+            "account".to_owned(),
+            "/home".to_owned(),
+            ProviderKind::Codex,
+        );
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
@@ -1269,7 +1285,9 @@ pub(crate) mod tests {
         );
 
         assert_eq!(
-            service.read("account", "/home", "codex", false).await,
+            service
+                .read("account", "/home", ProviderKind::Codex, false)
+                .await,
             CatalogRead::Unavailable
         );
         assert_eq!(pages.requests(), 0);
@@ -1277,7 +1295,7 @@ pub(crate) mod tests {
         tokio::time::advance(CATALOG_FAILURE_RETRY).await;
         assert_eq!(
             service
-                .read_until_ready("account", "/home", "codex", false)
+                .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await,
             CatalogRead::Ready(json!({"data":[{"model":"fixture"}],"nextCursor":null}))
         );
@@ -1290,7 +1308,11 @@ pub(crate) mod tests {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
         service.0.state.lock().expect("cache").entries.insert(
-            ("account".to_owned(), "/home".to_owned(), "codex".to_owned()),
+            (
+                "account".to_owned(),
+                "/home".to_owned(),
+                ProviderKind::Codex,
+            ),
             CacheEntry {
                 generation: 7,
                 value: None,
@@ -1302,7 +1324,7 @@ pub(crate) mod tests {
         let waiting = service.clone();
         let read = tokio::spawn(async move {
             waiting
-                .read_until_ready("account", "/home", "codex", false)
+                .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await
         });
         tokio::task::yield_now().await;
@@ -1314,7 +1336,11 @@ pub(crate) mod tests {
     async fn stale_display_value_returns_without_waiting_for_refresh() {
         let service = ModelCatalogService::new();
         service.0.state.lock().expect("cache").entries.insert(
-            ("account".to_owned(), "/home".to_owned(), "codex".to_owned()),
+            (
+                "account".to_owned(),
+                "/home".to_owned(),
+                ProviderKind::Codex,
+            ),
             CacheEntry {
                 generation: 7,
                 value: Some(json!({"data":[{"model":"stale"}]})),
@@ -1326,7 +1352,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             service
-                .read_until_ready("account", "/home", "codex", false)
+                .read_until_ready("account", "/home", ProviderKind::Codex, false)
                 .await,
             CatalogRead::Ready(json!({"data":[{"model":"stale"}]}))
         );
@@ -1338,7 +1364,7 @@ pub(crate) mod tests {
         let key = (
             "account".to_owned(),
             "/old-home".to_owned(),
-            "codex".to_owned(),
+            ProviderKind::Codex,
         );
         service.retain_accounts(&[json!({
             "id":"account",
@@ -1359,7 +1385,7 @@ pub(crate) mod tests {
         let waiting = service.clone();
         let read = tokio::spawn(async move {
             waiting
-                .read_until_ready("account", "/old-home", "codex", false)
+                .read_until_ready("account", "/old-home", ProviderKind::Codex, false)
                 .await
         });
         tokio::task::yield_now().await;
@@ -1384,7 +1410,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             service
-                .read_until_ready("account", "/old-home", "codex", false)
+                .read_until_ready("account", "/old-home", ProviderKind::Codex, false)
                 .await,
             CatalogRead::Unavailable
         );
@@ -1438,7 +1464,11 @@ pub(crate) mod tests {
     async fn cancelled_read_waiting_for_task_registry_does_not_leave_pending_entry() {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
-        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let key = (
+            "account".to_owned(),
+            "/home".to_owned(),
+            ProviderKind::Codex,
+        );
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
@@ -1451,7 +1481,7 @@ pub(crate) mod tests {
         );
         let task_guard = service.0.tasks.lock().await;
         {
-            let read = service.read("account", "/home", "codex", false);
+            let read = service.read("account", "/home", ProviderKind::Codex, false);
             tokio::pin!(read);
             tokio::select! {
                 biased;
@@ -1473,7 +1503,11 @@ pub(crate) mod tests {
     async fn read_rechecks_expiry_after_waiting_for_task_registry() {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
-        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        let key = (
+            "account".to_owned(),
+            "/home".to_owned(),
+            ProviderKind::Codex,
+        );
         service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
@@ -1485,7 +1519,7 @@ pub(crate) mod tests {
             },
         );
         let task_guard = service.0.tasks.lock().await;
-        let read = service.read("account", "/home", "codex", false);
+        let read = service.read("account", "/home", ProviderKind::Codex, false);
         tokio::pin!(read);
         tokio::select! {
             biased;
@@ -1513,14 +1547,14 @@ pub(crate) mod tests {
         let key = (
             "account".to_owned(),
             "/disposable".to_owned(),
-            "codex".to_owned(),
+            ProviderKind::Codex,
         );
         assert_eq!(
-            service.read_for_admission(&key.0, &key.1, &key.2),
+            service.read_for_admission(&key.0, &key.1, key.2),
             AdmissionCatalogRead::Pending
         );
         assert_eq!(
-            service.read_for_admission(&key.0, &key.1, "claude"),
+            service.read_for_admission(&key.0, &key.1, ProviderKind::Claude),
             AdmissionCatalogRead::Pending
         );
         let value = json!({"data": [{"model": "one"}]});
@@ -1536,27 +1570,27 @@ pub(crate) mod tests {
             },
         );
         assert_eq!(
-            service.read_for_admission(&key.0, &key.1, &key.2),
+            service.read_for_admission(&key.0, &key.1, key.2),
             AdmissionCatalogRead::Fresh {
                 value: value.clone(),
                 account_key: key.0.clone(),
                 home: key.1.clone(),
-                provider: key.2.clone(),
+                provider: key.2,
                 generation: 7,
                 expires_at: expiry.into_std(),
             }
         );
         assert_eq!(
-            service.read_for_admission("foreign", &key.1, &key.2),
+            service.read_for_admission("foreign", &key.1, key.2),
             AdmissionCatalogRead::Pending
         );
         assert_eq!(
-            service.read_for_admission(&key.0, "/changed-home", &key.2),
+            service.read_for_admission(&key.0, "/changed-home", key.2),
             AdmissionCatalogRead::Pending
         );
         tokio::time::advance(CATALOG_TTL).await;
         assert_eq!(
-            service.read_for_admission(&key.0, &key.1, &key.2),
+            service.read_for_admission(&key.0, &key.1, key.2),
             AdmissionCatalogRead::Pending
         );
         {
@@ -1566,12 +1600,12 @@ pub(crate) mod tests {
             entry.pending = true;
         }
         assert_eq!(
-            service.read_for_admission(&key.0, &key.1, &key.2),
+            service.read_for_admission(&key.0, &key.1, key.2),
             AdmissionCatalogRead::Pending
         );
         assert!(store_result(&service.0, &key, 7, Err(())));
         assert_eq!(
-            service.read_for_admission(&key.0, &key.1, &key.2),
+            service.read_for_admission(&key.0, &key.1, key.2),
             AdmissionCatalogRead::Unavailable
         );
     }

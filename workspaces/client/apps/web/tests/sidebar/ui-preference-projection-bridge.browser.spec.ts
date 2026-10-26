@@ -150,7 +150,7 @@ test("paired screen preference writes keep their server API and storage", async 
             (post) =>
               post.origin === origin &&
               post.body.scope === "server" &&
-              post.body.fields?.[field]?.value === value,
+              post.body.fields![field]?.value === value,
           ),
         )
         .toBe(true);
@@ -159,7 +159,7 @@ test("paired screen preference writes keep their server API and storage", async 
           (post) =>
             post.origin !== origin &&
             post.body.scope === "server" &&
-            post.body.fields?.[field]?.value === value,
+            post.body.fields![field]?.value === value,
         ),
       ).toBe(false);
     }

@@ -1,3 +1,14 @@
+import type { components } from "../runtime-contract.generated.ts";
+type JsonValue = components["schemas"]["JsonValue"];
+// The installed-CLI witness reads only these indexed views of its captured journal document.
+type CompatibilityRow = SessionStoreEntry & {
+  message: {
+    content: (Record<string, JsonValue> & {
+      content?: Record<string, JsonValue>[];
+    })[];
+  };
+  attachment: Record<string, string>;
+};
 import type {
   Options,
   SDKMessage,
@@ -6,8 +17,6 @@ import type {
 import type { Session } from "../session-state.ts";
 import type { ControlDependencies } from "../controls.ts";
 import type { SessionFixtureStreamEvent } from "../fixtures/session-sdk-types.ts";
-import { unusedFileControls } from "./control-fixture.ts";
-import { object } from "../history-records.ts";
 // Real installed CLI/SDK; all provider requests end at this disposable HTTP
 // fixture. Retry and deferred-tool formats are provider output, not new input.
 import assert from "node:assert/strict";
@@ -44,13 +53,8 @@ const server = http.createServer(async (req, res) => {
     res.end('{"input_tokens":10}');
     return;
   }
-  const body: unknown = JSON.parse(raw);
-  assert(
-    body &&
-      typeof body === "object" &&
-      "model" in body &&
-      typeof body.model === "string",
-  );
+  // The local CLI fixture owns this captured request document.
+  const body: Pick<Options, "model"> = JSON.parse(raw);
   captures.push({ scenario, body });
   requests++;
   if (scenario === "retry" && requests === 1) {
@@ -126,9 +130,7 @@ const server = http.createServer(async (req, res) => {
   send("message_stop", {});
   res.end();
 });
-await new Promise<void>((resolve) =>
-  server.listen(0, "127.0.0.1", () => resolve()),
-);
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 assert(address && typeof address === "object");
 const previous = process.env.CLAUDE_CONFIG_DIR;
@@ -246,7 +248,7 @@ try {
     const rows = (await fs.readFile(file, "utf8"))
       .trim()
       .split("\n")
-      .map((line): SessionStoreEntry => JSON.parse(line));
+      .map((line): CompatibilityRow => JSON.parse(line));
     if (mode === "retry")
       assert(
         rows.some(
@@ -261,17 +263,12 @@ try {
         rows.some(
           (row) =>
             row.type === "user" &&
-            object(row.message) &&
             Array.isArray(row.message.content) &&
             row.message.content.some(
-              (block: unknown) =>
-                object(block) &&
+              (block) =>
                 block.type === "tool_result" &&
                 Array.isArray(block.content) &&
-                block.content.some(
-                  (inner: unknown) =>
-                    object(inner) && inner.type === "tool_reference",
-                ),
+                block.content.some((inner) => inner.type === "tool_reference"),
             ),
         ),
       );
@@ -279,25 +276,23 @@ try {
         rows.some(
           (row) =>
             row.type === "attachment" &&
-            object(row.attachment) &&
-            typeof row.attachment.type === "string" &&
-            row.attachment.type.startsWith("deferred_tools"),
+            row.attachment.type?.startsWith("deferred_tools"),
         ),
       );
     }
-    const deps: ControlDependencies = {
-      ...unusedFileControls,
+    const deps = {
       persist: async () => {},
       forkSession,
       getHistoryIndex: (id, options) =>
         verifiedHistoryIndex({
           id,
-          cwd: options?.dir ?? assert.fail("Missing history directory"),
+          cwd: options!.dir!,
         }),
-    };
+    } as Partial<ControlDependencies> as ControlDependencies;
+    assert(session.turns[0] && session.turns[1]);
     const branch = await forkAtTurn(
       session,
-      { lastTurnId: session.turns[0]?.id ?? assert.fail("Missing first turn") },
+      { lastTurnId: session.turns[0].id },
       deps,
     );
     assert.equal(branch.turns.length, 1);
@@ -305,7 +300,7 @@ try {
       session,
       {
         requestId: randomUUID(),
-        turnId: session.turns[1]?.id ?? assert.fail("Missing second turn"),
+        turnId: session.turns[1].id,
       },
       deps,
     );
@@ -330,7 +325,5 @@ try {
   if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = previous;
   server.closeAllConnections();
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
+  await new Promise<void>((resolve) => server.close(resolve as () => void));
 }

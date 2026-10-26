@@ -121,7 +121,7 @@ fn fixture(
 ) -> (tempfile::TempDir, axum::Router, Arc<Session>) {
     let root = tempfile::tempdir().expect("fixture state");
     let path = root.path().join("registry.json");
-    std::fs::write(&path,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
+    std::fs::write(&path,json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
     let driver = Arc::new(AccountDriver::open(&path).expect("driver"));
     let session = Arc::new(Session {
         path,

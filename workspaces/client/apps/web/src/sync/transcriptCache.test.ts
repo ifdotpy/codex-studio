@@ -1,4 +1,7 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
+import type { TranscriptWireItem } from "../types";
+// Cache-only fixture views omit renderer-only role/text and input truncation fields.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("./client", () => ({}));
@@ -24,7 +27,7 @@ it("applies every delta immediately and publishes the latest transcript once", a
   cache.cacheTranscriptValue(
     "workspace",
     "a",
-    { items: [{ id: "a", role: "assistant", text: "initial" }] },
+    { items: [{ id: "a", text: "initial" } as TranscriptWireItem] },
     1,
   );
   const accept = vi.fn();
@@ -35,7 +38,7 @@ it("applies every delta immediately and publishes the latest transcript once", a
     "a",
     {},
     2,
-    [{ id: "a", role: "assistant", text: "second" }],
+    [{ id: "a", text: "second" } as TranscriptWireItem],
     [],
   );
   cache.patchTranscriptValue(
@@ -43,23 +46,35 @@ it("applies every delta immediately and publishes the latest transcript once", a
     "a",
     {},
     3,
-    [{ id: "b", role: "tool", text: "third", toolStatus: "running" }],
+    [{ id: "b", text: "third", toolStatus: "running" } as TranscriptWireItem],
     ["a"],
   );
   cache.patchTranscriptValue(
     "workspace",
     "a",
-    { truncated: true },
+    { completed: true } as Parameters<typeof cache.patchTranscriptValue>[2] & {
+      completed: boolean;
+    },
     4,
-    [{ id: "b", role: "tool", text: "finished", toolStatus: "completed" }],
+    [
+      {
+        id: "b",
+        text: "finished",
+        toolStatus: "completed",
+      } as TranscriptWireItem,
+    ],
     [],
   );
   expect(cache.peekTranscript("workspace", "a")).toEqual({
     seq: 4,
     payload: {
-      truncated: true,
+      completed: true,
       items: [
-        { id: "b", role: "tool", text: "finished", toolStatus: "completed" },
+        {
+          id: "b",
+          text: "finished",
+          toolStatus: "completed",
+        },
       ],
     },
   });
@@ -83,16 +98,15 @@ it("keeps workspace notifications separate and cancels notifications for a close
   cache.cacheTranscriptValue(
     "current",
     "same",
-    { items: [{ id: "new", role: "assistant", text: "" }] },
+    { items: [{ id: "new" } as TranscriptWireItem] },
     1,
   );
   stopOld();
   vi.advanceTimersByTime(50);
   expect(old).not.toHaveBeenCalled();
   expect(current).toHaveBeenCalledOnce();
-  assert.ok(current.mock.calls[0] != null);
-  expect(current.mock.calls[0][0].payload.items).toEqual([
-    { id: "new", role: "assistant", text: "" },
+  expect(required(current.mock.calls[0])[0].payload.items).toEqual([
+    { id: "new" },
   ]);
   stopCurrent();
 });
@@ -117,24 +131,23 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
     role: "user" as const,
     text: "input batch",
     inputs: [
-      { id: "input", kind: "user", text: "Hello", at: 1, truncated: false },
-      {
-        id: "result",
-        kind: "child_result",
-        text: "Worker finished",
-        at: 2,
-        truncated: false,
-      },
+      { id: "input", kind: "user", text: "Hello", at: 1 },
+      { id: "result", kind: "child_result", text: "Worker finished", at: 2 },
     ],
   };
   const reply = { id: "reply", role: "assistant" as const, text: "Answer" };
-  cache.cacheTranscriptValue("workspace", "chat", { items: [batch, reply] }, 1);
+  cache.cacheTranscriptValue(
+    "workspace",
+    "chat",
+    { items: [batch as typeof batch & TranscriptWireItem, reply] },
+    1,
+  );
   const accept = vi.fn();
   const stop = cache.subscribeTranscript("workspace", "chat", accept);
   // useMessages retains this payload in page.latest until the next publication.
   assert.ok(accept.mock.calls[0] != null);
   const retained = accept.mock.calls[0][0];
-  const rendered = transcriptMessages(retained.payload.items, "chat");
+  const rendered = transcriptMessages(retained.payload!.items, "chat");
   expect(rendered.map(({ id, role, text }) => ({ id, role, text }))).toEqual([
     { id: "chat:input", role: "user", text: "Hello" },
     { id: "chat:result", role: "tool", text: "Worker finished" },
@@ -146,8 +159,8 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
   expect(accept).toHaveBeenCalledOnce();
   // Before the fix, the retained array contains a null tombstone and this throws
   // "Cannot read properties of null (reading 'inputs')" in the real normalizer.
-  expect(transcriptMessages(retained.payload.items, "chat")).toEqual(rendered);
-  expect(retained.payload.items).toEqual([batch, reply]);
+  expect(transcriptMessages(retained.payload!.items, "chat")).toEqual(rendered);
+  expect(retained.payload!.items).toEqual([batch, reply]);
   const current = cache.peekTranscript("workspace", "chat")!;
   assert.ok(current.payload != null);
   expect(current.payload.items).toEqual([reply]);
@@ -167,11 +180,11 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
   async (operation) => {
     const { createTranscriptCache } = await import("./transcriptCache");
     const cache = createTranscriptCache();
-    const first = { id: "first", role: "assistant", text: "Original" };
-    const kept = { id: "kept", role: "assistant", text: "Unchanged" };
-    const added = { id: "added", role: "assistant", text: "New" };
-    const replacement = { id: "first", role: "assistant", text: "Updated" };
-    const items = [first, kept];
+    const first = { id: "first", text: "Original" };
+    const kept = { id: "kept", text: "Unchanged" };
+    const added = { id: "added", text: "New" };
+    const replacement = { id: "first", text: "Updated" };
+    const items = [first, kept] as TranscriptWireItem[];
     cache.cacheTranscriptValue("workspace", "chat", { items }, 1);
     const retained = cache.peekTranscript("workspace", "chat")!;
 
@@ -181,9 +194,9 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
       {},
       2,
       operation === "append"
-        ? [added]
+        ? [added as TranscriptWireItem]
         : operation === "replace"
-          ? [replacement]
+          ? [replacement as TranscriptWireItem]
           : [],
       operation === "remove" ? ["first"] : [],
       operation === "reorder" ? ["kept", "first"] : undefined,
@@ -204,6 +217,6 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
     assert.ok(current.payload != null);
     expect(current.payload.items).toEqual(expected);
     for (const [index, item] of expected.entries())
-      expect(current.payload.items[index]).toBe(item);
+      expect(current.payload!.items[index]).toBe(item);
   },
 );

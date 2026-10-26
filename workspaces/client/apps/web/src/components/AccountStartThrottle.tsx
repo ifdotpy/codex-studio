@@ -18,6 +18,7 @@ import {
   ACCOUNT_START_PAUSE_MIN_SECONDS,
 } from "../generated/sharedValues";
 import type { Account } from "./Accounts";
+import { ProviderKind } from "../generated/providerKind.ts";
 
 type Throttle = Omit<PostBody<"/api/accounts/throttle">, "account_key">;
 
@@ -89,20 +90,23 @@ export const THROTTLE_FIELDS: ThrottleFieldSpec[] = [
   },
 ];
 
+const DEFAULT_THROTTLES: Record<ProviderKind, Throttle> = {
+  [ProviderKind.Codex]: {
+    burst: ACCOUNT_START_BURST_DEFAULT_CODEX,
+    pauseSeconds: ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CODEX,
+    maxRunningTurns: ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX,
+  },
+  [ProviderKind.Claude]: {
+    burst: ACCOUNT_START_BURST_DEFAULT_CLAUDE,
+    pauseSeconds: ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CLAUDE,
+    maxRunningTurns: ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE,
+  },
+};
+
 /** The account's stored throttle, or its provider's generated defaults. */
 export function accountThrottle(account: Account): Throttle {
   if (account.startThrottle) return account.startThrottle;
-  return account.provider === "claude"
-    ? {
-        burst: ACCOUNT_START_BURST_DEFAULT_CLAUDE,
-        pauseSeconds: ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CLAUDE,
-        maxRunningTurns: ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE,
-      }
-    : {
-        burst: ACCOUNT_START_BURST_DEFAULT_CODEX,
-        pauseSeconds: ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CODEX,
-        maxRunningTurns: ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX,
-      };
+  return { ...DEFAULT_THROTTLES[account.provider] };
 }
 
 /** The one-line summary of the limits that apply: "8 per burst · 30 s pause · 16 running". */

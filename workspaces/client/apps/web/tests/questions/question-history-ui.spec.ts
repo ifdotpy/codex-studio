@@ -1,4 +1,5 @@
-import { responseJson, required } from "../messages/helpers.ts";
+import { required } from "../messages/helpers.ts";
+import { responseJson } from "../messages/helpers.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
 import type { Page } from "@playwright/test";
 import {
@@ -26,20 +27,19 @@ test("Question history", async ({ context }) => {
   });
   let log = "",
     page: Page | undefined;
-  proc.stderr?.on("data", (data) => {
+  proc.stderr!.on("data", (data) => {
     log += data;
   });
   try {
     const port = await new Promise<number>((resolve, reject) => {
-      proc.stdout?.once("data", (data) => resolve(Number(String(data).trim())));
+      proc.stdout!.once("data", (data) => resolve(Number(String(data).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
     const lead = state.runtime.agents.find(
       (agent) => agent.name === "Release lead",
-    );
-    assert(lead, "Fixture lead exists");
+    )!;
     page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
@@ -56,9 +56,9 @@ test("Question history", async ({ context }) => {
     const assistant = page.locator(".message.assistant").first();
     await assistant.waitFor();
     const transcriptLayout = await assistant.evaluate((element) => {
-      const content = element.closest(".message-content");
-      if (!content) throw new Error("Missing message content");
-      const column = content.getBoundingClientRect();
+      const column = element
+        .closest(".message-content")!
+        .getBoundingClientRect();
       const answer = element.getBoundingClientRect();
       return {
         width: column.width,
@@ -83,24 +83,27 @@ test("Question history", async ({ context }) => {
       exact: true,
     });
     await page.mouse.move(0, 0);
-    await page.waitForFunction(() => {
-      const button = document.querySelector(".message.assistant .copy-message");
-      if (!button) throw new Error("Missing copy button");
-      return getComputedStyle(button).opacity === "0";
-    });
+    await page.waitForFunction(
+      () =>
+        getComputedStyle(
+          document.querySelector(".message.assistant .copy-message")!,
+        ).opacity === "0",
+    );
     await assistant.hover();
-    await page.waitForFunction(() => {
-      const button = document.querySelector(".message.assistant .copy-message");
-      if (!button) throw new Error("Missing copy button");
-      return getComputedStyle(button).opacity === "1";
-    });
+    await page.waitForFunction(
+      () =>
+        getComputedStyle(
+          document.querySelector(".message.assistant .copy-message")!,
+        ).opacity === "1",
+    );
     await page.mouse.move(0, 0);
     await copy.focus();
-    await page.waitForFunction(() => {
-      const button = document.querySelector(".message.assistant .copy-message");
-      if (!button) throw new Error("Missing copy button");
-      return getComputedStyle(button).opacity === "1";
-    });
+    await page.waitForFunction(
+      () =>
+        getComputedStyle(
+          document.querySelector(".message.assistant .copy-message")!,
+        ).opacity === "1",
+    );
     const card = page.locator('[data-request$=":question:async-question"]');
     assert.equal(
       await card
@@ -162,11 +165,13 @@ test("Question history", async ({ context }) => {
     history = await responseJson<GetResult<"/api/questions">>(
       await fetch(origin + "/api/questions?agent=" + lead.id),
     );
-    const answer = required(
-      required(history.items[0]).answerHistory?.[0],
-    ).answer;
-    assert(Array.isArray(answer), "Question answer is a list");
-    assert.equal(answer[0], "Only the runtime folder");
+    assert.equal(
+      (
+        required(required(history.items[0]).answerHistory![0])
+          .answer as string[]
+      )[0],
+      "Only the runtime folder",
+    );
     assert.equal(required(history.items[0]).answeredBy, "user");
     assert.equal(required(history.items[0]).deferred, false);
     await page

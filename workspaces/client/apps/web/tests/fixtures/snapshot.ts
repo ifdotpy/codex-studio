@@ -1,28 +1,13 @@
-import type { Agent, BackgroundTask, Snapshot } from "../../src/types.ts";
+import type { Agent, BackgroundTask } from "../../src/types.ts";
+import { snapshotFixture } from "../../src/snapshotFixture.ts";
 
-/** A complete renderer snapshot for isolated component fixtures. */
+/** The browser fixture's state identity and tasks extend the shared snapshot owner. */
 export function fixtureSnapshot(agents: Agent[], tasks: BackgroundTask[] = []) {
+  const snapshot = snapshotFixture(agents);
   return {
+    ...snapshot,
     stateDir: "ux-chat-fixture",
     token: "fixture",
-    threads: agents,
-    nodes: agents,
-    chats: [],
-    edges: [],
-    runtime: {
-      agents,
-      tasks,
-      rooms: [],
-      monitors: [],
-      complaints: [],
-      requests: [],
-      rules: [],
-      projects: [],
-      peerTeams: [],
-      events: [],
-      work: [],
-      studioErrors: [],
-      nativeNotices: [],
-    },
-  } satisfies Snapshot;
+    runtime: { ...snapshot.runtime, tasks, nativeNotices: [] },
+  };
 }

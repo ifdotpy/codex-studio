@@ -39,6 +39,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let document: serde_json::Value = serde_json::from_slice(&fs::read(&spec_path)?)?;
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
+    // HTTP identities use the schema owner's enum, including through references.
+    analysis
+        .schemas
+        .get_mut("ProviderKind")
+        .ok_or("missing provider identity schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::ProviderKind".to_owned(),
+        serde_with: None,
+    };
     // Alias the named component to its runtime owner. References retain their
     // optional/null wrappers without generating a second status enum.
     analysis

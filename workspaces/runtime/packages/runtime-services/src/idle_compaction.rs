@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::{
     idle_compaction::{Mode, Settings},
     shared_values::*,
@@ -69,7 +70,7 @@ fn prefix_inputs(agent: &Value) -> Value {
 /// Called in the dedicated cache notification transaction. Only request-local
 /// assistant usage can arm a timer; a cumulative SDK result cannot arm it.
 pub fn observe(connection: &Connection, agent: &mut Value, raw: &Value) -> Result<(), StoreError> {
-    if agent["provider"] != "claude" {
+    if agent["provider"] != ProviderKind::Claude.key() {
         return Ok(());
     }
     let cache: CacheReport = serde_json::from_value(raw.clone())

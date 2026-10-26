@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test, mock } from "node:test";
+import { test } from "node:test";
 
 import {
   CheckFailed,
@@ -28,14 +28,387 @@ import type {
   Supervisor,
   Optional,
 } from "../usage.ts";
-import { isRecord, readEvidence } from "../usage.ts";
-import type { OwnedEntities } from "../smoke.ts";
+import { readEvidence } from "../usage.ts";
+import type { Smoke, OwnedEntities } from "../smoke.ts";
+import { ProviderKind } from "../../../../client/apps/web/src/generated/providerKind.ts";
+
+// Partial fixtures retain direct assignments and omit unused HTTP envelope fields,
+// turn model/account/detail, chat name/path, provenance binary/release, and live
+// stream controller/reader state. Each test calls the real method under test.
+type PartialMethods<T, K extends keyof T> = Omit<T, K> & {
+  [P in K]: T[P] extends (...args: infer A) => unknown
+    ? (...args: A) => unknown
+    : T[P];
+};
+type SmokeFixture<K extends keyof Smoke> = PartialMethods<
+  Omit<Smoke, "backend" | "live">,
+  Exclude<K, "backend" | "live">
+> & {
+  live?: Partial<NonNullable<Smoke["live"]>> | null;
+  backend: Omit<
+    PartialMethods<Smoke["backend"], "get" | "post" | "request">,
+    "post"
+  > & {
+    post: (
+      route: Parameters<Smoke["backend"]["post"]>[0],
+      body: Record<string, unknown>,
+    ) => unknown;
+  };
+};
+
+test("account selection rejects unsupported identities and keeps known default preference", async () => {
+  const { Smoke } = await import("../smoke.ts");
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: os.tmpdir(),
+    model: {},
+  }) as SmokeFixture<never>;
+  type Account = Pick<Schema["Account"], "id" | "provider" | "status">;
+  const known = [
+    { id: "first", provider: ProviderKind.Codex, status: "ready" },
+    { id: "preferred", provider: ProviderKind.Codex, status: "ready" },
+    { id: "other", provider: ProviderKind.Claude, status: "ready" },
+  ] satisfies Account[];
+  for (const provider of [undefined, null, "", "future-provider", 7, {}, []]) {
+    const unsupported = { id: "unsupported", status: "ready", provider };
+    smoke.backend.get = async () => ({ accounts: [unsupported] });
+    await assert.rejects(smoke.accounts(), /no provider has a ready login/);
+    smoke.backend.get = async () => ({
+      accounts: [...known, unsupported],
+      defaultAccountKey: "unsupported",
+    });
+    await smoke.accounts();
+    assert.deepEqual(
+      [...smoke.accountsByProvider],
+      [
+        [ProviderKind.Codex, "first"],
+        [ProviderKind.Claude, "other"],
+      ],
+    );
+  }
+  smoke.backend.get = async () => ({
+    accounts: known,
+    defaultAccountKey: "preferred",
+  });
+  await smoke.accounts();
+  assert.equal(smoke.accountsByProvider.get(ProviderKind.Codex), "preferred");
+  smoke.providers = [ProviderKind.Claude];
+  await smoke.accounts();
+  assert.deepEqual(
+    [...smoke.accountsByProvider],
+    [[ProviderKind.Claude, "other"]],
+  );
+  smoke.usage = true;
+  await assert.rejects(smoke.accounts(), /requires ready/);
+});
+
+test("saved usage and native discovery reject unsupported provider identities", async () => {
+  const { nativeEvidence } = await import("../usage.ts");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-identity-test-"));
+  const file = path.join(folder, "run.json");
+  try {
+    for (const provider of [
+      undefined,
+      null,
+      "",
+      "future-provider",
+      7,
+      {},
+      [],
+    ]) {
+      const agent: Parameters<typeof nativeEvidence>[1] = JSON.parse(
+        JSON.stringify({ id: "a", provider, threadId: "thread" }),
+      );
+      assert.throws(
+        () =>
+          nativeEvidence(folder, agent, { id: "default", home: folder }, []),
+        /Unsupported provider/,
+      );
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ providers: [{ provider, agentId: "a" }] }),
+      );
+      assert.throws(() => readEvidence(file), /Unsupported provider/);
+    }
+    const providers = [ProviderKind.Codex, ProviderKind.Claude].map(
+      (provider) =>
+        ({ provider, agentId: "a" }) satisfies Pick<
+          Evidence["providers"][number],
+          "provider" | "agentId"
+        >,
+    );
+    fs.writeFileSync(file, JSON.stringify({ providers }));
+    assert.deepEqual(readEvidence(file).providers, providers);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("native discovery reads only the selected provider's disposable journal", async () => {
+  const { nativeEvidence } = await import("../usage.ts");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-journal-test-"));
+  try {
+    const sessions = path.join(folder, "sessions");
+    const project = path.join(folder, "projects", "fixture");
+    fs.mkdirSync(sessions);
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessions, "thread.json"),
+      JSON.stringify({ nativeId: "native" }),
+    );
+    const codexFile = path.join(sessions, "rollout-thread.jsonl");
+    const claudeFile = path.join(project, "native.jsonl");
+    fs.writeFileSync(
+      codexFile,
+      JSON.stringify({
+        type: "token_usage_record",
+        payload: {
+          response_id: "codex-response",
+          usage: { input_tokens: 20, cached_input_tokens: 5 },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      claudeFile,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          id: "claude-response",
+          usage: { input_tokens: 20, cache_read_input_tokens: 5 },
+        },
+      }),
+    );
+    const account = { id: "default", home: folder } satisfies Pick<
+      Schema["Account"],
+      "id" | "home" | "claudeOptions"
+    >;
+    for (const [provider, expectedFile, uncachedInput] of [
+      [ProviderKind.Codex, codexFile, 15],
+      [ProviderKind.Claude, claudeFile, 20],
+    ] as const) {
+      const evidence = nativeEvidence(
+        folder,
+        { id: "a", provider, threadId: "thread" },
+        account,
+        [],
+      );
+      assert.deepEqual(evidence.files, [expectedFile]);
+      assert.equal(evidence.tokens.uncachedInput, uncachedInput);
+      assert.equal(evidence.tokens.cacheReadInput, 5);
+    }
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
 
 test("process ages read every ps etime form", () => {
   assert.equal(elapsedSeconds("05:03"), 303);
   assert.equal(elapsedSeconds(" 1:02:03\n"), 3723);
   assert.equal(elapsedSeconds("2-01:02:03"), 2 * 86_400 + 3723);
   assert.throws(() => elapsedSeconds("soon"), CheckFailed);
+});
+
+test("native journal runtime guards reject malformed usage and narrow saved envelopes", async (t) => {
+  const { nativeResponses } = await import("../usage.ts");
+  for (const usage of [
+    true,
+    [],
+    "usage",
+    { input_tokens: "20" },
+    { output_tokens: "2" },
+    { cache_read_input_tokens: "3" },
+    { cache_creation: { ephemeral_1h_input_tokens: "4" } },
+  ]) {
+    await t.test(`reject usage ${JSON.stringify(usage)}`, () => {
+      assert.throws(
+        () =>
+          nativeResponses(
+            [{ type: "assistant", message: { id: "a", usage } }],
+            ProviderKind.Claude,
+          ),
+        /Native (usage|token count)/,
+      );
+    });
+  }
+  await t.test("skip non-object rows and non-string identifiers", () => {
+    for (const provider of [ProviderKind.Codex, ProviderKind.Claude])
+      assert.deepEqual(
+        nativeResponses(
+          [
+            null,
+            true,
+            [],
+            { type: "assistant", message: { id: 7, usage: {} } },
+            {
+              type: "token_usage_record",
+              payload: { response_id: 7, usage: {} },
+            },
+          ],
+          provider,
+        ),
+        [],
+      );
+  });
+  await t.test("narrow native model and turn identifiers", () => {
+    const [response] = nativeResponses(
+      [
+        { type: "turn_context", payload: { model: "context-model" } },
+        {
+          type: "token_usage_record",
+          payload: { response_id: "r", turn_id: 7, model: {}, usage: {} },
+        },
+      ],
+      ProviderKind.Codex,
+    );
+    assert.ok(response);
+    assert.equal(response.turnId, undefined);
+    assert.equal(response.model, "context-model");
+  });
+});
+
+test("steer runtime guards compare saved timestamps numerically and reject absent identity", async () => {
+  const { validateSteer } = await import("../usage.ts");
+  const submitted = { id: "s", turnId: "long" };
+  const receipt = {
+    id: "s",
+    status: "delivered",
+    materialized: true,
+  } satisfies Optional<Schema["MessageReceiptEntityDto"]>;
+  const item: Transcript = JSON.parse(
+    JSON.stringify({
+      at: "9",
+      inputs: [
+        {
+          id: "s",
+          deliveryStatus: "delivered",
+          materialized: true,
+          pending: false,
+          requestedDelivery: "current_turn",
+        },
+      ],
+    }),
+  );
+  const start: Transcript["at"] = JSON.parse('"10"');
+  assert.throws(
+    () => validateSteer(item, receipt, submitted, "long", start, 12),
+    /associated with turn 2/,
+  );
+  const missing: Transcript = { inputs: [{}] };
+  assert.throws(
+    () => validateSteer(missing, undefined, undefined, "long", 1, 12),
+    /Steer identity/,
+  );
+});
+
+test("model runtime guards normalize malformed reasoning efforts before selection", async () => {
+  const { Smoke } = await import("../smoke.ts");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-model-guard-"));
+  const smoke = new Smoke({
+    url: "http://fixture",
+    app: folder,
+    model: {},
+  }) as SmokeFixture<never>;
+  smoke.state = folder;
+  fs.mkdirSync(path.join(folder, "model-pricing"));
+  fs.writeFileSync(
+    path.join(folder, "model-pricing/models-dev-v1.json"),
+    JSON.stringify({
+      catalog: {
+        providers: {
+          openai: { models: { small: { cost: { input: 1, output: 1 } } } },
+        },
+      },
+    }),
+  );
+  try {
+    for (const supportedReasoningEfforts of ["low", {}]) {
+      smoke.backend.get = async () => ({
+        data: [{ model: "small", supportedReasoningEfforts }],
+      });
+      const choice = await smoke.chooseModel(ProviderKind.Codex, "default");
+      assert.equal(choice.model, "small");
+      assert.deepEqual(choice.efforts, []);
+      assert.equal(lowestEffort(choice.efforts), undefined);
+    }
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("scenario runtime guards require object tools and string output", async () => {
+  const { scenarioEvidence } = await import("../usage.ts");
+  const root = path.join(os.tmpdir(), "smoke-fixture");
+  const items = (tool: unknown): Transcript[] => [
+    { role: "user", text: "This is turn 2 of a usage check." },
+    { role: "assistant", text: "Before" },
+    { role: "output", text: JSON.stringify(tool) },
+    { role: "assistant", text: "After" },
+    { role: "user", text: "Turn 3: reply with exactly DONE" },
+  ];
+  assert.throws(
+    () =>
+      scenarioEvidence(
+        items({
+          command: "pwd",
+          cwd: root,
+          exitCode: 0,
+          aggregatedOutput: [root],
+        }),
+        ProviderKind.Codex,
+        root,
+      ),
+    /pwd call/,
+  );
+  assert.throws(
+    () => scenarioEvidence(items(null), ProviderKind.Codex, root),
+    /Tool evidence is not an object/,
+  );
+  assert.equal(
+    scenarioEvidence(
+      items({ command: "pwd", cwd: root, exitCode: 0, aggregatedOutput: root }),
+      ProviderKind.Codex,
+      root,
+    ).assistantResponses,
+    2,
+  );
+});
+
+test("native snapshot runtime guards ignore malformed branches and reject non-objects", async () => {
+  const { nativeEvidence } = await import("../usage.ts");
+  const folder = fs.mkdtempSync(
+    path.join(os.tmpdir(), "smoke-snapshot-guard-"),
+  );
+  const snapshot = path.join(folder, "sessions", "thread.json");
+  const journal = path.join(folder, "projects", "fixture", "native.jsonl");
+  const agent = { id: "a", provider: ProviderKind.Claude, threadId: "thread" };
+  const account = { id: "default", home: folder };
+  fs.mkdirSync(path.dirname(snapshot), { recursive: true });
+  fs.mkdirSync(path.dirname(journal), { recursive: true });
+  fs.writeFileSync(
+    journal,
+    JSON.stringify({ type: "assistant", message: { id: "a", usage: {} } }),
+  );
+  try {
+    fs.writeFileSync(
+      snapshot,
+      JSON.stringify({
+        nativeId: "native",
+        historyBranches: [null, { nativeId: 7 }],
+      }),
+    );
+    assert.deepEqual(nativeEvidence(folder, agent, account, []).files, [
+      journal,
+    ]);
+    for (const value of [null, [], true, { session: [] }]) {
+      fs.writeFileSync(snapshot, JSON.stringify(value));
+      assert.throws(
+        () => nativeEvidence(folder, agent, account, []),
+        /Native session.*not an object/,
+      );
+    }
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
 });
 
 test("the cheapest priced visible model wins, and an alias prices by its resolved model", () => {
@@ -67,15 +440,14 @@ test("the cheapest priced visible model wins, and an alias prices by its resolve
     pricing,
     "codex",
   );
-  assert.ok(codex);
-  assert.equal(codex.model, "small");
-  assert.equal(lowestEffort(codex.efforts), "low");
+  assert.equal(codex!.model, "small");
+  assert.equal(lowestEffort(codex!.efforts), "low");
   assert.equal(
     cheapestModel(
       [{ model: "haiku", resolvedModel: "claude-haiku-4-5" }],
       pricing,
       "claude",
-    )?.model,
+    )!.model,
     "haiku",
   );
   assert.equal(cheapestModel([{ model: "big" }], pricing, "claude"), null);
@@ -254,7 +626,8 @@ test("native truth keeps final Claude usage per message and excludes double-coun
     ],
     "codex",
   );
-  assert.deepEqual(codex[0]?.tokens, {
+  assert.ok(codex[0]);
+  assert.deepEqual(codex[0].tokens, {
     uncachedInput: 20,
     cacheReadInput: 80,
     cacheWriteInput: 0,
@@ -262,19 +635,6 @@ test("native truth keeps final Claude usage per message and excludes double-coun
     reasoningOutput: 20,
   });
   assert.equal(totalTokens(sumTokens(codex)), 130);
-});
-
-test("native journal context without a model clears the preceding model", async () => {
-  const { nativeResponses } = await import("../usage.ts");
-  const journal = [
-    { type: "turn_context", payload: { model: "previous-model" } },
-    { type: "turn_context", payload: {} },
-    {
-      type: "token_usage_record",
-      payload: { response_id: "next-response", usage: {} },
-    },
-  ];
-  assert.equal(nativeResponses(journal, "codex")[0]?.model, undefined);
 });
 
 test("truth cost uses every billed category and typed recorded usage wins", async () => {
@@ -307,27 +667,20 @@ test("truth cost uses every billed category and typed recorded usage wins", asyn
     ).costUsd,
     0.002495,
   );
-  assert.deepEqual(
-    recordedResponses(
+  const [recorded] = recordedResponses({
+    timeline: [
       {
-        timeline: [
-          {
-            responseId: "r",
-            studioUsage: {
-              kind: "response",
-              responseId: "r",
-              model: "haiku",
-              evidence: "live",
-              tokens,
-            },
-            requestUsage: { inputTokens: 1 },
-          },
-        ],
+        responseId: "r",
+        studioUsage: {
+          kind: "response",
+          tokens,
+        } as Schema["UsageObservation"],
+        requestUsage: { inputTokens: 1 },
       },
-      "claude",
-    )[0]?.tokens,
-    tokens,
-  );
+    ],
+  });
+  assert.ok(recorded);
+  assert.deepEqual(recorded.tokens, tokens);
 });
 
 test("analytics collection uses a bounded API snapshot", async () => {
@@ -427,20 +780,29 @@ test("an interrupt between turns prevents later paid submissions and cleanup han
     url: "http://127.0.0.1:1",
     app: os.tmpdir(),
     model: {},
-  });
+  }) as SmokeFixture<
+    | "answered"
+    | "preflight"
+    | "build"
+    | "renderer"
+    | "accounts"
+    | "session"
+    | "ownerChatsUnchanged"
+    | "makeRoot"
+    | "turn"
+    | "cleanup"
+  >;
   smoke.root = path.join(os.tmpdir(), "smoke-cancellation-fixture");
   const posts: Parameters<typeof smoke.backend.post>[] = [];
-  mock.method(
-    smoke.backend,
-    "post",
-    async (...args: Parameters<typeof smoke.backend.post>) => {
-      posts.push(args);
-    },
-  );
-  mock.method(smoke, "answered", async () => {
+  smoke.backend.post = async (
+    ...args: Parameters<typeof smoke.backend.post>
+  ) => {
+    posts.push(args);
+  };
+  smoke.answered = async () => {
     smoke.cancel.abort(new Error("interrupted"));
     return [];
-  });
+  };
   await assert.rejects(
     smoke.usageScenario({ id: "a" }, "codex"),
     /interrupted/,
@@ -454,19 +816,19 @@ test("an interrupt between turns prevents later paid submissions and cleanup han
     "session",
     "ownerChatsUnchanged",
   ] as const)
-    mock.method(smoke, method, async () => "fixture");
-  mock.method(smoke, "makeRoot", () => {});
+    smoke[method] = async () => "fixture";
+  smoke.makeRoot = () => {};
   smoke.accountsByProvider = new Map([["codex", "account"]]);
-  mock.method(smoke, "turn", async () => {
+  smoke.turn = async () => {
     process.emit("SIGINT");
     return { id: "a" };
-  });
+  };
   let cleanup = false;
-  mock.method(smoke, "cleanup", async () => {
+  smoke.cleanup = async () => {
     assert.ok(process.listenerCount("SIGINT") > 0);
     process.emit("SIGTERM");
     cleanup = true;
-  });
+  };
   await smoke.main(false);
   assert.equal(cleanup, true);
   assert.equal(process.listenerCount("SIGINT"), 0);
@@ -476,15 +838,15 @@ test("an interrupt between turns prevents later paid submissions and cleanup han
 test("SSE connection establishment has a deadline", async () => {
   const { LiveChanges } = await import("../smoke.ts");
   const original = globalThis.fetch;
-  globalThis.fetch = async (_url, init) => {
-    assert.ok(init?.signal);
-    const signal = init.signal;
-    return new Promise((_resolve, reject) =>
+  globalThis.fetch = (async (
+    _url: Parameters<typeof fetch>[0],
+    { signal }: RequestInit & { signal: AbortSignal },
+  ) =>
+    new Promise((_resolve, reject) =>
       signal.addEventListener("abort", () => reject(signal.reason), {
         once: true,
       }),
-    );
-  };
+    )) as typeof fetch;
   try {
     const stream = new LiveChanges({ url: "http://fixture" }, "a", 4, {
       connectMs: 10,
@@ -634,7 +996,7 @@ test("atomic checkpoint failure preserves the previous complete evidence", async
         ),
       /rename fixture/,
     );
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), {
+    assert.deepEqual(JSON.parse(fs.readFileSync(file) as Buffer & string), {
       original: true,
     });
     assert.deepEqual(fs.readdirSync(folder), ["evidence.json"]);
@@ -642,8 +1004,9 @@ test("atomic checkpoint failure preserves the previous complete evidence", async
       server: { binary: "original" },
     };
     preserveProvenance(evidence, { binary: "observed" }, true);
-    assert.equal(evidence.server?.binary, "original");
-    assert.equal(evidence.recoveryObservations?.[0]?.server.binary, "observed");
+    assert.equal(evidence.server!.binary, "original");
+    assert.ok(evidence.recoveryObservations![0]);
+    assert.equal(evidence.recoveryObservations![0].server.binary, "observed");
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }
@@ -655,32 +1018,27 @@ test("cleanup recovers project registration by the exact owned path after a lost
     url: "http://127.0.0.1:1",
     app: os.tmpdir(),
     model: {},
-  });
+  }) as SmokeFixture<never>;
   smoke.makeRoot();
   const root = smoke.root;
-  assert.ok(root);
   const posts: Parameters<typeof smoke.backend.post>[] = [];
-  mock.method(smoke.backend, "get", async (route: string) =>
+  smoke.backend.get = async (route: string) =>
     route === "/api/projects"
       ? { items: [{ path: root + "-owner" }, { locations: [{ path: root }] }] }
-      : { chats: [] },
-  );
-  mock.method(
-    smoke.backend,
-    "post",
-    async (...args: Parameters<typeof smoke.backend.post>) => {
-      posts.push(args);
-      return {};
-    },
-  );
+      : { chats: [] };
+  smoke.backend.post = async (
+    ...args: Parameters<typeof smoke.backend.post>
+  ) => {
+    posts.push(args);
+    return {};
+  };
   try {
     await smoke.cleanup();
     assert.equal(posts.length, 1);
     assert.ok(posts[0]);
-    assert.ok(isRecord(posts[0][1]));
     assert.equal(posts[0][0], "/api/projects");
-    assert.equal(posts[0][1].path, root);
-    assert.equal(posts[0][1].action, "remove");
+    assert.equal((posts[0][1] as Record<string, unknown>).path, root);
+    assert.equal((posts[0][1] as Record<string, unknown>).action, "remove");
     assert.equal(fs.existsSync(root), false);
   } finally {
     if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
@@ -693,7 +1051,7 @@ test("collector waits for a matching final-turn cost publication through SSE", a
     url: "http://fixture",
     app: os.tmpdir(),
     model: {},
-  });
+  }) as SmokeFixture<never>;
   const cost: Cost = {
     rootId: "a",
     generation: 4,
@@ -709,9 +1067,7 @@ test("collector waits for a matching final-turn cost publication through SSE", a
       { turnId: "final", responseId: "r", delta: { outputTokens: 1 } },
     ],
   };
-  const control: {
-    stream?: ReadableStreamDefaultController<Uint8Array> | null;
-  } = {};
+  let controller!: ReadableStreamDefaultController<Uint8Array> | null;
   let updated = false;
   const encoder = new TextEncoder();
   const frame = (value: Cost) =>
@@ -734,27 +1090,27 @@ test("collector waits for a matching final-turn cost publication through SSE", a
       })}\n\n`,
     );
   const original = globalThis.fetch;
-  globalThis.fetch = async (_url, init) => {
-    assert.ok(init?.signal);
-    const signal = init.signal;
-    return new Response(
+  globalThis.fetch = (async (
+    _url: Parameters<typeof fetch>[0],
+    { signal }: RequestInit & { signal: AbortSignal },
+  ) =>
+    new Response(
       new ReadableStream({
         start(stream) {
-          control.stream = stream;
+          controller = stream;
           signal.addEventListener(
             "abort",
             () => {
               stream.close();
-              control.stream = null;
+              controller = null;
             },
             { once: true },
           );
           stream.enqueue(frame({ ...cost, generation: 3 }));
         },
       }),
-    );
-  };
-  mock.method(smoke.backend, "get", async (route: string) => {
+    )) as typeof fetch;
+  smoke.backend.get = async (route: string) => {
     if (route === "/api/sync/protocol")
       return { protocolVersion: 4 } satisfies Pick<
         Schema["SyncProtocolResponse"],
@@ -763,19 +1119,19 @@ test("collector waits for a matching final-turn cost publication through SSE", a
     if (route.startsWith("/api/session-cost")) {
       if (!updated) {
         updated = true;
-        control.stream?.enqueue(frame(cost));
+        controller!.enqueue(frame(cost));
       }
       return cost;
     }
     return analytics;
-  });
+  };
   try {
     const result = await smoke.ownEntities("a", "final");
     assert.equal(updated, true);
     assert.equal(result.sessionCost.generation, 4);
     assert.equal(result.publication.finalTurnId, "final");
   } finally {
-    control.stream?.close();
+    controller?.close();
     globalThis.fetch = original;
   }
 });
@@ -863,8 +1219,15 @@ test("recovery uses saved serving provenance when no live bridge remains", async
     url: "http://fixture",
     app: os.tmpdir(),
     model: {},
-  });
-  mock.method(smoke.backend, "get", async (route: string) =>
+  }) as SmokeFixture<
+    | "ownEntities"
+    | "bridgeObservation"
+    | "collectUsage"
+    | "serverObservation"
+    | "saveUsage"
+    | "printUsage"
+  >;
+  smoke.backend.get = async (route: string) =>
     route === "/api/desktop"
       ? ({ backendBuild: "build", stateDir: "/state", pid: 10 } satisfies Pick<
           Schema["DesktopResponse"],
@@ -873,49 +1236,54 @@ test("recovery uses saved serving provenance when no live bridge remains", async
       : ({ accounts: [] } satisfies Pick<
           Schema["AccountsResponse"],
           "accounts"
-        >),
-  );
-  mock.method(
-    smoke,
-    "ownEntities",
-    async (): Promise<Pick<OwnedEntities, "agent">> => ({
-      agent: {
-        name: "Studio smoke abcdef12 claude",
-        id: "a",
-        provider: "claude",
-        accountKey: "c",
-        model: "haiku",
-      },
-    }),
-  );
-  mock.method(smoke, "bridgeObservation", async () => {
-    throw new Error("No live bridge");
-  });
-  const recovery: {
-    value?: Awaited<ReturnType<typeof smoke.currentBridgeProvenance>>;
-  } = {};
-  mock.method(
-    smoke,
-    "collectUsage",
-    async (
-      _chat: Parameters<typeof smoke.collectUsage>[0],
-      _provider: Parameters<typeof smoke.collectUsage>[1],
-      scenario: Parameters<typeof smoke.collectUsage>[2],
-    ) => {
-      recovery.value = await smoke.currentBridgeProvenance(
-        "c",
-        scenario?.savedBridge,
-      );
+        >);
+  smoke.ownEntities = async (): Promise<Pick<OwnedEntities, "agent">> => ({
+    agent: {
+      name: "Studio smoke abcdef12 claude",
+      id: "a",
+      provider: "claude",
+      accountKey: "c",
+      model: "haiku",
     },
-  );
-  mock.method(smoke, "serverObservation", () => ({ ...server, pid: 10 }));
-  mock.method(smoke, "saveUsage", () => {});
-  mock.method(smoke, "printUsage", () => {});
+  });
+  smoke.bridgeObservation = async () => {
+    throw new Error("No live bridge");
+  };
+  let recovered!: Awaited<ReturnType<typeof smoke.currentBridgeProvenance>>;
+  let collections = 0;
+  smoke.collectUsage = async (
+    _chat: Parameters<typeof smoke.collectUsage>[0],
+    _provider: Parameters<typeof smoke.collectUsage>[1],
+    scenario: Parameters<typeof smoke.collectUsage>[2],
+  ) => {
+    collections++;
+    recovered = await smoke.currentBridgeProvenance("c", scenario!.savedBridge);
+  };
+  smoke.serverObservation = () => ({ ...server, pid: 10 });
+  smoke.saveUsage = () => {};
+  smoke.printUsage = () => {};
   try {
     await smoke.recover(file);
-    assert.deepEqual(recovery.value?.serving, savedBridge);
-    assert.equal(recovery.value?.current.available, false);
+    assert.deepEqual(recovered.serving, savedBridge);
+    assert.equal(recovered.current.available, false);
     assert.deepEqual(smoke.usageEvidence.server, server);
+    const checkpoint = readEvidence(file);
+    const [saved] = checkpoint.providers;
+    assert.ok(saved);
+    const cost = {
+      rootId: "a",
+      generation: 1,
+      totalUSD: 1,
+      pricedSamples: 1,
+      pricingState: "ready",
+      refreshing: false,
+    } satisfies Cost;
+    saved.displayedCost = cost;
+    saved.publication = { currentCost: cost, finalTurnId: "final" };
+    fs.writeFileSync(file, JSON.stringify(checkpoint));
+    await smoke.recover(file);
+    assert.equal(collections, 2);
+    assert.deepEqual(recovered.serving, savedBridge);
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }
@@ -927,34 +1295,27 @@ test("cancellation during Claude steering prevents steer and final message submi
     url: "http://fixture",
     app: os.tmpdir(),
     model: {},
-  });
+  }) as SmokeFixture<"transcript" | "chatStatus" | "saveUsage">;
   smoke.root = path.join(os.tmpdir(), "smoke-steer-fixture");
   const posts: Parameters<typeof smoke.backend.post>[] = [];
-  mock.method(
-    smoke.backend,
-    "post",
-    async (...args: Parameters<typeof smoke.backend.post>) => {
-      posts.push(args);
-    },
-  );
-  mock.method(
-    smoke,
-    "transcript",
-    async () =>
-      [{ role: "assistant", turnId: "initial" }] satisfies Transcript[],
-  );
+  smoke.backend.post = async (
+    ...args: Parameters<typeof smoke.backend.post>
+  ) => {
+    posts.push(args);
+  };
+  smoke.transcript = async () =>
+    [{ role: "assistant", turnId: "initial" }] satisfies Transcript[];
   smoke.live = {
     entities: new Map([["agentSummary:a", { turnId: "long" }]]),
     changed: async () => {},
-    close: async () => {},
-  };
-  mock.method(smoke, "chatStatus", async () => {
+  } satisfies Pick<NonNullable<Smoke["live"]>, "entities" | "changed">;
+  smoke.chatStatus = async () => {
     smoke.cancel.abort(new Error("steer interrupted"));
     return { inFlight: true } satisfies Partial<
       NonNullable<Awaited<ReturnType<typeof smoke.chatStatus>>>
     >;
-  });
-  mock.method(smoke, "saveUsage", () => {});
+  };
+  smoke.saveUsage = () => {};
   await assert.rejects(
     smoke.usageScenario({ id: "a" }, "claude"),
     /steer interrupted/,
@@ -972,97 +1333,83 @@ test("usage chat stays idle until returned permissions have been verified", asyn
         app: os.tmpdir(),
         model: {},
         usage: true,
-      });
+      }) as SmokeFixture<
+        "permissionRecord" | "chooseModel" | "saveUsage" | "answered"
+      >;
       smoke.makeRoot();
-      let permissionRecord: PermissionRecord = {};
-      mock.method(smoke, "permissionRecord", () => permissionRecord);
+      let permissionRecord!: PermissionRecord;
+      smoke.permissionRecord = () => permissionRecord;
       smoke.accountsByProvider = new Map([["codex", "default"]]);
-      mock.method(
-        smoke,
-        "chooseModel",
-        async () =>
-          ({
-            model: "small",
-            efforts: [],
-          }) satisfies Awaited<ReturnType<typeof smoke.chooseModel>>,
-      );
-      mock.method(smoke, "saveUsage", () => {});
-      mock.method(smoke, "answered", async () => []);
-      mock.method(
-        smoke.backend,
-        "get",
-        async () =>
-          ({ protocolVersion: 4 }) satisfies Pick<
-            Schema["SyncProtocolResponse"],
-            "protocolVersion"
-          >,
-      );
-      const control: {
-        stream?: ReadableStreamDefaultController<Uint8Array> | null;
-      } = {};
-      globalThis.fetch = async (_url, init) => {
-        assert.ok(init?.signal);
-        const signal = init.signal;
-        return new Response(
+      smoke.chooseModel = async () =>
+        ({
+          model: "small",
+          efforts: [],
+        }) satisfies Awaited<ReturnType<typeof smoke.chooseModel>>;
+      smoke.saveUsage = () => {};
+      smoke.answered = async () => [];
+      smoke.backend.get = async () =>
+        ({ protocolVersion: 4 }) satisfies Pick<
+          Schema["SyncProtocolResponse"],
+          "protocolVersion"
+        >;
+      let controller!: ReadableStreamDefaultController<Uint8Array> | null;
+      globalThis.fetch = (async (
+        _url: Parameters<typeof fetch>[0],
+        { signal }: RequestInit & { signal: AbortSignal },
+      ) =>
+        new Response(
           new ReadableStream({
             start(stream) {
-              control.stream = stream;
+              controller = stream;
               signal.addEventListener("abort", () => stream.close(), {
                 once: true,
               });
             },
           }),
-        );
-      };
+        )) as typeof fetch;
       const posts: { route: string; body: unknown }[] = [];
-      mock.method(
-        smoke.backend,
-        "post",
-        async (route: string, body: unknown) => {
-          assert.ok(isRecord(body));
-          posts.push({ route, body });
-          if (route === "/api/leads") {
-            assert.ok(isRecord(body));
-            assert.ok(smoke.root);
-            const record = {
-              id: body.id,
-              role: "orchestrator" as const,
-              yoloMode: unsafe,
-              cwd: smoke.root,
-              provider: "codex",
-            };
-            permissionRecord = record;
-            control.stream?.enqueue(
-              new TextEncoder().encode(
-                `event: resources\ndata: ${JSON.stringify({ resourceVersions: [{ entityChanges: { documents: [{ collection: "agentDetail", id: body.id, value: record }] } }] })}\n\n`,
-              ),
-            );
-            return record;
-          }
-          if (route === "/api/rename") return {};
-          assert.equal(typeof body.room, "string");
-          assert.ok(
-            typeof body.room === "string" &&
-              smoke.usageEvidence.permissions?.[body.room],
+      smoke.backend.post = async (
+        route: string,
+        body: Record<string, unknown>,
+      ) => {
+        posts.push({ route, body });
+        if (route === "/api/leads") {
+          const record = {
+            id: body.id,
+            role: "orchestrator" as const,
+            yoloMode: unsafe,
+            cwd: smoke.root,
+            provider: "codex",
+          };
+          permissionRecord = record;
+          controller!.enqueue(
+            new TextEncoder().encode(
+              `event: resources\ndata: ${JSON.stringify({ resourceVersions: [{ entityChanges: { documents: [{ collection: "agentDetail", id: body.id, value: record }] } }] })}\n\n`,
+            ),
           );
-          return {};
-        },
-      );
+          return record;
+        }
+        if (route === "/api/rename") return {};
+        assert.ok(smoke.usageEvidence.permissions![body.room as string]);
+        return {};
+      };
       try {
         if (unsafe)
           await assert.rejects(smoke.turn("codex"), /permission|YOLO/i);
         else await smoke.turn("codex");
         assert.ok(posts[0]);
-        assert.ok(isRecord(posts[0].body));
         assert.equal(posts[0].route, "/api/leads");
-        assert.equal(posts[0].body.yolo_mode, false);
+        assert.equal(
+          (posts[0].body as Record<string, unknown>).yolo_mode,
+          false,
+        );
         assert.equal(
           posts.filter((post) => post.route === "/api/messages").length,
           unsafe ? 0 : 1,
         );
       } finally {
-        await smoke.live?.close();
-        removeRunRoot(smoke.root ?? "", smoke.runId, smoke.temporaryRoot);
+        await smoke.live?.close!();
+        removeRunRoot(smoke.root, smoke.runId, smoke.temporaryRoot);
       }
     }
   } finally {
@@ -1220,8 +1567,7 @@ test("supervisor ownership rejects unregistered backend descendants and reused P
     ).length,
     0,
   );
-  assert.ok(supervisor.health);
-  supervisor.health.handles = [
+  supervisor.health!.handles = [
     {
       id: "account:c",
       pid: 40,
@@ -1327,10 +1673,10 @@ c.execute('INSERT INTO analytics_usage_roots VALUES(?,?)',('owned',1));c.commit(
     const evidence = sqliteEvidence(root, "owned", "abcdef12", true);
     assert.equal(evidence.analytics.source, "sqlite-ro");
     assert.deepEqual(
-      evidence.analytics.timeline?.map((row) => row.responseId),
+      evidence.analytics.timeline!.map((row) => row.responseId),
       ["owned-response"],
     );
-    assert.equal(evidence.permissions.sandbox?.type, "workspaceWrite");
+    assert.equal(evidence.permissions.sandbox!.type, "workspaceWrite");
     assert.throws(
       () => sqliteEvidence(root, "owner", "abcdef12", true),
       /outside the evidence run/,
@@ -1442,21 +1788,21 @@ test("failed analytics collection persists its latency before a provider row exi
     app: os.tmpdir(),
     model: {},
     usage: true,
-  });
+  }) as SmokeFixture<"evidencePath" | "saveUsage">;
   smoke.evidencePath = file;
-  mock.method(smoke, "saveUsage", () =>
-    fs.writeFileSync(file, JSON.stringify(smoke.usageEvidence)),
-  );
-  mock.method(smoke.backend, "request", async () => {
+  smoke.saveUsage = () =>
+    fs.writeFileSync(file, JSON.stringify(smoke.usageEvidence));
+  smoke.backend.request = async () => {
     throw new Error("TimeoutError: request timed out");
-  });
+  };
   try {
     await assert.rejects(smoke.analyticsSnapshot("a", 17), /timed out/);
     const evidence = readEvidence(file);
     assert.equal(evidence.providers.length, 0);
-    assert.equal(evidence.analyticsLatency?.[0]?.route, analyticsRoute("a"));
-    assert.equal(evidence.analyticsLatency?.[0]?.outcome, "timeout");
-    assert.equal(evidence.analyticsLatency?.[0]?.timeoutMs, 17);
+    assert.ok(evidence.analyticsLatency![0]);
+    assert.equal(evidence.analyticsLatency![0].route, analyticsRoute("a"));
+    assert.equal(evidence.analyticsLatency![0].outcome, "timeout");
+    assert.equal(evidence.analyticsLatency![0].timeoutMs, 17);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1473,11 +1819,10 @@ test("recorded usage separates gaps and cumulative rows from responses", async (
   };
   const response = {
     kind: "response",
-    evidence: "live",
     responseId: "typed",
     model: "haiku",
     tokens,
-  } satisfies Schema["UsageObservation"];
+  } as Extract<Schema["UsageObservation"], { kind: "response" }>;
   const gap = {
     kind: "gap",
     responseId: "gap",
@@ -1499,11 +1844,12 @@ test("recorded usage separates gaps and cumulative rows from responses", async (
       { responseId: "notice", counterDomain: "nativeNotice", last: {} },
     ],
   };
-  assert.equal(recordedResponses(analytics, "claude").length, 1);
-  const recorded = recordedUsage(analytics, "claude");
-  assert.equal(recorded.responses[0]?.responseId, "typed");
+  assert.equal(recordedResponses(analytics).length, 1);
+  const recorded = recordedUsage(analytics);
+  assert.ok(recorded.responses[0]);
+  assert.equal(recorded.responses[0].responseId, "typed");
   assert.deepEqual(recorded.gaps, [
-    { ...gap, tokens: null, costUsd: null, record: analytics.timeline?.[1] },
+    { ...gap, tokens: null, costUsd: null, record: analytics.timeline![1] },
   ]);
   assert.equal(sumTokens(recorded.responses).output, 3);
 });
@@ -1519,38 +1865,33 @@ test("legacy recorded categories stay unknown and use persisted adapter preceden
   };
   for (const source of ["delta", "requestUsage", "last"]) {
     for (const missing of [undefined, null]) {
-      const responses = recordedResponses(
-        {
-          timeline: [
-            {
-              responseId: "old",
-              last: complete,
-              [source]: { ...complete, cachedInputTokens: missing },
-            },
-          ],
-        },
-        "codex",
-      );
-      assert.equal(responses[0]?.tokens.cacheReadInput, null);
-      assert.equal(responses[0]?.tokens.uncachedInput, null);
+      const responses = recordedResponses({
+        timeline: [
+          {
+            responseId: "old",
+            last: complete,
+            [source]: { ...complete, cachedInputTokens: missing },
+          },
+        ],
+      });
+      assert.ok(responses[0]);
+      assert.equal(responses[0].tokens.cacheReadInput, null);
+      assert.equal(responses[0].tokens.uncachedInput, null);
       assert.equal(sumTokens(responses).cacheReadInput, null);
       assert.equal(totalTokens(sumTokens(responses)), null);
     }
   }
-  const [response] = recordedResponses(
-    {
-      timeline: [
-        {
-          responseId: "old",
-          usageSource: "claudeResponse",
-          last: complete,
-          requestUsage: { ...complete, inputTokens: 50 },
-          delta: complete,
-        },
-      ],
-    },
-    "claude",
-  );
+  const [response] = recordedResponses({
+    timeline: [
+      {
+        responseId: "old",
+        usageSource: "claudeResponse",
+        last: complete,
+        requestUsage: { ...complete, inputTokens: 50 },
+        delta: complete,
+      },
+    ],
+  });
   assert.ok(response);
   assert.equal(response.tokens.uncachedInput, 10);
 });
@@ -1667,9 +2008,8 @@ test("comparison gaps make totals incomplete and prices use one explicit rate ba
       kind: "response",
       responseId: "r",
       model: "m",
-      evidence: "live",
       tokens,
-    },
+    } as Schema["UsageObservation"],
   } satisfies LegacyUsageRow;
   const gap = {
     studioUsage: { kind: "gap", responseId: "g", reason: "queryClosed" },
@@ -1698,10 +2038,9 @@ test("comparison gaps make totals incomplete and prices use one explicit rate ba
   const unknown = structuredClone(response);
   // @ts-expect-error cacheReadInput is deliberately null to model malformed saved usage.
   unknown.studioUsage.tokens.cacheReadInput = null;
-  assert.equal(
-    compareEvidence(make([unknown]), make([unknown]))[0]?.["recorded USD"],
-    null,
-  );
+  const [unknownRow] = compareEvidence(make([unknown]), make([unknown]));
+  assert.ok(unknownRow);
+  assert.equal(unknownRow["recorded USD"], null);
   const unavailableRates = make([response]);
   assert.ok(unavailableRates.providers[0]);
   delete unavailableRates.providers[0].truth.prices;
@@ -1844,9 +2183,8 @@ test("saved Claude runs reprice native one-hour truth and display the CLI estima
     };
     const [row] = compareEvidence(snapshot, snapshot);
     assert.ok(row);
-    assert.ok(row["truth USD"] != null);
     assert.ok(
-      Math.abs(row["truth USD"] - run.expectedCostUsd) < 1e-12,
+      Math.abs(row["truth USD"]! - run.expectedCostUsd) < 1e-12,
       "comparison reparses saved rawUsage",
     );
     assert.equal(row["CLI provider USD"], run.expectedCostUsd);
@@ -1874,4 +2212,61 @@ test("mixed legacy and v4 token totals retain the known one-hour subset", async 
     assert.equal(totalTokens(total), 20, "subset is not counted twice");
   }
   assert.equal(sumTokens([legacy]).cacheWriteInput1h, 0);
+});
+
+test("native usage boundaries accept sparse numeric fields and nested JSON documents", async () => {
+  const { default: ts } = await import("typescript");
+  const usageFile = path.resolve(
+    "workspaces/tooling/apps/installed-smoke/usage.ts",
+  );
+  const fixtureFile = path.resolve(
+    "workspaces/tooling/apps/installed-smoke/tests/fixtures/native-documents.ts",
+  );
+  const program = ts.createProgram([usageFile, fixtureFile], {
+    target: ts.ScriptTarget.ES2024,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    strict: true,
+    skipLibCheck: true,
+    noEmit: true,
+    allowImportingTsExtensions: true,
+  });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(usageFile)!;
+  const fixtures = program.getSourceFile(fixtureFile)!;
+  const variableType = (node: import("typescript").Node, name: string) => {
+    let declaration: import("typescript").VariableDeclaration | undefined;
+    const visit = (child: import("typescript").Node) => {
+      if (ts.isVariableDeclaration(child) && child.name.getText() === name)
+        declaration = child;
+      ts.forEachChild(child, visit);
+    };
+    visit(node);
+    assert.ok(declaration, name);
+    return checker.getTypeAtLocation(declaration.name);
+  };
+  const usageBoundary = source.statements.find(
+    (node) =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "nativeTokens",
+  )!;
+  const journalBoundary = source.statements.find(
+    (node) =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "nativeResponses",
+  )!;
+  const usageView = variableType(usageBoundary, "usage");
+  const journalView = variableType(journalBoundary, "row");
+  assert.deepEqual(
+    [
+      checker.isTypeAssignableTo(
+        variableType(fixtures, "usageDocument"),
+        usageView,
+      ),
+      checker.isTypeAssignableTo(
+        variableType(fixtures, "journalDocument"),
+        journalView,
+      ),
+    ],
+    [true, true],
+    "the boundary views must accept the numeric and nested object values the journal stores",
+  );
 });

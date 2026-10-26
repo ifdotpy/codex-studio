@@ -68,7 +68,9 @@ fn same_selected_account(selected: &Value, current: &Value) -> bool {
     PIN_FIELDS.iter().all(|key| {
         let old = selected.get(*key).unwrap_or(&Value::Null);
         let new = current.get(*key).unwrap_or(&Value::Null);
-        if *key == "_credentialIdentity" && selected.get("provider") == Some(&json!("claude")) {
+        if *key == "_credentialIdentity"
+            && selected.get("provider") == Some(&json!(ProviderKind::Claude.key()))
+        {
             old == new
                 || old.as_str().zip(new.as_str()).is_some_and(|(old, new)| {
                     crate::account_driver::claude_identity::accepts(old, new)

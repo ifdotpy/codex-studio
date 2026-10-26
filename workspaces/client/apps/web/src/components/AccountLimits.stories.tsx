@@ -236,10 +236,8 @@ export const SettingsDark = {
     const controls = canvas.getAllByRole("button", {
       name: /Limit details for/,
     });
-    const first = controls[0],
-      fourth = controls[3],
-      third = controls[2];
-    if (!first || !fourth || !third)
+    const [first, , third, fourth] = controls;
+    if (!first || !third || !fourth)
       throw new Error("Missing limit detail controls");
     await userEvent.click(first);
     await expect(

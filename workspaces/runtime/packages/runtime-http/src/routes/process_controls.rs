@@ -7,6 +7,7 @@ use crate::{error::ApiError, router::HttpState};
 use axum::{Extension, Json, extract::State, http::StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::shared_values::{
     NATIVE_TERMINAL_ITEMS_PER_PAGE, NATIVE_TERMINAL_MAX_PAGES,
 };
@@ -538,7 +539,12 @@ async fn stop_response(
             connection: scope.connection.clone(),
             generation: scope.generation,
         };
-        Ok::<_, ApiError>((port, scope, ticket, owner["provider"] == "claude"))
+        Ok::<_, ApiError>((
+            port,
+            scope,
+            ticket,
+            owner["provider"] == ProviderKind::Claude.key(),
+        ))
     }
     .await;
     let (port, scope, ticket, claude) = match binding {
@@ -564,10 +570,6 @@ async fn stop_response(
     .await?;
     Ok(json!({"status":"requested"}))
 }
-/// Providers whose adapter implements `thread/commandExecution/background`.
-/// Codex app-server has no request that ends a running exec wait early.
-const BACKGROUND_COMMAND_PROVIDERS: &[&str] = &["claude"];
-
 async fn background_command(
     state: &HttpState,
     target: &Value,
@@ -584,7 +586,8 @@ async fn background_command(
             })
             .await?;
         let owner = &owners[0];
-        let supported = BACKGROUND_COMMAND_PROVIDERS.contains(&text(owner, "provider"));
+        // Only the Claude adapter implements `thread/commandExecution/background`.
+        let supported = matches!(ProviderKind::of_record(owner), Ok(ProviderKind::Claude));
         let port = provider(state, owner)?;
         let scope = port
             .current_scope(text(&expected, "accountKey"))

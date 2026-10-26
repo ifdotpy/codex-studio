@@ -6,7 +6,7 @@
 - **Public interface:** Pure `SessionState` events/actions, `encode_line`, typed `Frame`/`Method`/`RequestId`, `Inbound`, and `PendingBook` transitions.
 - **Boundaries:** The caller owns process I/O, account discovery, durable settlement, callback delivery, and backpressure. This crate does not spawn processes or access HTTP or SQLite.
 - **Invariants:** Initialization precedes ordinary requests; tickets include their connection generation; registered IDs correlate replies. Deadlines and transport loss preserve uncertainty without retries, and late matched replies remain evidence.
-- **Configuration owners:** [`codec.rs`](src/codec.rs) owns methods and frame limits; [`provider_kind.rs`](src/provider_kind.rs) owns provider identity and wire profiles; callers supply monotonic deadline values.
+- **Configuration owners:** [`codec.rs`](src/codec.rs) owns methods and frame limits; the shared [`ProviderKind`](../runtime-schema/src/provider_kind.rs) owns provider identity and wire profiles; callers supply monotonic deadline values. Provider integration follows the [extensibility contract](../../../providers/README.md#provider-extensibility).
 - **Focused check:** `cargo nextest run --build-jobs 4 -p studio-runtime-providers`.
 
 ## Framing and request state

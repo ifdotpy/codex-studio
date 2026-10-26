@@ -37,23 +37,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
       stateDir: "fixture",
       chats: [],
       edges: [],
-      runtime: {
-        agents: [],
-        rooms: [],
-        tasks: [],
-        monitors: [],
-        complaints: [],
-        projects: [],
-        events: [],
-        peerTeams: [],
-        requests: [],
-        rules: [],
-        work: [],
-        nativeNotices: [],
-        sidebarOrder: { groups: null, revision: 0 },
-        rateLimits: null,
-        rateLimitsByAccount: {},
-      },
+      runtime: {},
     },
     workspaceId: syncIdentityFixture().workspaceId,
   };
@@ -66,7 +50,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
     ) {
       if (handleEntitySyncFixtureRequest(request, response, syncFixture))
         return;
-      if (new URL(request.url ?? "", "http://fixture").pathname !== "/")
+      if (new URL(request.url!, "http://fixture").pathname !== "/")
         return next();
       response.setHeader("Content-Type", "text/html");
       response.end(
@@ -135,7 +119,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
         });
       if (path === "/api/workspace/tasks") {
         const agent = new URL(request.url()).searchParams.get("agent");
-        const tasks = workspaceTasks[agent ?? ""] || [];
+        const tasks = workspaceTasks[agent!] || [];
         const latest = tasks.reduce<Pick<WorkspaceTask, "id" | "created">>(
           (result, task) => (task.created > result.created ? task : result),
           { id: "", created: 0 },
@@ -156,10 +140,9 @@ test("ux support ui", async ({ page: runnerPage }) => {
         const summary = Object.values(workspaceTasks)
           .flat()
           .find((task) => task.id === id);
-        assert.ok(summary);
         return route.fulfill({
           json: {
-            ...summary,
+            ...summary!,
             arguments: JSON.stringify({ fixture: true }),
             tail: `${id} output`,
           } satisfies GetResult<"/api/task">,
@@ -237,9 +220,9 @@ test("ux support ui", async ({ page: runnerPage }) => {
     const support = async (name: SupportStage) => {
       await page.evaluate((method) => {
         const update = window.support[method];
-        window.support[method] = async () => {
+        window.support[method] = async (...args: Parameters<typeof update>) => {
           await window.setWorkspaceTaskFixture(method);
-          return update();
+          return update(...args);
         };
       }, name);
       await page.evaluate((method) => window.support[method](), name);

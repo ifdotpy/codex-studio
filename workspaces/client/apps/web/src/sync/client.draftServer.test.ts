@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { DRAFT_SERVER_READY_TIMEOUT_MS } from "./draftServerFixture";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
@@ -306,12 +307,12 @@ it.each(fixture.orders)(
         deliver(
           await firstValueFrom(
             received.pipe(
-              filter((frame) => {
-                assert.ok(frame.resourceVersions[0] != null);
-                return !!frame.resourceVersions[0].draftChanges?.documents.some(
-                  (doc) => doc.id === id,
-                );
-              }),
+              filter(
+                (frame) =>
+                  !!required(
+                    frame.resourceVersions[0],
+                  ).draftChanges?.documents.some((doc) => doc.id === id),
+              ),
             ),
           ),
         );
@@ -366,10 +367,11 @@ it.each(fixture.orders)(
         order === "second-writer" ? "other writer" : "edit-3";
       await firstValueFrom(
         received.pipe(
-          filter((frame) => {
-            assert.ok(frame.resourceVersions[0] != null);
-            return !!frame.resourceVersions[0].draftChanges?.documents.some(
-              (doc) => {
+          filter(
+            (frame) =>
+              !!required(
+                frame.resourceVersions[0],
+              ).draftChanges?.documents.some((doc) => {
                 if (doc.id !== id) return false;
                 const payload = JSON.parse(doc.payload);
                 return (
@@ -377,9 +379,8 @@ it.each(fixture.orders)(
                   (order !== "second-writer" ||
                     payload.alternatives?.includes("edit-3"))
                 );
-              },
-            );
-          }),
+              }),
+          ),
         ),
       );
       await mocks.replications[0].awaitInSync();
@@ -394,26 +395,24 @@ it.each(fixture.orders)(
           .$.pipe(filter((doc) => !!doc?.payload.includes("edit-3"))),
       );
       expect(local?.payload).toContain("edit-3");
-      expect(posts.at(-1)?.body.rows[0]?.newDocumentState.payload).toContain(
-        "edit-3",
-      );
+      expect(
+        required(required(posts.at(-1)).body.rows[0]).newDocumentState.payload,
+      ).toContain("edit-3");
       console.log(
         JSON.stringify({
           order,
           posts: posts.length,
           conflicts: posts.filter((post) => post.conflicts.length).length,
-          trace: posts.map(({ body, conflicts }) => {
-            assert.ok(body.rows[0] != null);
-            return {
-              sent: JSON.parse(body.rows[0]?.newDocumentState.payload).updated,
-              assumed: body.rows[0].assumedMasterState
-                ? JSON.parse(body.rows[0].assumedMasterState.payload).updated
-                : null,
-              conflicts: conflicts.map(
-                (row) => JSON.parse(row.payload).updated,
-              ),
-            };
-          }),
+          trace: posts.map(({ body, conflicts }) => ({
+            sent: JSON.parse(required(body.rows[0]).newDocumentState.payload)
+              .updated,
+            assumed: required(body.rows[0]).assumedMasterState
+              ? JSON.parse(
+                  required(required(body.rows[0]).assumedMasterState).payload,
+                ).updated
+              : null,
+            conflicts: conflicts.map((row) => JSON.parse(row.payload).updated),
+          })),
           replications: mocks.replications.length,
           reportedErrors: errors.length,
           pulls: mocks.syncGet.mock.calls,

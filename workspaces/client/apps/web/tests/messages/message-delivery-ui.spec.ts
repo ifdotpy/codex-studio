@@ -1,10 +1,10 @@
+import { required } from "./helpers.ts";
 import { responseJson } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
 import type { Page, Route } from "@playwright/test";
 import type { Message } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { MessageRequest } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import type { TestInfo, BrowserContext } from "@playwright/test";
 import {
   readTestState,
@@ -127,7 +127,7 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
   page.setDefaultTimeout(10_000);
   const { message, hit, box } = await setupUncertainRemovePointer(page);
   test.fail(
-    true,
+    // @ts-expect-error The original fixture passes its truthy description as the condition.
     "Known delivery-control overlap; see workspaces/client/apps/web/tests/status/msg-known-failures.md.",
   );
   assert.equal(hit, "Quote message");
@@ -211,42 +211,44 @@ test("message delivery ui", async ({ browser: _browser }) => {
           });
       });
       const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("pageerror", (error) => errors.push((error as Error).message));
       await page.addInitScript(
         ({ workspaceId, schemaHandshake }) => {
-          window.messageDeliveryStreams = [];
-          const DeliveryEventSource = class extends EventTarget {
-            url: string;
-            constructor(url: string | URL) {
+          window.deliveryStreams = [];
+          (
+            window as {
+              EventSource: new (
+                url: Parameters<
+                  typeof import("../../src/servers/eventSource.ts").openServerEvents
+                >[0],
+              ) => Pick<EventSource, "url" | "close"> &
+                Pick<EventTarget, "addEventListener">;
+            }
+          ).EventSource = class extends EventTarget {
+            declare url: string;
+            constructor(url: string) {
               super();
-              this.url = String(url);
-              window.messageDeliveryStreams.push(this);
+              this.url = url;
+              window.deliveryStreams.push(this);
               queueMicrotask(() => {
                 this.dispatchEvent(
                   new MessageEvent("api-schema", {
                     data: JSON.stringify(schemaHandshake),
                   }),
                 );
-                window.messagePublishDelivery("initial", 0);
+                window.publishDelivery("initial", 0);
               });
             }
             close() {
-              window.messageDeliveryStreams =
-                window.messageDeliveryStreams.filter(
-                  (stream) => stream !== this,
-                );
+              window.deliveryStreams = window.deliveryStreams.filter(
+                (stream) => stream !== this,
+              );
             }
-          } satisfies new (
-            ...args: ConstructorParameters<typeof EventSource>
-          ) => Pick<EventSource, "url" | "close"> &
-            Pick<EventTarget, "addEventListener">;
-          Object.defineProperty(window, "EventSource", {
-            value: DeliveryEventSource,
-          });
+          };
           let generation = Date.now();
-          window.messagePublishDelivery = (_id, _revision) => {
+          window.publishDelivery = (_id, _revision) => {
             const revision = ++generation;
-            for (const stream of window.messageDeliveryStreams) {
+            for (const stream of window.deliveryStreams) {
               const url = new URL(stream.url, location.href);
               const scope = url.searchParams.get("scope");
               if (scope?.startsWith("transcript:"))
@@ -299,11 +301,11 @@ test("message delivery ui", async ({ browser: _browser }) => {
         }
       >(
         [a, b].map((agent) => [
-          required(agent).id,
+          agent.id,
           {
-            agent: required(agent),
+            agent,
             items: Array.from({ length: 36 }, (_, index) => ({
-              id: `${required(agent).id}-history-${index}`,
+              id: `${agent.id}-history-${index}`,
               role: "assistant",
               text: `Saved paragraph ${index}. ${"Existing conversation text. ".repeat(22)}`,
             })),
@@ -322,7 +324,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
       );
       const queuedItems = new Map<
         string,
-        import("../../src/api.ts").QueueItemDto[]
+        Array<
+          Omit<import("../../src/api.ts").QueueItemDto, "created"> &
+            Partial<Pick<import("../../src/api.ts").QueueItemDto, "created">>
+        >
       >();
       await page.route("**/api/queue?*", (route) => {
         const id = new URL(route.request().url()).searchParams.get("agent");
@@ -343,24 +348,24 @@ test("message delivery ui", async ({ browser: _browser }) => {
         const scope = url.searchParams.get("scope");
         if (!required(scope).startsWith("transcript:")) return route.fallback();
         const id = required(scope).slice("transcript:".length);
-        const seq = revisions.get(id);
+        const seq = required(revisions.get(id));
         const after = Number(url.searchParams.get("after") || 0);
         if (required(scope).startsWith("transcript:")) transcriptPulls++;
         return route.fulfill({
           json: {
             ...identity,
             documents:
-              after < required(seq)
+              after < seq
                 ? [
                     {
                       id: scope,
-                      payload: JSON.stringify(history.get(id)),
+                      payload: JSON.stringify(required(history.get(id))),
                       seq,
                       _deleted: false,
                     },
                   ]
                 : [],
-            checkpoint: { seq: Math.max(after, required(seq)) },
+            checkpoint: { seq: Math.max(after, seq) },
           },
         });
       });
@@ -382,7 +387,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
         history.set(id, payload);
         revisions.set(id, required(revisions.get(id)) + 1);
         await page.evaluate(
-          ({ id, revision }) => window.messagePublishDelivery(id, revision),
+          ({ id, revision }) => window.publishDelivery(id, revision),
           { id, revision: required(revisions.get(id)) },
         );
       };
@@ -596,7 +601,9 @@ test("message delivery ui", async ({ browser: _browser }) => {
         page
           .getByTestId("message-queue")
           .getByText(queuedText, { exact: true });
-      const assertQueueGeometry = async (_label: string) => {
+      const assertQueueGeometry: (
+        ...args: string[]
+      ) => Promise<void> = async () => {
         // After-tool input waits in the chat, never in the after-turn queue.
         await row(queuedText).waitFor();
         assert.equal(await queueRow().count(), 0);
@@ -690,19 +697,19 @@ test("message delivery ui", async ({ browser: _browser }) => {
         () => posts.length === beforeRejectedRetry + 1,
         `${mode}: a definite rejection permits another attempt`,
       );
-      const rejectedRetry = posts.at(-1);
+      const rejectedRetry = required(posts.at(-1));
       assert.notEqual(
-        required(rejectedRetry).body.id,
+        rejectedRetry.body.id,
         failed.body.id,
         `${mode}: retry after HTTP 400 has a fresh request identity`,
       );
-      assert.equal(required(rejectedRetry).body.text, failed.body.text);
+      assert.equal(rejectedRetry.body.text, failed.body.text);
       assert.deepEqual(
-        required(rejectedRetry).body.assets,
-        failed.body.assets,
+        rejectedRetry.body.assets,
+        required(failed.body.assets),
         `${mode}: retry retains the same attachment`,
       );
-      await accept(required(rejectedRetry));
+      await accept(rejectedRetry);
       await attachment.waitFor({ state: "hidden" });
 
       // Unknown delivery does not become permission to submit a fresh message.
@@ -831,7 +838,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
           id: materialized.body.id,
           kind: "user",
           text: materializedText,
-          created: 0,
           status: "pending",
           delivery: "current_turn",
         },
@@ -844,11 +850,11 @@ test("message delivery ui", async ({ browser: _browser }) => {
           ),
         "Accepted input remains visible while the agent waits",
       );
-      const silentBase = history.get(a.id);
+      const silentBase = required(history.get(a.id));
       history.set(a.id, {
-        ...required(silentBase),
+        ...silentBase,
         items: [
-          ...required(silentBase).items,
+          ...silentBase.items,
           {
             id: `${a.id}:${materialized.body.id}`,
             clientMessageId: materialized.body.id,
@@ -863,7 +869,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       revisions.set(a.id, required(revisions.get(a.id)) + 1);
       queuedItems.set(a.id, []);
       await page.evaluate(
-        ({ id, revision }) => window.messagePublishDelivery(id, revision),
+        ({ id, revision }) => window.publishDelivery(id, revision),
         { id: a.id, revision: required(revisions.get(a.id)) },
       );
       const postsBeforeReconcile = posts.length;
@@ -1025,7 +1031,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await page.reload();
       await page.locator(`[data-chat="${a.id}"]`).click();
       await page
-        .locator(`[data-message="${required(required(retained).at(-1)).id}"]`)
+        .locator(`[data-message="${required(retained.at(-1)).id}"]`)
         .waitFor();
       for (const message of [...removable, dismissedEcho])
         assert.equal(
@@ -1096,7 +1102,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
 
 declare global {
   interface Window {
-    messageDeliveryStreams: Array<Pick<EventSource, "url" | "dispatchEvent">>;
-    messagePublishDelivery: (id: string, revision: number) => void;
+    deliveryStreams: Array<Pick<EventSource, "url" | "dispatchEvent">>;
+    publishDelivery: (id: string, revision: number) => void;
   }
 }

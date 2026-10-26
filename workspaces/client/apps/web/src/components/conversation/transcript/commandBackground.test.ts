@@ -64,9 +64,9 @@ describe("requestCommandBackground", () => {
       await requestCommandBackground(api, "lead", "turn", "toolu-1"),
     ).toEqual({ kind: "backgrounded" });
     const [post] = posts(calls);
-    if (!post) throw new Error("Expected post fixture result");
-    expect(post.path).toBe("/api/processes/action");
-    expect(post.value).toMatchObject({
+
+    expect(required(post).path).toBe("/api/processes/action");
+    expect(required(post).value).toMatchObject({
       action: "background_command",
       agent: "lead",
       accountKey: "acct",

@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
@@ -146,9 +147,7 @@ it("publishes a real scoped snapshot and republishes after a saved preference ed
   );
   mount();
   expect(navigationMessages()).toHaveLength(1);
-  const firstMessage = navigationMessages()[0];
-  assert.ok(firstMessage);
-  const [initial, origin] = firstMessage;
+  const [initial, origin] = required(navigationMessages()[0]);
   expect(origin).toBe("https://parent.example");
   expect(initial.serverId).toBe("remote");
   expect(initial.navigation.sidebar?.threads[0]?.name).toBe("Real chat");
@@ -276,10 +275,12 @@ it("keeps navigation without sidebar data until a snapshot is available", () => 
     }),
   );
   expect(navigationMessages()).toHaveLength(1);
-  expect(navigationMessages()[0]?.[0].navigation).toMatchObject({
+  expect(required(navigationMessages()[0])[0].navigation).toMatchObject({
     ready: false,
   });
-  expect(navigationMessages()[0]?.[0].navigation).not.toHaveProperty("sidebar");
+  expect(required(navigationMessages()[0])[0].navigation).not.toHaveProperty(
+    "sidebar",
+  );
 });
 
 it("executes sidebar requests only from the bound parent and replies with the same identity", async () => {

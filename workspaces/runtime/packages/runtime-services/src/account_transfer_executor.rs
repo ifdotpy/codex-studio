@@ -34,6 +34,7 @@ use std::{
     time::{Duration, Instant},
 };
 use studio_runtime_providers::Method;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::path_identity::CanonicalPath;
 
@@ -448,7 +449,7 @@ async fn source_transfer_call(
 
 async fn read_catalog(
     context: &ProviderReadContext<'_>,
-    provider: &str,
+    provider: ProviderKind,
     home: &str,
 ) -> Result<CatalogObservation, TransferError> {
     let mut cursor: Option<String> = None;
@@ -534,7 +535,7 @@ async fn read_catalog(
                     identity: CatalogIdentity {
                         account_key: context.account.into(),
                         home: home.into(),
-                        provider: provider.into(),
+                        provider,
                         generation: 0,
                     },
                     expires_at: Instant::now() + Duration::from_secs(30),
@@ -554,14 +555,12 @@ async fn read_catalog(
 
 fn destination_settings(
     agent: &Value,
-    source_provider: &str,
-    target_provider: &str,
+    source_provider: ProviderKind,
+    target_provider: ProviderKind,
     catalog: &CatalogObservation,
 ) -> Result<Value, TransferError> {
     let changed = source_provider != target_provider;
-    let target_kind: studio_runtime_providers::ProviderKind = target_provider
-        .parse()
-        .map_err(|_| TransferError::Refused("Unknown destination provider"))?;
+    let target_kind = target_provider;
     let visible = catalog
         .models
         .iter()
@@ -622,36 +621,41 @@ fn destination_settings(
         "nativeEffort":native_effort,"fastMode":settings.fast_mode.unwrap_or(false),
         "daybreakEnabled":settings.daybreak_enabled.unwrap_or(false),"workerDefaults":worker_defaults});
     let daybreak = !changed && agent["daybreakEnabled"] == true;
-    let cyber_program = if target_provider == "claude" {
-        if daybreak {
-            return Err(TransferError::Requires(
-                "account-transfer/destination-settings",
-            ));
-        }
-        "standard".to_owned()
-    } else {
-        let grants = catalog
-            .models
-            .iter()
-            .find(|row| row.model == selected_model && !row.hidden)
-            .and_then(|row| row.access_programs.as_ref());
-        if daybreak {
-            grants
-                .and_then(|programs| {
-                    ["daybreakBlue", "daybreakRed"]
-                        .into_iter()
-                        .find(|p| programs.iter().any(|v| v == p))
-                })
-                .ok_or(TransferError::Requires(
+    let cyber_program = match target_provider {
+        ProviderKind::Claude => {
+            if daybreak {
+                return Err(TransferError::Requires(
                     "account-transfer/destination-settings",
-                ))?
-                .to_owned()
-        } else if grants.is_some_and(|programs| !programs.iter().any(|value| value == "standard")) {
-            return Err(TransferError::Requires(
-                "account-transfer/destination-settings",
-            ));
-        } else {
+                ));
+            }
             "standard".to_owned()
+        }
+        ProviderKind::Codex => {
+            let grants = catalog
+                .models
+                .iter()
+                .find(|row| row.model == selected_model && !row.hidden)
+                .and_then(|row| row.access_programs.as_ref());
+            if daybreak {
+                grants
+                    .and_then(|programs| {
+                        ["daybreakBlue", "daybreakRed"]
+                            .into_iter()
+                            .find(|p| programs.iter().any(|v| v == p))
+                    })
+                    .ok_or(TransferError::Requires(
+                        "account-transfer/destination-settings",
+                    ))?
+                    .to_owned()
+            } else if grants
+                .is_some_and(|programs| !programs.iter().any(|value| value == "standard"))
+            {
+                return Err(TransferError::Requires(
+                    "account-transfer/destination-settings",
+                ));
+            } else {
+                "standard".to_owned()
+            }
         }
     };
     result["cyberAccessProgram"] = json!(cyber_program);
@@ -737,12 +741,10 @@ impl TransferExecutor for AccountTransferExecutor {
                 .as_str()
                 .ok_or(TransferError::Refused("Invalid transfer target"))?;
             let source_provider = studio_runtime_providers::ProviderKind::of_record(member)
-                .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
-                .key();
+                .map_err(|_| TransferError::Refused("Invalid transfer provider"))?;
             let target_provider =
                 studio_runtime_providers::ProviderKind::of_field(operation.get("targetProvider"))
-                    .map_err(|_| TransferError::Refused("Invalid transfer provider"))?
-                    .key();
+                    .map_err(|_| TransferError::Refused("Invalid transfer provider"))?;
             let (home, registered_provider) =
                 self.catalog
                     .account_profile(target_account)
@@ -894,8 +896,8 @@ impl TransferExecutor for AccountTransferExecutor {
                     ));
                 }
                 let portable_required = source_provider != target_provider
-                    || source_provider == "claude"
-                    || target_provider == "claude";
+                    || source_provider == ProviderKind::Claude
+                    || target_provider == ProviderKind::Claude;
                 if !portable_required {
                     let native_path = thread.get("path").and_then(Value::as_str).ok_or(
                         TransferError::Refused("Codex returned no saved context path"),
@@ -971,8 +973,10 @@ impl TransferExecutor for AccountTransferExecutor {
                     }
                     archive_agent["accountKey"] = json!(source_account);
                     archive_agent["threadId"] = json!(thread_id);
-                    let descriptor_settings =
-                        portable_history::source_settings_snapshot(&archive_agent);
+                    let descriptor_settings = portable_history::source_settings_snapshot(
+                        &archive_agent,
+                    )
+                    .map_err(|_| TransferError::Refused("Source portable history export failed"))?;
                     let descriptor_generation = self
                         .session
                         .current_scope(source_account)
@@ -1263,7 +1267,7 @@ mod destination_settings_tests {
             identity: CatalogIdentity {
                 account_key: "target".into(),
                 home: "/tmp/target".into(),
-                provider: "codex".into(),
+                provider: ProviderKind::Codex,
                 generation: 1,
             },
             expires_at: Instant::now() + Duration::from_secs(30),
@@ -1280,8 +1284,8 @@ mod destination_settings_tests {
         };
         let result = destination_settings(
             &json!({"model":"source-model"}),
-            "claude",
-            "codex",
+            ProviderKind::Claude,
+            ProviderKind::Codex,
             &catalog,
         );
         assert!(matches!(
@@ -2276,7 +2280,7 @@ mod retained_executor_tests {
         catalog.seed_test_admission_catalog(
             "target",
             target_home.to_str().expect("target home"),
-            "codex",
+            ProviderKind::Codex,
             json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
         );
@@ -2478,7 +2482,7 @@ mod retained_executor_tests {
         recovered_catalog.seed_test_admission_catalog(
             "target",
             target_home.to_str().expect("target home"),
-            "codex",
+            ProviderKind::Codex,
             json!({"data":[{"model":"gpt-6-astra","isDefault":true,
                 "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}],"nextCursor":null}),
         );

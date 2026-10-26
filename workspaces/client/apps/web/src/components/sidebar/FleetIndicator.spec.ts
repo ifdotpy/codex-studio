@@ -28,7 +28,7 @@ test("fleet state indicators remain visible and animated in priority and project
     },
   });
   let errors = "";
-  proc.stderr?.on("data", (chunk) => {
+  proc.stderr!.on("data", (chunk) => {
     errors += chunk;
   });
   const port = await waitForFixturePort(proc, { diagnostics: () => errors });
@@ -93,10 +93,8 @@ test("fleet state indicators remain visible and animated in priority and project
         await sidebar.locator("#chat-list").evaluate((element) => {
           element.scrollTop = 0;
         });
-        await page.evaluate(
-          () =>
-            document.activeElement instanceof HTMLElement &&
-            document.activeElement.blur(),
+        await page.evaluate(() =>
+          (document.activeElement as HTMLElement | null)?.blur(),
         );
         await page.screenshot({
           path: join(evidence, `indicator-real-${scheme}-${width}.png`),

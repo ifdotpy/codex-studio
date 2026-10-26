@@ -1,6 +1,6 @@
-export { resolveSettings } from "./sdk-fixtures.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
 import { inputText } from "./sdk-fixtures.ts";
+export { resolveSettings } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import type { UserDialogResult } from "@anthropic-ai/claude-agent-sdk";
 export interface UnloadLog {
@@ -69,7 +69,7 @@ export function fixtureQuery(
         if (dialog && options.resume && !asked) {
           asked = true;
           log({
-            dialog: await options.onUserDialog?.(
+            dialog: await options.onUserDialog!(
               { dialogKind: "resume_return", toolUseID: "dialog", payload: {} },
               { requestId: "dialog", signal: abort.signal },
             ),
@@ -81,7 +81,13 @@ export function fixtureQuery(
           subtype: "init",
           session_id: options.resume || options.sessionId,
         };
-        yield { type: "result", subtype: "success", usage, result: "done" };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage,
+          result: "done",
+        };
       }
     },
   };

@@ -104,7 +104,7 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
     let state_root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(state_root.path())).await.unwrap());
     let registry = root.path().join("accounts.json");
-    std::fs::write(&registry, json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":cwd,"label":"Fixture","source":"Fixture","provider":"claude","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+    std::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":cwd,"label":"Fixture","source":"Fixture","provider":"claude","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
     let state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),
@@ -119,7 +119,12 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
     catalog.set_account_session(Some(Arc::new(Catalog)));
     assert!(matches!(
         catalog
-            .read_until_ready("default", &cwd, "claude", false)
+            .read_until_ready(
+                "default",
+                &cwd,
+                studio_runtime_providers::ProviderKind::Claude,
+                false
+            )
             .await,
         studio_runtime_services::model_catalog::CatalogRead::Ready(_)
     ));

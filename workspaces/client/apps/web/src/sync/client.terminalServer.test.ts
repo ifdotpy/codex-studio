@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
@@ -332,20 +333,20 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
       terminalGeneration: 0,
     });
     await write("tail", 20);
-    expect((await waitRaw(24)).resourceVersions[0]?.replyKind).toBe("snapshot");
+    expect(required((await waitRaw(24)).resourceVersions[0]).replyKind).toBe(
+      "snapshot",
+    );
     await waitApplied(24, "tail");
     await write("new");
     await waitApplied(3, "new");
     await write("new", 0, "exited");
     await firstValueFrom(
       applied.pipe(
-        filter((event) => {
-          assert.ok(event.resourceVersions[0] != null);
-          return (
-            event.resourceVersions[0].viewSnapshot?.terminalOutput?.status ===
-            "exited"
-          );
-        }),
+        filter(
+          (event) =>
+            required(event.resourceVersions[0]).viewSnapshot?.terminalOutput
+              ?.status === "exited",
+        ),
         timeout(5000),
       ),
     );

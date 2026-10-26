@@ -1,3 +1,4 @@
+import { required } from "./componentTestFixtures.ts";
 import type { Message } from "../types";
 import assert from "node:assert/strict";
 import { it } from "vitest";
@@ -15,7 +16,7 @@ it("does not create a failed turn group for an empty turn ID", () => {
   ]);
   assert.ok(group);
 
-  assert.equal(group?.outcome, undefined);
+  assert.equal(group.outcome, undefined);
 });
 
 it("keeps an unconfirmed outcome terminal even with a stale active tool", () => {
@@ -121,8 +122,8 @@ it("keeps a reply unconfirmed when only its user row has the terminal status", (
     ],
     "turn",
   );
-  assert.equal(groups[0]?.outcome, undefined);
-  assert.equal(groups[1]?.outcome, "uncertain");
+  assert.equal(required(groups[0]).outcome, undefined);
+  assert.equal(required(groups[1]).outcome, "uncertain");
 });
 
 it("moves a user-only outcome to a later reply without a duplicate notice", () => {

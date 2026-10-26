@@ -1,7 +1,7 @@
+import { required } from "./helpers.ts";
 import type { Route } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 import { requestBody } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import type { ComplaintBody } from "./helpers.ts";
 import type {} from "./complaint-ownership-ui.fixture.tsx";
 import assert from "node:assert/strict";
@@ -72,7 +72,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
     });
     const page = await browserContext.newPage();
     const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -89,19 +89,14 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
     );
     let mode = "lost",
       completed = 0,
-      pending: { route: Route | null } = { route: null };
-    const pendingRoute = (): Route => {
-      const route = pending.route;
-      if (!route) throw new Error("Missing deferred reply");
-      return route;
-    };
+      pending: Route | null | undefined;
     const attempts: ComplaintBody[] = [];
     await page.route("**/api/complaints", async (route) => {
       const payload = requestBody<ComplaintBody>(route);
       attempts.push(payload);
       assert.equal(route.request().headers()["x-canvas-token"], "fixture");
       if (mode === "deferred") {
-        pending.route = route;
+        pending = route;
         return;
       }
       if (mode === "conflict") {
@@ -136,7 +131,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
         status: required(payload.status),
         at: 3,
       });
-      user.status = payload.status;
+      user.status = required(payload.status);
       user.needsUserResponse = false;
       if (mode === "lost") {
         mode = "retry";
@@ -144,11 +139,8 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
       } else await route.fulfill({ json: user });
     });
     await page.goto(required(server.resolvedUrls).local[0] + "check");
-    await page.waitForFunction(() => !!window.ownershipSetRecords);
-    await page.evaluate(
-      (records) => window.ownershipSetRecords(records),
-      records,
-    );
+    await page.waitForFunction(() => !!window.setRecords);
+    await page.evaluate((records) => window.setRecords(records), records);
     const card = (id: string) => page.locator(`[data-complaint="${id}"]`);
     const open = async (id: string) => {
       await card(id)
@@ -240,7 +232,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
     assert.notEqual(required(attempts[3]).id, required(attempts[2]).id);
     assert.equal(required(attempts[3]).status, "in_progress");
     await close("owner");
-    await page.evaluate(() => window.ownershipSetTarget("lead"));
+    await page.evaluate(() => window.setTarget("lead"));
     await card("worker-request").waitFor();
     assert.equal(
       await card("worker-request")
@@ -249,33 +241,33 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
       0,
       "messages addressed to the lead do not expose the user's reply form",
     );
-    await page.evaluate(() => window.ownershipSetTarget("user"));
+    await page.evaluate(() => window.setTarget("user"));
     for (const status of [200, 409]) {
       await open("owner");
       await card("owner")
         .getByLabel("Reply", { exact: true })
         .fill(`Deferred ${status}`);
       mode = "deferred";
-      pending.route = null;
+      pending = null;
       await card("owner")
         .getByRole("button", { name: "Send reply", exact: true })
         .click();
-      for (let attempt = 0; !pending.route && attempt < 100; attempt++)
+      for (let attempt = 0; !pending && attempt < 100; attempt++)
         await new Promise((resolve) => setTimeout(resolve, 10));
-      assert.ok(pending.route);
+      assert.ok(pending);
       await close("owner");
       await open("history");
       await page.evaluate((forbidden) => {
-        window.ownershipWrongMessage = false;
-        window.ownershipObserver = new MutationObserver(() => {
+        window.wrongMessage = false;
+        window.observer = new MutationObserver(() => {
           if (
             document
               .querySelector('[data-complaint="history"]')
               ?.textContent.includes(forbidden)
           )
-            window.ownershipWrongMessage = true;
+            window.wrongMessage = true;
         });
-        window.ownershipObserver.observe(document.body, {
+        window.observer.observe(document.body, {
           childList: true,
           subtree: true,
           characterData: true,
@@ -290,7 +282,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
               response.url().includes("/api/complaint?id=owner"),
             )
           : null;
-      await pendingRoute().fulfill({
+      await (pending as Route).fulfill({
         status,
         json: status === 200 ? user : { error: "Message version changed" },
       });
@@ -300,17 +292,14 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
         await new Promise(requestAnimationFrame);
         await new Promise(requestAnimationFrame);
       });
-      assert.equal(
-        await page.evaluate(() => window.ownershipWrongMessage),
-        false,
-      );
+      assert.equal(await page.evaluate(() => window.wrongMessage), false);
       await historyCard.getByText(history.text, { exact: true }).waitFor();
       assert.equal(
         await historyCard.locator(".complaint-reply").count(),
         1,
         "Current historical records permit a user reply",
       );
-      await page.evaluate(() => window.ownershipObserver.disconnect());
+      await page.evaluate(() => window.observer.disconnect());
       await close("history");
     }
     await page.setViewportSize({ width: 390, height: 844 });

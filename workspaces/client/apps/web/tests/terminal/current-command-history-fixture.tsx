@@ -7,7 +7,8 @@ export type HistorySnapshot = {
 };
 declare global {
   interface Window {
-    currentCommandHistoryApply: (snapshot: HistorySnapshot) => void;
+    // applySnapshot takes BrowserAccessSnapshot in tests/notices/browser-access-notice-ui.fixture.tsx.
+    applyHistorySnapshot: (snapshot: HistorySnapshot) => void;
   }
 }
 
@@ -18,7 +19,7 @@ import "@mantine/core/styles.css";
 import TurnHistory from "../../src/components/conversation/transcript/TurnHistory.tsx";
 function Fixture() {
   const [snapshot, setSnapshot] = useState<HistorySnapshot | null>(null);
-  window.currentCommandHistoryApply = setSnapshot;
+  window.applyHistorySnapshot = setSnapshot;
   return (
     <MantineProvider>
       <main data-case={snapshot?.label}>

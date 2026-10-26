@@ -1,5 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
-import type { ComponentProps, ReactElement } from "react";
+import {
+  isValidElement,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 
 const h = vi.hoisted(() => ({ effects: [] as Array<() => unknown> }));
 vi.mock("react", async (original) => ({
@@ -69,6 +74,8 @@ vi.mock("./useSendingMessageRemoval", () => ({
 vi.mock("../wasm/client", () => ({}));
 import Conversation from "./Conversation";
 import { NativeError } from "./NativeNotice";
+import PromptComposer from "./prompt-composer/PromptComposer";
+import RealtimeVoice from "./RealtimeVoice";
 
 type Props = ComponentProps<typeof Conversation>;
 function render(agent: Props["agent"], reloadLimits: () => void) {
@@ -105,6 +112,39 @@ afterEach(() => {
   h.effects = [];
   vi.unstubAllGlobals();
 });
+
+function elements(node: ReactNode): ReactElement<{ children?: ReactNode }>[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!isValidElement<{ children?: ReactNode }>(node)) return [];
+  return [node, ...elements(node.props.children)];
+}
+
+it.each([undefined, null, "future-provider", "claude", "codex"])(
+  "the conversation only mounts realtime voice for an explicit Codex provider (%s)",
+  (provider) => {
+    const agent: NonNullable<Props["agent"]> = {
+      id: "lead",
+      source: "managed",
+      isLead: true,
+      status: "idle",
+      // @ts-expect-error Future identities must not enable the voice capability.
+      provider,
+    };
+    const tree = render(agent, () => {});
+    const composer = elements(tree).find(
+      (node) => node.type === PromptComposer,
+    );
+    expect(
+      isValidElement<ComponentProps<typeof PromptComposer>>(composer),
+    ).toBe(true);
+    if (!isValidElement<ComponentProps<typeof PromptComposer>>(composer))
+      return;
+    const tools = elements(composer.props.children(""));
+    expect(tools.some((node) => node.type === RealtimeVoice)).toBe(
+      provider === "codex",
+    );
+  },
+);
 
 it.each(["usageLimitExceeded", "rateLimitExceeded"])(
   "does not read limits after the streamed agent error changes to %s",

@@ -1,3 +1,8 @@
+declare global {
+  interface Window {
+    __notes: string[];
+  }
+}
 import type { components } from "../../src/generated/api.ts";
 
 type Params = components["schemas"]["RequestParamsDto"];

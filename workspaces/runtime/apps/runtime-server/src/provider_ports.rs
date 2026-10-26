@@ -183,10 +183,10 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
             for (index, ((_, provider, _), result)) in active.iter().zip(account_reads).enumerate()
             {
                 let alias = format!("account{}", index + 1);
-                match result {
-                    Some(value) if *provider == ProviderKind::Claude => {
+                match (result, *provider) {
+                    (Some(value), ProviderKind::Claude) => {
                         let mut row = serde_json::Map::new();
-                        row.insert("provider".to_owned(), json!("claude"));
+                        row.insert("provider".to_owned(), json!(ProviderKind::Claude.key()));
                         if let Some(fields) = value.as_object() {
                             row.extend(fields.clone());
                         }
@@ -194,7 +194,7 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         row.insert("idleLimitSeconds".to_owned(), json!(idle_limit_seconds));
                         native_accounts.insert(alias.clone(), Value::Object(row));
                     }
-                    Some(value) => {
+                    (Some(value), ProviderKind::Codex) => {
                         let count = value
                             .get("data")
                             .and_then(Value::as_array)
@@ -202,10 +202,10 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         loaded_threads = loaded_threads.saturating_add(count as u64);
                         native_accounts.insert(
                             alias.clone(),
-                            json!({"provider":"codex", "loadedThreads":count}),
+                            json!({"provider":ProviderKind::Codex.key(), "loadedThreads":count}),
                         );
                     }
-                    None => {
+                    (None, ProviderKind::Codex | ProviderKind::Claude) => {
                         native_accounts.insert(
                             alias.clone(),
                             json!({"error":"ProviderDiagnosticsUnavailable"}),
@@ -1173,7 +1173,7 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('agent-a',?1)",
-                    [r#"{"id":"agent-a","accountKey":"account-a"}"#],
+                    [serde_json::json!({"id":"agent-a","accountKey":"account-a","provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'accepted','{}')",

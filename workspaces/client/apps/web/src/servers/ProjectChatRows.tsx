@@ -5,6 +5,7 @@ import { Badge, Tooltip } from "@mantine/core";
 import { WifiOff } from "lucide-react";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
 import "./sidebar-status.css";
+import { providerLabel } from "../generated/providerKind.ts";
 
 export type ProjectChat = {
   id: string;
@@ -67,9 +68,9 @@ export function ChatServerLine({
   return (
     <span
       className="chat-server-line"
-      aria-label={`${provider === "claude" ? "Claude" : "Codex"}, ${alias}`}
+      aria-label={`${providerLabel(provider || "")}, ${alias}`}
     >
-      <ProviderMark provider={provider || "codex"} />
+      <ProviderMark provider={provider || ""} />
       <span className="chat-server-alias" title={alias}>
         {alias}
       </span>

@@ -59,7 +59,7 @@ test("Dictation ui", async ({
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.getByRole("button", { name: /Stop ·/ }).waitFor();
     await page.getByRole("button", { name: /Stop ·/ }).waitFor();
-    await page.evaluate(() => window.dictationFixture.emitAudio());
+    await page.evaluate(() => window.emitAudio());
     await page.getByRole("button", { name: /Stop ·/ }).click();
     await page
       .getByText("Recognition unavailable; recording preserved.")
@@ -70,10 +70,7 @@ test("Dictation ui", async ({
     );
     await page.locator("audio").waitFor();
     assert.equal(await page.locator("audio").count(), 1);
-    assert.equal(
-      await page.evaluate(() => window.dictationFixture.audioBytes),
-      32044,
-    );
+    assert.equal(await page.evaluate(() => window.audioBytes), 32044);
     await page.reload();
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
     await page
@@ -81,7 +78,7 @@ test("Dictation ui", async ({
       .waitFor();
     await page.locator("audio").waitFor();
     assert.equal(await page.locator("audio").count(), 1);
-    await page.evaluate(() => (window.dictationFixture.retryOK = true));
+    await page.evaluate(() => (window.retryOK = true));
     await page.getByRole("button", { name: "Retry transcription" }).click();
     await page.waitForFunction(
       () =>
@@ -109,11 +106,9 @@ test("Dictation ui", async ({
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.getByRole("button", { name: /Stop ·/ }).waitFor();
     await page.getByRole("button", { name: /Stop ·/ }).waitFor();
-    await page.evaluate(() => window.dictationFixture.emitAudio());
+    await page.evaluate(() => window.emitAudio());
     await page.getByRole("button", { name: "Switch chat" }).click();
-    await page.waitForFunction(
-      () => window.dictationFixture.captureStopped >= 1,
-    );
+    await page.waitForFunction(() => window.captureStopped >= 1);
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
     await page
       .getByRole("textbox", { name: "Review dictated text" })
@@ -140,7 +135,7 @@ test("Dictation ui", async ({
     // Reload during capture simulates a renderer loss. Periodic chunks survive.
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.getByRole("button", { name: /Stop ·/ }).waitFor();
-    await page.evaluate(() => window.dictationFixture.emitAudio());
+    await page.evaluate(() => window.emitAudio());
     await page.waitForFunction(async () => {
       const { listRecordings } = await import("/src/dictation/storage.ts");
       return (await listRecordings("first")).some(
@@ -153,13 +148,9 @@ test("Dictation ui", async ({
     await page.locator("audio").waitFor();
     assert.equal(await page.locator("audio").count(), 1);
     // The original component can finish after this recording was deleted elsewhere.
-    await page.evaluate(
-      () => (window.dictationFixture.deferTranscription = true),
-    );
+    await page.evaluate(() => (window.deferTranscription = true));
     await page.getByRole("button", { name: "Transcribe", exact: true }).click();
-    await page.waitForFunction(
-      () => !!window.dictationFixture.finishTranscription,
-    );
+    await page.waitForFunction(() => !!window.finishTranscription);
     await page.getByRole("button", { name: "Switch chat" }).click();
     await page.getByRole("button", { name: "Switch chat" }).click();
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
@@ -168,11 +159,7 @@ test("Dictation ui", async ({
       () => document.querySelectorAll("audio").length === 0,
     );
     await page.evaluate(() =>
-      window.dictationFixture.finishTranscription?.({
-        text: "Late response",
-        provider: "fixture",
-        onDevice: true,
-      }),
+      window.finishTranscription!({ text: "Late response" }),
     );
     await page.waitForTimeout(100);
     assert.equal(
@@ -205,7 +192,9 @@ test("Dictation ui", async ({
           { ...row, transcriptionAttempt: "old", transcript: "Old result" },
           "old",
         );
-        const result = (await store.listRecordings("first"))[0]?.transcript;
+        const recording = (await store.listRecordings("first"))[0];
+        if (!recording) throw new Error("Missing recording");
+        const result = recording.transcript;
         await store.deleteRecording(row.id);
         return result;
       }),
@@ -214,8 +203,8 @@ test("Dictation ui", async ({
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.getByRole("button", { name: /Stop ·/ }).waitFor();
     await page.evaluate(() => {
-      window.dictationFixture.emitAudio();
-      window.dictationFixture.failStop = true;
+      window.emitAudio();
+      window.failStop = true;
     });
     await page.getByRole("button", { name: /Stop ·/ }).click();
     await page
@@ -241,19 +230,13 @@ test("Dictation ui", async ({
       .waitFor();
     await page.locator("audio").waitFor();
     await page.evaluate(() => {
-      window.dictationFixture.deferTranscription = true;
-      window.dictationFixture.finishTranscription = null;
+      window.deferTranscription = true;
+      window.finishTranscription = null;
     });
     await page.getByRole("button", { name: "Retry transcription" }).click();
-    await page.waitForFunction(
-      () => !!window.dictationFixture.finishTranscription,
-    );
+    await page.waitForFunction(() => !!window.finishTranscription);
     await page.evaluate(() =>
-      window.dictationFixture.speechProgress?.({
-        id: window.dictationFixture.attemptId,
-        completed: 1,
-        total: 3,
-      }),
+      window.speechProgress!({ id: window.attemptId, completed: 1, total: 3 }),
     );
     await page
       .getByText("Transcribing… 1 of 3 parts", { exact: true })

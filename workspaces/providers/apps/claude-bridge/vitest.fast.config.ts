@@ -12,7 +12,13 @@ export default {
       "live-permissions.test.ts",
       // Native tool plan fields retain their raw wire values.
       "protocol-output.test.ts",
-      "output-compatibility.test.ts",
+      "provider-lifecycle.test.ts",
+      "provider-lifecycle-boundary.test.ts",
+      "features.test.ts",
+      "command-background.test.ts",
+      "file-restore.test.ts",
+      "move.test.ts",
+      "move-external.test.ts",
       // Test-side fixture waits must preserve the worker's IPC lifetime.
       "file-signals.test.ts",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
@@ -32,6 +38,7 @@ export default {
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
       "usage.test.ts",
       "usage-bridge.test.ts",
+      "usage-events.test.ts",
       // Portable image codecs, bounded compression and visible pre-input refusals.
       "images.test.ts",
       "images-bridge.test.ts",

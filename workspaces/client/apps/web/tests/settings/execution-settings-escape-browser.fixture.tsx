@@ -1,7 +1,6 @@
 import type { Agent } from "../../src/types.ts";
 import { fixtureAccount } from "./fixture-helpers.ts";
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, Modal, Button } from "@mantine/core";
@@ -22,17 +21,23 @@ const agent: Agent = {
 const models = [
   {
     model: "gpt-6-astra",
+    serviceTiers: [],
     supportedReasoningEfforts: [
       { reasoningEffort: "low" },
       { reasoningEffort: "high" },
     ],
-    serviceTiers: [],
   },
 ];
+declare global {
+  interface Window {
+    escapeState: { parent: boolean; opened: boolean; account: boolean };
+  }
+}
 function Fixture() {
   const [parent, setParent] = useState(true),
     [opened, setOpened] = useState(false),
     [account, setAccount] = useState(false);
+  window.escapeState = { parent, opened, account };
 
   return (
     <MantineProvider>
@@ -66,4 +71,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

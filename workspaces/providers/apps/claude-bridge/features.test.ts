@@ -1,4 +1,6 @@
 import type { RateLimitInfo } from "./features.ts";
+import type { SDKAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { KnownCodexErrorKind } from "./provider-errors.generated.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "vitest";
@@ -8,6 +10,7 @@ import {
   nativeItem,
   InputQueue,
   claudeErrorInfo,
+  legacyClaudeErrorInfo,
   overageAllowed,
   limitApplies,
 } from "./features.ts";
@@ -24,17 +27,15 @@ test("subscription windows use percentages and seconds", () => {
     },
   };
   const actual = usageLimits(raw);
-  assert.ok(actual.rateLimits.primary);
-  assert.equal(actual.rateLimits.primary.usedPercent, 11);
+  assert.equal(actual.rateLimits.primary!.usedPercent, 11);
   assert.equal(
-    actual.rateLimits.primary.resetsAt,
+    actual.rateLimits.primary!.resetsAt,
     Date.parse(raw.rate_limits.five_hour.resets_at) / 1000,
   );
-  assert.equal(actual.rateLimits.primary.windowDurationMins, 300);
-  assert.ok(actual.rateLimits.secondary);
-  assert.equal(actual.rateLimits.secondary.windowDurationMins, 10080);
+  assert.equal(actual.rateLimits.primary!.windowDurationMins, 300);
+  assert.equal(actual.rateLimits.secondary!.windowDurationMins, 10080);
   assert.equal(
-    actual.rateLimitsByLimitId["claude-fable"]?.secondary?.usedPercent,
+    actual.rateLimitsByLimitId["claude-fable"]!.secondary!.usedPercent,
     7,
   );
   assert.deepEqual(actual.extraUsage, { is_enabled: true });
@@ -48,9 +49,8 @@ test("invalid or absent utilization never becomes zero usage", () => {
     rate_limits_available: true,
     rate_limits: { five_hour: { utilization: null, resets_at: "invalid" } },
   });
-  assert.ok(actual.rateLimits.primary);
-  assert.equal(actual.rateLimits.primary.usedPercent, null);
-  assert.equal(actual.rateLimits.primary.resetsAt, null);
+  assert.equal(actual.rateLimits.primary!.usedPercent, null);
+  assert.equal(actual.rateLimits.primary!.resetsAt, null);
   assert.ok(actual.rateLimits.secondary == null);
 });
 test("native events use fractional utilization without mutating cached windows", () => {
@@ -66,13 +66,10 @@ test("native events use fractional utilization without mutating cached windows",
     utilization: 0.25,
     resetsAt: 123,
   });
-  assert.ok(updated?.rateLimits?.primary);
-  assert.ok(updated.rateLimits.secondary);
-  assert.ok(initial.rateLimits.primary);
-  assert.equal(updated.rateLimits.primary.usedPercent, 25);
-  assert.equal(updated.rateLimits.primary.resetsAt, 123);
-  assert.equal(initial.rateLimits.primary.usedPercent, 11);
-  assert.equal(updated.rateLimits.secondary.usedPercent, 4);
+  assert.equal(updated!.rateLimits.primary!.usedPercent, 25);
+  assert.equal(updated!.rateLimits.primary!.resetsAt, 123);
+  assert.equal(initial.rateLimits.primary!.usedPercent, 11);
+  assert.equal(updated!.rateLimits.secondary!.usedPercent, 4);
   assert.equal(
     limitEvent(initial, { rateLimitType: "unrecognized", utilization: 0.1 }),
     null,
@@ -84,14 +81,15 @@ test("native events use fractional utilization without mutating cached windows",
 });
 test("native tools preserve commands and file edits", () => {
   const command = nativeItem(
-    { id: "bash", name: "Bash", input: { command: "pwd" } },
+    { type: "tool_use", id: "bash", name: "Bash", input: { command: "pwd" } },
     "/work",
   );
-  assert.ok(command.type === "commandExecution");
+  assert.equal(command.type, "commandExecution");
   assert.equal(command.command, "pwd");
   assert.equal(command.cwd, "/work");
   const edit = nativeItem(
     {
+      type: "tool_use",
       id: "edit",
       name: "Edit",
       input: {
@@ -102,15 +100,18 @@ test("native tools preserve commands and file edits", () => {
     },
     "/work",
   );
-  assert.ok(edit.type === "fileChange");
-  assert.ok(edit.changes[0]);
-  assert.equal(typeof edit.changes[0].diff, "string");
-  assert.equal(edit.changes[0].path, "/work/a");
-  assert.ok(typeof edit.changes[0].diff === "string");
-  assert.match(edit.changes[0].diff, /before/);
+  assert.equal(edit.type, "fileChange");
+  assert.ok(edit.changes?.[0]);
+  assert.equal(edit.changes![0].path, "/work/a");
+  assert.match(edit.changes![0].diff as string, /before/);
   assert.equal(
     nativeItem(
-      { id: "read", name: "Read", input: { file_path: "/work/a" } },
+      {
+        type: "tool_use",
+        id: "read",
+        name: "Read",
+        input: { file_path: "/work/a" },
+      },
       "/work",
     ).type,
     "mcpToolCall",
@@ -127,7 +128,7 @@ test("AskUserQuestion starts as the stored question item contract", () => {
     ),
   );
   const started = nativeItem(
-    { id: item.id, name: item.tool, input: item.arguments },
+    { type: "tool_use", id: item.id, name: item.tool, input: item.arguments },
     "/work",
   );
   const { status, result, ...fields } = item;
@@ -161,9 +162,8 @@ test("rate limit events retain overage permission without utilization", () => {
     resetsAt: 1234,
   } satisfies RateLimitInfo;
   const next = limitEvent(current, info);
-  assert.ok(next?.rateLimits?.primary);
-  assert.deepEqual(next.rateLimits.claudeRateLimit, info);
-  assert.equal(next.rateLimits.primary.usedPercent, 100);
+  assert.deepEqual(next!.rateLimits.claudeRateLimit, info);
+  assert.equal(next!.rateLimits.primary!.usedPercent, 100);
   assert.equal(current.rateLimits.claudeRateLimit, undefined);
 });
 
@@ -175,8 +175,7 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     utilization: 1,
     resetsAt: 100,
   });
-  assert.ok(allowed?.claudeRateLimit);
-  assert.equal(overageAllowed(allowed.claudeRateLimit), true);
+  assert.equal(overageAllowed(allowed!.claudeRateLimit!), true);
   const rejected = limitEvent(allowed, {
     rateLimitType: "five_hour",
     status: "rejected",
@@ -184,17 +183,15 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     isUsingOverage: true,
     resetsAt: 200,
   });
-  assert.ok(rejected?.claudeRateLimit);
-  assert.equal(overageAllowed(rejected.claudeRateLimit), false);
+  assert.equal(overageAllowed(rejected!.claudeRateLimit!), false);
   const unknown = limitEvent(allowed, {
     rateLimitType: "future_scope",
     status: "rejected",
     resetsAt: 900,
   });
-  assert.ok(unknown?.claudeRateLimit);
-  assert.equal(overageAllowed(unknown.claudeRateLimit), false);
+  assert.equal(overageAllowed(unknown!.claudeRateLimit!), false);
   assert.equal(
-    unknown.rateLimitsByLimitId?.["claude-unknown-limit"]?.secondary?.resetsAt,
+    unknown!.rateLimitsByLimitId["claude-unknown-limit"]!.secondary!.resetsAt,
     900,
   );
   const overage = limitEvent(allowed, {
@@ -202,8 +199,7 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     status: "rejected",
     overageStatus: "allowed_warning",
   });
-  assert.ok(overage?.claudeRateLimit);
-  assert.equal(overageAllowed(overage.claudeRateLimit), true);
+  assert.equal(overageAllowed(overage!.claudeRateLimit!), true);
 });
 
 test("model scope excludes only a known different family", () => {
@@ -223,6 +219,29 @@ test("API error classification retains unrelated failure types", () => {
     ["authentication_failed", "Sign in", "unauthorized"],
     ["unknown", "ECONNRESET", "httpConnectionFailed"],
     ["unknown", "Failed to parse row 429", null],
-  ])
+  ] as const satisfies readonly (readonly [
+    SDKAssistantMessage["error"],
+    string,
+    KnownCodexErrorKind | null,
+  ])[])
     assert.equal(claudeErrorInfo(error, text), expected);
+});
+
+test("untyped terminal errors use the explicit adapter and preserve unknown input", () => {
+  const future = {
+    error: "future_vendor_error",
+    opaque: { nested: [1, null] },
+  };
+  const original = JSON.stringify(future);
+  assert.equal(legacyClaudeErrorInfo(future.error, "API Error: 429"), null);
+  assert.equal(legacyClaudeErrorInfo(future, "API Error: 429"), null);
+  assert.equal(
+    legacyClaudeErrorInfo(undefined, "API Error: 429"),
+    "rateLimitExceeded",
+  );
+  assert.equal(
+    legacyClaudeErrorInfo("server_error", "Failure"),
+    "internalServerError",
+  );
+  assert.equal(JSON.stringify(future), original);
 });

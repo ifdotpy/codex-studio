@@ -3,18 +3,12 @@ import type { JsonInput, Agent } from "../../src/types.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 declare global {
   interface Window {
-    structuredOperationalErrorsUiReadRecordings: () => ReturnType<
-      typeof listRecordings
-    >;
-    structuredOperationalErrorsUiCrashes: string[];
-    structuredOperationalErrorsUiRenderCase: (
-      which: string,
-      value: JsonInput,
-    ) => Promise<void>;
-    structuredOperationalErrorsUiTranscriptionCalls: number;
+    readRecordings: () => ReturnType<typeof listRecordings>;
+    crashes: string[];
+    renderCase: (which: string, value: JsonInput) => Promise<void>;
+    transcriptionCalls: number;
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -27,9 +21,10 @@ import CapacityRetry from "../../src/components/CapacityRetry.tsx";
 import SafetyBuffering from "../../src/components/conversation/transcript/SafetyBuffering.tsx";
 import { Dictation } from "../../src/components/Dictation.tsx";
 import { saveRecording, listRecordings } from "../../src/dictation/storage.ts";
-window.structuredOperationalErrorsUiReadRecordings = () =>
-  listRecordings("lead");
-const root = createRoot(required(document.getElementById("root")));
+window.readRecordings = () => listRecordings("lead");
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("Missing fixture root");
+const root = createRoot(rootElement);
 const agent: Agent = {
   id: "lead",
   rootId: "lead",
@@ -39,7 +34,7 @@ const agent: Agent = {
   turnId: "turn",
   inFlight: true,
 };
-const snapshot = fixtureSnapshot([agent]);
+const snapshot = { ...fixtureSnapshot([agent]), stateDir: "fixture" };
 const noop = () => {};
 const refresh = async () => {};
 let renderId = 0;
@@ -49,7 +44,7 @@ class Boundary extends React.Component<React.PropsWithChildren> {
     return { error: error.message };
   }
   override componentDidCatch(error: Error) {
-    window.structuredOperationalErrorsUiCrashes.push(error.message);
+    window.crashes.push(error.message);
   }
   override render() {
     return this.state.error
@@ -57,7 +52,7 @@ class Boundary extends React.Component<React.PropsWithChildren> {
       : this.props.children;
   }
 }
-window.structuredOperationalErrorsUiRenderCase = async (which, value) => {
+window.renderCase = async (which, value) => {
   let component;
   if (which === "request") {
     const request = {
@@ -178,4 +173,4 @@ window.structuredOperationalErrorsUiRenderCase = async (which, value) => {
     ),
   );
 };
-window.structuredOperationalErrorsUiCrashes = [];
+window.crashes = [];

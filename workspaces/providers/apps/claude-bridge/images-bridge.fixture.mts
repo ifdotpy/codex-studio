@@ -1,5 +1,6 @@
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 export { resolveSettings } from "./sdk-fixtures.ts";
-import { inputText, waitForFile } from "./sdk-fixtures.ts";
+import { waitForFile } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 export {
   tool,
@@ -38,11 +39,19 @@ export function query({ prompt, options }: FixtureQuery) {
             "\n",
         );
         yield { type: "user", isReplay: true, uuid: input.uuid };
-        if (inputText(input) === "hold")
+        if (
+          (
+            input.message.content[0] as Extract<
+              Exclude<SDKUserMessage["message"]["content"], string>[number],
+              { type: "text" }
+            >
+          )?.text === "hold"
+        )
           await waitForFile(options.cwd + "/release");
         yield {
           type: "result",
           subtype: "success",
+          is_error: false,
           usage: { input_tokens: 1, output_tokens: 1 },
           result: "done",
         };

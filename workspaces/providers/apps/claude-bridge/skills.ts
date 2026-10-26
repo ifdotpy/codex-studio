@@ -1,4 +1,3 @@
-import { isRecord } from "./move.ts";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -27,18 +26,18 @@ export function frontmatter(source: string) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(source);
   if (!match) return {};
   const fields: Record<string, string> = {};
-  const lines = (match[1] ?? "").split(/\r?\n/);
+  const lines = match[1]!.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
-    const field = /^([A-Za-z_-]+):\s*(.*)$/.exec(lines[i] ?? "");
+    const field = /^([A-Za-z_-]+):\s*(.*)$/.exec(lines[i]!);
     if (!field) continue;
-    let value = field[2] ?? "";
+    let value = field[2]!;
     if (/^[>|][-+]?$/.test(value.trim())) {
       const block = [];
-      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1] ?? ""))
-        block.push((lines[++i] ?? "").trim());
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1]!))
+        block.push(lines[++i]!.trim());
       value = block.join(" ");
     }
-    fields[field[1] ?? ""] = unquote(value);
+    fields[field[1]!] = unquote(value);
   }
   return fields;
 }
@@ -54,11 +53,11 @@ async function skillsIn(
     entries = await fs.readdir(root, { withFileTypes: true });
   } catch (error) {
     if (
-      !isRecord(error) ||
-      (error.code !== "ENOENT" && error.code !== "ENOTDIR")
+      (error as NodeJS.ErrnoException).code !== "ENOENT" &&
+      (error as NodeJS.ErrnoException).code !== "ENOTDIR"
     )
       errors.push({
-        message: `${root}: ${error instanceof Error ? error.message : String(error)}`,
+        message: `${root}: ${(error as Error).message}`,
       });
     return [];
   }
@@ -71,11 +70,11 @@ async function skillsIn(
       source = await fs.readFile(file, "utf8");
     } catch (error) {
       if (
-        !isRecord(error) ||
-        (error.code !== "ENOENT" && error.code !== "ENOTDIR")
+        (error as NodeJS.ErrnoException).code !== "ENOENT" &&
+        (error as NodeJS.ErrnoException).code !== "ENOTDIR"
       )
         errors.push({
-          message: `${file}: ${error instanceof Error ? error.message : String(error)}`,
+          message: `${file}: ${(error as Error).message}`,
         });
       continue;
     }
@@ -91,17 +90,32 @@ async function skillsIn(
   return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+type PluginInstall = {
+  installPath?: string;
+  scope?: string;
+  projectPath?: string;
+};
+type SkillSettings = {
+  enabledPlugins?: Record<string, unknown>;
+  plugins?: Record<string, PluginInstall | PluginInstall[]>;
+};
 async function readSettings(file: string, errors: DiscoveryError[]) {
   try {
-    const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
-    if (!isRecord(value)) throw new Error("Settings must contain an object");
-    if (value.enabledPlugins != null && !isRecord(value.enabledPlugins))
+    // User-owned settings retain the original checks; the indexed view adds no validation.
+    const value: SkillSettings = JSON.parse(await fs.readFile(file, "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Settings must contain an object");
+    if (
+      value.enabledPlugins != null &&
+      (typeof value.enabledPlugins !== "object" ||
+        Array.isArray(value.enabledPlugins))
+    )
       throw new Error("enabledPlugins must contain an object");
     return value;
   } catch (error) {
-    if (!isRecord(error) || error.code !== "ENOENT")
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       errors.push({
-        message: `${file}: ${error instanceof Error ? error.message : String(error)}`,
+        message: `${file}: ${(error as Error).message}`,
       });
     return {};
   }
@@ -122,9 +136,10 @@ async function projectIdentity(cwd: string) {
       { timeout: 5000 },
     );
     const [root, common] = stdout.trim().split("\n");
+    if (!root || !common) throw new Error("Incomplete project identity");
     return {
-      root: root ?? path.resolve(cwd),
-      common: await fs.realpath(common ?? ""),
+      root,
+      common: await fs.realpath(common),
     };
   } catch {
     return { root: path.resolve(cwd), common: null };
@@ -163,9 +178,9 @@ async function pluginRoots(cwd: string, errors: DiscoveryError[]) {
         .map((name) => path.join(managed, "managed-settings.d", name)),
     );
   } catch (error) {
-    if (!isRecord(error) || error.code !== "ENOENT")
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       errors.push({
-        message: `${managed}: ${error instanceof Error ? error.message : String(error)}`,
+        message: `${managed}: ${(error as Error).message}`,
       });
   }
   const enabled: Record<string, unknown> = {};
@@ -177,17 +192,11 @@ async function pluginRoots(cwd: string, errors: DiscoveryError[]) {
     Object.assign(enabled, settings.enabledPlugins || {});
   }
   const roots = [];
-  for (const [key, installs] of Object.entries(
-    isRecord(installed.plugins) ? installed.plugins : {},
-  )) {
+  for (const [key, installs] of Object.entries(installed.plugins || {})) {
     // Legacy registries contain one user installation without an explicit scope.
-    const candidates: unknown[] = Array.isArray(installs)
-      ? installs
-      : [installs];
+    const candidates = Array.isArray(installs) ? installs : [installs];
     for (const install of candidates) {
-      if (!isRecord(install) || !install.installPath) continue;
-      if (typeof install.installPath !== "string")
-        throw new TypeError("Invalid plugin installation path");
+      if (!install?.installPath) continue;
       let matches =
         install.scope === "user" ||
         install.scope === "managed" ||

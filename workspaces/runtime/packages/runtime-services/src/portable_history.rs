@@ -518,7 +518,7 @@ fn export_snapshot(
         || account_key != input.account_key
         || agent.epoch != input.epoch
         || thread_id.as_deref() != input.thread_id.as_deref()
-        || source_settings_snapshot(&agent_value) != input.source_settings
+        || source_settings_snapshot(&agent_value)? != input.source_settings
     {
         return Err(PortableHistoryError::SourceChanged);
     }
@@ -1542,8 +1542,9 @@ fn record_kind(record: &ArchiveRecord) -> &'static str {
 }
 
 /// Capture the account-transfer source settings used to bind native history.
-#[must_use]
-pub fn source_settings_snapshot(agent: &Value) -> Value {
+pub fn source_settings_snapshot(agent: &Value) -> Result<Value, PortableHistoryError> {
+    let provider = studio_runtime_schema::ProviderKind::of_record(agent)
+        .map_err(|_| PortableHistoryError::InvalidIdentity("provider"))?;
     let mut settings = serde_json::Map::new();
     for key in [
         "model",
@@ -1564,17 +1565,14 @@ pub fn source_settings_snapshot(agent: &Value) -> Value {
             settings.insert(key.to_owned(), value.clone());
         }
     }
-    settings.insert(
-        "provider".to_owned(),
-        agent.get("provider").cloned().unwrap_or(json!("codex")),
-    );
+    settings.insert("provider".to_owned(), json!(provider));
     for key in ["workerDefaults", "claudeOptions"] {
         settings.insert(
             key.to_owned(),
             agent.get(key).cloned().unwrap_or(Value::Null),
         );
     }
-    Value::Object(settings)
+    Ok(Value::Object(settings))
 }
 
 fn identity(value: &str, kind: &'static str) -> Result<(), PortableHistoryError> {
@@ -1624,6 +1622,38 @@ mod tests {
         enforce_archive_size, enforce_record_count, enforce_record_size, open_archive_file,
         read_line_remainder, tail_chars,
     };
+
+    #[test]
+    fn provider_identity_archive_export_rejects_unknown_before_writing() {
+        let root = tempfile::tempdir().expect("state directory");
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!(7)),
+        ] {
+            let mut agent = json!({"id":"agent-a","rootId":"agent-a","epoch":2,"status":"idle","accountKey":"default"});
+            if let Some(provider) = provider {
+                agent["provider"] = provider;
+            }
+            let agent = studio_runtime_store::AgentRecord::from_value(agent).expect("agent");
+            let input = super::ExportInput {
+                agent_id: "agent-a".into(),
+                account_key: "default".into(),
+                epoch: 2,
+                thread_id: None,
+                source_settings: json!({}),
+                source_connection_generation: None,
+                transfer_id: "transfer-a".into(),
+                native_history: None,
+            };
+            assert!(matches!(
+                super::export_snapshot(root.path(), input, agent, Ok(vec![])),
+                Err(PortableHistoryError::InvalidIdentity("provider"))
+            ));
+            assert!(!root.path().join("portable-history").exists());
+        }
+    }
 
     fn source() -> HistorySource {
         HistorySource {

@@ -1,7 +1,7 @@
+import { inputText } from "./sdk-fixtures.ts";
 export { resolveSettings } from "./sdk-fixtures.ts";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
-import { inputText } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 
 import fs from "node:fs";
 export {
@@ -79,7 +79,13 @@ export function query({ prompt, options }: FixtureQuery) {
           subtype: "init",
           session_id: options.resume || options.sessionId,
         };
-        yield { type: "result", subtype: "success", usage, result: "done" };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          usage,
+          result: "done",
+        };
       }
     },
   };

@@ -1,8 +1,9 @@
+import { required } from "./performance-fixture.ts";
 import { fileURLToPath } from "node:url";
 import type { components } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as TranscriptWireItem } from "./performance-fixture.ts";
 import type { TranscriptPageResponse } from "../playwright.ts";
-import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
+import { transcriptFixtureAgent } from "./performance-fixture.ts";
 import { build } from "esbuild";
 import { createServer, request as httpRequest } from "node:http";
 import { writeFile, appendFile, mkdir } from "node:fs/promises";
@@ -36,8 +37,9 @@ const transcript = (
   id: string | null,
   before?: string | null,
 ): TranscriptPageResponse => {
-  const found = instance.snapshot.threads.find((a) => a.id === id);
-  const agent = found ? transcriptFixtureAgent(found) : found;
+  const agent = transcriptFixtureAgent(
+    instance.snapshot.threads.find((a) => a.id === id)!,
+  );
   const all = id === "short" ? messages.slice(0, 4) : messages;
   const end = before
     ? Math.max(
@@ -58,7 +60,7 @@ const transcript = (
   };
 };
 instance = await fixture("Performance", false, {
-  ...(process.argv[4] ? { dist: process.argv[4] } : {}),
+  ...(process.argv[4] === undefined ? {} : { dist: process.argv[4] }),
   handle({ url, json, snapshot }) {
     if (url.pathname === "/api/changes") {
       json({ scope: "chat", git: true, files: [], diff: "" } satisfies Pick<
@@ -104,7 +106,7 @@ instance = await fixture("Performance", false, {
       url.pathname === "/api/sync/pull" &&
       url.searchParams.get("scope")?.startsWith("transcript:")
     ) {
-      const id = url.searchParams.get("scope")?.slice(11) ?? "";
+      const id = url.searchParams.get("scope")!.slice(11);
       json({
         workspaceId: fixtureWorkspaceId("Performance"),
         ...entityPullFixtureForRequest(snapshot, url.href, {
@@ -148,36 +150,35 @@ const scenario = await build({
   platform: "browser",
 });
 const server = createServer(async (req, res) => {
-  const requestUrl = required(req.url);
-  if (requestUrl.startsWith("/api/"))
+  if (required(req.url).startsWith("/api/"))
     await appendFile(
       dir + "/requests.log",
-      req.method + " " + requestUrl + "\n",
+      req.method + " " + required(req.url) + "\n",
     );
-  if (requestUrl === "/benchmark-result") {
+  if (required(req.url) === "/benchmark-result") {
     let body = "";
     for await (const chunk of req) body += chunk;
     await writeFile(dir + "/browser-latest.json", body);
     res.end("ok");
     return;
   }
-  if (requestUrl === "/scenario.js") {
+  if (required(req.url) === "/scenario.js") {
     res.setHeader("Content-Type", "text/javascript");
     res.end(required(scenario.outputFiles[0]).contents);
     return;
   }
   const forward = httpRequest(
-    instance.origin + requestUrl,
+    instance.origin + required(req.url),
     { method: req.method, headers: req.headers },
     (up) => {
       const headers = { ...up.headers };
-      if (typeof headers["content-security-policy"] === "string")
-        headers["content-security-policy"] = headers[
-          "content-security-policy"
-        ].replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'");
+      if (headers["content-security-policy"])
+        headers["content-security-policy"] = (
+          headers["content-security-policy"] as string
+        ).replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'");
       delete headers["content-length"];
       headers["cache-control"] = "no-store";
-      if (requestUrl === "/" || requestUrl.startsWith("/?")) {
+      if (required(req.url) === "/" || required(req.url).startsWith("/?")) {
         let body = "";
         up.on("data", (v) => (body += v));
         up.on("end", () => {
@@ -190,7 +191,7 @@ const server = createServer(async (req, res) => {
           );
         });
       } else {
-        if (requestUrl.endsWith(".wasm"))
+        if (required(req.url).endsWith(".wasm"))
           headers["content-type"] = "application/wasm";
         res.writeHead(required(up.statusCode), headers);
         up.pipe(res);
@@ -205,10 +206,7 @@ const server = createServer(async (req, res) => {
   res.on("close", () => forward.destroy());
 });
 server.listen(Number(process.argv[3] || 0), "127.0.0.1", async () => {
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("Missing fixture server address");
-  const origin = `http://127.0.0.1:${address.port}`;
+  const origin = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
   await writeFile(
     dir + "/fixture.json",
     JSON.stringify({ origin, pid: process.pid }),

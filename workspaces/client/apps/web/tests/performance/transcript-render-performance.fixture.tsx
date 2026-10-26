@@ -18,23 +18,30 @@ const counters = {
   renders: 0,
   duration: 0,
 };
-window.transcriptPerformanceCounters = counters;
+window.counters = counters;
 const lex = marked.lexer;
-marked.lexer = new Proxy(lex, {
-  apply(target, thisArg, args: Parameters<typeof lex>) {
-    counters.lex++;
-    counters.lexChars += args[0].length;
-    return Reflect.apply(target, thisArg, args);
-  },
-});
+(
+  marked as {
+    lexer: (...args: Parameters<typeof lex>) => ReturnType<typeof lex>;
+  }
+).lexer = function (t, ...args) {
+  counters.lex++;
+  counters.lexChars += t.length;
+  return lex.call(this, t, ...args);
+};
 const sanitize = DOMPurify.sanitize;
-DOMPurify.sanitize = new Proxy(sanitize, {
-  apply(target, thisArg, args: Parameters<typeof sanitize>) {
-    counters.sanitize++;
-    counters.sanitizeChars += typeof args[0] === "string" ? args[0].length : 0;
-    return Reflect.apply(target, thisArg, args);
-  },
-});
+// Instrument the string-input overload used by StreamingText.
+(
+  DOMPurify as {
+    sanitize: (
+      ...args: Parameters<typeof sanitize>
+    ) => ReturnType<typeof sanitize>;
+  }
+).sanitize = function (t, ...args) {
+  counters.sanitize++;
+  counters.sanitizeChars += (t as string).length;
+  return sanitize.call(this, t, ...args);
+};
 const parse = JSON.parse;
 JSON.parse = function (t, ...args) {
   if (typeof t === "string" && t.includes("audit_tool_payload"))
@@ -93,7 +100,7 @@ function Harness() {
   const [suffix, setSuffix] = useState("");
   const [items, setItems] = useState<Message[]>(initial);
   const [stream, setStream] = useState<string | null>(null);
-  window.transcriptPerformanceReplaceLast = () =>
+  window.replaceLast = () =>
     flushSync(() =>
       setItems((old) =>
         old.map((m) =>
@@ -103,9 +110,7 @@ function Harness() {
         ),
       ),
     );
-  window.transcriptPerformanceDiagnostic = (
-    error: NonNullable<Message["turnError"]>,
-  ) =>
+  window.diagnostic = (error: NonNullable<Message["turnError"]>) =>
     flushSync(() =>
       setItems((old) =>
         old.map((m) =>
@@ -113,12 +118,10 @@ function Harness() {
         ),
       ),
     );
-  window.transcriptPerformanceStream = (text: string) =>
-    flushSync(() => setStream(text));
-  window.transcriptPerformanceTick = () =>
-    flushSync(() => setTick((v) => v + 1));
-  window.transcriptPerformanceMode = (v: string) => flushSync(() => setMode(v));
-  window.transcriptPerformanceAppend = () =>
+  window.stream = (text: string) => flushSync(() => setStream(text));
+  window.tick = () => flushSync(() => setTick((v) => v + 1));
+  window.mode = (v: string) => flushSync(() => setMode(v));
+  window.append = () =>
     flushSync(() => setSuffix((v) => v + " Next sentence."));
   return (
     <MantineProvider>
@@ -153,14 +156,12 @@ createRoot(required(document.getElementById("root"))).render(<Harness />);
 
 declare global {
   interface Window {
-    transcriptPerformanceCounters: typeof counters;
-    transcriptPerformanceReplaceLast: () => void;
-    transcriptPerformanceDiagnostic: (
-      error: NonNullable<Message["turnError"]>,
-    ) => void;
-    transcriptPerformanceStream: (text: string) => void;
-    transcriptPerformanceTick: () => void;
-    transcriptPerformanceMode: (mode: string) => void;
-    transcriptPerformanceAppend: () => void;
+    counters: typeof counters;
+    replaceLast: () => void;
+    diagnostic: (error: NonNullable<Message["turnError"]>) => void;
+    stream: (text: string) => void;
+    tick: () => void;
+    mode: (mode: string) => void;
+    append: () => void;
   }
 }

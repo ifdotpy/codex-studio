@@ -1,6 +1,6 @@
 import {
   javascriptFindings,
-  JAVASCRIPT_EXCEPTIONS,
+  readJavaScriptExceptions,
 } from "../javascript-policy.ts";
 import type {
   LocatedPackage,
@@ -25,6 +25,7 @@ import {
   parseSelection,
   pruneLogs,
   recipePlan,
+  typescriptProjects,
   unsafeRustFindings,
 } from "../facade.ts";
 import {
@@ -41,6 +42,8 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+const JAVASCRIPT_EXCEPTIONS = readJavaScriptExceptions();
 
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
@@ -1616,5 +1619,39 @@ test("native configuration owner permits erased type queries while keeping runti
     );
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("JavaScript coverage uses the same project names as gate type checking", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "studio-project-parity-"));
+  const exception = JAVASCRIPT_EXCEPTIONS[0];
+  assert.ok(exception);
+  const config = "tsconfiglegacy.json";
+  try {
+    mkdirSync(path.dirname(path.join(root, exception.file)), {
+      recursive: true,
+    });
+    writeFileSync(path.join(root, exception.file), "// @ts-check\n");
+    writeFileSync(
+      path.join(root, config),
+      JSON.stringify({
+        compilerOptions: { allowJs: true },
+        include: ["**/*.cjs"],
+      }),
+    );
+    spawnSync("git", ["init", "--quiet"], { cwd: root });
+    spawnSync("git", ["add", "."], { cwd: root });
+    const findings = javascriptFindings(root, [exception.file, config]);
+    const projects = typescriptProjects(root);
+    const covered = !findings.some((finding) =>
+      finding.includes("not included"),
+    );
+    assert.equal(
+      covered,
+      projects.includes(config),
+      "policy coverage must imply an executed type check",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

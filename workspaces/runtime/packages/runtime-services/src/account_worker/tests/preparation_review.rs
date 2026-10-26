@@ -331,8 +331,9 @@ async fn late_context_change_refuses_submission() {
 async fn missing_native_effort_uses_shared_catalog_published_after_construction() {
     let state = State::new().await;
     let service = crate::model_catalog::ModelCatalogService::new();
-    let resources =
+    let mut resources =
         preparation::PreparationResources::bundled(String::new(), service.clone()).unwrap();
+    resources.claude_account_pin = json!({"provider":studio_runtime_schema::ProviderKind::Codex});
     crate::model_catalog::tests::publish_fixture(
         &service,
         "default",
@@ -515,8 +516,10 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
             crate::model_catalog::tests::publish_fixture(&catalog, "default", "", page.clone());
             crate::model_catalog::tests::expire_fixture(&catalog);
         }
-        let resources =
+        let mut resources =
             preparation::PreparationResources::bundled(String::new(), catalog.clone()).unwrap();
+        resources.claude_account_pin =
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex});
         let mut peer = Peer::new();
         let mut worker = peer
             .open_worker_with_resources(state.bridge.clone(), resources.clone())

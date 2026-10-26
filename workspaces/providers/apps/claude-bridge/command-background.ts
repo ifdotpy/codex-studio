@@ -1,5 +1,7 @@
 import type { ActiveQuery, BackgroundTask } from "./bridge.ts";
 import type { BridgeParams, BridgeResult } from "./bridge-protocol.ts";
+import type { FreshToolItem } from "./session-state.ts";
+type FreshCommandItem = Extract<FreshToolItem, { type: "commandExecution" }>;
 import type {
   SDKTaskStartedMessage,
   SDKTaskUpdatedMessage,
@@ -27,7 +29,7 @@ export function foregroundCommandUpdate(
   active: Pick<ActiveQuery, "tools">,
   task: BackgroundTask,
   message: TaskEvent,
-) {
+): FreshCommandItem | null {
   if (
     task.task_type !== FOREGROUND_SHELL ||
     !("tool_use_id" in task) ||
@@ -40,14 +42,17 @@ export function foregroundCommandUpdate(
   let available = item.canMoveToBackground === true;
   if (message.subtype === "task_started")
     available = message.is_backgrounded === false;
-  if ("patch" in message && message.patch.is_backgrounded === true)
+  if (
+    (message as Extract<TaskEvent, { patch: unknown }>).patch
+      ?.is_backgrounded === true
+  )
     available = false;
   if (
     message.subtype === "task_notification" ||
-    ("patch" in message &&
-      ["completed", "failed", "killed"].some(
-        (status) => status === message.patch.status,
-      ))
+    ["completed", "failed", "killed"].includes(
+      (message as Extract<TaskEvent, { patch: unknown }>).patch
+        ?.status as string,
+    )
   )
     available = false;
   if (available === (item.canMoveToBackground === true)) return null;
@@ -57,7 +62,12 @@ export function foregroundCommandUpdate(
 
 // Fields for a Bash result whose command keeps running as a background task.
 // A backgrounded command has no exit code yet, so none is reported.
-export function backgroundedCommandFields(toolUseResult: unknown) {
+export function backgroundedCommandFields(
+  toolUseResult: unknown,
+): Pick<
+  FreshCommandItem,
+  "canMoveToBackground" | "backgroundTaskId" | "backgroundedByUser"
+> | null {
   const taskId =
     toolUseResult &&
     typeof toolUseResult === "object" &&
@@ -69,10 +79,8 @@ export function backgroundedCommandFields(toolUseResult: unknown) {
     canMoveToBackground: false,
     backgroundTaskId: taskId,
     backgroundedByUser:
-      toolUseResult !== null &&
-      typeof toolUseResult === "object" &&
-      "backgroundedByUser" in toolUseResult &&
-      toolUseResult.backgroundedByUser === true,
+      (toolUseResult as { backgroundedByUser?: boolean }).backgroundedByUser ===
+      true,
   };
 }
 

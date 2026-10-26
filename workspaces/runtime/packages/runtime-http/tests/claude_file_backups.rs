@@ -229,6 +229,12 @@ pub(crate) async fn fixture() -> (
         .unwrap();
     let native = Arc::new(Native::default());
     let clock = SessionClock::default();
+    let mut resources = PreparationResources::bundled(
+        String::new(),
+        studio_runtime_services::model_catalog::ModelCatalogService::new(),
+    )
+    .unwrap();
+    resources.claude_account_pin = json!({"provider":studio_runtime_schema::ProviderKind::Claude});
     let worker = start_account_worker(
         StoreBridge::new(store.clone()).await.unwrap(),
         "account".into(),
@@ -247,16 +253,12 @@ pub(crate) async fn fixture() -> (
             request_id_prefix: None,
             recovered: vec![],
         },
-        PreparationResources::bundled(
-            String::new(),
-            studio_runtime_services::model_catalog::ModelCatalogService::new(),
-        )
-        .unwrap(),
+        resources,
     )
     .await
     .unwrap();
     native.ready.notified().await;
-    let policy=AccountPolicyState::from_startup(Some(br#"{"version":1,"defaultAccountKey":"account","accounts":{"account":{"id":"account","provider":"claude","home":"/fixture","label":"Fixture","source":"Claude Code","status":"ready"}},"logins":{}}"#),[]).unwrap();
+    let policy=AccountPolicyState::from_startup(Some(serde_json::json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"account","accounts":{"account":{"id":"account","provider":"claude","home":"/fixture","label":"Fixture","source":"Claude Code","status":"ready"}},"logins":{}}).to_string().as_bytes()),[]).unwrap();
     let mut state = HttpState::new(
         "fixture-token".into(),
         "fixture".into(),

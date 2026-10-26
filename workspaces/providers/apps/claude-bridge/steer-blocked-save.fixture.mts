@@ -6,7 +6,7 @@ export {
   getSessionMessages,
 } from "./steer.fixture.mts";
 import { fixtureQuery, installSteerFaults } from "./steer.fixture.mts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 installSteerFaults("hold", false);
 export const query = (args: FixtureQuery) =>
   fixtureQuery(args, { markInterrupt: true, ignoreInterruptMarker: true });

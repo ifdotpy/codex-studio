@@ -1,6 +1,7 @@
 //! Human-authorized, durable reconnect of one server on one retained session.
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_services::account_session_runtime::ConnectionScope;
 use studio_runtime_store::{EventWriteRepository, WorkspaceViewsRepository};
 
@@ -83,13 +84,21 @@ async fn execute(state: HttpState, body: Value) -> Result<Value, ApiError> {
         .accounts
         .iter()
         .find(|a| a["id"] == account)
-        .and_then(|a| a["provider"].as_str())
-        .unwrap_or("codex");
-    if provider != "claude" {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "MCP server reconnect is not supported for Codex.",
-        ));
+        .and_then(|account| ProviderKind::of_record(account).ok());
+    match provider {
+        Some(ProviderKind::Claude) => {}
+        Some(ProviderKind::Codex) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "MCP server reconnect is not supported for Codex.",
+            ));
+        }
+        None => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "MCP server reconnect requires a supported account provider.",
+            ));
+        }
     }
     let port = state
         .account_session

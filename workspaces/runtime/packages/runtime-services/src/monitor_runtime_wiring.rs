@@ -2096,11 +2096,13 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
-                    [serde_json::json!({
-                        "id":"owner","rootId":"owner","epoch":0,"status":"ready",
-                        "autoWake":true,"accountKey":"default","threadId":"thread"
-                    })
-                    .to_string()],
+                    [
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"owner","rootId":"owner","epoch":0,"status":"ready",
+                            "autoWake":true,"accountKey":"default","threadId":"thread"
+                        })
+                        .to_string(),
+                    ],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
@@ -2690,7 +2692,7 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
-                    [serde_json::json!({"id":"owner","epoch":1,"autoWake":true}).to_string()],
+                    [serde_json::json!({"id":"owner","provider":studio_runtime_schema::ProviderKind::Codex,"epoch":1,"autoWake":true}).to_string()],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
@@ -2726,14 +2728,16 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
-                    [serde_json::json!({
-                        "id":"owner","rootId":"owner","epoch":1,"status":"interrupted",
-                        "autoWake":true,"accountKey":"default","threadId":"thread",
-                        "nativeFailureHold":{"reason":"pending"},
-                        "disconnectRecovery":{"epoch":1,"autoWake":true,
-                            "accountKey":"default","threadId":"thread"}
-                    })
-                    .to_string()],
+                    [
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"owner","rootId":"owner","epoch":1,"status":"interrupted",
+                            "autoWake":true,"accountKey":"default","threadId":"thread",
+                            "nativeFailureHold":{"reason":"pending"},
+                            "disconnectRecovery":{"epoch":1,"autoWake":true,
+                                "accountKey":"default","threadId":"thread"}
+                        })
+                        .to_string(),
+                    ],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('rule',?1)",
@@ -2762,14 +2766,16 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
-                    [serde_json::json!({
-                        "id":"owner","rootId":"owner","epoch":1,"status":"ready",
-                        "autoWake":true,"accountKey":"default","threadId":"thread",
-                        "nativeFailureHold":{},
-                        "disconnectRecovery":{"epoch":1,"autoWake":true,
-                            "accountKey":"default","threadId":"thread"}
-                    })
-                    .to_string()],
+                    [
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"owner","rootId":"owner","epoch":1,"status":"ready",
+                            "autoWake":true,"accountKey":"default","threadId":"thread",
+                            "nativeFailureHold":{},
+                            "disconnectRecovery":{"epoch":1,"autoWake":true,
+                                "accountKey":"default","threadId":"thread"}
+                        })
+                        .to_string(),
+                    ],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('rule',?1)",
@@ -2918,11 +2924,13 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
-                    [serde_json::json!({
-                        "id":"worker","rootId":"owner","epoch":0,
-                        "status":"running","isLead":false
-                    })
-                    .to_string()],
+                    [
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"worker","rootId":"owner","epoch":0,
+                            "status":"running","isLead":false
+                        })
+                        .to_string(),
+                    ],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('low-rule',?1)",
@@ -2980,11 +2988,13 @@ mod tests {
             .transaction_with(|tx| {
                 tx.execute(
                     "UPDATE runtime_agents SET record=?1 WHERE id='worker'",
-                    [serde_json::json!({
-                        "id":"worker","rootId":"owner","epoch":0,
-                        "status":"completed","isLead":false
-                    })
-                    .to_string()],
+                    [
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"worker","rootId":"owner","epoch":0,
+                            "status":"completed","isLead":false
+                        })
+                        .to_string(),
+                    ],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })

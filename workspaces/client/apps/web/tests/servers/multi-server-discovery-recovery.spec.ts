@@ -1,6 +1,6 @@
+import { required } from "../teams/helpers.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
 import { fixtureBarrier } from "./browser-fixture.ts";
-import assert from "node:assert/strict";
 import type { AutomaticAccessAttempt } from "../../src/servers/automaticUiAccess.ts";
 import { settings, remoteNetwork } from "./browser-fixture.ts";
 import type { ServerFixture } from "./browser-fixture.ts";
@@ -52,9 +52,8 @@ test("revoke cancels an automatic invitation whose reply is still in flight", as
     );
     await page.route(local.origin + "/api/multi-server", async (route) => {
       if (
-        route.request().method() !== "POST" ||
         fixturePostBody<"/api/multi-server">(route.request().postDataJSON())
-          .action !== "ui_invite"
+          ?.action !== "ui_invite"
       )
         return route.continue();
       const response = await route.fetch();
@@ -141,10 +140,7 @@ test("revoke cancels an automatic invitation whose reply is still in flight", as
         });
         expect(JSON.stringify(value)).not.toContain('"token"');
         expect(JSON.stringify(value)).not.toContain("secret-remote");
-        return value.some(
-          (row) =>
-            row.generation !== "old" && "invitation" in row && row.invitation,
-        );
+        return value.some((row) => row.generation !== "old" && row.invitation);
       })
       .toBe(true);
     expect(remote.pairs).toHaveLength(0);
@@ -386,10 +382,10 @@ test("an unused legacy invitation expires into a new attempt without a credentia
     const request = local.accessRequests.find(
       (row) => row.action === "ui_invite",
     );
-    assert.ok(request);
-    expect(request.requestId).not.toBe("legacy-invite");
+
+    expect(request!.requestId).not.toBe("legacy-invite");
     expect(remote.pairs).toHaveLength(1);
-    expect(JSON.parse(remote.pairs[0] ?? "null").requestId).not.toBe(
+    expect(JSON.parse(required(remote.pairs[0])).requestId).not.toBe(
       "legacy-pair",
     );
   } finally {
@@ -483,8 +479,8 @@ test("startup migration preserves a saved pair receipt without keeping its legac
       .toBe(true);
     const state = await attempts(page);
     expect(JSON.stringify(state.rows)).not.toContain('"token"');
-    expect(state.rows[0]?.pairRequestId).toBe("legacy-pair");
-    expect(state.rows[0]?.needsPairCheck).toBeUndefined();
+    expect(required(state.rows[0]).pairRequestId).toBe("legacy-pair");
+    expect(required(state.rows[0]).needsPairCheck).toBeUndefined();
     expect(
       local.accessRequests.filter((row) => row.action === "ui_invite"),
     ).toHaveLength(0);

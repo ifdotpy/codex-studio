@@ -92,6 +92,13 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       }
       if (req.url?.startsWith("/api/")) {
         res.setHeader("Content-Type", "application/json");
+        if (req.method === "POST" && req.url === "/api/costs/interest") {
+          req.resume();
+          res.end(
+            JSON.stringify({} satisfies PostResult<"/api/costs/interest">),
+          );
+          return;
+        }
         if (req.url.startsWith("/api/session-cost")) {
           reads.sessionCost++;
           res.end(JSON.stringify(usageSessionCost()));
@@ -113,16 +120,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             captured.reset = fixturePostBody<"/api/limits/reset">(
               JSON.parse(body),
             );
-            res.end(
-              JSON.stringify({
-                outcome: "reset",
-                account_id: captured.reset.account_id,
-                account_key: captured.reset.account_key ?? "team",
-                credit_id: captured.reset.credit_id,
-                request_id: captured.reset.request_id,
-                limits: { accountKey: "team" },
-              } satisfies PostResult<"/api/limits/reset">),
-            );
+            res.end(JSON.stringify({ outcome: "reset" }));
           });
           return;
         }
@@ -148,7 +146,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       .filter({ hasText: "*" })
       .waitFor({ state: "attached" });
     assert.match(
-      (await page.locator(".session-cost-summary").getAttribute("title")) ?? "",
+      (await page.locator(".session-cost-summary").getAttribute("title"))!,
       /Earlier Claude totals may be incomplete/,
     );
     assert.doesNotMatch(
@@ -177,17 +175,15 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.match(await ownLimitsPanel.innerText(), /80%\s*left/);
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "own" && force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "own" && force),
     );
 
     await page.goto(fixtureOrigin(server) + `?multi&now=${now}`);
     const ownTab = page.getByRole("tab", {
-      name: "own@example.test account limits",
+      name: "own@example.test, codex account limits",
     });
     const teamTab = page.getByRole("tab", {
-      name: "team@example.test, openai account limits",
+      name: "team@example.test, codex account limits",
     });
     await ownTab.waitFor();
     assert.equal(
@@ -214,9 +210,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       "ArrowRight selects the next account tile",
     );
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "team" && !force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "team" && !force),
     );
     const selectedTeamLimit = accountPanel.getByText("8% left", {
       exact: false,
@@ -239,9 +233,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "team" && force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "team" && force),
     );
     await page
       .getByRole("button", { name: "Apply reset", exact: true })
@@ -252,12 +244,11 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     const resetStatus = page.getByText("Reset applied.", { exact: true });
     await resetStatus.waitFor();
     assert.equal(await resetStatus.textContent(), "Reset applied.");
-    const reset = captured.reset;
-    assert.ok(reset, "reset request reached the fixture server");
+    const reset = captured.reset!;
     assert.equal(reset.account_id, "team-account");
     assert.equal(reset.credit_id, "team-credit");
     const ownTile = page.getByRole("tab", {
-      name: "own@example.test account limits",
+      name: "own@example.test, codex account limits",
       exact: true,
     });
     assert.equal(
@@ -274,9 +265,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.equal(
       await teamMeter
         .locator("span")
-        .evaluate((element) =>
-          element instanceof HTMLElement ? element.style.background : "",
-        ),
+        .evaluate((element) => (element as HTMLElement).style.background),
       "var(--studio-state-error)",
     );
     await page
@@ -301,16 +290,12 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.equal(
       await claudeMeter
         .locator("span")
-        .evaluate((element) =>
-          element instanceof HTMLElement ? element.style.background : "",
-        ),
+        .evaluate((element) => (element as HTMLElement).style.background),
       "var(--studio-state-answer)",
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "claude" && force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "claude" && force),
     );
     await page
       .getByRole("radio", { name: "Codex", exact: true })
@@ -324,9 +309,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await ownTile
         .getByRole("meter")
         .locator("span")
-        .evaluate((element) =>
-          element instanceof HTMLElement ? element.style.background : "",
-        ),
+        .evaluate((element) => (element as HTMLElement).style.background),
       "var(--studio-state-unread)",
     );
     const unnamedTile = page.getByRole("tab", {
@@ -345,9 +328,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await unnamedTile
         .getByRole("meter")
         .locator("span")
-        .evaluate((element) =>
-          element instanceof HTMLElement ? element.style.background : "",
-        ),
+        .evaluate((element) => (element as HTMLElement).style.background),
       "var(--studio-state-answer)",
     );
     await unnamedTile.click();
@@ -409,10 +390,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           assert.equal(dot.width, 6);
           assert.equal(dot.height, 6);
           assert.equal(dot.radius, "50%");
-          assert.equal(
-            dot.background,
-            dot.color === null ? undefined : palette[dot.color],
-          );
+          assert.equal(dot.background, palette[dot.color!]);
         }
         const targets = await page
           .locator(".account-limits-dot-target")
@@ -427,7 +405,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           assert.ok(target.height >= 24);
           if (index)
             assert.ok(
-              target.left >= (targets[index - 1]?.right ?? 0),
+              target.left >= targets[index - 1].right,
               "allowance targets do not overlap",
             );
         }
@@ -450,14 +428,14 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           );
           if (index)
             assert.ok(
-              control.left >= (footerControls[index - 1]?.right ?? 0),
+              control.left >= footerControls[index - 1].right,
               JSON.stringify({ width, footerControls }),
             );
         }
         const footer = await page.locator(".usage-footer").boundingBox();
-        assert.ok(footer);
+
         assert.ok(
-          footer.height <= (width < 760 ? 24 : 32),
+          footer!.height <= (width < 760 ? 24 : 32),
           "usage footer preserves its row height",
         );
         console.log(
@@ -465,9 +443,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           JSON.stringify({
             width,
             scheme,
-            height: footer.height,
-            targetWidth: targets[0]?.width,
-            targetHeight: targets[0]?.height,
+            height: footer!.height,
+            targetWidth: targets[0].width,
+            targetHeight: targets[0].height,
           }),
         );
         const popover = page.locator(".account-limits-popover");
@@ -476,10 +454,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           .waitFor();
         await page.waitForFunction(
           () =>
-            getComputedStyle(
-              document.querySelector(".account-limits-popover") ??
-                document.body,
-            ).opacity === "1",
+            getComputedStyle(document.querySelector(".account-limits-popover")!)
+              .opacity === "1",
         );
         await page.evaluate(
           () =>
@@ -497,9 +473,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           assert.deepEqual(
             await popover.evaluate((element) => {
               const panel = element.querySelector(".account-limits-panel");
-              if (!panel) throw new Error("Limits panel is missing");
+
               return {
-                clipped: panel.scrollHeight > panel.clientHeight + 1,
+                clipped: panel!.scrollHeight > panel!.clientHeight + 1,
                 scrollbars: [...element.querySelectorAll("*")]
                   .filter(
                     (e) =>
@@ -513,9 +489,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             { clipped: false, scrollbars: [] },
           );
           const rect = await popover.boundingBox();
-          assert.ok(rect);
+
           assert.ok(
-            rect.y >= 0 && rect.y + rect.height <= 845,
+            rect!.y >= 0 && rect!.y + rect!.height <= 845,
             "all limits fit in the viewport",
           );
         };
@@ -528,16 +504,15 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         await page.getByRole("link", { name: "Open free resets" }).waitFor();
         assert.equal(await page.getByRole("tab").count(), 2);
         const after = await popover.boundingBox();
-        assert.ok(before);
-        assert.ok(after);
+
         assert.equal(
-          after.height,
-          before.height,
+          after!.height,
+          before!.height,
           "switching providers preserves natural panel height",
         );
         assert.equal(
-          after.y,
-          before.y,
+          after!.y,
+          before!.y,
           "switching providers preserves popover position",
         );
         await assertFits();
@@ -549,7 +524,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Apply reset", exact: true })
           .waitFor();
-        assert.equal((await popover.boundingBox())?.height, before.height);
+        assert.equal((await popover.boundingBox())!.height, before!.height);
         const claudeDot = page.locator(
           '.account-limits-dot-target[data-account-key="claude-main"]',
         );

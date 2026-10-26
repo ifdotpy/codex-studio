@@ -1,3 +1,7 @@
+import type { core } from "zod";
+type FixtureSchema = Omit<core.JSONSchema.ObjectSchema, "properties"> & {
+  properties: Record<string, core.JSONSchema.JSONSchema>;
+};
 import { canonicalJson } from "./move.ts";
 import { test } from "vitest";
 import assert from "node:assert/strict";
@@ -19,13 +23,11 @@ import {
   exactProof,
   exactTurnTools,
 } from "./move.ts";
-import { externalAliases } from "./move-external.ts";
+import { externalAliases, externalRefusal } from "./move-external.ts";
 
 // The same test writes these fixtures, so canonicalization preserves their type.
 function canonicalFixture<T>(value: T): T {
-  const text = canonicalJson(value);
-  assert.ok(text !== undefined);
-  return JSON.parse(text);
+  return JSON.parse(canonicalJson(value)!);
 }
 
 test("move exports only its native session, preserves bytes and refuses conflicts", async () => {
@@ -204,31 +206,25 @@ test("tool refusal reports names and changed schemas without private values", ()
   assert.throws(
     () => verifyToolProof({ tools: source }, target),
     (error) => {
-      assert.ok(error instanceof Error);
-      assert.ok(
-        "data" in error && error.data && typeof error.data === "object",
-      );
+      const refusal = error as ReturnType<typeof externalRefusal>;
       for (const name of [
         "mcp__studio__old",
         "mcp__studio__new",
         "mcp__studio__same",
       ])
-        assert.ok(error.message.includes(name));
+        assert.ok(refusal.message.includes(name));
       assert.ok(
-        error.message.includes("changed definitions [mcp__studio__same]"),
+        refusal.message.includes("changed definitions [mcp__studio__same]"),
       );
-      assert.ok(!error.message.includes("source-secret"));
-      assert.ok(!error.message.includes("target-secret"));
-      assert.deepEqual(
-        "moveRefusal" in error.data ? error.data.moveRefusal : undefined,
-        {
-          kind: "studio_tools",
-          sourceNames: source.map((entry) => entry.name),
-          targetNames: target.map((entry) => entry.name),
-          changedNames: ["mcp__studio__same"],
-        },
-      );
-      assert.ok(!JSON.stringify(error.data).includes("source-secret"));
+      assert.ok(!refusal.message.includes("source-secret"));
+      assert.ok(!refusal.message.includes("target-secret"));
+      assert.deepEqual(refusal.data.moveRefusal, {
+        kind: "studio_tools",
+        sourceNames: source.map((entry) => entry.name),
+        targetNames: target.map((entry) => entry.name),
+        changedNames: ["mcp__studio__same"],
+      });
+      assert.ok(!JSON.stringify(refusal.data).includes("source-secret"));
       return true;
     },
   );
@@ -243,20 +239,9 @@ test("tool refusal reports names and changed schemas without private values", ()
         [],
       ),
     (error) => {
-      assert.ok(error instanceof Error);
-      assert.ok(
-        "data" in error && error.data && typeof error.data === "object",
-      );
-      assert.ok(!error.message.includes("name-secret"));
-      assert.deepEqual(
-        "moveRefusal" in error.data &&
-          error.data.moveRefusal &&
-          typeof error.data.moveRefusal === "object" &&
-          "sourceNames" in error.data.moveRefusal
-          ? error.data.moveRefusal.sourceNames
-          : undefined,
-        ["<unavailable>"],
-      );
+      const refusal = error as ReturnType<typeof externalRefusal>;
+      assert.ok(!refusal.message.includes("name-secret"));
+      assert.deepEqual(refusal.data.moveRefusal.sourceNames, ["<unavailable>"]);
       return true;
     },
   );
@@ -293,24 +278,20 @@ test("Studio proof reads the compiled ordered MCP schemas without model input", 
     catalog.map((entry) => entry.name),
     ["mcp__studio__one", "mcp__studio__two"],
   );
-  const schema = catalog[0]?.input_schema;
-  assert.ok(schema);
-  assert.ok(schema.properties && typeof schema.properties === "object");
-  const cwd = Reflect.get(schema.properties, "cwd");
-  assert.ok(cwd && typeof cwd === "object" && "type" in cwd);
-  assert.equal(cwd.type, "string");
+  // The fixture compiled this object schema through the SDK.
+  assert.ok(catalog[0]);
+  const schema = catalog[0].input_schema as FixtureSchema;
+  assert.ok(schema.properties.cwd);
+  assert.equal(schema.properties.cwd.type, "string");
   assert.throws(
     () => verifyToolProof({ tools: catalog }, [...catalog].reverse()),
     /order/,
   );
   const changed = structuredClone(catalog);
-  const changedProperties = changed[0]?.input_schema?.properties;
-  assert.ok(changedProperties && typeof changedProperties === "object");
-  const changedCwd: unknown = Reflect.get(changedProperties, "cwd");
-  assert.ok(
-    changedCwd && typeof changedCwd === "object" && "type" in changedCwd,
-  );
-  changedCwd.type = "number";
+  assert.ok(changed[0]);
+  const changedSchema = changed[0].input_schema as typeof schema;
+  assert.ok(changedSchema.properties.cwd);
+  changedSchema.properties.cwd.type = "number";
   assert.throws(() => verifyToolProof({ tools: catalog }, changed), /schemas/);
 });
 
@@ -487,7 +468,7 @@ test("an inline snapshot whose MCP tools are all deferred gets the deferred proo
     assert.equal(proof.inlineTools, false);
     assert.equal(proof.surfacedExternal, true);
     assert.deepEqual(
-      proof.deferredTools?.map((t) => t.name).sort(),
+      proof.deferredTools!.map((t) => t.name).sort(),
       [docs.name, studio.name].sort(),
     );
     // Only servers whose definitions the history holds need a catalog on the target.
@@ -542,8 +523,7 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
   ];
   const sorted = canonicalFixture(current);
   const [first, second] = sorted;
-  assert.ok(first);
-  assert.ok(second);
+  assert.ok(first && second);
   const proof = {
     inlineTools: false,
     tools: [{ name: "Bash", input_schema: { type: "object" } }],
@@ -592,11 +572,12 @@ test("a move restores the exact tool order that the paired channel sorted", () =
     JSON.stringify(exactSession(moved).dynamicTools),
     JSON.stringify(original),
   );
+  assert.ok(original[0]);
   const compiled = [
     {
       name: "mcp__studio__orchestration_teleport",
       description: "Move",
-      input_schema: original[0]?.inputSchema,
+      input_schema: original[0].inputSchema,
     },
   ];
   const proof = canonicalFixture({
@@ -698,7 +679,7 @@ test("later turns of a moved session keep the exact tool order the server sorted
           return tool(
             definition.name,
             definition.description,
-            schema.shape,
+            (schema as import("zod").ZodObject).shape,
             async () => ({ content: [] }),
           );
         }),
@@ -721,9 +702,11 @@ test("later turns of a moved session keep the exact tool order the server sorted
   // The server stores records with sorted keys and sends that copy on later turns.
   const sorted = canonicalFixture(source);
   const proof = await compile(source);
+  const sortedProof = await compile(sorted);
+  assert.ok(sortedProof[0] && proof[0]);
   assert.notDeepEqual(
-    (await compile(sorted))[0]?.input_schema?.required,
-    proof[0]?.input_schema?.required,
+    sortedProof[0].input_schema.required,
+    proof[0].input_schema.required,
   );
   assert.deepEqual(await compile(exactTurnTools(session, sorted)), proof);
   verifyToolProof(
@@ -735,3 +718,39 @@ test("later turns of a moved session keep the exact tool order the server sorted
   assert.equal(exactTurnTools(session, changed), changed);
   assert.equal(exactTurnTools({}, sorted), sorted);
 });
+
+test.each(
+  [[], 42, null, false, "invalid"].map((invalidRow) => ({ invalidRow })),
+)(
+  "non-object native row $invalidRow cannot certify a saved prompt",
+  async ({ invalidRow }) => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "claude-prompt-boundary-"),
+    );
+    const file = path.join(root, "native.jsonl");
+    const session = { id: randomUUID(), model: "default", dynamicTools: [] };
+    const row = {
+      type: "attachment",
+      sessionId: session.id,
+      attachment: {
+        type: "prompt_snapshot",
+        systemPrompt: ["Complete prompt"],
+        tools: [{ name: "Bash", input_schema: { type: "object" } }],
+      },
+    };
+    try {
+      await fs.writeFile(file, JSON.stringify(row) + "\n");
+      assert.equal(
+        (await savedPromptProof(file, session)).snapshotHash.length,
+        64,
+      );
+      await fs.appendFile(file, JSON.stringify(invalidRow) + "\n");
+      await assert.rejects(
+        savedPromptProof(file, session),
+        /complete native snapshot history is unavailable/,
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);

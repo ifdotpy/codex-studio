@@ -20,6 +20,15 @@ const lead = (mode: ClaudePermissionMode, yolo = true): Agent => ({
   claudeOptions: { permissionMode: mode },
 });
 
+test("unknown provider identities never inherit or display Codex permissions", () => {
+  expect(inheritedClaudeMode({ id: "missing-provider" })).toBeNull();
+  for (const provider of ["", "future-provider", "CODEX"]) {
+    const html = render(provider);
+    expect(html).not.toContain("Codex sandbox");
+    expect(html).not.toContain("Permission mode");
+  }
+});
+
 test.each(CLAUDE_PERMISSION_MODES)(
   "inherits effective %s despite legacy yolo",
   (mode) => {

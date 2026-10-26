@@ -9,16 +9,10 @@ import type {
   handleEntitySyncFixtureRequest,
 } from "../playwright.ts";
 
-export function required<T>(value: T | null | undefined): T {
-  if (value == null) throw new Error("Missing accounts fixture value");
-  return value;
-}
 export function fixtureUrl(server: Server | ViteDevServer): string {
   const address = (
-    "httpServer" in server ? required(server.httpServer) : server
-  ).address();
-  if (!address || typeof address === "string")
-    throw new Error("Accounts fixture needs a TCP address");
+    "httpServer" in server ? server.httpServer! : server
+  ).address() as import("node:net").AddressInfo;
   return `http://127.0.0.1:${address.port}`;
 }
 export function fixtureAccount(
@@ -111,7 +105,7 @@ export type NotifyResources = Parameters<
   NonNullable<SyncFixture["onStreamReady"]>
 >[0];
 type UnionKeys<T> = T extends unknown ? keyof T : never;
-type WithAbsentFields<T, All = T> = T extends unknown
+export type WithAbsentFields<T, All = T> = T extends unknown
   ? T & Partial<Record<Exclude<UnionKeys<All>, keyof T>, never>>
   : never;
 export type FixtureRequest = {
@@ -133,34 +127,54 @@ export const fixtureContentTypes: Record<string, string> = {
 };
 
 // Fixture HTTP responses are produced by these specs using the generated route contracts.
-export async function readFixtureResponse<
+type FixtureResponse = Pick<import("@playwright/test").APIResponse, "json">;
+type FixtureEntity = JsonInputOf<import("../playwright.ts").SyncEntity>;
+// The fixture sync route writes modern entity documents, not legacy payload envelopes.
+export function readFixtureResponse(
+  _path: "/api/sync/pull",
+  response: FixtureResponse,
+): Promise<
+  Omit<
+    Extract<
+      import("../../src/apiTypes.ts").GetResult<"/api/sync/pull">,
+      { documents: unknown }
+    >,
+    "documents"
+  > & { documents: FixtureEntity[] }
+>;
+export function readFixtureResponse<
   Path extends import("../../src/apiTypes.ts").ApiGetPath,
 >(
   _path: Path,
-  response: Pick<import("@playwright/test").APIResponse, "json">,
-): Promise<import("../../src/apiTypes.ts").GetResult<Path>> {
+  response: FixtureResponse,
+): Promise<import("../../src/apiTypes.ts").GetResult<Path>>;
+export async function readFixtureResponse(
+  _path: string,
+  response: FixtureResponse,
+): Promise<unknown> {
   return response.json();
 }
 
 export function fixtureAgentEntity(
-  documents: JsonInputOf<
-    import("../playwright.ts").SyncPullResponse["documents"]
-  >,
+  documents: Exclude<
+    ReturnType<typeof import("../playwright.ts").entityPullFixture>,
+    { reset: true }
+  >["documents"],
   id: string,
 ) {
   return documents
     .filter(
       (
-        document,
-      ): document is JsonInputOf<
-        Extract<
-          import("../playwright.ts").SyncEntity,
-          { op: "upsert"; collection: "agent" }
-        >
-      > =>
-        "op" in document &&
-        document.op === "upsert" &&
-        document.collection === "agent",
+        document: (typeof documents)[number] & { op?: unknown },
+      ): document is Extract<FixtureEntity, { op: "upsert" }> =>
+        document.op === "upsert",
     )
-    .find((document) => document.id === id);
+    .find(
+      (
+        entity,
+      ): entity is Extract<
+        FixtureEntity,
+        { op: "upsert"; collection: "agent" }
+      > => entity.collection === "agent" && entity.id === id,
+    );
 }

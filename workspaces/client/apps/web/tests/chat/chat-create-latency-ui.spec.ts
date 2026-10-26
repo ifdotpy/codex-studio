@@ -1,6 +1,7 @@
+#!/usr/bin/env node
 import { waitForFixturePort } from "../playwright.ts";
 import type { Route } from "@playwright/test";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { JsonValue, PostBody, PostResult } from "../../src/apiTypes.ts";
 import {
   fixturePostBody,
   fixtureGetResult,
@@ -23,15 +24,13 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 function hasConfirmedChatCount(expected: number) {
-  const value: unknown = JSON.parse(
-    localStorage.getItem("codex-confirmed-chats") || "null",
-  );
   return (
-    value !== null &&
-    typeof value === "object" &&
-    "agents" in value &&
-    Array.isArray(value.agents) &&
-    value.agents.length === expected
+    (
+      JSON.parse(localStorage.getItem("codex-confirmed-chats")!) as Record<
+        string,
+        JsonValue[]
+      >
+    ).agents?.length === expected
   );
 }
 
@@ -46,9 +45,7 @@ test("Chat Create Latency Ui @performance", async ({
   });
   let page,
     log = "";
-  if (!fixture.stderr || !fixture.stdout)
-    throw new Error("Missing fixture output");
-  fixture.stderr.on("data", (data) => {
+  fixture.stderr!.on("data", (data) => {
     log += data;
   });
   try {
@@ -192,15 +189,14 @@ test("Chat Create Latency Ui @performance", async ({
     assert.equal(
       JSON.parse(
         await page.evaluate(
-          (selectionKey) => localStorage.getItem(selectionKey) || "null",
+          (selectionKey) => localStorage.getItem(selectionKey)!,
           `codex-desktop-opened:${initial.stateDir}`,
         ),
       ),
       confirmed.id,
       "the confirmed chat is selected",
     );
-    assert.ok(repliedAt !== undefined);
-    const openedAfterMs = Date.now() - repliedAt;
+    const openedAfterMs = Date.now() - repliedAt!;
     assert.ok(
       openedAfterMs < 1500,
       `creation opens before refresh: ${openedAfterMs}ms`,
@@ -301,7 +297,7 @@ test("Chat Create Latency Ui @performance", async ({
     );
     const final = await readTestState(origin);
     assert.equal(
-      final.runtime.agents.filter((a) => a.id === request?.id).length,
+      final.runtime.agents.filter((a) => a.id === request!.id).length,
       1,
     );
     await page.waitForFunction(hasConfirmedChatCount, 0);

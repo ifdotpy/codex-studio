@@ -25,13 +25,8 @@ export type ClippingFinding = ClippingDetails & {
   reason: string;
 };
 // Serializable browser function. Call page.evaluate(detectTextClipping, {scene, profile}).
-export function detectTextClipping({
-  scene,
-  profile,
-}: {
-  scene: string;
-  profile: string;
-}) {
+type ClippingContext = { scene: string; profile: string };
+export function detectTextClipping({ scene, profile }: ClippingContext) {
   const findings: ClippingFinding[] = [];
   const path = (el: Element | null) => {
     const parts = [];
@@ -42,7 +37,7 @@ export function detectTextClipping({
       }
       let part = el.tagName.toLowerCase();
       const siblings = Array.from(el.parentElement?.children || []).filter(
-        (x) => x.tagName === el?.tagName,
+        (x) => x.tagName === el!.tagName,
       );
       if (siblings.length > 1)
         part += `:nth-of-type(${siblings.indexOf(el) + 1})`;
@@ -82,7 +77,7 @@ export function detectTextClipping({
   const hasFullText = (el: Element, text: string) => {
     for (let a: Element | null = el; a; a = a.parentElement) {
       if (
-        [a.getAttribute("title"), a.getAttribute("aria-label")].some((x) =>
+        [(a as HTMLElement).title, a.getAttribute("aria-label")].some((x) =>
           x?.includes(text),
         )
       )
@@ -121,10 +116,10 @@ export function detectTextClipping({
     )
       continue;
     const nodes = Array.from(el.childNodes).filter(
-      (n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim(),
+      (n) => n.nodeType === Node.TEXT_NODE && n.textContent!.trim(),
     );
     if (!nodes.length) continue;
-    const text = nodes.map((n) => n.textContent?.trim()).join(" "),
+    const text = nodes.map((n) => n.textContent!.trim()).join(" "),
       s = getComputedStyle(el);
     const ranges = nodes.flatMap((n) => {
       const range = document.createRange();

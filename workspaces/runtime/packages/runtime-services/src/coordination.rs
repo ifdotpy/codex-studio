@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use studio_runtime_schema::delivery::DeliveryMoment;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_store::{
     CoordinationRepository, QueueEventId, QueueEventRepository, QueueWriteRepository, StoreError,
     Transaction,
@@ -694,11 +695,7 @@ fn assert_native_thread_open(
             && agent
                 .extra
                 .get("error")
-                .and_then(Value::as_object)
-                .is_some_and(|error| {
-                    error.get("codexErrorInfo").and_then(Value::as_str)
-                        == Some("misalignmentPolicyViolation")
-                }))
+                .is_some_and(is_misalignment_policy_violation))
         || (thread.is_some()
             && agent
                 .extra
@@ -708,11 +705,7 @@ fn assert_native_thread_open(
                     previous.get("turnId") == agent.extra.get("turnId")
                         && previous
                             .get("error")
-                            .and_then(Value::as_object)
-                            .is_some_and(|error| {
-                                error.get("codexErrorInfo").and_then(Value::as_str)
-                                    == Some("misalignmentPolicyViolation")
-                            })
+                            .is_some_and(is_misalignment_policy_violation)
                 }));
     if blocked {
         return Err(CoordinationError::InvalidRequest(
@@ -1244,7 +1237,7 @@ mod tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
-            let record = json!({"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
+            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1273,7 +1266,7 @@ mod tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead")] {
-            let record = json!({"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
+            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
             connection
                 .execute(
                     "INSERT OR IGNORE INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1901,7 +1894,7 @@ mod tests {
         connection
             .execute(
                 "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
-                [json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
+                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
             )
             .expect("managed thread fixture updates");
         connection
@@ -1999,7 +1992,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents VALUES('user',?1)",
-                [json!({"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
+                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
         let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";

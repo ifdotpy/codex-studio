@@ -15,14 +15,25 @@ it("lists chat account exclusions as toggles, leaving new accounts enabled", () 
       createElement(AccountExclusionsControl, {
         lead: {
           id: "lead",
+          provider: "codex",
           isLead: true,
           accountKey: "enabled",
           excludedAccountKeys: ["disabled"],
         } as never,
         accounts: {
           accounts: [
-            { id: "disabled", label: "Disabled", email: "a@example.test" },
-            { id: "enabled", label: "Enabled", email: "b@example.test" },
+            {
+              id: "disabled",
+              provider: "codex",
+              label: "Disabled",
+              email: "a@example.test",
+            },
+            {
+              id: "enabled",
+              provider: "codex",
+              label: "Enabled",
+              email: "b@example.test",
+            },
           ],
         } as never,
         refresh: async () => {},

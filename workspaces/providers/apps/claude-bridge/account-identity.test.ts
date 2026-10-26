@@ -30,34 +30,29 @@ function fixture(expectedIdentity?: string) {
   roots.push(root);
   const options = {
     expectedEmail: email,
-    expectedIdentity,
+    ...(expectedIdentity === undefined ? {} : { expectedIdentity }),
     identityPath: path.join(root, "pin"),
     nativePath: path.join(root, ".claude.json"),
   };
   return { options, check: createAccountCheck(options) };
 }
+import type { AccountValidationError } from "./account-identity.ts";
 const refuses = (fn: () => unknown) =>
-  assert.throws(fn, (error) => {
-    assert.ok(
-      error instanceof Error &&
-        "claudeAccountValidationFailed" in error &&
-        "data" in error,
-    );
-    assert.ok(
-      error.data &&
-        typeof error.data === "object" &&
-        "claudeAccountFailure" in error.data &&
-        "turnStartOutcome" in error.data,
-    );
-    return (
-      error.claudeAccountValidationFailed === true &&
-      error.data.claudeAccountFailure === "identity_mismatch" &&
-      error.data.turnStartOutcome === "not_applied"
-    );
-  });
+  assert.throws(
+    fn,
+    (error) =>
+      (error as AccountValidationError).claudeAccountValidationFailed &&
+      (error as AccountValidationError).data.claudeAccountFailure ===
+        "identity_mismatch" &&
+      (error as AccountValidationError).data.turnStartOutcome === "not_applied",
+  );
 
-test("shared Claude credential identity contract matches the Rust owner", () => {
-  const cases: unknown = JSON.parse(
+// Rust owns this checked-in contract fixture; both implementations consume it.
+function readIdentityCases(): {
+  identities: [...Parameters<typeof credentialIdentity>, string][];
+  comparisons: [number, number, boolean][];
+} {
+  return JSON.parse(
     fs.readFileSync(
       new URL(
         "../../../runtime/packages/runtime-services/src/account_driver/claude_identity_cases.json",
@@ -66,37 +61,18 @@ test("shared Claude credential identity contract matches the Rust owner", () => 
       "utf8",
     ),
   );
-  assert.ok(
-    cases &&
-      typeof cases === "object" &&
-      "identities" in cases &&
-      "comparisons" in cases,
-  );
-  assert.ok(
-    Array.isArray(cases.identities) && Array.isArray(cases.comparisons),
-  );
-  const identities: unknown[] = cases.identities;
-  const expectedIdentities: string[] = [];
-  for (const row of identities) {
-    assert.ok(Array.isArray(row));
-    const [email, organization, uuid, expected]: unknown[] = row;
-    assert.ok(typeof email === "string" && typeof expected === "string");
+}
+test("shared Claude credential identity contract matches the Rust owner", () => {
+  const cases = readIdentityCases();
+  for (const [email, organization, uuid, expected] of cases.identities)
     assert.equal(credentialIdentity(email, organization, uuid), expected);
-    expectedIdentities.push(expected);
-  }
-  const comparisons: unknown[] = cases.comparisons;
-  for (const row of comparisons) {
-    assert.ok(Array.isArray(row));
-    const [old, next, expected]: unknown[] = row;
-    assert.ok(
-      typeof old === "number" &&
-        typeof next === "number" &&
-        typeof expected === "boolean",
+  for (const [old, next, expected] of cases.comparisons) {
+    assert.ok(cases.identities[old]);
+    assert.ok(cases.identities[next]);
+    assert.equal(
+      acceptsIdentity(cases.identities[old][3], cases.identities[next][3]),
+      expected,
     );
-    const previous = expectedIdentities[old],
-      observed = expectedIdentities[next];
-    assert.ok(previous !== undefined && observed !== undefined);
-    assert.equal(acceptsIdentity(previous, observed), expected);
   }
 });
 
@@ -159,9 +135,7 @@ test("checkAccount preserves email provider and subscription refusal", () => {
     assert.throws(
       () => check(invalid),
       (error) =>
-        error instanceof Error &&
-        "claudeAccountValidationFailed" in error &&
-        error.claudeAccountValidationFailed === true,
+        (error as AccountValidationError).claudeAccountValidationFailed,
     );
 });
 
@@ -197,15 +171,14 @@ test("the real bridge reports native UUIDs and refuses input after an organizati
     input: [{ type: "text", text: "Must stay held" }],
   });
   const completed = await bridge.note(
-    "turn/completed",
     (note) => note.method === "turn/completed",
   );
   assert.ok(completed.params.turn.error?.data);
   assert.equal(completed.params.turn.status, "failed");
   assert.equal(completed.params.turn.startOutcome, "not_applied");
   assert.equal(
-    completed.params.turn.error.data.claudeAccountFailure,
+    completed.params.turn.error!.data!.claudeAccountFailure,
     "identity_mismatch",
   );
-  assert.match(completed.params.turn.error.message, /identity changed/);
+  assert.match(completed.params.turn.error!.message, /identity changed/);
 });

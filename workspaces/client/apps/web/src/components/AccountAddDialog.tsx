@@ -4,9 +4,19 @@ import { layerZIndex } from "../theme";
 import type { useAccounts } from "./Accounts";
 import AccountSignIn from "./AccountSignIn";
 import ClaudeAddSignIn from "./ClaudeAddSignIn";
+import {
+  PROVIDER_KINDS,
+  PROVIDER_LABELS,
+  ProviderKind,
+} from "../generated/providerKind.ts";
+
+export const ACCOUNT_SIGN_IN_HINTS: Record<ProviderKind, string> = {
+  [ProviderKind.Codex]: "ChatGPT subscription, one-time code",
+  [ProviderKind.Claude]: "Claude subscription, link + paste code",
+};
 
 export type AddAccountIntent = {
-  provider?: "codex" | "claude";
+  provider?: ProviderKind;
   email?: string | null;
   label?: string;
   serverLabel?: string;
@@ -23,7 +33,7 @@ export default function AccountAddDialog({
   state: ReturnType<typeof useAccounts>;
   onClose: () => void;
 }) {
-  const [provider, setProvider] = useState<"codex" | "claude" | "">("");
+  const [provider, setProvider] = useState<ProviderKind | "">("");
   const [label, setLabel] = useState("");
   const [email, setEmail] = useState("");
   const [flow, setFlow] = useState(false);
@@ -54,24 +64,18 @@ export default function AccountAddDialog({
             role="group"
             aria-label="Account type"
           >
-            <button
-              type="button"
-              className={`account-provider-choice${provider === "codex" ? " selected" : ""}`}
-              aria-pressed={provider === "codex"}
-              onClick={() => setProvider("codex")}
-            >
-              <strong>Codex</strong>
-              <span>ChatGPT subscription, one-time code</span>
-            </button>
-            <button
-              type="button"
-              className={`account-provider-choice${provider === "claude" ? " selected" : ""}`}
-              aria-pressed={provider === "claude"}
-              onClick={() => setProvider("claude")}
-            >
-              <strong>Claude</strong>
-              <span>Claude subscription, link + paste code</span>
-            </button>
+            {PROVIDER_KINDS.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className={`account-provider-choice${provider === kind ? " selected" : ""}`}
+                aria-pressed={provider === kind}
+                onClick={() => setProvider(kind)}
+              >
+                <strong>{PROVIDER_LABELS[kind]}</strong>
+                <span>{ACCOUNT_SIGN_IN_HINTS[kind]}</span>
+              </button>
+            ))}
           </div>
           <TextInput label="Server" value={serverLabel} readOnly />
           <TextInput
@@ -97,7 +101,7 @@ export default function AccountAddDialog({
           </div>
         </Stack>
       </Modal>
-      {opened && flow && provider === "codex" && (
+      {opened && flow && provider === ProviderKind.Codex && (
         <Modal
           opened={opened}
           zIndex={layerZIndex.modalAbovePopover}
@@ -115,7 +119,7 @@ export default function AccountAddDialog({
           </Stack>
         </Modal>
       )}
-      {opened && flow && provider === "claude" && (
+      {opened && flow && provider === ProviderKind.Claude && (
         <ClaudeAddSignIn
           label={label || "Claude Code"}
           email={email}

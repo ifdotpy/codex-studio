@@ -394,6 +394,40 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
     }
 }
 #[tokio::test]
+async fn provider_identity_radio_rejects_unknown_participant_before_enqueue() {
+    let corpus = corpus();
+    let case = corpus
+        .cases
+        .iter()
+        .find(|case| case["name"] == "floor")
+        .expect("queued radio floor");
+    for provider in [json!("future"), json!(7)] {
+        let root = tempfile::tempdir().expect("radio state directory");
+        copy_template(&corpus, root.path());
+        let store =
+            std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        seed(&store, &case["before"]).await;
+        store.transaction(move |db| {
+            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.provider',json(?1)) WHERE id='b'", [provider.to_string()])?;
+            Ok(())
+        }).await.expect("invalid participant");
+        let before = database_rows(&store);
+        let error = run(std::sync::Arc::clone(&store), case)
+            .await
+            .expect_err("unknown participant refused");
+        assert!(
+            matches!(error, ProjectsError::InvalidStored { .. }),
+            "{error}"
+        );
+        assert_eq!(
+            database_rows(&store),
+            before,
+            "refusal writes no input or room state"
+        );
+    }
+}
+
+#[tokio::test]
 async fn python_written_radio_corpus_and_restart_replay() {
     let corpus = corpus();
     for original_case in &corpus.cases {

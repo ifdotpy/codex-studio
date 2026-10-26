@@ -1,4 +1,5 @@
 import { RetainedWorktree } from "./RetainedWorktrees";
+import { providerLabel } from "../../generated/providerKind.ts";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import { ActionIcon, Button, Menu, UnstyledButton } from "@mantine/core";
@@ -141,7 +142,7 @@ const WorkerCardView = memo(function WorkerCardView({
   remove,
 }: WorkerCardProps) {
   reportPromptComposerRender("team-row", agent.id);
-  const provider = agent.provider || "codex";
+  const provider = agent.provider || "";
   const models = useContext(TeamModelCatalog).filter(
     (row) => !row.provider || row.provider === provider,
   );
@@ -168,8 +169,7 @@ const WorkerCardView = memo(function WorkerCardView({
           agent.model || "",
         );
   const connected = accounts.filter(
-    (account) =>
-      !account.disconnected && (account.provider || "codex") === provider,
+    (account) => !account.disconnected && account.provider === provider,
   );
   const account = connected.find(
     (account) => account.id === (agent.accountKey || "default"),
@@ -282,8 +282,8 @@ const WorkerCardView = memo(function WorkerCardView({
               <span
                 className="worker-provider"
                 role="img"
-                aria-label={provider === "claude" ? "Claude" : "Codex"}
-                title={provider === "claude" ? "Claude" : "Codex"}
+                aria-label={providerLabel(provider)}
+                title={providerLabel(provider)}
               >
                 <ProviderMark provider={provider} />
               </span>

@@ -1,7 +1,7 @@
 export { resolveSettings } from "./sdk-fixtures.ts";
 import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile } from "./sdk-fixtures.ts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -77,6 +77,7 @@ export function query({ prompt, options }: FixtureQuery) {
         yield {
           type: "result",
           subtype: "success",
+          is_error: false,
           usage: { input_tokens: 1, output_tokens: 1 },
           result: "done",
         };

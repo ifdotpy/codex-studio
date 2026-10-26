@@ -37,7 +37,8 @@ it("builds completed reply notifications with a bounded title and body", () => {
       { ...lead, id: "no-turn", lastCompletedTurn: "" },
       { ...lead, id: "in-flight", inFlight: true },
       { ...lead, id: "deleted", deletedAt: 1 },
-      { ...lead, id: "moved", movedTo: { server: "target", move: "move" } },
+      // This partial move fixture omits the unused move receipt.
+      { ...lead, id: "moved", movedTo: { server: "target" } } as Agent,
       { ...lead, id: "imported", moveImportPending: true },
       {
         ...lead,
@@ -177,14 +178,18 @@ it("turns active requests into question or approval notifications", () => {
       id: "question",
       agent: "lead",
       status: "pending",
-      params: { questions: [{ id: "q", question: "Which scope?" }] },
+      // The question fixture omits the unused question identity.
+      params: {
+        questions: [{ question: "Which scope?" }],
+      } as Request["params"],
     },
     { id: "approval", agent: "lead", status: "pending" },
     {
       id: "empty-question",
       agent: "lead",
       status: "pending",
-      params: { questions: [{ id: "q", question: "" }] },
+      // The question fixture omits the unused question identity.
+      params: { questions: [{ question: "" }] } as Request["params"],
     },
     {
       id: "no-questions",
@@ -395,7 +400,8 @@ it("does not show a complaint from before the window started when its page arriv
   assert.ok(next);
   assert.equal(fresh(next), true);
   // A record without a time keeps the earlier rule.
-  const { at: _at, ...withoutTime } = old;
+  const withoutTime = { ...old };
+  delete withoutTime.at;
   assert.equal(fresh(withoutTime), true);
 });
 
@@ -411,12 +417,7 @@ const signIn = (fields: Partial<Request> = {}): Request => ({
   agent: "lead",
   status: "pending",
   createdAt: 1000,
-  params: {
-    bridgeId: "b1",
-    host: "id.example.com",
-    expiresAt: 1600,
-    source: "host",
-  },
+  params: signInParams,
   ...fields,
 });
 

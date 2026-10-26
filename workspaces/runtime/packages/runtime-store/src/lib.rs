@@ -22,6 +22,7 @@ pub const WORK_DETAILS_SEED_MARKER: &str = "work_details_v1";
 mod multi_server_state_check;
 mod path;
 pub mod path_identity;
+pub mod provider_identity;
 mod records;
 mod repositories;
 mod schema;
@@ -1277,9 +1278,9 @@ impl RuntimeStore {
         // Existing paired databases make fresh_state::prepare a no-op; newly
         // created databases are verified here after their catalog is prepared.
         schema::verify_core(&canvas_path, &analytics_path)?;
+        let provider_accounts = provider_identity::validate_2026_10_26(&root)?;
         // Keep Rust opens current even when Python has not refreshed this index yet.
         schema::ensure_analytics_limits_index(&analytics_path)?;
-        repositories::cost_aggregate::ensure_cost_aggregate(&analytics_path)?;
 
         let table_change_flags = Arc::new(AtomicU32::new(0));
         let resource_receipt_update_count = Arc::new(AtomicU64::new(0));
@@ -1322,9 +1323,14 @@ impl RuntimeStore {
                 tokio_rusqlite::Error::Close((_, error)) => StoreError::from(error),
                 _ => StoreError::WriterActorInitialization(tokio_rusqlite::Error::ConnectionClosed),
             })?;
-        let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let mut analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         sqlite_durability::configure_writer(&analytics)?;
         schema::verify_serving_pragmas(&analytics, "analytics.sqlite3")?;
+        {
+            let transaction = analytics.transaction()?;
+            provider_identity::migrate_analytics_2026_10_26(&transaction, &provider_accounts)?;
+            transaction.commit()?;
+        }
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
         let identity_registry_path = canvas_path.clone();
@@ -1372,6 +1378,7 @@ impl RuntimeStore {
         };
         store
             .transaction(move |transaction| {
+                provider_identity::migrate_canvas_2026_10_26(transaction, &provider_accounts)?;
                 agent_columns::prepare(transaction)?;
                 bootstrap::prepare_sync_schema(transaction)?;
                 account_state::migrate_workspace_limits(transaction)?;
@@ -1386,6 +1393,7 @@ impl RuntimeStore {
                 verify_observed_tables_are_rowid(transaction)
             })
             .await?;
+        repositories::cost_aggregate::ensure_cost_aggregate(&analytics_path)?;
         let recovery_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64())
@@ -4652,7 +4660,7 @@ mod projection_generation_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                     [
                         "generation-agent",
-                        r#"{"id":"generation-agent","rootId":"generation-agent","epoch":0,"status":"idle"}"#,
+                        r#"{"id":"generation-agent","provider":"codex","rootId":"generation-agent","epoch":0,"status":"idle"}"#,
                     ],
                 )?;
                 Ok(())

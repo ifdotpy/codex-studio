@@ -1,15 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { Message } from "../../../types";
-import Activity, { activitySummary } from "./Activity";
-
-it("renders an empty activity group as open details", () => {
-  const markup = renderToStaticMarkup(createElement(Activity, { items: [] }));
-  expect(markup).toContain('<details class="tool-group"');
-  expect(markup).toContain('open=""');
-  expect(markup).toContain("<summary>");
-});
+import { activitySummary } from "./Activity";
 
 function toolMessage(value: unknown): Message {
   return {

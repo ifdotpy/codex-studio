@@ -1,14 +1,9 @@
 import type { ComponentHookCell } from "./componentTestFixtures";
-import type { EffectCallback, PropsWithChildren } from "react";
-import assert from "node:assert/strict";
 import { required } from "./componentTestFixtures";
+import type { EffectCallback, PropsWithChildren } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import {
-  isValidElement,
-  createElement,
-  type ReactElement,
-  type ReactNode,
-} from "react";
+import { createElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Agent, Message } from "../types";
 import type { Account } from "./Accounts";
@@ -49,12 +44,13 @@ vi.mock("react", async (original) => ({
     const previous = h.cells[index];
     if (
       !previous ||
-      deps.some((value, i) => !Object.is(value, previous.deps?.[i]))
+      deps.some((value, i) => !Object.is(value, previous.deps![i]))
     ) {
       previous?.cleanup?.();
       h.cells[index] = { deps };
       h.effects.push(() => {
-        required(h.cells[index]).cleanup = effect() || undefined;
+        required(h.cells[index]).cleanup =
+          effect() as ComponentHookCell["cleanup"];
       });
     }
   },
@@ -98,8 +94,10 @@ function find(
       const match = find(child, predicate);
       if (match) return match;
     }
-  } else if (isValidElement<PropsWithChildren<Record<string, unknown>>>(node)) {
-    const element = node;
+  } else if (node && typeof node === "object" && "props" in node) {
+    const element = node as ReactElement<
+      PropsWithChildren<Record<string, unknown>>
+    >;
     return predicate(element)
       ? element
       : find(element.props.children, predicate);
@@ -260,20 +258,18 @@ it("message info reads on open and reopen but not streamed turn metadata changes
 it("Claude account status and key updates do not reload settings; explicit retry does", async () => {
   h.post.mockRejectedValue(new Error("Sign in with claude auth login first"));
   let currentAgent = agent;
-  const accountFields = {
+  let account: Account = {
     id: "claude",
-    status: "signedOut",
     home: "/fixture",
     source: "fixture",
+    status: "signedOut",
     provider: "claude",
     label: "Claude",
-  } satisfies Account;
-  let account: Omit<typeof accountFields, "status"> & Pick<Account, "status"> =
-    accountFields;
+  };
   const read = () => ClaudeSettings({ agent: currentAgent, account });
   render(read);
   await settle();
-  account = { ...account, status: "ready" };
+  account = { ...account, status: "ready" } as Account;
   currentAgent = { ...agent, accountKey: "other" };
   const view = render(read);
   await settle();
@@ -288,8 +284,7 @@ it("Claude account status and key updates do not reload settings; explicit retry
     turns: [],
     tasks: [],
   });
-  assert.ok(typeof retry?.props.onClick === "function");
-  retry.props.onClick();
+  (retry!.props.onClick as () => void)();
   render(read);
   await settle();
   expect(h.post).toHaveBeenCalledTimes(2);
@@ -326,8 +321,7 @@ it("repair scope changes hide old evidence without reads; refresh uses the curre
     render(read),
     (node) => node.props.children === "Refresh saved report",
   );
-  assert.ok(typeof refresh?.props.onClick === "function");
-  refresh.props.onClick();
+  (refresh!.props.onClick as () => void)();
   render(read);
   await settle();
   expect(h.get).toHaveBeenCalledTimes(2);

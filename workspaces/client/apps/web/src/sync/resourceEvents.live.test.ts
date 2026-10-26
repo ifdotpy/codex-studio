@@ -1,5 +1,5 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
-import type { createSyncClient } from "./client";
 import type { OutgoingTabMessage } from "./resourceEvents";
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
@@ -1131,9 +1131,10 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
     const baseline = f.post.mock.calls.length;
     for (let step = 0; step < 10; step++) {
       stop();
-      const ref = refs[step % refs.length];
-      assert.ok(ref);
-      stop = events.watchResourceChanges(ref, () => {});
+      stop = events.watchResourceChanges(
+        required(refs[step % refs.length]),
+        () => {},
+      );
       await settle();
     }
     expect(f.sources).toHaveLength(1);
@@ -1518,11 +1519,7 @@ it("a late terminal follower consumes owner merged views without repeated recove
   const recover = vi.fn(async () => merged);
   const accept = vi.fn();
   const stop = createDataObserver(
-    () => ({
-      subscribeTranscriptProjection: vi.fn<
-        ReturnType<typeof createSyncClient>["subscribeTranscriptProjection"]
-      >(() => () => {}),
-    }),
+    () => ({}) as ReturnType<Parameters<typeof createDataObserver>[0]>,
     follower.transport,
     undefined,
     recover,

@@ -33,3 +33,19 @@ export function fixtureResourceRefs(
 ): import("../playwright.ts").ResourceRef[] {
   return JSON.parse(value) as import("../playwright.ts").ResourceRef[];
 }
+
+// These legacy fixture pulls assume a successful response with serialized documents.
+export type LegacySyncDocument = Extract<
+  import("../../src/generated/api.ts").components["schemas"]["SyncDocument"],
+  { payload: string }
+>;
+export async function fixturePullResult(
+  response: Pick<Response, "json">,
+): Promise<
+  Omit<
+    import("../../src/generated/api.ts").components["schemas"]["SyncPullResponse"],
+    "documents"
+  > & { documents: LegacySyncDocument[] }
+> {
+  return await response.json();
+}

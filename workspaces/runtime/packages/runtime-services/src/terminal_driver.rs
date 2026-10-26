@@ -1189,6 +1189,10 @@ mod tests {
                 .expect("test runtime store"),
         );
         let mut extra = BTreeMap::new();
+        extra.insert(
+            "provider".to_owned(),
+            serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+        );
         extra.insert("cwd".to_owned(), serde_json::json!(root));
         let agent = AgentRecord {
             id: AgentId::from("agent"),

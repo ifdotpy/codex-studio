@@ -12,7 +12,7 @@ import { fixture } from "../web/tests/servers/multi-server-fixture.ts";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await mkdtemp(path.join(tmpdir(), "studio-native-frames-"));
 const remote = await fixture("Remote", true);
-let desktop: ElectronApplication | null = null;
+let desktop: ElectronApplication | undefined;
 try {
   const executablePath = process.env.CODEX_FRAMES_EXECUTABLE;
   desktop = await electron.launch({
@@ -33,6 +33,7 @@ try {
   await desktop.evaluate(
     ({ safeStorage }, { origin, destination }) => {
       safeStorage.isEncryptionAvailable = () => true;
+      // Complete the secure-storage fixture: the displayless host selects basic_text.
       safeStorage.getSelectedStorageBackend = () => "gnome_libsecret";
       safeStorage.encryptString = (value) => Buffer.from(value);
       safeStorage.decryptString = (bytes) => bytes.toString();
@@ -54,10 +55,6 @@ try {
     { origin: remote.invitation.origin, destination: remote.origin },
   );
   const page = await desktop.firstWindow();
-  await desktop.evaluate(({ BrowserWindow }) => {
-    for (const win of BrowserWindow.getAllWindows())
-      win.setBounds({ width: 1440, height: 960 });
-  });
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
@@ -68,27 +65,17 @@ try {
   await page.waitForFunction(() => !!window.codexDesktop);
   await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });
   await page.evaluate(async (invitation) => {
-    const bridge = window.codexDesktop;
-    if (!bridge) throw new Error("The desktop bridge is unavailable.");
-    if (!bridge.serverCredentialAction)
-      throw new Error(
-        "The desktop serverCredentialAction method is unavailable.",
-      );
-    const server = await bridge.serverCredentialAction({
+    const server = await window.codexDesktop!.serverCredentialAction!({
       action: "pair",
       origin: invitation.origin,
       invitation,
       requestId: crypto.randomUUID(),
     });
-    if (
-      !server ||
-      typeof server !== "object" ||
-      !("id" in server) ||
-      typeof server.id !== "string"
-    )
-      throw new Error("Pairing receipt is unavailable.");
     localStorage.setItem("studio-paired-servers-v1", JSON.stringify([server]));
-    localStorage.setItem("studio-selected-server", server.id);
+    localStorage.setItem(
+      "studio-selected-server",
+      (server as import("./server-credentials.ts").PairReceipt).id,
+    );
   }, remote.invitation);
   await page.reload();
   const frame = page.frameLocator('iframe[title="Studio on Remote"]');
@@ -122,9 +109,8 @@ try {
     .getByRole("button", { name: "Hide terminals", exact: true })
     .click();
   const frameURL = await page.locator("iframe").getAttribute("src");
-  assert.ok(frameURL);
   assert.equal(
-    new URL(frameURL).searchParams.get("studio-navigation"),
+    new URL(frameURL!).searchParams.get("studio-navigation"),
     "classic",
   );
   assert.equal(remote.pairs.length, 1);
@@ -148,7 +134,6 @@ try {
 } finally {
   if (desktop) {
     const pid = desktop.process().pid;
-    assert.ok(pid);
     let watchdog;
     const testChildren = await desktop
       .evaluate(({ app }) => app.getAppMetrics().map(({ pid }) => pid))
@@ -158,7 +143,7 @@ try {
       new Promise<void>((resolve) => {
         watchdog = setTimeout(() => {
           try {
-            process.kill(pid, "SIGKILL");
+            process.kill(pid!, "SIGKILL");
           } catch {}
           resolve();
         }, 5000);

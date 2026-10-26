@@ -1,3 +1,5 @@
+import type { AccountValidationError } from "./account-identity.ts";
+
 // Refresh trusted metadata only while native work remains active.
 export function createCatalogCache<
   Value,
@@ -6,70 +8,51 @@ export function createCatalogCache<
   load,
   isActive,
   now = Date.now,
-  setTimer,
-  clearTimer,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout as (timer: Timer) => void,
   ttlMs = 300000,
   refreshMs = 240000,
 }: {
   load(background: boolean): Promise<Value>;
   isActive(): boolean;
   now?: () => number;
-  setTimer?: (callback: () => void, delay: number) => Timer;
+  setTimer?: (callback: () => void, delay: number) => Timer | NodeJS.Timeout;
   clearTimer?: (timer: Timer) => void;
   ttlMs?: number;
   refreshMs?: number;
 }) {
   let confirmed: { value: Value; startedAt: number } | undefined;
   let pending: Promise<Value> | undefined;
-  let timer: { unref?: () => unknown; cancel: () => void } | undefined;
+  let timer: Timer | NodeJS.Timeout | undefined;
   let attempted: typeof confirmed;
   let closed = false;
   const fresh = () => confirmed && now() - confirmed.startedAt < ttlMs;
   const cancelTimer = () => {
-    if (timer !== undefined) timer.cancel();
+    if (timer !== undefined) clearTimer(timer as Timer);
     timer = undefined;
   };
 
   function activityChanged() {
     cancelTimer();
-    if (
-      closed ||
-      !confirmed ||
-      !fresh() ||
-      pending ||
-      attempted === confirmed ||
-      !isActive()
-    )
+    if (closed || !fresh() || pending || attempted === confirmed || !isActive())
       return;
-    const callback = () => {
-      if (timer !== scheduled) return;
-      timer = undefined;
-      if (
-        closed ||
-        !fresh() ||
-        pending ||
-        attempted === confirmed ||
-        !isActive()
-      )
-        return;
-      attempted = confirmed;
-      void refresh(true).catch(() => {});
-    };
-    const delay = Math.max(0, confirmed.startedAt + refreshMs - now());
-    const scheduled = (() => {
-      if (setTimer && clearTimer) {
-        const handle = setTimer(callback, delay);
-        return {
-          unref: () => handle.unref?.(),
-          cancel: () => clearTimer(handle),
-        };
-      }
-      const handle = setTimeout(callback, delay);
-      return {
-        unref: () => handle.unref(),
-        cancel: () => clearTimeout(handle),
-      };
-    })();
+    const scheduled = setTimer(
+      () => {
+        if (timer !== scheduled) return;
+        timer = undefined;
+        if (
+          closed ||
+          !fresh() ||
+          pending ||
+          attempted === confirmed ||
+          !isActive()
+        )
+          return;
+        attempted = confirmed;
+        void refresh(true).catch(() => {});
+      },
+      Math.max(0, confirmed!.startedAt + refreshMs - now()),
+    );
     timer = scheduled;
     timer?.unref?.();
   }
@@ -87,10 +70,8 @@ export function createCatalogCache<
         (error: unknown) => {
           // A proven account rejection invalidates even an unexpired proof.
           if (
-            error !== null &&
-            typeof error === "object" &&
-            "claudeAccountValidationFailed" in error &&
-            error.claudeAccountValidationFailed === true
+            (error as AccountValidationError)?.claudeAccountValidationFailed ===
+            true
           )
             confirmed = undefined;
           throw error;
@@ -111,14 +92,14 @@ export function createCatalogCache<
         return Promise.reject(
           new Error("Fresh Claude account proof is unavailable"),
         );
-      return fresh() ? Promise.resolve(confirmed.value) : refresh(true);
+      return fresh() ? Promise.resolve(confirmed!.value) : refresh(true);
     },
     read() {
       if (closed)
         return Promise.reject(new Error("Claude metadata cache closed"));
-      if (confirmed && fresh()) {
+      if (fresh()) {
         activityChanged();
-        return Promise.resolve(confirmed.value);
+        return Promise.resolve(confirmed!.value);
       }
       return refresh();
     },
@@ -151,10 +132,8 @@ export async function loadCatalog<Live, Value>({
     } catch (error) {
       if (
         background ||
-        (error !== null &&
-          typeof error === "object" &&
-          "claudeAccountValidationFailed" in error &&
-          error.claudeAccountValidationFailed === true)
+        (error as AccountValidationError)?.claudeAccountValidationFailed ===
+          true
       )
         throw error;
     }

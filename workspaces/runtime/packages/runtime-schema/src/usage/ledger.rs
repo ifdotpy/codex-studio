@@ -1,5 +1,6 @@
 //! Identity and correction policy shared by durable budget and analytics receipts.
-use super::{UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope};
+use super::{UsageEvidence, UsageObservation, UsageParseError, UsageScope};
+use crate::provider_kind::ProviderKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -268,7 +269,25 @@ impl UsageLedgerRow {
     }
 
     /// Read typed persisted rows directly; legacy decoding stays at its supported boundary.
-    pub fn from_analytics(provider: UsageProvider, row: &Value) -> Result<Self, UsageParseError> {
+    pub fn from_analytics(provider: ProviderKind, row: &Value) -> Result<Self, UsageParseError> {
+        if row.get("studioUsage").is_some() || !Self::is_pre_ledger_row(row) {
+            return Self::from_typed_analytics(row);
+        }
+        let observation = super::persisted::parse_analytics_usage_row(provider, row)?;
+        let mut ledger = Self::capture(
+            row["agentId"].as_str().unwrap_or_default(),
+            row["threadId"].as_str(),
+            observation,
+        );
+        // A pre-ledger counter's original wire receipt can only be proved by the budget table.
+        if matches!(ledger.studio_usage, UsageObservation::Cumulative { .. }) {
+            ledger.receipt_key = None;
+        }
+        Ok(ledger)
+    }
+
+    /// Read provider-neutral typed evidence while checking its persisted receipt identity.
+    pub fn from_typed_analytics(row: &Value) -> Result<Self, UsageParseError> {
         let agent = row["agentId"].as_str().unwrap_or_default();
         if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
             let ledger = Self::deserialize(row)?;
@@ -281,7 +300,7 @@ impl UsageLedgerRow {
             }
             return Ok(ledger);
         }
-        let observation = super::persisted::parse_analytics_usage_row(provider, row)?;
+        let observation = UsageObservation::deserialize(&row["studioUsage"])?;
         let usage_identity = UsageIdentity::new(agent, row["threadId"].as_str(), &observation);
         let receipt_key = match &usage_identity {
             UsageIdentity::Response { response_id, .. } => {
@@ -296,6 +315,31 @@ impl UsageLedgerRow {
             receipt_key,
             studio_usage: observation,
         })
+    }
+}
+
+#[cfg(test)]
+mod typed_analytics_tests {
+    use super::*;
+
+    #[test]
+    fn provider_identity_typed_ledger_preserves_receipt_and_identity_checks() {
+        let observation: UsageObservation = serde_json::from_value(json!({"kind":"response","responseId":"response","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}})).expect("typed usage");
+        let ledger = UsageLedgerRow::capture("agent", Some("thread"), observation);
+        let mut row = serde_json::to_value(&ledger).expect("ledger");
+        row["agentId"] = json!("agent");
+        row["threadId"] = json!("thread");
+        assert_eq!(
+            UsageLedgerRow::from_typed_analytics(&row).expect("provider-neutral typed row"),
+            ledger
+        );
+        for pointer in ["/receiptKey", "/usageIdentity/agent"] {
+            let mut invalid = row.clone();
+            *invalid.pointer_mut(pointer).expect("field") = json!("");
+            assert!(UsageLedgerRow::from_typed_analytics(&invalid).is_err());
+        }
+        row["studioUsage"]["tokens"]["output"] = json!("invalid");
+        assert!(UsageLedgerRow::from_typed_analytics(&row).is_err());
     }
 }
 

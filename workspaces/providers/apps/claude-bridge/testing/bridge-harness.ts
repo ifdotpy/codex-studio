@@ -1,3 +1,8 @@
+import type {
+  CallToolResult,
+  TextContent,
+} from "@modelcontextprotocol/sdk/types.js";
+export type FixtureToolResult = CallToolResult & { content: TextContent[] };
 // Start the real bridge with a scripted Agent SDK. No model calls are made.
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -12,6 +17,7 @@ import type {
   BridgeEmpty,
   BridgeMethod,
   BridgeNotification,
+  BridgeHistoricalItemEvent,
   BridgeParams,
   BridgeResponse,
   BridgeResult,
@@ -56,7 +62,10 @@ export type BridgeFixtureNotification = {
   };
 }[keyof BridgeFixtureNotifications];
 export type BridgeNote =
-  | BridgeNotification
+  | Exclude<BridgeNotification, { method: "item/started" | "item/completed" }>
+  // The reader also observes historical item re-emissions on this same wire.
+  | { method: "item/started"; params: BridgeHistoricalItemEvent }
+  | { method: "item/completed"; params: BridgeHistoricalItemEvent }
   | BridgeServerRequest
   | BridgeFixtureNotification;
 export type BridgeNoteFor<M extends BridgeNote["method"]> = Extract<

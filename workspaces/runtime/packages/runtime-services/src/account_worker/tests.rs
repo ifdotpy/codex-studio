@@ -51,10 +51,12 @@ use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
 
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
-    preparation::PreparationResources::bundled(
+    let mut resources = preparation::PreparationResources::bundled(
         String::new(),
         crate::model_catalog::ModelCatalogService::new(),
-    )
+    )?;
+    resources.claude_account_pin = json!({"provider": studio_runtime_schema::ProviderKind::Codex});
+    Ok(resources)
 }
 // The bridge observes both sides of each whole store operation. No production
 // transaction is changed by injection; after-commit failures retain its writes.
@@ -1082,6 +1084,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                         "rootId": write_good_id.clone(),
                         "epoch": good_epoch,
                         "status": "queued",
+                        "provider": studio_runtime_schema::ProviderKind::Codex,
                         "accountKey": "default",
                         "autoWake": true,
                         "isLead": true,
@@ -1266,6 +1269,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
                 "INSERT INTO runtime_agents(id,record) VALUES('racy',?1)",
                 [json!({
                     "id":"racy", "rootId":17, "epoch":1,
+                    "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
                 })
                 .to_string()],
@@ -1315,6 +1319,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
                 tx,
                 &studio_runtime_store::AgentRecord::from_value(json!({
                     "id":"racy", "rootId":"racy", "epoch":1,
+                    "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
                 }))?,
             )?;

@@ -18,6 +18,8 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -25,7 +27,6 @@ const MAX_ITEMS: usize = 40;
 const MAX_ITEM_BYTES: usize = 1_048_576;
 /// Python's one-shot title generation deadline (`codex_rename.py:109-110`).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-const TITLE_EFFECT_SIGNATURE: &str = "title-generation-effect-v1";
 
 #[derive(Debug, Error)]
 pub enum TitleError {
@@ -333,6 +334,15 @@ enum Admission {
 
 /// Select the model and optional low reasoning effort with Python's priority.
 pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<String>), TitleError> {
+    let provider = ProviderKind::of_record(agent).map_err(|_| {
+        invalid(
+            "runtime_agents",
+            agent
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing-id>"),
+        )
+    })?;
     let rows = catalog
         .get("data")
         .and_then(Value::as_array)
@@ -350,15 +360,13 @@ pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<Str
     if available.is_empty() {
         return Err(TitleError::NoModel);
     }
-    let provider = agent.get("provider").and_then(Value::as_str);
-    let preferred = if provider == Some("claude") {
-        available.iter().find(|row| {
+    let preferred = match provider {
+        ProviderKind::Claude => available.iter().find(|row| {
             row.get("model")
                 .and_then(Value::as_str)
                 .is_some_and(|model| model.to_lowercase().contains("haiku"))
-        })
-    } else {
-        available
+        }),
+        ProviderKind::Codex => available
             .iter()
             .find(|row| {
                 row.get("model")
@@ -371,7 +379,7 @@ pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<Str
                         .and_then(Value::as_str)
                         .is_some_and(|m| m.to_lowercase().contains("luna"))
                 })
-            })
+            }),
     };
     let own_model = agent.get("model").and_then(Value::as_str);
     let own = available.iter().find(|row| {
@@ -380,7 +388,7 @@ pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<Str
                 || row.get("resolvedModel").and_then(Value::as_str) == Some(model)
         })
     });
-    if provider == Some("claude") && preferred.is_none() && own.is_none() {
+    if provider == ProviderKind::Claude && preferred.is_none() && own.is_none() {
         return Err(TitleError::ChatModelUnavailable);
     }
     let selected = preferred.or(own).unwrap_or(&available[0]);
@@ -559,6 +567,7 @@ async fn generate_inner(
             let snapshot = &snapshot_for_admission;
             let catalog = &catalog_for_admission;
             let fingerprint = fingerprint_for_admission.as_str();
+            migrate_title_fingerprint_2026_10_26(tx, snapshot, fingerprint)?;
             let saved = tx
                 .query_row(
                     "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
@@ -1101,6 +1110,49 @@ fn signature(snapshot: &Snapshot) -> String {
     data_encoding::HEXLOWER.encode(&digest)
 }
 
+/// Complete the 2026-10-26 provider migration using the actual title snapshot.
+/// Retire with the store migration only after supported states and backups cross
+/// the format boundary and all tagged title effects are converted or terminal.
+fn migrate_title_fingerprint_2026_10_26(
+    tx: &Connection,
+    snapshot: &Snapshot,
+    fingerprint: &str,
+) -> Result<(), TitleError> {
+    use studio_runtime_store::provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
+
+    let agent_id = snapshot.agent["id"]
+        .as_str()
+        .ok_or_else(|| invalid("runtime_agents", "<missing-id>"))?;
+    let Some(mut effect) = read_effect(tx, &snapshot.request_id, agent_id)? else {
+        return Ok(());
+    };
+    let Some(provider) = effect.record.get(TITLE_FINGERPRINT_PROVIDER_2026_10_26) else {
+        return Ok(());
+    };
+    if !provider.is_null() || snapshot.provider.as_deref() != Some(ProviderKind::Codex.key()) {
+        return Err(TitleError::Conflict);
+    }
+    let mut historical = snapshot.clone();
+    historical.agent["provider"] = provider.clone();
+    if effect.record.get("fingerprint").and_then(Value::as_str)
+        != Some(signature(&historical).as_str())
+    {
+        return Err(TitleError::Conflict);
+    }
+    effect.record["fingerprint"] = json!(fingerprint);
+    effect
+        .record
+        .as_object_mut()
+        .ok_or_else(|| {
+            invalid(
+                "runtime_operation_receipts",
+                &effect_id(&snapshot.request_id),
+            )
+        })?
+        .remove(TITLE_FINGERPRINT_PROVIDER_2026_10_26);
+    write_effect(tx, &snapshot.request_id, agent_id, &effect.record)
+}
+
 fn python_rename_signature(agent_id: &str) -> String {
     // codex_work.operation_receipt hashes json.dumps(body, sort_keys=True),
     // whose default separators include spaces after colons and commas.
@@ -1131,6 +1183,34 @@ fn invalid(table: &'static str, id: &str) -> TitleError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_identity_title_model_rejects_unknown_before_selection() {
+        let catalog = json!({"data":[{"model":"gpt-mini"},{"model":"claude-haiku"}]});
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!(7)),
+        ] {
+            let mut agent = json!({"id":"a","model":"gpt-mini"});
+            if let Some(provider) = provider {
+                agent["provider"] = provider;
+            }
+            assert!(
+                matches!(title_model(&catalog, &agent), Err(TitleError::InvalidStoredObject { table: "runtime_agents", id }) if id == "a"),
+                "{agent}"
+            );
+        }
+        for (provider, expected) in [("codex", "gpt-mini"), ("claude", "claude-haiku")] {
+            assert_eq!(
+                title_model(&catalog, &json!({"provider":provider}))
+                    .expect("known provider")
+                    .0,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn title_model_prioritizes_provider_preference_and_low_effort() {

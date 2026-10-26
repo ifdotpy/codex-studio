@@ -2,11 +2,35 @@ import { describe, expect, test } from "vitest";
 import contract from "../../../../contracts/account-preference.json";
 import {
   defaultChatModel,
+  canStart,
   newChatDefault,
   parseGroups,
   type PreferenceAccount,
   type PreferenceProject,
 } from "./accountPreference";
+
+test("the no-model default rejects accounts without a supported provider, matching the Rust owner", () => {
+  for (const provider of [undefined, null, "future-provider"]) {
+    const unsupported = { id: "bad", provider, status: "ready" };
+    const supported: PreferenceAccount = {
+      id: "ok",
+      provider: "codex",
+      status: "ready",
+    };
+    // @ts-expect-error A malformed wire record cannot be a startable account.
+    expect(canStart(unsupported)).toBe(false);
+    expect(
+      newChatDefault(
+        // @ts-expect-error Exercise the runtime boundary as well as the required account type.
+        [unsupported, supported],
+        "bad",
+        [],
+        null,
+        null,
+      ),
+    ).toEqual({ accountKey: "ok", model: null, effort: null });
+  }
+});
 
 type Case = {
   name: string;

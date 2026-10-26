@@ -9,6 +9,16 @@ import {
 } from "./modelOption";
 
 describe("modelDisplayName", () => {
+  it("does not infer a known provider from part of an explicit provider name", () => {
+    expect(
+      modelDisplayName({
+        model: "custom",
+        provider: "claude-mirror",
+        displayName: "Private model",
+        description: "Claude Opus 4.6 · Compatibility protocol",
+      }),
+    ).toBe("Private model");
+  });
   it.each([
     ["gpt-6-astra", "Astra 6"],
     ["gpt-6.1-sol", "Sol 6.1"],
@@ -70,10 +80,18 @@ describe("Claude description aliases", () => {
 });
 
 describe("toModelOptions", () => {
+  it("does not assign a provider identity to an unnamed catalog source", () => {
+    expect(toModelOptions([{ model: "custom" }])[0]?.provider).toBe("");
+  });
   it("preserves values, provider, descriptions, default/current tags and disabled reasons", () => {
     const options = toModelOptions(
       [
-        { model: "gpt-6-astra", isDefault: true, description: "General work" },
+        {
+          model: "gpt-6-astra",
+          provider: "codex",
+          isDefault: true,
+          description: "General work",
+        },
         { model: "claude-opus-4-6", provider: "claude" },
       ],
       {

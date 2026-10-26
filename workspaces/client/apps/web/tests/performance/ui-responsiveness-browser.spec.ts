@@ -1,7 +1,8 @@
+import { required } from "./performance-fixture.ts";
 import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
 import type { Agent } from "../../src/types.ts";
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
-import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
+import { transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
   readTestState,
   readFixtureSyncContract,
@@ -65,9 +66,10 @@ test(
       const original = await readTestState(origin);
       const a = original.threads.find(
         (agent) => agent.name === "Other project",
-      );
-      const b = original.threads.find((agent) => agent.name === "Release lead");
-      if (!a || !b) throw new Error("Missing responsiveness fixture chats");
+      )!;
+      const b = original.threads.find(
+        (agent) => agent.name === "Release lead",
+      )!;
       const agents = [a, b].map(
         (agent) =>
           ({
@@ -193,7 +195,7 @@ test(
             return route
               .fulfill({
                 path: join(staticDir, path),
-                ...(type ? { contentType: type } : {}),
+                ...(type === undefined ? {} : { contentType: type }),
               })
               .catch(() => route.fallback());
           }
@@ -202,7 +204,7 @@ test(
             return route.fulfill({
               json: {
                 agent: agents.find((agent) => agent.id === id),
-                items: histories.get(id ?? "") || [],
+                items: histories.get(id!) || [],
                 historyVersion: "fixed-history",
               },
             });
@@ -242,9 +244,10 @@ test(
           pullUrl.searchParams.set("after", "0");
           const fixture = entityPullFixtureForRequest(state, pullUrl, {
             transcript,
-          });
-          if (!("documents" in fixture))
-            throw new Error("Unexpected sync reset");
+          }) as Extract<
+            ReturnType<typeof entityPullFixtureForRequest>,
+            { documents: unknown }
+          >;
           for (const document of fixture.documents)
             document.seq = transcriptSequence;
           fixture.checkpoint.seq = transcriptSequence;
@@ -265,7 +268,7 @@ test(
         await page.waitForTimeout(500);
         const setPhase = (phase: string) =>
           page.evaluate((phase) => {
-            window.responsivenessMetrics.phase = phase;
+            window.metrics.phase = phase;
           }, phase);
         const input = page.locator("#message");
         await setPhase("idle-input");
@@ -292,12 +295,12 @@ test(
           if (name === "mobile")
             await page.getByLabel("Toggle conversations").click();
           const count = await page.evaluate((expected) => {
-            window.responsivenessSwitchExpected = expected;
-            return window.responsivenessMetrics.switches.length;
+            window.switchExpected = expected;
+            return window.metrics.switches.length;
           }, `${prefix}-result-29`);
           await page.locator(`[data-chat="${agent.id}"]`).click();
           await page.waitForFunction(
-            (count) => window.responsivenessMetrics.switches.length > count,
+            (count) => window.metrics.switches.length > count,
             count,
           );
         };
@@ -312,13 +315,11 @@ test(
         );
         await setPhase("stream-and-input");
         await input.focus();
-        await input.evaluate(
-          (element) =>
-            element instanceof HTMLTextAreaElement &&
-            element.setSelectionRange(
-              element.value.length,
-              element.value.length,
-            ),
+        await input.evaluate((element) =>
+          (element as HTMLTextAreaElement).setSelectionRange(
+            (element as HTMLTextAreaElement).value.length,
+            (element as HTMLTextAreaElement).value.length,
+          ),
         );
         const suffix = " Input while the answer streams.";
         const streaming = (async () => {
@@ -331,8 +332,7 @@ test(
             histories.set(a.id, items);
             transcriptSequence++;
             await page.evaluate(
-              ({ id, revision }) =>
-                window.responsivenessEmitFixture(id, revision),
+              ({ id, revision }) => window.emitFixture(id, revision),
               {
                 id: a.id,
                 revision,
@@ -345,9 +345,7 @@ test(
           streaming,
           page.keyboard.type(suffix, { delay: 35 }),
         ]);
-        await page.waitForFunction(
-          () => window.responsivenessMetrics.stream.length === 12,
-        );
+        await page.waitForFunction(() => window.metrics.stream.length === 12);
         assert.equal(
           await input.inputValue(),
           firstText + suffix,
@@ -373,7 +371,7 @@ test(
           /Stream revision 12\./,
         );
         assert.deepEqual(errors, []);
-        const metrics = await page.evaluate(() => window.responsivenessMetrics);
+        const metrics = await page.evaluate(() => window.metrics);
         const summarize = (values: number[]) => {
           const sorted = [...values].sort((a, b) => a - b);
           return {
@@ -474,7 +472,7 @@ test(
             `${name}/${phase}: typing must not rerender the sidebar`,
           );
           assert.ok(
-            (counts.conversation ?? 0) <= 1,
+            required(counts.conversation) <= 1,
             `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
           );
         }

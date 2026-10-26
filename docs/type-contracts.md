@@ -3,8 +3,10 @@
 This page owns the cross-language typing policy for maintainers changing Studio
 contracts. The required architecture below guides new and migrated code;
 [current coverage](#current-migration-coverage) records where the source still
-falls short. Language-specific rules belong in [TypeScript](typescript.md), and
-check selection belongs in [Testing](testing.md).
+falls short. Provider-specific rules belong to the
+[provider extensibility contract](../workspaces/providers/README.md#provider-extensibility).
+Language-specific rules belong in [TypeScript](typescript.md), and check
+selection belongs in [Testing](testing.md).
 
 ## One owner per contract
 
@@ -16,14 +18,12 @@ unavailable, a fast parity check must name the owner and cover every consumer.
 
 Choose the owner at the boundary that defines the contract:
 
-- **Vendor protocol:** Use the provider's published SDK types or generated
-  protocol schemas. Pin dependencies in their manifests. Do not copy a vendor
+- **External library or protocol:** Use published SDK types or generated
+  protocol schemas. Pin dependencies in their manifests. Do not copy an external
   shape into an optional-field object or maintain a second list of variants.
-- **Studio domain:** Normalize provider data through an explicit adapter into
-  one shared Studio contract. Provider identity and common thread, turn, item,
-  and outcome semantics belong here. Keep genuinely provider-specific data in
-  explicit variants; preserve the distinction between a native provider session
-  and Studio's thread or mirror identity.
+- **Studio domain:** Give each shared concept one owning contract. Use explicit
+  variants for genuinely different data. Follow the provider extensibility
+  contract for provider identity, adapters, and dispatch.
 - **Studio wire and storage:** Use the owning Rust contract or committed schema,
   with generated declarations for other languages. The
   [runtime schema guide](../workspaces/runtime/packages/runtime-schema/README.md)
@@ -71,28 +71,21 @@ or fallbacks to make an incomplete dispatch compile.
 
 ## Migrate Studio-owned persisted formats
 
-Prefer a dated, lossless one-time migration over permanent compatibility readers
-for old Studio-owned formats. Use the format owner's existing version or
-migration mechanism, then let current readers accept only the current format.
-The [store guide](../workspaces/runtime/packages/runtime-store/README.md) identifies
-existing feature migration markers; it does not provide a database-wide version
-or a general migration runner.
+The [provider extensibility contract](../workspaces/providers/README.md#provider-extensibility)
+owns provider identity migration rules and the dated migration lifecycle.
+Apply that lifecycle to other old Studio-owned formats through their existing
+owner's version or migration mechanism. Record the affected format/version and
+scope with the migration. The
+[store guide](../workspaces/runtime/packages/runtime-store/README.md) identifies
+existing feature markers rather than a general migration runner.
 
-Record the migration date and format or migration version, affected data, required
-support floor (the oldest source format or application version still supported),
-and the condition for removing the migration. Remove it only after supported
-upgrade paths no longer need it; its date alone does not make deletion safe.
-An older installation must have an explicit supported upgrade path or a visible
-refusal. Preserve historical meaning, exact request and receipt identities, and
-unsettled or uncertain outcomes; conversion must not replay an operation or
-invent evidence of completion.
-
-Unknown future vendor inputs are external protocol changes, not old Studio-owned
-formats. Handle them at the vendor adapter's declared extension or unsupported
-boundary, retaining the evidence needed for recovery. Do not coerce them into a
-known variant or run a Studio storage migration against vendor-owned history.
-These are migration requirements, not a claim that every existing format has
-already been migrated.
+Conversions must be lossless: preserve historical meaning, exact request and
+receipt identities, and unsettled or uncertain outcomes, without replaying an
+operation or inventing completion evidence. Unknown future external inputs are
+distinct from old owned formats; handle them at their declared extension or
+unsupported boundary and retain recovery evidence. A Studio storage migration
+does not convert external vendor-owned history. These requirements do not imply
+that every existing format has already been migrated.
 
 ## Enforcement owners
 
@@ -117,14 +110,16 @@ The source contains typed contracts alongside legacy and open representations.
 These examples identify coverage and remaining gaps; they are not a claim of a
 completed repository-wide migration.
 
-| Boundary                    | Implemented ownership and remaining limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| HTTP and persistence        | [HTTP validation](../workspaces/runtime/packages/runtime-http/src/validation.rs) uses registered schemas; [extractors](../workspaces/runtime/packages/runtime-http/src/routes/extractors.rs) can deserialize typed bodies. [Stored records and tables](../workspaces/runtime/packages/runtime-store/src/records.rs) provide named IDs and schema checks, while some record wrappers and service operations still carry JSON values. Schema validation alone does not make their internal field access statically typed.                                                                                                                                                  |
-| Shared generated contracts  | [Runtime schema](../workspaces/runtime/packages/runtime-schema/README.md) generates selected shared values, API declarations, usage observations, and bridge extensions. This does not mean that all HTTP or provider payloads originate in Rust structs.                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Provider transport          | [Runtime providers](../workspaces/runtime/packages/runtime-providers/README.md) owns typed frame envelopes, methods, request IDs, and request lifecycle outcomes. Request parameters and response payloads remain open JSON at the codec boundary.                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Provider identity           | [ProviderKind](../workspaces/runtime/packages/runtime-providers/src/provider_kind.rs) owns account and agent provider identity and explicit legacy parsing. [UsageProvider](../workspaces/runtime/packages/runtime-schema/src/usage.rs) is still a separate representation. A shared provider owner across these consumers remains migration work.                                                                                                                                                                                                                                                                                                                       |
-| Vendor and bridge contracts | The [bridge manifest](../workspaces/providers/apps/claude-bridge/package.json) pins the SDK; [bridge protocol](../workspaces/providers/apps/claude-bridge/bridge-protocol.ts) and [usage normalization](../workspaces/providers/apps/claude-bridge/usage.ts) import its types. [Studio bridge extensions](../workspaces/runtime/packages/runtime-schema/src/provider_input.rs) and usage observations generate their TypeScript consumers. The committed [Codex usage notification schema](../workspaces/runtime/packages/runtime-schema/src/schemas/codex/ThreadTokenUsageUpdatedNotification.json) covers that notification, rather than the complete vendor protocol. |
-| Threads, turns, and items   | [Bridge session state](../workspaces/providers/apps/claude-bridge/session-state.ts) keeps permissive legacy disk records and stronger fresh/completed turn types. Fresh items still use a string kind and an optional-field record. A shared normalized domain with exhaustive provider-specific variants is not yet universal.                                                                                                                                                                                                                                                                                                                                          |
+| Boundary                    | Implemented ownership and remaining limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP and persistence        | [HTTP validation](../workspaces/runtime/packages/runtime-http/src/validation.rs) uses registered schemas; [extractors](../workspaces/runtime/packages/runtime-http/src/routes/extractors.rs) can deserialize typed bodies. [Stored records and tables](../workspaces/runtime/packages/runtime-store/src/records.rs) provide named IDs and schema checks, while some record wrappers and service operations still carry JSON values. Schema validation alone does not make their internal field access statically typed.                                                                                             |
+| Shared generated contracts  | [Runtime schema](../workspaces/runtime/packages/runtime-schema/README.md) generates selected shared values, API declarations, usage observations, and bridge extensions. This does not mean that all HTTP or provider payloads originate in Rust structs.                                                                                                                                                                                                                                                                                                                                                           |
+| Provider transport          | [Runtime providers](../workspaces/runtime/packages/runtime-providers/README.md) owns typed frame envelopes, methods, request IDs, and request lifecycle outcomes. Request parameters and response payloads remain open JSON at the codec boundary.                                                                                                                                                                                                                                                                                                                                                                  |
+| Provider identity           | [ProviderKind](../workspaces/runtime/packages/runtime-schema/src/provider_kind.rs) is the shared identity owner for account, agent, and usage consumers. The [renderer](../workspaces/runtime/packages/runtime-schema/src/contracts.rs) generates [TypeScript identity](../workspaces/client/apps/web/src/generated/providerKind.ts) and schema references. The [2026-10-26 startup migration](../workspaces/runtime/packages/runtime-store/src/provider_identity.rs) converts historical owned identities before strict current readers run; those readers reject absent, null, unknown, and malformed identities. |
+| Vendor and bridge contracts | The [bridge manifest](../workspaces/providers/apps/claude-bridge/package.json) pins the SDK; bridge protocol and usage code consume its types. The [schema guide](../workspaces/runtime/packages/runtime-schema/README.md#provider-contract-sources) identifies the selected generated vendor leaves and Studio-owned envelopes. These cover selected boundaries, rather than a complete vendor protocol or every runtime payload.                                                                                                                                                                                  |
+| Provider errors             | [Known error classification](../workspaces/runtime/packages/runtime-schema/src/provider_errors.rs) and the [SDK assistant adapter](../workspaces/providers/apps/claude-bridge/features.ts) share generated known tags with an ingress guard. The vendor error leaf remains open; unknown error records retain their original payload. Classification does not validate every error field.                                                                                                                                                                                                                           |
+| Fresh bridge items          | [FreshItem](../workspaces/runtime/packages/runtime-schema/src/provider_input/items.rs) generates a closed fresh-output envelope. [Bridge emitters](../workspaces/providers/apps/claude-bridge/bridge.ts) distinguish new items from retained historical records. Native payloads remain opaque, and static output types do not validate arbitrary input.                                                                                                                                                                                                                                                            |
+| Turn and thread lifecycle   | [Lifecycle projections](../workspaces/runtime/packages/runtime-schema/src/provider_lifecycle.rs) and the [SDK result adapter](../workspaces/providers/apps/claude-bridge/provider-lifecycle.ts) supply typed observations to completion and recovery callers. Unknown lifecycle evidence supplies no terminal decision; raw stored records and native session identities remain separate.                                                                                                                                                                                                                           |
 
 When migrating a boundary, update its owner, adapters, generated consumers, and
 caller tests together, following the [persisted-format migration policy](#migrate-studio-owned-persisted-formats)

@@ -538,7 +538,7 @@ export default function BackgroundTasks({
     <Drawer
       opened={opened}
       onClose={close}
-      {...(afterClose === undefined ? {} : { onExitTransitionEnd: afterClose })}
+      {...(afterClose ? { onExitTransitionEnd: afterClose } : {})}
       returnFocus={!afterClose}
       position="right"
       size={940}

@@ -1142,7 +1142,7 @@ mod tests {
             .transaction(|transaction| {
                 AgentRepository::put(
                     transaction,
-                    &AgentRecord::from_value(json!({
+                    &AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"agent", "rootId":"agent", "epoch":0, "status":"idle"
                     }))?,
                 )?;

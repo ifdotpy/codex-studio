@@ -13,6 +13,7 @@ import type {
   BridgeTask,
   BridgeNotificationMethod,
   BridgeNotificationParams,
+  BridgeHistoricalItemEvent,
 } from "./bridge-protocol.ts";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -27,6 +28,8 @@ import type {
   Session,
   Turn,
   Item,
+  FreshItem,
+  FreshToolItem,
   FreshTurn,
   CompletedTurn,
   Thread,
@@ -34,7 +37,14 @@ import type {
 } from "./session-state.ts";
 import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
 import type { Limits } from "./features.ts";
+import {
+  claudeTurnStatus,
+  isClaudeResultLifecycle,
+} from "./provider-lifecycle.ts";
 import type { Stall, ToolClock } from "./stall-watch.ts";
+
+type BridgeFailure = Error &
+  Record<string, unknown> & { data?: Record<string, unknown> };
 
 type TaskMessage = Extract<SDKMessage, { subtype: `task_${string}` }>;
 function isTaskMessage(message: SDKMessage): message is TaskMessage {
@@ -60,11 +70,11 @@ type QueryStall = {
   closeError?: unknown;
 };
 export interface ActiveQuery {
-  turn: Turn | null;
+  turn: FreshTurn | null;
   input: InputQueue<StudioInputMessage>;
   q: Query | null;
   tasks: Map<string, BackgroundTask>;
-  tools: Map<string, Item>;
+  tools: Map<string, FreshToolItem>;
   pendingSteers: Set<string | undefined>;
   assistantBlocks: Map<string, AssistantBlockState>;
   usage: ResponseUsage;
@@ -145,6 +155,7 @@ import {
   nativeItem,
   overageAllowed,
   claudeErrorInfo,
+  legacyClaudeErrorInfo,
   providerNotice,
   limitApplies,
 } from "./features.ts";
@@ -219,16 +230,10 @@ type BridgeProviderOptions = Pick<
   "autoCompactWindow" | "customModels"
 > &
   Pick<Options, "extraArgs">;
-function readProviderOptions(text: string): BridgeProviderOptions {
-  const value: unknown = JSON.parse(text);
-  if (!isRecord(value)) throw new Error("Invalid Claude bridge options");
-  // Rust bridge_options owns this same-program configuration envelope; field
-  // types come from its generated settings and the SDK extra-argument owner.
-  return value as BridgeProviderOptions;
-}
-const providerOptions = readProviderOptions(
+const providerOptions: BridgeProviderOptions = JSON.parse(
   process.env.STUDIO_CLAUDE_OPTIONS || "{}",
 );
+
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
 function nativeUserMessageId(id: string): NonNullable<SDKUserMessage["uuid"]> {
   if (
@@ -269,9 +274,7 @@ function assistantBlockState(
       itemTurn: null,
       itemIndex: -1,
     });
-  const state = active.assistantBlocks.get(key);
-  if (!state) throw new Error("Assistant block state missing");
-  return state;
+  return active.assistantBlocks.get(key)!;
 }
 const streamingItems = new WeakSet<Item>();
 function assistantText(state: AssistantBlockState) {
@@ -362,7 +365,7 @@ async function boundedPreparation<T>(
       }),
     ]);
   } finally {
-    clearTimeout(timer ?? undefined);
+    clearTimeout(timer!);
   }
 }
 const sessionStore = createSessionStore(root, {
@@ -458,7 +461,7 @@ function studioWait(threadId: string | undefined) {
   return () => {
     if (!open) return;
     open = false;
-    const left = (studioWaits.get(threadId) ?? 0) - 1;
+    const left = studioWaits.get(threadId)! - 1;
     if (left > 0) studioWaits.set(threadId, left);
     else studioWaits.delete(threadId);
     // The tool budget starts again once Studio answers.
@@ -566,13 +569,8 @@ const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
       // Per-thread host declarations must reach the CLI process, not settings.json.
       ...Object.fromEntries(
         ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
-          .filter(
-            (key) =>
-              typeof (isRecord(s.claude?.env)
-                ? s.claude.env[key]
-                : undefined) === "string",
-          )
-          .map((key) => [key, s.claude?.env?.[key]]),
+          .filter((key) => typeof s.claude?.env?.[key] === "string")
+          .map((key) => [key, s.claude!.env![key]]),
       ),
       ...browserEnvironment(root, s.id),
       ...(s.moveProof
@@ -598,8 +596,12 @@ const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
     stderr: (line: string) => process.stderr.write(line),
   });
 const checkAccount = createAccountCheck({
-  expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
-  expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
+  ...(process.env.STUDIO_CLAUDE_ACCOUNT === undefined
+    ? {}
+    : { expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT }),
+  ...(process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY === undefined
+    ? {}
+    : { expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY }),
   identityPath: path.join(root, "claude-account-identity"),
 });
 async function verifiedAccount(
@@ -617,7 +619,8 @@ async function verifiedAccount(
     startedAt,
   );
   try {
-    return checkAccount(account);
+    checkAccount(account);
+    return account as CheckedAccount;
   } catch (error) {
     if (
       ![
@@ -626,7 +629,9 @@ async function verifiedAccount(
         "organization_metadata",
         "provider_metadata",
         "subscription_metadata",
-      ].some((reason) => reason === errorData(error).claudeAccountFailure) ||
+      ].includes(
+        (error as BridgeFailure)?.data?.claudeAccountFailure as string,
+      ) ||
       typeof q.reinitialize !== "function" ||
       (account?.apiProvider && account.apiProvider !== "firstParty") ||
       (account?.apiKeySource && account.apiKeySource !== "none")
@@ -644,7 +649,7 @@ async function verifiedAccount(
         startedAt,
       );
     } catch (refreshError) {
-      if (errorField(refreshError, "preparationTimedOut") === true)
+      if ((refreshError as BridgeFailure)?.preparationTimedOut === true)
         throw refreshError;
       throw error;
     }
@@ -670,7 +675,7 @@ async function verifiedAccount(
           },
         },
       );
-    return checkAccount(fresh.account);
+    return fresh.account as CheckedAccount;
   }
 }
 async function probe<T>(
@@ -681,11 +686,12 @@ async function probe<T>(
 ): Promise<T> {
   const startedAt = Date.now();
   const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
-  const { promise: hold, resolve: release } = Promise.withResolvers<void>();
+  let release: () => void;
+  const hold = new Promise<void>((r) => (release = r));
   // Keep an idle async iterable open until the account probe completes.
+  // oxlint-disable-next-line require-yield -- The base iterable intentionally yields no model input.
   async function* prompt(): AsyncGenerator<never> {
     await hold;
-    yield* [];
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), INITIALIZATION_TIMEOUT_MS);
@@ -722,17 +728,15 @@ async function probe<T>(
       startedAt,
     );
   } finally {
-    clearTimeout(timer ?? undefined);
-    release();
+    clearTimeout(timer!);
+    release!();
     q.close();
   }
 }
 // Refresh account metadata on the live query's own process.
 async function refreshLiveCatalog(live: ActiveQuery, background: boolean) {
-  const q = live.q;
-  const prior = live.accountProof;
-  if (!q || !prior)
-    throw new Error("Fresh Claude account control is unavailable");
+  const q = live.q!;
+  const prior = live.accountProof!;
   const startedAt = Date.now();
   const deadline =
     startedAt +
@@ -760,9 +764,8 @@ async function refreshLiveCatalog(live: ActiveQuery, background: boolean) {
     throw new Error("Claude query changed during metadata refresh");
   if (!Array.isArray(fresh.models))
     throw new Error("Fresh Claude model metadata is unavailable");
-  const verified = checkAccount(fresh.account);
-  live.accountProof = verified;
-  return { models: fresh.models, account: verified };
+  live.accountProof = fresh.account as CheckedAccount;
+  return { models: fresh.models, account: fresh.account as CheckedAccount };
 }
 const catalogCache = createCatalogCache({
   load: (background) =>
@@ -808,8 +811,8 @@ function wireThread(
       .digest("hex"),
     ...(includeTurns
       ? {
-          turns: s?.turns ?? [],
-          ...(s?.journalRepair ? { journalRepair: s.journalRepair } : {}),
+          turns: s!.turns,
+          ...(s!.journalRepair ? { journalRepair: s!.journalRepair } : {}),
         }
       : { turns: [] }),
     status: { type: queries.get(id)?.turn ? "active" : "idle" },
@@ -841,42 +844,18 @@ async function permissions(
   if (name.startsWith("mcp__studio__"))
     return { behavior: "allow", updatedInput: input };
   if (name === "AskUserQuestion") {
-    const rawQuestions = input.questions || [];
-    if (!Array.isArray(rawQuestions))
-      throw new Error("Invalid Claude question list");
-    const questions = rawQuestions.map((q: unknown, i) => {
-      if (!isRecord(q)) throw new Error("Invalid Claude question");
-      // The native tool schema owns this payload; fields are narrowed before Studio receives it.
-      const { question, header, options } = q;
-      if (
-        typeof question !== "string" ||
-        typeof header !== "string" ||
-        !Array.isArray(options)
-      )
-        throw new Error("Invalid Claude question");
-      const choices = options.map((option: unknown) => {
-        if (
-          !isRecord(option) ||
-          typeof option.label !== "string" ||
-          typeof option.description !== "string"
-        )
-          throw new Error("Invalid Claude question option");
-        return {
-          ...option,
-          label: option.label,
-          description: option.description,
-        };
-      });
-      return {
-        ...q,
-        question,
-        header,
-        options: choices,
-        id: String(i),
-        isOther: true,
-        isSecret: false,
-      } as const;
-    });
+    const questions = (
+      (input.questions as import("@anthropic-ai/claude-agent-sdk/sdk-tools").AskUserQuestionInput["questions"]) ||
+      []
+    ).map(
+      (q, i) =>
+        ({
+          ...q,
+          id: String(i),
+          isOther: true,
+          isSecret: false,
+        }) as const,
+    );
     let result;
     try {
       result = await request(
@@ -891,11 +870,11 @@ async function permissions(
       );
     } catch (error) {
       if (
-        errorText(error) !==
+        (error as Error).message !==
         "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."
       )
         throw error;
-      return { behavior: "deny", message: errorText(error) ?? "" };
+      return { behavior: "deny", message: (error as Error).message };
     }
     const answers = Object.fromEntries(
       questions.map((q) => [
@@ -937,9 +916,7 @@ async function permissions(
         itemId: options.toolUseID,
         command:
           name === "Bash"
-            ? typeof input.command === "string"
-              ? input.command
-              : JSON.stringify(input.command)
+            ? (input.command as string)
             : JSON.stringify({ tool: name, input }),
         cwd: s.cwd,
         reason:
@@ -973,10 +950,10 @@ async function permissions(
       });
     return { behavior: "deny", message };
   } finally {
-    clearTimeout(timer ?? undefined);
+    clearTimeout(timer!);
     options.signal?.removeEventListener("abort", cancel);
   }
-  return result.decision === "accept" || result.decision === "acceptForSession"
+  return ["accept", "acceptForSession"].includes(result.decision)
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user declined this action." };
 }
@@ -988,27 +965,23 @@ function studioTools(
     name: "studio",
     version: "1.0.0",
     tools: (s.dynamicTools || []).map((definition) => {
-      const schema = z.fromJSONSchema(definition.inputSchema);
-      if (!(schema instanceof z.ZodObject))
-        throw new Error("Studio dynamic tool requires an object schema");
+      const schema = z.fromJSONSchema(definition.inputSchema) as z.ZodObject;
+
       return tool(
         definition.name,
         definition.description,
         schema.shape,
         async (args, extra) => {
-          if (!s.id) throw new Error("Studio tool has no session");
           const result = await request(
             "item/tool/call",
             {
-              threadId: s.id,
+              threadId: s.id!,
               turnId: getTurn()?.id,
               callId: randomUUID(),
               tool: definition.name,
               arguments: args,
             },
-            isRecord(extra) && extra.signal instanceof AbortSignal
-              ? extra.signal
-              : undefined,
+            (extra as { signal?: AbortSignal } | undefined)?.signal,
           );
           return {
             isError: result.success === false,
@@ -1040,7 +1013,7 @@ async function currentExternalProof(
           proof.externalTransports || s.moveProof?.externalTransports || {},
       });
     } catch (error) {
-      if (errorData(error).moveRefusal) throw error;
+      if ((error as BridgeFailure).data?.moveRefusal) throw error;
       throw externalRefusal(aliases, [], aliases);
     }
   }
@@ -1055,12 +1028,12 @@ async function currentExternalProof(
     return result;
   };
   try {
-    const active = s.id ? queries.get(s.id) : undefined;
+    const active = queries.get(s.id!);
     return active?.q
       ? await read(active.q)
       : await probe(s.cwd, read, "teleport_catalog", true);
   } catch (error) {
-    if (errorData(error).moveRefusal) throw error;
+    if ((error as BridgeFailure).data?.moveRefusal) throw error;
     throw externalRefusal(aliases, [], aliases);
   }
 }
@@ -1081,8 +1054,7 @@ async function proofOptions<
     (s.dynamicTools || []).length,
   );
   const baseline =
-    exactProof(proof).compiledTools ||
-    (s.moveProof && exactProof(s.moveProof)?.compiledTools);
+    exactProof(proof).compiledTools || exactProof(s.moveProof!)?.compiledTools;
   const tools = verifyToolProof(
     { ...proof, ...(baseline ? { compiledTools: baseline } : {}) },
     compiled,
@@ -1146,14 +1118,15 @@ async function content(
     if (item.type === "text") result.push({ type: "text", text: item.text });
     else if (item.type === "localImage") {
       const ext = path.extname(item.path).toLowerCase();
-      const mediaTypes: Record<string, string> = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-      };
-      const media_type = mediaTypes[ext];
+      const media_type = (
+        {
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".gif": "image/gif",
+          ".webp": "image/webp",
+        } as Record<string, string>
+      )[ext];
       if (!media_type) throw new Error("Unsupported image format for Claude");
       // Refuse input before it reaches Claude if portable preprocessing fails.
       const image = await claudeImage(item.path);
@@ -1166,7 +1139,9 @@ async function content(
         },
       });
     } else
-      throw new Error("Unsupported Claude input: " + errorField(item, "type"));
+      throw new Error(
+        "Unsupported Claude input: " + (item as BridgeFailure).type,
+      );
   }
   return result;
 }
@@ -1174,18 +1149,36 @@ function turnEvent(
   s: Session,
   turn: Turn | null | undefined,
   method: "item/started" | "item/completed",
+  item: FreshItem,
+  receiptTimes?: Record<string, number>,
+) {
+  emit(method, {
+    threadId: s.id,
+    turnId: turn?.id,
+    item,
+    ...receiptTimes,
+  });
+}
+function historicalItemEvent(
+  s: Session,
+  turn: Turn | null | undefined,
+  method: "item/started" | "item/completed",
   item: Item,
   receiptTimes?: Record<string, number>,
 ) {
+  // 2026-10-26: retained rows cannot be losslessly migrated to required fresh
+  // fields or IDs. Remove this path when those original rows are no longer
+  // retained; preserve their receipt/hash payloads and the existing wire shape.
   // Legacy disk items may have no identity. Keep them readable without
   // inventing an identity or emitting an incomplete fresh notification.
   if (typeof item.id !== "string" || typeof item.type !== "string") return;
-  emit(method, {
+  const params = {
     threadId: s.id,
     turnId: turn?.id,
     item: { ...item, id: item.id, type: item.type },
     ...receiptTimes,
-  });
+  } satisfies BridgeHistoricalItemEvent;
+  send({ method, params });
 }
 // A submitted steer whose echo arrives after its turn ended.
 function submittedSteer(s: Session, nativeId: string | undefined) {
@@ -1204,7 +1197,7 @@ function submittedSteer(s: Session, nativeId: string | undefined) {
 function finishItem(
   s: Session,
   turn: Turn | null | undefined,
-  item: Item,
+  item: FreshItem,
   receiptTimes?: Record<string, number>,
 ) {
   if (!turn) return;
@@ -1212,6 +1205,18 @@ function finishItem(
   if (i < 0) turn.items.push(item);
   else turn.items[i] = item;
   turnEvent(s, turn, "item/completed", item, receiptTimes);
+}
+function finishHistoricalItem(
+  s: Session,
+  turn: Turn | null | undefined,
+  item: Item,
+  receiptTimes?: Record<string, number>,
+) {
+  if (!turn) return;
+  const i = turn.items.findIndex((old) => old.id === item.id);
+  if (i < 0) turn.items.push(item);
+  else turn.items[i] = item;
+  historicalItemEvent(s, turn, "item/completed", item, receiptTimes);
 }
 function notice(
   s: Session,
@@ -1255,6 +1260,13 @@ const permissionMode = (
     : s.sandbox === "read-only"
       ? "plan"
       : "default");
+function sdkSettings(
+  value: Parameters<Query["applyFlagSettings"]>[0],
+): NonNullable<Options["settings"]> {
+  // Decision 33: sdk.mjs:163 serializes object settings itself; the SDK accepted
+  // this flags object before migration, including values omitted by Settings.
+  return value as NonNullable<Options["settings"]>;
+}
 async function flags(
   s: Pick<Session, "model" | "claude">,
   p: Partial<BridgeTurnParams> = {},
@@ -1282,26 +1294,26 @@ async function flags(
 // finishTurn has cleared the turn, or when recording its end failed.
 const finishingTurns = new WeakMap<Turn, Promise<void>>();
 function clearDeferredResult(active: ActiveQuery) {
-  clearTimeout(active.resultTimer ?? undefined);
+  clearTimeout(active.resultTimer!);
   active.resultTimer = null;
   active.deferredResult = null;
 }
 function clearTurnTimers(active: ActiveQuery) {
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer ?? undefined);
+  clearTimeout(active.stopTimer!);
   active.stopTimer = null;
 }
 function lifecycleFailure(s: Session, active: ActiveQuery, error: unknown) {
   active.persistFailure ??= error;
   process.stderr.write(
-    "Claude turn finalization failed: " + errorText(error) + "\n",
+    "Claude turn finalization failed: " + (error as Error).message + "\n",
   );
   // Watchdog failures must end a visible turn, even if the SDK never yields
   // again. A finalizer already owns its completion and cannot be repeated.
   if (!active.turn || finishingTurns.has(active.turn)) return;
   return finishTurn(s, active, null, error).catch((failure) => {
     process.stderr.write(
-      "Claude turn finalization failed: " + errorText(failure) + "\n",
+      "Claude turn finalization failed: " + (failure as Error).message + "\n",
     );
   });
 }
@@ -1315,8 +1327,8 @@ function deferResult(
   const turn = active.turn;
   active.resultTimer = setTimeout(() => {
     if (active.turn !== turn || !active.deferredResult) return;
-    void finishTurn(s, active, active.deferredResult).catch(
-      (error) => s && lifecycleFailure(s, active, error),
+    void finishTurn(s, active, active.deferredResult).catch((error) =>
+      lifecycleFailure(s!, active, error),
     );
   }, limits.steerEchoGraceMs);
   active.resultTimer.unref();
@@ -1348,7 +1360,8 @@ function finishTurn(
       active.persistFailure = failure;
       turn.status = "failed";
       turn.error = {
-        message: "Claude turn finalization failed: " + errorText(failure),
+        message:
+          "Claude turn finalization failed: " + (failure as Error).message,
       };
       state.closed = true;
       throw failure;
@@ -1393,7 +1406,7 @@ function finishTurn(
 async function finalizeTurn(
   s: Session,
   active: ActiveQuery,
-  turn: Turn,
+  turn: FreshTurn,
   result: SDKResultMessage | null,
   error: unknown,
   state: {
@@ -1407,12 +1420,13 @@ async function finalizeTurn(
   let closeError = stall?.closeError;
   error ||= closeError;
   let closed = (state.closed = Boolean(stall?.closed));
-  if (closed) await stall?.closed;
+  if (closed) await stall!.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
   // this CLI. Stop it before finishing; only its final native history can
   // prove whether the server may redeliver that exact input.
   const unknown = turn.items.some(
     (item) =>
+      item.type === "userMessage" &&
       item.delivery === "steer" &&
       item.deliveryStatus === "submitted" &&
       !active.input.values.some(
@@ -1427,23 +1441,24 @@ async function finalizeTurn(
     await new Promise((resolve) => setTimeout(resolve, limits.exitWaitMs));
   }
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer ?? undefined);
+  clearTimeout(active.stopTimer!);
   active.stopTimer = null;
   active.toolClocks.clear();
+  const initialInput = turn.items[0];
   if (
     (errorField(error, "preparationTimedOut") === true ||
       errorField(error, "claudeAccountValidationFailed") === true) &&
     errorData(error).turnStartOutcome === "not_applied" &&
-    turn.items[0]?.type === "userMessage" &&
+    initialInput?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
     turn.clientUserMessageId.length > 0 &&
     // Stop can withdraw the initial input before preparation fails. Its
     // cancellation receipt preserves the proof that Claude did not read it.
-    (turn.items[0].deliveryStatus === "cancelled" ||
+    (initialInput.deliveryStatus === "cancelled" ||
       active.input.values.some(
         (input) =>
           input.studioInputIdentity === turn.clientUserMessageId &&
-          input.uuid === turn.items[0]?.nativeId &&
+          input.uuid === initialInput.nativeId &&
           input.session_id === (s.nativeId || s.id),
       ))
   ) {
@@ -1452,53 +1467,48 @@ async function finalizeTurn(
   }
   if (turn.startOutcome === "not_applied")
     cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
-  const status: CompletedTurn["status"] = turn.interrupted
-    ? "interrupted"
-    : error || result?.is_error || result?.subtype !== "success"
-      ? "failed"
-      : "completed";
+  const status = claudeTurnStatus(result, turn.interrupted, error);
   turn.status = status;
   armStallWatch();
   const errorMessage =
-    errorText(error) ||
+    (error as Error)?.message ||
     (result && "errors" in result ? result.errors.join("\n") : undefined) ||
     (result && "result" in result ? result.result : undefined) ||
     "Claude turn failed";
   const errorInfo =
     turn.apiErrorInfo ||
-    claudeErrorInfo(
-      typeof errorField(error, "error") === "string"
-        ? String(errorField(error, "error"))
-        : undefined,
-      errorMessage,
-    );
+    legacyClaudeErrorInfo(errorField(error, "error"), errorMessage);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
       message: errorMessage,
       ...(errorInfo && !turn.limitError ? { codexErrorInfo: errorInfo } : {}),
       ...(turn.startOutcome === "not_applied" &&
-      (errorField(error, "preparationTimedOut") === true ||
-        errorField(error, "claudeAccountValidationFailed") === true) &&
-      errorData(error).turnStartOutcome === "not_applied"
+      ((error as BridgeFailure)?.preparationTimedOut === true ||
+        (error as BridgeFailure)?.claudeAccountValidationFailed === true) &&
+      (error as BridgeFailure)?.data?.turnStartOutcome === "not_applied"
         ? {
             data: {
               turnStartOutcome: "not_applied",
-              ...(errorData(error).claudePreparationFailure ===
+              ...((error as BridgeFailure)?.data?.claudePreparationFailure ===
               "account_validation"
                 ? {
                     claudePreparationFailure: "account_validation",
-                    claudeAccountFailure: errorData(error).claudeAccountFailure,
+                    claudeAccountFailure: (error as BridgeFailure).data!
+                      .claudeAccountFailure,
                   }
                 : {}),
-              ...(errorField(error, "preparationTimedOut") === true &&
-              typeof errorData(error).claudePreparationPhase === "string" &&
-              Number.isFinite(errorData(error).claudePreparationElapsedMs)
+              ...((error as BridgeFailure)?.preparationTimedOut === true &&
+              typeof (error as BridgeFailure).data!.claudePreparationPhase ===
+                "string" &&
+              Number.isFinite(
+                (error as BridgeFailure).data!.claudePreparationElapsedMs,
+              )
                 ? {
-                    claudePreparationPhase:
-                      errorData(error).claudePreparationPhase,
-                    claudePreparationElapsedMs:
-                      errorData(error).claudePreparationElapsedMs,
+                    claudePreparationPhase: (error as BridgeFailure).data!
+                      .claudePreparationPhase,
+                    claudePreparationElapsedMs: (error as BridgeFailure).data!
+                      .claudePreparationElapsedMs,
                   }
                 : {}),
             },
@@ -1508,12 +1518,12 @@ async function finalizeTurn(
     };
   const answer = turn.items
     .filter(
-      (i) =>
+      (i): i is Extract<FreshItem, { type: "agentMessage" }> =>
         i.type === "agentMessage" &&
         !i.nativeSubagent &&
         !i.studioNotice &&
         !i.thinking &&
-        !i.id?.endsWith(":thinking"),
+        !i.id.endsWith(":thinking"),
     )
     .at(-1);
   if (answer) finishItem(s, turn, { ...answer, phase: "final_answer" });
@@ -1522,6 +1532,7 @@ async function finalizeTurn(
   // Input already handed to Claude without an echo has an unknown outcome.
   const unappliedSteers = state.unappliedSteers;
   for (const item of turn.items) {
+    if (item.type !== "userMessage") continue;
     if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
       cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
       unappliedSteers.push(item.id);
@@ -1562,11 +1573,11 @@ async function finalizeTurn(
 // delivered; the rest returns to Studio once as unapplied.
 async function reconcileClosedSteers(
   s: Session,
-  turn: Turn,
+  turn: FreshTurn,
   unapplied: (string | undefined)[],
 ) {
   const open = turn.items.filter(
-    (item) =>
+    (item): item is Extract<FreshItem, { type: "userMessage" }> =>
       item.type === "userMessage" &&
       item.delivery === "steer" &&
       item.deliveryStatus === "submitted",
@@ -1580,7 +1591,10 @@ async function reconcileClosedSteers(
       "unknown";
     if (outcome === "delivered") {
       item.deliveryStatus = "delivered";
-      turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
+      turnEvent(s, turn, "item/completed", {
+        ...item,
+        clientId: item.id,
+      });
     } else if (outcome === "not_applied") {
       item.deliveryStatus = "not_applied";
       cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
@@ -1603,18 +1617,25 @@ async function reconcileClosedSteers(
 // turn. The turn ends as interrupted with the stall as its error, so Studio
 // shows it and starts the next turn from queued input.
 async function recoverStall(
-  s: Session | undefined,
+  s: Session,
   active: ActiveQuery,
   found: (Stall & { stop?: false }) | { stop: true; id: string },
 ) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  if (closing || !s || !turn || active.stall || finishingTurns.has(turn))
+  if (
+    closing ||
+    queries.get(s.id) !== active ||
+    !turn ||
+    active.stall ||
+    finishingTurns.has(turn)
+  )
     return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
     : stallMessage({ ...found, tool: item?.tool || found.tool });
-  const { promise: finished, resolve: ended } = Promise.withResolvers<void>();
+  let ended!: () => void;
+  const finished = new Promise<void>((resolve) => (ended = resolve));
   active.stall = { turnId: turn.id, ended, closed: null };
   turn.interrupted = true;
   turn.stallError = {
@@ -1653,13 +1674,19 @@ async function recoverStall(
   try {
     await persist(s);
   } catch (error) {
-    if (!closing)
+    if (!closing && queries.get(s.id) === active)
       process.stderr.write(
-        "Claude stall: persist failed: " + errorText(error) + "\n",
+        "Claude stall: persist failed: " + (error as Error).message + "\n",
       );
   }
-  // A save already in flight may settle after shutdown closes the query.
-  if (closing) return;
+  // A save already in flight may settle after shutdown or query retirement.
+  if (
+    closing ||
+    queries.get(s.id) !== active ||
+    active.turn !== turn ||
+    finishingTurns.has(turn)
+  )
+    return;
   let timer;
   const deadline = new Promise(
     (resolve) =>
@@ -1669,15 +1696,23 @@ async function recoverStall(
   if (!found.stop)
     Promise.resolve()
       .then(() => {
-        return closing ? undefined : active.q?.interrupt();
+        return closing ||
+          queries.get(s.id) !== active ||
+          active.turn !== turn ||
+          finishingTurns.has(turn)
+          ? undefined
+          : active.q?.interrupt();
       })
-      .catch((error) =>
-        process.stderr.write(
-          "Claude stall: interrupt failed: " + errorText(error) + "\n",
-        ),
-      );
+      .catch((error) => {
+        if (!closing && queries.get(s.id) === active)
+          process.stderr.write(
+            "Claude stall: interrupt failed: " +
+              (error as Error).message +
+              "\n",
+          );
+      });
   await Promise.race([finished, deadline]);
-  clearTimeout(timer ?? undefined);
+  clearTimeout(timer!);
   if (
     closing ||
     active.turn !== turn ||
@@ -1695,27 +1730,46 @@ async function recoverStall(
   if (stall.closeError)
     turn.stallError = {
       ...turn.stallError,
-      message: message + " " + errorText(stall.closeError),
+      message: message + " " + (stall.closeError as Error).message,
     };
   await stall.closed;
+  if (
+    closing ||
+    queries.get(s.id) !== active ||
+    active.turn !== turn ||
+    finishingTurns.has(turn)
+  )
+    return;
   // Closing normally ends the SDK stream, and its owner finishes the turn.
   // If the stream still has not ended, finish it here and drop the query.
   await new Promise((resolve) => setImmediate(resolve));
-  if (closing || active.turn !== turn || finishingTurns.has(turn)) return;
+  if (
+    closing ||
+    queries.get(s.id) !== active ||
+    active.turn !== turn ||
+    finishingTurns.has(turn)
+  )
+    return;
   await finishTurn(
     s,
     active,
     null,
     stall.closeError || new Error("Claude did not stop after Studio closed it"),
-  ).catch((error) => lifecycleFailure(s, active, error));
+  ).catch((error) =>
+    queries.get(s.id) === active
+      ? lifecycleFailure(s, active, error)
+      : undefined,
+  );
 }
 const armStallWatch = watchStalls(
   queries,
   studioWaits,
   limits,
   (s, active, found) =>
-    recoverStall(s, active, found).catch(
-      (error) => s && lifecycleFailure(s, active, error),
+    recoverStall(s!, active, found).catch((error) =>
+      queries.get(s!.id) === active
+        ? lifecycleFailure(s!, active, error)
+        : undefined,
     ),
 );
 async function startSession(
@@ -1739,7 +1793,8 @@ async function startSession(
       s.dynamicTools,
     ]);
   const initialSource = source();
-  const { promise: admitted, resolve: admit } = Promise.withResolvers<void>();
+  let admit: () => void;
+  const admitted = new Promise<void>((r) => (admit = r));
   let allowed = false;
   // Keep an idle async iterable open until the account probe completes.
   async function* prompt() {
@@ -1755,9 +1810,8 @@ async function startSession(
     await guardNativeSessionStart(
       s,
       persist,
-      nativeInputAttempt(initial ?? undefined, initial?.items[0]),
+      nativeInputAttempt(initial!, initial?.items[0]),
     );
-    const effort = s.moveProof ? s.moveProof.options.effort : p.effort;
     const model = s.moveProof?.options.model || p.model || s.model;
     const q = query({
       prompt: prompt(),
@@ -1779,8 +1833,10 @@ async function startSession(
         disallowedTools: ["Agent"],
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
-        ...(effort ? { effort } : {}),
-        settings: JSON.stringify(
+        ...((s.moveProof ? s.moveProof.options.effort : p.effort)
+          ? { effort: (s.moveProof ? s.moveProof.options.effort : p.effort)! }
+          : {}),
+        settings: sdkSettings(
           await boundedPreparation(
             () =>
               s.moveProof
@@ -1805,9 +1861,7 @@ async function startSession(
         hooks: {
           SessionStart: [
             {
-              hooks: [
-                sessionStartHook(s, () => active.turn ?? undefined, persist),
-              ],
+              hooks: [sessionStartHook(s, () => active.turn!, persist)],
             },
           ],
         },
@@ -1848,11 +1902,12 @@ async function startSession(
             },
             { ...options, toolUseID: value.toolUseID || options.requestId },
           );
-          const updated =
-            answer?.behavior === "allow" ? answer.updatedInput : undefined;
-          const answers =
-            updated && isRecord(updated.answers) ? updated.answers : undefined;
-          const selected = answers?.[question];
+          const selected = (
+            answer as Extract<
+              Awaited<ReturnType<CanUseTool>>,
+              { behavior: "allow" }
+            > & { updatedInput: { answers?: Record<string, unknown> } }
+          ).updatedInput?.answers?.[question];
           return selected
             ? {
                 behavior: "completed",
@@ -1872,7 +1927,9 @@ async function startSession(
               threadId: s.id,
               turnId: active.turn?.id,
               request: value,
-              ...value,
+              serverName: (value as typeof value & { serverName?: string })
+                .serverName,
+              ...(value as Omit<typeof value, "serverName">),
             },
             options.signal,
           ),
@@ -1911,9 +1968,20 @@ async function startSession(
     active.accountProof = accountProof;
     active.accountProofQuery = q;
     allowed = true;
-    admit();
+    admit!();
     active.readyResolve();
     for await (const m of q) {
+      if (m.type === "result" && !isClaudeResultLifecycle(m)) {
+        // AsyncIteratorClose can wait for the native process. Retire its query
+        // ownership now so timers and in-flight tool recovery cannot finalize it.
+        discardQuery(s.id, active);
+        process.stderr.write(
+          "Claude result has an unknown lifecycle; turn outcome remains unconfirmed.\n",
+        );
+        // Leave the persisted unfinished turn for existing history/restart
+        // reconciliation. Throwing would route through finishTurn as failed.
+        return;
+      }
       const parentToolUseId =
         "parent_tool_use_id" in m ? m.parent_tool_use_id : undefined;
       const room = stdoutRoom();
@@ -1932,7 +2000,7 @@ async function startSession(
           s,
           m.session_id,
           "init",
-          active.turn ?? undefined,
+          active.turn!,
           persist,
         );
         s.started = true;
@@ -1949,21 +2017,21 @@ async function startSession(
       if (m.type === "user" && "isReplay" in m && m.isReplay) {
         const activeTurn = active.turn;
         const item = activeTurn?.items.find(
-          (i) =>
+          (i): i is Extract<FreshItem, { type: "userMessage" }> =>
             i.type === "userMessage" &&
             (i.nativeId === m.uuid ||
               (i.nativeId == null &&
-                (i.id === m.uuid || activeTurn.id === m.uuid))),
+                (i.id === m.uuid || active.turn!.id === m.uuid))),
         );
-        if (item && activeTurn) {
+        if (item) {
           item.nativeId = m.uuid;
           if (
-            item === activeTurn.items[0] &&
+            item === active.turn!.items[0] &&
             !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
           ) {
-            activeTurn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
-            activeTurn.fileCheckpointMessageId = m.uuid;
-            activeTurn.fileCheckpointSource = {
+            active.turn!.nativeMessageId = item.nativeIds?.[0] || m.uuid;
+            active.turn!.fileCheckpointMessageId = m.uuid;
+            active.turn!.fileCheckpointSource = {
               nativeId: s.nativeId || s.id,
               cwd: s.cwd,
             };
@@ -1974,17 +2042,25 @@ async function startSession(
         }
         // Claude echoed this exact steer input: it is delivered. The echo can
         // follow the end of its turn, so earlier turns are searched as well.
-        const steer =
-          item?.delivery === "steer"
-            ? { turn: activeTurn, item }
-            : submittedSteer(s, m.uuid);
-        if (steer?.item.deliveryStatus === "submitted") {
-          steer.item.deliveryStatus = "delivered";
-          turnEvent(s, steer.turn, "item/completed", {
-            ...steer.item,
-            clientId: steer.item.id,
-          });
-          persistLater(s, active);
+        if (item?.delivery === "steer" && activeTurn) {
+          if (item.deliveryStatus === "submitted") {
+            item.deliveryStatus = "delivered";
+            turnEvent(s, activeTurn, "item/completed", {
+              ...item,
+              clientId: item.id,
+            });
+            persistLater(s, active);
+          }
+        } else {
+          const steer = submittedSteer(s, m.uuid);
+          if (steer?.item.deliveryStatus === "submitted") {
+            steer.item.deliveryStatus = "delivered";
+            historicalItemEvent(s, steer.turn, "item/completed", {
+              ...steer.item,
+              clientId: steer.item.id,
+            });
+            persistLater(s, active);
+          }
         }
         continue;
       }
@@ -2038,7 +2114,7 @@ async function startSession(
             type: "contextCompaction",
             status: "completed",
             compactionMetadata: m.compact_metadata,
-          };
+          } satisfies FreshItem;
           finishItem(s, turn, item);
           persistLater(s, active);
         } else if (
@@ -2069,7 +2145,7 @@ async function startSession(
             ...active.tasks.get(id),
             ...m,
             ...("patch" in m ? m.patch : {}),
-          };
+          } satisfies BridgeTask;
           const command = foregroundCommandUpdate(active, task, m);
           if (command && turn) turnEvent(s, turn, "item/started", command);
           // A terminal patch can arrive before the notification's final output.
@@ -2105,7 +2181,7 @@ async function startSession(
                   },
                 ],
               },
-            };
+            } satisfies FreshToolItem;
             if (terminal) finishItem(s, taskTurn, item);
             else {
               const index = taskTurn.items.findIndex(
@@ -2118,7 +2194,7 @@ async function startSession(
           }
           persistLater(s, active);
         } else if (turn && providerNotice(m)) {
-          notice(s, turn, providerNotice(m) ?? "", m.uuid);
+          notice(s, turn, providerNotice(m)!, m.uuid);
           persistLater(s, active);
         } else if (
           turn &&
@@ -2176,8 +2252,6 @@ async function startSession(
               active.usage.turnFor(parentToolUseId, turn.id),
             );
       if (parentToolUseId) {
-        const subagentMessageId =
-          m.type === "assistant" ? m.message.id : undefined;
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
             const text =
@@ -2189,7 +2263,7 @@ async function startSession(
             if (text)
               finishItem(s, turn, {
                 id:
-                  (m.uuid || subagentMessageId) +
+                  ((m.uuid as string | undefined) || m.message.id) +
                   ":" +
                   block.type +
                   ":" +
@@ -2217,10 +2291,8 @@ async function startSession(
           active.idleRequest = {
             id: e.message.id,
             at:
-              typeof m.ttft_ms === "number" &&
-              Number.isFinite(m.ttft_ms) &&
-              m.ttft_ms >= 0
-                ? Date.now() - m.ttft_ms
+              Number.isFinite(m.ttft_ms) && m.ttft_ms! >= 0
+                ? Date.now() - m.ttft_ms!
                 : active.idleRequestStartedAt || Date.now(),
           };
           emit("provider/generationStarted", {
@@ -2240,7 +2312,7 @@ async function startSession(
             "";
           const state = assistantBlockState(
             active,
-            active.messageId ?? "undefined",
+            active.messageId!,
             thinking ? "thinking" : "text",
           );
           const index = Number.isInteger(e.index) ? e.index : 0;
@@ -2255,7 +2327,7 @@ async function startSession(
             state.blocks.push(block);
           }
           const separator =
-            block.text === "" && (block.position ?? 0) > 0 ? "\n" : "";
+            block.text === "" && block.position! > 0 ? "\n" : "";
           if (!block.complete) {
             block.text += delta;
             state.dirty = true;
@@ -2274,11 +2346,12 @@ async function startSession(
                   phase: "commentary",
                   text: "",
                   thinking,
-                }) - 1;
+                } satisfies FreshItem) - 1;
             }
           }
           const item = turn.items[state.itemIndex];
           if (!item) throw new Error("Streaming assistant item is missing");
+
           if (!block.complete) {
             if (!streamingItems.has(item)) {
               streamingItems.add(item);
@@ -2293,13 +2366,12 @@ async function startSession(
           }
         }
       } else if (m.type === "assistant") {
-        const assistantMessage = m.message;
         if (m.error) {
           const errorText = (m.message.content || [])
             .filter((b) => b.type === "text")
             .map((b) => b.text)
             .join("\n");
-          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText) ?? null;
+          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
           const params =
@@ -2360,7 +2432,9 @@ async function startSession(
                   : undefined;
             if (!text) continue;
             const frame =
-              (m.uuid || JSON.stringify(assistantMessage)) + ":" + index;
+              ((m.uuid as string | undefined) || JSON.stringify(m.message)) +
+              ":" +
+              index;
             if (state.frames.has(frame)) continue;
             state.frames.add(frame);
             const pending = state.blocks.find(
@@ -2395,14 +2469,14 @@ async function startSession(
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_use",
         )) {
-          if (!isRecord(b.input)) throw new Error("Invalid Claude tool input");
-          const input = b.input;
-          const item = nativeItem({ ...b, input }, s.cwd);
+          const item = nativeItem(b, s.cwd);
           active.tools.set(b.id, item);
           active.toolClocks.set(b.id, {
             tool: b.name,
             startedAt: Date.now(),
-            timeoutMs: declaredTimeoutMs({ ...b, input }),
+            timeoutMs: declaredTimeoutMs(
+              b as typeof b & { input: Record<string, unknown> },
+            ),
           });
           armStallWatch();
           turn.items.push(item);
@@ -2411,32 +2485,36 @@ async function startSession(
             emit("turn/plan/updated", {
               threadId: s.id,
               turnId: turn.id,
-              plan: Array.isArray(input.todos)
-                ? input.todos.map((t: unknown) => ({
-                    step: isRecord(t) ? t.content : undefined,
-                    status: isRecord(t) ? t.status : undefined,
-                  }))
-                : [],
+              plan:
+                (
+                  b.input as { todos?: { content: unknown; status: unknown }[] }
+                ).todos?.map((t) => ({ step: t.content, status: t.status })) ||
+                [],
             });
         }
         persistLater(s, active);
       } else if (m.type === "user" && Array.isArray(m.message?.content)) {
-        for (const b of m.message.content.filter(
-          (b) => b.type === "tool_result",
-        )) {
+        for (const b of (
+          m.message.content as Exclude<
+            SDKUserMessage["message"]["content"],
+            string
+          >
+        ).filter((b) => b.type === "tool_result")) {
           active.toolClocks.delete(b.tool_use_id);
           armStallWatch();
           const old = active.tools.get(b.tool_use_id);
           if (!old) continue;
           const text =
-            typeof b.content === "string"
-              ? b.content
-              : JSON.stringify(b.content);
+            b.content === undefined
+              ? undefined
+              : typeof b.content === "string"
+                ? b.content
+                : JSON.stringify(b.content);
           const background =
             old.type === "commandExecution" && !b.is_error
               ? backgroundedCommandFields(m.tool_use_result)
               : null;
-          const finished = {
+          const finished: FreshToolItem = {
             ...old,
             status: b.is_error ? "failed" : "completed",
             result: { content: b.content },
@@ -2486,6 +2564,7 @@ async function startSession(
   } catch (error) {
     active.readyReject(error);
     drainUsage(s.id, active);
+    if (queries.get(s.id) !== active) return;
     if (active.turn) {
       try {
         await finishTurn(s, active, null, error);
@@ -2496,7 +2575,7 @@ async function startSession(
       lifecycleFailure(s, active, active.persistFailure);
   } finally {
     allowed = false;
-    admit();
+    admit!();
     const owned = queries.get(s.id) === active;
     discardQuery(s.id, active);
     if (owned) void sessionStore.evict(s.id);
@@ -2505,7 +2584,7 @@ async function startSession(
 // The SDK reports a closed or aborted Claude process with these messages.
 function deadQuery(error: unknown) {
   return /process aborted by user|operation aborted|process exited|process terminated|transport is not ready|query (is )?closed/i.test(
-    String(errorText(error) || error),
+    String((error as Error)?.message || error),
   );
 }
 function closeQuery(active: ActiveQuery) {
@@ -2513,7 +2592,7 @@ function closeQuery(active: ActiveQuery) {
     active.q?.close();
   } catch (error) {
     process.stderr.write(
-      "Claude query close failed: " + errorText(error) + "\n",
+      "Claude query close failed: " + (error as Error).message + "\n",
     );
     return error;
   }
@@ -2541,15 +2620,7 @@ function discardQuery(threadId: string, active: ActiveQuery | undefined) {
   catalogCache.activityChanged();
 }
 function newActive(turn: FreshTurn): ActiveQuery {
-  const {
-    promise: ready,
-    resolve: readyResolve,
-    reject: readyReject,
-  } = Promise.withResolvers<void>();
-  const active: ActiveQuery = {
-    ready,
-    readyResolve,
-    readyReject,
+  const active = {
     turn,
     input: new InputQueue<StudioInputMessage>(),
     q: null,
@@ -2564,7 +2635,12 @@ function newActive(turn: FreshTurn): ActiveQuery {
     lastEventAt: Date.now(),
     toolClocks: new Map(),
     stall: null,
-  };
+  } as ActiveQuery;
+  // The ready promise and its callbacks are assigned synchronously before use.
+  active.ready = new Promise<void>((resolve, reject) => {
+    active.readyResolve = resolve;
+    active.readyReject = reject;
+  });
 
   active.ready.catch(() => {});
   return active;
@@ -2578,6 +2654,7 @@ function userMessage(
   turn.nativeSessionId = s.nativeId || s.id;
   const item = turn.items.find((item) => item.id === id) || turn.items[0];
   if (!item) throw new Error("Claude input has no owning item");
+
   guardNativeSessionInput(s, groups, newNativeInputAttempt(turn, item));
   const messages = sdkInputMessages(
     s.nativeId || s.id,
@@ -3133,7 +3210,8 @@ async function handle(
         if (idle())
           await reconcileHistoricalBash(s, {
             isIdle: idle,
-            complete: (turn, item, times) => finishItem(s, turn, item, times),
+            complete: (turn, item, times) =>
+              finishHistoricalItem(s, turn, item, times),
             persist,
           });
         // Reattach to a live query without changing its settings or background work.
@@ -3552,6 +3630,8 @@ async function handle(
       if (!id) throw new Error("Steer requires its original message identity");
       const previous = turn.items.find((item) => item.id === id);
       if (previous) {
+        if (previous.type !== "userMessage")
+          throw new Error("This message identity has different content");
         if (
           ["not_applied", "cancelled"].some(
             (status) => status === previous.deliveryStatus,
@@ -3570,7 +3650,7 @@ async function handle(
           "Claude finished before this steer could be submitted",
         );
       active.pendingSteers.add(id);
-      let item: Item | undefined;
+      let item: Extract<FreshItem, { type: "userMessage" }> | undefined;
       try {
         const groups = await inputGroups(p.input, content);
         if (
@@ -3663,7 +3743,11 @@ async function handle(
           void recoverStall(s, active, {
             id: "stop:" + turn.id,
             stop: true,
-          }).catch((error) => lifecycleFailure(s, active, error));
+          }).catch((error) =>
+            queries.get(s.id) === active
+              ? lifecycleFailure(s, active, error)
+              : undefined,
+          );
         }, limits.interruptWaitMs);
         active.stopTimer = timer;
         timer.unref();
@@ -3883,10 +3967,10 @@ lines.on("line", (line) => {
         send({
           id: message.id,
           error: {
-            code: Number.isInteger(errorField(error, "code"))
-              ? errorField(error, "code")
+            code: Number.isInteger((error as BridgeFailure).code)
+              ? (error as BridgeFailure).code
               : -32000,
-            message: errorText(error),
+            message: (error as Error).message,
             ...(error.data === undefined ? {} : { data: error.data }),
           },
         });
@@ -3914,7 +3998,7 @@ function shutdown() {
           }),
         ]);
       } finally {
-        clearTimeout(timer ?? undefined);
+        clearTimeout(timer!);
       }
     };
     for (const [, active] of activeQueries) {

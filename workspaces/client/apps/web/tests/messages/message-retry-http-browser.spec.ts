@@ -1,7 +1,7 @@
-import { requestBody } from "./helpers.ts";
-import { listeningPort } from "./helpers.ts";
-import type {} from "./message-retry-http-browser.fixture.tsx";
 import { required } from "./helpers.ts";
+import { requestBody } from "./helpers.ts";
+import type { AddressInfo } from "node:net";
+import type {} from "./message-retry-http-browser.fixture.tsx";
 import type { ComplaintBody } from "./helpers.ts";
 import {
   readTestState,
@@ -62,12 +62,12 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       },
     });
     await server.listen();
-    const origin = `http://127.0.0.1:${listeningPort(required(server.httpServer))}`;
+    const origin = `http://127.0.0.1:${(required(server.httpServer).address() as AddressInfo).port}`;
     const page = runnerPage;
     page.setDefaultTimeout(20000);
     const errors: string[] = [],
       attempts: ComplaintBody[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -77,7 +77,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    let markCommitted = () => {};
+    let markCommitted!: () => void;
     const committed = new Promise<void>((resolve) => {
       markCommitted = resolve;
     });
@@ -101,7 +101,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
         url: "/tests/messages/message-retry-http-browser.fixture.tsx",
       });
       await page.evaluate(() => window.retrySendInitialize());
-      await page.waitForFunction(() => !!window.retrySendOutbox);
+      await page.waitForFunction(() => !!window.outbox);
     };
     await mount();
     const id = crypto.randomUUID();
@@ -114,20 +114,20 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     };
     await page.clock.install();
     await page.evaluate((body) => {
-      window.retrySendSendResult = window.retrySendSend(body);
+      window.sendResult = window.retrySendSend(body);
     }, body);
     await committed;
     await page.clock.setSystemTime(
       (await page.evaluate(() => Date.now())) + 16_000,
     );
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
-    const result = await page.evaluate(() => window.retrySendSendResult);
+    const result = await page.evaluate(() => window.sendResult);
     assert.equal(result.queued, true, "A missing response remains pending");
     release();
     await mount();
     await page.waitForFunction(
       (id) =>
-        window.retrySendOutbox.entries.some(
+        window.outbox.entries.some(
           (entry) => entry.id === id && entry.status === "accepted",
         ),
       id,

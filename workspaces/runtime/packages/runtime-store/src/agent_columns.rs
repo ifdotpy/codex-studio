@@ -1,6 +1,6 @@
 //! Indexed agent fields as typed columns of `runtime_agents`.
 //!
-//! Storage format of 2026-10-20 ([`migrate_2026_10_20_columns`]). Every agent
+//! Storage format introduced on 2026-10-20; [`prepare`] also applies the explicit-provider cutover of 2026-10-26. Every agent
 //! field that an index or an indexed query reads is a STORED generated column
 //! of `runtime_agents`, computed by SQLite from the record when the row is
 //! written. Indexes are plain column indexes, and queries filter and sort on
@@ -26,7 +26,7 @@
 
 use std::sync::LazyLock;
 
-use rusqlite::Transaction;
+use rusqlite::{Connection, Transaction};
 
 use crate::StoreResult;
 
@@ -95,6 +95,10 @@ macro_rules! truthy {
     };
 }
 
+/// The explicit provider column is also the Canvas cutover evidence for 2026-10-26.
+const PROVIDER_COLUMN: AgentColumn =
+    column("provider", "TEXT", "record->>'$.provider'", "NOT NULL");
+
 /// The indexed agent fields; see the module documentation. Changing this list
 /// changes the table: it needs a new dated migration that rebuilds the table.
 pub const AGENT_COLUMNS: [AgentColumn; 41] = [
@@ -107,12 +111,7 @@ pub const AGENT_COLUMNS: [AgentColumn; 41] = [
         "COALESCE(record->>'$.accountKey','default')",
         "NOT NULL",
     ),
-    column(
-        "provider",
-        "TEXT",
-        "COALESCE(record->>'$.provider','codex')",
-        "NOT NULL",
-    ),
+    PROVIDER_COLUMN,
     column("role", "TEXT", "record->>'$.role'", ""),
     column("deleted_at", "", "record->>'$.deletedAt'", ""),
     column("thread_id", "TEXT", "record->>'$.threadId'", ""),
@@ -285,15 +284,25 @@ pub const AGENT_COLUMNS: [AgentColumn; 41] = [
 /// The `CREATE TABLE` statement of [`AGENT_TABLE`] named `name`. The columns
 /// precede `record`: a row's large record spills to overflow pages, and a
 /// column stored after it could be read only by walking that chain.
+fn column_sql(column: &AgentColumn) -> String {
+    format!(
+        "\"{}\" {} GENERATED ALWAYS AS ({}) STORED {}",
+        column.name, column.sql_type, column.value, column.constraint
+    )
+}
+
+pub(crate) fn has_explicit_provider_column(connection: &Connection) -> StoreResult<bool> {
+    Ok(connection.query_row(
+        "SELECT instr(sql,?1)>0 FROM sqlite_master WHERE type='table' AND name='runtime_agents'",
+        [column_sql(&PROVIDER_COLUMN)],
+        |row| row.get(0),
+    )?)
+}
+
 fn table_sql(name: &str) -> String {
     let columns = AGENT_COLUMNS
         .iter()
-        .map(|column| {
-            format!(
-                "\"{}\" {} GENERATED ALWAYS AS ({}) STORED {}",
-                column.name, column.sql_type, column.value, column.constraint
-            )
-        })
+        .map(column_sql)
         .collect::<Vec<_>>()
         .join(",");
     format!(
@@ -324,8 +333,9 @@ fn has_columns(transaction: &Transaction<'_>) -> StoreResult<bool> {
 pub fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     if crate::schema::table_exists(transaction, AGENT_TABLE)? {
         migrate_2026_10_21_capacity_retry_column(transaction)?;
-        if !has_columns(transaction)? {
-            migrate_2026_10_20_columns(transaction)?;
+        // 2026-10-26: identity leaves were migrated before rebuilding strict columns.
+        if !has_columns(transaction)? || !has_explicit_provider_column(transaction)? {
+            rebuild_columns(transaction)?;
         }
     }
     Ok(())
@@ -351,16 +361,16 @@ fn migrate_2026_10_21_capacity_retry_column(transaction: &Transaction<'_>) -> St
     Ok(())
 }
 
-/// Data migration of 2026-10-20: rebuild `runtime_agents` with the generated
+/// Shared rebuild for the 2026-10-20 columns and 2026-10-26 explicit provider: rebuild `runtime_agents` with the generated
 /// columns of [`AGENT_COLUMNS`]. Rows keep their rowid, id and record; the
 /// table's triggers are recreated unchanged. Its JSON expression indexes are
 /// dropped with the old table; their owners create the column indexes that
 /// replace them later in the same startup transaction. No trigger fires, so
 /// no change journal entry, transcript revision or sync projection follows.
 /// It runs in the caller's startup transaction, so a crash leaves either the
-/// old table or the complete new one. Delete it once every state has opened
-/// with a build of 2026-10-20 or later.
-pub fn migrate_2026_10_20_columns(transaction: &Transaction<'_>) -> StoreResult<()> {
+/// old table or the complete new one. Keep this helper while either dated
+/// startup upgrade still supports old states or restorable backups.
+fn rebuild_columns(transaction: &Transaction<'_>) -> StoreResult<()> {
     const STAGING: &str = "runtime_agents_2026_10_20";
     const RETIRED: &str = "runtime_agents_before_2026_10_20";
     let triggers = transaction
@@ -433,10 +443,10 @@ mod tests {
                 "provider":"claude","threadId":"t1","turnId":"u1","inFlight":true,"autoWake":true,
                 "cwd":"/w","workspaceOperation":"branch","startAttempt":{"submitted":true,
                 "connectionGeneration":4,"activeAtReservation":false},"prompt":"keep"}),
-            json!({"id":"child","rootId":"lead","parentId":"lead","epoch":0,"status":"completed",
+            json!({"id":"child","provider":"codex","rootId":"lead","parentId":"lead","epoch":0,"status":"completed",
                 "role":"reviewer","reviewArchiveScheduled":"",
                 "restartRecovery":{"stage":"held"},"deletedAt":5.5}),
-            json!({"id":"bare","rootId":"bare","epoch":0,"status":"idle"}),
+            json!({"id":"bare","provider":"codex","rootId":"bare","epoch":0,"status":"idle"}),
         ]
     }
 

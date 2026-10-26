@@ -1,5 +1,4 @@
 import type { Message } from "../../src/types.ts";
-import { required } from "./browser-helpers.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -8,10 +7,10 @@ import StreamingText from "../../src/components/conversation/transcript/Streamin
 import ConversationResults from "../../src/components/conversation/transcript/ConversationResults.tsx";
 import { completedMarkdown } from "../../src/native/markdownCache.ts";
 window.markdownCache = completedMarkdown;
-window.markdownCompilations = 0;
+window.compilations = 0;
 const save = completedMarkdown.set.bind(completedMarkdown);
 completedMarkdown.set = (...args) => {
-  window.markdownCompilations++;
+  window.compilations++;
   return save(...args);
 };
 const initial = Array.from({ length: 2 }, (_, i) => ({
@@ -35,13 +34,13 @@ function Harness() {
     [agent, setAgent] = useState("first"),
     [streaming, setStreaming] = useState(false),
     [results, setResults] = useState(false);
-  window.markdownResults = () => flushSync(() => setResults(true));
-  window.markdownChat = (otherChat) =>
+  window.results = () => flushSync(() => setResults(true));
+  window.chat = (otherChat) =>
     flushSync(() => setItems(otherChat ? other : initial));
-  window.markdownHide = () => flushSync(() => setShown(false));
+  window.hide = () => flushSync(() => setShown(false));
   window.markdownShow = () => flushSync(() => setShown(true));
   window.markdownAgent = (id) => flushSync(() => setAgent(id));
-  window.markdownText = (text, stream = false) =>
+  window.text = (text, stream = false) =>
     flushSync(() => {
       setItems([{ id: "only", role: "assistant", text }]);
       setStreaming(stream);
@@ -82,16 +81,19 @@ function Harness() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Harness />);
+createRoot(document.getElementById("root")!).render(<Harness />);
 declare global {
   interface Window {
+    // Renamed from cache: chat/chat-prefetch-browser.fixture.ts declares the transcript cache module.
     markdownCache: typeof completedMarkdown;
-    markdownCompilations: number;
-    markdownResults: () => void;
-    markdownChat: (otherChat: boolean) => void;
-    markdownHide: () => void;
+    compilations: number;
+    results: () => void;
+    chat: (otherChat: boolean) => void;
+    hide: () => void;
+    // Renamed from show: files/file-viewers-browser.fixture.tsx requires a path argument.
     markdownShow: () => void;
+    // Renamed from agent: chat/chat-read-client-browser.fixture.tsx declares an Agent.
     markdownAgent: (id: string) => void;
-    markdownText: (text: string, stream?: boolean) => void;
+    text: (text: string, stream?: boolean) => void;
   }
 }

@@ -1,6 +1,5 @@
 // Real macOS signatures and Python imports, with an isolated probe bundle.
 import assert from "node:assert/strict";
-import { mock } from "node:test";
 import { execFileSync } from "node:child_process";
 import childProcess from "node:child_process";
 import fs from "node:fs";
@@ -33,56 +32,66 @@ function privateUnlockContract() {
   let stderr = "";
   let calls = 0;
   const keychain = `/fixture/Studio "safe"\\name.keychain-db`;
-  mock.method(
-    fs,
-    "readFileSync",
-    (
+  // The base fixture replaces only these builtin signatures; omitted overloads are not used.
+  type FixtureFs = Omit<typeof fs, "readFileSync"> & {
+    readFileSync: (
       filename: Parameters<typeof fs.readFileSync>[0],
       options?: Parameters<typeof fs.readFileSync>[1],
-    ) =>
-      filename === "/fixture/password"
-        ? secret
-        : String(filename).endsWith("codex-studio/signing.json")
-          ? JSON.stringify({
-              identity,
-              keychain,
-              passwordFile: "/fixture/password",
-            })
-          : options === undefined
-            ? originals.readFileSync(filename)
-            : originals.readFileSync(filename, options),
-  );
-  mock.method(
-    childProcess,
-    "spawnSync",
-    (
+    ) => string | Buffer;
+  };
+  type FixtureProcess = Omit<
+    typeof childProcess,
+    "spawnSync" | "execFileSync"
+  > & {
+    spawnSync: (
       command: string,
       args: string[],
       options: import("node:child_process").SpawnSyncOptionsWithStringEncoding,
-    ) => {
-      calls++;
-      assert.equal(command, "/usr/bin/security");
-      assert.deepEqual(args, ["-i"]);
-      assert.equal(options.stdio, "pipe");
-      assert.equal(options.timeout, 10_000);
-      assert.equal(
-        options.input,
-        String.raw`unlock-keychain -p "synthetic \"value\"\\with ' space;$()" "/fixture/Studio \"safe\"\\name.keychain-db"` +
-          "\n",
-      );
-      assert.equal(JSON.stringify(args).includes(secret), false);
-      return { status, stdout: secret, stderr };
-    },
-  );
-  mock.method(
-    childProcess,
-    "execFileSync",
-    (command: string, args: string[]) => {
-      assert.equal(command, "security");
-      assert.deepEqual(args, ["find-identity", "-p", "codesigning", keychain]);
-      return identity;
-    },
-  );
+    ) => Pick<
+      ReturnType<typeof childProcess.spawnSync>,
+      "status" | "stdout" | "stderr"
+    >;
+    execFileSync: (command: string, args: string[]) => string;
+  };
+  (fs as FixtureFs).readFileSync = (
+    filename: Parameters<typeof fs.readFileSync>[0],
+    options?: Parameters<typeof fs.readFileSync>[1],
+  ) =>
+    filename === "/fixture/password"
+      ? secret
+      : String(filename).endsWith("codex-studio/signing.json")
+        ? JSON.stringify({
+            identity,
+            keychain,
+            passwordFile: "/fixture/password",
+          })
+        : originals.readFileSync(filename, options!);
+  (childProcess as FixtureProcess).spawnSync = (
+    command: string,
+    args: string[],
+    options: import("node:child_process").SpawnSyncOptionsWithStringEncoding,
+  ) => {
+    calls++;
+    assert.equal(command, "/usr/bin/security");
+    assert.deepEqual(args, ["-i"]);
+    assert.equal(options.stdio, "pipe");
+    assert.equal(options.timeout, 10_000);
+    assert.equal(
+      options.input,
+      String.raw`unlock-keychain -p "synthetic \"value\"\\with ' space;$()" "/fixture/Studio \"safe\"\\name.keychain-db"` +
+        "\n",
+    );
+    assert.equal(JSON.stringify(args).includes(secret), false);
+    return { status, stdout: secret, stderr };
+  };
+  (childProcess as FixtureProcess).execFileSync = (
+    command: string,
+    args: string[],
+  ) => {
+    assert.equal(command, "security");
+    assert.deepEqual(args, ["find-identity", "-p", "codesigning", keychain]);
+    return identity;
+  };
   syncBuiltinESMExports();
   try {
     assert.equal(signingIdentity({}), identity);
@@ -91,20 +100,18 @@ function privateUnlockContract() {
     assert.throws(
       () => signingIdentity({}),
       (error: unknown) =>
-        error instanceof Error &&
-        error.message ===
+        (error as Error).message ===
           `Could not unlock the dedicated Studio signing keychain ${keychain}: The user name or passphrase you entered is not correct.` &&
-        !String(error.stack).includes(password),
+        !String((error as Error).stack).includes(password),
     );
     // A defensive redaction covers a message that echoes the password.
     stderr = `security: unexpected ${password} and ${password.replace(/[\\"]/g, "\\$&")}\n`;
     assert.throws(
       () => signingIdentity({}),
       (error: unknown) =>
-        error instanceof Error &&
-        error.message ===
+        (error as Error).message ===
           `Could not unlock the dedicated Studio signing keychain ${keychain}: unexpected [redacted] and [redacted].` &&
-        !error.message.includes("synthetic"),
+        !(error as Error).message.includes("synthetic"),
     );
     stderr = "";
     assert.throws(

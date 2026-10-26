@@ -25,6 +25,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::path_identity::CanonicalPath;
 
 /// The account's provider server directory: the state root for `default`,
@@ -231,7 +232,7 @@ const CODEX_CREDENTIAL_FILES: &[auth_cache::CredentialFile] = &[auth_cache::Cred
 
 pub(crate) fn codex_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
     auth_cache::CredentialLocation {
-        identity: "codex".to_owned(),
+        identity: ProviderKind::Codex.key().to_owned(),
         directories: vec![profile.home.clone()],
         credential_files: CODEX_CREDENTIAL_FILES,
     }
@@ -1078,7 +1079,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .ok_or(AccountDriverError::InvalidRegistry)?
             .to_owned();
         if studio_runtime_providers::ProviderKind::key_of(registry_account(&state.value, &account)?)
-            != Some("codex")
+            != Some(ProviderKind::Codex.key())
         {
             return Err(AccountMutationError::Refused(
                 "Select a Codex sign-in request",
@@ -1144,7 +1145,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 })
             });
         if !starting
-            || studio_runtime_providers::ProviderKind::key_of(row) != Some("codex")
+            || studio_runtime_providers::ProviderKind::key_of(row)
+                != Some(ProviderKind::Codex.key())
             || row.get("deleted").is_some_and(truthy_value)
             || row.get("disconnected").is_some_and(truthy_value)
         {
@@ -1186,7 +1188,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let mut receipt = serde_json::json!({"requestId":request.login_id,"accountKey":key,"status":"starting","createdAt":now});
         if let Some(account) = &request.account_key {
             let row = registry_account(&value, account)?;
-            if studio_runtime_providers::ProviderKind::key_of(row) != Some("codex")
+            if studio_runtime_providers::ProviderKind::key_of(row)
+                != Some(ProviderKind::Codex.key())
                 || !row.get("accountId").is_some_and(truthy_value)
                 || row.get("duplicateOf").is_some_and(truthy_value)
             {
@@ -1215,7 +1218,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             receipt["expectedAccountId"] = row["accountId"].clone();
             receipt["email"] = row.get("email").cloned().unwrap_or(Value::Null);
         } else {
-            value["accounts"][&key] = serde_json::json!({"id":key,"home":home,"label":request.label.as_deref().unwrap_or("New account"),"source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"});
+            value["accounts"][&key] = serde_json::json!({"id":key,"provider":studio_runtime_schema::ProviderKind::Codex.key(),"home":home,"label":request.label.as_deref().unwrap_or("New account"),"source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"});
             order.accounts.push(key);
             receipt["emailHint"] = serde_json::json!(request.email);
             receipt["requestedLabel"] = serde_json::json!(request.label);
@@ -1615,7 +1618,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             let Ok(row) = registry_account(&value, &account) else {
                 continue;
             };
-            if studio_runtime_providers::ProviderKind::key_of(row) != Some("codex") {
+            if studio_runtime_providers::ProviderKind::key_of(row)
+                != Some(ProviderKind::Codex.key())
+            {
                 continue;
             }
             let profile = auth_profile(row)?;
@@ -1679,7 +1684,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut value = state.value.clone();
         let row = registry_account_mut(&mut value, key)?;
-        if row["provider"] != "claude" {
+        if row["provider"] != ProviderKind::Claude.key() {
             return Err(AccountMutationError::Refused(
                 "Select a Claude Code profile",
             ));
@@ -1740,7 +1745,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             return Ok(());
         }
         let mut value = state.value.clone();
-        let mut row = serde_json::json!({"id":"claude-local","provider":"claude","home":home,"label":"Claude Code","source":"Claude Code","status":"signedOut"});
+        let mut row = serde_json::json!({"id":"claude-local","provider":ProviderKind::Claude.key(),"home":home,"label":"Claude Code","source":"Claude Code","status":"signedOut"});
         apply_metadata(
             row.as_object_mut()
                 .ok_or(AccountDriverError::InvalidRegistry)?,
@@ -1863,16 +1868,20 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     }
 
     /// The account's turn start throttle, read under the registry lock
-    /// without copying the row; the Codex defaults for an unknown account,
-    /// like a row without a provider.
-    pub fn start_throttle(&self, account: &str) -> crate::account_start_gate::StartThrottle {
+    /// without copying the row. Unknown accounts or providers are refused.
+    pub fn start_throttle(
+        &self,
+        account: &str,
+    ) -> Result<crate::account_start_gate::StartThrottle, AccountDriverError> {
         let state = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::account_start_gate::StartThrottle::of_record(
-            registry_account(&state.value, account).unwrap_or(&Value::Null),
-        )
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        crate::account_start_gate::StartThrottle::of_record(registry_account(
+            &state.value,
+            account,
+        )?)
+        .ok_or(AccountDriverError::InvalidRegistry)
     }
 
     /// Stable, non-secret identity selected for a retained account session.
@@ -2448,6 +2457,10 @@ fn register_metadata(
         .unwrap_or("Codex profile");
     let mut row = serde_json::Map::new();
     row.insert("id".into(), Value::String(account.clone()));
+    row.insert(
+        "provider".into(),
+        Value::String(studio_runtime_schema::ProviderKind::Codex.key().into()),
+    );
     row.insert("home".into(), Value::String(home));
     row.insert("label".into(), Value::String(label.to_owned()));
     row.insert("source".into(), Value::String("Local profile".into()));
@@ -2815,6 +2828,10 @@ fn default_registry_bytes(codex_home: &Path) -> Result<Vec<u8>, AccountDriverErr
     let optional = |value: Option<&String>| value.map_or_else(|| "null".to_owned(), |v| text(v));
     let mut row = vec![
         ("id", text("default")),
+        (
+            "provider",
+            text(studio_runtime_schema::ProviderKind::Codex.key()),
+        ),
         ("home", text(home)),
         ("label", text("Codex")),
         ("source", text("Codex CLI")),
@@ -2852,7 +2869,10 @@ fn default_registry_bytes(codex_home: &Path) -> Result<Vec<u8>, AccountDriverErr
         ]),
     }
     let document = python_object(&[
-        ("version", "1".to_owned()),
+        (
+            "version",
+            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION.to_string(),
+        ),
         ("defaultAccountKey", text("default")),
         (
             "accounts",
@@ -2916,7 +2936,7 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
                     .filter(|v| !v.is_empty()),
             )
             .is_some_and(|(a, b)| {
-                if row.get("provider").and_then(Value::as_str) == Some("claude") {
+                if row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Claude.key()) {
                     !claude_identity::accepts(a, b)
                 } else {
                     a != b
@@ -2926,7 +2946,7 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
         row.insert("status".into(), Value::String("changed".into()));
         row.insert("error".into(), Value::String(CHANGED_ERROR.into()));
         row.remove("organizationMismatch");
-        if row.get("provider").and_then(Value::as_str) == Some("claude")
+        if row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Claude.key())
             && let Some(mismatch) = claude_identity::organization_mismatch(
                 expected_credential.as_deref(),
                 row.get("_organizationName").and_then(Value::as_str),
@@ -3052,6 +3072,39 @@ fn read_registry(path: &Path) -> Result<Vec<u8>, AccountDriverError> {
     Ok(bytes)
 }
 
+/// Upgrade 2026-10-26 identity leaves once at startup, before strict consumers.
+/// Keep until supported states and restorable backups have crossed this format,
+/// or the older upgrade path is explicitly retired. Atomic replacement retains
+/// the existing unconfirmed-directory-durability outcome; startup can be retried.
+pub fn migrate_provider_identity_2026_10_26(
+    path: &Path,
+    bytes: Vec<u8>,
+) -> Result<Vec<u8>, AccountDriverError> {
+    if bytes.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
+        || !studio_runtime_store::account_state::persisted_document_within_bounds(&bytes)
+    {
+        return Err(AccountDriverError::InvalidRegistry);
+    }
+    let mut value: Value =
+        serde_json::from_slice(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    let changed = studio_runtime_store::provider_identity::migrate_registry_2026_10_26(&mut value)
+        .map_err(|_| AccountDriverError::InvalidRegistry)?;
+    if !changed {
+        decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
+        return Ok(bytes);
+    }
+    let order = RegistryOrder::deserialize(&mut serde_json::Deserializer::from_slice(&bytes))
+        .map_err(|_| AccountDriverError::InvalidRegistry)?;
+    let encoded =
+        encode_registry(&value, &order).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    match atomic_replace(path, &encoded) {
+        Ok(()) => Ok(encoded),
+        Err(ReplaceError::NotReplaced) => Err(AccountDriverError::WriteRegistry),
+        Err(ReplaceError::ReplacedNotDurable) => Err(AccountDriverError::DurabilityUnconfirmed),
+    }
+}
+
 enum ReplaceError {
     NotReplaced,
     ReplacedNotDurable,
@@ -3119,6 +3172,161 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[test]
+    fn codex_account_producers_reserve_explicit_login_and_replay_exact_receipt() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        fs::write(&path, registry(&fixture.path)).expect("current registry");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::SignedOut, None, None)),
+        )
+        .expect("driver");
+        let request = CodexLoginRequest {
+            login_id: "00000000-0000-4000-8000-000000000001".into(),
+            account_key: None,
+            email: None,
+            label: Some("New Codex account".into()),
+        };
+        let home = fixture.path.join("login-home");
+        fs::create_dir(&home).expect("prepared login directory");
+        let LoginReservation::Dispatch(receipt) = driver
+            .reserve_codex_login(&request, &home, 1.0)
+            .expect("reserve new Codex account")
+        else {
+            panic!("new request dispatches");
+        };
+        let key = receipt["accountKey"].as_str().expect("account key");
+        assert_eq!(
+            driver.internal_record(key).expect("new account")["provider"],
+            studio_runtime_schema::ProviderKind::Codex.key()
+        );
+        let persisted = fs::read(&path).expect("durable intent");
+        decode_registry(&persisted).expect("current registry accepts new row");
+        let LoginReservation::Replay(replayed) = driver
+            .reserve_codex_login(&request, &home, 2.0)
+            .expect("same request receipt")
+        else {
+            panic!("retry never dispatches again");
+        };
+        assert_eq!(replayed, receipt);
+        assert_eq!(fs::read(path).expect("replay bytes"), persisted);
+    }
+
+    #[test]
+    fn codex_account_producers_register_explicit_local_profile() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        fs::write(&path, registry(&fixture.path)).expect("current registry");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::SignedOut, None, None)),
+        )
+        .expect("driver");
+        let profile = fixture.path.join("profile");
+        fs::create_dir(&profile).expect("profile directory");
+        fs::write(
+            profile.join("auth.json"),
+            br#"{"OPENAI_API_KEY":"placeholder-profile-key"}"#,
+        )
+        .expect("local auth fixture");
+        let accounts = driver
+            .register(profile.to_str().expect("profile path"))
+            .expect("register local Codex profile");
+        assert_eq!(accounts.accounts.len(), 2);
+        assert_eq!(
+            accounts.accounts[1]["provider"],
+            studio_runtime_schema::ProviderKind::Codex.key()
+        );
+        decode_registry(&fs::read(path).expect("saved registry"))
+            .expect("strict current profile row");
+    }
+
+    #[test]
+    fn migration_2026_10_26_registry_precedes_strict_policy_and_driver() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        let bytes = br#"{"version":1,"defaultAccountKey":"default","accounts":{"z":{"id":"z","provider":"claude","home":"/fixture/z","label":"Z","source":"fixture","status":"ready"},"default":{"id":"default","provider":null,"home":"/fixture/default","label":"Default","source":"fixture","status":"signedOut"}},"logins":{},"deleteReceipts":{}}"#.to_vec();
+        fs::write(&path, &bytes).expect("legacy registry");
+        assert!(
+            decode_registry(&bytes).is_err(),
+            "ordinary policy has no legacy fallback"
+        );
+        let migrated = migrate_provider_identity_2026_10_26(&path, bytes).expect("dated migration");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&migrated).expect("current registry")["version"],
+            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
+        );
+        let (_, order) = decode_registry(&migrated).expect("strict policy");
+        assert_eq!(order.accounts, ["z", "default"], "account order preserved");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::SignedOut, None, None)),
+        )
+        .expect("strict driver");
+        assert_eq!(
+            driver.internal_record("default").expect("default")["provider"],
+            "codex"
+        );
+        assert_eq!(
+            driver.internal_record("z").expect("z")["provider"],
+            "claude"
+        );
+        assert_eq!(fs::read(&path).expect("persisted"), migrated);
+        assert_eq!(
+            migrate_provider_identity_2026_10_26(&path, migrated.clone()).expect("repeat"),
+            migrated
+        );
+    }
+
+    #[test]
+    fn migration_2026_10_26_registry_failure_preserves_original_bytes() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        for provider in [
+            serde_json::json!("unknown"),
+            serde_json::json!(1),
+            serde_json::json!({}),
+        ] {
+            let mut value: Value =
+                serde_json::from_slice(&registry(&fixture.path)).expect("registry");
+            value["accounts"]["default"]["provider"] = provider;
+            let bytes = serde_json::to_vec(&value).expect("bytes");
+            fs::write(&path, &bytes).expect("invalid registry");
+            assert!(migrate_provider_identity_2026_10_26(&path, bytes.clone()).is_err());
+            assert_eq!(fs::read(&path).expect("preserved source"), bytes);
+        }
+        for field in [None, Some(Value::Null)] {
+            let mut value: Value =
+                serde_json::from_slice(&registry(&fixture.path)).expect("current registry");
+            match field {
+                None => {
+                    value["accounts"]["default"]
+                        .as_object_mut()
+                        .expect("account")
+                        .remove("provider");
+                }
+                Some(field) => value["accounts"]["default"]["provider"] = field,
+            }
+            let bytes = serde_json::to_vec(&value).expect("bytes");
+            fs::write(&path, &bytes).expect("corrupt current registry");
+            assert!(migrate_provider_identity_2026_10_26(&path, bytes.clone()).is_err());
+            assert_eq!(fs::read(&path).expect("unchanged current bytes"), bytes);
+        }
+        let mut explicit_legacy: Value =
+            serde_json::from_slice(&registry(&fixture.path)).expect("registry");
+        explicit_legacy["version"] = Value::from(1);
+        let upgraded = migrate_provider_identity_2026_10_26(
+            &path,
+            serde_json::to_vec(&explicit_legacy).expect("bytes"),
+        )
+        .expect("explicit legacy still crosses version cutoff");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&upgraded).expect("current")["version"],
+            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
+        );
+    }
 
     #[cfg(unix)]
     #[test]
@@ -3388,10 +3596,10 @@ exit 0
 
     fn registry(home: &Path) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "version": 1,
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey": "default",
             "accounts": {"default": {
-                "id": "default", "home": home, "label": "Codex", "source": "Codex CLI", "status": "signedOut"
+                "id": "default", "provider":"codex", "home": home, "label": "Codex", "source": "Codex CLI", "status": "signedOut"
             }},
             "logins": {}, "deleteReceipts": {}
         }))
@@ -3758,7 +3966,7 @@ exit 0
         let mut value: Value =
             serde_json::from_slice(&registry(&fixture.path)).expect("registry fixture");
         value["accounts"]["other"] = serde_json::json!({
-            "id": "other", "home": fixture.path.join("other"), "label": "Other",
+            "id": "other", "provider":studio_runtime_schema::ProviderKind::Codex.key(), "home": fixture.path.join("other"), "label": "Other",
             "source": "Codex CLI", "status": "signedOut"
         });
         fs::write(&path, serde_json::to_vec(&value).expect("encoded")).expect("write registry");
@@ -3879,9 +4087,10 @@ exit 0
         fs::create_dir_all(path.parent().expect("registry parent"))
             .expect("create registry directory");
         let bytes = format!(
-            r#"{{"version":1,"defaultAccountKey":"z","accounts":{{"z":{{"id":"z","home":"{}","label":"Z","source":"Codex CLI","status":"signedOut"}},"a":{{"id":"a","home":"{}","label":"A","source":"Codex CLI","status":"signedOut"}}}},"logins":{{}},"deleteReceipts":{{}}}}"#,
+            r#"{{"version":{version},"defaultAccountKey":"z","accounts":{{"z":{{"id":"z","provider":"codex","home":"{}","label":"Z","source":"Codex CLI","status":"signedOut"}},"a":{{"id":"a","provider":"codex","home":"{}","label":"A","source":"Codex CLI","status":"signedOut"}}}},"logins":{{}},"deleteReceipts":{{}}}}"#,
             fixture.path.display(),
-            fixture.path.display()
+            fixture.path.display(),
+            version = studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
         );
         fs::write(&path, bytes).expect("write ordered registry");
         let driver = AccountDriver::open_with_reader(
@@ -4133,10 +4342,10 @@ exit 0
             Some("chatgpt:stable-account"),
         );
         let mut value = serde_json::json!({
-            "version": 1,
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey": "existing",
             "accounts": {"existing": {
-                "id": "existing", "home": canonical, "label": "Profile",
+                "id": "existing", "provider":studio_runtime_schema::ProviderKind::Codex.key(), "home": canonical, "label": "Profile",
                 "source": "Local profile", "status": "ready",
                 "accountId": "stable-account"
             }},
@@ -4212,17 +4421,19 @@ exit 0
     }
 
     #[test]
-    fn default_registry_matches_python_bytes_and_is_never_replaced() {
+    fn default_registry_uses_current_identity_format_and_is_never_replaced() {
         let fixture = TestDir::new();
         let home = fixture.path.join("codex-\u{e9}");
         let path = fixture.path.join("state/accounts/registry.json");
         assert_eq!(create_default_registry(&path, &home), Ok(true));
         let expected = format!(
-            "{{\"version\": 1, \"defaultAccountKey\": \"default\", \"accounts\": {{\"default\": \
-             {{\"id\": \"default\", \"home\": \"{}\", \"label\": \"Codex\", \"source\": \
+            "{{\"version\": {version}, \"defaultAccountKey\": \"default\", \"accounts\": {{\"default\": \
+             {{\"id\": \"default\", \"provider\": \"{provider}\", \"home\": \"{}\", \"label\": \"Codex\", \"source\": \
              \"Codex CLI\", \"accountId\": null, \"email\": null, \"plan\": null, \"status\": \
              \"signedOut\"}}}}, \"logins\": {{}}, \"deleteReceipts\": {{}}}}",
-            fixture.path.join("codex-\\u00e9").display()
+            fixture.path.join("codex-\\u00e9").display(),
+            version = studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
+            provider = studio_runtime_schema::ProviderKind::Codex.key(),
         );
         let written = fs::read(&path).expect("read created registry");
         assert_eq!(String::from_utf8_lossy(&written), expected);

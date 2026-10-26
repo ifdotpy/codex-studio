@@ -5,6 +5,7 @@ use crate::{submit_gates as gates, thread_prepare as thread, turn_prepare as tur
 use snapshot::*;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::Transaction;
 use studio_runtime_store::path_identity::CanonicalPath;
 
@@ -433,7 +434,7 @@ fn catalog(
     match resources.model_catalog.read_for_admission(
         &intent.account_key,
         &resources.account_home,
-        intent.provider.key(),
+        intent.provider,
     ) {
         AdmissionCatalogRead::Fresh {
             value,
@@ -510,7 +511,7 @@ fn catalog(
             gates::CatalogIdentity {
                 account_key: intent.account_key.clone(),
                 home: resources.account_home.clone(),
-                provider: intent.provider.key().to_owned(),
+                provider: intent.provider,
                 generation: 0,
             },
             None,
@@ -717,7 +718,7 @@ fn daybreak_program(
     let catalog = match resources.model_catalog.read_for_admission(
         &snapshot.account.key,
         &resources.account_home,
-        "codex",
+        ProviderKind::Codex,
     ) {
         crate::model_catalog::AdmissionCatalogRead::Fresh { value, .. } => value,
         crate::model_catalog::AdmissionCatalogRead::Pending => return Err(catalog_pending()),
@@ -2464,6 +2465,7 @@ mod daybreak_tests {
     fn monitor_preparation_accepts_submitted_running_actor_without_start_admission() {
         let record = json!({
             "id":"agent", "epoch":7, "autoWake":true, "deletedAt":null,
+            "provider":studio_runtime_schema::ProviderKind::Codex,
             "status":"running", "startAttempt":{"id":"submitted","submitted":true}
         });
         assert!(validate_monitor_actor(&record, 7).is_ok());

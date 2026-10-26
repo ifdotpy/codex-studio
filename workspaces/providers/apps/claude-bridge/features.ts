@@ -1,7 +1,14 @@
 import type {
   SDKControlGetUsageResponse,
+  SDKAssistantMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { KnownCodexErrorKind } from "./provider-errors.generated.ts";
+import type { FreshToolItem } from "./session-state.ts";
+type NativeToolBlock = Extract<
+  SDKAssistantMessage["message"]["content"][number],
+  { type: "tool_use" }
+>;
 import type {
   BridgeRateLimitInfo,
   BridgeRateBucket as LimitBucket,
@@ -46,11 +53,9 @@ export function usageLimits(response: UsageResponse): BridgeRateLimits {
   const raw = response.rate_limits;
   const window = (value: NativeWindow | null | undefined, minutes: number) =>
     value && {
-      usedPercent:
-        typeof value.utilization === "number" &&
-        Number.isFinite(value.utilization)
-          ? Math.max(0, Math.min(100, value.utilization))
-          : null,
+      usedPercent: Number.isFinite(value.utilization)
+        ? Math.max(0, Math.min(100, value.utilization!))
+        : null,
       resetsAt:
         value.resets_at && Number.isFinite(Date.parse(value.resets_at))
           ? Date.parse(value.resets_at) / 1000
@@ -115,16 +120,13 @@ export function limitEvent(
         id !== "claude" &&
         !["claude-opus", "claude-sonnet", "claude-oauth-apps"].includes(id),
     );
-    const id =
-      names.length === 1
-        ? (names[0] ?? "claude-unknown-limit")
-        : "claude-unknown-limit";
+    const id = names.length === 1 ? names[0]! : "claude-unknown-limit";
     bucket = all[id] ||= { limitId: id, limitName: "Claude · Unknown limit" };
-  } else if (["seven_day_opus", "seven_day_sonnet"].includes(type ?? "")) {
-    const name = (type ?? "").slice(10),
+  } else if (type === "seven_day_opus" || type === "seven_day_sonnet") {
+    const name = type === "seven_day_opus" ? "opus" : "sonnet",
       id = usagePolicy.modelBuckets[name] ?? "";
     bucket = all[id] ||= { limitId: id, limitName: "Claude · " + name };
-  } else if (!["five_hour", "seven_day"].includes(type ?? "")) {
+  } else if (!["five_hour", "seven_day"].includes(type as string)) {
     if (!info.status && !info.overageStatus) return null;
     const id = type === "overage" ? "claude-overage" : "claude-unknown-limit";
     bucket = all[id] ||= {
@@ -138,48 +140,38 @@ export function limitEvent(
     typeof info.overageStatus === "string" ||
     typeof info.isUsingOverage === "boolean" ||
     typeof info.overageInUse === "boolean";
-  if (
-    !(
-      typeof info.utilization === "number" && Number.isFinite(info.utilization)
-    ) &&
-    !hasStatus
-  )
-    return null;
+  if (!Number.isFinite(info.utilization) && !hasStatus) return null;
   bucket[key] = {
     ...bucket[key],
     ...(Number.isFinite(info.utilization)
       ? {
-          usedPercent: Math.max(
-            0,
-            Math.min(100, (info.utilization ?? NaN) * 100),
-          ),
+          usedPercent: Math.max(0, Math.min(100, info.utilization! * 100)),
         }
       : {}),
     windowDurationMins: type === "five_hour" ? 300 : 10080,
-    ...(typeof info.resetsAt === "number" && Number.isFinite(info.resetsAt)
-      ? { resetsAt: info.resetsAt }
-      : {}),
+    ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
   };
   // Replace permission on each event; a later rejection revokes it.
   bucket.claudeRateLimit = structuredClone(info);
   result.claudeRateLimit = structuredClone(info);
   return Object.assign(result, { rateLimits: main, rateLimitsByLimitId: all });
 }
-export function nativeItem(
-  block: { id: string; name: string; input: Record<string, unknown> },
-  cwd: string,
-) {
+export function nativeItem(block: NativeToolBlock, cwd: string): FreshToolItem {
+  const input = block.input;
+  const isInputRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!isInputRecord(input)) throw new Error("Invalid Claude tool input");
   const base = {
     id: block.id,
     status: "inProgress" as const,
     tool: block.name,
-    arguments: block.input,
+    arguments: input,
   };
   if (block.name === "Bash")
     return {
       ...base,
       type: "commandExecution" as const,
-      command: block.input.command,
+      command: input.command,
       cwd,
       aggregatedOutput: "",
     };
@@ -189,14 +181,11 @@ export function nativeItem(
       type: "fileChange" as const,
       changes: [
         {
-          path: block.input.file_path || block.input.notebook_path,
+          path: input.file_path || input.notebook_path,
           kind: { type: block.name === "Write" ? "add" : "update" },
           diff:
-            block.input.content ||
-            "-" +
-              (block.input.old_string || "") +
-              "\n+" +
-              (block.input.new_string || ""),
+            input.content ||
+            "-" + (input.old_string || "") + "\n+" + (input.new_string || ""),
         },
       ],
     };
@@ -207,16 +196,12 @@ export class InputQueue<
 > {
   values: (T & { studioInputBatch?: T[] })[] = [];
   nonQueryIds = new Set<string | undefined>();
-  pending: T[] = [];
+  pending: (T & { uuid?: string; shouldQuery?: boolean })[] = [];
   // Stop removes every SDK message that has not crossed the iterator boundary.
   withdraw() {
     const messages = this.pending.splice(0);
     for (const value of this.values.splice(0))
-      messages.push(
-        ...(typeof value === "object"
-          ? value.studioInputBatch || [value]
-          : [value]),
-      );
+      messages.push(...(value.studioInputBatch || [value]));
     return messages;
   }
   wake: (() => void) | null = null;
@@ -238,14 +223,11 @@ export class InputQueue<
         await new Promise<void>((resolve) => (this.wake = resolve));
       if (this.closed) break;
       if (this.values.length) {
-        const value = this.values.shift();
-        if (value === undefined) continue;
+        const value = this.values.shift()!;
         this.pending = [...(value.studioInputBatch || [value])];
         while (this.pending.length && !this.closed) {
-          const message = this.pending.shift();
-          if (message === undefined) continue;
-          if (typeof message === "object" && message.shouldQuery === false)
-            this.nonQueryIds.add(message.uuid);
+          const message = this.pending.shift()!;
+          if (message.shouldQuery === false) this.nonQueryIds.add(message.uuid);
           yield message;
         }
       }
@@ -257,21 +239,41 @@ export class InputQueue<
 export function overageAllowed(info: RateLimitInfo) {
   if (info.overageStatus === "rejected") return false;
   return (
-    usagePolicy.allowedOverageStatuses.includes(info.overageStatus ?? "") ||
+    usagePolicy.allowedOverageStatuses.includes(info.overageStatus as string) ||
     info.isUsingOverage === true ||
     info.overageInUse === true
   );
 }
 
-// Keep API failure classification at both assistant and terminal boundaries.
+// The SDK owns this closed input domain; new SDK variants require a decision.
+const assistantErrorKinds = {
+  authentication_failed: "unauthorized",
+  oauth_org_not_allowed: null,
+  account_on_hold: null,
+  verification_required: null,
+  billing_error: null,
+  rate_limit: "rateLimitExceeded",
+  overloaded: "serverOverloaded",
+  invalid_request: null,
+  model_not_found: null,
+  server_error: "internalServerError",
+  unknown: null,
+  max_output_tokens: null,
+  cloud_credential_error: null,
+} satisfies Record<
+  NonNullable<SDKAssistantMessage["error"]>,
+  KnownCodexErrorKind | null
+>;
+
+// Keep API failure classification at the SDK assistant boundary.
 export function claudeErrorInfo(
-  error: string | null | undefined,
+  error: SDKAssistantMessage["error"],
   text: string | null | undefined,
-) {
-  if (error === "rate_limit") return "rateLimitExceeded";
-  if (error === "overloaded") return "serverOverloaded";
-  if (error === "server_error") return "internalServerError";
-  if (error === "authentication_failed") return "unauthorized";
+): KnownCodexErrorKind | null {
+  // The SDK yields parsed JSON without validating this declared union. Check
+  // primitive own tags before indexing so arrays and prototype keys stay raw.
+  if (error !== undefined && !isAssistantError(error)) return null;
+  if (error && error !== "unknown") return assistantErrorKinds[error];
   if (
     (!error || error === "unknown") &&
     /(?:^|\b(?:http(?: error)?|api(?: error)?|status(?: code)?)[ :]+)429\b/i.test(
@@ -289,6 +291,23 @@ export function claudeErrorInfo(
   return null;
 }
 
+function isAssistantError(
+  value: unknown,
+): value is NonNullable<SDKAssistantMessage["error"]> {
+  return typeof value === "string" && Object.hasOwn(assistantErrorKinds, value);
+}
+
+// Terminal exceptions and legacy callers are untyped external ingress. A future
+// vendor tag stays unclassified; its original exception belongs to the caller.
+export function legacyClaudeErrorInfo(
+  error: unknown,
+  text: string | null | undefined,
+): KnownCodexErrorKind | null {
+  if (error == null || isAssistantError(error))
+    return claudeErrorInfo(error ?? undefined, text);
+  return null;
+}
+
 export function providerNotice(message: Record<string, unknown>) {
   if (message.subtype === "api_retry") {
     const status =
@@ -299,7 +318,7 @@ export function providerNotice(message: Record<string, unknown>) {
   }
   if (
     ["model_fallback", "model_consent_fallback"].includes(
-      String(message.subtype),
+      message.subtype as string,
     )
   ) {
     const original =

@@ -206,7 +206,7 @@ mod tests {
             json!({"id":"task","owner":"worker","status":"running","updated":10}),
         )
         .expect("test fixture value");
-        let mut agent = json!({"id":"worker","rootId":"lead","epoch":0,"status":"completed"});
+        let mut agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":0,"status":"completed"});
         let mut tasks = vec![task];
         let progress = derive(&connection, &agent, &tasks).expect("test fixture value");
         assert_eq!(
@@ -386,7 +386,7 @@ mod tests {
             .await
             .expect("test fixture value");
         store.transaction_with(|tx| {
-            let actor = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).expect("test fixture value");
+            let actor = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).expect("test fixture value");
             AgentRepository::put(tx,&actor)?;
             let record = json!({"id":"m","agent":"worker","epoch":0,"status":"running","command":"just test-fast","created":5,"tail":"first"});
             Table::<MonitorRecord>::new(tx).put(&MonitorRecord::from_value(record.clone()).expect("test fixture value"))?;

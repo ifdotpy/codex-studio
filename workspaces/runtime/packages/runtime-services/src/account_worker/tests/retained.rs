@@ -2804,7 +2804,16 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         let state = State::new().await;
         let mut peer = Peer::new();
         peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
-        let mut worker = peer.worker(state.bridge.clone()).await;
+        let mut resources = test_resources().unwrap();
+        resources.claude_account_pin =
+            json!({"provider":studio_runtime_schema::ProviderKind::Claude});
+        let mut worker = peer
+            .open_worker_with_resources(state.bridge.clone(), resources)
+            .await;
+        let mut ready = peer.ready.clone();
+        while !*ready.borrow_and_update() {
+            ready.changed().await.unwrap();
+        }
         let session = RetainedClaudeSession::new(std::sync::Arc::new(
             crate::account_worker::retained::consumers::ClaudePort::new(worker.retained_session())
                 .unwrap(),
@@ -2839,7 +2848,15 @@ async fn retained_claude_mutation_waits_while_lightweight_read_can_progress() {
     let state = State::new().await;
     let mut peer = Peer::new();
     peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
-    let mut worker = peer.worker(state.bridge.clone()).await;
+    let mut resources = test_resources().unwrap();
+    resources.claude_account_pin = json!({"provider":studio_runtime_schema::ProviderKind::Claude});
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.unwrap();
+    }
     let port = worker.retained_session();
     let mut first = request(&state, &port, "serialized:first");
     first.method = Method::ClaudeState;

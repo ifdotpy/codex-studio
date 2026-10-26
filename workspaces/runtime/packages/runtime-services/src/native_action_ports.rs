@@ -6,6 +6,8 @@ use crate::native_actions::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, Transaction};
 
 /// Native action admission over the message-ingress workspace and budget owner.
@@ -47,22 +49,20 @@ impl Admission for MessageNativeAdmission {
             })
             || (thread_id.is_some()
                 && value
-                    .pointer("/error/codexErrorInfo")
-                    .and_then(Value::as_str)
-                    == Some("misalignmentPolicyViolation"))
+                    .get("error")
+                    .is_some_and(is_misalignment_policy_violation))
             || (thread_id.is_some()
                 && value.get("nativeTurnError").is_some_and(|previous| {
                     previous.get("turnId") == value.get("turnId")
                         && previous
-                            .pointer("/error/codexErrorInfo")
-                            .and_then(Value::as_str)
-                            == Some("misalignmentPolicyViolation")
+                            .get("error")
+                            .is_some_and(is_misalignment_policy_violation)
                 }));
         if native_thread_blocked {
             return Err(NativeError::Invalid("native-thread/precaution-stop"));
         }
         if action == Action::Review {
-            if value.get("provider").and_then(Value::as_str) != Some("codex") {
+            if value.get("provider").and_then(Value::as_str) != Some(ProviderKind::Codex.key()) {
                 return Err(NativeError::Invalid("review/provider"));
             }
             if value.get("daybreakEnabled") == Some(&serde_json::json!(true)) {

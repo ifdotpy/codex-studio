@@ -7,6 +7,7 @@ use crate::recovery_history::{
 use crate::recovery_policy::{RecoverySnapshot, native_operations_settled};
 use serde_json::{Value, json};
 use std::time::Instant;
+use studio_runtime_schema::provider_lifecycle::{CodexTurnStatus, ThreadActivity, ThreadLifecycle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionMode {
@@ -152,10 +153,9 @@ pub async fn recover_turn(
                 // Restart history proves delivery, but not ownership of a live
                 // stream. Only a confirmed terminal turn can clear this hold.
                 if restart_input_wait
-                    && !matches!(
-                        turn["status"].as_str(),
-                        Some("completed" | "failed" | "interrupted")
-                    )
+                    && CodexTurnStatus::observe(&turn)
+                        .and_then(|status| status.terminal())
+                        .is_none()
                 {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
@@ -166,7 +166,11 @@ pub async fn recover_turn(
             }
             Ok(crate::recovery_history::ExactStart::NotApplied) => {
                 let state = read.thread_document(thread).await?;
-                if !idle(&state["status"]) || crate::event_write::truthy(state.get("activeFlags")) {
+                if !ThreadLifecycle::observe(&state)
+                    .and_then(|observation| observation.activity)
+                    .is_some_and(|activity| activity.is_idle())
+                    || crate::event_write::truthy(state.get("activeFlags"))
+                {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
                 read.barrier().await?;
@@ -453,7 +457,7 @@ async fn latest_turn(
     Ok(rows.first().cloned())
 }
 fn idle(state: &Value) -> bool {
-    matches!(state["type"].as_str(), Some("idle" | "notLoaded"))
+    ThreadActivity::observe(state).is_some_and(|state| state.is_idle())
 }
 fn state_name(state: &Value) -> Result<&str, HistoryError> {
     state["type"]
@@ -461,10 +465,10 @@ fn state_name(state: &Value) -> Result<&str, HistoryError> {
         .ok_or(HistoryError::Invalid("status.type"))
 }
 fn terminal(turn: &Value) -> bool {
-    matches!(
-        turn["status"].as_str(),
-        Some("completed" | "failed" | "interrupted" | "uncertain")
-    )
+    CodexTurnStatus::observe(turn)
+        .and_then(|status| status.terminal()).is_some()
+        // An explicit bridge history hold, never a successful terminal decision.
+        || turn["status"] == "uncertain"
 }
 
 /// Pure completion permission proof; the adapter obtains `unresolved_receipts`

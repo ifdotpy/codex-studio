@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::{StoreError, Transaction};
 
 #[derive(Debug, thiserror::Error)]
@@ -248,14 +249,18 @@ pub fn processes(
             let Some(owner) = owners.iter().find(|o| o["id"] == raw["agent"]) else {
                 continue;
             };
-            let provider =
-                text(&raw, "sourceProvider", text(owner, "provider", "codex")).to_owned();
+            let provider = text(
+                &raw,
+                "sourceProvider",
+                text(owner, "provider", ProviderKind::Codex.key()),
+            )
+            .to_owned();
             let source = if table == "runtime_monitors" {
                 "monitor"
             } else if raw["kind"] == "command" && studio_runtime_store::truthy(raw.get("processId"))
             {
                 "codex_task"
-            } else if provider == "claude"
+            } else if provider == ProviderKind::Claude.key()
                 && raw["kind"] == "tool"
                 && text(&raw, "itemId", "")
                     .strip_prefix("task:")

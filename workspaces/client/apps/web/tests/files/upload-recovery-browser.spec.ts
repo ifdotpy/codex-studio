@@ -1,7 +1,7 @@
-import type { Browser, Page, Route } from "@playwright/test";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
-import { fixturePostBody } from "../teams/helpers.ts";
 import { required } from "../teams/helpers.ts";
+import type { Browser, Page, Route } from "@playwright/test";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "../teams/helpers.ts";
 import type {} from "./upload-recovery-browser.fixture.tsx";
 import type {} from "./upload-recovery-browser.writer.fixture.tsx";
 // Real File blobs, IndexedDB transactions, recovery hooks, and composer input.
@@ -38,7 +38,7 @@ test("upload recovery browser", async ({ browser }) => {
   try {
     await server.listen();
     context = await browser.newContext();
-    const page = await required(context).newPage();
+    const page = await context.newPage();
     let stage = "initial";
     const errors: {
       stage: string;
@@ -52,8 +52,20 @@ test("upload recovery browser", async ({ browser }) => {
       mode = "hold";
     const posts: PostBody<"/api/assets">[] = [],
       headers: (string | undefined)[] = [],
-      held: { route: Route; receipt: PostResult<"/api/assets"> }[] = [],
-      receipts = new Map<string, PostResult<"/api/assets">>();
+      held: {
+        route: Route;
+        receipt: Pick<
+          import("../../src/apiTypes.ts").PostResult<"/api/assets">,
+          "id" | "name" | "size" | "mime" | "image"
+        >;
+      }[] = [],
+      receipts = new Map<
+        string,
+        Pick<
+          import("../../src/apiTypes.ts").PostResult<"/api/assets">,
+          "id" | "name" | "size" | "mime" | "image"
+        >
+      >();
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -74,9 +86,6 @@ test("upload recovery browser", async ({ browser }) => {
         return route.fulfill({ status: 400, json: { error: "Rejected file" } });
       const receipt = receipts.get(required(body.id)) || {
         id: required(body.id),
-        agent: body.agent,
-        created: 1,
-        hash: "fixture",
         name: body.name,
         size: Buffer.from(required(body.base64), "base64").length,
         mime: "text/plain",
@@ -91,14 +100,14 @@ test("upload recovery browser", async ({ browser }) => {
     });
     const mount = async () => {
       stage = `mount ${workspaceId}`;
-      await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+      await page.goto(server.resolvedUrls!.local[0]! + "check");
       await page.addScriptTag({
         type: "module",
         url: "/tests/files/upload-recovery-browser.fixture.tsx",
       });
       await page.waitForFunction(() => !!window.uploadRecoveryBrowserMount);
       await page.evaluate((scope) => {
-        window.uploadRecoveryBrowserScope = scope;
+        window.scope = scope;
         window.uploadRecoveryBrowserMount();
       }, workspaceId);
       await page.waitForFunction(() => !!window.uploadRecoveryBrowserFixture);
@@ -111,7 +120,7 @@ test("upload recovery browser", async ({ browser }) => {
             "Recovery state did not arrive: " +
               JSON.stringify(
                 await page.evaluate(() => ({
-                  notices: window.uploadRecoveryBrowserNotices,
+                  notices: window.notices,
                   error: window.uploadRecoveryBrowserFixture?.recovery.error,
                   pending:
                     window.uploadRecoveryBrowserFixture?.recovery.pending.map(
@@ -131,7 +140,7 @@ test("upload recovery browser", async ({ browser }) => {
     // A failed local commit must leave the selected File objects in the input.
     await page.evaluate(() => {
       const original = IDBDatabase.prototype.transaction;
-      window.uploadRecoveryBrowserRestoreTransactions = () =>
+      window.restoreTransactions = () =>
         (IDBDatabase.prototype.transaction = original);
       IDBDatabase.prototype.transaction = function (...args) {
         if (this.name === "codex-studio-uploads" && args[1] === "readwrite")
@@ -149,20 +158,18 @@ test("upload recovery browser", async ({ browser }) => {
       buffer: Buffer.from("Keep selected bytes"),
     });
     await page.waitForFunction(() =>
-      window.uploadRecoveryBrowserNotices.some((message) =>
+      window.notices.some((message) =>
         message.includes("Upload storage is full"),
       ),
     );
     assert.equal(
-      await input.evaluate((input) =>
-        input instanceof HTMLInputElement ? input.files?.length : undefined,
+      await input.evaluate(
+        (input) => (input as HTMLInputElement).files!.length,
       ),
       1,
     );
     assert.equal(posts.length, 0);
-    await page.evaluate(() =>
-      window.uploadRecoveryBrowserRestoreTransactions(),
-    );
+    await page.evaluate(() => window.restoreTransactions());
     await page.evaluate(() =>
       window.uploadRecoveryBrowserFixture.setScope("b".repeat(32)),
     );
@@ -181,6 +188,7 @@ test("upload recovery browser", async ({ browser }) => {
     const retryOwner = await page.evaluate(async () => {
       const row = (await window.uploadRecoveryBrowserFixture.pending())[0];
       if (!row) throw new Error("Missing pending upload");
+
       return { id: row.id, agent: row.agent, workspace: row.workspace };
     });
     assert.equal(retryOwner.agent, "lead");
@@ -247,8 +255,8 @@ test("upload recovery browser", async ({ browser }) => {
       ["First saved bytes", "Second saved bytes"],
     );
     assert.equal(
-      await input.evaluate((input) =>
-        input instanceof HTMLInputElement ? input.files?.length : undefined,
+      await input.evaluate(
+        (input) => (input as HTMLInputElement).files!.length,
       ),
       0,
     );
@@ -306,13 +314,13 @@ test("upload recovery browser", async ({ browser }) => {
     );
     assert.equal(
       await page.evaluate(
-        () => window.uploadRecoveryBrowserFixture.profile?.instructions,
+        () => window.uploadRecoveryBrowserFixture.profile!.instructions,
       ),
       "Keep these instructions",
     );
     assert.equal(
       await page.evaluate(
-        () => window.uploadRecoveryBrowserFixture.rule?.command,
+        () => window.uploadRecoveryBrowserFixture.rule!.command,
       ),
       "printf recovery",
     );
@@ -334,13 +342,12 @@ test("upload recovery browser", async ({ browser }) => {
       try {
         await window.uploadRecoveryBrowserFixture.recovery.remove(id);
       } catch (error) {
-        window.uploadRecoveryBrowserCancelError =
-          error instanceof Error ? error.message : String(error);
+        window.cancelError = (error as Error).message;
       }
       IDBDatabase.prototype.transaction = original;
     }, cancelled);
     assert.equal(
-      await page.evaluate(() => window.uploadRecoveryBrowserCancelError),
+      await page.evaluate(() => window.cancelError),
       "Deletion interrupted",
     );
     await required(held.shift()).route.fulfill({
@@ -349,7 +356,7 @@ test("upload recovery browser", async ({ browser }) => {
     await page.waitForTimeout(150);
     assert.equal(
       await page.evaluate(
-        () => window.uploadRecoveryBrowserFixture.attachments.lead?.length,
+        () => window.uploadRecoveryBrowserFixture.attachments.lead!.length,
       ),
       2,
       "A late upload reply cannot recreate a removed attachment",
@@ -359,12 +366,15 @@ test("upload recovery browser", async ({ browser }) => {
     await page.waitForTimeout(200);
     assert.equal(
       await page.evaluate(
-        () => window.uploadRecoveryBrowserFixture.attachments.lead?.length,
+        () => window.uploadRecoveryBrowserFixture.attachments.lead!.length,
       ),
       2,
       "A persisted tombstone prevents recovery after interrupted deletion and reload",
     );
-    assert.equal(posts.filter((body) => body.id === cancelled).length, 1);
+    assert.equal(
+      posts.filter((body) => required(body.id) === cancelled).length,
+      1,
+    );
     await input.setInputFiles([
       {
         name: "reject.txt",
@@ -379,7 +389,7 @@ test("upload recovery browser", async ({ browser }) => {
     ]);
     await wait(() =>
       page.evaluate(() =>
-        window.uploadRecoveryBrowserFixture.attachments.lead?.some(
+        window.uploadRecoveryBrowserFixture.attachments.lead!.some(
           (asset) => asset.name === "pass.txt",
         ),
       ),
@@ -399,18 +409,17 @@ test("upload recovery browser", async ({ browser }) => {
       async () =>
         (await window.uploadRecoveryBrowserFixture.pending()).find(
           (row) => row.name === "reject.txt",
-        )?.id,
+        )!.id,
     );
     await page.evaluate(
-      (id) => window.uploadRecoveryBrowserFixture.recovery.remove(id || ""),
+      (id) => window.uploadRecoveryBrowserFixture.recovery.remove(id!),
       rejected,
     );
     // Freeze the blob read between identity validation and the HTTP request.
     await page.evaluate(() => {
       const read = FileReader.prototype.readAsDataURL;
       FileReader.prototype.readAsDataURL = function (blob) {
-        window.uploadRecoveryBrowserReleaseFileRead = () =>
-          read.call(this, blob);
+        window.releaseFileRead = () => read.call(this, blob);
         FileReader.prototype.readAsDataURL = read;
       };
     });
@@ -419,16 +428,14 @@ test("upload recovery browser", async ({ browser }) => {
       mimeType: "text/plain",
       buffer: Buffer.from("Immutable workspace"),
     });
-    await page.waitForFunction(
-      () => !!window.uploadRecoveryBrowserReleaseFileRead,
-    );
+    await page.waitForFunction(() => !!window.releaseFileRead);
     await page.evaluate(async () => {
       (await import("/src/api.ts")).setWorkspace("b".repeat(32));
-      window.uploadRecoveryBrowserReleaseFileRead();
+      window.releaseFileRead();
     });
     await wait(() =>
       page.evaluate(() =>
-        window.uploadRecoveryBrowserFixture.attachments.lead?.some(
+        window.uploadRecoveryBrowserFixture.attachments.lead!.some(
           (asset) => asset.name === "scope.txt",
         ),
       ),
@@ -450,7 +457,7 @@ test("upload recovery browser", async ({ browser }) => {
         );
         return "accepted";
       } catch (error) {
-        return error instanceof Error ? error.message : String(error);
+        return (error as Error).message;
       }
     });
     assert.match(refused, /workspace changed/i);
@@ -466,7 +473,7 @@ test("upload recovery browser", async ({ browser }) => {
     await other.route("**/api/sync/identity", (route) =>
       route.fulfill({ json: { workspaceId } }),
     );
-    await other.goto(required(server.resolvedUrls?.local[0]) + "check");
+    await other.goto(server.resolvedUrls!.local[0]! + "check");
     await other.addScriptTag({
       type: "module",
       url: "/tests/files/upload-recovery-browser.fixture.tsx",
@@ -475,11 +482,11 @@ test("upload recovery browser", async ({ browser }) => {
       () => !!window.uploadRecoveryBrowserMountWriter,
     );
     await other.evaluate(() => window.uploadRecoveryBrowserMountWriter());
-    await other.waitForFunction(() => !!window.uploadRecoveryBrowserWriter);
+    await other.waitForFunction(() => !!window.uploadRecoveryBrowserFixture);
     const write = (page: Page, id: string) =>
       page.evaluate(
         (id) =>
-          window.uploadRecoveryBrowserWriter.setAttachments((current) => ({
+          window.uploadRecoveryBrowserFixture.setAttachments((current) => ({
             ...current,
             lead: [
               ...(current.lead || []),
@@ -497,7 +504,7 @@ test("upload recovery browser", async ({ browser }) => {
           tab.waitForFunction(
             () =>
               ["tab-a", "tab-b"].every((id) =>
-                window.uploadRecoveryBrowserWriter.attachments.lead?.some(
+                window.uploadRecoveryBrowserFixture.attachments.lead!.some(
                   (asset) => asset.id === id,
                 ),
               ),
@@ -510,7 +517,7 @@ test("upload recovery browser", async ({ browser }) => {
       const state = await Promise.all(
         tabs.map((tab) =>
           tab.evaluate(() => ({
-            attachments: window.uploadRecoveryBrowserWriter.attachments,
+            attachments: window.uploadRecoveryBrowserFixture.attachments,
             stored: window.uploadRecoveryBrowserReadStoredAttachments(),
           })),
         ),
@@ -522,14 +529,14 @@ test("upload recovery browser", async ({ browser }) => {
     }
     const shared = await page.evaluate(() =>
       window
-        .uploadRecoveryBrowserReadStoredAttachments()
-        .lead?.map(
+        .uploadRecoveryBrowserReadStoredAttachments(null)
+        .lead!.map(
           (
             asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
           ) => asset.id,
         ),
     );
-    assert.ok(shared?.includes("tab-a") && shared?.includes("tab-b"));
+    assert.ok(shared.includes("tab-a") && shared.includes("tab-b"));
     await other.close();
     expect(errors).toEqual([]);
     console.log(
@@ -575,14 +582,14 @@ async function setupAttachmentWriters(browser: Browser) {
           body: "<!doctype html><title>Attachment writer</title>",
         }),
       );
-      await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+      await page.goto(server.resolvedUrls!.local[0]! + "check");
       await page.addScriptTag({
         type: "module",
         url: "/tests/files/upload-recovery-browser.writer.fixture.tsx",
       });
       await page.waitForFunction(() => !!window.uploadRecoveryBrowserRaceMount);
       await page.evaluate(() => window.uploadRecoveryBrowserRaceMount());
-      await page.waitForFunction(() => !!window.uploadRecoveryBrowserWriter);
+      await page.waitForFunction(() => !!window.uploadRecoveryBrowserFixture);
       return page;
     };
     const page = await mountWriter();
@@ -596,7 +603,7 @@ async function setupAttachmentWriters(browser: Browser) {
     const write = (tab: Page, id: string) =>
       tab.evaluate(
         (id) =>
-          window.uploadRecoveryBrowserWriter.setAttachments((current) => ({
+          window.uploadRecoveryBrowserFixture.setAttachments((current) => ({
             ...current,
             lead: [
               ...(current.lead || []),
@@ -680,7 +687,7 @@ test("20 concurrent cross-tab attachment pairs lose no update", async ({
       const surviving = snapshots.at(-1);
       if (
         writes.some((written) => !written) ||
-        !ids.every((id) => surviving?.includes(id))
+        !ids.every((id) => surviving!.includes(id))
       )
         lost.push({ pair, writes, surviving });
     }

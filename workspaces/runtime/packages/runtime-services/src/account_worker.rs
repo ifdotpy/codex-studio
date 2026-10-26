@@ -23,6 +23,7 @@ use studio_runtime_process::{
         Shutdown,
     },
 };
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{Frame, Method, RequestId, RequestOutcome, ResponseBody};
 use studio_runtime_store::{
     AgentId, AgentRepository, ObservedTable, RuntimeStore, SchedulerRepository, StoreError,
@@ -490,6 +491,12 @@ pub enum AccountCommand {
     /// Re-evaluate idle candidates as if a durable blocker commit notified the worker.
     #[cfg(test)]
     IdleStateChange(tokio::time::Instant),
+    /// Inspect settled idle decisions, optionally after a completed sweep.
+    #[cfg(test)]
+    IdleInspect {
+        sweep_at: Option<tokio::time::Instant>,
+        reply: tokio::sync::oneshot::Sender<idle_unload::IdleObservation>,
+    },
     /// The caller's durable event and epoch are rechecked inside the claim transaction.
     Wake {
         agent_id: String,
@@ -1588,6 +1595,13 @@ impl Worker {
             }
             #[cfg(test)]
             AccountCommand::IdleStateChange(now) => self.idle_state_changed(now),
+            #[cfg(test)]
+            AccountCommand::IdleInspect { sweep_at, reply } => {
+                if let Some(now) = sweep_at {
+                    self.idle_sweep(now).await?;
+                }
+                let _sent = reply.send(self.idle_observation());
+            }
             AccountCommand::VmNotification(command) => self.vm_notification(*command).await?,
             AccountCommand::CommittedFrame(command) => self.committed_frame(*command).await?,
             AccountCommand::RetainedRequest(command) => self.retained_request(*command).await?,
@@ -1804,7 +1818,7 @@ impl Worker {
                     self.resources.model_catalog.clone(),
                     self.account.clone(),
                     self.resources.account_home.clone(),
-                    intent.provider.key().to_owned(),
+                    intent.provider,
                 )
             });
         let agents = catalog
@@ -1813,7 +1827,7 @@ impl Worker {
         let task = tokio::spawn(async move {
             match (catalog, agents) {
                 (Some((catalog, account, home, provider)), _) => {
-                    catalog.refreshed(&account, &home, &provider).await;
+                    catalog.refreshed(&account, &home, provider).await;
                 }
                 (None, Some(agents)) => {
                     if agents.await.is_err() {
@@ -1852,7 +1866,10 @@ impl Worker {
             .vm_sessions
             .values()
             .map(|session| session.launch_request.clone())
-            .filter(|request| request.provider == "claude" && request.account_key == self.account)
+            .filter(|request| {
+                request.provider == ProviderKind::Claude.key()
+                    && request.account_key == self.account
+            })
             .collect::<Vec<_>>();
         let Some(resolver) = self.resources.vm_provider_launch.clone() else {
             self.vm_credential_refresh_at = None;
@@ -3404,7 +3421,7 @@ impl Worker {
 
     fn has_active_claude_vm_sessions(&self) -> bool {
         self.vm_sessions.values().any(|session| {
-            session.launch_request.provider == "claude"
+            session.launch_request.provider == ProviderKind::Claude.key()
                 && session.launch_request.account_key == self.account
         })
     }

@@ -1,4 +1,3 @@
-import { requiredFixtureValue } from "./browser-fixture.ts";
 import assert from "node:assert/strict";
 import type { TestAgent, TestRuntimeView } from "../playwright.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
@@ -47,11 +46,11 @@ test("team, task assignments and projects render typed stream changes without ex
       }
       if (url.pathname === "/api/projects" && request.method === "POST") {
         const projectBody = fixturePostBody<"/api/projects">(body);
-        assert.ok("path" in projectBody && projectBody.path);
+
         projectWrites.push(projectBody);
         const project = {
-          id: projectBody.path,
-          path: projectBody.path,
+          id: projectBody.path!,
+          path: projectBody.path!,
           name: "Created live project",
           folders: [],
           peerTeams: [],
@@ -74,6 +73,7 @@ test("team, task assignments and projects render typed stream changes without ex
   });
   const lead = backend.snapshot.runtime.agents[0];
   assert.ok(lead);
+
   backend.snapshot.runtime.viewScopedAgents = true;
   const worker: TestAgent = {
     ...lead,
@@ -169,9 +169,9 @@ test("team, task assignments and projects render typed stream changes without ex
         files: [],
         created: 2,
         gate: {
-          status: "failed",
           cwd: null,
           log: null,
+          status: "failed",
           config: gate,
           exitCode: 1,
           output: "Full streamed gate output",
@@ -188,7 +188,7 @@ test("team, task assignments and projects render typed stream changes without ex
         created: 2,
       },
     ];
-    requiredFixtureValue(backend.snapshot.runtime.work[0]).status = task.status;
+    backend.snapshot.runtime.work[0]!.status = task.status;
     backend.publishState([
       { kind: "state" },
       { kind: "work", agentId: lead.id },

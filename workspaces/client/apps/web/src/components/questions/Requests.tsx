@@ -232,21 +232,16 @@ function AnswerForm({
           const v = answerList(question, values[key]);
           if (!required.has(key) && !v.some((answer) => answer.trim()))
             continue;
-          if (type === "array" && enumValues.length > 0) {
-            content[key] = v;
-            continue;
-          }
-          const [first] = v;
-          if (first === undefined)
-            throw new Error("Missing requested answer value");
           content[key] =
             type === "boolean"
-              ? first === "true"
+              ? v[0] === "true"
               : ["integer", "number"].includes(type)
-                ? Number(first)
-                : ["object", "array"].includes(type)
-                  ? parseJson(first)
-                  : first;
+                ? Number(v[0])
+                : type === "array" && enumValues.length > 0
+                  ? v
+                  : ["object", "array"].includes(type)
+                    ? parseJson(v[0] ?? "")
+                    : v[0];
         }
         body = { decision: "accept", content };
       }

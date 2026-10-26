@@ -161,6 +161,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         result: "cleared",
         usage: { input_tokens: 0, output_tokens: 0 },
       };

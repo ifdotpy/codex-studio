@@ -1,7 +1,10 @@
 import type { Agent } from "../../src/types.ts";
 import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
-import type {} from "./context-repair-notice-ui.fixture.tsx";
+import type {
+  ContextRepairAgent,
+  ContextRepairSnapshot,
+} from "./context-repair-notice-ui.fixture.tsx";
 import { test } from "../playwright.ts";
 // Render the actual banner: ordinary monitor waits are quiet, failures stay visible.
 import assert from "node:assert/strict";
@@ -56,7 +59,7 @@ test("Context repair notice ui", async ({
     );
     const error =
       "Context repair waits for monitors: 3c403ca5-4143-5750-a061-dd19ab5aab5c";
-    const agent: Agent = {
+    const agent = {
       id: "fixture",
       name: "Fixture",
       status: "queued",
@@ -67,20 +70,18 @@ test("Context repair notice ui", async ({
       epoch: 0,
       error,
       contextRepairWait: { scope: "local", error },
-    };
+    } satisfies Agent;
     let cases = 0;
     const check = async (
       label: string,
-      value: Agent,
+      value: ContextRepairAgent,
       visible: boolean,
       text?: RegExp,
     ) => {
-      await page.evaluate(
-        (snapshot) => window.applyContextRepairSnapshot(snapshot),
-        JSON.stringify({
-          label,
-          agent: value,
-        }),
+      await page.evaluate<void, unknown>(
+        (snapshot) =>
+          window.applyContextRepairSnapshot(snapshot as ContextRepairSnapshot),
+        { label, agent: value },
       );
       await page.locator(`main[data-case="${label}"]`).waitFor();
       assert.equal(
@@ -138,7 +139,7 @@ test("Context repair notice ui", async ({
       {
         ...agent,
         nativeThreadBlock: {
-          threadId: agent.threadId ?? null,
+          threadId: agent.threadId!,
           error: {
             codexErrorInfo: "badRequest",
             message: "Native request rejected",
@@ -154,12 +155,11 @@ test("Context repair notice ui", async ({
         ...agent,
         capacityRetry: {
           id: "retry",
-          threadId: agent.threadId ?? null,
+          threadId: agent.threadId!,
           epoch: 0,
           accountKey: "default",
           status: "scheduled",
           dueAt: Date.now() / 1000 + 60,
-          updatedAt: Date.now() / 1000,
         },
       },
       true,

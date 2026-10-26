@@ -615,6 +615,7 @@ it("preserves an existing oversized Work result and >512 history rows, then stre
     await request("/fixture/entity", {
       agent: {
         id: "work-child",
+        provider: "codex",
         rootId: "lead",
         epoch: 1,
         status: "idle",
@@ -797,6 +798,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
     const reads = mocks.syncGet.mock.calls.length;
     const worker = {
       id: "worker",
+      provider: "codex",
       rootId: "lead",
       parentId: "lead",
       epoch: 1,
@@ -876,6 +878,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       agent: {
         id: "lead",
         rootId: "lead",
+        provider: "codex",
         epoch: 1,
         status: "running",
         name: "Lead",

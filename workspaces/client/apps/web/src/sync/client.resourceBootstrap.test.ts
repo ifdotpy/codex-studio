@@ -36,10 +36,9 @@ vi.mock("../servers/eventSource", () => ({
     onopen = null;
     onerror = null;
     closed = false;
-    readonly url: string;
+    declare readonly url: string;
     constructor(url: string) {
       this.url = url;
-
       mocks.sources.push(this);
     }
     addEventListener(name: string, accept: (event: Event) => void) {

@@ -1,6 +1,10 @@
 //! Durable claim and settlement operations owned by the account turn worker.
 
 use serde_json::{Value, json};
+use studio_runtime_schema::{
+    provider_errors::{KnownCodexErrorKind, known_error_kind},
+    provider_lifecycle::{CodexTurnStatus, TerminalTurnStatus, TurnLifecycle, TurnPhase},
+};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, ExecutionHistoryRepository, RuntimeStore,
     SchedulerRepository, StoreError, TurnAttemptIdentity,
@@ -634,6 +638,15 @@ pub(crate) fn settle_terminal_in_transaction(
                 id: identity.attempt_id.clone(),
             });
     }
+    let Some(TurnLifecycle {
+        phase: TurnPhase::Terminal(_),
+        ..
+    }) = params["threadId"]
+        .as_str()
+        .and_then(|thread_id| TurnLifecycle::observe(thread_id, &params["turn"]))
+    else {
+        return Ok(false);
+    };
     let agent = AgentRepository::get(transaction, &AgentId::from(identity.agent_id.as_str()))
         .map_err(|_| StoreError::InvalidSyncObject {
             scope: "runtime_agents".into(),
@@ -728,41 +741,41 @@ pub(crate) fn settle_terminal_in_transaction(
 }
 
 // Pure native/visible classification is shared with the future asynchronous worker.
-fn terminal_outcome<'a>(
-    turn: &'a Value,
+fn terminal_outcome(
+    turn: &Value,
     previous: Option<&Value>,
-) -> Option<(&'a str, AgentStatus, Option<Value>)> {
-    let mut native = turn["status"].as_str()?;
+) -> Option<(&'static str, AgentStatus, Option<Value>)> {
+    let mut native = CodexTurnStatus::observe(turn)?.terminal()?;
     let error = turn.get("error").filter(|v| !v.is_null());
-    let info = &turn["error"]["codexErrorInfo"];
-    if native == "interrupted" && (info == "tooManyDenials" || info.get("tooManyDenials").is_some())
+    if native == TerminalTurnStatus::Interrupted
+        && known_error_kind(&turn["error"]) == Some(KnownCodexErrorKind::TooManyDenials)
     {
-        native = "failed";
+        native = TerminalTurnStatus::Failed;
     }
     let saved = previous
         .filter(|p| p["turnId"] == turn["id"])
         .and_then(|p| p.get("error"));
     let visible_error = error.or(saved).filter(|v| !v.is_null());
-    let kind = visible_error.and_then(|e| e.get("codexErrorInfo"));
-    let refusal = kind.is_some_and(|k| {
-        k == "cyberPolicy"
-            || k == "misalignmentPolicyViolation"
-            || k.get("cyberPolicy").is_some()
-            || k.get("misalignmentPolicyViolation").is_some()
-    });
-    let visible = if refusal { "failed" } else { native };
+    let refusal = matches!(
+        visible_error.and_then(known_error_kind),
+        Some(KnownCodexErrorKind::CyberPolicy | KnownCodexErrorKind::MisalignmentPolicyViolation)
+    );
+    let visible = if refusal {
+        TerminalTurnStatus::Failed
+    } else {
+        native
+    };
     let (status, error) = match visible {
-        "completed" => (AgentStatus::Completed, None),
-        "failed" => (
+        TerminalTurnStatus::Completed => (AgentStatus::Completed, None),
+        TerminalTurnStatus::Failed => (
             AgentStatus::Failed,
             Some(visible_error.cloned().unwrap_or_else(
                 || serde_json::json!({"message":"Codex ended this turn with an error."}),
             )),
         ),
-        "interrupted" => (AgentStatus::Interrupted, error.cloned()),
-        _ => return None,
+        TerminalTurnStatus::Interrupted => (AgentStatus::Interrupted, error.cloned()),
     };
-    Some((native, status, error))
+    Some((native.as_str(), status, error))
 }
 
 /// The durable result can replay true; only the first successful application authorizes transport.
@@ -1047,6 +1060,48 @@ mod terminal_policy_tests {
     use super::*;
     use serde_json::json;
     #[test]
+    fn terminal_refusal_visibility_preserves_native_outcome_and_saved_turn_scope() {
+        for info in [
+            json!("cyberPolicy"),
+            json!({"misalignmentPolicyViolation":{}}),
+        ] {
+            let turn = json!({"id":"turn","status":"completed","error":{"codexErrorInfo":info}});
+            let (native, visible, error) = terminal_outcome(&turn, None).expect("terminal");
+            assert_eq!(native, "completed");
+            assert_eq!(visible, AgentStatus::Failed);
+            assert_eq!(error, Some(turn["error"].clone()));
+            let saved = json!({"turnId":"turn","error":turn["error"]});
+            let turn = json!({"id":"turn","status":"completed"});
+            assert_eq!(
+                terminal_outcome(&turn, Some(&saved)),
+                Some((
+                    "completed",
+                    AgentStatus::Failed,
+                    Some(saved["error"].clone())
+                ))
+            );
+            let other = json!({"turnId":"other","error":saved["error"]});
+            assert_eq!(
+                terminal_outcome(&turn, Some(&other)),
+                Some(("completed", AgentStatus::Completed, None))
+            );
+        }
+    }
+    #[test]
+    fn unknown_turn_status_cannot_be_settled_by_a_refusal_error() {
+        for status in [json!("futureStatus"), json!("uncertain"), Value::Null] {
+            let turn =
+                json!({"id":"turn","status":status,"error":{"codexErrorInfo":"cyberPolicy"}});
+            let original = turn.clone();
+            assert!(terminal_outcome(&turn, None).is_none());
+            assert_eq!(turn, original, "classification preserves receipt payloads");
+            let saved =
+                json!({"turnId":"turn","error":{"codexErrorInfo":"misalignmentPolicyViolation"}});
+            let turn = json!({"id":"turn","status":status});
+            assert!(terminal_outcome(&turn, Some(&saved)).is_none());
+        }
+    }
+    #[test]
     fn native_denials_fail_both_outcomes_without_fabricating_other_interrupts() {
         for info in [json!("tooManyDenials"), json!({"tooManyDenials":{}})] {
             let turn = json!({"status":"interrupted","error":{"codexErrorInfo":info}});
@@ -1077,7 +1132,7 @@ mod invalid_record_recovery_tests {
             .transaction(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('bad',?1)",
-                    [json!({
+                    [json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"bad", "rootId":17, "epoch":1, "status":"running",
                         "autoWake":true, "inFlight":true,
                         "startAttempt":{"id":"attempt","epoch":1,"submitted":true,"events":[]}
@@ -1098,13 +1153,15 @@ mod invalid_record_recovery_tests {
             .transaction(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('healthy',?1)",
-                    [json!({
-                        "id":"healthy", "rootId":"healthy", "epoch":1,
-                        "status":"running", "autoWake":true, "inFlight":true,
-                        "startAttempt":{"id":"live-attempt","submitted":true,
-                            "connectionId":"fcd7c814-1048-4599-9b2d-4151fbc40b68"}
-                    })
-                    .to_string()],
+                    [
+                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"healthy", "rootId":"healthy", "epoch":1,
+                            "status":"running", "autoWake":true, "inFlight":true,
+                            "startAttempt":{"id":"live-attempt","submitted":true,
+                                "connectionId":"fcd7c814-1048-4599-9b2d-4151fbc40b68"}
+                        })
+                        .to_string(),
+                    ],
                 )?;
                 Ok(())
             })
@@ -1160,7 +1217,7 @@ mod child_turn_parent_tests {
         store
             .transaction(move |tx| {
                 for record in [
-                    json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed",
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"completed",
                         "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
                         "concurrency":4}),
                     json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,
@@ -1551,6 +1608,39 @@ mod child_turn_parent_tests {
     }
 
     const TOO_MANY_ATTEMPTS: &str = "responseTooManyFailedAttempts";
+
+    #[tokio::test]
+    async fn unknown_terminal_notification_preserves_attempt_and_raw_receipt() {
+        let (_directory, store, intent) = seeded("claude").await;
+        let params = json!({"threadId":"thread","turn":{"id":TURN,"status":"futureStatus",
+            "error":{"codexErrorInfo":"cyberPolicy"},"futureReceipt":{"opaque":[1,2,3]}}});
+        let before = child(&store);
+        let bytes = serde_json::to_vec(&params).expect("raw notification");
+        assert!(
+            !settle_terminal_attempt(&store, &intent.identity(), &params)
+                .await
+                .expect("classification")
+        );
+        assert_eq!(
+            child(&store),
+            before,
+            "unknown outcome cannot settle the attempt"
+        );
+        assert!(parent_events(&store).is_empty());
+        assert_eq!(
+            serde_json::to_vec(&params).expect("raw notification"),
+            bytes
+        );
+        store
+            .transaction(move |tx| {
+                let attempt = ExecutionHistoryRepository::attempt(tx, &intent.attempt_id)?
+                    .expect("attempt retained");
+                assert!(attempt["receipts"].get("terminalInput").is_none());
+                Ok(())
+            })
+            .await
+            .expect("receipt read");
+    }
 
     #[tokio::test]
     async fn failed_child_turn_reports_one_failed_result() {

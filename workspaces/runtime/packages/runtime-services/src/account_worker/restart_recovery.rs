@@ -15,6 +15,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
+use studio_runtime_schema::provider_lifecycle::{CodexTurnStatus, TerminalTurnStatus};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SchedulerRepository};
 
 pub(super) struct FirstPass {
@@ -355,14 +356,14 @@ impl CompletionWriter for RestartInputCompletion {
             marker["reconciledAt"] = json!(unix_seconds());
         }
         AgentRepository::put(tx, &agent)?;
-        let native_status = turn["status"].as_str().ok_or(RecoveryError::CommitFailed)?;
-        let terminal = match native_status {
-            "completed" => Some(studio_runtime_store::AgentStatus::Completed),
-            "failed" => Some(studio_runtime_store::AgentStatus::Failed),
-            "interrupted" => Some(studio_runtime_store::AgentStatus::Interrupted),
-            _ => None,
-        };
-        if let Some(status) = terminal {
+        let terminal = CodexTurnStatus::observe(turn).and_then(|status| status.terminal());
+        if let Some(terminal) = terminal {
+            let native_status = terminal.as_str();
+            let status = match terminal {
+                TerminalTurnStatus::Completed => studio_runtime_store::AgentStatus::Completed,
+                TerminalTurnStatus::Failed => studio_runtime_store::AgentStatus::Failed,
+                TerminalTurnStatus::Interrupted => studio_runtime_store::AgentStatus::Interrupted,
+            };
             let items = turn["items"]
                 .as_array()
                 .ok_or(RecoveryError::CommitFailed)?;

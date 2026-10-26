@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { atomicJSON } from "./recovery.ts";
 
-function rectangle(value: Rectangle | undefined): value is Rectangle {
+function rectangle(value: Rectangle | undefined) {
   return (
     !!value &&
     [value.x, value.y, value.width, value.height].every((coordinate) =>

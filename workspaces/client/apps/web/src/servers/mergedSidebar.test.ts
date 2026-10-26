@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { decodeSidebarRanks } from "./sidebarOrderRanks";
 import { describe, expect, it, vi } from "vitest";
@@ -429,19 +430,16 @@ describe("complete multi-server sidebar projection", () => {
       model.data.threads[0].projectFolder!,
     );
     expect(folder?.owner).toBe("remote");
-    const nested = project.folders!.find((row) => {
-      assert.ok(model.data.threads[0] != null);
-      return row.id === model.data.threads[0].projectFolder;
-    });
+    const nested = project.folders!.find(
+      (row) => row.id === required(model.data.threads[0]).projectFolder,
+    );
     expect(model.folderReferences.get(nested!.parentId!)?.owner).toBe("remote");
-    expect(
-      model.data.threads.every((row) => {
-        assert.ok(project != null);
-        return row.cwd === project.path;
-      }),
-    ).toBe(true);
-    assert.ok(model.data.runtime.peerTeams[0] != null);
-    expect(model.data.runtime.peerTeams[0].projectPath).toBe(project.path);
+    expect(model.data.threads.every((row) => row.cwd === project.path)).toBe(
+      true,
+    );
+    expect(required(model.data.runtime.peerTeams[0]).projectPath).toBe(
+      project.path,
+    );
     expect(model.wireProject("remote", project.path!)).toBe("/remote/path");
     expect(model.wireProject("local", project.path!)).toBe("project:shared");
   });
@@ -588,10 +586,10 @@ describe("original saved sidebar state", () => {
         projectAliases: [{ serverId: "local", projectId: path, name: "local" }],
       },
     ]);
-    for (const value of [local, remote]) {
-      assert.ok(value.sidebar.projects[0]);
-      value.sidebar.projects[0].folders = [{ id: "shared", name: "Notes" }];
-    }
+    for (const value of [local, remote])
+      required(value.sidebar.projects[0]).folders = [
+        { id: "shared", name: "Notes" },
+      ];
     local.sidebar.collapsed = { [treeKey("shared")]: true };
     const model = mergeSidebar([local, remote]);
     expect(model.mapTreeKey("local", treeKey("shared"))).toBe(
@@ -903,19 +901,20 @@ describe("original saved sidebar state", () => {
     const original = JSON.stringify([local.sidebar, remote.sidebar]);
     const model = mergeSidebar([local, remote]);
     const group = itemGroup(model.projectKey("local", path));
-    const order = model.order[group];
-    assert.ok(order);
-    const ids = [...order].reverse();
+    const ids = [...required(model.order[group])].reverse();
     const write = sidebarOrderWrite(model, "local", {
       ...model.order,
       [group]: ids,
     });
     expect(write.expected_revision).toBe(3);
     expect(write.groups[itemGroup(path)]).toEqual(["missing", "same"]);
-    const ranks =
-      write.groups[JSON.stringify(["combined-sidebar-ranks", group])];
-    assert.ok(ranks);
-    expect(decodeSidebarRanks(ranks)).toEqual(ids);
+    expect(
+      decodeSidebarRanks(
+        required(
+          write.groups[JSON.stringify(["combined-sidebar-ranks", group])],
+        ),
+      ),
+    ).toEqual(ids);
     expect(write.groups.projects).toEqual([path]);
     expect(JSON.stringify([local.sidebar, remote.sidebar])).toBe(original);
     const accepted = {

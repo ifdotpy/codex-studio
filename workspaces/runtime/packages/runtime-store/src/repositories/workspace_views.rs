@@ -512,7 +512,7 @@ mod bulk_read_tests {
                     "INSERT INTO runtime_agents VALUES(?1,?2)",
                     (
                         id,
-                        json!({"id":id,"rootId":"a","epoch":0,"status":"idle","tail":"legacy"})
+                        json!({"id":id,"provider":"codex","rootId":"a","epoch":0,"status":"idle","tail":"legacy"})
                             .to_string(),
                     ),
                 )
