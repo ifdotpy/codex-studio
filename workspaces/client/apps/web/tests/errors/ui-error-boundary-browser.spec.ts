@@ -45,7 +45,7 @@ test("ui-error-boundary-browser", async ({ page }) => {
     await page
       .getByRole("textbox", { name: "Draft" })
       .fill("Unsent input remains");
-    await page.evaluate(() => window.fixture.setBad(true));
+    await page.evaluate(() => window.uiErrorBoundaryFixture.setBad(true));
     await page
       .getByRole("alert", { name: "this conversation display error" })
       .waitFor();
@@ -62,14 +62,14 @@ test("ui-error-boundary-browser", async ({ page }) => {
       await page.getByRole("textbox", { name: "Draft" }).inputValue(),
       "Unsent input remains",
     );
-    await page.evaluate(() => window.fixture.setBad(true));
+    await page.evaluate(() => window.uiErrorBoundaryFixture.setBad(true));
     await page.getByRole("alert").waitFor();
-    await page.evaluate(() => window.fixture.setBad(false));
+    await page.evaluate(() => window.uiErrorBoundaryFixture.setBad(false));
     await page.getByRole("button", { name: "Try again" }).click();
     await page.getByText("Feature ready").waitFor();
     await page.evaluate(() => {
       localStorage.setItem("retained-draft", "durable input");
-      window.fixture.setFatal(true);
+      window.uiErrorBoundaryFixture.setFatal(true);
     });
     await page.getByRole("alert", { name: "Studio display error" }).waitFor();
     await page.getByRole("button", { name: "Reload Studio" }).click();

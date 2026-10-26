@@ -65,7 +65,7 @@ test("current command history ui", async ({ browser: _browser }) => {
     });
     await page.goto(server.resolvedUrls!.local[0]!);
     await page.waitForFunction(
-      () => typeof window.applySnapshot === "function",
+      () => typeof window.applyHistorySnapshot === "function",
     );
     const command = (
       id: string,
@@ -135,7 +135,7 @@ test("current command history ui", async ({ browser: _browser }) => {
       currentTurn?: string,
     ) => {
       await page.evaluate<void, unknown>(
-        (snapshot) => window.applySnapshot(snapshot as HistorySnapshot),
+        (snapshot) => window.applyHistorySnapshot(snapshot as HistorySnapshot),
         { label, items: rows, enabled, currentTurn },
       );
       await page

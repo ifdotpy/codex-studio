@@ -1,6 +1,6 @@
 declare global {
   interface Window {
-    fixture: {
+    uiErrorBoundaryFixture: {
       setBad: React.Dispatch<React.SetStateAction<boolean>>;
       setScope: React.Dispatch<React.SetStateAction<string>>;
       setFatal: React.Dispatch<React.SetStateAction<boolean>>;
@@ -24,7 +24,7 @@ function App() {
   const [bad, setBad] = useState(false),
     [scope, setScope] = useState("one"),
     [fatal, setFatal] = useState(false);
-  window.fixture = { setBad, setScope, setFatal };
+  window.uiErrorBoundaryFixture = { setBad, setScope, setFatal };
   if (fatal) throw new Error("Fixture root failure");
   return (
     <>

@@ -7,7 +7,7 @@ export type HistorySnapshot = {
 };
 declare global {
   interface Window {
-    applySnapshot: (snapshot: HistorySnapshot) => void;
+    applyHistorySnapshot: (snapshot: HistorySnapshot) => void;
   }
 }
 
@@ -18,7 +18,7 @@ import "@mantine/core/styles.css";
 import TurnHistory from "../../src/components/conversation/transcript/TurnHistory.tsx";
 function Fixture() {
   const [snapshot, setSnapshot] = useState<HistorySnapshot | null>(null);
-  window.applySnapshot = setSnapshot;
+  window.applyHistorySnapshot = setSnapshot;
   return (
     <MantineProvider>
       <main data-case={snapshot?.label}>
