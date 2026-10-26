@@ -1,14 +1,19 @@
 import type {
   BridgeMethod,
+  BridgeParams,
+  BridgeThreadParams,
   BridgeResult,
   BridgeRequest,
-  BridgeResponse,
+  BridgeErrorResponse,
+  BridgeSuccessResponse,
   BridgeRpcId,
   BridgeServerMethod,
   BridgeServerParams,
   BridgeServerResult,
   BridgeInput,
   BridgeMoveProof,
+  BridgeStoredMoveProof,
+  BridgePage,
   BridgeTurnParams,
   BridgeSessionParams,
   BridgeTask,
@@ -35,10 +40,23 @@ import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
 import type { Limits } from "./features.ts";
 import type { Stall, ToolClock } from "./stall-watch.ts";
 
-type TaskMessage = Extract<SDKMessage, { subtype: `task_${string}` }>;
-function isTaskMessage(message: SDKMessage): message is TaskMessage {
-  return message.type === "system" && message.subtype.startsWith("task_");
-}
+type BridgeFailure = Error &
+  Record<string, unknown> & { data?: Record<string, unknown> };
+
+type UnionKeys<T> = T extends unknown ? keyof T : never;
+type UnionView<T> = {
+  [K in UnionKeys<T>]?: T extends unknown
+    ? K extends keyof T
+      ? T[K]
+      : never
+    : never;
+};
+type ProviderMessage = SDKMessage &
+  UnionView<SDKMessage> & {
+    api_error_params?: {
+      rate_limit_info?: import("@anthropic-ai/claude-agent-sdk").SDKRateLimitInfo;
+    };
+  };
 import type { CheckedAccount } from "./account-identity.ts";
 type SessionContext = Pick<Session, "cwd"> & Partial<Session>;
 type AssistantBlock = { text: string; complete: boolean; position?: number };
@@ -218,16 +236,10 @@ type BridgeProviderOptions = Pick<
   "autoCompactWindow" | "customModels"
 > &
   Pick<Options, "extraArgs">;
-function readProviderOptions(text: string): BridgeProviderOptions {
-  const value: unknown = JSON.parse(text);
-  if (!isRecord(value)) throw new Error("Invalid Claude bridge options");
-  // Rust bridge_options owns this same-program configuration envelope; field
-  // types come from its generated settings and the SDK extra-argument owner.
-  return value as BridgeProviderOptions;
-}
-const providerOptions = readProviderOptions(
+const providerOptions: BridgeProviderOptions = JSON.parse(
   process.env.STUDIO_CLAUDE_OPTIONS || "{}",
 );
+
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
 function nativeUserMessageId(id: string): NonNullable<SDKUserMessage["uuid"]> {
   if (
@@ -245,8 +257,8 @@ function nativeUserMessageId(id: string): NonNullable<SDKUserMessage["uuid"]> {
     .update(String(id))
     .digest()
     .subarray(0, 16);
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
@@ -268,9 +280,7 @@ function assistantBlockState(
       itemTurn: null,
       itemIndex: -1,
     });
-  const state = active.assistantBlocks.get(key);
-  if (!state) throw new Error("Assistant block state missing");
-  return state;
+  return active.assistantBlocks.get(key)!;
 }
 const streamingItems = new WeakSet<Item>();
 function assistantText(state: AssistantBlockState) {
@@ -303,19 +313,17 @@ function streamText(item: Item, state: AssistantBlockState) {
   });
 }
 let lastLimits: Limits | undefined;
-const root = process.argv[2] || "";
+const root = process.argv[2];
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
+type PendingRequest<M extends BridgeServerMethod = BridgeServerMethod> = {
+  method: M;
+  params: BridgeServerParams<M>;
+  resolve(value: BridgeServerResult<M>): void;
+  reject: (error: unknown) => void;
+};
 const queries = new Map<string, ActiveQuery>(),
-  pending = new Map<
-    BridgeRpcId,
-    {
-      method: BridgeServerMethod;
-      params: BridgeServerParams<BridgeServerMethod>;
-      resolve: (line: string) => void;
-      reject: (error: unknown) => void;
-    }
-  >();
+  pending = new Map<BridgeRpcId, PendingRequest>();
 const pendingTurnReceipts = new Set<string>();
 const PREPARATION_TIMEOUT_MS = 20_000;
 const PASSIVE_ACCOUNT_TIMEOUT_MS = 8_000;
@@ -361,7 +369,7 @@ async function boundedPreparation<T>(
       }),
     ]);
   } finally {
-    clearTimeout(timer ?? undefined);
+    clearTimeout(timer!);
   }
 }
 const sessionStore = createSessionStore(root, {
@@ -457,7 +465,7 @@ function studioWait(threadId: string | undefined) {
   return () => {
     if (!open) return;
     open = false;
-    const left = (studioWaits.get(threadId) ?? 0) - 1;
+    const left = studioWaits.get(threadId)! - 1;
     if (left > 0) studioWaits.set(threadId, left);
     else studioWaits.delete(threadId);
     // The tool budget starts again once Studio answers.
@@ -489,13 +497,12 @@ const request = <M extends BridgeServerMethod>(
       settled();
       signal?.removeEventListener("abort", abort);
     };
-    pending.set(id, {
+    (pending as Map<BridgeRpcId, PendingRequest<M>>).set(id, {
       method,
       params,
-      resolve: (line) => {
+      resolve: (value) => {
         cleanup();
-        const reply = readBridgeInput<M>(line);
-        if (!("method" in reply) && "result" in reply) resolve(reply.result);
+        resolve(value);
       },
       reject: (error) => {
         cleanup();
@@ -565,13 +572,8 @@ const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
       // Per-thread host declarations must reach the CLI process, not settings.json.
       ...Object.fromEntries(
         ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
-          .filter(
-            (key) =>
-              typeof (isRecord(s.claude?.env)
-                ? s.claude.env[key]
-                : undefined) === "string",
-          )
-          .map((key) => [key, s.claude?.env?.[key]]),
+          .filter((key) => typeof s.claude?.env?.[key] === "string")
+          .map((key) => [key, s.claude!.env![key]]),
       ),
       ...browserEnvironment(root, s.id),
       ...(s.moveProof
@@ -616,7 +618,8 @@ async function verifiedAccount(
     startedAt,
   );
   try {
-    return checkAccount(account);
+    checkAccount(account);
+    return account as CheckedAccount;
   } catch (error) {
     if (
       ![
@@ -625,7 +628,9 @@ async function verifiedAccount(
         "organization_metadata",
         "provider_metadata",
         "subscription_metadata",
-      ].some((reason) => reason === errorData(error).claudeAccountFailure) ||
+      ].includes(
+        (error as BridgeFailure)?.data?.claudeAccountFailure as string,
+      ) ||
       typeof q.reinitialize !== "function" ||
       (account?.apiProvider && account.apiProvider !== "firstParty") ||
       (account?.apiKeySource && account.apiKeySource !== "none")
@@ -643,7 +648,7 @@ async function verifiedAccount(
         startedAt,
       );
     } catch (refreshError) {
-      if (errorField(refreshError, "preparationTimedOut") === true)
+      if ((refreshError as BridgeFailure)?.preparationTimedOut === true)
         throw refreshError;
       throw error;
     }
@@ -669,7 +674,7 @@ async function verifiedAccount(
           },
         },
       );
-    return checkAccount(fresh.account);
+    return fresh.account as CheckedAccount;
   }
 }
 async function probe<T>(
@@ -680,11 +685,12 @@ async function probe<T>(
 ): Promise<T> {
   const startedAt = Date.now();
   const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
-  const { promise: hold, resolve: release } = Promise.withResolvers<void>();
+  let release: () => void;
+  const hold = new Promise<void>((r) => (release = r));
   // Keep an idle async iterable open until the account probe completes.
+  // oxlint-disable-next-line require-yield -- The base iterable intentionally yields no model input.
   async function* prompt(): AsyncGenerator<never> {
     await hold;
-    yield* [];
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), INITIALIZATION_TIMEOUT_MS);
@@ -721,17 +727,15 @@ async function probe<T>(
       startedAt,
     );
   } finally {
-    clearTimeout(timer ?? undefined);
-    release();
+    clearTimeout(timer!);
+    release!();
     q.close();
   }
 }
 // Refresh account metadata on the live query's own process.
 async function refreshLiveCatalog(live: ActiveQuery, background: boolean) {
-  const q = live.q;
-  const prior = live.accountProof;
-  if (!q || !prior)
-    throw new Error("Fresh Claude account control is unavailable");
+  const q = live.q!;
+  const prior = live.accountProof!;
   const startedAt = Date.now();
   const deadline =
     startedAt +
@@ -759,9 +763,8 @@ async function refreshLiveCatalog(live: ActiveQuery, background: boolean) {
     throw new Error("Claude query changed during metadata refresh");
   if (!Array.isArray(fresh.models))
     throw new Error("Fresh Claude model metadata is unavailable");
-  const verified = checkAccount(fresh.account);
-  live.accountProof = verified;
-  return { models: fresh.models, account: verified };
+  live.accountProof = fresh.account as CheckedAccount;
+  return { models: fresh.models, account: fresh.account as CheckedAccount };
 }
 const catalogCache = createCatalogCache({
   load: (background) =>
@@ -807,8 +810,8 @@ function wireThread(
       .digest("hex"),
     ...(includeTurns
       ? {
-          turns: s?.turns ?? [],
-          ...(s?.journalRepair ? { journalRepair: s.journalRepair } : {}),
+          turns: s!.turns,
+          ...(s!.journalRepair ? { journalRepair: s!.journalRepair } : {}),
         }
       : { turns: [] }),
     status: { type: queries.get(id)?.turn ? "active" : "idle" },
@@ -840,42 +843,18 @@ async function permissions(
   if (name.startsWith("mcp__studio__"))
     return { behavior: "allow", updatedInput: input };
   if (name === "AskUserQuestion") {
-    const rawQuestions = input.questions || [];
-    if (!Array.isArray(rawQuestions))
-      throw new Error("Invalid Claude question list");
-    const questions = rawQuestions.map((q: unknown, i) => {
-      if (!isRecord(q)) throw new Error("Invalid Claude question");
-      // The native tool schema owns this payload; fields are narrowed before Studio receives it.
-      const { question, header, options } = q;
-      if (
-        typeof question !== "string" ||
-        typeof header !== "string" ||
-        !Array.isArray(options)
-      )
-        throw new Error("Invalid Claude question");
-      const choices = options.map((option: unknown) => {
-        if (
-          !isRecord(option) ||
-          typeof option.label !== "string" ||
-          typeof option.description !== "string"
-        )
-          throw new Error("Invalid Claude question option");
-        return {
-          ...option,
-          label: option.label,
-          description: option.description,
-        };
-      });
-      return {
-        ...q,
-        question,
-        header,
-        options: choices,
-        id: String(i),
-        isOther: true,
-        isSecret: false,
-      } as const;
-    });
+    const questions = (
+      (input.questions as import("@anthropic-ai/claude-agent-sdk/sdk-tools").AskUserQuestionInput["questions"]) ||
+      []
+    ).map(
+      (q, i) =>
+        ({
+          ...q,
+          id: String(i),
+          isOther: true,
+          isSecret: false,
+        }) as const,
+    );
     let result;
     try {
       result = await request(
@@ -890,11 +869,11 @@ async function permissions(
       );
     } catch (error) {
       if (
-        errorText(error) !==
+        (error as Error).message !==
         "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."
       )
         throw error;
-      return { behavior: "deny", message: errorText(error) ?? "" };
+      return { behavior: "deny", message: (error as Error).message };
     }
     const answers = Object.fromEntries(
       questions.map((q) => [
@@ -936,9 +915,7 @@ async function permissions(
         itemId: options.toolUseID,
         command:
           name === "Bash"
-            ? typeof input.command === "string"
-              ? input.command
-              : JSON.stringify(input.command)
+            ? (input.command as string)
             : JSON.stringify({ tool: name, input }),
         cwd: s.cwd,
         reason:
@@ -972,10 +949,10 @@ async function permissions(
       });
     return { behavior: "deny", message };
   } finally {
-    clearTimeout(timer ?? undefined);
+    clearTimeout(timer!);
     options.signal?.removeEventListener("abort", cancel);
   }
-  return result.decision === "accept" || result.decision === "acceptForSession"
+  return ["accept", "acceptForSession"].includes(result.decision)
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user declined this action." };
 }
@@ -987,27 +964,23 @@ function studioTools(
     name: "studio",
     version: "1.0.0",
     tools: (s.dynamicTools || []).map((definition) => {
-      const schema = z.fromJSONSchema(definition.inputSchema);
-      if (!(schema instanceof z.ZodObject))
-        throw new Error("Studio dynamic tool requires an object schema");
+      const schema = z.fromJSONSchema(definition.inputSchema) as z.ZodObject;
+
       return tool(
         definition.name,
         definition.description,
         schema.shape,
         async (args, extra) => {
-          if (!s.id) throw new Error("Studio tool has no session");
           const result = await request(
             "item/tool/call",
             {
-              threadId: s.id,
+              threadId: s.id!,
               turnId: getTurn()?.id,
               callId: randomUUID(),
               tool: definition.name,
               arguments: args,
             },
-            isRecord(extra) && extra.signal instanceof AbortSignal
-              ? extra.signal
-              : undefined,
+            (extra as { signal?: AbortSignal } | undefined)?.signal,
           );
           return {
             isError: result.success === false,
@@ -1039,7 +1012,7 @@ async function currentExternalProof(
           proof.externalTransports || s.moveProof?.externalTransports || {},
       });
     } catch (error) {
-      if (errorData(error).moveRefusal) throw error;
+      if ((error as BridgeFailure).data?.moveRefusal) throw error;
       throw externalRefusal(aliases, [], aliases);
     }
   }
@@ -1054,12 +1027,12 @@ async function currentExternalProof(
     return result;
   };
   try {
-    const active = s.id ? queries.get(s.id) : undefined;
+    const active = queries.get(s.id!);
     return active?.q
       ? await read(active.q)
       : await probe(s.cwd, read, "teleport_catalog", true);
   } catch (error) {
-    if (errorData(error).moveRefusal) throw error;
+    if ((error as BridgeFailure).data?.moveRefusal) throw error;
     throw externalRefusal(aliases, [], aliases);
   }
 }
@@ -1080,8 +1053,7 @@ async function proofOptions<
     (s.dynamicTools || []).length,
   );
   const baseline =
-    exactProof(proof).compiledTools ||
-    (s.moveProof && exactProof(s.moveProof)?.compiledTools);
+    exactProof(proof).compiledTools || exactProof(s.moveProof!)?.compiledTools;
   const tools = verifyToolProof(
     { ...proof, ...(baseline ? { compiledTools: baseline } : {}) },
     compiled,
@@ -1145,14 +1117,15 @@ async function content(
     if (item.type === "text") result.push({ type: "text", text: item.text });
     else if (item.type === "localImage") {
       const ext = path.extname(item.path).toLowerCase();
-      const mediaTypes: Record<string, string> = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-      };
-      const media_type = mediaTypes[ext];
+      const media_type = (
+        {
+          ".png": "image/png",
+          ".jpg": "image/jpeg",
+          ".jpeg": "image/jpeg",
+          ".gif": "image/gif",
+          ".webp": "image/webp",
+        } as Record<string, string>
+      )[ext];
       if (!media_type) throw new Error("Unsupported image format for Claude");
       // Refuse input before it reaches Claude if portable preprocessing fails.
       const image = await claudeImage(item.path);
@@ -1165,7 +1138,9 @@ async function content(
         },
       });
     } else
-      throw new Error("Unsupported Claude input: " + errorField(item, "type"));
+      throw new Error(
+        "Unsupported Claude input: " + (item as BridgeFailure).type,
+      );
   }
   return result;
 }
@@ -1278,26 +1253,26 @@ async function flags(
 // finishTurn has cleared the turn, or when recording its end failed.
 const finishingTurns = new WeakMap<Turn, Promise<void>>();
 function clearDeferredResult(active: ActiveQuery) {
-  clearTimeout(active.resultTimer ?? undefined);
+  clearTimeout(active.resultTimer!);
   active.resultTimer = null;
   active.deferredResult = null;
 }
 function clearTurnTimers(active: ActiveQuery) {
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer ?? undefined);
+  clearTimeout(active.stopTimer!);
   active.stopTimer = null;
 }
 function lifecycleFailure(s: Session, active: ActiveQuery, error: unknown) {
   active.persistFailure ??= error;
   process.stderr.write(
-    "Claude turn finalization failed: " + errorText(error) + "\n",
+    "Claude turn finalization failed: " + (error as Error).message + "\n",
   );
   // Watchdog failures must end a visible turn, even if the SDK never yields
   // again. A finalizer already owns its completion and cannot be repeated.
   if (!active.turn || finishingTurns.has(active.turn)) return;
   return finishTurn(s, active, null, error).catch((failure) => {
     process.stderr.write(
-      "Claude turn finalization failed: " + errorText(failure) + "\n",
+      "Claude turn finalization failed: " + (failure as Error).message + "\n",
     );
   });
 }
@@ -1311,8 +1286,8 @@ function deferResult(
   const turn = active.turn;
   active.resultTimer = setTimeout(() => {
     if (active.turn !== turn || !active.deferredResult) return;
-    void finishTurn(s, active, active.deferredResult).catch(
-      (error) => s && lifecycleFailure(s, active, error),
+    void finishTurn(s, active, active.deferredResult).catch((error) =>
+      lifecycleFailure(s!, active, error),
     );
   }, limits.steerEchoGraceMs);
   active.resultTimer.unref();
@@ -1343,7 +1318,8 @@ function finishTurn(
       active.persistFailure = failure;
       turn.status = "failed";
       turn.error = {
-        message: "Claude turn finalization failed: " + errorText(failure),
+        message:
+          "Claude turn finalization failed: " + (failure as Error).message,
       };
       state.closed = true;
       throw failure;
@@ -1402,7 +1378,7 @@ async function finalizeTurn(
   let closeError = stall?.closeError;
   error ||= closeError;
   let closed = (state.closed = Boolean(stall?.closed));
-  if (closed) await stall?.closed;
+  if (closed) await stall!.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
   // this CLI. Stop it before finishing; only its final native history can
   // prove whether the server may redeliver that exact input.
@@ -1422,13 +1398,13 @@ async function finalizeTurn(
     await new Promise((resolve) => setTimeout(resolve, limits.exitWaitMs));
   }
   clearDeferredResult(active);
-  clearTimeout(active.stopTimer ?? undefined);
+  clearTimeout(active.stopTimer!);
   active.stopTimer = null;
   active.toolClocks.clear();
   if (
-    (errorField(error, "preparationTimedOut") === true ||
-      errorField(error, "claudeAccountValidationFailed") === true) &&
-    errorData(error).turnStartOutcome === "not_applied" &&
+    ((error as BridgeFailure)?.preparationTimedOut === true ||
+      (error as BridgeFailure)?.claudeAccountValidationFailed === true) &&
+    (error as BridgeFailure)?.data?.turnStartOutcome === "not_applied" &&
     turn.items[0]?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
     turn.clientUserMessageId.length > 0 &&
@@ -1438,7 +1414,7 @@ async function finalizeTurn(
       active.input.values.some(
         (input) =>
           input.studioInputIdentity === turn.clientUserMessageId &&
-          input.uuid === turn.items[0]?.nativeId &&
+          input.uuid === turn.items[0].nativeId &&
           input.session_id === (s.nativeId || s.id),
       ))
   ) {
@@ -1454,16 +1430,14 @@ async function finalizeTurn(
       : "completed";
   armStallWatch();
   const errorMessage =
-    errorText(error) ||
-    (result && "errors" in result ? result.errors.join("\n") : undefined) ||
-    (result && "result" in result ? result.result : undefined) ||
+    (error as Error)?.message ||
+    (result as UnionView<SDKResultMessage> | null)?.errors?.join("\n") ||
+    (result as UnionView<SDKResultMessage> | null)?.result ||
     "Claude turn failed";
   const errorInfo =
     turn.apiErrorInfo ||
     claudeErrorInfo(
-      typeof errorField(error, "error") === "string"
-        ? String(errorField(error, "error"))
-        : undefined,
+      (error as BridgeFailure)?.error as string | undefined,
       errorMessage,
     );
   if (turn.stallError) turn.error = turn.stallError;
@@ -1472,27 +1446,31 @@ async function finalizeTurn(
       message: errorMessage,
       ...(errorInfo && !turn.limitError ? { codexErrorInfo: errorInfo } : {}),
       ...(turn.startOutcome === "not_applied" &&
-      (errorField(error, "preparationTimedOut") === true ||
-        errorField(error, "claudeAccountValidationFailed") === true) &&
-      errorData(error).turnStartOutcome === "not_applied"
+      ((error as BridgeFailure)?.preparationTimedOut === true ||
+        (error as BridgeFailure)?.claudeAccountValidationFailed === true) &&
+      (error as BridgeFailure)?.data?.turnStartOutcome === "not_applied"
         ? {
             data: {
               turnStartOutcome: "not_applied",
-              ...(errorData(error).claudePreparationFailure ===
+              ...((error as BridgeFailure)?.data?.claudePreparationFailure ===
               "account_validation"
                 ? {
                     claudePreparationFailure: "account_validation",
-                    claudeAccountFailure: errorData(error).claudeAccountFailure,
+                    claudeAccountFailure: (error as BridgeFailure)?.data
+                      ?.claudeAccountFailure,
                   }
                 : {}),
-              ...(errorField(error, "preparationTimedOut") === true &&
-              typeof errorData(error).claudePreparationPhase === "string" &&
-              Number.isFinite(errorData(error).claudePreparationElapsedMs)
+              ...((error as BridgeFailure)?.preparationTimedOut === true &&
+              typeof (error as BridgeFailure)?.data?.claudePreparationPhase ===
+                "string" &&
+              Number.isFinite(
+                (error as BridgeFailure)?.data?.claudePreparationElapsedMs,
+              )
                 ? {
-                    claudePreparationPhase:
-                      errorData(error).claudePreparationPhase,
-                    claudePreparationElapsedMs:
-                      errorData(error).claudePreparationElapsedMs,
+                    claudePreparationPhase: (error as BridgeFailure)?.data
+                      ?.claudePreparationPhase,
+                    claudePreparationElapsedMs: (error as BridgeFailure)?.data
+                      ?.claudePreparationElapsedMs,
                   }
                 : {}),
             },
@@ -1507,7 +1485,7 @@ async function finalizeTurn(
         !i.nativeSubagent &&
         !i.studioNotice &&
         !i.thinking &&
-        !i.id?.endsWith(":thinking"),
+        !i.id!.endsWith(":thinking"),
     )
     .at(-1);
   if (answer) finishItem(s, turn, { ...answer, phase: "final_answer" });
@@ -1596,18 +1574,18 @@ async function reconcileClosedSteers(
 // turn. The turn ends as interrupted with the stall as its error, so Studio
 // shows it and starts the next turn from queued input.
 async function recoverStall(
-  s: Session | undefined,
+  s: Session,
   active: ActiveQuery,
   found: (Stall & { stop?: false }) | { stop: true; id: string },
 ) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  if (closing || !s || !turn || active.stall || finishingTurns.has(turn))
-    return;
+  if (closing || !turn || active.stall || finishingTurns.has(turn)) return;
   const message = found.stop
     ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
     : stallMessage({ ...found, tool: item?.tool || found.tool });
-  const { promise: finished, resolve: ended } = Promise.withResolvers<void>();
+  let ended!: () => void;
+  const finished = new Promise<void>((resolve) => (ended = resolve));
   active.stall = { turnId: turn.id, ended, closed: null };
   turn.interrupted = true;
   turn.stallError = {
@@ -1648,7 +1626,7 @@ async function recoverStall(
   } catch (error) {
     if (!closing)
       process.stderr.write(
-        "Claude stall: persist failed: " + errorText(error) + "\n",
+        "Claude stall: persist failed: " + (error as Error).message + "\n",
       );
   }
   // A save already in flight may settle after shutdown closes the query.
@@ -1666,11 +1644,11 @@ async function recoverStall(
       })
       .catch((error) =>
         process.stderr.write(
-          "Claude stall: interrupt failed: " + errorText(error) + "\n",
+          "Claude stall: interrupt failed: " + (error as Error).message + "\n",
         ),
       );
   await Promise.race([finished, deadline]);
-  clearTimeout(timer ?? undefined);
+  clearTimeout(timer!);
   if (
     closing ||
     active.turn !== turn ||
@@ -1688,7 +1666,7 @@ async function recoverStall(
   if (stall.closeError)
     turn.stallError = {
       ...turn.stallError,
-      message: message + " " + errorText(stall.closeError),
+      message: message + " " + (stall.closeError as Error).message,
     };
   await stall.closed;
   // Closing normally ends the SDK stream, and its owner finishes the turn.
@@ -1707,8 +1685,8 @@ const armStallWatch = watchStalls(
   studioWaits,
   limits,
   (s, active, found) =>
-    recoverStall(s, active, found).catch(
-      (error) => s && lifecycleFailure(s, active, error),
+    recoverStall(s!, active, found).catch((error) =>
+      lifecycleFailure(s!, active, error),
     ),
 );
 async function startSession(
@@ -1732,7 +1710,8 @@ async function startSession(
       s.dynamicTools,
     ]);
   const initialSource = source();
-  const { promise: admitted, resolve: admit } = Promise.withResolvers<void>();
+  let admit: () => void;
+  const admitted = new Promise<void>((r) => (admit = r));
   let allowed = false;
   // Keep an idle async iterable open until the account probe completes.
   async function* prompt() {
@@ -1748,17 +1727,15 @@ async function startSession(
     await guardNativeSessionStart(
       s,
       persist,
-      nativeInputAttempt(initial ?? undefined, initial?.items[0]),
+      nativeInputAttempt(initial!, initial?.items[0]),
     );
-    const effort = s.moveProof ? s.moveProof.options.effort : p.effort;
-    const model = s.moveProof?.options.model || p.model || s.model;
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
         // Match Python's --no-session-persistence and --tools "" title flags.
         ...titleOptions,
-        ...(model === undefined ? {} : { model }),
+        model: s.moveProof?.options.model || p.model || s.model,
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
@@ -1772,19 +1749,20 @@ async function startSession(
         disallowedTools: ["Agent"],
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
-        ...(effort ? { effort } : {}),
-        settings: JSON.stringify(
-          await boundedPreparation(
-            () =>
-              s.moveProof
-                ? Promise.resolve(s.moveProof.options.settings)
-                : flags(s, p),
-            deadline,
-            () => {},
-            "catalog_flags",
-            startedAt,
-          ),
-        ),
+        ...((s.moveProof ? s.moveProof.options.effort : p.effort)
+          ? { effort: (s.moveProof ? s.moveProof.options.effort : p.effort)! }
+          : {}),
+        // The SDK accepted this flags object before migration; its Settings declaration omits some applyFlagSettings values.
+        settings: (await boundedPreparation(
+          () =>
+            s.moveProof
+              ? Promise.resolve(s.moveProof.options.settings)
+              : flags(s, p),
+          deadline,
+          () => {},
+          "catalog_flags",
+          startedAt,
+        )) as Options["settings"],
         extraArgs: {
           ...providerOptions.extraArgs,
           "replay-user-messages": null,
@@ -1798,9 +1776,7 @@ async function startSession(
         hooks: {
           SessionStart: [
             {
-              hooks: [
-                sessionStartHook(s, () => active.turn ?? undefined, persist),
-              ],
+              hooks: [sessionStartHook(s, () => active.turn!, persist)],
             },
           ],
         },
@@ -1841,11 +1817,12 @@ async function startSession(
             },
             { ...options, toolUseID: value.toolUseID || options.requestId },
           );
-          const updated =
-            answer?.behavior === "allow" ? answer.updatedInput : undefined;
-          const answers =
-            updated && isRecord(updated.answers) ? updated.answers : undefined;
-          const selected = answers?.[question];
+          const selected = (
+            answer as Extract<
+              Awaited<ReturnType<CanUseTool>>,
+              { behavior: "allow" }
+            > & { updatedInput: { answers?: Record<string, unknown> } }
+          ).updatedInput?.answers?.[question];
           return selected
             ? {
                 behavior: "completed",
@@ -1866,6 +1843,8 @@ async function startSession(
               turnId: active.turn?.id,
               request: value,
               ...value,
+              serverName: (value as typeof value & { serverName?: string })
+                .serverName,
             },
             options.signal,
           ),
@@ -1904,11 +1883,9 @@ async function startSession(
     active.accountProof = accountProof;
     active.accountProofQuery = q;
     allowed = true;
-    admit();
+    admit!();
     active.readyResolve();
-    for await (const m of q) {
-      const parentToolUseId =
-        "parent_tool_use_id" in m ? m.parent_tool_use_id : undefined;
+    for await (const m of q as AsyncIterable<ProviderMessage>) {
       const room = stdoutRoom();
       if (room) await room;
       // A grace timer can finish a turn during the backpressure wait. Process
@@ -1925,7 +1902,7 @@ async function startSession(
           s,
           m.session_id,
           "init",
-          active.turn ?? undefined,
+          active.turn!,
           persist,
         );
         s.started = true;
@@ -1939,24 +1916,23 @@ async function startSession(
         catalogCache.activityChanged();
         continue;
       }
-      if (m.type === "user" && "isReplay" in m && m.isReplay) {
-        const activeTurn = active.turn;
-        const item = activeTurn?.items.find(
+      if (m.type === "user" && m.isReplay) {
+        const item = active.turn?.items.find(
           (i) =>
             i.type === "userMessage" &&
             (i.nativeId === m.uuid ||
               (i.nativeId == null &&
-                (i.id === m.uuid || activeTurn.id === m.uuid))),
+                (i.id === m.uuid || active.turn!.id === m.uuid))),
         );
-        if (item && activeTurn) {
+        if (item) {
           item.nativeId = m.uuid;
           if (
-            item === activeTurn.items[0] &&
+            item === active.turn!.items[0] &&
             !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
           ) {
-            activeTurn.nativeMessageId = item.nativeIds?.[0] || m.uuid;
-            activeTurn.fileCheckpointMessageId = m.uuid;
-            activeTurn.fileCheckpointSource = {
+            active.turn!.nativeMessageId = item.nativeIds?.[0] || m.uuid;
+            active.turn!.fileCheckpointMessageId = m.uuid;
+            active.turn!.fileCheckpointSource = {
               nativeId: s.nativeId || s.id,
               cwd: s.cwd,
             };
@@ -1969,7 +1945,7 @@ async function startSession(
         // follow the end of its turn, so earlier turns are searched as well.
         const steer =
           item?.delivery === "steer"
-            ? { turn: activeTurn, item }
+            ? { turn: active.turn!, item }
             : submittedSteer(s, m.uuid);
         if (steer?.item.deliveryStatus === "submitted") {
           steer.item.deliveryStatus = "delivered";
@@ -1984,7 +1960,7 @@ async function startSession(
       if (
         !active.turn &&
         ["assistant", "stream_event"].includes(m.type) &&
-        !parentToolUseId
+        !m.parent_tool_use_id
       ) {
         active.turn = {
           id: randomUUID(),
@@ -1999,7 +1975,8 @@ async function startSession(
           turn: { id: active.turn.id, status: "inProgress" },
         });
       }
-      const turn = active.turn || (parentToolUseId ? s.turns.at(-1) : null);
+      const turn =
+        active.turn || (m.parent_tool_use_id ? s.turns.at(-1) : null);
       if (m.type === "rate_limit_event") {
         const next = limitEvent(lastLimits, m.rate_limit_info || {});
         if (next) {
@@ -2021,7 +1998,7 @@ async function startSession(
         if (
           m.subtype === "status" &&
           m.status === "requesting" &&
-          !parentToolUseId
+          !m.parent_tool_use_id
         ) {
           active.idleRequestStartedAt = Date.now();
         }
@@ -2049,21 +2026,21 @@ async function startSession(
           notice(
             s,
             turn,
-            m.content ||
-              ("output" in m && typeof m.output === "string"
-                ? m.output
-                : undefined) ||
-              "Claude command completed.",
+            (m.content || m.output || "Claude command completed.") as string,
             m.uuid,
           );
-        } else if (isTaskMessage(m)) {
+        } else if (m.subtype?.startsWith("task_")) {
           const id = m.task_id || m.uuid;
           const task = {
             ...active.tasks.get(id),
             ...m,
-            ...("patch" in m ? m.patch : {}),
-          };
-          const command = foregroundCommandUpdate(active, task, m);
+            ...m.patch,
+          } as BridgeTask;
+          const command = foregroundCommandUpdate(
+            active,
+            task,
+            m as Extract<SDKMessage, { subtype: `task_${string}` }>,
+          );
           if (command && turn) turnEvent(s, turn, "item/started", command);
           // A terminal patch can arrive before the notification's final output.
           const terminal =
@@ -2090,10 +2067,10 @@ async function startSession(
                   {
                     type: "text",
                     text:
-                      ("summary" in m ? m.summary : undefined) ||
-                      ("last_tool_name" in m ? m.last_tool_name : undefined) ||
-                      ("description" in m ? m.description : undefined) ||
-                      ("status" in m ? m.status : undefined) ||
+                      m.summary ||
+                      m.last_tool_name ||
+                      m.description ||
+                      m.status ||
                       "Running",
                   },
                 ],
@@ -2111,7 +2088,7 @@ async function startSession(
           }
           persistLater(s, active);
         } else if (turn && providerNotice(m)) {
-          notice(s, turn, providerNotice(m) ?? "", m.uuid);
+          notice(s, turn, providerNotice(m)!, m.uuid);
           persistLater(s, active);
         } else if (
           turn &&
@@ -2124,26 +2101,17 @@ async function startSession(
             ].includes(m.subtype) ||
             (m.subtype === "informational" && m.level === "warning"))
         )
-          notice(
-            s,
-            turn,
-            ("text" in m ? m.text : undefined) ||
-              ("content" in m ? m.content : undefined) ||
-              ("error" in m ? m.error : undefined) ||
-              m.subtype,
-            m.uuid,
-          );
+          notice(s, turn, m.text || m.content || m.error || m.subtype, m.uuid);
         continue;
       }
       if (m.type === "result") {
         active.usage.recordModels(m.modelUsage);
         const studioUsage = cumulativeUsage(m, turn?.id);
         if (studioUsage) {
-          if (
-            "modelContextWindow" in studioUsage &&
-            studioUsage.modelContextWindow
-          )
-            s.contextWindow = studioUsage.modelContextWindow;
+          if ((studioUsage as UnionView<typeof studioUsage>).modelContextWindow)
+            s.contextWindow = (
+              studioUsage as UnionView<typeof studioUsage>
+            ).modelContextWindow!;
           emit("thread/tokenUsage/updated", {
             threadId: s.id,
             turnId: turn?.id,
@@ -2166,11 +2134,9 @@ async function startSession(
           if (block.type === "tool_use")
             active.usage.registerTool(
               block.id,
-              active.usage.turnFor(parentToolUseId, turn.id),
+              active.usage.turnFor(m.parent_tool_use_id, turn.id),
             );
-      if (parentToolUseId) {
-        const subagentMessageId =
-          m.type === "assistant" ? m.message.id : undefined;
+      if (m.parent_tool_use_id) {
         if (m.type === "assistant")
           for (const [index, block] of (m.message.content || []).entries()) {
             const text =
@@ -2182,7 +2148,7 @@ async function startSession(
             if (text)
               finishItem(s, turn, {
                 id:
-                  (m.uuid || subagentMessageId) +
+                  ((m.uuid as string | undefined) || m.message.id) +
                   ":" +
                   block.type +
                   ":" +
@@ -2210,10 +2176,8 @@ async function startSession(
           active.idleRequest = {
             id: e.message.id,
             at:
-              typeof m.ttft_ms === "number" &&
-              Number.isFinite(m.ttft_ms) &&
-              m.ttft_ms >= 0
-                ? Date.now() - m.ttft_ms
+              Number.isFinite(m.ttft_ms) && m.ttft_ms! >= 0
+                ? Date.now() - m.ttft_ms!
                 : active.idleRequestStartedAt || Date.now(),
           };
           emit("provider/generationStarted", {
@@ -2224,16 +2188,17 @@ async function startSession(
         }
         if (
           e.type === "content_block_delta" &&
-          (e.delta.type === "text_delta" || e.delta.type === "thinking_delta")
+          ["text_delta", "thinking_delta"].includes(e.delta.type)
         ) {
           const thinking = e.delta.type === "thinking_delta";
           const id = active.messageId + (thinking ? ":thinking" : "");
           const delta =
-            (e.delta.type === "text_delta" ? e.delta.text : e.delta.thinking) ||
+            (e.delta as UnionView<typeof e.delta>).text ||
+            (e.delta as UnionView<typeof e.delta>).thinking ||
             "";
           const state = assistantBlockState(
             active,
-            active.messageId ?? "undefined",
+            active.messageId!,
             thinking ? "thinking" : "text",
           );
           const index = Number.isInteger(e.index) ? e.index : 0;
@@ -2248,7 +2213,7 @@ async function startSession(
             state.blocks.push(block);
           }
           const separator =
-            block.text === "" && (block.position ?? 0) > 0 ? "\n" : "";
+            block.text === "" && block.position! > 0 ? "\n" : "";
           if (!block.complete) {
             block.text += delta;
             state.dirty = true;
@@ -2271,7 +2236,7 @@ async function startSession(
             }
           }
           const item = turn.items[state.itemIndex];
-          if (!item) throw new Error("Streaming assistant item is missing");
+
           if (!block.complete) {
             if (!streamingItems.has(item)) {
               streamingItems.add(item);
@@ -2286,26 +2251,19 @@ async function startSession(
           }
         }
       } else if (m.type === "assistant") {
-        const assistantMessage = m.message;
         if (m.error) {
           const errorText = (m.message.content || [])
             .filter((b) => b.type === "text")
             .map((b) => b.text)
             .join("\n");
-          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText) ?? null;
+          turn.apiErrorInfo = claudeErrorInfo(m.error, errorText);
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
-          const params =
-            "api_error_params" in m && isRecord(m.api_error_params)
-              ? m.api_error_params
-              : {};
-          const info = isRecord(params.rate_limit_info)
-            ? params.rate_limit_info
-            : undefined;
+          const info = m.api_error_params?.rate_limit_info;
           if (
             m.error === "rate_limit" &&
             info?.status === "rejected" &&
-            !parentToolUseId &&
+            !m.parent_tool_use_id &&
             !turn.limitError
           )
             limitReached(s, turn, info);
@@ -2314,13 +2272,13 @@ async function startSession(
         if (
           turn &&
           !turn.idleCompaction &&
-          !parentToolUseId &&
+          !m.parent_tool_use_id &&
           m.message.id &&
           m.message.usage
         ) {
           const { effective } = await resolveSettings({
             cwd: s.cwd,
-            settingSources: settings(s).settingSources ?? [],
+            settingSources: settings(s).settingSources,
           });
           s.idleCache = cacheReport(
             s,
@@ -2344,24 +2302,28 @@ async function startSession(
         ) => {
           const state = assistantBlockState(active, m.message.id, kind);
           for (const [index, block] of m.message.content.entries()) {
-            if (block.type !== kind) continue;
-            const text =
-              field === "text" && block.type === "text"
-                ? block.text
-                : field === "thinking" && block.type === "thinking"
-                  ? block.thinking
-                  : undefined;
-            if (!text) continue;
+            if (
+              block.type !== kind ||
+              !(block as UnionView<typeof block>)[field]
+            )
+              continue;
             const frame =
-              (m.uuid || JSON.stringify(assistantMessage)) + ":" + index;
+              ((m.uuid as string | undefined) || JSON.stringify(m.message)) +
+              ":" +
+              index;
             if (state.frames.has(frame)) continue;
             state.frames.add(frame);
             const pending = state.blocks.find(
-              (old) => !old.complete && old.text === text,
+              (old) =>
+                !old.complete &&
+                old.text === (block as UnionView<typeof block>)[field],
             );
             if (pending) pending.complete = true;
             else {
-              state.blocks.push({ text, complete: true });
+              state.blocks.push({
+                text: (block as UnionView<typeof block>)[field]!,
+                complete: true,
+              });
               state.dirty = true;
             }
           }
@@ -2385,17 +2347,23 @@ async function startSession(
             text: thinking,
             phase: "commentary",
           });
-        for (const b of m.message.content.filter(
-          (b) => b.type === "tool_use",
-        )) {
-          if (!isRecord(b.input)) throw new Error("Invalid Claude tool input");
-          const input = b.input;
-          const item = nativeItem({ ...b, input }, s.cwd);
+        for (const b of (
+          m.message.content as Exclude<
+            SDKUserMessage["message"]["content"],
+            string
+          >
+        ).filter((b) => b.type === "tool_use")) {
+          const item = nativeItem(
+            b as typeof b & { input: Record<string, unknown> },
+            s.cwd,
+          );
           active.tools.set(b.id, item);
           active.toolClocks.set(b.id, {
             tool: b.name,
             startedAt: Date.now(),
-            timeoutMs: declaredTimeoutMs({ ...b, input }),
+            timeoutMs: declaredTimeoutMs(
+              b as typeof b & { input: Record<string, unknown> },
+            ),
           });
           armStallWatch();
           turn.items.push(item);
@@ -2404,19 +2372,21 @@ async function startSession(
             emit("turn/plan/updated", {
               threadId: s.id,
               turnId: turn.id,
-              plan: Array.isArray(input.todos)
-                ? input.todos.map((t: unknown) => ({
-                    step: isRecord(t) ? t.content : undefined,
-                    status: isRecord(t) ? t.status : undefined,
-                  }))
-                : [],
+              plan:
+                (
+                  b.input as { todos?: { content: unknown; status: unknown }[] }
+                ).todos?.map((t) => ({ step: t.content, status: t.status })) ||
+                [],
             });
         }
         persistLater(s, active);
       } else if (m.type === "user" && Array.isArray(m.message?.content)) {
-        for (const b of m.message.content.filter(
-          (b) => b.type === "tool_result",
-        )) {
+        for (const b of (
+          m.message.content as Exclude<
+            SDKUserMessage["message"]["content"],
+            string
+          >
+        ).filter((b) => b.type === "tool_result")) {
           active.toolClocks.delete(b.tool_use_id);
           armStallWatch();
           const old = active.tools.get(b.tool_use_id);
@@ -2489,7 +2459,7 @@ async function startSession(
       lifecycleFailure(s, active, active.persistFailure);
   } finally {
     allowed = false;
-    admit();
+    admit!();
     const owned = queries.get(s.id) === active;
     discardQuery(s.id, active);
     if (owned) void sessionStore.evict(s.id);
@@ -2498,7 +2468,7 @@ async function startSession(
 // The SDK reports a closed or aborted Claude process with these messages.
 function deadQuery(error: unknown) {
   return /process aborted by user|operation aborted|process exited|process terminated|transport is not ready|query (is )?closed/i.test(
-    String(errorText(error) || error),
+    String((error as Error)?.message || error),
   );
 }
 function closeQuery(active: ActiveQuery) {
@@ -2506,7 +2476,7 @@ function closeQuery(active: ActiveQuery) {
     active.q?.close();
   } catch (error) {
     process.stderr.write(
-      "Claude query close failed: " + errorText(error) + "\n",
+      "Claude query close failed: " + (error as Error).message + "\n",
     );
     return error;
   }
@@ -2533,15 +2503,7 @@ function discardQuery(threadId: string, active: ActiveQuery | undefined) {
   catalogCache.activityChanged();
 }
 function newActive(turn: Turn): ActiveQuery {
-  const {
-    promise: ready,
-    resolve: readyResolve,
-    reject: readyReject,
-  } = Promise.withResolvers<void>();
-  const active: ActiveQuery = {
-    ready,
-    readyResolve,
-    readyReject,
+  const active = {
     turn,
     input: new InputQueue<StudioInputMessage>(),
     q: null,
@@ -2556,7 +2518,12 @@ function newActive(turn: Turn): ActiveQuery {
     lastEventAt: Date.now(),
     toolClocks: new Map(),
     stall: null,
-  };
+  } as ActiveQuery;
+  // The ready promise and its callbacks are assigned synchronously before use.
+  active.ready = new Promise<void>((resolve, reject) => {
+    active.readyResolve = resolve;
+    active.readyReject = reject;
+  });
 
   active.ready.catch(() => {});
   return active;
@@ -2569,7 +2536,7 @@ function userMessage(
 ): StudioInputMessage {
   turn.nativeSessionId = s.nativeId || s.id;
   const item = turn.items.find((item) => item.id === id) || turn.items[0];
-  if (!item) throw new Error("Claude input has no owning item");
+
   guardNativeSessionInput(s, groups, newNativeInputAttempt(turn, item));
   const messages = sdkInputMessages(
     s.nativeId || s.id,
@@ -2578,17 +2545,15 @@ function userMessage(
     nativeUserMessageId,
   );
   const message = messages.at(-1);
-  const first = messages[0];
-  if (!message || !first)
-    throw new Error("Claude input has no native messages");
-  if (item === turn.items[0]) turn.nativeMessageId = first.uuid;
+
+  if (item === turn.items[0]) turn.nativeMessageId = messages[0].uuid;
   if (messages.length > 1) {
     item.nativeIds = messages.map((part) => part.uuid);
     // The queue removes this whole submission before yielding its first part.
     // A partial SDK read is uncertain and must never be reported as unapplied.
     Object.defineProperty(message, "studioInputBatch", { value: messages });
   }
-  return message;
+  return message!;
 }
 
 type HandlerResult<M extends BridgeMethod> =
@@ -2596,21 +2561,17 @@ type HandlerResult<M extends BridgeMethod> =
   | Promise<BridgeResult<M>>;
 
 function handle<M extends BridgeMethod>(
-  request: BridgeRequest<M>,
+  method: M,
+  p: BridgeParams<M>,
 ): Promise<BridgeResult<M>>;
 // Each return checks its narrowed method with satisfies HandlerResult<typeof method>.
 async function handle(
-  request: BridgeRequest,
+  ...[method, p]: {
+    [M in BridgeMethod]: [method: M, p: BridgeParams<M>];
+  }[BridgeMethod]
 ): Promise<BridgeResult<BridgeMethod>> {
-  const { method, params: p } = request;
   if (
-    isRecord(p) &&
-    typeof p.threadId === "string" &&
-    isRecord(p) &&
-    typeof p.threadId === "string" &&
-    isRecord(p) &&
-    typeof p.threadId === "string" &&
-    p.threadId &&
+    (p as Partial<BridgeThreadParams>).threadId &&
     [
       "turn/start",
       "turn/steer",
@@ -2619,16 +2580,14 @@ async function handle(
       "thread/compact/start",
     ].includes(method)
   )
-    assertNativeSessionReady(await session(p.threadId));
+    assertNativeSessionReady(await session((p as BridgeThreadParams).threadId));
   if (commandMethods.has(method))
     return commands.handle(
       method,
-      isRecord(p) ? p : {},
+      p as Record<string, unknown>,
     ) satisfies HandlerResult<typeof method>;
   if (
-    isRecord(p) &&
-    typeof p.threadId === "string" &&
-    p.threadId &&
+    (p as Partial<BridgeThreadParams>).threadId &&
     [
       "turn/start",
       "turn/steer",
@@ -2638,7 +2597,7 @@ async function handle(
       "thread/compact/start",
     ].includes(method)
   ) {
-    const current = await session(p.threadId);
+    const current = await session((p as BridgeThreadParams).threadId);
     if (
       Object.values(current.controlRequests || {}).some(
         (r) => r.status !== "completed",
@@ -2785,7 +2744,10 @@ async function handle(
         s,
       ),
     );
-    const { session: _sessionProof, ...moveProof } = proof;
+    const moveProof: BridgeStoredMoveProof & {
+      session?: BridgeMoveProof["session"];
+    } = { ...proof };
+    delete moveProof.session;
     return {
       path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
       session: {
@@ -2812,8 +2774,8 @@ async function handle(
         "The destination Claude session has a different native identity",
       );
     let s: Session = exactSession({ ...p.session, cwd: p.cwd });
-    if (!s.moveProof) throw new Error("Claude move proof is missing");
-    s.moveProof = exactProof(s.moveProof);
+
+    s.moveProof = exactProof(s.moveProof!);
     const saved = await savedPromptProof(p.path, s);
     if (saved.snapshotHash !== s.moveProof?.snapshotHash)
       throw new Error(
@@ -2833,7 +2795,7 @@ async function handle(
     if (existing) {
       const cached = await session(s.id);
       for (const key of Object.keys(cached))
-        Reflect.deleteProperty(cached, key);
+        delete (cached as Partial<Session>)[key as keyof Session];
       Object.assign(cached, s);
       s = cached;
     } else sessions.set(s.id, s);
@@ -2867,9 +2829,13 @@ async function handle(
         canRestoreFiles: fileRestoreReason(s, t, active) === null,
         restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
         text:
-          previewInput(
-            t.items.find((i) => i.type === "userMessage")?.content,
-          ) || "Claude turn",
+          (
+            t.items.find((i) => i.type === "userMessage")?.content as
+              | BridgeInput[]
+              | undefined
+          )
+            ?.find((b) => b.type === "text")
+            ?.text?.slice(0, 160) || "Claude turn",
       })),
       tasks: [...(active?.tasks.values() || [])],
       version: s.claudeVersion,
@@ -2938,9 +2904,7 @@ async function handle(
             ].includes(waiting.method)
           ) {
             pending.delete(id);
-            waiting.resolve(
-              JSON.stringify({ id, result: { decision: "accept" } }),
-            );
+            waiting.resolve({ decision: "accept" });
             emit("serverRequest/resolved", { threadId: s.id, requestId: id });
           }
         }
@@ -2969,7 +2933,7 @@ async function handle(
       persist,
       forkSession,
       getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options?.dir ?? s.cwd }),
+        verifiedHistoryMessages({ id, cwd: options!.dir! }),
       prepareFileRestore: (session, messages, messageId) =>
         prepareFileRestore(session, messages, messageId, root),
       verifyFileRestore,
@@ -2997,30 +2961,28 @@ async function handle(
   }
   if (method === "thread/turns/list" || method === "thread/turns/items/list") {
     const s = await session(p.threadId);
-    const page = <T>(values: T[]) => {
-      const offset = p.cursor ? Number(p.cursor) : 0,
-        limit = Math.max(1, Math.min(100, p.limit || 20));
-      if (!Number.isSafeInteger(offset) || offset < 0)
-        throw new Error("Invalid Claude history cursor");
-      return {
-        data: values.slice(offset, offset + limit),
-        nextCursor:
-          offset + limit < values.length ? String(offset + limit) : null,
-      };
-    };
-    if (method === "thread/turns/list") {
-      const values = s.turns.filter(
-        (turn) => !pendingTurnReceipts.has(turn.id),
-      );
-      if (p.sortDirection !== "asc") values.reverse();
-      return page(values) satisfies HandlerResult<typeof method>;
+    let values: Turn[] | Item[];
+    if (method === "thread/turns/list")
+      values = s.turns.filter((turn) => !pendingTurnReceipts.has(turn.id));
+    else {
+      const t = s.turns.find((t) => t.id === p.turnId);
+      if (!t) throw new Error("Unknown Claude turn");
+      values = t.items;
     }
-    const turn = s.turns.find((turn) => turn.id === p.turnId);
-    if (!turn) throw new Error("Unknown Claude turn");
-    return page(turn.items) satisfies HandlerResult<typeof method>;
+    if (method === "thread/turns/list" && p.sortDirection !== "asc")
+      values.reverse();
+    const offset = p.cursor ? Number(p.cursor) : 0,
+      limit = Math.max(1, Math.min(100, p.limit || 20));
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid Claude history cursor");
+    // The selected collection has the element type of its method above.
+    return {
+      data: values.slice(offset, offset + limit),
+      nextCursor:
+        offset + limit < values.length ? String(offset + limit) : null,
+    } satisfies BridgePage<Item | Turn> as BridgeResult<typeof method>;
   }
-  if (request.method === "thread/list") {
-    const p = request.params;
+  if (method === "thread/list") {
     const page = await sessionStore.listMetadata(p.cursor, p.limit);
     return {
       data: page.data.map((metadata) => ({
@@ -3038,7 +3000,7 @@ async function handle(
         modelProvider: "claude",
       })),
       nextCursor: page.nextCursor,
-    } satisfies HandlerResult<typeof request.method>;
+    } satisfies HandlerResult<typeof method>;
   }
   if (method === "skills/extraRoots/set")
     throw new Error("Claude uses its native skills and MCP configuration");
@@ -3128,7 +3090,7 @@ async function handle(
     const s = await forkAtTurn(old, p, {
       forkSession,
       getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options?.dir ?? old.cwd }),
+        verifiedHistoryMessages({ id, cwd: options!.dir! }),
       persist,
     });
     sessions.set(s.id, s);
@@ -3149,7 +3111,7 @@ async function handle(
     if (p.idleCompaction) {
       const { effective: options } = await resolveSettings({
         cwd: s.cwd,
-        settingSources: settings(s).settingSources ?? [],
+        settingSources: settings(s).settingSources,
       });
       const refusal = idleRefusal(
         s,
@@ -3165,14 +3127,11 @@ async function handle(
           : refusal;
       if (reason) throw new Error("Idle compaction skipped: " + reason);
     }
-    return handle({
-      method: "turn/start",
-      params: {
-        ...p,
-        model: s.model,
-        clientUserMessageId: p.requestId || randomUUID(),
-        input: [{ type: "text", text: "/compact" }],
-      },
+    return handle("turn/start", {
+      ...p,
+      model: s.model,
+      clientUserMessageId: p.requestId || randomUUID(),
+      input: [{ type: "text", text: "/compact" }],
     }) satisfies HandlerResult<typeof method>;
   }
   if (method === "turn/start") {
@@ -3218,14 +3177,11 @@ async function handle(
     const running = queries.get(s.id)?.turn;
     if (running) {
       try {
-        await handle({
-          method: "turn/steer",
-          params: {
-            threadId: s.id,
-            expectedTurnId: running.id,
-            clientUserMessageId: p.clientUserMessageId ?? "",
-            input: p.input,
-          },
+        await handle("turn/steer", {
+          threadId: s.id,
+          expectedTurnId: running.id,
+          clientUserMessageId: p.clientUserMessageId!,
+          input: p.input,
         });
         return {
           turn: { id: running.id, status: running.status },
@@ -3234,7 +3190,7 @@ async function handle(
       } catch (error) {
         // The running turn ended before this input reached Claude. Nothing
         // was submitted, so the input starts the next turn instead.
-        if (!errorField(error, "steerNotSubmitted") || running.interrupted)
+        if (!(error as BridgeFailure).steerNotSubmitted || running.interrupted)
           throw error;
         await finishingTurns.get(running);
         if (queries.get(s.id)?.turn) throw error;
@@ -3242,10 +3198,7 @@ async function handle(
     }
     let nativeCommand;
     if (p.claudeCommand) {
-      const commands = await handle({
-        method: "claude/commands",
-        params: { cwd: s.cwd },
-      });
+      const commands = await handle("claude/commands", { cwd: s.cwd });
       nativeCommand = explicitNativeCommand(p.claudeCommand, commands);
       // Unknown slash text remains ordinary user input; never extract commands from it.
     }
@@ -3303,7 +3256,7 @@ async function handle(
       // A persistent query can die between turns (its Claude process ends).
       // Nothing is running in it, so start this turn in a fresh query.
       try {
-        await control(() => active?.ready, "active_ready");
+        await control(() => active!.ready, "active_ready");
       } catch (error) {
         if (!deadQuery(error)) throw error;
         discardQuery(s.id, active);
@@ -3311,32 +3264,32 @@ async function handle(
       }
     }
     if (active) {
-      const live = active;
-      await control(() => live.ready, "active_ready");
-      const q = live.q;
-      if (!q) throw new Error("Claude query is closed");
+      await control(() => active!.ready, "active_ready");
       if (toolsChanged) {
         // Replace only the Studio MCP server; background tasks keep running.
         // The SDK keeps an already registered in-process server even when its
         // tools change. Remove it first so the new schema replaces it.
         await control(
-          () => q.setMcpServers(live.externalMcpServers || {}),
+          () => active!.q!.setMcpServers(active!.externalMcpServers || {}),
           "mcp_remove",
         );
         await control(
           () =>
-            q.setMcpServers({
-              ...live.externalMcpServers,
-              studio: studioTools(s, () => live.turn),
+            active!.q!.setMcpServers({
+              ...active!.externalMcpServers,
+              studio: studioTools(s, () => active!.turn),
             }),
           "mcp_install",
         );
         active.toolsIdentity = toolsIdentity;
       }
       try {
-        await control(() => q.setModel(p.model || s.model), "model_set");
         await control(
-          () => q.setPermissionMode(permissionMode(s, p)),
+          () => active!.q!.setModel(p.model || s.model),
+          "model_set",
+        );
+        await control(
+          () => active!.q!.setPermissionMode(permissionMode(s, p)),
           "permissions_set",
         );
         active.permissionMode = permissionMode(s, p);
@@ -3344,7 +3297,10 @@ async function handle(
           () => flags(s, p, true),
           "catalog_flags",
         );
-        await control(() => q.applyFlagSettings(flagSettings), "flag_settings");
+        await control(
+          () => active!.q!.applyFlagSettings(flagSettings),
+          "flag_settings",
+        );
       } catch (error) {
         if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
         discardQuery(s.id, active);
@@ -3407,12 +3363,12 @@ async function handle(
       active = newActive(turn);
       queries.set(s.id, active);
       active.consumer = new Promise((resolve, reject) => {
-        const owned = active;
-        if (!owned) return reject(new Error("Claude query is missing"));
-        setImmediate(() => startSession(s, owned, p).then(resolve, reject));
+        setImmediate(() => startSession(s, active!, p).then(resolve, reject));
       });
       active.consumer.catch((error) =>
-        process.stderr.write("Claude consumer: " + errorText(error) + "\n"),
+        process.stderr.write(
+          "Claude consumer: " + (error as Error).message + "\n",
+        ),
       );
     }
     catalogCache.activityChanged();
@@ -3459,9 +3415,7 @@ async function handle(
     const previous = turn.items.find((item) => item.id === id);
     if (previous) {
       if (
-        ["not_applied", "cancelled"].some(
-          (status) => status === previous.deliveryStatus,
-        )
+        ["not_applied", "cancelled"].includes(previous.deliveryStatus as string)
       )
         throw new Error(previous.error);
       if (JSON.stringify(previous.content) !== JSON.stringify(p.input))
@@ -3522,7 +3476,7 @@ async function handle(
       if (item) {
         item.deliveryStatus = "not_applied";
         cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
-        item.error = errorText(error);
+        item.error = (error as Error).message;
         await persistLive(s);
       }
       if (
@@ -3538,13 +3492,13 @@ async function handle(
     }
   }
   if (method === "turn/interrupt") {
-    const s = await session(p.threadId);
     const active = queries.get(p.threadId);
     // Match Codex: an interrupt without an active turn changes nothing.
     // Closing an idle session here would also end its background tasks.
     if (!active?.turn) throw new Error("no active turn to interrupt");
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
+    const s = sessions.get(p.threadId)!;
     const turn = active.turn;
     turn.interrupted = true;
     const reservingInput = active.reservingInput;
@@ -3579,7 +3533,7 @@ async function handle(
         ? async () => {
             results = await Promise.allSettled(
               [...active.tasks.keys()].map((taskId) =>
-                active.q?.stopTask(taskId),
+                active.q!.stopTask(taskId),
               ),
             );
           }
@@ -3675,37 +3629,15 @@ async function handle(
   throw new Error("Claude does not support " + method);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function errorData(error: unknown): Record<string, unknown> {
-  return isRecord(error) && isRecord(error.data) ? error.data : {};
-}
-function errorField(error: unknown, field: string): unknown {
-  return isRecord(error) ? error[field] : undefined;
-}
-function previewInput(input: unknown): string | undefined {
-  if (!Array.isArray(input)) return undefined;
-  const block: unknown = input.find(
-    (value: unknown) => isRecord(value) && value.type === "text",
-  );
-  return isRecord(block) && typeof block.text === "string"
-    ? block.text.slice(0, 160)
-    : undefined;
-}
-function errorText(error: unknown): string | undefined {
-  const text = errorField(error, "message");
-  return typeof text === "string" ? text : undefined;
-}
 function readBridgeInput<M extends BridgeServerMethod = BridgeServerMethod>(
   line: string,
-): BridgeRequest | BridgeResponse<BridgeServerResult<M>> {
-  const value: unknown = JSON.parse(line);
-  if (!isRecord(value)) throw new Error("Invalid Claude bridge message");
-  if ("method" in value && !isRecord(value.params)) value.params = {};
-  // Studio and this bridge own the protocol; the envelope is checked here once.
-  // Payload types come from the shared wire owner, as in the scripted child boundary.
-  return value as BridgeRequest | BridgeResponse<BridgeServerResult<M>>;
+): Partial<
+  BridgeRequest &
+    BridgeErrorResponse &
+    BridgeSuccessResponse<BridgeServerResult<M>>
+> {
+  // Studio owns this wire document; payloads use the shared protocol owner.
+  return JSON.parse(line);
 }
 
 const operations = new Map<string, Promise<unknown>>();
@@ -3717,27 +3649,32 @@ lines.on("line", (line) => {
   } catch {
     return;
   }
-  if (!("method" in message)) {
-    const waiting = pending.get(message.id);
+  if (!message.method) {
+    const waiting = pending.get(message.id!);
     if (waiting) {
-      pending.delete(message.id);
-      if ("error" in message) waiting.reject(new Error(message.error.message));
-      else waiting.resolve(line);
+      pending.delete(message.id!);
+      if (message.error) waiting.reject(new Error(message.error.message));
+      else waiting.resolve(message.result!);
     }
     return;
   }
-  const params = message.params;
-  if (!isRecord(params)) return;
+  const params = message.params || {};
   // Serialize session mutations, but keep interrupt and permission replies independent.
-  const key =
-    "threadId" in params && typeof params.threadId === "string"
-      ? params.threadId
-      : undefined;
-  const ordered = key && isThreadSerialized(message.method, params);
+  const key = (params as Partial<BridgeThreadParams>).threadId;
+  const ordered =
+    key &&
+    isThreadSerialized(message.method, params as Record<string, unknown>);
   const before = ordered
     ? operations.get(key) || Promise.resolve()
     : Promise.resolve();
-  const operation = before.catch(() => {}).then(() => handle(message));
+  const operation = before
+    .catch(() => {})
+    .then(() =>
+      (handle as (method: BridgeMethod, params: unknown) => Promise<unknown>)(
+        message.method!,
+        params,
+      ),
+    );
   if (ordered) {
     operations.set(key, operation);
     operation
@@ -3756,10 +3693,10 @@ lines.on("line", (line) => {
         send({
           id: message.id,
           error: {
-            code: Number.isInteger(errorField(error, "code"))
-              ? errorField(error, "code")
+            code: Number.isInteger((error as BridgeFailure).code)
+              ? (error as BridgeFailure).code
               : -32000,
-            message: errorText(error),
+            message: (error as Error).message,
             ...(error.data === undefined ? {} : { data: error.data }),
           },
         });
@@ -3787,7 +3724,7 @@ function shutdown() {
           }),
         ]);
       } finally {
-        clearTimeout(timer ?? undefined);
+        clearTimeout(timer!);
       }
     };
     for (const [, active] of activeQueries) {

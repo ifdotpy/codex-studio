@@ -86,12 +86,12 @@ export async function nativeHistoryRows(
     const end = tail.raw.indexOf(10, start);
     if (end < 0 || end - start > NATIVE_HISTORY_TAIL_BYTES)
       throw new Error("Invalid native history record");
-    const row: unknown = JSON.parse(
+    const row: Record<string, unknown> = JSON.parse(
       tail.raw.subarray(start, end).toString("utf8"),
     );
     if (!row || typeof row !== "object" || Array.isArray(row))
       throw new Error("Invalid native history row");
-    rows.push({ row: { ...row }, offset: start });
+    rows.push({ row, offset: start });
     start = end + 1;
     if (start - yielded >= 256 * 1024) {
       await new Promise<void>((resolve) => setImmediate(resolve));
