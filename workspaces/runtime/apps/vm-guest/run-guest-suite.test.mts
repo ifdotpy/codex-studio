@@ -19,11 +19,12 @@ async function start(args: string[], cwd: string) {
     cwd,
     detached: true,
     stdio: ["pipe", "ignore", "ignore", "ipc"],
-  }) as ReturnType<typeof spawn> & { exited: ReturnType<typeof once> };
-  child.exited = once(child, "exit");
+  });
+  const exited = once(child, "exit");
   await once(child, "message");
   child.disconnect();
-  return child;
+  assert.ok(child.pid);
+  return { pid: child.pid, exited };
 }
 
 function alive(pid: number) {
@@ -52,7 +53,12 @@ test(
       ),
       start(["-e", WAIT], outside),
     ]);
-    const [named, working, stubborn, other] = children.map(({ pid }) => pid!);
+    const [
+      { pid: named },
+      { pid: working },
+      { pid: stubborn },
+      { pid: other },
+    ] = children;
     try {
       const found = suiteProcesses(folder).map(({ pid }) => pid);
       for (const pid of [named, working, stubborn])

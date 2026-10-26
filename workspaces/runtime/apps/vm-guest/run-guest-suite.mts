@@ -111,11 +111,10 @@ export function suiteProcesses(folder: string) {
   const cwd = workingFolders();
   const found = [];
   for (const line of listed.stdout.split("\n")) {
-    const match = line.match(/^\s*(\d+)\s+(.*)$/);
-    if (!match) continue;
-    const pid = +match[1];
+    const [, pidText, command] = line.match(/^\s*(\d+)\s+(.*)$/) ?? [];
+    if (pidText === undefined || command === undefined) continue;
+    const pid = +pidText;
     if (pid === process.pid) continue;
-    const command = match[2];
     if (
       folders.some((name) => command.includes(name)) ||
       within(cwd.get(pid) ?? "", folders)
