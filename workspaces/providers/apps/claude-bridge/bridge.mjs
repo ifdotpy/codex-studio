@@ -2498,6 +2498,7 @@ async function handle(method, p) {
     // Only the permission mode has a live SDK control. Other changes still
     // require an idle query. Missing thinking means the default, enabled.
     const permissionOnly =
+      Object.hasOwn(p.settings, "permissionMode") &&
       (p.settings.thinking !== false) === (previous?.thinking !== false) &&
       (p.settings.autoCompactWindow ?? null) ===
         (previous?.autoCompactWindow ?? null);

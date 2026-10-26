@@ -183,8 +183,9 @@ impl ControlSnapshot {
         request.action == Action::Settings
             && request.settings.as_ref().is_some_and(|next| {
                 let previous = &self.raw["claudeOptions"];
-                (next.get("thinking").and_then(Value::as_bool) != Some(false))
-                    == (previous.get("thinking").and_then(Value::as_bool) != Some(false))
+                next.get("permissionMode").is_some()
+                    && (next.get("thinking").and_then(Value::as_bool) != Some(false))
+                        == (previous.get("thinking").and_then(Value::as_bool) != Some(false))
                     && next
                         .get("autoCompactWindow")
                         .filter(|value| !value.is_null())
