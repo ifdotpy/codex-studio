@@ -10,6 +10,7 @@ import {
 
 declare global {
   interface Window {
+    // Renamed from calls: chat/chat-read-client-browser.fixture.tsx declares read-state writes.
     settingsCalls: PostBody<"/api/conversation">[];
     agent: Agent;
     updateAgent: (agent: Agent) => void;
