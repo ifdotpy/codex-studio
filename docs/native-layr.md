@@ -100,7 +100,11 @@ The original source folder stays separate from main.
 Studio requires a compatible Layr store format before it prepares a line.
 `layr store-version --json` reports the store format, package version, and build identity.
 An incompatible store returns an error that names the root and both versions.
-An unversioned store requires an explicit upgrade with the approved Layr binary.
+Studio can adopt its default store when Layr reports an older format with a metadata-only upgrade.
+The upgrade uses a durable receipt and runs once for the target format.
+A repeat reads the current compatible marker without another upgrade.
+Studio never automatically upgrades an operator-selected store or a link to an external store.
+An operator-selected store requires an explicit upgrade with the approved Layr binary.
 Make a copy of the store before the upgrade.
 Wait for its current Layr commands to finish.
 Then run:

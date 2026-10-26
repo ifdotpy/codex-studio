@@ -63,6 +63,18 @@ pub(super) fn same_root(left: &Path, right: &Path) -> bool {
         == right.canonicalize().unwrap_or_else(|_| right.to_owned())
 }
 
+/// A link to an operator's store does not make that store Studio-owned.
+pub(super) fn owns_store(state: &Path, root: &Path) -> bool {
+    let expected = state
+        .canonicalize()
+        .unwrap_or_else(|_| state.to_owned())
+        .join(NATIVE_LAYR_DIRECTORY)
+        .join(STORE_DIRECTORY);
+    root.canonicalize().unwrap_or_else(|_| root.to_owned()) == expected
+        && !fs::symlink_metadata(store_path(state))
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+}
+
 /// Keep the original metadata location for old Studio imports.
 pub(super) fn metadata(state: &Path, root: &Path) -> PathBuf {
     let base = state.join(NATIVE_LAYR_DIRECTORY);
@@ -116,6 +128,19 @@ pub fn record_store(state: &Path, record: &Value) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_default_path_symlink_does_not_make_a_developer_store_owned() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let state = fixture.path().join("state");
+        let developer = fixture.path().join("developer");
+        fs::create_dir_all(state.join(NATIVE_LAYR_DIRECTORY)).expect("native folder");
+        fs::create_dir(&developer).expect("developer store");
+        std::os::unix::fs::symlink(&developer, store_path(&state)).expect("store link");
+        assert!(!owns_store(&state, &developer));
+        assert!(!owns_store(&state, &store_path(&state)));
+    }
 
     #[test]
     fn root_switch_keeps_existing_chats_on_their_original_store() {

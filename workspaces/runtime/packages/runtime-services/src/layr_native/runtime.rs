@@ -128,7 +128,7 @@ pub fn operation(
     operation_with_preflight(state_dir, id, intent, || Ok(()), effect)
 }
 
-fn operation_in_store(
+pub(super) fn operation_in_store(
     state_dir: &Path,
     root: &Path,
     id: &str,

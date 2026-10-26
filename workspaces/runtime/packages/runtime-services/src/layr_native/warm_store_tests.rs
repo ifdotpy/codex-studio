@@ -5,13 +5,40 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "macos")]
+struct UnsealFixture(PathBuf);
+#[cfg(target_os = "macos")]
+impl Drop for UnsealFixture {
+    fn drop(&mut self) {
+        let _result = crate::bounded_child::run(crate::bounded_child::Request {
+            program: std::ffi::OsStr::new("chflags"),
+            git_directory: None,
+            args: &["-RP", "nouchg", self.0.to_str().unwrap_or_default()],
+            environment: &[],
+            input: None,
+            stdout_limit: 4096,
+            stderr_limit: 4096,
+            timeout: Duration::from_secs(30),
+        });
+    }
+}
+
 fn cargo_build(cwd: &Path) -> (Duration, Vec<Value>) {
     let target = cwd.join("target");
+    let manifest = cwd.join("Cargo.toml");
     let started = Instant::now();
     let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("cargo"),
-        git_directory: Some(cwd.as_os_str()),
-        args: &["build", "--offline", "-j", "4", "--message-format=json"],
+        git_directory: None,
+        args: &[
+            "build",
+            "--manifest-path",
+            manifest.to_str().expect("manifest"),
+            "--offline",
+            "-j",
+            "4",
+            "--message-format=json",
+        ],
         environment: &[("CARGO_TARGET_DIR", target.to_str().expect("target"))],
         input: None,
         stdout_limit: 1024 * 1024,
@@ -37,6 +64,8 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
     let fixture_root = CanonicalPath::existing(fixture.path())
         .expect("canonical fixture")
         .into_path_buf();
+    #[cfg(target_os = "macos")]
+    let _unseal = UnsealFixture(fixture_root.clone());
     let state = fixture_root.join("state");
     let source = fixture_root.join("codex-agents");
     fs::create_dir_all(source.join("src")).expect("source");
@@ -171,16 +200,4 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
             && error.contains(root.to_str().expect("root")),
         "{error}"
     );
-    #[cfg(target_os = "macos")]
-    crate::bounded_child::run(crate::bounded_child::Request {
-        program: std::ffi::OsStr::new("chflags"),
-        git_directory: None,
-        args: &["-RP", "nouchg", fixture_root.to_str().expect("fixture")],
-        environment: &[],
-        input: None,
-        stdout_limit: 4096,
-        stderr_limit: 4096,
-        timeout: Duration::from_secs(30),
-    })
-    .expect("unseal only the private fixture before removal");
 }

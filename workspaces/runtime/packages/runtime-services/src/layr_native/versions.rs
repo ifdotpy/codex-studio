@@ -16,6 +16,16 @@ struct Inspection {
     store: Option<Identity>,
     compatible: bool,
     state: String,
+    #[serde(default)]
+    upgrade: Option<Upgrade>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Upgrade {
+    from_format: u64,
+    to_format: u64,
+    metadata_only: bool,
 }
 
 fn inspect(binary: &Path, root: &Path) -> Result<Inspection> {
@@ -32,7 +42,31 @@ fn inspect(binary: &Path, root: &Path) -> Result<Inspection> {
 }
 
 pub(super) fn verify(state: &Path, root: &Path) -> Result<Option<String>> {
-    let bundled = inspect(&super::git_guard::executable_path(state), root)?;
+    let mut bundled = inspect(&super::git_guard::executable_path(state), root)?;
+    if !bundled.compatible
+        && settings::owns_store(state, root)
+        && let Some(upgrade) = &bundled.upgrade
+        && upgrade.metadata_only
+        && upgrade.from_format < upgrade.to_format
+        && upgrade.to_format == bundled.binary.format
+        && (bundled.state == "legacy"
+            || bundled
+                .store
+                .as_ref()
+                .is_some_and(|version| version.format == upgrade.from_format))
+    {
+        super::runtime::operation_in_store(
+            state,
+            root,
+            &format!("store-upgrade:{}", upgrade.to_format),
+            &json!({"kind":"store-upgrade","root":root,"fromFormat":upgrade.from_format,"toFormat":upgrade.to_format}),
+            || {
+                super::runtime::run_in_store(state, root, state, &["store-version", "--upgrade"])?;
+                Ok(json!({"storeRoot":root,"format":upgrade.to_format}))
+            },
+        )?;
+        bundled = inspect(&super::git_guard::executable_path(state), root)?;
+    }
     if !bundled.compatible {
         let written = bundled
             .store
@@ -52,7 +86,7 @@ pub(super) fn verify(state: &Path, root: &Path) -> Result<Option<String>> {
             bundled.binary.build
         )));
     }
-    if settings::same_root(root, &store_path(state)) {
+    if settings::owns_store(state, root) {
         return Ok(None);
     }
     let developer =
@@ -99,6 +133,61 @@ fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_store_adopts_metadata_once_and_selected_store_remains_untouched() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let fixture = tempfile::tempdir().expect("fixture");
+        let state = fixture.path().join("state");
+        let root = store_path(&state);
+        fs::create_dir_all(&root).expect("legacy store");
+        fs::write(root.join("legacy-data"), "preserved").expect("legacy data");
+        let script = r#"#!/bin/sh
+case "$*" in
+  *--json)
+    if [ -f "$2/upgraded" ]; then
+      printf '%s\n' '{"binary":{"format":1,"version":"0.4.0","build":"fixture"},"store":{"format":1,"version":"0.4.0","build":"fixture"},"compatible":true,"state":"compatible"}'
+    else
+      printf '%s\n' '{"binary":{"format":1,"version":"0.4.0","build":"fixture"},"store":null,"compatible":false,"state":"legacy","upgrade":{"fromFormat":0,"toFormat":1,"metadataOnly":true}}'
+    fi ;;
+  *--upgrade)
+    printf 'upgrade\n' >> "$LAYR_ROOT/calls"
+    printf 'complete\n' > "$LAYR_ROOT/upgraded" ;;
+esac
+"#;
+        fs::create_dir_all(binary_path(&state).parent().expect("bin")).expect("bin");
+        for binary in [
+            binary_path(&state),
+            super::super::git_guard::executable_path(&state),
+        ] {
+            fs::write(&binary, script).expect("binary fixture");
+            fs::set_permissions(binary, fs::Permissions::from_mode(0o755)).expect("executable");
+        }
+        verify(&state, &root).expect("metadata adoption");
+        verify(&state, &root).expect("repeat is a no-op");
+        assert_eq!(
+            fs::read_to_string(root.join("calls")).expect("calls"),
+            "upgrade\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("legacy-data")).expect("data"),
+            "preserved"
+        );
+        let developer = fixture.path().join("developer-store");
+        fs::create_dir(&developer).expect("developer store");
+        let error = verify(&state, &developer)
+            .expect_err("operator store requires explicit upgrade")
+            .to_string();
+        assert!(error.contains("upgrade-store"));
+        assert!(!developer.join("upgraded").exists());
+        assert!(
+            fs::read_dir(developer)
+                .expect("developer store")
+                .next()
+                .is_none()
+        );
+    }
     #[test]
     fn package_mismatch_refuses_but_build_difference_is_visible() {
         let bundled = Identity {
