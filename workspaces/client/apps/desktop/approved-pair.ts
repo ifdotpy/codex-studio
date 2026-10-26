@@ -61,7 +61,7 @@ async function pairApproved({
       !peer ||
       peer.kind !== "server" ||
       peer.status !== "paired" ||
-      serveOrigin(peer.origin ?? "") !== target ||
+      serveOrigin(peer.origin!) !== target ||
       JSON.stringify([peer.created, peer.publicKey]) !== approval.generation
     )
       throw new Error("This server is not approved or its identity changed.");
@@ -107,11 +107,7 @@ async function pairApproved({
     ).some(
       (key) =>
         invitation[key] !==
-        (value.invitation &&
-        typeof value.invitation === "object" &&
-        key in value.invitation
-          ? Reflect.get(value.invitation, key)
-          : undefined),
+        (value.invitation as Partial<typeof invitation> | undefined)?.[key],
     )
   )
     throw new Error(
