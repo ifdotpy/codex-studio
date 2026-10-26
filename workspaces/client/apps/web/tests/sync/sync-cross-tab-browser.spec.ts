@@ -846,10 +846,11 @@ const runSyncCrossTabScenario = async (
             resourceQuery,
           }),
         ),
-        openIntervalMs: requiredEntry(takeoverRequests, 1)
-          ? requiredEntry(takeoverRequests, 1).openedAt -
-            requiredEntry(takeoverRequests, 0).openedAt
-          : undefined,
+        openIntervalMs:
+          takeoverRequests.length > 1
+            ? requiredEntry(takeoverRequests, 1).openedAt -
+              requiredEntry(takeoverRequests, 0).openedAt
+            : undefined,
         activeStreamsAtEnd: streams.size,
       })}\n`,
     );
