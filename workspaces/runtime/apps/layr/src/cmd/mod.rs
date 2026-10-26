@@ -217,6 +217,17 @@ Lines are folders: <root>/projects/<project>/lines/<line>. Run commands inside a
 const OVERLAY_READS: &[&str] =
     &["log", "show", "diff", "grep", "ls-files", "blame", "rev-parse", "merge-base", "fsck", "reindex", "help", "version"];
 
+/// Public command names, including removed commands with a replacement diagnostic.
+pub const COMMANDS: &[&str] = &[
+    "help", "--help", "-h", "version", "--version", "status", "diff", "show", "log", "rev-parse", "merge-base", "blame",
+    "index", "grep", "ls-files", "add", "rm", "mv", "apply", "restore", "reset", "park", "clean", "line", "tag", "adopt",
+    "merge", "pick", "invert", "replay", "save", "undo", "op", "try", "bisect", "access", "protect", "approve", "approvals",
+    "checks", "ref", "release", "queue", "request", "requests", "view", "attest", "attestations", "change", "comment", "probe",
+    "gc", "fsck", "reindex", "init", "projects", "machines", "debug", "config", "cache", "layer", "remote", "fetch", "pull",
+    "push", "git-sync", "git", "clone", "overlay", "export", "sync", "serve-peer", "worktree", "branch", "commit", "stash",
+    "cherry-pick", "rebase", "revert", "checkout", "switch", "person", "mount", "daemon",
+];
+
 pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
     let (cmd, rest) = match argv.first() {
         Some(c) => (c.as_str(), &argv[1..]),

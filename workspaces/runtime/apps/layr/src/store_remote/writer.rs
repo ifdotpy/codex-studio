@@ -57,6 +57,18 @@ fn cached_tree(dir: &Path, state: &str, entry: &Cached) -> Result<Pushed> {
     Tree::parse(&pushed.tree.canonical()?)?;
     Ok(pushed)
 }
+fn recovered_cache(dir: &Path, state: &str, attempt: String) -> Result<Cached> {
+    let entry = Cached { attempt, depth: format::FULL_TREE_EVERY - 1 };
+    // With no checkpoint, the local cache is not an authenticated description of
+    // the published tree. Discard it and let the parent selection read that tree
+    // through the normal remote signature checks (or upload a full child).
+    match std::fs::remove_file(cache_path(dir, state, &entry)?) {
+        Ok(()) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error.into()),
+    }
+    Ok(entry)
+}
 fn load_index(dir: &Path) -> Result<BTreeMap<String, Cached>> {
     let path = dir.join("pushed.json");
     if !path.exists() {
@@ -352,7 +364,8 @@ pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options)
             }
             if let Some(attempt) = complete.remove(&id) {
                 present.insert(id.clone(), attempt.clone());
-                index.insert(id, Cached { attempt, depth: format::FULL_TREE_EVERY - 1 });
+                let cached = recovered_cache(&store.dir, &id, attempt)?;
+                index.insert(id, cached);
                 continue;
             }
         }

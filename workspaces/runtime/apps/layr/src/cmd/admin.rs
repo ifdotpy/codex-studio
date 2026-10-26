@@ -74,6 +74,7 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
         let l = repo.line(&l.id)?;
+        crate::repo::recover_cache_replacements(&repo.working(&l))?;
         let (caches, versioned) = if a.has("--caches") { repo.line_cache_paths(&l)? } else { Default::default() };
         let st = if a.has("--caches") {
             // A cache folder that a tool made again as a plain folder becomes a cache first, so
@@ -1990,6 +1991,7 @@ pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
             let _lock = repo.p.lock()?;
             let l = repo.line(&l.id)?;
             let (u, g) = repo.owner_ids(&l);
+            crate::repo::recover_cache_replacements(&repo.working(&l))?;
             let (caches, versioned) = repo.line_cache_paths(&l)?;
             for p in versioned {
                 if crate::repo::uncache(&repo.working(&l), &p, u, g)? {

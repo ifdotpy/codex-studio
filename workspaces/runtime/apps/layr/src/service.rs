@@ -67,7 +67,7 @@ fn recv_with_fds(sock: &UnixStream, buf: &mut [u8]) -> Result<(usize, Vec<OwnedF
 pub fn forward(argv: &[String]) -> Result<i32> {
     let path = socket_path();
     let sock = UnixStream::connect(&path).map_err(|e| connect_error(&path, &e))?;
-    negotiate(&sock)?;
+    negotiate(&sock).context("cannot send the request to the layr service")?;
     let cwd = std::env::current_dir()?;
     let env: HashMap<String, String> = std::env::vars().collect();
     let req = serde_json::to_vec(
