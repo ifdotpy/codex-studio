@@ -42,11 +42,18 @@ export class AutomaticUiAccess {
     string,
     { retryAt: number; delay: number; serverId: string; error: string }
   >();
+  private store: AutomaticAccessStore;
+  private adapter: AutomaticAccessAdapter;
+  private now: typeof Date.now;
   constructor(
-    private store: AutomaticAccessStore,
-    private adapter: AutomaticAccessAdapter,
-    private now = Date.now,
-  ) {}
+    store: AutomaticAccessStore,
+    adapter: AutomaticAccessAdapter,
+    now = Date.now,
+  ) {
+    this.store = store;
+    this.adapter = adapter;
+    this.now = now;
+  }
   reconcile(snapshot: DiscoverySnapshot): Promise<void> {
     this.latest = snapshot;
     if (this.running) return this.running;
