@@ -1631,7 +1631,8 @@ describe("shared resource event transport", () => {
     );
     await vi.advanceTimersByTimeAsync(2_500);
     expect(Source.instances).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1_000);
+    // The changed selection restarts its cursor reads before one stream opens.
+    await vi.advanceTimersByTimeAsync(4_000);
     expect(Source.instances).toHaveLength(1);
     expect(
       JSON.parse(
@@ -1645,7 +1646,8 @@ describe("shared resource event transport", () => {
         { kind: "queue", agentId: "later" },
       ]),
     );
-    expect(readSubscriptionCursor).toHaveBeenCalledTimes(3);
+    // The state cursor read is reused; only the joining queue is read again.
+    expect(readSubscriptionCursor).toHaveBeenCalledTimes(2);
     stopQueue();
     stopState();
   });

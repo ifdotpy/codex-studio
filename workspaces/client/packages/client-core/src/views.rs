@@ -52,6 +52,12 @@ impl Views {
             );
         };
         if request.method == "view.unsubscribe" {
+            crate::stream_log::line(&format!(
+                "unsubscribe {id} known={} views={} reason={}",
+                self.tasks.contains_key(id),
+                self.tasks.len(),
+                request.params["reason"].as_str().unwrap_or("")
+            ));
             self.flows.remove(id);
             if let Some(task) = self.tasks.remove(id) {
                 task.abort();
@@ -66,6 +72,7 @@ impl Views {
             }) {
                 Response::success(request.id.clone(), json!({"granted":true}))
             } else {
+                crate::stream_log::line(&format!("invalid_credit {id}"));
                 Response::failure(
                     request.id.clone(),
                     "invalid_credit",
@@ -77,6 +84,11 @@ impl Views {
             || self.tasks.contains_key(id)
             || self.tasks.len() >= 64
         {
+            crate::stream_log::line(&format!(
+                "refuse {id} method={} views={}",
+                request.method,
+                self.tasks.len()
+            ));
             return Response::failure(
                 request.id.clone(),
                 "invalid_subscription",
@@ -206,6 +218,11 @@ impl Views {
                 }
             }),
         );
+        crate::stream_log::line(&format!(
+            "subscribe {} views={}",
+            request.params["subscription"].as_str().unwrap_or(""),
+            self.tasks.len()
+        ));
         Response::success(request.id.clone(), json!({"subscribed":true}))
     }
 }

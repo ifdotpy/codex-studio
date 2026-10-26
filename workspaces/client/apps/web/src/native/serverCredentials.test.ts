@@ -1,5 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
-vi.mock("./client", () => ({ nativeRequest: vi.fn() }));
+vi.mock("./client", () => ({
+  nativeRequest: vi.fn(),
+  hasNativeClient: () => true,
+}));
 import { nativeRequest } from "./client";
 import { NativeServerCredentials } from "./serverCredentials";
 const server = {

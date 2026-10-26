@@ -45,6 +45,7 @@ import {
   hasFreshServerFrame,
   isResourceConnectionState,
   onResourceConnectionLifecycle,
+  pageHidden,
   resourceCoordinationNames,
   RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS,
   RESOURCE_HEARTBEAT_TIMEOUT_MS,
@@ -407,7 +408,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   const resourceKey = subscriptionKey;
 
   function setStatus(status: ResourceConnectionState) {
-    if (coordinatorActive && document.hidden && status !== "schema-mismatch")
+    if (coordinatorActive && pageHidden() && status !== "schema-mismatch")
       status = "paused";
     if (currentStatus === status) {
       notifyConnectionListeners();
@@ -423,7 +424,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function streamState(): ResourceStreamState {
     if (!coordinatorActive) return "stopped";
     if (navigator.onLine === false) return "offline";
-    if (document.hidden) return "paused";
+    if (pageHidden()) return "paused";
     if (source) return sourceOpened ? "open" : "connecting";
     if (openingSource || initializing) return "preparing";
     if (reconnectTimer !== undefined) return "retry-scheduled";
@@ -1250,7 +1251,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   ) {
     if (error !== undefined)
       console.error("Sync stream frame could not be applied", error);
-    reconnectNow(failure);
+    reconnectNow(
+      failure,
+      error === undefined
+        ? undefined
+        : String((error as Error)?.message ?? error),
+    );
   }
 
   function refreshHeartbeatTimeout() {
@@ -1274,7 +1280,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     )
       return;
     if (
-      document.hidden &&
+      pageHidden() &&
       (record.kind === "resource-event" ||
         record.kind === "resource-progress" ||
         record.kind === "token-rates" ||
@@ -1344,7 +1350,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       record.kind === "discover-subscriptions" &&
       !owner &&
       !independent &&
-      !document.hidden &&
+      !pageHidden() &&
       navigator.onLine !== false
     ) {
       // A new lock owner has no reliable way to infer subscriptions from
@@ -1490,7 +1496,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }, COORDINATOR_IDLE_STOP_MS);
   }
 
-  function closeSource() {
+  /** The reason reaches the desktop stream log. */
+  function closeSource(reason = "closed") {
     openingSource?.abort();
     openingSource = undefined;
     validatedServerFrameAt = undefined;
@@ -1513,7 +1520,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     heartbeatTimeout = undefined;
     clearTimeout(schemaHandshakeTimeout);
     schemaHandshakeTimeout = undefined;
-    source?.close();
+    (source as { close(reason?: string): void } | undefined)?.close(reason);
     source = undefined;
     sourceOpened = false;
   }
@@ -1541,7 +1548,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     connectionFailure = failure;
     reconnecting = true;
     setStatus(
-      document.hidden
+      pageHidden()
         ? "paused"
         : navigator.onLine === false
           ? "offline"
@@ -1549,7 +1556,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     );
     if (
       reconnectTimer !== undefined ||
-      document.hidden ||
+      pageHidden() ||
       navigator.onLine === false
     )
       return;
@@ -1564,9 +1571,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     notifyConnectionListeners();
   }
 
-  function reconnectNow(failure: ResourceConnectionFailure = "unknown") {
+  function reconnectNow(
+    failure: ResourceConnectionFailure = "unknown",
+    detail?: string,
+  ) {
     if (source) requireBaselineReconciliation();
-    closeSource();
+    closeSource(detail ? `${failure}: ${detail}` : failure);
     scheduleReconnect(failure);
   }
 
@@ -1632,7 +1642,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       !isApiSchemaMismatch() &&
       coordinatorActive &&
       (owner || independent) &&
-      !document.hidden &&
+      !pageHidden() &&
       navigator.onLine !== false
     );
   }
@@ -1992,7 +2002,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function sendPeerHeartbeat() {
-    if (!coordinatorReady || document.hidden) return;
+    if (!coordinatorReady || pageHidden()) return;
     if (!owner && !independent && currentStatus === "live") {
       const status = peerHealth.status();
       if (status && status !== "live") setStatus(status);
@@ -2065,7 +2075,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             generation !== coordinatorGeneration ||
             requestedWorkspaceId !== workspaceId ||
             !lock ||
-            document.hidden ||
+            pageHidden() ||
             navigator.onLine === false
           )
             return;
@@ -2169,7 +2179,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function resumeTransport() {
     if (!coordinatorActive) return;
-    if (document.hidden) {
+    if (pageHidden()) {
       pauseTransport();
       return;
     }
@@ -2257,8 +2267,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       },
       pause: pauseTransport,
     });
-    if (document.hidden || navigator.onLine === false) {
-      setStatus(document.hidden ? "paused" : "offline");
+    if (pageHidden() || navigator.onLine === false) {
+      setStatus(pageHidden() ? "paused" : "offline");
       return;
     }
     void initialize();

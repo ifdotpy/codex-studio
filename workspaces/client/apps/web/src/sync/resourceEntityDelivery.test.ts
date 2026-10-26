@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  PERSIST_DEADLINE_MS,
   MAX_PENDING_RESOURCE_FRAMES,
   ResourceEntityDelivery,
 } from "./resourceEntityDelivery";
@@ -194,7 +195,8 @@ describe("bounded stream entity delivery", () => {
         resources: [{ kind: "work", agentId: "lead" }],
       });
       if (cause === "rejection") reject(new Error("base mismatch"));
-      else if (cause === "deadline") await vi.advanceTimersByTimeAsync(1000);
+      else if (cause === "deadline")
+        await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
       else
         for (let i = 0; i < MAX_PENDING_RESOURCE_FRAMES; i++)
           delivery.receive(frame(i + 3));

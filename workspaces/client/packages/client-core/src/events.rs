@@ -173,10 +173,17 @@ pub async fn run_controlled(
     let mut last_id = String::new();
     let mut retry = 3000;
     loop {
+        let started = std::time::Instant::now();
+        let mut delivered = 0u64;
         let result: Result<bool, crate::protocol::CommandError> = async {
             let Some(mut response) = backend.event_stream(path, &last_id).await? else {
                 return Ok(false);
             };
+            crate::stream_log::line(&format!(
+                "open {id} resume={} path={}",
+                !last_id.is_empty(),
+                path.split('?').next().unwrap_or("")
+            ));
             let mut open = json!({"event":id,"value":{"type":"open"}});
             if let Some(flow) = &flow { open["credit"] = json!(flow.credit()); }
             output.send(open)
@@ -214,6 +221,7 @@ pub async fn run_controlled(
                         output.send(json!({"event":id,"consumedCredit":consumed,"credit":next,"value":event}))
                             .await.map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
                         admitted = false;
+                        delivered += 1;
                     } else {
                         emit(&output, &id, event).await.map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
                     }
@@ -226,6 +234,10 @@ pub async fn run_controlled(
             Err(error) => error.message,
             _ => "The server event stream closed.".into(),
         };
+        crate::stream_log::line(&format!(
+            "end {id} after_ms={} events={delivered} permanent={permanent} reason={message}",
+            started.elapsed().as_millis()
+        ));
         if emit(
             &output,
             &id,

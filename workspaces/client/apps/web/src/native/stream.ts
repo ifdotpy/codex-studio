@@ -30,6 +30,7 @@ export async function nativeEventResponse(
   });
   // A rejection can precede listener registration completing.
   void ready.catch(() => {});
+  let reason = "closed by the page";
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -39,10 +40,13 @@ export async function nativeEventResponse(
     request.signal.removeEventListener("abort", abort);
     unlisten?.();
     if (confirmed)
-      void nativeRequest("view.unsubscribe", { subscription }).catch(() => {});
+      void nativeRequest("view.unsubscribe", { subscription, reason }).catch(
+        () => {},
+      );
   };
   const fail = (error: unknown) => {
     if (stopped) return;
+    reason = String((error as Error)?.message ?? error).slice(0, 300);
     rejectOpen(error);
     pending?.reject(error);
     pending = undefined;
@@ -73,7 +77,11 @@ export async function nativeEventResponse(
           );
         });
       },
-      cancel() {
+      cancel(cause) {
+        reason = `reader cancelled: ${String(cause?.message ?? cause)}`.slice(
+          0,
+          300,
+        );
         stop();
       },
     },

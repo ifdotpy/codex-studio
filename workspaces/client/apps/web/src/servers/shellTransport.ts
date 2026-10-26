@@ -56,7 +56,11 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         throw new Error("Invalid server frame owner.");
       const key = owner + ":" + value.streamId;
       if (value.action === "cancel") {
-        active.get(key)?.controller.abort();
+        active
+          .get(key)
+          ?.controller.abort(
+            new Error(value.reason || "the frame closed this stream"),
+          );
         return reply(undefined);
       }
       if (value.action !== "request" || !value.streamId || active.has(key))
@@ -111,7 +115,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         const reader = response.body.getReader();
         const send = (chunk: Omit<StreamChunk, "serverId" | "streamId">) => {
           if (!frame.isConnected || frames.get(owner) !== frame) {
-            controller.abort();
+            controller.abort(new Error("the frame was replaced or removed"));
             return;
           }
           frame.contentWindow?.postMessage(
@@ -137,8 +141,8 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         } catch {
           send({ error: "The server connection closed." });
         } finally {
-          controller.abort();
-          await reader.cancel().catch(() => {});
+          controller.abort(new Error("the stream ended"));
+          await reader.cancel(controller.signal.reason).catch(() => {});
           active.delete(key);
         }
       } else {
@@ -148,7 +152,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
       }
     } catch (error) {
       if (ownedKey) {
-        active.get(ownedKey)?.controller.abort();
+        active.get(ownedKey)?.controller.abort(new Error("the request failed"));
         active.delete(ownedKey);
       }
       reply(undefined, (error as Error).message);
@@ -157,7 +161,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
   const removed = new MutationObserver(() => {
     for (const [key, stream] of active)
       if (!stream.frame.isConnected) {
-        stream.controller.abort();
+        stream.controller.abort(new Error("the frame left the page"));
         active.delete(key);
       }
   });
@@ -168,7 +172,8 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
     unbindNative();
     window.removeEventListener("message", listener);
     removed.disconnect();
-    for (const stream of active.values()) stream.controller.abort();
+    for (const stream of active.values())
+      stream.controller.abort(new Error("the shell transport stopped"));
     active.clear();
   };
 }
