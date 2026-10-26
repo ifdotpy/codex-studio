@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import type { ExternalConfig, ExternalServer } from "./move-external.ts";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { test } from "vitest";
@@ -77,7 +78,7 @@ test("external proof lists only current server aliases and never transfers crede
     },
     (catalog: ExternalServer[]) => {
       const schema = catalog[0]?.tools[0]?.input_schema;
-      assert.ok(schema);
+      assert.ok(schema && typeof schema === "object" && "type" in schema);
       schema.type = "array";
     },
     (catalog: ExternalServer[]) => {
@@ -123,18 +124,16 @@ test("external server failure and missing schemas return only safe names", async
 
 test("stdio proof sends initialize and tools/list without tool calls or model input", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-mcp-list-"));
-  const script = path.join(root, "server.mjs");
-  const log = path.join(root, "requests.jsonl");
-  await fs.writeFile(
-    script,
-    `import fs from 'node:fs';import {createInterface} from 'node:readline';for await(const line of createInterface({input:process.stdin})){const r=JSON.parse(line);fs.appendFileSync(${JSON.stringify(log)},r.method+'\\n');if(!('id'in r))continue;const result=r.method==='initialize'?{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}:r.method==='tools/list'?{tools:${JSON.stringify(tools)}}:{};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');}`,
+  const script = fileURLToPath(
+    new URL("./move-external.fixture.ts", import.meta.url),
   );
+  const log = path.join(root, "requests.jsonl");
   try {
     assert.deepEqual(
       await listExternalTools({
         type: "stdio",
         command: process.execPath,
-        args: [script],
+        args: [script, log, "catalog", JSON.stringify(tools)],
       }),
       tools,
     );
@@ -152,18 +151,16 @@ test("Codex instruction proof initializes without listing resources or calling t
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "codex-mcp-instructions-"),
   );
-  const script = path.join(root, "server.mjs");
-  const log = path.join(root, "requests");
-  await fs.writeFile(
-    script,
-    `import fs from 'node:fs';import {createInterface} from 'node:readline';for await(const line of createInterface({input:process.stdin})){const r=JSON.parse(line);fs.appendFileSync(${JSON.stringify(log)},r.method+'\\n');if(!('id'in r))continue;process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'},instructions:'Private instructions'}})+'\\n');}`,
+  const script = fileURLToPath(
+    new URL("./move-external.fixture.ts", import.meta.url),
   );
+  const log = path.join(root, "requests");
   try {
     assert.equal(
       await readExternalInstructions({
         type: "stdio",
         command: process.execPath,
-        args: [script],
+        args: [script, log, "instructions"],
       }),
       "Private instructions",
     );

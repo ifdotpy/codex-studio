@@ -1,3 +1,4 @@
+import type { BridgeMoveProof } from "./bridge-protocol.ts";
 import type {
   CacheReport,
   ToolDefinition,
@@ -39,6 +40,7 @@ export interface FileRestorePlan {
   }[];
 }
 export interface TurnError {
+  resetsAt?: number | undefined;
   message: string;
   codexErrorInfo?: string;
   data?: Record<string, unknown>;
@@ -157,7 +159,7 @@ export interface Session {
   claude?: import("./thinking.ts").ClaudeSettings;
   developerInstructions?: string;
   dynamicTools?: ToolDefinition[];
-  moveProof?: import("./bridge-protocol.ts").BridgeMoveProof;
+  moveProof?: BridgeMoveProof;
   dynamicToolsJson?: string;
   capabilityProfile?: unknown;
   moveTurnOptions?: Partial<Options>;

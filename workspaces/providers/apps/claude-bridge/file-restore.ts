@@ -100,12 +100,7 @@ async function safePath(cwd: string, file: string) {
       if ((await fs.realpath(parent)) !== parent) throw invalid();
       break;
     } catch (error) {
-      if (
-        (error && typeof error === "object" && "code" in error
-          ? error.code
-          : undefined) !== "ENOENT"
-      )
-        throw error;
+      if (!isRecord(error) || error.code !== "ENOENT") throw error;
       parent = path.dirname(parent);
     }
   }
@@ -410,12 +405,7 @@ export function fileBackups<S extends Pick<Session, "controlRequests">>(
         await fs.rm(directory, { recursive: true });
         released++;
       } catch (error) {
-        if (
-          (error && typeof error === "object" && "code" in error
-            ? error.code
-            : undefined) !== "ENOENT"
-        )
-          throw error;
+        if (!isRecord(error) || error.code !== "ENOENT") throw error;
       }
       for (const { receipt } of refs) receipt.fileBackupReleased = true;
     }

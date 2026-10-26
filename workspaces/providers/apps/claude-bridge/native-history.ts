@@ -1,15 +1,59 @@
+import type { FileHandle, FileReadResult } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+type NativeStat = Pick<
+  Stats,
+  "size" | "dev" | "ino" | "mtimeMs" | "isFile" | "isSymbolicLink"
+>;
+export type NativeHistoryHandle = Pick<FileHandle, "close"> & {
+  stat: () => Promise<NativeStat>;
+  read: (
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ) => Promise<Pick<FileReadResult<Buffer>, "bytesRead">>;
+};
+export type NativeHistoryFilesystem = {
+  realpath: (file: string) => Promise<string>;
+  open: (file: string, flags: number) => Promise<NativeHistoryHandle>;
+  lstat: (file: string) => Promise<NativeStat>;
+};
+export interface NativeTail {
+  offset: number;
+  raw: Buffer;
+  before: NativeStat;
+  handle: NativeHistoryHandle;
+}
+export interface HistorySession {
+  id: string;
+  nativeId?: string | undefined;
+  cwd: string;
+  nativeHistoryCwd?: string | undefined;
+}
+export interface NativeHistoryOptions {
+  configDir?: string;
+  filesystem?: NativeHistoryFilesystem;
+}
+export interface NativeHistoryRow {
+  row: Record<string, unknown>;
+  offset: number;
+}
+
 // Maximum bytes read from one native transcript during recovery.
 export const NATIVE_HISTORY_TAIL_BYTES = 8 * 1024 * 1024;
-export const nativeUuid = (value) =>
+export const nativeUuid = (value: unknown): value is string =>
   typeof value === "string" &&
   /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value);
 
-async function readTail(file, filesystem) {
+async function readTail(
+  file: string,
+  filesystem: NonNullable<NativeHistoryOptions["filesystem"]>,
+) {
   // Resolve the account's own native path. Never follow a transcript symlink.
   if ((await filesystem.realpath(file)) !== file) return null;
   const handle = await filesystem.open(
@@ -32,7 +76,9 @@ async function readTail(file, filesystem) {
 }
 
 // Return complete bounded records. A torn native tail cannot prove an outcome.
-export async function nativeHistoryRows(tail) {
+export async function nativeHistoryRows(
+  tail: NativeTail,
+): Promise<NativeHistoryRow[]> {
   const rows = [];
   let start = tail.offset ? tail.raw.indexOf(10) + 1 : 0;
   let yielded = start;
@@ -40,27 +86,40 @@ export async function nativeHistoryRows(tail) {
     const end = tail.raw.indexOf(10, start);
     if (end < 0 || end - start > NATIVE_HISTORY_TAIL_BYTES)
       throw new Error("Invalid native history record");
-    const row = JSON.parse(tail.raw.subarray(start, end).toString("utf8"));
+    const row: unknown = JSON.parse(
+      tail.raw.subarray(start, end).toString("utf8"),
+    );
     if (!row || typeof row !== "object" || Array.isArray(row))
       throw new Error("Invalid native history row");
-    rows.push({ row, offset: start });
+    rows.push({ row: { ...row }, offset: start });
     start = end + 1;
     if (start - yielded >= 256 * 1024) {
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
       yielded = start;
     }
   }
   return rows;
 }
 
-export async function readNativeHistory(
-  session,
+export function readNativeHistory(
+  session: HistorySession,
+  options?: NativeHistoryOptions,
+): Promise<NativeHistoryRow[] | null>;
+export function readNativeHistory<T>(
+  session: HistorySession,
+  options: NativeHistoryOptions | undefined,
+  inspect: (tail: NativeTail) => Promise<T[] | null>,
+): Promise<T[] | null>;
+export async function readNativeHistory<T>(
+  session: HistorySession,
   {
     configDir = process.env.CLAUDE_CONFIG_DIR ||
       path.join(os.homedir(), ".claude"),
     filesystem = fs,
-  } = {},
-  inspect = nativeHistoryRows,
+  }: NativeHistoryOptions = {},
+  inspect:
+    | ((tail: NativeTail) => Promise<T[] | null>)
+    | typeof nativeHistoryRows = nativeHistoryRows,
 ) {
   if (
     !nativeUuid(session.nativeId || session.id) ||

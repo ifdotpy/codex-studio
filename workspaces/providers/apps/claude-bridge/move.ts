@@ -2,9 +2,9 @@ import type { Session } from "./session-state.ts";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 export type ProofTool = {
   name: string;
-  description?: string;
-  input_schema?: Record<string, unknown> | undefined;
-  schema?: Record<string, unknown>;
+  description?: unknown;
+  input_schema?: unknown;
+  schema?: unknown;
   [key: string]: unknown;
 };
 export type ToolProof = {
@@ -375,12 +375,7 @@ export async function studioToolCatalog(
     } catch (error) {
       // The SDK advertises tools for an empty server but registers no handler.
       // Only Studio's known empty definition list permits this exact rejection.
-      if (
-        expectedToolCount === 0 &&
-        (error && typeof error === "object" && "code" in error
-          ? error.code
-          : undefined) === -32601
-      )
+      if (expectedToolCount === 0 && isRecord(error) && error.code === -32601)
         return [];
       throw error;
     }
@@ -455,12 +450,7 @@ export async function nativeFile(
       const stat = await fs.lstat(file);
       if (stat.isFile() && !stat.isSymbolicLink()) found.push(file);
     } catch (error) {
-      if (
-        (error && typeof error === "object" && "code" in error
-          ? error.code
-          : undefined) !== "ENOENT"
-      )
-        throw error;
+      if (!isRecord(error) || error.code !== "ENOENT") throw error;
     }
   }
   const current = cwd && nativeDestination(sessionId, cwd, configDir);
@@ -512,12 +502,7 @@ export async function publishNative(
     )
       throw new Error("The destination Claude history has different bytes");
   } catch (error) {
-    if (
-      (error && typeof error === "object" && "code" in error
-        ? error.code
-        : undefined) !== "ENOENT"
-    )
-      throw error;
+    if (!isRecord(error) || error.code !== "ENOENT") throw error;
   }
   const temporary = destination + ".move-" + process.pid;
   const handle = await fs.open(temporary, "wx", 0o600);

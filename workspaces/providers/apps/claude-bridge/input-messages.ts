@@ -1,16 +1,19 @@
+import type { Item } from "./session-state.ts";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
 export type InputGroup = {
   origin: typeof HUMAN_INPUT | typeof STUDIO_EVENT_INPUT;
   blocks: Exclude<SDKUserMessage["message"]["content"], string>;
 };
-export type StudioInputMessage = SDKUserMessage & {
-  uuid: string;
-  text_not_typed?: boolean;
-  studioInputIdentity?: string;
-  studioInputBatch?: StudioInputMessage[];
-};
+export type StudioInputMessage = QueuedInput<
+  SDKUserMessage & {
+    uuid: string;
+    text_not_typed?: boolean;
+    studioInputIdentity?: string;
+  }
+>;
 
+import type { QueuedInput } from "./features.ts";
 import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.ts";
 
 // Validate every origin before conversion or submission. An omitted field is
@@ -77,13 +80,13 @@ export function sdkInputMessages(
 // Ordered native UUIDs of one logical input. The final UUID keeps the logical
 // input identity; the first UUID is its history boundary, never a checkpoint.
 export function nativeInputIds(
-  item: { nativeIds?: string[]; nativeId?: string } | null | undefined,
+  item: Pick<Item, "nativeIds" | "nativeId"> | null | undefined,
 ) {
   const ids = item?.nativeIds ?? [item?.nativeId];
   if (
     !Array.isArray(ids) ||
     !ids.length ||
-    ids.some((id) => typeof id !== "string" || !id) ||
+    !ids.every((id): id is string => typeof id === "string" && !!id) ||
     new Set(ids).size !== ids.length ||
     (item?.nativeId && ids.at(-1) !== item.nativeId)
   )
