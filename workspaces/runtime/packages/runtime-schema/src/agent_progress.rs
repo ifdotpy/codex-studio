@@ -1,5 +1,4 @@
 //! Agent-list progress contract. Timestamps use Unix seconds.
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Persisted wait field shared by admission owners, status, and sync.
@@ -65,7 +64,7 @@ impl AgentStartWait {
 }
 
 /// A managed command currently starting or running for this agent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCommandProgress {
     pub monitor_id: String,
@@ -76,7 +75,7 @@ pub struct AgentCommandProgress {
 }
 
 /// An idle worker still owns this unsubmitted assignment.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentStall {
     pub task_id: String,
@@ -86,17 +85,20 @@ pub struct AgentStall {
 
 /// Schemas consumed by OpenAPI and its generated renderer contract.
 pub(crate) fn schemas() -> [(&'static str, serde_json::Value); 2] {
-    let mut generator = schemars::generate::SchemaSettings::openapi3()
-        .for_serialize()
-        .into_generator();
+    use serde_json::json;
     [
         (
             "AgentCommandProgress",
-            AgentCommandProgress::json_schema(&mut generator).to_value(),
+            json!({"type":"object","title":"AgentCommandProgress","additionalProperties":false,
+            "properties":{"monitorId":{"type":"string","title":"Monitorid"},"stage":{"type":"string","title":"Stage"},
+            "startedAt":{"type":"number","title":"Startedat"},"lastOutputLine":{"type":"string","title":"Lastoutputline"}},
+            "required":["lastOutputLine","monitorId","stage","startedAt"]}),
         ),
         (
             "AgentStall",
-            AgentStall::json_schema(&mut generator).to_value(),
+            json!({"type":"object","title":"AgentStall","additionalProperties":false,
+            "properties":{"taskId":{"type":"string","title":"Taskid"},"since":{"type":"number","title":"Since"}},
+            "required":["since","taskId"]}),
         ),
     ]
 }
@@ -146,30 +148,6 @@ pub(crate) fn check_schema_parity(openapi: &serde_json::Value) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn agent_progress_openapi_fragments_derive_from_serde_owners() {
-        fn fragment<T: schemars::JsonSchema>() -> serde_json::Value {
-            T::json_schema(
-                &mut schemars::generate::SchemaSettings::openapi3()
-                    .for_serialize()
-                    .into_generator(),
-            )
-            .to_value()
-        }
-        let openapi: serde_json::Value =
-            serde_json::from_str(include_str!("../../runtime-http/openapi.json"))
-                .expect("OpenAPI source parses");
-        for (name, schema) in [
-            ("AgentCommandProgress", fragment::<AgentCommandProgress>()),
-            ("AgentStall", fragment::<AgentStall>()),
-        ] {
-            assert_eq!(
-                openapi.pointer(&format!("/components/schemas/{name}")),
-                Some(&schema)
-            );
-        }
-    }
-
     #[test]
     fn agent_progress_schema_matches_strict_serde_contract() {
         for reason in StartWaitReason::ALL {

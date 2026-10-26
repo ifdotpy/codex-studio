@@ -1217,17 +1217,19 @@ fn vm_result_needs_merge(lead_id: &str, owner: &AgentRecord) -> bool {
 pub async fn prepare_vm_accept(
     store: &RuntimeStore,
     agent_id: &str,
+    task_id: &str,
+    version: Option<i64>,
     request_id: Option<&str>,
     signature: &str,
-    input: &AcceptWork,
+    reason: &str,
+    override_reason: Option<&str>,
 ) -> Result<VmAcceptPreparation, WorkWriteError> {
     let agent_id = agent_id.to_owned();
-    let task_id = input.task_id.clone();
-    let version = input.version;
+    let task_id = task_id.to_owned();
     let request_id = request_id.map(str::to_owned);
     let signature = signature.to_owned();
-    let reason = input.reason.clone();
-    let override_reason = input.override_reason.clone();
+    let reason = reason.to_owned();
+    let override_reason = override_reason.map(str::to_owned);
     store
         .transaction_with_error(move |tx| {
             let lead = event_write::checked_agent(tx, &agent_id)?;
@@ -2168,9 +2170,9 @@ fn decide_accept(
     if let Some(reason) = override_reason {
         updated["decisions"]
             .as_array_mut()
-            .expect("decision array exists after push")
+            .unwrap()
             .last_mut()
-            .expect("accepted decision exists after push")["gateOverrideReason"] = json!(reason);
+            .unwrap()["gateOverrideReason"] = json!(reason);
     }
     updated["status"] = json!("accepted");
     updated["archive"] =
@@ -4341,8 +4343,8 @@ mod actor_tests {
         );
         assert_eq!(
             WorkItemsRepository::work_record(&tx, "gated")
-                .expect("gate query succeeds")
-                .expect("gate exists")["status"],
+                .unwrap()
+                .unwrap()["status"],
             "review"
         );
     }

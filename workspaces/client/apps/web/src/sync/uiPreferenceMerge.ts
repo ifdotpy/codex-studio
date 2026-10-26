@@ -15,6 +15,7 @@ export function preferenceScope(key: string): PreferenceScope | null {
   if (
     key.startsWith("codex-project-tree:") ||
     key.startsWith("codex-project-compact:") ||
+    key.startsWith("codex-progress-hidden:") ||
     key.startsWith("studio-prompt-bookmarks:") ||
     key === "codex-worker-disclosures"
   )

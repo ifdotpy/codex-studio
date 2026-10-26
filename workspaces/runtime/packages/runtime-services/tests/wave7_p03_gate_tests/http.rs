@@ -1,3 +1,5 @@
+#[path = "../support/prepared_python.rs"]
+mod python;
 pub(super) mod support;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7,7 +9,7 @@ async fn http_accepts_unrelated_operation_started_after_preparation() {
         http::Request,
     };
     use tower::ServiceExt;
-    let fixture = support::Fixture::new("http").await;
+    let fixture = support::Fixture::new("http", python::prepared_python).await;
     let state = crate::router::HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -48,7 +50,7 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
     };
     use tower::ServiceExt;
 
-    let fixture = support::Fixture::new("pending-asset").await;
+    let fixture = support::Fixture::new("pending-asset", python::prepared_python).await;
     let state = crate::router::HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -167,7 +169,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         }
     }
 
-    let fixture = support::Fixture::new("remote-anchor-message").await;
+    let fixture = support::Fixture::new("remote-anchor-message", python::prepared_python).await;
     fixture
         .store
         .transaction(|tx| {
@@ -324,7 +326,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(envelope["payload"]["link"], "remote-link");
     assert_eq!(envelope["payload"]["kind"], "user");
     assert_eq!(envelope["payload"]["text"], "Continue on the paired server");
-    let receiver = support::Fixture::new("remote-anchor-home").await;
+    let receiver = support::Fixture::new("remote-anchor-home", python::prepared_python).await;
     receiver
         .store
         .transaction(|tx| {

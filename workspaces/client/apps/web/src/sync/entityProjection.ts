@@ -28,12 +28,11 @@ export type UiPreferenceProjection = Partial<
   Record<UiPreferenceScope, UiPreferencesDto>
 >;
 
-/** Local new rows may omit the wire tombstone flag until storage fills it. */
-export type EntityRow = Omit<
-  components["schemas"]["SyncDocument"],
-  "_deleted"
-> & {
-  _deleted?: components["schemas"]["SyncDocument"]["_deleted"];
+export type EntityRow = {
+  id: string;
+  payload: string;
+  seq: number;
+  _deleted?: boolean;
 };
 
 type EntityCollection = SyncEntityPayload["collection"];

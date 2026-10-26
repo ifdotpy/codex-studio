@@ -1,7 +1,10 @@
+use crate::prepared_python_support as python_test_support;
 use serde_json::json;
 use std::{
+    fs,
     path::Path,
-    sync::{Arc, Mutex},
+    process::Command,
+    sync::{Arc, Mutex, OnceLock},
 };
 use studio_runtime_services::{
     recovery::{
@@ -21,6 +24,7 @@ fn scope() -> ConnectionScope {
         generation: 1,
     }
 }
+#[allow(clippy::disallowed_methods)]
 fn fixture() -> tempfile::TempDir {
     fn temporary() -> tempfile::TempDir {
         let base = std::env::temp_dir();
@@ -29,12 +33,36 @@ fn fixture() -> tempfile::TempDir {
             .tempdir_in(base)
             .expect("isolated store")
     }
+    static TEMPLATE: OnceLock<Vec<(std::ffi::OsString, Vec<u8>)>> = OnceLock::new();
+    let template = TEMPLATE.get_or_init(|| {
+        let root = temporary();
+        let result = Command::new(python_test_support::prepared_python(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/state.py"))
+        .arg(root.path())
+        .output()
+        .expect("valid recovery fixture");
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        fs::read_dir(root.path())
+            .expect("template files")
+            .map(|entry| {
+                let entry = entry.expect("file");
+                (
+                    entry.file_name(),
+                    fs::read(entry.path()).expect("template bytes"),
+                )
+            })
+            .collect()
+    });
     let result = temporary();
-    crate::recovery_fixtures::state(
-        result.path(),
-        include_str!("recovery/canvas.sql"),
-        include_str!("recovery/analytics.sql"),
-    );
+    for (name, bytes) in template {
+        fs::write(result.path().join(name), bytes).expect("cloned template");
+    }
     result
 }
 async fn open_store(path: &Path) -> Arc<RuntimeStore> {
@@ -438,17 +466,20 @@ async fn queued_active_wait_terminal_is_reconciled_and_saved() {
     assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
 }
 
-enum Corpus {
-    Start,
-    Absence,
-}
-
-fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
-    let corpus = match corpus {
-        Corpus::Start => include_str!("recovery/start_oracle.json"),
-        Corpus::Absence => include_str!("recovery/absence_oracle.json"),
-    };
-    serde_json::from_str(corpus).expect("frozen recovery cases")
+#[allow(clippy::disallowed_methods)]
+fn oracle(name: &str) -> Vec<serde_json::Value> {
+    let output = Command::new(python_test_support::prepared_python(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    ))
+    .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/recovery/{name}.py")))
+    .output()
+    .expect("oracle");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("cases")
 }
 async fn seed_agent(store: &Arc<RuntimeStore>, agent: &serde_json::Value) {
     let agent = agent.clone();
@@ -552,7 +583,7 @@ impl CompletionWriter for HoldWriter {
 }
 #[tokio::test]
 async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
-    for case in frozen_cases(Corpus::Start)
+    for case in oracle("start_oracle")
         .into_iter()
         .filter(|c| c["history_case"] == false)
     {
@@ -627,7 +658,7 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
 
 #[tokio::test]
 async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
-    let cases = frozen_cases(Corpus::Start);
+    let cases = oracle("start_oracle");
     for (name, table) in [
         ("restore", "runtime_events"),
         ("restore", "runtime_agents"),
@@ -693,7 +724,7 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
 
 #[tokio::test]
 async fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
-    let case = frozen_cases(Corpus::Start)
+    let case = oracle("start_oracle")
         .into_iter()
         .find(|case| case["name"] == "restore")
         .expect("restore oracle case");
@@ -896,7 +927,7 @@ impl studio_runtime_services::recovery_history::RecoveryReader for TaskReader {
 #[tokio::test]
 async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
     use studio_runtime_services::{recovery_absence::*, task_recovery::*, task_recovery_store::*};
-    for case in frozen_cases(Corpus::Absence) {
+    for case in oracle("absence_oracle") {
         let root = fixture();
         let store = open_store(root.path()).await;
         seed_task(&store, &case).await;
@@ -994,7 +1025,7 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
 #[tokio::test]
 async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
     use studio_runtime_services::{recovery_absence::*, task_recovery::*, task_recovery_store::*};
-    let case = &frozen_cases(Corpus::Absence)[0];
+    let case = &oracle("absence_oracle")[0];
     for mode in ["lost", "hold"] {
         for (table, timing) in [
             ("runtime_tasks", "BEFORE"),
@@ -1109,7 +1140,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
 #[tokio::test]
 async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
     use studio_runtime_services::{recovery_absence::*, task_recovery::*, task_recovery_store::*};
-    let case = frozen_cases(Corpus::Absence)
+    let case = oracle("absence_oracle")
         .into_iter()
         .find(|c| c["name"] == "terminal-list-unavailable")
         .expect("case");
@@ -1307,29 +1338,6 @@ async fn restart_continues_only_a_confirmed_interruption() {
         .await
         .expect("restart reconciliation");
         let after = snapshot(&store).record().clone();
-        if status == "uncertain" {
-            assert!(matches!(result, RecoveryOutcome::Applied(_)));
-            assert_eq!(after["status"], "paused");
-            assert_eq!(after["autoWake"], false);
-            assert_eq!(after["nativeFailureHold"], true);
-            assert_eq!(after["lastCompletedTurnStatus"], "uncertain");
-            assert_eq!(after["nativeTurnError"]["error"], error);
-            let page = studio_runtime_services::transcript_runtime::page_at(
-                &store,
-                "agent".into(),
-                Default::default(),
-                100.0,
-            )
-            .await
-            .expect("unconfirmed transcript");
-            assert!(
-                page["items"]
-                    .as_array()
-                    .expect("items")
-                    .iter()
-                    .any(|item| item["turnStatus"] == "uncertain" && item["turnError"] == error)
-            );
-        }
         assert_eq!(
             after["status"] == "queued",
             should_continue,

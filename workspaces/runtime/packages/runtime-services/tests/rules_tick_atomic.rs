@@ -1,3 +1,5 @@
+use crate::prepared_python_support;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -14,31 +16,38 @@ use tempfile::TempDir;
 const NOW: f64 = 1_800_000_000.0;
 
 fn temporary_state() -> TempDir {
-    tempfile::tempdir().expect("isolated rules state")
+    prepared_python_support::disposable_state_dir()
 }
 
-async fn seeded_state() -> TempDir {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Seed {
-        owner: studio_runtime_store::AgentRecord,
-        rule: RuleRecord,
+struct Template(TempDir);
+impl Template {
+    #[allow(clippy::disallowed_methods)]
+    fn new() -> Self {
+        let root = temporary_state();
+        let python = prepared_python_support::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
+        let output = Command::new(python)
+            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/rules_engine/oracle.py"))
+            .arg("--template")
+            .arg(root.path())
+            .output()
+            .expect("Python writer");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Self(root)
     }
-    let seed: Seed =
-        serde_json::from_str(include_str!("rules_engine/seed.json")).expect("frozen rule seed");
-    let root = temporary_state();
-    let store = RuntimeStore::open(Some(root.path()))
-        .await
-        .expect("rules store");
-    store
-        .transaction(move |tx| {
-            studio_runtime_store::AgentRepository::put(tx, &seed.owner)?;
-            RulesRepository::put(tx, &seed.rule)
-        })
-        .await
-        .expect("seed rules store");
-    drop(store);
-    root
+    fn clone_state(&self) -> TempDir {
+        let state = temporary_state();
+        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+            std::fs::copy(self.0.path().join(name), state.path().join(name))
+                .expect("copy closed template");
+        }
+        state
+    }
 }
 fn rule(store: &RuntimeStore) -> Value {
     RulesRepository::get(&store.test_reader().expect("read"), "rule")
@@ -124,6 +133,7 @@ impl RuleFiles for EditingFiles<'_> {
 
 #[tokio::test]
 async fn tick_commit_restart_and_callback_failpoint_matrix() {
+    let template = Template::new();
     // Fail before and after each durable table write in the no-command path.
     // Rollback must include canonical views, queue owner and wake; a restart retries
     // a rolled-back tick but never a committed one.
@@ -146,10 +156,10 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
     };
     for table in tables {
         for timing in timings {
-            let state = seeded_state().await;
+            let state = template.clone_state();
             let store = RuntimeStore::open(Some(state.path()))
                 .await
-                .expect("rules database opens");
+                .expect("Python database opens");
             let initial = rule(&store);
             store.transaction(move |tx| {
                 tx.execute_batch(&format!("CREATE TRIGGER rules_fail_insert {timing} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'rules-failpoint'); END; CREATE TRIGGER rules_fail_update {timing} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'rules-failpoint'); END;"))?;
@@ -196,7 +206,7 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
     }
     // Crash after reservation / native submission but before an acknowledgement.
     for unknown in if full { vec![false, true] } else { vec![true] } {
-        let state = seeded_state().await;
+        let state = template.clone_state();
         let store = RuntimeStore::open(Some(state.path())).await.expect("open");
         change(&store, json!({"command":"printf fixture"})).await;
         let monitor = CapturingMonitor {
@@ -267,10 +277,11 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
 
 #[tokio::test]
 async fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
-    let state = seeded_state().await;
+    let template = Template::new();
+    let state = template.clone_state();
     let store = RuntimeStore::open(Some(state.path()))
         .await
-        .expect("open rules state");
+        .expect("open Python state");
     change(
         &store,
         json!({"kind":"file","path":"/disposable/watch","fingerprint":[100,2,3]}),
@@ -434,10 +445,11 @@ async fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
 
 #[tokio::test]
 async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
-    let state = seeded_state().await;
+    let template = Template::new();
+    let state = template.clone_state();
     let store = RuntimeStore::open(Some(state.path()))
         .await
-        .expect("open rules state");
+        .expect("open Python state");
     change(
         &store,
         json!({
@@ -491,10 +503,11 @@ async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
 
 #[tokio::test]
 async fn cancelled_paused_check_settles_its_durable_launch_intent() {
-    let state = seeded_state().await;
+    let template = Template::new();
+    let state = template.clone_state();
     let store = RuntimeStore::open(Some(state.path()))
         .await
-        .expect("open rules state");
+        .expect("open Python state");
     change(
         &store,
         json!({
@@ -701,13 +714,14 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
         }
         panic!("crash boundary was not reached");
     }
+    let template = Template::new();
     for kind in ["interval", "event"] {
         for state_kind in [
             CheckReconciliation::NotSubmitted,
             CheckReconciliation::Submitted,
             CheckReconciliation::Unknown,
         ] {
-            let state = seeded_state().await;
+            let state = template.clone_state();
             {
                 let store = RuntimeStore::open(Some(state.path())).await.expect("seed");
                 change(

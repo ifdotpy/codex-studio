@@ -214,7 +214,7 @@ fn session_cost_inner(
     }))
 }
 
-// Session identifier and state-file byte caps for local cost scans.
+// Python contract owner: codex_session_costs.py:_thread_ids.
 const MAX_SESSION_ID_BYTES: usize = 100;
 const MAX_SESSION_STATE_BYTES: u64 = 16 * 1024 * 1024;
 

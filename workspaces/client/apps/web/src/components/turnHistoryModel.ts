@@ -110,17 +110,12 @@ export function historyGroups(
   const replyTurns = new Set(
     items.filter((item) => item.role !== "user").map((item) => item.turnId),
   );
-  const unconfirmed = new Set(
-    items
-      .filter((item) => item.turnStatus === "uncertain")
-      .map((item) => item.turnId),
-  );
   for (const group of groups) {
     const first = group.items[0];
     if (
       first.role === "user" &&
       first.turnId &&
-      unconfirmed.has(first.turnId) &&
+      first.turnStatus === "uncertain" &&
       !replyTurns.has(first.turnId)
     ) {
       group.outcome = "uncertain";
@@ -135,11 +130,9 @@ export function historyGroups(
           !isEmptyAssistantMessage(item),
       )
       .at(-1);
-    const uncertain = unconfirmed.has(first.turnId);
-    if (first.turnId && first.role !== "user" && uncertain) {
-      group.outcome = "uncertain";
-      continue;
-    }
+    const uncertain = group.items.some(
+      (item) => item.turnStatus === "uncertain",
+    );
     if (
       !first.turnId ||
       (!uncertain && first.turnId === currentTurn) ||
@@ -199,9 +192,6 @@ export function incrementalHistoryGroups(
   } | null,
 ): HistoryGroup[] {
   if (!prior || prior.currentTurn !== currentTurn)
-    return historyGroups(items, currentTurn);
-  // Unconfirmed outcomes depend on records outside their own presentation group.
-  if (items.some((item) => item.turnStatus === "uncertain"))
     return historyGroups(items, currentTurn);
   let shared = 0;
   while (

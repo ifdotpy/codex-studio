@@ -18,7 +18,6 @@ import {
 import { defaultChatModel, newChatDefault } from "./accountPreference";
 import {
   readNewChatResource,
-  settingsForNewChatRequest,
   settingsForNewChatAccount,
   type NewChatSettings,
 } from "./newChatSettings";
@@ -212,15 +211,12 @@ function ModelDraft({
   useEffect(() => {
     onChange(
       ready
-        ? settingsForNewChatRequest(
-            {
-              ...settings,
-              ...(defaultEffort ? { effort: defaultEffort } : {}),
-            },
-            accountKey,
-            settings.account_key !== undefined,
+        ? {
+            ...settings,
+            ...(defaultEffort ? { effort: defaultEffort } : {}),
+            account_key: accountKey,
             model,
-          )
+          }
         : null,
     );
   }, [ready, settings, defaultEffort, accountKey, model, onChange]);

@@ -13,9 +13,12 @@ import {
   modelOptions,
   modelValue,
   selectModel,
-} from "../fixtures/model-picker.mjs";
+} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 import { test } from "../playwright.mjs";
-import { setupControl, setupToggle } from "../fixtures/setup-controls.mjs";
+import {
+  setupControl,
+  setupToggle,
+} from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 
 test("Daybreak settings", async ({ context }) => {
   test.setTimeout(60_000);

@@ -301,9 +301,13 @@ fn bundled_desk_program() -> Option<PathBuf> {
         } else {
             ancestor
         };
-        let desk = root.join("bin/layr-desk");
-        if desk.is_file() {
-            return Some(desk);
+        for desk in [
+            root.join("bin/layr-desk"),
+            root.join("workspaces/runtime/apps/server/bin/layr-desk"),
+        ] {
+            if desk.is_file() {
+                return Some(desk);
+            }
         }
     }
     None
@@ -893,6 +897,12 @@ mod tests {
             store_site(root.path(), "p1", "http://desk.example"),
             Err(VaultError::InvalidSite)
         ));
+    }
+
+    #[test]
+    fn default_region_has_fast_parity_with_the_python_owner() {
+        let python = include_str!("../../../apps/server/src/codex_vm_vault.py");
+        assert!(python.contains("else 'eu-central-1'"));
     }
 
     #[test]

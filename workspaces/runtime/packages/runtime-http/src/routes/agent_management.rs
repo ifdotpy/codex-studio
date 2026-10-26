@@ -752,6 +752,7 @@ mod native_review_preflight_tests {
             String::new(),
             ModelCatalogService::new(),
             root.clone().to_path_buf(),
+            root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");
         let provider = Arc::new(ProviderSpy(AtomicUsize::new(0)));
@@ -1149,6 +1150,7 @@ mod native_review_preflight_tests {
             String::new(),
             ModelCatalogService::new(),
             root.clone().to_path_buf(),
+            root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");
         let guest = Arc::new(
@@ -1280,6 +1282,7 @@ mod native_review_preflight_tests {
             String::new(),
             ModelCatalogService::new(),
             root.clone().to_path_buf(),
+            root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");
         let guest = Arc::new(GuestSpy::new(json!({
@@ -1371,6 +1374,7 @@ mod native_review_preflight_tests {
             String::new(),
             ModelCatalogService::new(),
             root.clone().to_path_buf(),
+            root.join("workspaces/runtime/apps/server/src"),
         )
         .expect("preparation resources");
         let guest = Arc::new(GuestSpy::uncertain(json!({})));

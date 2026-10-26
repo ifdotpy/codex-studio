@@ -368,8 +368,28 @@ impl CaptureSnapshot {
             ..CaptureRows::default()
         };
         if prepared.method == "thread/tokenUsage/updated" {
-            let id = usage_key(&meta, &prepared.params);
+            let mut id = usage_key(&meta, &prepared.params);
             rows.usage = Repo::read(db, CaptureTable::Usage, &id)?;
+            if rows.usage.is_none()
+                && prepared.params["usageSource"] != "claudeResponse"
+                && number(&prepared.params["tokenUsage"]["total"]["totalTokens"]).is_none()
+            {
+                let total = prepared.params["tokenUsage"]
+                    .get("total")
+                    .filter(|v| v.is_object())
+                    .cloned()
+                    .unwrap_or(json!({}));
+                rows.usage = Repo::usage_without_total(
+                    db,
+                    text(&meta["agentId"]),
+                    &meta["threadId"],
+                    &meta["turnId"],
+                    &total,
+                )?;
+                if let Some(row) = &rows.usage {
+                    id = text(&row["id"]).to_owned();
+                }
+            }
             let response = &prepared.params["responseId"];
             if studio_runtime_store::truthy(Some(response)) {
                 rows.exact_response =
@@ -767,9 +787,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             }
             "turn/completed" => {
                 let error = &p["turn"]["error"];
-                let status = if p["turn"]["status"] == "uncertain" {
-                    json!("uncertain")
-                } else if studio_runtime_store::truthy(Some(error)) {
+                let status = if studio_runtime_store::truthy(Some(error)) {
                     json!("failed")
                 } else {
                     p["turn"].get("status").cloned().unwrap_or(json!("unknown"))

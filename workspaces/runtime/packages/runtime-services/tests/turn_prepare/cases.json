@@ -663,58 +663,30 @@
     "expectGuidance": "role"
   },
   {
-    "id": "progress-file-retired",
+    "id": "progress-changed",
     "family": "role",
     "fast": true,
     "snapshot": {
-      "delivered_manifests": [
-        {
-          "epoch": ["thread", 0],
-          "sequence": 1,
-          "versions": {
-            "progressFile": "0123456789abcdef01234567"
-          }
-        }
-      ]
+      "guidance": {
+        "progress": "New progress path"
+      }
     },
-    "expectProgressNotice": true
+    "prior": {
+      "guidance": {
+        "progress": "Previously delivered guidance, different from the current block."
+      }
+    },
+    "expectGuidance": "progress"
   },
   {
-    "id": "progress-file-retired-delivered",
+    "id": "progress-empty",
     "family": "role",
     "fast": false,
     "snapshot": {
-      "delivered_manifests": [
-        {
-          "epoch": ["thread", 0],
-          "sequence": 1,
-          "versions": {
-            "progressFile": "fdd98f0c0cedad96afe04fc8"
-          }
-        }
-      ]
-    },
-    "expectProgressNotice": false
-  },
-  {
-    "id": "progress-file-retired-worker",
-    "family": "role",
-    "fast": false,
-    "snapshot": {
-      "actor": {
-        "is_lead": false
-      },
-      "delivered_manifests": [
-        {
-          "epoch": ["thread", 0],
-          "sequence": 1,
-          "versions": {
-            "progressFile": "0123456789abcdef01234567"
-          }
-        }
-      ]
-    },
-    "expectProgressNotice": false
+      "guidance": {
+        "progress": ""
+      }
+    }
   },
   {
     "id": "worktrees-0",

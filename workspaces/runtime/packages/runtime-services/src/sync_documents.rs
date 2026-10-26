@@ -31,6 +31,7 @@ pub enum DraftPushError {
 pub async fn push_drafts(
     store: &RuntimeStore,
     rows: Vec<DraftWrite>,
+    validate: impl Fn(&Value) -> bool + Send + 'static,
     post_commit: impl FnOnce() + Send + 'static,
 ) -> Result<DraftPushResult, DraftPushError> {
     let (result, _) = store
@@ -54,11 +55,8 @@ pub async fn push_drafts(
                                     id: row.id.clone(),
                                 }
                             })?;
-                        if studio_runtime_schema::drafts::DraftVersion::from_stored_value(
-                            &row.id,
-                            value.clone(),
-                        )
-                        .is_err()
+                        if !validate(&value)
+                            || crate::sync_policy::validate_draft(&row.id, &value).is_err()
                         {
                             return Err(StoreError::InvalidSyncObject {
                                 scope: "drafts".to_owned(),

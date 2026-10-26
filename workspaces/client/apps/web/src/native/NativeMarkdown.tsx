@@ -13,11 +13,15 @@ import { hasNativeClient, nativeRequest } from "./client";
 import { parseMarkdown } from "../wasm/client";
 import { completedMarkdown } from "./markdownCache";
 
-import type {
-  MarkdownNode,
-  MarkdownTree as Tree,
-  MarkdownBlock as Block,
-} from "../generated/rustOwned";
+export type MarkdownNode = {
+  tag?: string;
+  text?: string;
+  props?: Record<string, string>;
+  children?: MarkdownNode[];
+  sentences?: { text: string; index: number }[];
+};
+type Tree = { nodes: MarkdownNode[]; length: number; kind?: never };
+type Block = Tree | { kind: "html" | "mermaid"; source: string };
 type Context = { agentId?: string; basePath?: string };
 const textContent = (node: MarkdownNode): string =>
   (node.text || "") + (node.children || []).map(textContent).join("");
@@ -131,7 +135,7 @@ export default function NativeMarkdown({
             undefined,
             controller.signal,
           )
-        : parseMarkdown(text, streaming);
+        : (parseMarkdown(text, streaming) as Promise<Block[]>);
       void request.then(
         (blocks) => {
           if (!streaming) completedMarkdown.set(text, blocks);
@@ -161,7 +165,7 @@ export default function NativeMarkdown({
       {error && <p role="alert">{error}</p>}
       {usable ? (
         parsed.blocks.map((block, index) =>
-          "kind" in block ? (
+          block.kind ? (
             <RichPreview key={index} kind={block.kind} source={block.source} />
           ) : (
             <NativeMarkdownBlock

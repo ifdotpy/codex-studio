@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Register host agents and their actual parent relationships on the canvas."""
+import argparse
+import json
+import os
+import sys
+import uuid
+sys.dont_write_bytecode = True
+from codex_canvas import Canvas
+from studio_api.sync.resources.models import ResourceRef, StateResource, WorkspaceResource
+from studio_api.sync.resources.relay.client import NotifyCommittedWriteError, notify_external_write
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('action', choices=['list', 'agent'])
+parser.add_argument('--id', help='Stable identity returned by the host')
+parser.add_argument('--name')
+parser.add_argument('--parent', help='Exact board identity of the agent that created this agent')
+parser.add_argument('--thread', help='Local Codex thread identity, when the host provides one')
+parser.add_argument('--status', default='unknown', choices=['unknown', 'running', 'waiting', 'completed', 'blocked', 'failed', 'interrupted'])
+args = parser.parse_args()
+try:
+    if os.environ.get("CODEX_BOARD_OWNER"):
+        raise ValueError("CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.")
+    if os.environ.get("CODEX_AGENT_OWNER"):
+        raise ValueError("Agent sessions must use their team runtime tools. The graph CLI is for the user.")
+    canvas = Canvas(read_only=args.action == 'list')
+    if args.action == 'list':
+        with canvas.connect() as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            threads = canvas.threads(db=db)
+            chats = canvas.chats(db=db)
+            result = {'nodes': threads + chats, 'edges': canvas.edges(threads, db=db)}
+    else:
+        result = canvas.register_agent(args.id, args.name, args.parent, args.thread, args.status)
+        notify_external_write(str(uuid.uuid4()), [
+            ResourceRef(StateResource(kind="state")),
+            ResourceRef(WorkspaceResource(kind="workspace", agentId=args.id)),
+        ], source_root=canvas.root)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+except NotifyCommittedWriteError as error:
+    sys.exit(f"Source change committed; UI invalidation is unconfirmed. Do not repeat the source operation. {error}")
+except (ValueError, RuntimeError) as error:
+    sys.exit(str(error))

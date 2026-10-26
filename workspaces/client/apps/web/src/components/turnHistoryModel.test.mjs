@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
-import { historyGroups, incrementalHistoryGroups } from "./turnHistoryModel.ts";
+import { historyGroups } from "./turnHistoryModel.ts";
 
 it("does not create a failed turn group for an empty turn ID", () => {
   const [group] = historyGroups([
@@ -73,75 +73,4 @@ it("shows an unconfirmed turn that has no assistant reply", () => {
     },
   ]);
   assert.equal(group.outcome, "uncertain");
-});
-
-it("keeps uncertainty despite a stale in-progress record", () => {
-  const [group] = historyGroups([
-    {
-      id: "a",
-      role: "assistant",
-      text: "Partial reply",
-      turnId: "turn",
-      turnStatus: "inProgress",
-    },
-    {
-      id: "b",
-      role: "system",
-      text: "",
-      turnId: "turn",
-      turnStatus: "uncertain",
-    },
-  ]);
-  assert.equal(group.outcome, "uncertain");
-});
-
-it("keeps a reply unconfirmed when only its user row has the terminal status", () => {
-  const groups = historyGroups(
-    [
-      {
-        id: "input",
-        role: "user",
-        text: "Run",
-        turnId: "turn",
-        turnStatus: "uncertain",
-      },
-      {
-        id: "answer",
-        role: "assistant",
-        text: "Partial reply",
-        turnId: "turn",
-        turnStatus: "inProgress",
-      },
-    ],
-    "turn",
-  );
-  assert.equal(groups[0].outcome, undefined);
-  assert.equal(groups[1].outcome, "uncertain");
-});
-
-it("moves a user-only outcome to a later reply without a duplicate notice", () => {
-  const items = [
-    {
-      id: "input",
-      role: "user",
-      text: "Run",
-      turnId: "turn",
-      turnStatus: "uncertain",
-    },
-  ];
-  const groups = historyGroups(items);
-  const next = [
-    ...items,
-    {
-      id: "answer",
-      role: "assistant",
-      text: "Partial reply",
-      turnId: "turn",
-      turnStatus: "uncertain",
-    },
-  ];
-  assert.deepEqual(
-    incrementalHistoryGroups(next, undefined, { items, groups }),
-    historyGroups(next),
-  );
 });

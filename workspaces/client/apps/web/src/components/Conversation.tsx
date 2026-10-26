@@ -119,6 +119,7 @@ import SelectionQuote, {
 } from "./conversation/transcript/SelectionQuote";
 import MessageActions from "./conversation/transcript/MessageActions";
 import { LiveAgentPhase } from "./agents/AgentPhase";
+import AgentPanel from "./agents/AgentPanel";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
 import type { useAccounts } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
@@ -963,17 +964,6 @@ export default function Conversation(p: {
   });
   const branch = useMessageAction(
     async (message: Message, draft?: { before: boolean; text: string }) => {
-      if (
-        items.some(
-          (item) =>
-            item.turnId === message.turnId && item.turnStatus === "uncertain",
-        )
-      ) {
-        p.notify(
-          "The turn outcome is unconfirmed. Review the saved evidence before you continue.",
-        );
-        return;
-      }
       if (branchLock.current) return;
       const agentId = p.id;
       if (!agentId) return;
@@ -1079,16 +1069,10 @@ export default function Conversation(p: {
     (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
-    const unconfirmed = new Set(
-      items
-        .filter((item) => item.turnStatus === "uncertain")
-        .map((item) => item.turnId),
-    );
     for (const item of items)
       if (
         item.role === "assistant" &&
         item.turnId &&
-        !unconfirmed.has(item.turnId) &&
         !isEmptyAssistantMessage(item)
       )
         last.set(item.turnId, item.id);
@@ -1353,7 +1337,6 @@ export default function Conversation(p: {
           managed &&
           m.role === "user" &&
           m.turnId &&
-          m.turnStatus !== "uncertain" &&
           (!m.deliveryStatus || m.deliveryStatus === "accepted")
             ? () => void editMessage(m)
             : undefined
@@ -1756,6 +1739,13 @@ export default function Conversation(p: {
         </p>
       ) : (
         <>
+          {managed && !p.legacy && agent && agent.isLead === true && (
+            <AgentPanel
+              key={`${p.data.stateDir}:${agent.id}`}
+              agentId={agent.id}
+              stateDir={p.data.stateDir}
+            />
+          )}
           {managed && (
             <>
               {Boolean(messageQueue.pending) && !messageQueue.busy && (

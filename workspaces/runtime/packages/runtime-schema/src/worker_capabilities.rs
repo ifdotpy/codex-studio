@@ -113,37 +113,26 @@ mod tests {
     #[test]
     fn capability_fields_validate_and_preserve_empty_lists() {
         for field in ["allowedTools", "disallowedTools", "mcpServers", "skills"] {
-            let empty: WorkerCapabilities = serde_json::from_value(json!({field:[]}))
-                .expect("empty capability list deserializes");
-            empty.validate().expect("empty capability list validates");
-            assert_eq!(
-                serde_json::to_value(empty).expect("capabilities serialize")[field],
-                json!([])
-            );
-            let bad: WorkerCapabilities = serde_json::from_value(json!({field:[""]}))
-                .expect("invalid capability list deserializes before validation");
-            assert!(
-                bad.validate()
-                    .expect_err("empty capability name must fail")
-                    .contains(field)
-            );
+            let empty: WorkerCapabilities = serde_json::from_value(json!({field:[]})).unwrap();
+            empty.validate().unwrap();
+            assert_eq!(serde_json::to_value(empty).unwrap()[field], json!([]));
+            let bad: WorkerCapabilities = serde_json::from_value(json!({field:[""]})).unwrap();
+            assert!(bad.validate().unwrap_err().contains(field));
         }
         assert!(serde_json::from_value::<WorkerCapabilities>(json!({"maxTurns":-1})).is_err());
-        let zero: WorkerCapabilities = serde_json::from_value(json!({"maxTurns":0}))
-            .expect("zero maxTurns deserializes before validation");
+        let zero: WorkerCapabilities = serde_json::from_value(json!({"maxTurns":0})).unwrap();
         assert!(zero.validate().is_err());
-        let one: WorkerCapabilities =
-            serde_json::from_value(json!({"maxTurns":1})).expect("positive maxTurns deserializes");
-        one.validate().expect("positive maxTurns validates");
+        let one: WorkerCapabilities = serde_json::from_value(json!({"maxTurns":1})).unwrap();
+        one.validate().unwrap();
     }
 
     #[test]
     fn capability_schema_copies_match_owner() {
-        let openapi: Value = serde_json::from_str(include_str!("../../runtime-http/openapi.json"))
-            .expect("OpenAPI document parses");
+        let openapi: Value =
+            serde_json::from_str(include_str!("../../runtime-http/openapi.json")).unwrap();
         let stored: Value =
             serde_json::from_str(include_str!("schemas/persisted-profile-record.schema.json"))
-                .expect("persisted profile schema parses");
+                .unwrap();
         for (field, schema) in properties() {
             assert_eq!(stored["properties"][&field], schema, "persisted {field}");
             for name in [

@@ -1,5 +1,4 @@
-import type { syncPost } from "../api";
-import { onResume } from "./resume";
+import { syncPost } from "../api";
 import {
   acknowledgePreferenceFields,
   initializePreferenceMigration,
@@ -15,10 +14,7 @@ import {
 import type { UiPreferenceProjection } from "./entityProjection";
 
 /** Bridges projected preference rows to local storage and gated API writes. */
-export function createUiPreferenceBridge(
-  storage: Storage,
-  post: typeof syncPost<"/api/sync/preferences">,
-) {
+export function createUiPreferenceBridge(storage: Storage) {
   let active = false;
   let ready = false;
   let sending = false;
@@ -51,7 +47,7 @@ export function createUiPreferenceBridge(
             Array.from(new Uint8Array(digest), (byte) =>
               byte.toString(16).padStart(2, "0"),
             ).join("");
-          const result = await post("/api/sync/preferences", body, {
+          const result = await syncPost("/api/sync/preferences", body, {
             requestId,
           });
           if (!active) return;
@@ -66,7 +62,7 @@ export function createUiPreferenceBridge(
       } while (sendAgain && active);
     } catch {
       // The API client owns schema gating and transport failures. A later
-      // preference edit, resume or connection recovery retries pending fields.
+      // preference edit or bridge mount will retry pending fields.
     } finally {
       sending = false;
     }
@@ -88,17 +84,14 @@ export function createUiPreferenceBridge(
 
   return {
     receiveProjection,
-    retryPendingWrites: () => void send(),
     start() {
       if (active) return () => {};
       active = true;
       initializePreferenceMigration("user", storage);
       initializePreferenceMigration("server", storage);
       const stopWrites = watchPreferenceWrites(() => void send());
-      const stopResume = onResume(() => void send());
       return () => {
         active = false;
-        stopResume();
         stopWrites();
       };
     },

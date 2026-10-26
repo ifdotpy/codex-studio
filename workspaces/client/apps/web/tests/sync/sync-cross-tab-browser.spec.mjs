@@ -413,10 +413,10 @@ const runSyncCrossTabScenario = async (
     }
     await pages[0].evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.queueCallbacks = 0;
-      window.stopQueueCallbacks = client.watchResourceChanges(
-        { kind: "queue", agentId: "stable-queue" },
-        () => window.queueCallbacks++,
+      window.panelCallbacks = 0;
+      window.stopPanelCallbacks = client.watchResourceChanges(
+        { kind: "panel", agentId: "stable-panel" },
+        () => window.panelCallbacks++,
       );
     });
     await pages[2].evaluate(async () => {
@@ -428,7 +428,7 @@ const runSyncCrossTabScenario = async (
       );
     });
     await Promise.all([
-      pages[0].waitForFunction(() => window.queueCallbacks > 0),
+      pages[0].waitForFunction(() => window.panelCallbacks > 0),
       pages[2].waitForFunction(() => window.costCallbacks > 0),
     ]);
     const costBeforeUnrelated = await pages[2].evaluate(
@@ -439,39 +439,39 @@ const runSyncCrossTabScenario = async (
       (prior) => window.costCallbacks > prior,
       costBeforeUnrelated,
     );
-    const queueFollower = pages[1];
-    await queueFollower.evaluate(async () => {
+    const panelFollower = pages[1];
+    await panelFollower.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.lateQueueCallbacks = 0;
-      window.stopLateQueue = client.watchResourceChanges(
-        { kind: "queue", agentId: "stable-queue" },
-        () => window.lateQueueCallbacks++,
+      window.latePanelCallbacks = 0;
+      window.stopLatePanel = client.watchResourceChanges(
+        { kind: "panel", agentId: "stable-panel" },
+        () => window.latePanelCallbacks++,
       );
     });
-    await queueFollower.waitForFunction(
-      () => window.lateQueueCallbacks > 0,
+    await panelFollower.waitForFunction(
+      () => window.latePanelCallbacks > 0,
       undefined,
       { timeout: 5000 },
     );
-    const lateQueueBaseline = await queueFollower.evaluate(
-      () => window.lateQueueCallbacks,
+    const latePanelBaseline = await panelFollower.evaluate(
+      () => window.latePanelCallbacks,
     );
-    const lateQueueAfterUnrelated = await queueFollower.evaluate(
-      () => window.lateQueueCallbacks,
+    const latePanelAfterUnrelated = await panelFollower.evaluate(
+      () => window.latePanelCallbacks,
     );
     assert.equal(
-      lateQueueAfterUnrelated,
-      lateQueueBaseline,
-      "An unrelated resource event does not change the queue callback version",
+      latePanelAfterUnrelated,
+      latePanelBaseline,
+      "An unrelated resource event does not change the panel callback version",
     );
-    sendChange(workspaceId, { kind: "queue", agentId: "stable-queue" });
-    await queueFollower.waitForFunction(
-      (prior) => window.lateQueueCallbacks > prior,
-      lateQueueAfterUnrelated,
+    sendChange(workspaceId, { kind: "panel", agentId: "stable-panel" });
+    await panelFollower.waitForFunction(
+      (prior) => window.latePanelCallbacks > prior,
+      latePanelAfterUnrelated,
       { timeout: 5000 },
     );
-    const stableQueueCallbacks = await queueFollower.evaluate(
-      () => window.lateQueueCallbacks,
+    const stablePanelCallbacks = await panelFollower.evaluate(
+      () => window.latePanelCallbacks,
     );
     const costBeforeHeartbeat = await pages[2].evaluate(
       () => window.costCallbacks,
@@ -481,10 +481,10 @@ const runSyncCrossTabScenario = async (
       (prior) => window.costCallbacks > prior,
       costBeforeHeartbeat,
     );
-    await queueFollower.waitForTimeout(3500);
+    await panelFollower.waitForTimeout(3500);
     assert.equal(
-      await queueFollower.evaluate(() => window.lateQueueCallbacks),
-      stableQueueCallbacks,
+      await panelFollower.evaluate(() => window.latePanelCallbacks),
+      stablePanelCallbacks,
       "Peer subscription heartbeats do not replay unchanged resources after unrelated traffic",
     );
     const initialOwnerIndex = await Promise.any(
@@ -501,10 +501,10 @@ const runSyncCrossTabScenario = async (
     const takeoverSubscriberIndex = initialOwnerIndex === 1 ? 0 : 1;
     await pages[takeoverSubscriberIndex].evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.takeoverQueueCallbacks = 0;
-      window.stopTakeoverQueue = client.watchResourceChanges(
-        { kind: "queue", agentId: "takeover-unique-queue" },
-        () => window.takeoverQueueCallbacks++,
+      window.takeoverPanelCallbacks = 0;
+      window.stopTakeoverPanel = client.watchResourceChanges(
+        { kind: "panel", agentId: "takeover-unique-panel" },
+        () => window.takeoverPanelCallbacks++,
       );
     });
     await waitFor(
@@ -512,15 +512,15 @@ const runSyncCrossTabScenario = async (
         [...streamResources.values()].some((resources) =>
           resources.some(
             (resource) =>
-              resource.kind === "queue" &&
-              resource.agentId === "takeover-unique-queue",
+              resource.kind === "panel" &&
+              resource.agentId === "takeover-unique-panel",
           ),
         ),
-      "the original owner did not learn the second tab's unique queue subscription",
+      "the original owner did not learn the second tab's unique panel subscription",
     );
-    await pages[0].evaluate(() => window.stopQueueCallbacks());
+    await pages[0].evaluate(() => window.stopPanelCallbacks());
     await pages[2].evaluate(() => window.stopCostCallbacks());
-    await queueFollower.evaluate(() => window.stopLateQueue());
+    await panelFollower.evaluate(() => window.stopLatePanel());
     const streamsBeforeHidingOwner = streamsOpened;
     const requestsBeforeHidingOwner = streamRequestRecords.length;
     const subscriptionsBeforeTakeover = await Promise.all(
@@ -672,15 +672,15 @@ const runSyncCrossTabScenario = async (
       "every takeover EventSource open is recorded with its exact resource query",
     );
     assert.ok(takeoverRequests.length > 0);
-    const hasUniqueQueue = (resources) =>
+    const hasUniquePanel = (resources) =>
       resources.some(
         (resource) =>
-          resource.kind === "queue" &&
-          resource.agentId === "takeover-unique-queue",
+          resource.kind === "panel" &&
+          resource.agentId === "takeover-unique-panel",
       );
     assert.ok(
-      hasUniqueQueue(takeoverRequests.at(-1).resources),
-      `the final takeover query contains the subscribed queue: ${JSON.stringify(takeoverRequests)}`,
+      hasUniquePanel(takeoverRequests.at(-1).resources),
+      `the final takeover query contains the subscribed panel: ${JSON.stringify(takeoverRequests)}`,
     );
     let takeoverSequence;
     for (let index = 0; index < takeoverRequests.length - 1; index++) {
@@ -700,9 +700,9 @@ const runSyncCrossTabScenario = async (
           "duplicate identical union query; first stream was replaced";
       } else {
         assert.equal(
-          hasUniqueQueue(takeoverRequests[0].resources),
+          hasUniquePanel(takeoverRequests[0].resources),
           false,
-          `the first query is local-only before the peer's queue is discovered: ${JSON.stringify(takeoverRequests)}`,
+          `the first query is local-only before the peer's panel is discovered: ${JSON.stringify(takeoverRequests)}`,
         );
         assert.ok(
           takeoverRequests[0].resources.every((resource) =>
@@ -729,13 +729,13 @@ const runSyncCrossTabScenario = async (
         [
           JSON.stringify({ kind: "state" }),
           JSON.stringify({ kind: "transcript", agentId: "session-one" }),
-          JSON.stringify({ kind: "queue", agentId: "takeover-unique-queue" }),
+          JSON.stringify({ kind: "panel", agentId: "takeover-unique-panel" }),
         ].sort(),
       ],
-      "the sole active stream carries the new owner's local resources plus the discovered peer queue",
+      "the sole active stream carries the new owner's local resources plus the discovered peer panel",
     );
     const takeoverOwnerIndex = openSourcesByPage.findIndex((count) => count);
-    const peerQueueArrivedBeforeFirstOpen = await pages[
+    const peerPanelArrivedBeforeFirstOpen = await pages[
       takeoverOwnerIndex
     ].evaluate(
       (firstOpenAt) =>
@@ -745,8 +745,8 @@ const runSyncCrossTabScenario = async (
             message.__receivedAt <= firstOpenAt &&
             message.resources?.some(
               (resource) =>
-                resource.kind === "queue" &&
-                resource.agentId === "takeover-unique-queue",
+                resource.kind === "panel" &&
+                resource.agentId === "takeover-unique-panel",
             ),
         ),
       takeoverRequests[0].openedAt,
@@ -755,24 +755,24 @@ const runSyncCrossTabScenario = async (
       `TAKEOVER_STREAM_SEQUENCE ${JSON.stringify({
         sequence: takeoverSequence,
         takeoverOwnerIndex,
-        ownerAlreadyKnewQueue:
+        ownerAlreadyKnewPanel:
           subscriptionsBeforeTakeover[takeoverOwnerIndex]?.some((message) =>
-            hasUniqueQueue(message.resources),
+            hasUniquePanel(message.resources),
           ) ?? false,
-        peerQueueArrivedBeforeFirstOpen,
+        peerPanelArrivedBeforeFirstOpen,
         subscriptionDiscoveryBeforeOpen: subscriptionsBeforeTakeover.map(
           (messages, index) => ({
             index,
-            peerQueueAnnouncements: messages.filter((message) =>
-              hasUniqueQueue(message.resources),
+            peerPanelAnnouncements: messages.filter((message) =>
+              hasUniquePanel(message.resources),
             ).length,
           }),
         ),
         subscriptionMessagesBeforeTakeover: subscriptionsBeforeTakeover.map(
           (messages, index) => ({
             index,
-            queueAnnouncements: messages.filter((message) =>
-              hasUniqueQueue(message.resources),
+            panelAnnouncements: messages.filter((message) =>
+              hasUniquePanel(message.resources),
             ).length,
           }),
         ),
@@ -798,34 +798,34 @@ const runSyncCrossTabScenario = async (
         [...streamResources.values()].some((resources) =>
           resources.some(
             (resource) =>
-              resource.kind === "queue" &&
-              resource.agentId === "takeover-unique-queue",
+              resource.kind === "panel" &&
+              resource.agentId === "takeover-unique-panel",
           ),
         ),
-      "the replacement owner did not rediscover the surviving peer's unique queue",
+      "the replacement owner did not rediscover the surviving peer's unique panel",
     );
-    const takeoverQueueBefore = await pages[takeoverSubscriberIndex].evaluate(
-      () => window.takeoverQueueCallbacks,
+    const takeoverPanelBefore = await pages[takeoverSubscriberIndex].evaluate(
+      () => window.takeoverPanelCallbacks,
     );
     sendChange(workspaceId, {
-      kind: "queue",
-      agentId: "takeover-unique-queue",
+      kind: "panel",
+      agentId: "takeover-unique-panel",
     });
     await pages[takeoverSubscriberIndex].waitForFunction(
-      (previous) => window.takeoverQueueCallbacks > previous,
-      takeoverQueueBefore,
+      (previous) => window.takeoverPanelCallbacks > previous,
+      takeoverPanelBefore,
       { timeout: 5000 },
     );
-    const takeoverQueueAfterChange = await pages[
+    const takeoverPanelAfterChange = await pages[
       takeoverSubscriberIndex
-    ].evaluate(() => window.takeoverQueueCallbacks);
+    ].evaluate(() => window.takeoverPanelCallbacks);
     await pages[takeoverSubscriberIndex].waitForTimeout(3500);
     assert.equal(
       await pages[takeoverSubscriberIndex].evaluate(
-        () => window.takeoverQueueCallbacks,
+        () => window.takeoverPanelCallbacks,
       ),
-      takeoverQueueAfterChange,
-      "quiet peer heartbeats do not refetch the surviving queue after takeover",
+      takeoverPanelAfterChange,
+      "quiet peer heartbeats do not refetch the surviving panel after takeover",
     );
     if (checkResumeRace) {
       const resumedOwnerIndex = await Promise.any(
@@ -859,10 +859,10 @@ const runSyncCrossTabScenario = async (
         });
         document.dispatchEvent(new Event("visibilitychange"));
         const client = await import("/src/sync/client.ts");
-        window.resumedQueueCount = 0;
-        window.stopResumedQueue = client.watchResourceChanges(
-          { kind: "queue", agentId: "resumed-follower" },
-          () => window.resumedQueueCount++,
+        window.resumedPanelCount = 0;
+        window.stopResumedPanel = client.watchResourceChanges(
+          { kind: "panel", agentId: "resumed-follower" },
+          () => window.resumedPanelCount++,
         );
       });
       await waitFor(
@@ -870,14 +870,14 @@ const runSyncCrossTabScenario = async (
           [...streamResources.values()].some((resources) =>
             resources.some(
               (resource) =>
-                resource.kind === "queue" &&
+                resource.kind === "panel" &&
                 resource.agentId === "resumed-follower",
             ),
           ),
         "the resumed follower's new ref was not added to the owner's stream",
       );
       await follower.waitForFunction(
-        () => window.resumedQueueCount > 0,
+        () => window.resumedPanelCount > 0,
         undefined,
         { timeout: 5000 },
       );
@@ -886,26 +886,26 @@ const runSyncCrossTabScenario = async (
         [...streamResources.values()].some((resources) =>
           resources.some(
             (resource) =>
-              resource.kind === "queue" &&
+              resource.kind === "panel" &&
               resource.agentId === "resumed-follower",
           ),
         ),
         "the resumed follower kept its ref advertised past peer expiry",
       );
       const resumedBefore = await follower.evaluate(
-        () => window.resumedQueueCount,
+        () => window.resumedPanelCount,
       );
       sendChange(workspaceId, {
-        kind: "queue",
+        kind: "panel",
         agentId: "resumed-follower",
       });
       await follower.waitForFunction(
-        (previous) => window.resumedQueueCount > previous,
+        (previous) => window.resumedPanelCount > previous,
         resumedBefore,
         { timeout: 5000 },
       );
-      await follower.evaluate(() => window.stopResumedQueue());
-      await pages[1].evaluate(() => window.stopTakeoverQueue());
+      await follower.evaluate(() => window.stopResumedPanel());
+      await pages[1].evaluate(() => window.stopTakeoverPanel());
       await pages[initialOwnerIndex].evaluate(() => {
         Object.defineProperty(document, "hidden", {
           configurable: true,
@@ -1003,7 +1003,7 @@ const runSyncCrossTabScenario = async (
       if (duplicateWaitError) throw duplicateWaitError;
       return;
     }
-    await pages[1].evaluate(() => window.stopTakeoverQueue());
+    await pages[1].evaluate(() => window.stopTakeoverPanel());
     const beforeOffline = await Promise.all(
       pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
     );

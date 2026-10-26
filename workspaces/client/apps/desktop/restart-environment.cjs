@@ -1,10 +1,9 @@
-// Owner of persisted launch-environment version and allowed keys; Rust parity is checked by backend.test.mjs.
-const restartEnvironmentVersion = 1;
 const restartKeys = [
   "CODEX_HOME",
   "CODEX_CANVAS_CWD",
   "CODEX_CANVAS_CONCURRENCY",
   "CODEX_BIN",
+  "CODEX_AGENTS_PYTHON",
   "SHELL",
   "LANG",
   "LC_ALL",
@@ -21,7 +20,7 @@ function savedLaunchEnvironment(env, saved, state) {
   const environment = saved.environment;
   const unset = saved.unsetEnvironment;
   if (
-    saved.version !== restartEnvironmentVersion ||
+    saved.version !== 1 ||
     saved.stateDir !== state ||
     !environment ||
     typeof environment !== "object" ||
@@ -41,8 +40,4 @@ function savedLaunchEnvironment(env, saved, state) {
   return Object.assign(result, environment);
 }
 
-module.exports = {
-  restartKeys,
-  restartEnvironmentVersion,
-  savedLaunchEnvironment,
-};
+module.exports = { restartKeys, savedLaunchEnvironment };
