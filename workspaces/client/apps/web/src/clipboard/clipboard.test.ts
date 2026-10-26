@@ -10,7 +10,7 @@ const originalGlobals = new Map(
   ]),
 );
 
-function setGlobal(name, value) {
+function setGlobal(name: string, value: unknown) {
   Object.defineProperty(globalThis, name, {
     configurable: true,
     value,
@@ -20,16 +20,13 @@ function setGlobal(name, value) {
 afterEach(() => {
   for (const [name, descriptor] of originalGlobals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-    else delete globalThis[name];
+    else Reflect.deleteProperty(globalThis, name);
   }
 });
 
 test("copyText awaits the Clipboard API and does not touch the fallback", async () => {
-  const calls = [];
-  let release;
-  const pending = new Promise((resolve) => {
-    release = resolve;
-  });
+  const calls: unknown[] = [];
+  const { promise: pending, resolve: release } = Promise.withResolvers<void>();
   setGlobal("document", {
     get activeElement() {
       throw new Error("Unexpected clipboard fallback");
@@ -37,7 +34,7 @@ test("copyText awaits the Clipboard API and does not touch the fallback", async 
   });
   setGlobal("navigator", {
     clipboard: {
-      writeText: (text) => {
+      writeText: (text: string) => {
         calls.push(text);
         return pending;
       },
@@ -57,14 +54,25 @@ test("copyText awaits the Clipboard API and does not touch the fallback", async 
 });
 
 test("copyText falls back and restores textarea, selection and focus state", async () => {
-  const calls = [];
+  const calls: unknown[] = [];
   const ranges = [{ id: "first" }, { id: "second" }];
   const attributes = new Map();
-  const styles = {};
-  let textarea;
+  const styles: Partial<CSSStyleDeclaration> = {};
+  const textarea = {
+    value: "",
+    style: styles,
+    setAttribute: (name: string, value: string) => attributes.set(name, value),
+    select: () => calls.push(["select", textarea.value]),
+    setSelectionRange: (start: number, end: number) =>
+      calls.push(["setSelectionRange", start, end]),
+    remove: () => calls.push(["remove"]),
+  } satisfies Pick<
+    HTMLTextAreaElement,
+    "value" | "setAttribute" | "select" | "setSelectionRange" | "remove"
+  > & { style: Partial<CSSStyleDeclaration> };
   setGlobal("navigator", {
     clipboard: {
-      writeText: async (text) => {
+      writeText: async (text: string) => {
         calls.push(["clipboard", text]);
         throw new Error("permission denied");
       },
@@ -72,34 +80,27 @@ test("copyText falls back and restores textarea, selection and focus state", asy
   });
   setGlobal("document", {
     activeElement: {
-      focus: (options) => calls.push(["focus", options]),
+      focus: (options: FocusOptions) => calls.push(["focus", options]),
     },
     getSelection: () => ({
       rangeCount: ranges.length,
-      getRangeAt: (index) => {
+      getRangeAt: (index: number) => {
         calls.push(["getRangeAt", index]);
         return ranges[index];
       },
       removeAllRanges: () => calls.push(["clearSelection"]),
-      addRange: (range) => calls.push(["restoreRange", range.id]),
+      addRange: (range: (typeof ranges)[number]) =>
+        calls.push(["restoreRange", range.id]),
     }),
-    createElement: (tag) => {
+    createElement: (tag: string) => {
       calls.push(["createElement", tag]);
-      textarea = {
-        value: "",
-        style: styles,
-        setAttribute: (name, value) => attributes.set(name, value),
-        select: () => calls.push(["select", textarea.value]),
-        setSelectionRange: (start, end) =>
-          calls.push(["setSelectionRange", start, end]),
-        remove: () => calls.push(["remove"]),
-      };
       return textarea;
     },
     body: {
-      appendChild: (element) => calls.push(["append", element]),
+      appendChild: (element: typeof textarea) =>
+        calls.push(["append", element]),
     },
-    execCommand: (command) => {
+    execCommand: (command: string) => {
       calls.push(["command", command]);
       return true;
     },
@@ -132,7 +133,7 @@ test("copyText falls back and restores textarea, selection and focus state", asy
 });
 
 test("copyText cleans up and rejects when the fallback command fails without selection", async () => {
-  const calls = [];
+  const calls: unknown[] = [];
   let removed = false;
   setGlobal("navigator", {});
   setGlobal("document", {
@@ -149,7 +150,7 @@ test("copyText cleans up and rejects when the fallback command fails without sel
       },
     }),
     body: { appendChild: () => calls.push("append") },
-    execCommand: (command) => {
+    execCommand: (command: string) => {
       calls.push(command);
       return false;
     },

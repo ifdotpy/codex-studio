@@ -28,13 +28,14 @@ test("the production Vite build compresses final outputs without changing shell 
     await mkdir(join(root, "public"));
     await writeFile(
       join(root, "index.html"),
-      '<html><head></head><body><script type="module" src="/entry.js"></script></body></html>',
+      '<html><head></head><body><script type="module" src="/entry.ts"></script></body></html>',
     );
     await writeFile(
-      join(root, "entry.js"),
-      'import "./style.css"; console.log("' +
-        "compress me ".repeat(300) +
-        '");',
+      join(root, "entry.ts"),
+      await readFile(
+        new URL("./precompressedAssets.fixture.ts", import.meta.url),
+        "utf8",
+      ),
     );
     await writeFile(
       join(root, "style.css"),
@@ -76,7 +77,7 @@ test("the production Vite build compresses final outputs without changing shell 
       for (const [suffix, decode] of [
         ["br", brotliDecompressSync],
         ["gz", gunzipSync],
-      ]) {
+      ] as const) {
         const expected =
           suffix === "br"
             ? brotliCompressSync(original, {
@@ -112,7 +113,10 @@ test("the production Vite build compresses final outputs without changing shell 
     );
     assert.ok(!files.some((name) => /\.(?:br|gz)\.(?:br|gz)$/.test(name)));
     const worker = await readFile(join(dist, "studio-sw.js"), "utf8");
-    const shell = JSON.parse(worker.match(/^self\.STUDIO_SHELL = (.*);/)[1]);
+    const manifest = worker.match(/^self\.STUDIO_SHELL = (.*);/)?.[1];
+    assert.ok(manifest);
+    const shell: { initial: string[]; allowed: string[]; build: string } =
+      JSON.parse(manifest);
     assert.ok(shell.initial.length > 0);
     assert.ok(
       [...shell.initial, ...shell.allowed].every(

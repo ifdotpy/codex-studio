@@ -1,9 +1,11 @@
+import type { Agent } from "../types";
+import type { components } from "../generated/api";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { limitRecovery, limitRecovered } from "./limitRecovery.ts";
 
 const now = 1_800_000_000;
-const agent = {
+const agent: Agent = {
   id: "agent",
   accountKey: "work",
   model: "gpt-6",
@@ -11,7 +13,9 @@ const agent = {
   error: { codexErrorInfo: "rateLimitExceeded" },
   nativeLimitErrorAt: now - 10,
 };
-const decision = (overrides = {}) => ({
+const decision = (
+  overrides: Partial<components["schemas"]["UsageEligibility"]> = {},
+): components["schemas"]["UsageEligibility"] => ({
   agentId: "agent",
   accountKey: "work",
   model: "gpt-6",
@@ -59,7 +63,7 @@ test("recovery consumes the Rust decision and validates its identity and validit
       JSON.stringify(patch),
     );
   }
-  const sonnet = { ...agent, provider: "claude", model: "sonnet" };
+  const sonnet: Agent = { ...agent, provider: "claude", model: "sonnet" };
   const response = {
     ...available,
     eligibility: decision({
@@ -125,9 +129,16 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
       }),
       now,
     );
+    assert.ok(recovery);
     assert.equal(recovery.title, title);
+
     assert.equal(recovery.action?.label, action);
-    if (owner) assert.ok(recovery.ownerRequest.includes(owner));
+
+    if (owner) {
+      assert.ok(recovery.ownerRequest);
+      assert.ok(recovery.ownerRequest.includes(owner));
+    }
+
     assert.equal(
       recovery.resetAt,
       now + 90,
@@ -138,6 +149,7 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
       limits({ rateLimitReachedType: reason }),
       now,
     );
+    assert.ok(usage);
     assert.match(usage.title, /usage limit/);
   }
   for (const [plan, label] of [
@@ -148,16 +160,17 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
     ["go", "View ChatGPT usage"],
   ]) {
     assert.equal(
-      limitRecovery(agent, limits({ planType: plan }), now).action.label,
+      limitRecovery(agent, limits({ planType: plan }), now)?.action?.label,
       label,
     );
   }
+  assert.ok(limitRecovery);
   assert.equal(
     limitRecovery(
       agent,
       limits({ rateLimitReachedType: "future", planType: "pro" }),
       now,
-    ).action,
+    )?.action,
     undefined,
   );
   for (const snapshot of [
@@ -168,14 +181,14 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
     limits({}, { at: now - 301 }),
   ]) {
     assert.match(
-      limitRecovery(agent, snapshot, now).message,
+      limitRecovery(agent, snapshot, now)?.message ?? "",
       /^View account limits/,
     );
   }
 });
 
 test("Claude notices show model reset and overage without Codex purchase actions", () => {
-  const claude = { ...agent, provider: "claude", model: "sonnet" };
+  const claude: Agent = { ...agent, provider: "claude", model: "sonnet" };
   const eligibility = decision({
     provider: "claude",
     model: "sonnet",
@@ -187,7 +200,10 @@ test("Claude notices show model reset and overage without Codex purchase actions
     limits({ planType: "pro" }, { eligibility }),
     now,
   );
+  assert.ok(recovery);
   assert.equal(recovery.eligibility, eligibility);
+
   assert.equal(recovery.resetAt, now + 180);
+
   assert.equal(recovery.action, undefined);
 });

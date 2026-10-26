@@ -20,6 +20,9 @@ it("cleans up audio resources after construction, worklet and flush failures", a
     let stopped = 0,
       closed = 0;
     class AudioContext {
+      sampleRate: number;
+      destination: Record<string, never>;
+      audioWorklet: Pick<globalThis.AudioWorklet, "addModule">;
       constructor() {
         if (mode === "constructor-failure") throw Error("Context unavailable");
         this.sampleRate = 16000;
@@ -31,7 +34,7 @@ it("cleans up audio resources after construction, worklet and flush failures", a
         };
       }
       createMediaStreamSource() {
-        return { connect: (node) => node, disconnect() {} };
+        return { connect: (node: AudioWorkletNode) => node, disconnect() {} };
       }
       createGain() {
         return { gain: {}, connect() {} };
@@ -42,15 +45,14 @@ it("cleans up audio resources after construction, worklet and flush failures", a
       }
     }
     class AudioWorkletNode {
-      constructor() {
-        this.port = {
-          postMessage: () => {
-            if (mode !== "flush-failure")
-              queueMicrotask(() => this.port.onmessage({ data: "stopped" }));
-          },
-        };
-      }
-      connect(node) {
+      port = {
+        onmessage: (_event: Pick<MessageEvent, "data">) => {},
+        postMessage: () => {
+          if (mode !== "flush-failure")
+            queueMicrotask(() => this.port.onmessage({ data: "stopped" }));
+        },
+      };
+      connect(node: unknown) {
         return node;
       }
       disconnect() {}

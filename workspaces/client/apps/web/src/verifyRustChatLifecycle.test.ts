@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import {
   isAcceptedMessageReceiptStatus,
   selectedChatRowSelector,
-} from "../scripts/verify-rust-chat-lifecycle.mjs";
+} from "../scripts/verify-rust-chat-lifecycle.ts";
 
 it("accepts durable pending inputs without treating uncertainty as delivery", () => {
   for (const status of ["pending", "queued", "accepted", "delivered", "sent"])

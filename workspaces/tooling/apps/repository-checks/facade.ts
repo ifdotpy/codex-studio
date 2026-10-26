@@ -175,14 +175,14 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-agents-desktop",
     file: "profile-export-test.ts",
-    specifier: "../web/src/native/importBrowserProfile.mjs",
+    specifier: "../web/src/native/importBrowserProfile.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
   {
     importer: "codex-agents-desktop",
     file: "profile-export-test.ts",
-    specifier: "../web/src/native/combineBrowserProfiles.mjs",
+    specifier: "../web/src/native/combineBrowserProfiles.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
