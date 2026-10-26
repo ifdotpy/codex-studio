@@ -137,12 +137,12 @@ async function runStep(threadId: string, turnId: string, step: FixtureStep) {
       arguments: step.arguments ?? {},
     });
   } else if ("notify" in step) {
-    notify(step.notify.method, { threadId, turnId, ...step.notify.params });
+    notify(step.notify!.method, { threadId, turnId, ...step.notify!.params });
   } else if ("request" in step) {
-    await call(step.request.method, {
+    await call(step.request!.method, {
       threadId,
       turnId,
-      ...step.request.params,
+      ...step.request!.params,
     });
   } else if (step.complete) {
     holds.get(turnId)?.complete();
