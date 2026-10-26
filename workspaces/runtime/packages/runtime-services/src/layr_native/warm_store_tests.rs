@@ -154,7 +154,10 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
     let automatic = run(&state, &main, &["rev-parse", "main@{0}"]).expect("automatic state");
     let (start, warning) =
         mapping::cached_main_start(&state, &main).expect("equal automatic state");
-    assert_eq!(start, automatic);
+    assert_eq!(
+        run(&state, &main, &["rev-parse", &start]).expect("selected state"),
+        automatic
+    );
     assert!(warning.is_none());
     let equal_lead =
         runtime::prepare_files(&state, &lead).expect("main with equal automatic caches");
@@ -179,7 +182,7 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
     let (start, warning) =
         mapping::cached_main_start(&state, &main).expect("different automatic state");
     assert_eq!(
-        start,
+        run(&state, &main, &["rev-parse", &start]).expect("selected main"),
         run(&state, &main, &["rev-parse", "main"]).expect("main head")
     );
     assert!(warning.is_some());
