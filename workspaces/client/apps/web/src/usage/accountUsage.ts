@@ -1,5 +1,5 @@
 import { serverLocalStorage } from "../servers/storage";
-import type { JsonInput, Json } from "../types";
+import type { JsonInput, JsonInputOf, Json } from "../types";
 import type { ApiError, GetResult } from "../api";
 import type { components } from "../generated/api";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "../generated/sharedValues";
@@ -7,8 +7,10 @@ import { providerLimitData, providerRateLimitsDataDto } from "./providerLimits";
 
 export type JsonObject = Json;
 
-type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
-type UsageLimitsResponse = GetResult<"/api/limits">;
+type AccountRateLimitsDto = JsonInputOf<
+  components["schemas"]["AccountRateLimitsDto"]
+>;
+type UsageLimitsResponse = JsonInputOf<GetResult<"/api/limits">>;
 type ClientLimitMetadata = { loading?: boolean; stale?: boolean };
 export type AccountLimitsReadError = Pick<ApiError, "message" | "status"> & {
   location?: string[];
