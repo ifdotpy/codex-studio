@@ -22,3 +22,11 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSDictionary", "NSNotification", "NSOperation", "NSValue", "NSURL", "NSError", "NSTimer", "NSDate", "block2"] }
+objc2-ui-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-foundation", "UIApplication", "UIResponder", "UIView", "UIScrollView", "UIGeometry", "UIWindow", "UIScreen", "UIScene", "UIWindowScene"] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "WKUserContentController", "WKScriptMessage", "WKScriptMessageHandler"] }

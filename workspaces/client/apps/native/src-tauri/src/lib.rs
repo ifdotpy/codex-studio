@@ -4,6 +4,9 @@ mod desktop_menu;
 #[cfg(desktop)]
 mod desktop_recovery;
 mod frame_assets;
+mod ios_insets;
+#[cfg(target_os = "ios")]
+mod ios_shell;
 mod local_backend;
 #[cfg(feature = "native-check")]
 mod native_check;
@@ -505,7 +508,15 @@ fn context() -> tauri::Context<tauri::Wry> {
 pub fn run() {
     #[cfg(feature = "native-check")]
     eprintln!("Hidden native check: starting host");
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "ios")]
+    let builder = {
+        let token = ios_shell::start_token();
+        builder.register_uri_scheme_protocol(ios_shell::START_SCHEME, move |ctx, request| {
+            ios_shell::start_page(ctx, request, &token)
+        })
+    };
+    builder
         .register_uri_scheme_protocol("studio-view", frame_assets::respond)
         .manage(Clients::default())
         .manage(close::CloseState::default())
@@ -523,6 +534,10 @@ pub fn run() {
                 }
         })
         .on_page_load(|window, payload| {
+            #[cfg(target_os = "ios")]
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                ios_shell::page_loaded(window);
+            }
             #[cfg(feature = "native-check")]
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 native_check::loaded(window);
@@ -565,18 +580,33 @@ pub fn run() {
                     }
                 }
             });
-            let window = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
+            // iOS loads the web client from the user's server, or the
+            // first-launch page that saves that server.
+            #[cfg(target_os = "ios")]
+            let url = match ios_shell::server_url(app) {
+                Some(url) => tauri::WebviewUrl::External(url),
+                None => tauri::WebviewUrl::CustomProtocol(
+                    format!("{}://localhost/", ios_shell::START_SCHEME).parse()?,
+                ),
+            };
+            #[cfg(not(target_os = "ios"))]
+            let url = tauri::WebviewUrl::App("index.html".into());
+            let window = tauri::WebviewWindowBuilder::new(app, "main", url)
             .title("LAYR Studio")
             // The renderer owns sidebar/queue reordering and file attachments.
             // Tauri's native handler consumes drops before HTML5 can receive them.
             .disable_drag_drop_handler()
-            .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
-            .inner_size(1200.0, 800.0)
+            .on_new_window(|_url, _| {
+                #[cfg(target_os = "ios")]
+                ios_shell::open_external(&_url);
+                tauri::webview::NewWindowResponse::Deny
+            })
             .visible(!hidden);
+            // iOS sizes the web view to its window; see ios_shell::configure.
+            #[cfg(desktop)]
+            let window = window.inner_size(1200.0, 800.0);
+            #[cfg(target_os = "ios")]
+            let window = window.initialization_script(include_str!("ios_viewport.js"));
             // Explicit test profiles never reuse the installed WebKit data store.
             let ephemeral = std::env::var("CODEX_DESKTOP_EPHEMERAL_PROFILE").as_deref() == Ok("1");
             if ephemeral && std::env::var_os("CODEX_DESKTOP_PROFILE").is_none() {
@@ -631,6 +661,8 @@ pub fn run() {
             #[cfg(desktop)]
             let window = window.focused(!hidden);
             let window = window.build()?;
+            #[cfg(target_os = "ios")]
+            ios_shell::configure(&window);
             #[cfg(desktop)]
             window_state::install(&window, &directory, hidden)?;
             Ok(())

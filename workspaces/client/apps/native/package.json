@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "tauri": "tauri",
     "icons": "node generate-icons.mjs",
     "dev": "tauri dev",
     "build": "tauri build",

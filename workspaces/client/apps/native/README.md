@@ -3,9 +3,8 @@
 This Tauri host is the native desktop client. The installed macOS client was
 migrated from Electron with its profile preserved on 2026-10-16. See the
 [desktop parity report](../../../../docs/desktop/native-parity-20261016.md) for
-verified behavior and remaining limitations. The current mobile target is the web PWA with the shared Rust
-WebAssembly module. Generated iOS files and mobile CLI commands are retained as
-experiments, not release targets.
+verified behavior and remaining limitations. The mobile targets are the web PWA with the shared Rust
+WebAssembly module, and the iOS shell below. Android commands are experiments.
 
 Desktop artwork is owned by `../desktop/assets/codex-studio.icns`. Run
 `pnpm --filter studio-native-client run icons` on macOS to regenerate the
@@ -93,6 +92,73 @@ An encoded record above 64 MiB is rejected explicitly. The exporter requires the
 source desktop to be closed; its backend can remain running. A copy taken while
 the desktop runs is suitable for diagnostics, not a final migration snapshot.
 
+## iOS shell
+
+The iOS build of this host is a shell for the iPhone Duo. It exists because
+iOS 27.2 gives a PWA no side status strip and stops PWA paint while the
+keyboard closes. Code: `src-tauri/src/ios_shell.rs`, `ios_viewport.js`,
+`ios_start.html`. The Xcode project is `src-tauri/gen/apple`.
+
+- One WKWebView fills the window. `contentInsetAdjustmentBehavior` is
+  `never`, and its own scroll view does not scroll. The page uses
+  `viewport-fit=cover`.
+- The web view loads the Studio web client from the user's server, not the
+  bundled renderer. The page receives no Tauri commands. The server keeps its
+  Tailscale authentication.
+- Server address: the `STUDIO_SERVER_URL` launch environment value, else the
+  address saved by the first-launch page (`studio-shell://localhost/`, saved
+  as `server-url.txt` in the app configuration folder). The shell accepts
+  `https://` addresses, and `http://` only on `127.0.0.1` or `localhost`.
+  Reinstall the app to choose another server.
+- Links that ask for a new window open in the system browser.
+
+### Viewport API
+
+The shell owns three names. Their web owner is
+`apps/web/src/native/nativeViewport.ts`.
+
+| Name                                              | Kind                      | Meaning                                           |
+| ------------------------------------------------- | ------------------------- | ------------------------------------------------- |
+| `--native-safe-top`, `-right`, `-bottom`, `-left` | CSS lengths on `<html>`   | UIKit `safeAreaInsets` of the web view, in CSS px |
+| `studio-native-viewport`                          | `CustomEvent` on `window` | `detail` = `{ insets, keyboard }`                 |
+| `window.__studioNativeViewport`                   | object, `version: 1`      | current `state`, read when the page starts        |
+
+- `insets`: `{ top, right, bottom, left }` in CSS px.
+- `keyboard`: `{ overlap, duration, curve }`. `overlap` is the keyboard height
+  over the web view bottom in CSS px (0 when it closes). `duration` is in ms.
+  `curve` is the `UIViewAnimationCurve` value (7 for the keyboard).
+- The shell sends `keyboard` from `UIKeyboardWillChangeFrame` and
+  `UIKeyboardWillHide`, before UIKit starts the animation. It sends `insets`
+  after each page load and when the page reports `resize`.
+- The shell removes WebKit's own keyboard observers, so WebKit neither shrinks
+  the visual viewport nor pans the page. Set `STUDIO_SHELL_WEBKIT_KEYBOARD=1`
+  at launch to keep WebKit's behavior for a comparison.
+- The page uses `var(--native-safe-*, env(safe-area-inset-*))`
+  (`--viewport-device-safe-*` in `viewport-surface.css`): the shell values
+  replace `env()` on all four sides. The edge rail turns on when a side inset
+  is at least `edgeRail.minInset`.
+- iOS 27.2 on the iPhone Duo (open pose, landscape) reports the side status
+  strip as a top inset (top 82, right 0) with a 2 pt status bar line.
+  `ios_insets.rs` moves that inset to the side of the device top edge
+  (landscapeLeft: right; landscapeRight: left). Other geometry passes
+  unchanged. The shell logs `studio-shell insets: uikit … reported …` to
+  stderr on each change; `STUDIO_SHELL_DIAG=1` also saves samples in
+  `Documents/shell-diag/`.
+- A served client without this code ignores the event and the CSS lengths.
+  Without the shell, the page keeps its browser and PWA keyboard path.
+
+### Build and run on the simulator
+
+```sh
+pnpm --filter studio-native-client tauri ios build --target aarch64-sim --debug \
+  -c '{"build":{"beforeBuildCommand":""}}'
+xcrun simctl install <udid> src-tauri/gen/apple/build/arm64-sim/LAYR\ Studio.app
+SIMCTL_CHILD_STUDIO_SERVER_URL=http://127.0.0.1:<port> xcrun simctl launch <udid> local.codex.agents
+```
+
+`frontendDist` must exist for the build (`vite build` in `apps/web`). A device
+build needs an Apple Development team (`bundle > iOS > developmentTeam`).
+
 ## Package cycle
 
 Set up package signing first. See [Signing setup](#signing-setup) and run
@@ -124,7 +190,7 @@ just package-native /tmp/out --hosted-ci-passed
   Package validation and the hidden startup check run with Node and require
   no Python backend environment or PyO3 module.
 - `just package-native` runs the dev-profile host check next (`just
-test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
+  test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
   when hosted CI passed on the exact commit. The default runs the check.
 
 ## Signing setup
