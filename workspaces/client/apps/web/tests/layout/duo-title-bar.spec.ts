@@ -59,16 +59,56 @@ for (const size of [
     try {
       const sidebar = await fixture.open(page);
       await sidebar
-        .getByRole("button", { name: /^Local Saved pin\b/ })
+        .getByRole("button")
+        .filter({ hasText: "Local Saved pin" })
+        .filter({ has: page.locator("strong") })
         .first()
         .click();
       await cdp.send("Emulation.setSafeAreaInsetsOverride", {
         insets: { top: 0, right: 84, bottom: 34, left: 0 },
       });
       await page.setViewportSize(size);
+      if (size.height > size.width) {
+        // Emulate the native top rail; its owner is the iOS shell.
+        await page.locator(".edge-rail").evaluate((rail) => {
+          document.documentElement.setAttribute("data-viewport-top-strip", "");
+          document.documentElement.style.setProperty(
+            "--native-safe-top",
+            "82px",
+          );
+          rail.setAttribute("data-side", "top");
+          Object.assign((rail as HTMLElement).style, {
+            position: "fixed",
+            left: "0px",
+            right: "auto",
+            top: "0px",
+            width: "545px",
+            height: "82px",
+            flexDirection: "row",
+            justifyContent: "flex-end",
+            alignItems: "flex-end",
+            paddingBottom: "10px",
+            gap: "8px",
+          });
+        });
+      }
       await expect(page.locator("#messages .message")).toHaveCount(20);
       const heading = page.locator(".duo-transcript-bar");
       await expect(heading).toBeVisible();
+      if (size.height > size.width) {
+        await expect
+          .poll(async () => (await heading.boundingBox())?.width)
+          .toBe(size.width);
+        await expect(heading).toHaveCSS("height", "82px");
+        const textRight = await heading
+          .locator(".conversation-heading")
+          .evaluate((node) => node.getBoundingClientRect().right);
+        const firstRailButton = (await page
+          .locator(".edge-rail button")
+          .first()
+          .boundingBox())!;
+        expect(textRight).toBeLessThan(firstRailButton.x);
+      }
       await expect(heading.locator("#conversation-title")).toContainText(
         "Local Saved pin",
       );
@@ -92,7 +132,9 @@ for (const size of [
           background: style.backgroundColor,
         };
       });
-      expect(geometry.position).toBe("absolute");
+      expect(geometry.position).toBe(
+        size.height > size.width ? "fixed" : "absolute",
+      );
       expect(geometry.backdrop).not.toBe("none");
       expect(geometry.bar.top).toBeCloseTo(geometry.transcript.top, 0);
       expect(geometry.firstTop).toBeGreaterThanOrEqual(geometry.bar.bottom);

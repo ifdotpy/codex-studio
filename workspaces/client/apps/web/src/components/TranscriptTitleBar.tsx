@@ -1,9 +1,9 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
-/** Keep the title left of the actual top rail buttons, including native status space. */
+/** Keep the title text left of the actual top rail buttons, including native status space. */
 export function TranscriptTitleBar({ children }: { children: ReactNode }) {
   const bar = useRef<HTMLElement>(null);
-  const [width, setWidth] = useState<number>();
+  const [clearance, setClearance] = useState<number>();
   useLayoutEffect(() => {
     const node = bar.current;
     if (!node) return;
@@ -27,9 +27,9 @@ export function TranscriptTitleBar({ children }: { children: ReactNode }) {
         }
       }
       const first = rail?.querySelector("button")?.getBoundingClientRect();
-      setWidth(
+      setClearance(
         first
-          ? Math.max(0, first.left - node.getBoundingClientRect().left)
+          ? Math.max(0, node.getBoundingClientRect().right - first.left)
           : undefined,
       );
     };
@@ -55,7 +55,12 @@ export function TranscriptTitleBar({ children }: { children: ReactNode }) {
     <header
       ref={bar}
       className="duo-transcript-bar"
-      style={{ maxWidth: width }}
+      style={{
+        paddingInlineEnd:
+          clearance === undefined
+            ? undefined
+            : `calc(${clearance}px + var(--mantine-spacing-xs))`,
+      }}
     >
       {children}
     </header>

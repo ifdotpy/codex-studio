@@ -145,7 +145,10 @@ html[data-viewport-short-landscape] #conversation #messages {
 
 /* Drawer backgrounds reach the physical bottom; Home space is inside the scroll content. */
 html[data-touch-input] body .mantine-Drawer-inner {
-  height: calc(var(--viewport-surface-height) + var(--viewport-safe-bottom));
+  height: calc(
+    var(--viewport-surface-height) + var(--viewport-safe-bottom) -
+      var(--viewport-overlay-inset-top, 0px)
+  );
 }
 html[data-touch-input] body .mantine-Drawer-body:not(:has(#sidebar, #team)) {
   padding-bottom: calc(
