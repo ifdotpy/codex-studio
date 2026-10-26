@@ -1,3 +1,14 @@
+import type { GetResult } from "../../src/apiTypes.ts";
+import type { Browser, BrowserContext, Page } from "@playwright/test";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
+import type { ResourceRef, ResourceChangeEvent } from "../playwright.ts";
+import type {
+  OutgoingTabMessage,
+  ResourceVersion,
+} from "../../src/sync/resourceEvents.ts";
+import type { ResourceConnectionState } from "../../src/sync/resourceConnection.ts";
+import { fixtureOrigin, fixtureResources } from "./helpers.ts";
 // Same-origin Chromium proof: one elected sync stream fans out to eight tabs.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -12,8 +23,8 @@ import {
 test.use({ apiSchemaFixtureHeaders: false });
 
 const runSyncCrossTabScenario = async (
-  fixtureBrowser,
-  checkResumeRace,
+  fixtureBrowser: Browser,
+  checkResumeRace: boolean,
   checkDuplicateBaseline = false,
 ) => {
   const { createFixtureViteServer: createServer } =
@@ -25,24 +36,35 @@ const runSyncCrossTabScenario = async (
   });
   const workspaceId = "b".repeat(32);
   const otherWorkspaceId = "a".repeat(32);
-  const workspaceFor = (req) =>
+  const workspaceFor = (req: IncomingMessage) =>
     req.headers.host?.startsWith("localhost:") ? otherWorkspaceId : workspaceId;
-  const streams = new Set();
+  const streams = new Set<ServerResponse>();
   let streamsOpened = 0;
   let entityPullRequests = 0;
-  const streamRequestRecords = [];
-  const streamWorkspaces = new Map();
-  const streamResources = new Map();
-  const revisions = new Map();
-  const resourceRevisions = new Map();
+  const streamRequestRecords: {
+    openedAt: number;
+    url: string | undefined;
+    resourceQuery: string | null;
+    resources: ResourceRef[];
+    closedAt: number | undefined;
+  }[] = [];
+  const streamWorkspaces = new Map<ServerResponse, string>();
+  const streamResources = new Map<ServerResponse, ResourceRef[]>();
+  const revisions = new Map<string, number>();
+  const resourceRevisions = new Map<string, Map<string, number>>();
   let unchangedReconnectBaseline = false;
-  const setJsonHeaders = (response) => {
+  const setJsonHeaders = (response: ServerResponse) => {
     for (const [name, value] of Object.entries(
       apiSchemaHeaders({ "Content-Type": "application/json" }),
     ))
       response.setHeader(name, value);
   };
-  const sendResourceEvent = (response, currentWorkspace, reason, resources) => {
+  const sendResourceEvent = (
+    response: ServerResponse,
+    currentWorkspace: string,
+    reason: ResourceChangeEvent["reason"],
+    resources: ResourceRef[],
+  ) => {
     const revision = (revisions.get(currentWorkspace) || 0) + 1;
     revisions.set(currentWorkspace, revision);
     let known = resourceRevisions.get(currentWorkspace);
@@ -61,14 +83,14 @@ const runSyncCrossTabScenario = async (
         reason,
         resources,
         resourceVersions,
-      })}\n\n`,
+      } satisfies ResourceChangeEvent)}\n\n`,
     );
   };
   const sendSameVersionBaseline = (
-    response,
-    currentWorkspace,
-    reason,
-    resources,
+    response: ServerResponse,
+    currentWorkspace: string,
+    reason: ResourceChangeEvent["reason"],
+    resources: ResourceRef[],
   ) => {
     const known = resourceRevisions.get(currentWorkspace) || new Map();
     response.write(
@@ -83,10 +105,10 @@ const runSyncCrossTabScenario = async (
           resource,
           revision: known.get(JSON.stringify(resource)) || 0,
         })),
-      })}\n\n`,
+      } satisfies ResourceChangeEvent)}\n\n`,
     );
   };
-  const sendSameVersionBaselineToStreams = (currentWorkspace) => {
+  const sendSameVersionBaselineToStreams = (currentWorkspace: string) => {
     for (const response of streams) {
       if (streamWorkspaces.get(response) !== currentWorkspace) continue;
       sendSameVersionBaseline(
@@ -97,7 +119,7 @@ const runSyncCrossTabScenario = async (
       );
     }
   };
-  const sendChange = (currentWorkspace, resource) => {
+  const sendChange = (currentWorkspace: string, resource: ResourceRef) => {
     for (const response of streams) {
       if (streamWorkspaces.get(response) !== currentWorkspace) continue;
       const resources = streamResources.get(response) || [];
@@ -109,7 +131,7 @@ const runSyncCrossTabScenario = async (
         sendResourceEvent(response, currentWorkspace, "change", [resource]);
     }
   };
-  const apiFixture = (req, res, next) => {
+  const apiFixture: Connect.NextHandleFunction = (req, res, next) => {
     const path = new URL(req.url || "/", "http://localhost").pathname;
     if (path === "/sync-check") {
       res.setHeader("Content-Type", "text/html");
@@ -117,7 +139,11 @@ const runSyncCrossTabScenario = async (
     } else if (path === "/api/sync/identity") {
       const currentWorkspace = workspaceFor(req);
       setJsonHeaders(res);
-      res.end(JSON.stringify({ workspaceId: currentWorkspace }));
+      res.end(
+        JSON.stringify({
+          workspaceId: currentWorkspace,
+        } satisfies Pick<GetResult<"/api/sync/identity">, "workspaceId">),
+      );
     } else if (path === "/api/sync/pull") {
       entityPullRequests++;
       const currentWorkspace = workspaceFor(req);
@@ -127,7 +153,10 @@ const runSyncCrossTabScenario = async (
           workspaceId: currentWorkspace,
           documents: [],
           checkpoint: { seq: 0 },
-        }),
+        } satisfies Pick<
+          import("../playwright.ts").SyncPullResponse,
+          "workspaceId" | "documents" | "checkpoint"
+        >),
       );
     } else if (path === "/api/sync/stream") {
       const currentWorkspace = workspaceFor(req);
@@ -143,8 +172,8 @@ const runSyncCrossTabScenario = async (
         req.url || "/",
         "http://localhost",
       ).searchParams.get("resources");
-      const resources = JSON.parse(resourceQuery || "[]");
-      const requestRecord = {
+      const resources = fixtureResources(resourceQuery);
+      const requestRecord: (typeof streamRequestRecords)[number] = {
         openedAt: Date.now(),
         url: req.url,
         resourceQuery,
@@ -176,10 +205,15 @@ const runSyncCrossTabScenario = async (
   await server.listen();
   const browser = fixtureBrowser;
   const context = await browser.newContext();
-  let noCoordination;
-  let otherWorkspaceContext;
-  const pages = [];
-  const waitFor = async (predicate, message, timeoutMs = 10000) => {
+  let noCoordination: Page | undefined;
+  let otherWorkspaceContext: BrowserContext | undefined;
+  const pages: Page[] = [];
+  const pageAt = (index: number) => requiredEntry(pages, index);
+  const waitFor = async (
+    predicate: () => boolean | Promise<boolean>,
+    message: string,
+    timeoutMs = 10000,
+  ) => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
       if (await predicate()) return;
@@ -188,7 +222,7 @@ const runSyncCrossTabScenario = async (
     assert.fail(message);
   };
   try {
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const origin = fixtureOrigin(server);
     const competingOwner = await context.newPage();
     await competingOwner.goto(`${origin}/sync-check`);
     const streamLockName = await competingOwner.evaluate(
@@ -202,21 +236,21 @@ const runSyncCrossTabScenario = async (
     await competingOwner.evaluate(async (name) => {
       if (!navigator.locks?.request)
         throw new Error("Web Locks are required for single-stream ownership");
-      window.lockReady = new Promise((resolve) => {
-        window.resolveLockReady = resolve;
+      window.crossTabLockReady = new Promise<void>((resolve) => {
+        window.crossTabResolveLockReady = resolve;
       });
       void navigator.locks.request(name, async (lock) => {
         if (!lock)
           throw new Error("Failed to establish competing stream lease");
-        window.resolveLockReady();
-        await new Promise((resolve) => {
-          window.releaseStreamLock = resolve;
+        window.crossTabResolveLockReady();
+        await new Promise<void>((resolve) => {
+          window.crossTabReleaseStreamLock = resolve;
         });
       });
-      await window.lockReady;
+      await window.crossTabLockReady;
     }, streamLockName);
     await context.addInitScript(() => {
-      window.__syncDiagnostics = {
+      window.crossTabDiagnostics = {
         sse: [],
         sources: [],
         sent: [],
@@ -224,31 +258,33 @@ const runSyncCrossTabScenario = async (
       };
       const NativeSource = window.EventSource;
       window.EventSource = class extends NativeSource {
-        constructor(...args) {
+        constructor(...args: ConstructorParameters<typeof EventSource>) {
           super(...args);
-          window.__syncDiagnostics.sources.push(this);
+          window.crossTabDiagnostics.sources.push(this);
           this.addEventListener("message", (event) =>
-            window.__syncDiagnostics.sse.push(event.data),
+            window.crossTabDiagnostics.sse.push(String(event.data)),
           );
           for (const name of ["resources", "heartbeat", "token-rates"])
             this.addEventListener(name, (event) =>
-              window.__syncDiagnostics.sse.push(event.data),
+              window.crossTabDiagnostics.sse.push(String(event.data)),
             );
         }
       };
       const NativeChannel = window.BroadcastChannel;
       window.BroadcastChannel = class extends NativeChannel {
-        constructor(...args) {
+        constructor(...args: ConstructorParameters<typeof BroadcastChannel>) {
           super(...args);
-          this.addEventListener("message", (event) =>
-            window.__syncDiagnostics.received.push({
-              ...event.data,
-              __receivedAt: Date.now(),
-            }),
+          this.addEventListener(
+            "message",
+            (event: MessageEvent<OutgoingTabMessage>) =>
+              window.crossTabDiagnostics.received.push({
+                ...event.data,
+                __receivedAt: Date.now(),
+              }),
           );
         }
-        postMessage(data) {
-          window.__syncDiagnostics.sent.push(data);
+        postMessage(data: OutgoingTabMessage) {
+          window.crossTabDiagnostics.sent.push(data);
           return super.postMessage(data);
         }
       };
@@ -260,40 +296,40 @@ const runSyncCrossTabScenario = async (
       await page.evaluate(async () => {
         const client = await import("/src/sync/client.ts");
         const identity = await client.syncDatabase();
-        window.workspace = identity.workspaceId;
-        window.syncDb = identity.db;
-        window.counts = { state: 0, transcripts: 0 };
-        window.countEvents = [];
-        window.hasStateWatch = true;
-        window.stopState = client.watchResourceChanges(
+        window.crossTabWorkspace = identity.workspaceId;
+        window.crossTabSyncDb = identity.db;
+        window.crossTabCounts = { state: 0, transcripts: 0 };
+        window.crossTabCountEvents = [];
+        window.crossTabHasStateWatch = true;
+        window.crossTabStopState = client.watchResourceChanges(
           { kind: "state" },
           (version) => {
-            window.counts.state++;
-            window.countEvents.push({
+            window.crossTabCounts.state++;
+            window.crossTabCountEvents.push({
               resource: "state",
               version,
-              received: window.__syncDiagnostics.received.length,
-              sse: window.__syncDiagnostics.sse.length,
+              received: window.crossTabDiagnostics.received.length,
+              sse: window.crossTabDiagnostics.sse.length,
               at: performance.now(),
             });
           },
         );
-        window.stopTranscript = client.watchResourceChanges(
+        window.crossTabStopTranscript = client.watchResourceChanges(
           { kind: "transcript", agentId: "session-one" },
           (version) => {
-            window.counts.transcripts++;
-            window.countEvents.push({
+            window.crossTabCounts.transcripts++;
+            window.crossTabCountEvents.push({
               resource: "transcript",
               version,
-              received: window.__syncDiagnostics.received.length,
-              sse: window.__syncDiagnostics.sse.length,
+              received: window.crossTabDiagnostics.received.length,
+              sse: window.crossTabDiagnostics.sse.length,
               at: performance.now(),
             });
           },
         );
-        window.states = [];
-        window.stopConnection = client.watchResourceConnection((state) =>
-          window.states.push(state),
+        window.crossTabStates = [];
+        window.crossTabStopConnection = client.watchResourceConnection(
+          (state) => window.crossTabStates.push(state),
         );
       });
     }
@@ -303,7 +339,7 @@ const runSyncCrossTabScenario = async (
       0,
       "no elected tab may open SSE while another owner holds the stream lease",
     );
-    await competingOwner.evaluate(() => window.releaseStreamLock());
+    await competingOwner.evaluate(() => window.crossTabReleaseStreamLock());
     await competingOwner.close();
     await waitFor(
       () => streams.size === 1 && streamsOpened >= 1,
@@ -314,19 +350,19 @@ const runSyncCrossTabScenario = async (
       pages.map((page) =>
         page.waitForFunction(
           () =>
-            window.workspace &&
-            window.counts &&
-            window.counts.state > 0 &&
-            window.counts.transcripts > 0,
+            window.crossTabWorkspace &&
+            window.crossTabCounts &&
+            window.crossTabCounts.state > 0 &&
+            window.crossTabCounts.transcripts > 0,
           null,
           { timeout: 5000 },
         ),
       ),
     );
     const beforeForeignSchemaMessage = await Promise.all(
-      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+      pages.map((page) => page.evaluate(() => ({ ...window.crossTabCounts }))),
     );
-    await pages[7].evaluate(async (currentWorkspace) => {
+    await pageAt(7).evaluate(async (currentWorkspace) => {
       const { API_SCHEMA_HASH } = await import("/src/generated/apiSchema.ts");
       const { resourceCoordinationNames } =
         await import("/src/sync/resourceConnection.ts");
@@ -353,41 +389,45 @@ const runSyncCrossTabScenario = async (
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.deepEqual(
       await Promise.all(
-        pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+        pages.map((page) =>
+          page.evaluate(() => ({ ...window.crossTabCounts })),
+        ),
       ),
       beforeForeignSchemaMessage,
       "Tabs ignore channel messages from a different schema hash",
     );
     await new Promise((resolve) => setTimeout(resolve, 1400));
     const before = await Promise.all(
-      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+      pages.map((page) => page.evaluate(() => ({ ...window.crossTabCounts }))),
     );
     const lateSubscriber = await context.newPage();
     await lateSubscriber.goto(`${origin}/sync-check`);
     await lateSubscriber.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.lateCount = 0;
-      window.counts = { state: 0, transcripts: 0 };
-      window.countEvents = [];
-      window.hasStateWatch = false;
-      window.stopLate = client.watchResourceChanges(
+      window.crossTabLateCount = 0;
+      window.crossTabCounts = { state: 0, transcripts: 0 };
+      window.crossTabCountEvents = [];
+      window.crossTabHasStateWatch = false;
+      window.crossTabStopLate = client.watchResourceChanges(
         { kind: "transcript", agentId: "session-one" },
         (version) => {
-          window.lateCount++;
-          window.counts.transcripts++;
-          window.countEvents.push({
+          window.crossTabLateCount++;
+          window.crossTabCounts.transcripts++;
+          window.crossTabCountEvents.push({
             resource: "transcript",
             version,
-            received: window.__syncDiagnostics.received.length,
-            sse: window.__syncDiagnostics.sse.length,
+            received: window.crossTabDiagnostics.received.length,
+            sse: window.crossTabDiagnostics.sse.length,
             at: performance.now(),
           });
         },
       );
     });
-    await lateSubscriber.waitForFunction(() => window.lateCount > 0);
+    await lateSubscriber.waitForFunction(() => window.crossTabLateCount > 0);
     pages.push(lateSubscriber);
-    before.push(await lateSubscriber.evaluate(() => ({ ...window.counts })));
+    before.push(
+      await lateSubscriber.evaluate(() => ({ ...window.crossTabCounts })),
+    );
     sendChange(workspaceId, {
       kind: "transcript",
       agentId: "session-one",
@@ -397,9 +437,9 @@ const runSyncCrossTabScenario = async (
         pages.map((page, index) =>
           page.waitForFunction(
             (prior) =>
-              window.counts.transcripts > prior.transcripts &&
-              window.counts.state === prior.state,
-            before[index],
+              window.crossTabCounts.transcripts > prior.transcripts &&
+              window.crossTabCounts.state === prior.state,
+            requiredEntry(before, index),
             { timeout: 5000 },
           ),
         ),
@@ -408,10 +448,10 @@ const runSyncCrossTabScenario = async (
       const diagnostics = await Promise.all(
         pages.map((page) =>
           page.evaluate(() => ({
-            counts: window.counts,
-            sse: window.__syncDiagnostics.sse,
-            sent: window.__syncDiagnostics.sent,
-            received: window.__syncDiagnostics.received,
+            counts: window.crossTabCounts,
+            sse: window.crossTabDiagnostics.sse,
+            sent: window.crossTabDiagnostics.sent,
+            received: window.crossTabDiagnostics.received,
           })),
         ),
       );
@@ -420,53 +460,53 @@ const runSyncCrossTabScenario = async (
       );
       throw error;
     }
-    await pages[0].evaluate(async () => {
+    await pageAt(0).evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.queueCallbacks = 0;
-      window.stopQueueCallbacks = client.watchResourceChanges(
+      window.crossTabQueueCallbacks = 0;
+      window.crossTabStopQueueCallbacks = client.watchResourceChanges(
         { kind: "queue", agentId: "stable-queue" },
-        () => window.queueCallbacks++,
+        () => window.crossTabQueueCallbacks++,
       );
     });
-    await pages[2].evaluate(async () => {
+    await pageAt(2).evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.costCallbacks = 0;
-      window.stopCostCallbacks = client.watchResourceChanges(
+      window.crossTabCostCallbacks = 0;
+      window.crossTabStopCostCallbacks = client.watchResourceChanges(
         { kind: "costs" },
-        () => window.costCallbacks++,
+        () => window.crossTabCostCallbacks++,
       );
     });
     await Promise.all([
-      pages[0].waitForFunction(() => window.queueCallbacks > 0),
-      pages[2].waitForFunction(() => window.costCallbacks > 0),
+      pageAt(0).waitForFunction(() => window.crossTabQueueCallbacks > 0),
+      pageAt(2).waitForFunction(() => window.crossTabCostCallbacks > 0),
     ]);
-    const costBeforeUnrelated = await pages[2].evaluate(
-      () => window.costCallbacks,
+    const costBeforeUnrelated = await pageAt(2).evaluate(
+      () => window.crossTabCostCallbacks,
     );
     sendChange(workspaceId, { kind: "costs" });
-    await pages[2].waitForFunction(
-      (prior) => window.costCallbacks > prior,
+    await pageAt(2).waitForFunction(
+      (prior) => window.crossTabCostCallbacks > prior,
       costBeforeUnrelated,
     );
-    const queueFollower = pages[1];
+    const queueFollower = pageAt(1);
     await queueFollower.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.lateQueueCallbacks = 0;
-      window.stopLateQueue = client.watchResourceChanges(
+      window.crossTabLateQueueCallbacks = 0;
+      window.crossTabStopLateQueue = client.watchResourceChanges(
         { kind: "queue", agentId: "stable-queue" },
-        () => window.lateQueueCallbacks++,
+        () => window.crossTabLateQueueCallbacks++,
       );
     });
     await queueFollower.waitForFunction(
-      () => window.lateQueueCallbacks > 0,
+      () => window.crossTabLateQueueCallbacks > 0,
       undefined,
       { timeout: 5000 },
     );
     const lateQueueBaseline = await queueFollower.evaluate(
-      () => window.lateQueueCallbacks,
+      () => window.crossTabLateQueueCallbacks,
     );
     const lateQueueAfterUnrelated = await queueFollower.evaluate(
-      () => window.lateQueueCallbacks,
+      () => window.crossTabLateQueueCallbacks,
     );
     assert.equal(
       lateQueueAfterUnrelated,
@@ -475,31 +515,31 @@ const runSyncCrossTabScenario = async (
     );
     sendChange(workspaceId, { kind: "queue", agentId: "stable-queue" });
     await queueFollower.waitForFunction(
-      (prior) => window.lateQueueCallbacks > prior,
+      (prior) => window.crossTabLateQueueCallbacks > prior,
       lateQueueAfterUnrelated,
       { timeout: 5000 },
     );
     const stableQueueCallbacks = await queueFollower.evaluate(
-      () => window.lateQueueCallbacks,
+      () => window.crossTabLateQueueCallbacks,
     );
-    const costBeforeHeartbeat = await pages[2].evaluate(
-      () => window.costCallbacks,
+    const costBeforeHeartbeat = await pageAt(2).evaluate(
+      () => window.crossTabCostCallbacks,
     );
     sendChange(workspaceId, { kind: "costs" });
-    await pages[2].waitForFunction(
-      (prior) => window.costCallbacks > prior,
+    await pageAt(2).waitForFunction(
+      (prior) => window.crossTabCostCallbacks > prior,
       costBeforeHeartbeat,
     );
     await queueFollower.waitForTimeout(3500);
     assert.equal(
-      await queueFollower.evaluate(() => window.lateQueueCallbacks),
+      await queueFollower.evaluate(() => window.crossTabLateQueueCallbacks),
       stableQueueCallbacks,
       "Peer subscription heartbeats do not replay unchanged resources after unrelated traffic",
     );
     const initialOwnerIndex = await Promise.any(
       pages.map(async (page, index) =>
         (await page.evaluate(() =>
-          window.__syncDiagnostics.sources.some(
+          window.crossTabDiagnostics.sources.some(
             (source) => source.readyState === EventSource.OPEN,
           ),
         ))
@@ -508,12 +548,12 @@ const runSyncCrossTabScenario = async (
       ),
     );
     const takeoverSubscriberIndex = initialOwnerIndex === 1 ? 0 : 1;
-    await pages[takeoverSubscriberIndex].evaluate(async () => {
+    await pageAt(takeoverSubscriberIndex).evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.takeoverQueueCallbacks = 0;
-      window.stopTakeoverQueue = client.watchResourceChanges(
+      window.crossTabTakeoverQueueCallbacks = 0;
+      window.crossTabStopTakeoverQueue = client.watchResourceChanges(
         { kind: "queue", agentId: "takeover-unique-queue" },
-        () => window.takeoverQueueCallbacks++,
+        () => window.crossTabTakeoverQueueCallbacks++,
       );
     });
     await waitFor(
@@ -527,16 +567,23 @@ const runSyncCrossTabScenario = async (
         ),
       "the original owner did not learn the second tab's unique queue subscription",
     );
-    await pages[0].evaluate(() => window.stopQueueCallbacks());
-    await pages[2].evaluate(() => window.stopCostCallbacks());
-    await queueFollower.evaluate(() => window.stopLateQueue());
+    await pageAt(0).evaluate(() => window.crossTabStopQueueCallbacks());
+    await pageAt(2).evaluate(() => window.crossTabStopCostCallbacks());
+    await queueFollower.evaluate(() => window.crossTabStopLateQueue());
     const streamsBeforeHidingOwner = streamsOpened;
     const requestsBeforeHidingOwner = streamRequestRecords.length;
     const subscriptionsBeforeTakeover = await Promise.all(
       pages.map((page) =>
         page.evaluate(() =>
-          window.__syncDiagnostics.received
-            .filter((message) => message.kind === "subscriptions")
+          window.crossTabDiagnostics.received
+            .filter(
+              (
+                message,
+              ): message is Extract<
+                typeof message,
+                { kind: "subscriptions" }
+              > => message.kind === "subscriptions",
+            )
             .map(({ tabId, resources, tokenRates, reset }) => ({
               tabId,
               resources,
@@ -546,7 +593,7 @@ const runSyncCrossTabScenario = async (
         ),
       ),
     );
-    await pages[initialOwnerIndex].evaluate(() => {
+    await pageAt(initialOwnerIndex).evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
         value: true,
@@ -554,9 +601,9 @@ const runSyncCrossTabScenario = async (
       document.dispatchEvent(new Event("visibilitychange"));
     });
     try {
-      await pages[initialOwnerIndex].waitForFunction(
+      await pageAt(initialOwnerIndex).waitForFunction(
         () =>
-          window.__syncDiagnostics.sources.every(
+          window.crossTabDiagnostics.sources.every(
             (source) => source.readyState === EventSource.CLOSED,
           ),
         null,
@@ -567,13 +614,13 @@ const runSyncCrossTabScenario = async (
         pages.map((page) =>
           page.evaluate(() => ({
             hidden: document.hidden,
-            states: window.states,
-            sources: window.__syncDiagnostics.sources.map((source) => ({
+            states: window.crossTabStates,
+            sources: window.crossTabDiagnostics.sources.map((source) => ({
               readyState: source.readyState,
               url: source.url,
             })),
-            sent: window.__syncDiagnostics.sent,
-            received: window.__syncDiagnostics.received,
+            sent: window.crossTabDiagnostics.sent,
+            received: window.crossTabDiagnostics.received,
           })),
         ),
       );
@@ -593,7 +640,7 @@ const runSyncCrossTabScenario = async (
                 .filter((_, index) => index !== initialOwnerIndex)
                 .map((page) =>
                   page.evaluate(() =>
-                    window.__syncDiagnostics.sources.some(
+                    window.crossTabDiagnostics.sources.some(
                       (source) => source.readyState === EventSource.OPEN,
                     ),
                   ),
@@ -608,11 +655,11 @@ const runSyncCrossTabScenario = async (
         pages.map((page) =>
           page.evaluate(() => ({
             hidden: document.hidden,
-            states: window.states,
-            counts: window.counts,
-            sent: window.__syncDiagnostics.sent.slice(-12),
-            received: window.__syncDiagnostics.received.slice(-12),
-            sources: window.__syncDiagnostics.sources.map((source) => ({
+            states: window.crossTabStates,
+            counts: window.crossTabCounts,
+            sent: window.crossTabDiagnostics.sent.slice(-12),
+            received: window.crossTabDiagnostics.received.slice(-12),
+            sources: window.crossTabDiagnostics.sources.map((source) => ({
               readyState: source.readyState,
               url: source.url,
             })),
@@ -620,22 +667,24 @@ const runSyncCrossTabScenario = async (
         ),
       );
       throw new Error(
-        `${error.message}; ${JSON.stringify({
-          streamsOpened,
-          streamsBeforeHidingOwner,
-          streamCount: streams.size,
-          diagnostics: diagnostics.map((entry) => ({
-            hidden: entry.hidden,
-            states: entry.states,
-            openSources: entry.sources.filter(
-              (source) => source.readyState === 1,
-            ).length,
-            sentKinds: entry.sent.map((message) => message.kind || "other"),
-            receivedKinds: entry.received.map(
-              (message) => message.kind || "other",
-            ),
-          })),
-        })}`,
+        `${error instanceof Error ? error.message : String(error)}; ${JSON.stringify(
+          {
+            streamsOpened,
+            streamsBeforeHidingOwner,
+            streamCount: streams.size,
+            diagnostics: diagnostics.map((entry) => ({
+              hidden: entry.hidden,
+              states: entry.states,
+              openSources: entry.sources.filter(
+                (source) => source.readyState === 1,
+              ).length,
+              sentKinds: entry.sent.map((message) => message.kind || "other"),
+              receivedKinds: entry.received.map(
+                (message) => message.kind || "other",
+              ),
+            })),
+          },
+        )}`,
       );
     }
     assert.ok(
@@ -646,7 +695,7 @@ const runSyncCrossTabScenario = async (
       pages.map((page) =>
         page.evaluate(
           () =>
-            window.__syncDiagnostics.sources.filter(
+            window.crossTabDiagnostics.sources.filter(
               (source) => source.readyState === EventSource.OPEN,
             ).length,
         ),
@@ -681,21 +730,24 @@ const runSyncCrossTabScenario = async (
       "every takeover EventSource open is recorded with its exact resource query",
     );
     assert.ok(takeoverRequests.length > 0);
-    const hasUniqueQueue = (resources) =>
+    const hasUniqueQueue = (resources: ResourceRef[]) =>
       resources.some(
         (resource) =>
           resource.kind === "queue" &&
           resource.agentId === "takeover-unique-queue",
       );
     assert.ok(
-      hasUniqueQueue(takeoverRequests.at(-1).resources),
+      hasUniqueQueue(
+        requiredEntry(takeoverRequests, takeoverRequests.length - 1).resources,
+      ),
       `the final takeover query contains the subscribed queue: ${JSON.stringify(takeoverRequests)}`,
     );
     let takeoverSequence;
     for (let index = 0; index < takeoverRequests.length - 1; index++) {
       assert.ok(
-        takeoverRequests[index].closedAt <=
-          takeoverRequests[index + 1].openedAt,
+        (requiredEntry(takeoverRequests, index).closedAt ??
+          Number.POSITIVE_INFINITY) <=
+          requiredEntry(takeoverRequests, index + 1).openedAt,
         `takeover never has two open streams at once: ${JSON.stringify(takeoverRequests)}`,
       );
     }
@@ -703,24 +755,25 @@ const runSyncCrossTabScenario = async (
       takeoverSequence = "one request opens with the peer subscription union";
     } else if (takeoverRequests.length === 2) {
       const sameQuery =
-        takeoverRequests[0].resourceQuery === takeoverRequests[1].resourceQuery;
+        requiredEntry(takeoverRequests, 0).resourceQuery ===
+        requiredEntry(takeoverRequests, 1).resourceQuery;
       if (sameQuery) {
         takeoverSequence =
           "duplicate identical union query; first stream was replaced";
       } else {
         assert.equal(
-          hasUniqueQueue(takeoverRequests[0].resources),
+          hasUniqueQueue(requiredEntry(takeoverRequests, 0).resources),
           false,
           `the first query is local-only before the peer's queue is discovered: ${JSON.stringify(takeoverRequests)}`,
         );
         assert.ok(
-          takeoverRequests[0].resources.every((resource) =>
-            takeoverRequests[1].resources.some(
+          requiredEntry(takeoverRequests, 0).resources.every((resource) =>
+            requiredEntry(takeoverRequests, 1).resources.some(
               (entry) => JSON.stringify(entry) === JSON.stringify(resource),
             ),
           ) &&
-            takeoverRequests[0].resources.length <
-              takeoverRequests[1].resources.length,
+            requiredEntry(takeoverRequests, 0).resources.length <
+              requiredEntry(takeoverRequests, 1).resources.length,
           `the replacement query extends the first query with discovered peer subscriptions: ${JSON.stringify(takeoverRequests)}`,
         );
         takeoverSequence =
@@ -744,11 +797,11 @@ const runSyncCrossTabScenario = async (
       "the sole active stream carries the new owner's local resources plus the discovered peer queue",
     );
     const takeoverOwnerIndex = openSourcesByPage.findIndex((count) => count);
-    const peerQueueArrivedBeforeFirstOpen = await pages[
-      takeoverOwnerIndex
-    ].evaluate(
+    const peerQueueArrivedBeforeFirstOpen = await pageAt(
+      takeoverOwnerIndex,
+    ).evaluate(
       (firstOpenAt) =>
-        window.__syncDiagnostics.received.some(
+        window.crossTabDiagnostics.received.some(
           (message) =>
             message.kind === "subscriptions" &&
             message.__receivedAt <= firstOpenAt &&
@@ -758,7 +811,7 @@ const runSyncCrossTabScenario = async (
                 resource.agentId === "takeover-unique-queue",
             ),
         ),
-      takeoverRequests[0].openedAt,
+      requiredEntry(takeoverRequests, 0).openedAt,
     );
     process.stdout.write(
       `TAKEOVER_STREAM_SEQUENCE ${JSON.stringify({
@@ -793,9 +846,11 @@ const runSyncCrossTabScenario = async (
             resourceQuery,
           }),
         ),
-        openIntervalMs: takeoverRequests[1]
-          ? takeoverRequests[1].openedAt - takeoverRequests[0].openedAt
-          : undefined,
+        openIntervalMs:
+          takeoverRequests.length > 1
+            ? requiredEntry(takeoverRequests, 1).openedAt -
+              requiredEntry(takeoverRequests, 0).openedAt
+            : undefined,
         activeStreamsAtEnd: streams.size,
       })}\n`,
     );
@@ -813,25 +868,25 @@ const runSyncCrossTabScenario = async (
         ),
       "the replacement owner did not rediscover the surviving peer's unique queue",
     );
-    const takeoverQueueBefore = await pages[takeoverSubscriberIndex].evaluate(
-      () => window.takeoverQueueCallbacks,
+    const takeoverQueueBefore = await pageAt(takeoverSubscriberIndex).evaluate(
+      () => window.crossTabTakeoverQueueCallbacks,
     );
     sendChange(workspaceId, {
       kind: "queue",
       agentId: "takeover-unique-queue",
     });
-    await pages[takeoverSubscriberIndex].waitForFunction(
-      (previous) => window.takeoverQueueCallbacks > previous,
+    await pageAt(takeoverSubscriberIndex).waitForFunction(
+      (previous) => window.crossTabTakeoverQueueCallbacks > previous,
       takeoverQueueBefore,
       { timeout: 5000 },
     );
-    const takeoverQueueAfterChange = await pages[
-      takeoverSubscriberIndex
-    ].evaluate(() => window.takeoverQueueCallbacks);
-    await pages[takeoverSubscriberIndex].waitForTimeout(3500);
+    const takeoverQueueAfterChange = await pageAt(
+      takeoverSubscriberIndex,
+    ).evaluate(() => window.crossTabTakeoverQueueCallbacks);
+    await pageAt(takeoverSubscriberIndex).waitForTimeout(3500);
     assert.equal(
-      await pages[takeoverSubscriberIndex].evaluate(
-        () => window.takeoverQueueCallbacks,
+      await pageAt(takeoverSubscriberIndex).evaluate(
+        () => window.crossTabTakeoverQueueCallbacks,
       ),
       takeoverQueueAfterChange,
       "quiet peer heartbeats do not refetch the surviving queue after takeover",
@@ -840,7 +895,7 @@ const runSyncCrossTabScenario = async (
       const resumedOwnerIndex = await Promise.any(
         pages.map(async (page, index) =>
           (await page.evaluate(() =>
-            window.__syncDiagnostics.sources.some(
+            window.crossTabDiagnostics.sources.some(
               (source) => source.readyState === EventSource.OPEN,
             ),
           ))
@@ -852,7 +907,7 @@ const runSyncCrossTabScenario = async (
         (_, index) =>
           index !== resumedOwnerIndex && index !== initialOwnerIndex,
       );
-      const follower = pages[followerIndex];
+      const follower = pageAt(followerIndex);
       await follower.evaluate(async () => {
         Object.defineProperty(document, "hidden", {
           configurable: true,
@@ -868,10 +923,10 @@ const runSyncCrossTabScenario = async (
         });
         document.dispatchEvent(new Event("visibilitychange"));
         const client = await import("/src/sync/client.ts");
-        window.resumedQueueCount = 0;
-        window.stopResumedQueue = client.watchResourceChanges(
+        window.crossTabResumedQueueCount = 0;
+        window.crossTabStopResumedQueue = client.watchResourceChanges(
           { kind: "queue", agentId: "resumed-follower" },
-          () => window.resumedQueueCount++,
+          () => window.crossTabResumedQueueCount++,
         );
       });
       await waitFor(
@@ -886,7 +941,7 @@ const runSyncCrossTabScenario = async (
         "the resumed follower's new ref was not added to the owner's stream",
       );
       await follower.waitForFunction(
-        () => window.resumedQueueCount > 0,
+        () => window.crossTabResumedQueueCount > 0,
         undefined,
         { timeout: 5000 },
       );
@@ -902,20 +957,20 @@ const runSyncCrossTabScenario = async (
         "the resumed follower kept its ref advertised past peer expiry",
       );
       const resumedBefore = await follower.evaluate(
-        () => window.resumedQueueCount,
+        () => window.crossTabResumedQueueCount,
       );
       sendChange(workspaceId, {
         kind: "queue",
         agentId: "resumed-follower",
       });
       await follower.waitForFunction(
-        (previous) => window.resumedQueueCount > previous,
+        (previous) => window.crossTabResumedQueueCount > previous,
         resumedBefore,
         { timeout: 5000 },
       );
-      await follower.evaluate(() => window.stopResumedQueue());
-      await pages[1].evaluate(() => window.stopTakeoverQueue());
-      await pages[initialOwnerIndex].evaluate(() => {
+      await follower.evaluate(() => window.crossTabStopResumedQueue());
+      await pageAt(1).evaluate(() => window.crossTabStopTakeoverQueue());
+      await pageAt(initialOwnerIndex).evaluate(() => {
         Object.defineProperty(document, "hidden", {
           configurable: true,
           value: false,
@@ -936,8 +991,8 @@ const runSyncCrossTabScenario = async (
       const resumedOwnerConvergence = {
         waitPassed: !duplicateWaitError,
         streams: [...streamResources.values()],
-        resumedOwnerSources: await pages[initialOwnerIndex].evaluate(() =>
-          window.__syncDiagnostics.sources.map((source) => ({
+        resumedOwnerSources: await pageAt(initialOwnerIndex).evaluate(() =>
+          window.crossTabDiagnostics.sources.map((source) => ({
             readyState: source.readyState,
             url: source.url,
           })),
@@ -957,13 +1012,17 @@ const runSyncCrossTabScenario = async (
         const duplicateStreamCount = streams.size;
         const resourcesDuringOverlap = [...streamResources.values()];
         const callbacksBefore = await Promise.all(
-          pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+          pages.map((page) =>
+            page.evaluate(() => ({ ...window.crossTabCounts })),
+          ),
         );
         const pullsBeforeChange = entityPullRequests;
         sendChange(workspaceId, { kind: "state" });
         await new Promise((resolve) => setTimeout(resolve, 500));
         const callbacksAfterChange = await Promise.all(
-          pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+          pages.map((page) =>
+            page.evaluate(() => ({ ...window.crossTabCounts })),
+          ),
         );
         const pullsAfterChange = entityPullRequests;
         await new Promise((resolve) => setTimeout(resolve, 10_000));
@@ -974,8 +1033,8 @@ const runSyncCrossTabScenario = async (
             resourcesDuringOverlap,
             streamsAfterTenSeconds,
             resources: [...streamResources.values()],
-            resumedOwnerSources: await pages[initialOwnerIndex].evaluate(() =>
-              window.__syncDiagnostics.sources.map((source) => ({
+            resumedOwnerSources: await pageAt(initialOwnerIndex).evaluate(() =>
+              window.crossTabDiagnostics.sources.map((source) => ({
                 readyState: source.readyState,
                 url: source.url,
               })),
@@ -993,12 +1052,12 @@ const runSyncCrossTabScenario = async (
             (index) => ({
               index,
               hidden: document.hidden,
-              states: window.states,
-              sources: window.__syncDiagnostics.sources.map((source) => ({
+              states: window.crossTabStates,
+              sources: window.crossTabDiagnostics.sources.map((source) => ({
                 readyState: source.readyState,
                 url: source.url,
               })),
-              received: window.__syncDiagnostics.received.slice(-6),
+              received: window.crossTabDiagnostics.received.slice(-6),
             }),
             index,
           ),
@@ -1012,12 +1071,12 @@ const runSyncCrossTabScenario = async (
       if (duplicateWaitError) throw duplicateWaitError;
       return;
     }
-    await pages[1].evaluate(() => window.stopTakeoverQueue());
+    await pageAt(1).evaluate(() => window.crossTabStopTakeoverQueue());
     const beforeOffline = await Promise.all(
-      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+      pages.map((page) => page.evaluate(() => ({ ...window.crossTabCounts }))),
     );
     const hadStateWatch = await Promise.all(
-      pages.map((page) => page.evaluate(() => window.hasStateWatch)),
+      pages.map((page) => page.evaluate(() => window.crossTabHasStateWatch)),
     );
     await context.setOffline(true);
     await waitFor(
@@ -1036,9 +1095,12 @@ const runSyncCrossTabScenario = async (
         pages.map((page, index) =>
           page.waitForFunction(
             ({ prior, needsState }) =>
-              (!needsState || window.counts.state > prior.state) &&
-              window.counts.transcripts > prior.transcripts,
-            { prior: beforeOffline[index], needsState: index < 8 },
+              (!needsState || window.crossTabCounts.state > prior.state) &&
+              window.crossTabCounts.transcripts > prior.transcripts,
+            {
+              prior: requiredEntry(beforeOffline, index),
+              needsState: index < 8,
+            },
             { timeout: 5000 },
           ),
         ),
@@ -1048,10 +1110,10 @@ const runSyncCrossTabScenario = async (
         pages.map((page) =>
           page.evaluate(() => ({
             hidden: document.hidden,
-            counts: window.counts,
-            states: window.states,
-            sse: window.__syncDiagnostics.sse.slice(-5),
-            received: window.__syncDiagnostics.received.slice(-8),
+            counts: window.crossTabCounts,
+            states: window.crossTabStates,
+            sse: window.crossTabDiagnostics.sse.slice(-5),
+            received: window.crossTabDiagnostics.received.slice(-8),
           })),
         ),
       );
@@ -1063,40 +1125,47 @@ const runSyncCrossTabScenario = async (
     const afterRecovery = await Promise.all(
       pages.map((page) =>
         page.evaluate(() => ({
-          counts: { ...window.counts },
-          countEvents: window.countEvents.slice(-8),
-          received: window.__syncDiagnostics.received.slice(-8),
-          sse: window.__syncDiagnostics.sse.slice(-8),
+          counts: { ...window.crossTabCounts },
+          countEvents: window.crossTabCountEvents.slice(-8),
+          received: window.crossTabDiagnostics.received.slice(-8),
+          sse: window.crossTabDiagnostics.sse.slice(-8),
         })),
       ),
     );
     if (checkDuplicateBaseline) {
       for (let index = 0; index < pages.length; index++) {
         const expected = {
-          state: beforeOffline[index].state + Number(hadStateWatch[index]),
-          transcripts: beforeOffline[index].transcripts + 1,
+          state:
+            requiredEntry(beforeOffline, index).state +
+            Number(hadStateWatch[index]),
+          transcripts: requiredEntry(beforeOffline, index).transcripts + 1,
         };
         assert.deepEqual(
-          afterRecovery[index].counts,
+          requiredEntry(afterRecovery, index).counts,
           expected,
           `tab ${index} reconciles its unchanged same-version resume baseline exactly once`,
         );
       }
       const duplicateWindowStartedAt = Date.now();
       sendSameVersionBaselineToStreams(workspaceId);
-      await pages[0].waitForTimeout(3500);
+      await pageAt(0).waitForTimeout(3500);
       const duplicateWindowEndedAt = Date.now();
       const afterDuplicateAudit = await Promise.all(
         pages.map((page) =>
           page.evaluate(
             ({ startedAt, endedAt }) => ({
-              counts: { ...window.counts },
-              frames: window.__syncDiagnostics.received
+              counts: { ...window.crossTabCounts },
+              frames: window.crossTabDiagnostics.received
                 .filter(
-                  ({ kind, __receivedAt }) =>
-                    kind === "resource-event" &&
-                    __receivedAt >= startedAt &&
-                    __receivedAt <= endedAt,
+                  (
+                    message,
+                  ): message is Extract<
+                    typeof message,
+                    { kind: "resource-event" }
+                  > =>
+                    message.kind === "resource-event" &&
+                    message.__receivedAt >= startedAt &&
+                    message.__receivedAt <= endedAt,
                 )
                 .map(({ event, __receivedAt }) => ({
                   at: __receivedAt,
@@ -1135,7 +1204,7 @@ const runSyncCrossTabScenario = async (
     const streamOwnerIndex = await Promise.any(
       pages.map(async (page, index) =>
         (await page.evaluate(() =>
-          window.__syncDiagnostics.sources.some(
+          window.crossTabDiagnostics.sources.some(
             (source) => source.readyState === EventSource.OPEN,
           ),
         ))
@@ -1144,7 +1213,7 @@ const runSyncCrossTabScenario = async (
       ),
     );
     const replacementFollowerIndex = streamOwnerIndex === 0 ? 1 : 0;
-    await pages[replacementFollowerIndex].evaluate(() => {
+    await pageAt(replacementFollowerIndex).evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
         value: false,
@@ -1154,9 +1223,9 @@ const runSyncCrossTabScenario = async (
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(streams.size, 1, "one owner stream remains before failover");
     assert.equal(
-      await pages[streamOwnerIndex].evaluate(
+      await pageAt(streamOwnerIndex).evaluate(
         async (name) =>
-          (await navigator.locks.query()).held.some(
+          ((await navigator.locks.query()).held || []).some(
             (lock) => lock.name === name,
           ),
         streamLockName,
@@ -1166,7 +1235,7 @@ const runSyncCrossTabScenario = async (
     );
     const failoverStarted = Date.now();
     const streamsOpenedBeforeFailover = streamsOpened;
-    await pages[streamOwnerIndex].close();
+    await pageAt(streamOwnerIndex).close();
     pages.splice(streamOwnerIndex, 1);
     await waitFor(
       () =>
@@ -1189,7 +1258,7 @@ const runSyncCrossTabScenario = async (
       pages.map(async (page, index) => {
         await page.waitForFunction(
           () =>
-            window.__syncDiagnostics.sources.some(
+            window.crossTabDiagnostics.sources.some(
               (source) => source.readyState === EventSource.OPEN,
             ),
           undefined,
@@ -1198,7 +1267,7 @@ const runSyncCrossTabScenario = async (
         return index;
       }),
     );
-    await pages[workspaceOwnerIndex].evaluate(() => {
+    await pageAt(workspaceOwnerIndex).evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
         value: false,
@@ -1207,13 +1276,11 @@ const runSyncCrossTabScenario = async (
     });
     otherWorkspaceContext = await browser.newContext();
     const isolatedPage = await otherWorkspaceContext.newPage();
-    await isolatedPage.goto(
-      `http://localhost:${server.httpServer.address().port}/sync-check`,
-    );
+    await isolatedPage.goto(`${fixtureOrigin(server, "localhost")}/sync-check`);
     await isolatedPage.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.identity = (await client.syncDatabase()).workspaceId;
-      window.stop = client.watchSyncInvalidations("state", () => {});
+      window.crossTabIdentity = (await client.syncDatabase()).workspaceId;
+      window.crossTabStop = client.watchSyncInvalidations("state", () => {});
     });
     try {
       await waitFor(
@@ -1226,31 +1293,31 @@ const runSyncCrossTabScenario = async (
           page.evaluate(
             (index) => ({
               index,
-              workspace: window.workspace,
-              identity: window.identity,
-              states: window.states,
-              sources: (window.__syncDiagnostics?.sources || []).map(
+              workspace: window.crossTabWorkspace,
+              identity: window.crossTabIdentity,
+              states: window.crossTabStates,
+              sources: (window.crossTabDiagnostics?.sources || []).map(
                 (source) => ({
                   readyState: source.readyState,
                   url: source.url,
                 }),
               ),
-              received: window.__syncDiagnostics?.received.slice(-5) || [],
+              received: window.crossTabDiagnostics?.received.slice(-5) || [],
             }),
             index,
           ),
         ),
       );
       throw new Error(
-        `${error.message}; workspace stream diagnostic: ${JSON.stringify({ streamsOpened, activeWorkspaces: [...streams].map((response) => streamWorkspaces.get(response)), diagnostics })}`,
+        `${error instanceof Error ? error.message : String(error)}; workspace stream diagnostic: ${JSON.stringify({ streamsOpened, activeWorkspaces: [...streams].map((response) => streamWorkspaces.get(response)), diagnostics })}`,
       );
     }
     assert.equal(
-      await isolatedPage.evaluate(() => window.identity),
+      await isolatedPage.evaluate(() => window.crossTabIdentity),
       otherWorkspaceId,
     );
     const beforeWorkspaceMove = await Promise.all(
-      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+      pages.map((page) => page.evaluate(() => ({ ...window.crossTabCounts }))),
     );
     for (const response of streams)
       if (streamWorkspaces.get(response) === workspaceId)
@@ -1263,9 +1330,10 @@ const runSyncCrossTabScenario = async (
         pages.map((page, index) =>
           page.waitForFunction(
             (prior) =>
-              (!window.hasStateWatch || window.counts.state > prior.state) &&
-              window.counts.transcripts > prior.transcripts,
-            beforeWorkspaceMove[index],
+              (!window.crossTabHasStateWatch ||
+                window.crossTabCounts.state > prior.state) &&
+              window.crossTabCounts.transcripts > prior.transcripts,
+            requiredEntry(beforeWorkspaceMove, index),
             { timeout: 4500 },
           ),
         ),
@@ -1274,11 +1342,11 @@ const runSyncCrossTabScenario = async (
       const diagnostics = await Promise.all(
         pages.map((page) =>
           page.evaluate(() => ({
-            counts: window.counts,
-            states: window.states,
-            sse: window.__syncDiagnostics.sse.slice(-8),
-            sent: window.__syncDiagnostics.sent.slice(-5),
-            received: window.__syncDiagnostics.received.slice(-8),
+            counts: window.crossTabCounts,
+            states: window.crossTabStates,
+            sse: window.crossTabDiagnostics.sse.slice(-8),
+            sent: window.crossTabDiagnostics.sent.slice(-5),
+            received: window.crossTabDiagnostics.received.slice(-8),
           })),
         ),
       );
@@ -1291,7 +1359,7 @@ const runSyncCrossTabScenario = async (
     otherWorkspaceContext = undefined;
     await context.close();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(streams.size).toBe(0);
+    expect(Number(streams.size)).toBe(0);
     noCoordination = await browser.newPage();
     await noCoordination.addInitScript(() => {
       Object.defineProperty(window, "BroadcastChannel", { value: undefined });
@@ -1304,7 +1372,10 @@ const runSyncCrossTabScenario = async (
     });
     await noCoordination.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.stop = client.watchResourceChanges({ kind: "state" }, () => {});
+      window.crossTabStop = client.watchResourceChanges(
+        { kind: "state" },
+        () => {},
+      );
     });
     await waitFor(
       () => streams.size === 1,
@@ -1353,3 +1424,55 @@ test("resumed former owner closes its duplicate stream @performance", async ({
   test.setTimeout(180_000);
   await runSyncCrossTabScenario(browser, true);
 });
+
+function requiredEntry<T>(items: readonly T[], index: number): T {
+  const item = items[index];
+  assert.ok(item !== undefined, `Missing fixture entry at index ${index}`);
+  return item;
+}
+
+type CrossTabCounts = { state: number; transcripts: number };
+declare global {
+  interface Window {
+    crossTabLockReady: Promise<void>;
+    crossTabResolveLockReady: () => void;
+    crossTabReleaseStreamLock: () => void;
+    crossTabDiagnostics: {
+      sse: string[];
+      sources: EventSource[];
+      sent: OutgoingTabMessage[];
+      received: (OutgoingTabMessage & { __receivedAt: number })[];
+    };
+    crossTabWorkspace: string;
+    crossTabIdentity: string;
+    crossTabSyncDb: Awaited<
+      ReturnType<typeof import("../../src/sync/client.ts").syncDatabase>
+    >["db"];
+    crossTabCounts: CrossTabCounts;
+    crossTabCountEvents: {
+      resource: "state" | "transcript";
+      version: ResourceVersion | undefined;
+      received: number;
+      sse: number;
+      at: number;
+    }[];
+    crossTabHasStateWatch: boolean;
+    crossTabStates: ResourceConnectionState[];
+    crossTabStop: () => void;
+    crossTabStopState: () => void;
+    crossTabStopTranscript: () => void;
+    crossTabStopConnection: () => void;
+    crossTabStopLate: () => void;
+    crossTabStopQueueCallbacks: () => void;
+    crossTabStopCostCallbacks: () => void;
+    crossTabStopLateQueue: () => void;
+    crossTabStopTakeoverQueue: () => void;
+    crossTabStopResumedQueue: () => void;
+    crossTabLateCount: number;
+    crossTabQueueCallbacks: number;
+    crossTabCostCallbacks: number;
+    crossTabLateQueueCallbacks: number;
+    crossTabTakeoverQueueCallbacks: number;
+    crossTabResumedQueueCount: number;
+  }
+}
