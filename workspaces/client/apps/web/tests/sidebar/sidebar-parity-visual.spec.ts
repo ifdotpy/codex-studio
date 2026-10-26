@@ -266,9 +266,9 @@ async function equalContentPixels(
 
 function inspectLayout(element: Element) {
   const root = element.getBoundingClientRect();
-  const top = requiredFixtureValue(
-    element.querySelector(".sidebar-header"),
-  ).getBoundingClientRect().bottom;
+  const header = element.querySelector(".sidebar-header");
+  if (!header) throw new Error("Missing fixture header");
+  const top = header.getBoundingClientRect().bottom;
   const selectors =
     ".sidebar-header,.projects-heading,input,.project-tree-heading,.sidebar-row,.project-show-more,.project-show-all,.row-copy strong,.chat-server-line";
   return [...element.querySelectorAll(selectors)].map((node) => {

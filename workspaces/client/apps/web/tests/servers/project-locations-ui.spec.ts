@@ -72,8 +72,7 @@ async function projectFixtures(offline = false) {
       }
       if (url.pathname === "/api/projects") {
         const body = fixturePostBody<"/api/projects">(rawBody);
-        if (!("path" in body)) return false;
-        if (body.path) {
+        if ("path" in body && body.path) {
           registrations.push(body);
           json({
             outcome: "applied",

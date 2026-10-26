@@ -1,5 +1,4 @@
 import type { StudioServer } from "../../src/servers/registry.ts";
-import { remoteNetwork } from "./browser-fixture.ts";
 import { settings } from "./browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
@@ -164,7 +163,45 @@ test("a UI-only client renames through its signed credential and retries the sam
   const local = await fixture("Local");
   const remote = await fixture("Remote", true);
   try {
-    await remoteNetwork(context, remote);
+    await context.addInitScript(
+      ({ origin, destination }) => {
+        const native = window.fetch.bind(window);
+        window.fetch = async (input, init) => {
+          const request = new Request(input, init),
+            url = new URL(request.url);
+          if (url.origin !== origin) return native(request);
+          const bytes = await request.clone().arrayBuffer();
+          const response = await native(
+            destination + url.pathname + url.search,
+            {
+              method: request.method,
+              headers: request.headers,
+              ...(bytes.byteLength ? { body: bytes } : {}),
+              signal: request.signal,
+              redirect: "error",
+              credentials: "omit",
+            },
+          );
+          const body: unknown =
+            request.method === "POST" && url.pathname === "/api/multi-server"
+              ? JSON.parse(new TextDecoder().decode(bytes))
+              : null;
+          if (
+            body &&
+            typeof body === "object" &&
+            "action" in body &&
+            body.action === "name" &&
+            !sessionStorage.getItem("name-response-lost")
+          ) {
+            sessionStorage.setItem("name-response-lost", "1");
+            await response.text();
+            throw new TypeError("The name response was lost.");
+          }
+          return response;
+        };
+      },
+      { origin: remote.invitation.origin, destination: remote.origin },
+    );
     await page.goto(local.origin + "/?studio-ui-only=1");
     const dialog = page.getByRole("dialog", {
       name: "Studio settings",
