@@ -1,4 +1,4 @@
-import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.mjs";
+import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.ts";
 
 // Validate every origin before conversion or submission. An omitted field is
 // the legacy human-input contract; unknown provenance must not become human.

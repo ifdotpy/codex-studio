@@ -9,12 +9,12 @@ import {
   prepareFileRestore,
   verifyFileRestore,
   fileBackups,
-} from "./file-restore.mjs";
+} from "./file-restore.ts";
 import {
   fileCheckpointOptions,
   fileRestoreReason,
   rewindSessionFiles,
-} from "./file-checkpoints.mjs";
+} from "./file-checkpoints.ts";
 import { createAccountCheck } from "./account-identity.ts";
 import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
 import {
@@ -51,7 +51,7 @@ import {
   claudeErrorInfo,
   providerNotice,
   limitApplies,
-} from "./features.mjs";
+} from "./features.ts";
 import {
   commandCatalog,
   explicitNativeCommand,
@@ -73,7 +73,7 @@ import {
   isDiskFull,
 } from "./session-store.mjs";
 import { claudeImage } from "./images.ts";
-import { listSkills } from "./skills.mjs";
+import { listSkills } from "./skills.ts";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.ts";
 import {
@@ -102,7 +102,7 @@ import {
   verifyToolProof,
   studioToolCatalog,
   exactTurnTools,
-} from "./move.mjs";
+} from "./move.ts";
 
 import {
   externalAliases,
@@ -111,7 +111,7 @@ import {
   externalRefusal,
   serverAlias,
   canonicalJson,
-} from "./move-external.mjs";
+} from "./move-external.ts";
 
 const externalConfigs = new Map();
 

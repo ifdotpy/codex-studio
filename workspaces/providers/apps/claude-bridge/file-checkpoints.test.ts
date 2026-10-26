@@ -2,7 +2,7 @@ import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 const SDK = new URL("./file-checkpoints.sdk.ts", import.meta.url);
 const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
@@ -23,7 +23,7 @@ test("bridge enables SDK checkpoints and rewinds the exact echoed message with c
       n.method === "turn/completed" && n.params.turn.id === started.turn.id,
   );
   const state = await bridge.call("claude/state", { threadId: bridge.thread });
-  assert.equal(state.turns[0].canRestoreFiles, true);
+  assert.equal(state.turns[0]?.canRestoreFiles, true);
   const request = {
     threadId: bridge.thread,
     turnId: started.turn.id,
