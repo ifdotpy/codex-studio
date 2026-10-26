@@ -29,15 +29,12 @@ pub fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot, TransferError> {
     if !ids.iter().any(|id| id == lead) {
         ids.push(lead.into());
     }
-    let agents = ids
-        .into_iter()
-        .map(|id| {
-            let raw = Repository::agent(tx, &id)?
-                .ok_or(TransferError::Refused("Unknown transfer member"))?;
-            Ok((id, raw))
-        })
-        .collect::<Result<Vec<_>, TransferError>>()?;
-    Snapshot::read(&raw, agents)
+    let agents = ids.into_iter().map(|id| {
+        let raw =
+            Repository::agent(tx, &id)?.ok_or(TransferError::Refused("Unknown transfer member"))?;
+        Ok((id, raw))
+    });
+    Snapshot::read_fallible(&raw, agents)
 }
 
 /// The operation id of a lead summary that still claims an active transfer.
@@ -345,19 +342,6 @@ pub async fn request(
                     .collect();
             if !agents.contains_key(&lead) {
                 return Err(TransferError::Refused("Unknown managed agent"));
-            }
-            if agents.iter().any(|(id, agent)| {
-                !(scope == "subagents" && id == &lead)
-                    && agent["environment"] == "linux"
-                    && agent
-                        .get("accountKey")
-                        .and_then(Value::as_str)
-                        .unwrap_or("default")
-                        != target
-            }) {
-                return Err(TransferError::Refused(
-                    "Archive VM workers before changing the team account",
-                ));
             }
             let operation_id = id;
             let mut requests = serde_json::Map::new();
@@ -1337,6 +1321,141 @@ mod request_tests {
         );
         assert_eq!(stored(&store, "lead"), lead);
         assert_eq!(stored(&store, "fixture-1")["accountKey"], "source");
+    }
+
+    #[test]
+    fn active_alias_refuses_a_late_vm_member_before_any_enrollment_write() {
+        let (_root, store) = store_with_agents();
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42291";
+        request(&store, id, "lead", "target", "team", "codex", 10.0).expect("initial transfer");
+        run_async(
+            store.transaction(|tx| {
+                let vm = AgentRecord::from_value(
+                    json!({"id":"late-vm", "rootId":"lead", "epoch":3,
+                "status":"idle", "provider":"codex", "accountKey":"source", "environment":"linux"}),
+                )?;
+                AgentRepository::put(tx, &vm)
+            }),
+        )
+        .expect("late VM fixture");
+        let before = Repository::get(&store.test_reader().expect("reader"), id).expect("operation");
+        let vm = stored(&store, "late-vm");
+        let error = request(
+            &store,
+            "5a300f72-4ea6-4d30-8a0e-9b2c13c42292",
+            "lead",
+            "target",
+            "team",
+            "codex",
+            11.0,
+        )
+        .expect_err("active enrollment uses the same VM guard as a fresh request");
+        assert_eq!(
+            error.to_string(),
+            "Archive VM workers before changing the team account"
+        );
+        assert_eq!(stored(&store, "late-vm"), vm);
+        assert_eq!(
+            Repository::get(&store.test_reader().expect("reader"), id).expect("operation"),
+            before
+        );
+    }
+
+    #[test]
+    fn initial_and_active_enrollment_exclude_other_providers_before_the_vm_guard() {
+        for active in [false, true] {
+            for provider in ["codex", "claude"] {
+                for vm in [false, true] {
+                    let (_root, store) = store_with_agents();
+                    let original = "5a300f72-4ea6-4d30-8a0e-9b2c13c42294";
+                    if active {
+                        request(&store, original, "lead", "target", "team", "codex", 10.0)
+                            .expect("active transfer");
+                    }
+                    run_async(store.transaction(move |tx| {
+                        let mut candidate = json!({"id":"candidate", "rootId":"lead", "epoch":3,
+                            "status":"idle", "provider":provider, "accountKey":"source"});
+                        if vm {
+                            candidate["environment"] = json!("linux");
+                        }
+                        AgentRepository::put(tx, &AgentRecord::from_value(candidate)?)
+                    }))
+                    .expect("candidate");
+                    let candidate = stored(&store, "candidate");
+                    let lead = stored(&store, "lead");
+                    let before = Repository::get(&store.test_reader().expect("reader"), original)
+                        .expect("prior operation");
+                    let alias = "5a300f72-4ea6-4d30-8a0e-9b2c13c42295";
+                    let result = request(&store, alias, "lead", "target", "team", "codex", 11.0);
+                    if provider == "codex" && vm {
+                        assert_eq!(
+                            result
+                                .expect_err("same-provider VM must be refused")
+                                .to_string(),
+                            "Archive VM workers before changing the team account"
+                        );
+                        assert_eq!(stored(&store, "candidate"), candidate);
+                        assert_eq!(stored(&store, "lead"), lead);
+                        assert_eq!(
+                            Repository::get(&store.test_reader().expect("reader"), original)
+                                .expect("prior operation"),
+                            before
+                        );
+                        assert!(
+                            Repository::get(&store.test_reader().expect("reader"), alias)
+                                .expect("alias operation")
+                                .is_none()
+                        );
+                    } else {
+                        let result =
+                            result.expect("other-provider exclusion precedes VM restriction");
+                        if provider == "claude" {
+                            assert_eq!(result["members"]["candidate"]["phase"], "left");
+                            assert_eq!(stored(&store, "candidate"), candidate);
+                        } else {
+                            assert_eq!(result["members"]["candidate"]["phase"], "lazy");
+                            assert_eq!(stored(&store, "candidate")["accountKey"], "target");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_replay_stops_reading_members_at_the_snapshot_byte_boundary() {
+        let (_root, store) = store_with_agents();
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42293";
+        run_async(store.transaction(move |tx| {
+            let mut operation = json!({"id":id, "leadId":"lead", "targetAccountKey":"target",
+                "status":"pending", "scope":"team", "created":1.0, "members":{}, "requests":{}});
+            let member = json!({"phase":"waiting", "sourceAccountKey":"source", "lazy":false});
+            operation["members"]["lead"] = member.clone();
+            // Each valid row fits the per-record limit; their combined size
+            // crosses the snapshot bound before the final oversized sentinel.
+            let padding_bytes = studio_runtime_store::MAX_TRANSFER_RECORD_BYTES - 1024 * 1024;
+            let template = json!({"id":"padding", "rootId":"lead", "epoch":1, "status":"idle",
+                "provider":"codex", "fixturePadding":"x".repeat(padding_bytes)}).to_string();
+            let count = Repository::MAX_SNAPSHOT_BYTES / padding_bytes + 1;
+            for index in 0..count {
+                let member_id = format!("padding-{index:02}");
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,json_set(?2,'$.id',?1))",
+                    rusqlite::params![member_id, template])?;
+                operation["members"][&member_id] = member.clone();
+            }
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('z-sentinel',json_set(?1,'$.id','z-sentinel','$.fixturePadding',?2))",
+                rusqlite::params![template, "x".repeat(studio_runtime_store::MAX_TRANSFER_RECORD_BYTES)])?;
+            operation["members"]["z-sentinel"] = member;
+            Repository::put(tx, id, &operation.to_string())
+        })).expect("bounded snapshot fixture");
+        let before = stored(&store, "lead");
+        let error = request(&store, id, "lead", "target", "team", "codex", 10.0)
+            .expect_err("exact replay rejects aggregate overflow before reading later members");
+        assert!(
+            matches!(error, TransferError::Stored { object: "transfer snapshot", ref pointer } if pointer == "/resourceLimit"),
+            "snapshot bound must win before the oversized unread sentinel: {error}"
+        );
+        assert_eq!(stored(&store, "lead"), before);
     }
 
     #[test]

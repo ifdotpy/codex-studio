@@ -99,6 +99,86 @@ fn resources(root: &std::path::Path, session: Arc<dyn AccountSessionPort>) -> Pr
 }
 
 #[tokio::test]
+async fn subagents_summary_does_not_hold_the_excluded_leads_native_preparation() {
+    let (root, store) = fixture().await;
+    store
+        .transaction(|tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+            lead.extra.insert("provider".into(), json!("codex"));
+            lead.extra.insert("model".into(), json!("gpt-6-astra"));
+            lead.extra.insert("nativeEffort".into(), Value::Null);
+            AgentRepository::put(tx, &lead)?;
+            let child = AgentRecord::from_value(json!({
+                "id":"child", "rootId":"lead", "epoch":1, "status":"idle", "isLead":false,
+                "accountKey":"source", "provider":"codex", "cwd":"/tmp/work"
+            }))?;
+            AgentRepository::put(tx, &child)
+        })
+        .await
+        .expect("idle child");
+    driver::request(&store, OP, "lead", "target", "subagents", "codex", 10.0)
+        .await
+        .expect("subagents transfer");
+    let before = agent(&store);
+    let pending = operation(&store);
+    assert_eq!(pending["members"]["child"]["phase"], "lazy");
+    let session = Arc::new(CompletingSession {
+        store: store.clone(),
+        native_path: root.path().join("unused-history"),
+        calls: Mutex::default(),
+    });
+    let mut resources = resources(root.path(), session.clone());
+    resources.model_catalog.retain_accounts(&[
+        json!({"id":"source","home":root.path(),"provider":"codex"}),
+        json!({"id":"target","home":root.path(),"provider":"codex"}),
+    ]);
+    resources
+        .model_catalog
+        .set_account_session(Some(session.clone()));
+    let _catalog = resources
+        .model_catalog
+        .wait_for_admission_catalog(
+            "source",
+            &resources.account_home,
+            studio_runtime_providers::ProviderKind::Codex,
+        )
+        .await;
+    session.calls.lock().expect("calls").clear();
+    let prepared =
+        preparation::prepare_native_thread(store.clone(), &resources, "lead", "ordinary-lead", 1)
+            .await
+            .expect("child-only progress cannot hold the excluded lead");
+    assert_eq!(prepared.params["model"], "gpt-6-astra");
+    let after = agent(&store);
+    assert_eq!(after["accountKey"], before["accountKey"]);
+    assert_eq!(after["threadId"], before["threadId"]);
+    assert_eq!(after["accountTransfer"], before["accountTransfer"]);
+    assert_eq!(
+        operation(&store),
+        pending,
+        "lead admission cannot advance child history"
+    );
+    assert!(
+        session.calls.lock().expect("calls").is_empty(),
+        "lead preparation sends no transfer requests"
+    );
+    resources.account_session = None;
+    let error =
+        preparation::prepare_native_thread(store.clone(), &resources, "child", "ordinary-child", 1)
+            .await
+            .expect_err("enrolled child still requires its history executor");
+    assert!(
+        matches!(error, studio_runtime_services::account_worker::WorkerError::PreparationRefused(reason)
+        if reason == "Not implemented: requires provider-session/account-worker")
+    );
+    assert_eq!(
+        operation(&store),
+        pending,
+        "child cannot bypass pending history"
+    );
+}
+
+#[tokio::test]
 async fn unknown_transfer_operation_keeps_the_native_admission_hold() {
     let (root, store) = fixture().await;
     store

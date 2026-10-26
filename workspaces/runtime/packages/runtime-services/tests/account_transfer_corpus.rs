@@ -134,6 +134,62 @@ fn malformed_records_fail_without_panicking_or_echoing_values() {
 }
 
 #[test]
+fn subagents_summary_bypasses_only_an_unenrolled_leads_summary_hold() {
+    let (_, mut agent, _) = fixture();
+    agent
+        .as_object_mut()
+        .expect("agent")
+        .remove("accountTransferId");
+    agent["isLead"] = json!(true);
+    agent["accountTransfer"] = json!({"id":"op", "status":"pending", "scope":"subagents"});
+    before_start(&agent).expect("unenrolled lead summary does not hold");
+    for (key, marker) in [
+        ("accountTransferId", json!("op")),
+        ("lazyAccountTransfer", json!({"id":"op"})),
+        ("emptyTransferRecovery", json!({"phase":"pending"})),
+    ] {
+        let mut held = agent.clone();
+        held[key] = marker;
+        assert!(before_start(&held).is_err(), "summary cannot bypass {key}");
+    }
+    let mut child = agent.clone();
+    child["isLead"] = json!(false);
+    assert!(
+        before_start(&child).is_err(),
+        "a child summary cannot bypass admission"
+    );
+    for scope in [json!("team"), json!("future-scope"), json!(42), Value::Null] {
+        let mut held = agent.clone();
+        held["accountTransfer"]["scope"] = scope;
+        assert!(
+            before_start(&held).is_err(),
+            "only exact subagents scope bypasses the summary hold"
+        );
+    }
+    for status in [
+        Some(json!("future-status")),
+        Some(json!(42)),
+        Some(Value::Null),
+        None,
+    ] {
+        let mut held = agent.clone();
+        let summary = held["accountTransfer"].as_object_mut().expect("summary");
+        match status {
+            Some(status) => {
+                summary.insert("status".into(), status);
+            }
+            None => {
+                summary.remove("status");
+            }
+        }
+        assert!(
+            before_start(&held).is_err(),
+            "unknown summary state cannot bypass admission"
+        );
+    }
+}
+
+#[test]
 fn request_replay_is_bound_to_lead_destination_and_scope() {
     let (mut op, agent, _) = fixture();
     op["requests"] =

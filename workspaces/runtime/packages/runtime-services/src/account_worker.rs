@@ -303,7 +303,19 @@ impl StoreBridge {
             account_released: Arc::default(),
         };
         bridge
-            .run(|store| async move { Ok(scheduler::recover_on_startup(&store).await?) })
+            .run(|store| async move {
+                let changed = scheduler::recover_on_startup(&store).await?;
+                // Global restart decisions finish before the registry can
+                // construct account workers; provider reconnects never repeat them.
+                crate::account_transfer_driver::recover(&store, now())
+                    .await
+                    .map_err(|error| {
+                        WorkerError::PreparationRefused(format!(
+                            "account-transfer/startup-recovery/{error}"
+                        ))
+                    })?;
+                Ok(changed)
+            })
             .await?;
         Ok(bridge)
     }
