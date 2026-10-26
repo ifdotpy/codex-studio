@@ -1,3 +1,5 @@
+import type { BridgeError } from "./bridge-protocol.ts";
+import type { Stats } from "node:fs";
 import type { Session, ControlReceipt } from "./session-state.ts";
 import type { NativeFileRecord } from "./file-restore.ts";
 import type {
@@ -170,20 +172,19 @@ test("partial SDK success without skipped links retains context and durable befo
       /did not restore every tracked file/,
     );
     assert.equal(f.session.turns.length, 1);
-    const receipt = f.session.controlRequests?.restore;
-    assert.ok(receipt?.filePlan);
+    const receipt = f.session.controlRequests!.restore;
+
     assert.equal(receipt.status, "rewind_submitted");
-    for (const entry of receipt.filePlan.files) {
-      assert.ok(entry.backup);
+    for (const entry of receipt.filePlan!.files) {
       assert.equal(
-        await fs.readFile(entry.backup, "utf8"),
+        await fs.readFile(entry.backup!, "utf8"),
         "user " + path.basename(entry.file),
       );
     }
     assert.deepEqual(
       JSON.parse(
         await fs.readFile(
-          path.join(receipt.filePlan.directory, "manifest.json"),
+          path.join(receipt.filePlan!.directory, "manifest.json"),
           "utf8",
         ),
       ),
@@ -220,15 +221,14 @@ test("successful combined rewind verifies all file hashes and preserves original
     const result = await rollbackSession(f.session, f.request, f.deps);
     assert.equal(result.filesRestored, true);
     assert.equal(f.session.turns.length, 0);
-    assert.ok(f.session.controlRequests?.restore?.filePlan);
-    for (const entry of f.session.controlRequests.restore.filePlan.files) {
-      assert.ok(entry.backup);
+
+    for (const entry of f.session.controlRequests!.restore.filePlan!.files) {
       assert.equal(
         await fs.readFile(entry.file, "utf8"),
         "old " + path.basename(entry.file),
       );
       assert.equal(
-        await fs.readFile(entry.backup, "utf8"),
+        await fs.readFile(entry.backup!, "utf8"),
         "user " + path.basename(entry.file),
       );
     }
@@ -236,8 +236,7 @@ test("successful combined rewind verifies all file hashes and preserves original
 
 test("delta for a new file restores its absence and rejects a changed pre-restore source", async () =>
   fixture(async (f) => {
-    assert.ok(f.rows[0]?.snapshot);
-    f.rows[0].snapshot.trackedFileBackups = {};
+    f.rows[0].snapshot!.trackedFileBackups = {};
     f.rows.push({
       type: "file-history-delta",
       messageId: f.request.turnId,
@@ -256,20 +255,20 @@ test("delta for a new file restores its absence and rejects a changed pre-restor
       f.request.turnId,
     );
     assert.equal(plan.files.length, 1);
-    assert.ok(plan.files[0]?.backup);
+
     assert.equal(plan.files[0].expected, null);
     await fs.writeFile(path.join(f.cwd, "new.txt"), "changed");
     await assert.rejects(verifyFileRestore(plan, "before"), /Files changed/);
     await fs.unlink(path.join(f.cwd, "new.txt"));
     await verifyFileRestore(plan, "expected");
-    assert.equal(await fs.readFile(plan.files[0].backup, "utf8"), "new");
+    assert.equal(await fs.readFile(plan.files[0].backup!, "utf8"), "new");
   }));
 
 test("a file first tracked after the target uses its first backup", async () =>
   fixture(async (f) => {
     const later = randomUUID();
-    assert.ok(f.rows[0]?.snapshot);
-    f.rows[0].snapshot.trackedFileBackups = {};
+
+    f.rows[0].snapshot!.trackedFileBackups = {};
     f.rows.push({
       type: "file-history-snapshot",
       messageId: later,
@@ -313,27 +312,26 @@ test("a failed final descriptor save retains a durable pre-rewind copy and resum
       return rewind(native, message, options);
     };
     f.deps.persist = async (session) => {
-      if (session.controlRequests?.restore?.status === "completed")
+      if (session.controlRequests!.restore?.status === "completed")
         throw new Error("final save failed");
-      assert.ok("id" in session);
+
       saved = structuredClone(f.session);
     };
     await assert.rejects(
       rollbackSession(f.session, f.request, f.deps),
       /final save failed/,
     );
-    assert.ok(saved?.controlRequests?.restore?.filePlan);
-    assert.equal(saved.controlRequests.restore.status, "rewound");
-    for (const entry of saved.controlRequests.restore.filePlan.files) {
-      assert.ok(entry.backup);
+
+    assert.equal(saved!.controlRequests!.restore.status, "rewound");
+    for (const entry of saved!.controlRequests!.restore.filePlan!.files) {
       assert.equal(
-        await fs.readFile(entry.backup, "utf8"),
+        await fs.readFile(entry.backup!, "utf8"),
         "user " + path.basename(entry.file),
       );
     }
     f.deps.persist = async () => {};
     assert.equal(
-      (await rollbackSession(saved, f.request, f.deps)).filesRestored,
+      (await rollbackSession(saved!, f.request, f.deps)).filesRestored,
       true,
     );
     assert.equal(writes, 1);
@@ -387,7 +385,7 @@ test("native retention permits recent checkpoints and refuses expired checkpoint
     const plan = await f.deps.prepareFileRestore(
       f.session,
       f.messages,
-      f.messages.at(-1)?.uuid ?? "",
+      f.messages.at(-1)!.uuid,
     );
     assert.equal(plan.files.length, 2);
   }));
@@ -426,18 +424,23 @@ test("backup admission refuses new copies without deleting retained recovery dat
     const existing = path.join(retained, "0");
     await fs.mkdir(retained, { recursive: true });
     await fs.writeFile(existing, "unique recovery data");
-    const original = fs.lstat;
+    // This test uses the numeric-stat overload, as identity() does.
+    const statFs: {
+      lstat: (file: Parameters<typeof fs.lstat>[0]) => Promise<Stats>;
+    } = fs;
+    const original = statFs.lstat;
     const stat = vi
-      .spyOn(fs, "lstat")
+      .spyOn(statFs, "lstat")
       .mockImplementation(async (file, ...args) => {
         const value = await original(file, ...args);
         if (file !== existing) return value;
         // Model a full byte budget without allocating a large test file.
-        value.size =
-          typeof value.size === "bigint"
-            ? BigInt(MAX_BEFORE_RESTORE_BYTES)
-            : MAX_BEFORE_RESTORE_BYTES;
-        return value;
+        return {
+          ...value,
+          size: MAX_BEFORE_RESTORE_BYTES,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        };
       });
     try {
       await assert.rejects(
@@ -481,9 +484,9 @@ test("full quota releases settled copies, preserves unresolved copies and retrie
     await assert.rejects(
       rollbackSession(f.session, f.request, f.deps),
       (error) => {
-        assert.ok(error instanceof Error && "data" in error);
-        assert.match(error.message, /backup limit/);
-        assert.deepEqual(error.data, {
+        const failure = error as Error & Pick<BridgeError, "data">;
+        assert.match(failure.message, /backup limit/);
+        assert.deepEqual(failure.data, {
           fileRestoreOutcome: "not_applied",
           requestId: f.request.requestId,
           turnId: f.request.turnId,
@@ -491,11 +494,7 @@ test("full quota releases settled copies, preserves unresolved copies and retrie
         return true;
       },
     );
-    assert.equal(
-      Object.hasOwn(f.session, "controlRequests") &&
-        Reflect.get(f.session, "controlRequests")?.restore,
-      undefined,
-    );
+    assert.equal((f.session as Session).controlRequests?.restore, undefined);
     assert.equal(
       (await fileBackups(owner, null, f.state, f.deps.persist)).count,
       MAX_BEFORE_RESTORE_COPIES,
@@ -508,9 +507,9 @@ test("full quota releases settled copies, preserves unresolved copies and retrie
     );
     assert.equal(usage.released, 1);
     assert.equal(usage.count, MAX_BEFORE_RESTORE_COPIES - 1);
-    assert.ok(unresolved.files[0]?.backup);
+
     assert.equal(
-      await fs.readFile(unresolved.files[0].backup, "utf8"),
+      await fs.readFile(unresolved.files[0].backup!, "utf8"),
       "user a.txt",
     );
     assert.equal(
@@ -550,8 +549,11 @@ test("release refuses a completed receipt without durable settlement or with an 
       ).released,
       0,
     );
-    assert.ok(plan.files[0]?.backup);
-    assert.equal(await fs.readFile(plan.files[0].backup, "utf8"), "user a.txt");
+
+    assert.equal(
+      await fs.readFile(plan.files[0].backup!, "utf8"),
+      "user a.txt",
+    );
   }));
 
 test("concurrent admissions respect the count bound and refuse symbolic backup paths", async () =>
