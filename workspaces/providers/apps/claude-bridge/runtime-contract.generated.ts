@@ -24,6 +24,62 @@ export interface components {
       ttl: string;
       warm: boolean;
     };
+    /**
+     * ClaudeCustomModel
+     * @description Custom model records are nested in the stored account passthrough.
+     */
+    ClaudeCustomModel: {
+      /** Id */
+      id: string;
+      /** Label */
+      label: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    /** ClaudeSessionSettings */
+    ClaudeSessionSettings: {
+      /**
+       * Autocompactwindow
+       * @default null
+       */
+      autoCompactWindow?: number | null | undefined;
+      /**
+       * Binarypath
+       * @default null
+       */
+      binaryPath?: null | string | undefined;
+      /**
+       * Configdir
+       * @default null
+       */
+      configDir?: null | string | undefined;
+      /**
+       * Custommodels
+       * @default null
+       */
+      customModels?:
+        | components["schemas"]["ClaudeCustomModel"][]
+        | null
+        | undefined;
+      /**
+       * Launchargs
+       * @default null
+       */
+      launchArgs?: null | string | undefined;
+      /**
+       * Permissionmode
+       * @default null
+       */
+      permissionMode?:
+        | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")
+        | null
+        | undefined;
+      /**
+       * Thinking
+       * @default null
+       */
+      thinking?: boolean | null | undefined;
+    };
     /** JsonValue */
     JsonValue: JsonValue;
     /**
@@ -88,6 +144,9 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 export type CacheReport = components["schemas"]["CacheReport"];
+export type ClaudeCustomModel = components["schemas"]["ClaudeCustomModel"];
+export type ClaudeSessionSettings =
+  components["schemas"]["ClaudeSessionSettings"];
 export type RateLimitBucketDto = components["schemas"]["RateLimitBucketDto"];
 export type RateLimitWindowDto = components["schemas"]["RateLimitWindowDto"];
 export type ToolDefinition = components["schemas"]["ToolDefinition"];

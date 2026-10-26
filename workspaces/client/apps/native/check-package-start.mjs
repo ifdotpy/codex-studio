@@ -7,7 +7,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { identity } from "../desktop/backend.cjs";
+import { identity } from "../desktop/backend.ts";
 
 const startupTimeoutMs = 60_000;
 const startupPollMs = 100;

@@ -1,5 +1,9 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TranscriptPageData } from "../types";
+import type { TranscriptWireItem } from "../types";
+import type { CachedTranscript } from "./transcriptCache";
+import type { RxDocumentData } from "rxdb";
+import type { EntityRow } from "./entityProjection";
 import type { ResourceChangeEvent } from "./subscriptions/events";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import { READ_RECOVERY_MAX_ATTEMPTS, readRetryDelay } from "./readRetry";
@@ -136,9 +140,9 @@ describe("entity pull reset wiring", () => {
       }),
     });
     for (const [id, item] of [
-      ["first", { id: "first", role: "user" }],
-      ["second", { id: "second", role: "assistant" }],
-      ["tool", { id: "tool", toolStatus: "running" }],
+      ["first", { id: "first", role: "user", text: "" }],
+      ["second", { id: "second", role: "assistant", text: "" }],
+      ["tool", { id: "tool", role: "tool", text: "", toolStatus: "running" }],
     ] as const)
       rows.set(`transcript:item:agent:${id}`, {
         id: `transcript:item:agent:${id}`,
@@ -189,16 +193,19 @@ describe("entity pull reset wiring", () => {
     });
     const client = await import("./client");
     const cache = await import("./transcriptCache");
-    const stored = [
-      { id: "first", role: "user" },
-      { id: "second", role: "assistant" },
+    const stored: TranscriptWireItem[] = [
+      { id: "first", role: "user", text: "" },
+      { id: "second", role: "assistant", text: "" },
     ];
     cache.cacheTranscriptValue(
       workspaceId,
       "agent",
       {
         truncated: false,
-        items: [...stored, { id: "tool", toolStatus: "running" }],
+        items: [
+          ...stored,
+          { id: "tool", role: "tool", text: "", toolStatus: "running" },
+        ],
       },
       1,
     );
@@ -261,7 +268,7 @@ describe("entity pull reset wiring", () => {
     await settle();
     expect(fullReads()).toBe(1);
     expect(cache.peekTranscript(workspaceId, "agent")?.seq).toBe(3);
-    expect(cache.peekTranscript(workspaceId, "agent")?.payload.items).toEqual([
+    expect(cache.peekTranscript(workspaceId, "agent")?.payload?.items).toEqual([
       ...stored,
       { id: "tool", toolStatus: "failed" },
     ]);
@@ -550,6 +557,7 @@ describe("entity pull reset wiring", () => {
         ],
       };
       if (scenario.startsWith("window")) {
+        assert.ok(event.resourceVersions[0] != null);
         const delta = event.resourceVersions[0].transcriptChanges!.delta;
         delta.items.unshift({
           id: "older",
@@ -561,6 +569,7 @@ describe("entity pull reset wiring", () => {
       }
       if (scenario === "snapshot") {
         event.reason = "initial";
+        assert.ok(event.resourceVersions[0] != null);
         delete event.resourceVersions[0].transcriptChanges;
         event.resourceVersions[0].transcriptSnapshot = {
           items: [{ id: "answer", role: "assistant", text: "streamed" }],
@@ -580,6 +589,7 @@ describe("entity pull reset wiring", () => {
       }
       const stringify = vi.spyOn(JSON, "stringify");
       await client.persistResourceEntityChanges(event, () => true);
+      assert.ok(event.resourceVersions[0] != null);
       expect(stringify).not.toHaveBeenCalledWith(
         event.resourceVersions[0].transcriptChanges,
       );
@@ -635,7 +645,12 @@ describe("entity pull reset wiring", () => {
     rows.set("transcript:item:agent:tool", {
       id: "transcript:item:agent:tool",
       seq: 1,
-      payload: JSON.stringify({ id: "tool", toolStatus: "running" }),
+      payload: JSON.stringify({
+        id: "tool",
+        role: "tool",
+        text: "",
+        toolStatus: "running",
+      }),
     });
     const storageInstance = {
       findDocumentsById: vi.fn(async (ids: string[]) =>
@@ -672,7 +687,10 @@ describe("entity pull reset wiring", () => {
     cache.cacheTranscriptValue(
       workspaceId,
       "agent",
-      { truncated: false, items: [{ id: "tool", toolStatus: "running" }] },
+      {
+        truncated: false,
+        items: [{ id: "tool", role: "tool", text: "", toolStatus: "running" }],
+      },
       1,
     );
     const event = (
@@ -873,7 +891,7 @@ describe("entity pull reset wiring", () => {
       vi.stubGlobal("location", { origin: "http://studio.test" });
 
       const client = await import("./client");
-      const accepted: Array<TranscriptPageData | null> = [];
+      const accepted: Array<CachedTranscript["payload"]> = [];
       const delivered = () =>
         accepted.some((payload) =>
           payload?.items.some((item) => item.text === "STUDIO_RUST_LUNA_OK"),
@@ -1361,11 +1379,15 @@ describe("entity pull reset wiring", () => {
         seq: 11,
       });
       const emptyDelta = event(11, "delta");
-      delete emptyDelta.resourceVersions![0].entityChanges;
+      const emptyDeltaVersion = emptyDelta.resourceVersions?.[0];
+      assert.ok(emptyDeltaVersion);
+      delete emptyDeltaVersion.entityChanges;
       let current = true;
       storageInstance.findDocumentsById.mockImplementationOnce(async () => {
         current = false;
-        delete emptyDelta.resourceVersions![0].cursor;
+        const currentVersion = emptyDelta.resourceVersions?.[0];
+        assert.ok(currentVersion);
+        delete currentVersion.cursor;
         return [];
       });
       await expect(
@@ -1375,7 +1397,7 @@ describe("entity pull reset wiring", () => {
   );
   it("persists terminal records and cursor atomically, replays without duplicate output, and leaves the old cursor on failure", async () => {
     const workspaceId = "8".repeat(32);
-    const rows = new Map<string, Record<string, any>>();
+    const rows = new Map<string, RxDocumentData<EntityRow>>();
     let fail = false;
     const projections = {
       database: { name: "terminal-resume" },
@@ -1384,7 +1406,7 @@ describe("entity pull reset wiring", () => {
           ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
         ),
         bulkWrite: vi.fn(
-          async (writes: { document: Record<string, any> }[]) => {
+          async (writes: { document: RxDocumentData<EntityRow> }[]) => {
             if (fail) throw new Error("disk unavailable");
             for (const { document } of writes) rows.set(document.id, document);
             return { error: [] };
@@ -1442,11 +1464,13 @@ describe("entity pull reset wiring", () => {
     );
     const resumed = event("中", 3, "delta");
     await client.persistResourceEntityChanges(resumed, () => true);
+    assert.ok(resumed.resourceVersions[0] != null);
     expect(resumed.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
       "a🙂中",
     );
     const replay = event("中", 3, "delta");
     await client.persistResourceEntityChanges(replay, () => true);
+    assert.ok(replay.resourceVersions[0] != null);
     expect(replay.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
       "a🙂中",
     );
@@ -1456,6 +1480,7 @@ describe("entity pull reset wiring", () => {
     });
     const late = event("a🙂", 2, "delta");
     await client.persistResourceEntityChanges(late, () => true);
+    assert.ok(late.resourceVersions[0] != null);
     expect(late.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
       "a🙂中",
     );
@@ -1482,6 +1507,7 @@ describe("entity pull reset wiring", () => {
     });
     fail = false;
     const exited = event("", 3, "delta", 4);
+    assert.ok(exited.resourceVersions[0] != null);
     exited.resourceVersions[0].viewSnapshot!.terminalOutput!.status = "exited";
     await client.persistResourceEntityChanges(exited, () => true);
     const stored = () =>
@@ -1543,6 +1569,7 @@ describe("entity pull reset wiring", () => {
       let finish: (() => void) | undefined;
       const persist = vi.fn(
         async (incoming: ResourceChangeEvent, current: () => boolean) => {
+          assert.ok(incoming.resourceVersions[0] != null);
           if (
             incoming.resourceVersions[0].revision === revision + 1 &&
             cause !== "failure"
@@ -1639,6 +1666,7 @@ describe("entity pull reset wiring", () => {
     reloadDelta.reason = "reconnect";
     reloadedDelivery.receive(reloadDelta);
     await vi.waitFor(() => expect(reloadedDispatch).toHaveBeenCalled());
+    assert.ok(reloadedDispatch.mock.calls[0] != null);
     expect(
       reloadedDispatch.mock.calls[0][0].resourceVersions[0].viewSnapshot
         ?.terminalOutput,
@@ -1663,6 +1691,7 @@ describe("entity pull reset wiring", () => {
     );
     const foreignSnapshot = event("foreign", 7, "snapshot", 80);
     foreignSnapshot.workspaceId = "9".repeat(32);
+    assert.ok(foreignSnapshot.resourceVersions[0] != null);
     foreignSnapshot.resourceVersions[0].cursor!.workspaceId =
       foreignSnapshot.workspaceId;
     noOpDelivery.receive(foreignSnapshot);

@@ -6,11 +6,11 @@ import path from "node:path";
 import {
   runtimeBinaries,
   runtimeBinaryName,
-} from "../desktop/runtime-binaries.mjs";
+} from "../desktop/runtime-binaries.ts";
 import {
   missingPythonModules,
   pythonEntryPoints,
-} from "../desktop/python-resources.mjs";
+} from "../desktop/python-resources.ts";
 
 const application = process.argv[2];
 if (!application) throw new Error("Supply the packaged .app path.");
@@ -56,10 +56,10 @@ assert.deepEqual(
 for (const file of [
   "workspace/web/dist/index.html",
   "helpers/studio-speech",
-  "helpers/recovery.cjs",
-  "helpers/desktop-recovery/recovery.cjs",
-  "helpers/desktop-recovery/backend.cjs",
-  "helpers/desktop-recovery/restart-environment.cjs",
+  "helpers/recovery.ts",
+  "helpers/desktop-recovery/recovery.ts",
+  "helpers/desktop-recovery/backend.ts",
+  "helpers/desktop-recovery/restart-environment.ts",
   "studio-fs-events",
   "studio-linux-vm",
   ...pythonEntryPoints,

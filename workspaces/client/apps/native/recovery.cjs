@@ -1,6 +1,6 @@
 // Native desktop entry point for the same guarded recovery configuration as Electron.
 const path = require("node:path");
-const { configureRecovery } = require("./desktop-recovery/recovery.cjs");
+const { configureRecovery } = require("./desktop-recovery/recovery.ts");
 
 async function main() {
   const [executable, resources, enabled] = process.argv.slice(2);

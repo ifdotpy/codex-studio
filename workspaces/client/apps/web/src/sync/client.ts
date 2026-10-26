@@ -80,7 +80,7 @@ import {
   subscribeTranscript,
 } from "./transcriptCache";
 
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 
@@ -99,7 +99,7 @@ import {
   holdEntityProjectionDatabaseLock,
 } from "./entityCacheStorage";
 
-export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
 

@@ -179,6 +179,9 @@ export type OutgoingMessage =
   | { kind: "discover-subscriptions" }
   | { kind: "status"; status: ResourceConnectionState }
   | { kind: "resource-recovery"; resources: ResourceRef[] };
+export type OutgoingTabMessage = OutgoingMessage &
+  Pick<TabMessage, "workspaceId" | "tabId" | "apiSchemaHash" | "health">;
+
 export type ResourceEventsOptions = {
   api: Pick<
     import("../api").ServerApi,
@@ -456,7 +459,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         apiSchemaHash: API_SCHEMA_HASH,
         workspaceId,
         tabId,
-      } satisfies TabMessage);
+      } satisfies OutgoingTabMessage);
     } catch {
       releaseStream();
       stopChannel();
