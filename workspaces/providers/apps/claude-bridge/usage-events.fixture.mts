@@ -1,3 +1,4 @@
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 export { resolveSettings } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 export {
@@ -6,7 +7,11 @@ export {
   forkSession,
   getSessionMessages,
 } from "./sdk-fixtures.ts";
-const events: unknown[] = JSON.parse(process.env.STUDIO_FIXTURE_EVENTS ?? "[]");
+// The parent test writes this private environment document from SDK-checked fixtures.
+function readEvents(): SessionFixtureMessage[] {
+  return JSON.parse(process.env.STUDIO_FIXTURE_EVENTS ?? "[]");
+}
+const events = readEvents();
 export function query({ prompt, options }: FixtureQuery) {
   const abort = new AbortController();
   return {
