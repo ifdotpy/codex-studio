@@ -426,7 +426,14 @@ export function useMobileViewport(active: boolean, compact = false) {
       next(1);
     };
     const focusWithoutNativePan = (event: Event) => {
-      if (!viewport || !primaryPointer.matches) return;
+      // The native shell removes WebKit's keyboard pan. There a programmatic
+      // refocus of an already focused composer does not show the keyboard.
+      if (
+        !viewport ||
+        nativeViewport() !== undefined ||
+        !primaryPointer.matches
+      )
+        return;
       if (
         event.type === "pointerdown" &&
         (event as PointerEvent).pointerType === "mouse"
