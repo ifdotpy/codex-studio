@@ -44,11 +44,9 @@ test("Draft sync ui", async ({
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
-    const sessionAgent = snapshot.runtime.agents.find(
+    const session = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
-    );
-
-    const session = sessionAgent!.id;
+    )!.id;
     const { workspaceId } = await (
       await fetch(origin + "/api/sync/identity")
     ).json();
@@ -536,9 +534,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       "Draft sync paused. Retrying automatically.",
       "a healthy pull cannot hide the failed push",
     );
-    const statusBounds = await status.boundingBox();
-
-    assert.ok(statusBounds!.height < 50, "failure is a compact status");
+    assert.ok(
+      (await status.boundingBox())!.height < 50,
+      "failure is a compact status",
+    );
     const recovered = savedText(remoteText);
     failPush = false;
     await page.clock.runFor(

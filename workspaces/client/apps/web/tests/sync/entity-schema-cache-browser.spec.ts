@@ -369,7 +369,7 @@ test.describe("legacy schema mismatch", () => {
           pendingEntityChanges !== undefined
         ) {
           const entityChanges = pendingEntityChanges;
-          const entitySequence = pendingEntitySequence!;
+
           const changeBody = protocol3SseEvent("resources", {
             protocol: 4,
             workspaceId: workspaceId!,
@@ -392,7 +392,7 @@ test.describe("legacy schema mismatch", () => {
           } satisfies components["schemas"]["ResourceChangeEvent"]);
           pendingChange = {
             body: changeBody,
-            sequence: entitySequence,
+            sequence: pendingEntitySequence,
             page: newPage,
             cursor: stateCursor,
             release: allowPendingChangeEventPromise!,
@@ -703,9 +703,8 @@ test.describe("legacy schema mismatch", () => {
         validProjectionDatabaseNames.length > 0,
         "the valid new-build tab has a populated projection cache",
       );
-      const activeNewPage = newPage;
       const readNewPageStateCheckpoint = () =>
-        activeNewPage.evaluate(async (names) => {
+        newPage!.evaluate(async (names) => {
           const name = names.find((databaseName) =>
             databaseName.endsWith("--projections"),
           );
@@ -748,7 +747,7 @@ test.describe("legacy schema mismatch", () => {
       );
       await expect
         .poll(() =>
-          activeNewPage.evaluate(async (names) => {
+          newPage!.evaluate(async (names) => {
             const existing = new Set(
               (await indexedDB.databases()).map(({ name }) => name),
             );
@@ -757,7 +756,7 @@ test.describe("legacy schema mismatch", () => {
         )
         .toEqual([]);
       assert.ok(
-        await activeNewPage.evaluate(async (names) => {
+        await newPage!.evaluate(async (names) => {
           const existing = new Set(
             (await indexedDB.databases()).map(({ name }) => name),
           );
@@ -774,7 +773,7 @@ test.describe("legacy schema mismatch", () => {
       // below). Cleanup deletes it and keeps the drafts and outbox.
       await expect
         .poll(() =>
-          activeNewPage.evaluate(
+          newPage!.evaluate(
             async (name) =>
               (await indexedDB.databases()).some(
                 (database) => database.name === name,
@@ -784,7 +783,7 @@ test.describe("legacy schema mismatch", () => {
         )
         .toBe(false);
       assert.ok(
-        await activeNewPage.evaluate(
+        await newPage!.evaluate(
           async (names) => {
             const existing = new Set(
               (await indexedDB.databases()).map(({ name }) => name),
@@ -809,7 +808,7 @@ test.describe("legacy schema mismatch", () => {
       ).toBeVisible({ timeout: 20_000 });
       await expect
         .poll(() =>
-          activeNewPage.evaluate(async (expected) => {
+          newPage!.evaluate(async (expected) => {
             const names = new Set(
               (await indexedDB.databases()).map(({ name }) => name),
             );
@@ -881,9 +880,9 @@ test.describe("legacy schema mismatch", () => {
         Number(mutationEntity.seq) > newPageStateCheckpoint.checkpoint!,
       );
       pendingEntitySequence = Number(mutationEntity.seq);
-      const entitySequence = pendingEntitySequence!;
+
       const orderedEntityChangeDocuments = entityChangeDocuments.filter(
-        (document) => Number(document.seq) <= entitySequence,
+        (document) => Number(document.seq) <= pendingEntitySequence!,
       );
       pendingEntityChanges = {
         after: newPageStateCheckpoint.checkpoint!,
@@ -1042,8 +1041,6 @@ test("different build collection sets share only drafts and outbox", async ({
   const oldPage = await context.newPage();
   const newPage = await context.newPage();
 
-  const firstLegacyRow = legacyRows[0];
-
   const fixtureModule = `/@fs${fileURLToPath(new URL("./fixtures/schemaCacheBrowserFixture.ts", import.meta.url))}`;
   const databaseName = `studio${workspaceId}`;
   const origin = fixtureOrigin(server);
@@ -1134,13 +1131,13 @@ test("different build collection sets share only drafts and outbox", async ({
           };
         })(),
       }),
-      firstLegacyRow.id,
+      legacyRows[0].id,
     );
     const { legacyProjectionStats, ...sharedData } = oldData;
     assert.deepEqual(sharedData, {
       draft: "new draft",
       message: "new queued",
-      projection: firstLegacyRow.payload,
+      projection: legacyRows[0].payload,
     });
     assert.equal(legacyProjectionStats.rows, legacyRows.length);
     assert.ok(legacyProjectionStats.bytes > 200_000);
