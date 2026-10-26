@@ -71,13 +71,13 @@ export interface Item {
   status?: string;
   tool?: string;
   arguments?: Record<string, unknown>;
-  command?: string;
+  command?: unknown;
   cwd?: string;
   aggregatedOutput?: string;
   exitCode?: number | null;
   result?: unknown;
   server?: string;
-  changes?: { path: string; kind: { type: string }; diff: string }[];
+  changes?: { path: unknown; kind: { type: string }; diff: unknown }[];
 }
 export interface Turn {
   synthetic?: boolean;
