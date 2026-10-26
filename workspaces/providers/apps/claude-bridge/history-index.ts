@@ -194,11 +194,11 @@ export async function readHistoryIndex(
 > {
   const api = options.sessionApi || sdk;
   const sessionId = session.nativeId || session.id;
-  const dir = session.nativeHistoryCwd || session.cwd;
   if (!nativeUuid(sessionId)) return null;
   try {
     const result = await readNativeHistory(session, options, async (tail) => {
       if (tail.offset !== 0) return null;
+      const dir = tail.cwd;
       const guarded = (await nativeHistoryRows(tail)).map(({ row }) => row);
       const before = await api.getSessionInfo(sessionId, { dir });
       if (

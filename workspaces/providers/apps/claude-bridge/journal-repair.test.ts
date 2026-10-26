@@ -21,14 +21,18 @@ async function fixture(
     options: StoreOptions;
     valid: string;
   }) => Promise<void>,
+  linked = false,
 ) {
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "claude-journal-repair-")),
   );
+  // Claude records the real path of a project opened through a symlink.
+  const alias = root + "-link";
+  if (linked) await fs.symlink(root, alias);
   const configDir = path.join(root, "native");
   const session: Session = {
     id,
-    cwd: root,
+    cwd: linked ? alias : root,
     turns: [
       {
         id: userId,
@@ -99,27 +103,31 @@ async function fixture(
     });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(alias, { force: true });
   }
 }
 
-test("malformed complete journal row repairs only with exact native history and reports skipped count", async () =>
-  fixture(async (f) => {
-    const restored = await createSessionStore(f.root, f.options).get(id);
-    assert.deepEqual(restored.turns, f.session.turns);
-    assert.equal(restored.name, "Saved name");
-    assert.equal(restored.journalRepair!.status, "repaired");
-    assert.equal(restored.journalRepair!.skippedRows, 1);
-    assert.equal(restored.journalRepair!.scopeConfirmed, true);
-    assert.equal(restored.journalRepair!.nativeHistoryConfirmed, true);
-    assert.match(
-      await fs.readFile(f.journal + ".corrupt", "utf8"),
-      /broken complete row/,
-    );
-    assert.deepEqual(
-      await createSessionStore(f.root, f.options).get(id),
-      restored,
-    );
-  }));
+test.each([false, true])(
+  "malformed complete journal row repairs only with exact native history and reports skipped count (symlinked cwd: %s)",
+  async (linked) =>
+    fixture(async (f) => {
+      const restored = await createSessionStore(f.root, f.options).get(id);
+      assert.deepEqual(restored.turns, f.session.turns);
+      assert.equal(restored.name, "Saved name");
+      assert.equal(restored.journalRepair!.status, "repaired");
+      assert.equal(restored.journalRepair!.skippedRows, 1);
+      assert.equal(restored.journalRepair!.scopeConfirmed, true);
+      assert.equal(restored.journalRepair!.nativeHistoryConfirmed, true);
+      assert.match(
+        await fs.readFile(f.journal + ".corrupt", "utf8"),
+        /broken complete row/,
+      );
+      assert.deepEqual(
+        await createSessionStore(f.root, f.options).get(id),
+        restored,
+      );
+    }, linked),
+);
 
 for (const kind of [
   "missing",

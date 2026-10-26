@@ -2994,12 +2994,9 @@ async function handle(
         throw new Error(
           "The effective target tool options changed before import",
         );
+      const destination = await nativeDestination(s.nativeId || s.id, p.cwd);
       discardQuery(p.session.id, active);
-      await publishNative(
-        p.path,
-        nativeDestination(s.nativeId || s.id, p.cwd),
-        !!existing,
-      );
+      await publishNative(p.path, destination, !!existing);
       if (existing) {
         const cached = await session(s.id);
         for (const key of Object.keys(cached))

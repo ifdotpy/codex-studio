@@ -302,7 +302,7 @@ test("producer null model and userMcp preserve fresh output and move override ha
       ).readAll(bridge.thread);
       assert.equal(session.userMcp, false);
       assert.deepEqual(session.moveTurnOptions, overrides);
-      const file = nativeDestination(
+      const file = await nativeDestination(
         session.nativeId || session.id,
         session.cwd,
         path.join(bridge.root, "native-config"),
