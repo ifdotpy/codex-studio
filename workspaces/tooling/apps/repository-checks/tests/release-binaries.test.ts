@@ -248,7 +248,7 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
     ),
     false,
   );
-  assert.match(plan(false).at(-1).args[0], /check-package-start\.mjs$/);
+  assert.match(plan(false).at(-1).args[0], /check-package-start\.ts$/);
   assert.equal(
     parseFlowArguments(["/tmp/out", "--hosted-ci-passed"]).hostedCiPassed,
     true,

@@ -1,9 +1,6 @@
-// @ts-check
 // Native desktop entry point for the same guarded recovery configuration as Electron.
-const path = require("node:path");
-const helper = path.join(__dirname, "desktop-recovery", "recovery.cjs");
-/** @type {typeof import("../desktop/recovery.cjs")} */
-const { configureRecovery } = require(helper);
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 async function main() {
   const [executable, resources, enabled] = process.argv.slice(2);
@@ -16,7 +13,12 @@ async function main() {
     throw new Error("Recovery requires the installed application resources.");
   if (!executable || !resources)
     throw new Error("Recovery requires application paths.");
-  const result = await configureRecovery({
+  const recovery: typeof import("../desktop/recovery.ts") = await import(
+    pathToFileURL(
+      path.join(import.meta.dirname, "desktop-recovery/recovery.ts"),
+    ).href
+  );
+  const result = await recovery.configureRecovery({
     applicationPath: executable,
     resources: path.join(resources, "workspace"),
     supervisor: path.join(resources, "recover_backend.py"),
@@ -25,7 +27,7 @@ async function main() {
   });
   process.stdout.write(JSON.stringify({ enabled: result.enabled }));
 }
-main().catch((error) => {
-  console.error(error.message);
+main().catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });
