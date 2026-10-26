@@ -1,3 +1,14 @@
+import type { LegacySyncIdentityResponse } from "./syncBrowserFixture.ts";
+import type { ResourceChangeEvent } from "./resourceEvents";
+import type { Page } from "@playwright/test";
+import { initializeDelivery } from "./resourceEntityDelivery.browser.fixture.ts";
+import {
+  fixturePort,
+  legacyPullResponse,
+  type FixturePull,
+  type LegacyAgentChange,
+  type LegacyEntityFrame,
+} from "./syncBrowserFixture.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,15 +30,15 @@ test("state stream persists records across tabs without pulls and repairs missin
   const { createFixtureViteServer: createServer } =
     await import("../../tests/playwright.ts");
   const workspaceId = "b".repeat(32);
-  const streams = new Set();
-  const pulls = [];
-  const rows = new Map();
+  const streams = new Set<import("node:http").ServerResponse>();
+  const pulls: FixturePull[] = [];
+  const rows = new Map<string, LegacyAgentChange>();
   let opened = 0;
   let sequence = 0;
   let revision = 0;
   let epoch = "entity-stream-first";
-  const put = (id, name, deleted = false) => {
-    const row = {
+  const put = (id: string, name: string, deleted = false) => {
+    const row: LegacyAgentChange = {
       op: "upsert",
       collection: "agent",
       id,
@@ -40,7 +51,12 @@ test("state stream persists records across tabs without pulls and repairs missin
   put("lead", "Initial lead");
   put("removed", "Remove me");
 
-  const frame = (reason, documents, after, reset = false) => ({
+  const frame = (
+    reason: ResourceChangeEvent["reason"],
+    documents?: LegacyAgentChange[],
+    after = 0,
+    reset = false,
+  ): LegacyEntityFrame => ({
     protocol: 4,
     workspaceId,
     epoch,
@@ -60,7 +76,7 @@ test("state stream persists records across tabs without pulls and repairs missin
       },
     ],
   });
-  const send = (event) => {
+  const send = (event: LegacyEntityFrame) => {
     for (const response of streams)
       response.write(protocol3SseEvent("resources", event));
   };
@@ -77,7 +93,7 @@ test("state stream persists records across tabs without pulls and repairs missin
         name: "resource-entity-delivery-fixture",
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
-            const url = new URL(request.url, "http://localhost");
+            const url = new URL(request.url ?? "", "http://localhost");
             if (url.pathname === "/entity-delivery-check") {
               response.setHeader("Content-Type", "text/html");
               response.end(
@@ -102,7 +118,11 @@ test("state stream persists records across tabs without pulls and repairs missin
             if (url.pathname === "/api/sync/identity") {
               response.setHeader("Content-Type", "application/json");
               response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-              response.end(JSON.stringify({ workspaceId }));
+              response.end(
+                JSON.stringify({
+                  workspaceId,
+                } satisfies LegacySyncIdentityResponse),
+              );
               return;
             }
             if (url.pathname === "/api/sync/pull") {
@@ -112,7 +132,7 @@ test("state stream persists records across tabs without pulls and repairs missin
               response.setHeader("Content-Type", "application/json");
               response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
               response.end(
-                JSON.stringify({
+                legacyPullResponse({
                   workspaceId,
                   documents: [...rows.values()]
                     .filter((row) => row.seq > after)
@@ -131,54 +151,37 @@ test("state stream persists records across tabs without pulls and repairs missin
     ],
   });
   const context = await browser.newContext();
-  const pages = [];
-  const errors = [];
+  const pages: Page[] = [];
+  const errors: string[] = [];
   const openPage = async () => {
     const page = await context.newPage();
     pages.push(page);
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/entity-delivery-check`,
+      `http://127.0.0.1:${fixturePort(server)}/entity-delivery-check`,
     );
-    await page.evaluate(async () => {
-      const client = await import("/src/sync/client.ts");
-      window.snapshot = null;
-      window.syncErrors = [];
-      window.connection = "closed";
-      window.stopConnection = client.watchResourceConnection(
-        (state) => (window.connection = state),
-      );
-      window.stopProjection = client.subscribeStateProjection(
-        (snapshot) => (window.snapshot = snapshot),
-        (error) => {
-          if (error) window.syncErrors.push(String(error));
-        },
-      );
-      window.checkpoint = async () => {
-        const { db } = await client.syncDatabase();
-        return (
-          await db.projections.findOne("state:entities:checkpoint").exec()
-        )?.seq;
-      };
-    });
+    await page.evaluate(initializeDelivery);
     return page;
   };
-  const waitForAgent = (page, id, name) =>
+  const waitForAgent = (page: Page, id: string, name: string) =>
     page.waitForFunction(
       ({ id, name }) =>
-        window.snapshot?.runtime.agents.find((agent) => agent.id === id)
-          ?.name === name,
+        window.syncDelivery.snapshot?.runtime.agents.find(
+          (agent) => agent.id === id,
+        )?.name === name,
       { id, name },
     );
-  const waitForCheckpoint = (page, seq) =>
-    expect.poll(() => page.evaluate(() => window.checkpoint())).toBe(seq);
+  const waitForCheckpoint = (page: Page, seq: number) =>
+    expect
+      .poll(() => page.evaluate(() => window.syncDelivery.checkpoint()))
+      .toBe(seq);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
   try {
     await server.listen();
     const page = await openPage();
     await waitForAgent(page, "lead", "Initial lead");
     await waitForCheckpoint(page, 2);
-    await page.waitForFunction(() => window.connection === "live");
+    await page.waitForFunction(() => window.syncDelivery.connection === "live");
     await settle();
     const initialPulls = pulls.length;
     assert.ok(
@@ -199,7 +202,7 @@ test("state stream persists records across tabs without pulls and repairs missin
     send(frame("change", [put("removed", "", true)], 3));
     await page.waitForFunction(
       () =>
-        !window.snapshot?.runtime.agents.some(
+        !window.syncDelivery.snapshot?.runtime.agents.some(
           (agent) => agent.id === "removed",
         ),
     );
@@ -213,7 +216,9 @@ test("state stream persists records across tabs without pulls and repairs missin
 
     const follower = await openPage();
     await waitForAgent(follower, "lead", "Stream update");
-    await follower.waitForFunction(() => window.connection === "live");
+    await follower.waitForFunction(
+      () => window.syncDelivery.connection === "live",
+    );
     await expect.poll(() => streams.size).toBe(1);
     await settle();
     const beforePeerUpdate = pulls.length;
@@ -289,7 +294,10 @@ test("state stream persists records across tabs without pulls and repairs missin
     assert.ok(pulls.every((pull) => pull.scope === "state:entities:v1"));
     assert.deepEqual(errors, []);
     for (const tab of pages)
-      assert.deepEqual(await tab.evaluate(() => window.syncErrors), []);
+      assert.deepEqual(
+        await tab.evaluate(() => window.syncDelivery.syncErrors),
+        [],
+      );
   } finally {
     try {
       await context.close();

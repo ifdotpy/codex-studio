@@ -1,3 +1,12 @@
+import type { LegacySyncIdentityResponse } from "./syncBrowserFixture.ts";
+import type { components } from "../generated/api";
+import type { ResourceChangeEvent } from "./resourceEvents";
+import type { Page } from "@playwright/test";
+import {
+  initializeWrites,
+  persistAcceptedWrite,
+} from "./entityProjectionWrites.browser.fixture.ts";
+import { fixturePort, legacyPullResponse } from "./syncBrowserFixture.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,12 +29,16 @@ for (const writerTab of [0, 1]) {
     const { createFixtureViteServer: createServer } =
       await import("../../tests/playwright.ts");
     const workspaceId = "e".repeat(32);
-    const streams = new Set();
-    const rows = new Map();
+    const streams = new Set<import("node:http").ServerResponse>();
+    const rows = new Map<string, components["schemas"]["SyncEntity"]>();
     let sequence = 2;
     let revision = 0;
     let resetPending = false;
-    const row = (id, name, seq) => ({
+    const row = (
+      id: string,
+      name: string,
+      seq: number,
+    ): components["schemas"]["SyncEntity"] => ({
       op: "upsert",
       collection: "agent",
       id,
@@ -34,7 +47,11 @@ for (const writerTab of [0, 1]) {
     });
     rows.set("lead", row("lead", "Lead", 1));
     rows.set("existing", row("existing", "Existing", 2));
-    const frame = (reason, changes, reset = false) => ({
+    const frame = (
+      reason: ResourceChangeEvent["reason"],
+      changes?: components["schemas"]["EntityChangeBatch"] | null,
+      reset = false,
+    ): ResourceChangeEvent => ({
       protocol: 4,
       workspaceId,
       epoch: "projection-reset-race",
@@ -56,7 +73,7 @@ for (const writerTab of [0, 1]) {
         },
       ],
     });
-    const send = (event) => {
+    const send = (event: ResourceChangeEvent) => {
       for (const response of streams)
         response.write(protocol3SseEvent("resources", event));
     };
@@ -73,7 +90,7 @@ for (const writerTab of [0, 1]) {
           name: "entity-projection-reset-race",
           configureServer(server) {
             server.middlewares.use((request, response, next) => {
-              const url = new URL(request.url, "http://localhost");
+              const url = new URL(request.url ?? "", "http://localhost");
               if (url.pathname === "/projection-reset-check") {
                 response.setHeader("Content-Type", "text/html");
                 response.end(
@@ -84,7 +101,11 @@ for (const writerTab of [0, 1]) {
               if (url.pathname === "/api/sync/identity") {
                 response.setHeader("Content-Type", "application/json");
                 response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-                response.end(JSON.stringify({ workspaceId }));
+                response.end(
+                  JSON.stringify({
+                    workspaceId,
+                  } satisfies LegacySyncIdentityResponse),
+                );
                 return;
               }
               if (url.pathname === "/api/sync/stream") {
@@ -104,7 +125,7 @@ for (const writerTab of [0, 1]) {
                 if (resetPending && after > 0) {
                   resetPending = false;
                   response.end(
-                    JSON.stringify({
+                    legacyPullResponse({
                       workspaceId,
                       reset: true,
                       floor: 4,
@@ -113,7 +134,7 @@ for (const writerTab of [0, 1]) {
                   );
                 } else {
                   response.end(
-                    JSON.stringify({
+                    legacyPullResponse({
                       workspaceId,
                       documents: [...rows.values()]
                         .filter((document) => document.seq > after)
@@ -135,43 +156,21 @@ for (const writerTab of [0, 1]) {
       ],
     });
     const context = await browser.newContext();
-    const pages = [];
-    const errors = [];
+    const pages: Page[] = [];
+    const errors: string[] = [];
     const openPage = async () => {
       const page = await context.newPage();
       pages.push(page);
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(
-        `http://127.0.0.1:${server.httpServer.address().port}/projection-reset-check`,
+        `http://127.0.0.1:${fixturePort(server)}/projection-reset-check`,
       );
-      await page.evaluate(async () => {
-        const client = await import("/src/sync/client.ts");
-        window.client = client;
-        window.snapshot = null;
-        window.errors = [];
-        window.connection = "closed";
-        client.watchResourceConnection((state) => (window.connection = state));
-        client.subscribeStateProjection(
-          (snapshot) => (window.snapshot = snapshot),
-          (error) => {
-            if (error) window.errors.push(String(error));
-          },
-        );
-        const { db } = await client.syncDatabase();
-        window.db = db;
-        window.checkpoint = async () =>
-          (
-            await db.projections.storageInstance.findDocumentsById(
-              ["state:entities:checkpoint"],
-              true,
-            )
-          )[0]?.seq;
-      });
+      await page.evaluate(initializeWrites);
       await page.waitForFunction(
         () =>
-          window.snapshot?.runtime.agents.some(
+          window.syncWrites.snapshot?.runtime.agents.some(
             (agent) => agent.id === "lead",
-          ) && window.connection === "live",
+          ) && window.syncWrites.connection === "live",
       );
       return page;
     };
@@ -181,20 +180,25 @@ for (const writerTab of [0, 1]) {
       if (writerTab) await openPage();
       await expect.poll(() => streams.size).toBe(1);
       const writer = pages[writerTab];
+      assert.ok(writer);
       await writer.evaluate(() => {
-        const storage = window.db.projections.storageInstance;
+        const db = window.syncWrites.db;
+        if (!db) throw new Error("Missing writer fixture database");
+        const storage = db.projections.storageInstance;
         const original = storage.bulkWrite.bind(storage);
         storage.bulkWrite = async (writes, ...rest) => {
           if (
-            !window.writeStarted &&
+            !window.syncWrites.writeStarted &&
             writes.some(
               (entry) =>
                 entry.document.id === "entity:agent:ghost" &&
                 entry.document.seq === 3,
             )
           ) {
-            window.writeStarted = true;
-            await new Promise((resolve) => (window.releaseWrite = resolve));
+            window.syncWrites.writeStarted = true;
+            await new Promise<void>(
+              (resolve) => (window.syncWrites.releaseWrite = resolve),
+            );
           }
           return original(writes, ...rest);
         };
@@ -206,16 +210,11 @@ for (const writerTab of [0, 1]) {
         documents: [row("ghost", "Already deleted", 3)],
       });
       if (writerTab) {
-        await writer.evaluate((event) => {
-          window.write = window.client.persistResourceEntityChanges(
-            event,
-            () => true,
-          );
-        }, accepted);
+        await writer.evaluate(persistAcceptedWrite, JSON.stringify(accepted));
       } else {
         send(accepted);
       }
-      await writer.waitForFunction(() => window.writeStarted);
+      await writer.waitForFunction(() => window.syncWrites.writeStarted);
       sequence = 4;
       rows.set("fresh", row("fresh", "Replacement baseline", 4));
       resetPending = true;
@@ -223,19 +222,21 @@ for (const writerTab of [0, 1]) {
       await primary.waitForTimeout(150);
       assert.equal(
         await primary.evaluate(() =>
-          window.snapshot?.runtime.agents.some((agent) => agent.id === "fresh"),
+          window.syncWrites.snapshot?.runtime.agents.some(
+            (agent) => agent.id === "fresh",
+          ),
         ),
         false,
         "Reset must wait for the accepted storage write",
       );
-      await writer.evaluate(() => window.releaseWrite());
+      await writer.evaluate(() => window.syncWrites.releaseWrite());
       await Promise.all(
         pages.map((page) =>
           page.waitForFunction(
             async () =>
-              window.snapshot?.runtime.agents.some(
+              window.syncWrites.snapshot?.runtime.agents.some(
                 (agent) => agent.id === "fresh",
-              ) && (await window.checkpoint()) === 4,
+              ) && (await window.syncWrites.checkpoint()) === 4,
           ),
         ),
       );
@@ -243,7 +244,7 @@ for (const writerTab of [0, 1]) {
       for (const page of pages) {
         assert.equal(
           await page.evaluate(() =>
-            window.snapshot.runtime.agents.some(
+            window.syncWrites.snapshot?.runtime.agents.some(
               (agent) => agent.id === "ghost",
             ),
           ),
@@ -256,14 +257,17 @@ for (const writerTab of [0, 1]) {
       for (const page of pages) {
         assert.equal(
           await page.evaluate(() =>
-            window.snapshot.runtime.agents.some(
+            window.syncWrites.snapshot?.runtime.agents.some(
               (agent) => agent.id === "ghost",
             ),
           ),
           false,
           "A stale peer frame must not resurrect a row removed by reset",
         );
-        assert.deepEqual(await page.evaluate(() => window.errors), []);
+        assert.deepEqual(
+          await page.evaluate(() => window.syncWrites.errors),
+          [],
+        );
       }
       assert.deepEqual(errors, []);
     } finally {

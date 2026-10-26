@@ -8,7 +8,7 @@ import path from "node:path";
 // CFBundleName in Info.plist stays too: Electron finds its helper apps as
 // "<CFBundleName> Helper.app" and does not start without them. The localized
 // InfoPlist.strings carry the shown name.
-export function setBundleDisplayName(application, name) {
+export function setBundleDisplayName(application: string, name: string) {
   const info = path.join(application, "Contents/Info.plist");
   const fileName = path.basename(application, ".app");
   const current = execFileSync(

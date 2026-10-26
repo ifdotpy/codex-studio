@@ -50,9 +50,10 @@ print(json.dumps(sorted(missing)))
 // through a local module, and that neither the directory nor the standard library
 // supplies. An empty list means that the Python programs can start.
 export function missingPythonModules(
-  directory,
+  directory: string,
   entryPoints = pythonEntryPoints,
-) {
+): string[] {
+  // The fixed script above writes this report; this boundary reads its own child output.
   return JSON.parse(
     execFileSync(
       "python3",

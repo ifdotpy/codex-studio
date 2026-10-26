@@ -9,17 +9,17 @@ requests, hooks, and tool failures. The installed CLI schema still matches those
 18 variants. This change covers the additional user recovery states in
 `tui/src/chatwidget/protocol.rs` and `tui/src/app/safety_buffering.rs`.
 
-| Native input | Studio behavior |
-| --- | --- |
-| `model/safetyBuffering/updated` | Show an active safety check in the current chat. Keep waiting dismisses the card without stopping the turn. |
-| Server-provided `fasterModel` | Offer an explicit retry with confirmation. No local model selection after a policy refusal. |
-| Response or tool activity | Remove the retry offer. Check native history before interruption and again before the fork. |
-| `model/verification` | Show the native recommendation for Trusted Access checks. Do not infer entitlement from a model name. |
-| `item/autoApprovalReview/started` | Show the pending tool review. |
-| `item/autoApprovalReview/completed` | Preserve denial, timeout, abort, and rationale. Quiet successful review. No client-side permission grant. |
-| `activeTurnNotSteerable` | Preserve the warning without failing the active turn, for both enum representations. |
-| `thread/closed` or `notLoaded` | Schedule an immediate read of the exact native turn. Unloading alone does not prove completion. |
-| Unknown error variant | Keep the native message and details through the existing generic handler. |
+| Native input                        | Studio behavior                                                                                             |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `model/safetyBuffering/updated`     | Show an active safety check in the current chat. Keep waiting dismisses the card without stopping the turn. |
+| Server-provided `fasterModel`       | Offer an explicit retry with confirmation. No local model selection after a policy refusal.                 |
+| Response or tool activity           | Remove the retry offer. Check native history before interruption and again before the fork.                 |
+| `model/verification`                | Show the native recommendation for Trusted Access checks. Do not infer entitlement from a model name.       |
+| `item/autoApprovalReview/started`   | Show the pending tool review.                                                                               |
+| `item/autoApprovalReview/completed` | Preserve denial, timeout, abort, and rationale. Quiet successful review. No client-side permission grant.   |
+| `activeTurnNotSteerable`            | Preserve the warning without failing the active turn, for both enum representations.                        |
+| `thread/closed` or `notLoaded`      | Schedule an immediate read of the exact native turn. Unloading alone does not prove completion.             |
+| Unknown error variant               | Keep the native message and details through the existing generic handler.                                   |
 
 ## Retry behavior
 
@@ -70,7 +70,7 @@ native retry or policy decisions.
 
 ## Desktop delivery
 
-The application package passes `desktop/package-test.mjs` with an isolated state
+The application package passes `desktop/package-test.ts` with an isolated state
 directory and a hidden window. The candidate is at
 `desktop/dist/Codex Studio-darwin-arm64/Codex Studio.app`.
 

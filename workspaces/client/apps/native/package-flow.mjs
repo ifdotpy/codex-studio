@@ -22,7 +22,7 @@ import {
   releaseTargetDirectory,
   releaseTargetEnvironment,
   verifyReleaseBinaries,
-} from "../desktop/release-binaries.mjs";
+} from "../desktop/release-binaries.ts";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");
@@ -55,7 +55,7 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
     {
       label: "signing check",
       command: "node",
-      args: [path.join(root, "../desktop/signing-check.mjs")],
+      args: [path.join(root, "../desktop/signing-check.ts")],
     },
     hostedCiPassed
       ? {

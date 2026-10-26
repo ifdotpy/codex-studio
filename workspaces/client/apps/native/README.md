@@ -124,7 +124,7 @@ just package-native /tmp/out --hosted-ci-passed
   Package validation and the hidden startup check run with Node and require
   no Python backend environment or PyO3 module.
 - `just package-native` runs the dev-profile host check next (`just
-test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
+  test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
   when hosted CI passed on the exact commit. The default runs the check.
 
 ## Signing setup
@@ -132,7 +132,7 @@ test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
 Every package is signed with one persistent certificate. A new certificate
 changes the application identity, and macOS then asks again for the permissions
 that the user already gave. The build refuses ad hoc signing. The signer is
-[signing.mjs](../desktop/signing.mjs).
+[signing.ts](../desktop/signing.ts).
 
 Agents must run `just signing-check` before `just package-native`.
 

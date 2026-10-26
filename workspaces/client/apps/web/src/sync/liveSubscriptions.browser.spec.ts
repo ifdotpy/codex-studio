@@ -1,3 +1,12 @@
+import type { components } from "../generated/api";
+import type { ResourceRef } from "./resourceEvents";
+import { initializeSubscriptions } from "./liveSubscriptions.browser.fixture.ts";
+import {
+  fixturePort,
+  type LegacySubscriptionFrame,
+  fixtureSubscriptions,
+  fixtureResources,
+} from "./syncBrowserFixture.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,24 +18,33 @@ import {
   createFixtureViteServer,
   expect,
   readApiSchemaHash,
+  protocol3SseEvent as sse,
   test,
 } from "../../tests/playwright.ts";
-
-const sse = (name, value) =>
-  `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
 
 test("switching chats changes subscriptions on one EventSource", async ({
   browser,
 }) => {
   const workspaceId = "b".repeat(32);
-  const sessions = new Map();
-  const updates = [];
+  const sessions = new Map<
+    string,
+    {
+      response: import("node:http").ServerResponse;
+      resources: (ResourceRef | components["schemas"]["SubscriptionAdd"])[];
+      url: URL;
+    }
+  >();
+  const updates: (components["schemas"]["SyncSubscriptionRequest"] & {
+    bytes: number;
+  })[] = [];
   let opened = 0;
   let revision = 0;
   let updateResponseBytes = 0;
   let hypotheticalReopenBytes = 0;
   let hypotheticalReopenRequestBytes = 0;
-  const frame = (resources) =>
+  const frame = (
+    resources: (ResourceRef | components["schemas"]["SubscriptionAdd"])[],
+  ) =>
     sse("resources", {
       protocol: 3,
       workspaceId,
@@ -35,7 +53,7 @@ test("switching chats changes subscriptions on one EventSource", async ({
       reason: "initial",
       resources,
       resourceVersions: resources.map(() => ({ revision })),
-    });
+    } satisfies LegacySubscriptionFrame);
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-live-subscriptions-"));
   const server = await createFixtureViteServer({
     configFile: false,
@@ -47,7 +65,7 @@ test("switching chats changes subscriptions on one EventSource", async ({
         name: "live-subscriptions-fixture",
         configureServer(server) {
           server.middlewares.use(async (request, response, next) => {
-            const url = new URL(request.url, "http://localhost");
+            const url = new URL(request.url ?? "", "http://localhost");
             if (url.pathname === "/live-subscriptions-check") {
               response.setHeader("Content-Type", "text/html");
               response.end(
@@ -57,7 +75,9 @@ test("switching chats changes subscriptions on one EventSource", async ({
             }
             if (url.pathname === "/api/sync/stream") {
               const sessionId = `00000000-0000-4000-8000-${String(++opened).padStart(12, "0")}`;
-              const resources = JSON.parse(url.searchParams.get("resources"));
+              const resources = fixtureResources(
+                url.searchParams.get("resources"),
+              );
               sessions.set(sessionId, { response, resources, url });
               response.on("close", () => sessions.delete(sessionId));
               response.setHeader("Content-Type", "text/event-stream");
@@ -70,14 +90,18 @@ test("switching chats changes subscriptions on one EventSource", async ({
               const chunks = [];
               for await (const chunk of request) chunks.push(chunk);
               const body = Buffer.concat(chunks);
-              const update = JSON.parse(body);
+              const update = fixtureSubscriptions(body.toString());
               const session = sessions.get(update.sessionId);
               if (!session) {
                 response.writeHead(410);
                 response.end();
                 return;
               }
-              const key = (resource) => JSON.stringify(resource);
+              const key = (
+                resource:
+                  | ResourceRef
+                  | components["schemas"]["SubscriptionAdd"],
+              ) => JSON.stringify(resource);
               session.resources = session.resources.filter(
                 (resource) =>
                   !update.remove.some(
@@ -85,7 +109,9 @@ test("switching chats changes subscriptions on one EventSource", async ({
                   ),
               );
               session.resources.push(...update.add);
-              const ack = sse("subscriptions", { gen: update.gen });
+              const ack = sse("subscriptions", {
+                gen: update.gen,
+              } satisfies components["schemas"]["SyncSubscriptionAck"]);
               const initial = frame(update.add);
               updates.push({ ...update, bytes: body.length });
               updateResponseBytes += Buffer.byteLength(ack + initial);
@@ -106,7 +132,11 @@ test("switching chats changes subscriptions on one EventSource", async ({
               session.response.write(ack + initial);
               response.setHeader("Content-Type", "application/json");
               response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-              response.end(JSON.stringify({ gen: update.gen }));
+              response.end(
+                JSON.stringify({
+                  gen: update.gen,
+                } satisfies components["schemas"]["SyncSubscriptionAck"]),
+              );
               return;
             }
             next();
@@ -120,60 +150,27 @@ test("switching chats changes subscriptions on one EventSource", async ({
     await server.listen();
     const page = await context.newPage();
     await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/live-subscriptions-check`,
+      `http://127.0.0.1:${fixturePort(server)}/live-subscriptions-check`,
     );
-    await page.evaluate(async (workspaceId) => {
-      const { createResourceEvents } =
-        await import("/src/sync/resourceEvents.ts");
-      const api = await import("/src/api.ts");
-      const { openServerEvents } = await import("/src/servers/eventSource.ts");
-      api.setToken("fixture-token");
-      const transport = createResourceEvents({
-        api,
-        sync: {
-          syncDatabase: async () => ({ workspaceId }),
-          persistResourceEntityChanges: async () => {},
-        },
-        tokenRates: {
-          configureTokenRateStream() {},
-          receiveResourceTokenRates() {
-            return true;
-          },
-        },
-        openEvents: openServerEvents,
-        storageName: (name) => name,
-      });
-      transport.watchResourceChanges({ kind: "state" }, () => {});
-      let stop;
-      const select = (agentId) => {
-        stop?.();
-        stop = transport.watchResourceChanges(
-          { kind: "transcript", agentId },
-          () => {
-            document.querySelector("output").textContent = agentId;
-          },
-        );
-      };
-      document.querySelector("#one").onclick = () => select("one");
-      document.querySelector("#two").onclick = () => select("two");
-      window.transport = transport;
-      select("one");
-    }, workspaceId);
+    await page.evaluate(initializeSubscriptions, workspaceId);
     await expect(page.locator("output")).toHaveText("one");
     await page.locator("#two").click();
     await expect(page.locator("output")).toHaveText("two");
     await page.evaluate(() => {
+      const one = document.querySelector<HTMLButtonElement>("#one");
+      const two = document.querySelector<HTMLButtonElement>("#two");
+      if (!one || !two) throw new Error("Missing subscription buttons");
       for (let i = 0; i < 10; i++) {
-        document.querySelector("#one").click();
-        document.querySelector("#two").click();
+        one.click();
+        two.click();
       }
-      document.querySelector("#one").click();
+      one.click();
     });
     await expect(page.locator("output")).toHaveText("one");
     assert.equal(opened, 1);
     assert.equal(updates.length, 2);
-    assert.deepEqual(updates[0].add, [{ kind: "transcript", agentId: "two" }]);
-    assert.deepEqual(updates[0].remove, [
+    assert.deepEqual(updates[0]?.add, [{ kind: "transcript", agentId: "two" }]);
+    assert.deepEqual(updates[0]?.remove, [
       { kind: "transcript", agentId: "one" },
     ]);
     console.log(
@@ -194,14 +191,18 @@ test("switching chats changes subscriptions on one EventSource", async ({
               total +
               update.bytes +
               Buffer.byteLength("/api/sync/subscriptions") +
-              Buffer.byteLength(JSON.stringify({ gen: update.gen })),
+              Buffer.byteLength(
+                JSON.stringify({
+                  gen: update.gen,
+                } satisfies components["schemas"]["SyncSubscriptionAck"]),
+              ),
             0,
           ),
         reopenProtocolBytes:
           hypotheticalReopenBytes + hypotheticalReopenRequestBytes,
       }),
     );
-    await page.evaluate(() => window.transport.dispose());
+    await page.evaluate(() => window.syncSubscriptions.transport.dispose());
   } finally {
     await context.close();
     for (const { response } of sessions.values()) response.end();

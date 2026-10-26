@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, realpath, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,10 +8,12 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { execFileSync, spawnSync } from "node:child_process";
 const root = path.dirname(fileURLToPath(import.meta.url));
-const port = await new Promise((resolve) => {
+const port = await new Promise<number>((resolve) => {
   const server = createServer();
   server.listen(0, "127.0.0.1", () => {
-    const port = server.address().port;
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const port = address.port;
     server.close(() => resolve(port));
   });
 });
@@ -21,7 +24,7 @@ const executable =
     "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
   );
 const origin = `http://127.0.0.1:${port}`;
-let desktop;
+let desktop: ElectronApplication | null = null;
 let pid;
 const temp = await mkdtemp(path.join(tmpdir(), "studio-pkg-"));
 const state = path.join(temp, "state");
@@ -45,11 +48,17 @@ try {
     () => !!window.codexDesktop && !!document.querySelector("textarea"),
   );
   assert.equal(
-    await page.evaluate(() =>
-      ["requestMicrophone", "prepareTranscription", "transcribeAudio"].every(
-        (method) => typeof window.codexDesktop[method] === "function",
-      ),
-    ),
+    await page.evaluate(() => {
+      const bridge = window.codexDesktop;
+      if (!bridge) throw new Error("The desktop bridge is unavailable.");
+      return [
+        "requestMicrophone",
+        "prepareTranscription",
+        "transcribeAudio",
+      ].every(
+        (method) => typeof Reflect.get(bridge ?? {}, method) === "function",
+      );
+    }),
     true,
   );
   const speech = JSON.parse(
@@ -109,7 +118,7 @@ try {
   assert.equal(await desktop.evaluate(({ app }) => app.isPackaged), true);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );

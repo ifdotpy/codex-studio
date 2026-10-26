@@ -1,52 +1,67 @@
+import { parsedRecord } from "./test-support.ts";
+import { nodeFixture } from "./test-support.ts";
+import { present, record } from "./test-support.ts";
+import type { RawNativeAction } from "./test-support.ts";
+import type { DesktopBridge } from "./api.ts";
+import type { NativeFrame, NativeEvent } from "./main.ts";
+import type { NotificationConstructorOptions } from "electron";
+import { transcribe } from "./speech.ts";
+import type { SpeechProgress } from "./speech.ts";
+import { serverFrameHost } from "./frame-owner.ts";
+import { mainTestSource, mainDependency } from "./main-test-source.ts";
 import assert from "node:assert/strict";
 import { readFile, mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 import vm from "node:vm";
 import { test } from "vitest";
 
 test("desktop native settings, notification and speech boundaries work with fixtures", async () => {
-  const require = createRequire(import.meta.url);
   const folder = await mkdtemp(join(tmpdir(), "studio-native-ux-"));
-  const desktop = fileURLToPath(new URL("./", import.meta.url));
-  const main = await readFile(new URL("./main.cjs", import.meta.url), "utf8");
+  const main = mainTestSource();
   async function fixture() {
-    let window, handler, notification, ready;
+    const windows: Window[] = [];
+    const notices: Notice[] = [];
+    let handler: RawNativeAction | undefined;
+    let ready: () => void = () => {};
     const display = {
       id: 1,
       workArea: { x: 0, y: 0, width: 1440, height: 960 },
     };
-    const started = new Promise((resolve) => {
+    const started = new Promise<void>((resolve) => {
       ready = resolve;
     });
-    const events = [];
-    const intervals = new Set();
+    const events: unknown[][] = [];
+    const intervals = new Set<() => void>();
     let backendBuild = "installed";
-    let notificationFailure = null;
+    let notificationFailure: string | null = null;
     class Window extends EventEmitter {
+      webContents = Object.assign(new EventEmitter(), {
+        mainFrame: {
+          url: "http://localhost:1234/",
+          parent: null,
+          frames: [] as NativeFrame[],
+          processId: 1,
+          routingId: 1,
+          isDestroyed: () => false,
+          send: (...args: unknown[]) => this.webContents.send(...args),
+        },
+        session: {
+          setPermissionRequestHandler() {},
+          setPermissionCheckHandler() {},
+        },
+        setWindowOpenHandler() {},
+        isDestroyed: () => false,
+        getURL: () => "http://localhost:1234/",
+        send: (...args: unknown[]) => {
+          events.push(args);
+          this.webContents.emit("sent", ...args);
+        },
+      });
       constructor() {
         super();
-        window = this;
-        this.webContents = Object.assign(new EventEmitter(), {
-          mainFrame: {
-            url: "http://localhost:1234/",
-            send: (...args) => window.webContents.send(...args),
-          },
-          session: {
-            setPermissionRequestHandler() {},
-            setPermissionCheckHandler() {},
-          },
-          setWindowOpenHandler() {},
-          isDestroyed: () => false,
-          getURL: () => "http://localhost:1234/",
-          send: (...args) => {
-            events.push(args);
-            window.webContents.emit("sent", ...args);
-          },
-        });
+        windows.push(this);
       }
       async loadURL() {}
       isDestroyed() {
@@ -66,9 +81,10 @@ test("desktop native settings, notification and speech boundaries work with fixt
       static isSupported() {
         return true;
       }
-      constructor(options) {
+      options: NotificationConstructorOptions;
+      constructor(options: NotificationConstructorOptions) {
         super();
-        notification = this;
+        notices.push(this);
         this.options = options;
       }
       show() {
@@ -94,14 +110,14 @@ test("desktop native settings, notification and speech boundaries work with fixt
       },
     };
     vm.runInNewContext("(function(){\n" + main + "\n})()", {
-      require: (name) =>
+      require: (name: string) =>
         name === "electron"
           ? {
               app,
               BrowserWindow: Window,
               dialog: { showErrorBox() {} },
               ipcMain: {
-                handle: (_key, value) => {
+                handle: (_key: string, value: RawNativeAction) => {
                   handler = value;
                 },
               },
@@ -117,36 +133,39 @@ test("desktop native settings, notification and speech boundaries work with fixt
                 getAllDisplays: () => [display],
               },
             }
-          : name === "./backend.cjs"
+          : name === "./backend.ts"
             ? {
                 ensureBackend: async () => ({
                   origin: "http://localhost:1234",
                   stateDir: folder,
                 }),
-                identity: async (origin, state) => {
+                identity: async (origin: string, state: string) => {
                   assert.equal(origin, "http://localhost:1234");
                   assert.equal(state, folder);
                   return { backendBuild };
                 },
-                updateStatus: (_resources, running) => ({
+                updateStatus: (
+                  _resources: string,
+                  running: { backendBuild: string },
+                ) => ({
                   updateRequired: running.backendBuild !== "installed",
                   availableBackendBuild: "installed",
                 }),
               }
-            : name === "./ui-host.cjs"
+            : name === "./ui-host.ts"
               ? {
                   startUiHost: async () => ({
                     origin: "http://127.0.0.1:1235",
                     close: async () => {},
                   }),
                 }
-              : name === "./speech.cjs"
-                ? require("./speech.cjs")
-                : name === "./recovery.cjs"
-                  ? require("./recovery.cjs")
+              : name === "./speech.ts"
+                ? mainDependency("./speech.ts")
+                : name === "./recovery.ts"
+                  ? mainDependency("./recovery.ts")
                   : name.startsWith("./")
-                    ? require(join(desktop, name.slice(2)))
-                    : require(name),
+                    ? mainDependency(name)
+                    : mainDependency(name),
       process: { argv: ["--hidden"], env: {}, platform: "darwin" },
       __dirname: join(folder, "desktop"),
       module: { exports: {} },
@@ -160,48 +179,59 @@ test("desktop native settings, notification and speech boundaries work with fixt
       URL,
       setTimeout,
       clearTimeout,
-      setInterval: (callback) => {
+      setInterval: (callback: () => void) => {
         intervals.add(callback);
         return callback;
       },
-      clearInterval: (callback) => intervals.delete(callback),
+      clearInterval: (callback: () => void) => intervals.delete(callback),
       console: { log: ready, error: console.error },
     });
     await started;
+    const window = present(windows.at(-1));
+    const action = present(handler);
     const event = {
       sender: window.webContents,
       senderFrame: window.webContents.mainFrame,
-    };
+    } satisfies NativeEvent;
     return {
-      invoke: (method, value) => handler(event, { method, value }),
-      handler,
+      invoke: (method: string, value?: unknown) =>
+        action(event, { method, value }),
+      handler: action,
       event,
       events,
       intervals,
-      notification: () => notification,
-      setBackendBuild: (value) => {
+      notification: () => present(notices.at(-1)),
+      setBackendBuild: (value: string) => {
         backendBuild = value;
       },
-      setNotificationFailure: (value) => {
+      setNotificationFailure: (value: string | null) => {
         notificationFailure = value;
       },
     };
   }
   try {
     let f = await fixture();
-    assert.equal((await f.invoke("getBackendUpdate")).updateRequired, false);
-    const serverFrame = {
-      url: `http://${require("./frame-owner.cjs").serverFrameHost("local")}:1235/?studio-server=local&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+    assert.equal(
+      record(await f.invoke("getBackendUpdate")).updateRequired,
+      false,
+    );
+    const serverFrame: NativeFrame = {
+      processId: 2,
+      routingId: 2,
+      frames: [],
+      isDestroyed: () => false,
+      send() {},
+      url: `http://${serverFrameHost("local")}:1235/?studio-server=local&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
       parent: f.event.senderFrame,
     };
     f.event.senderFrame.frames = [serverFrame];
     const serverEvent = { sender: f.event.sender, senderFrame: serverFrame };
     assert.equal(
-      (
+      record(
         await f.handler(serverEvent, {
           method: "serverNativeAction",
           value: { serverId: "local", method: "getBackendUpdate" },
-        })
+        }),
       ).updateRequired,
       false,
     );
@@ -296,15 +326,20 @@ test("desktop native settings, notification and speech boundaries work with fixt
       /Invalid server frame owner/,
     );
 
-    const remoteManagementFrame = {
-      url: `http://${require("./frame-owner.cjs").serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+    const remoteManagementFrame: NativeFrame = {
+      processId: 3,
+      routingId: 3,
+      frames: [],
+      isDestroyed: () => false,
+      send() {},
+      url: `http://${serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
       parent: f.event.senderFrame,
     };
     f.event.senderFrame.frames.push(remoteManagementFrame);
     for (const [owner, origin, frame] of [
       ["local", "http://localhost:1234", serverFrame],
       ["remote", "https://remote.tailnet.ts.net", remoteManagementFrame],
-    ]) {
+    ] as const) {
       for (const path of [
         "/api/multi-server",
         "/api/multi-server/",
@@ -331,7 +366,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       }
     }
     assert.equal(
-      (
+      record(
         await f.handler(serverEvent, {
           method: "serverCredentialAction",
           value: {
@@ -341,7 +376,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
             url: "http://localhost:1234/api/messages",
             method: "POST",
           },
-        })
+        }),
       ).status,
       200,
     );
@@ -378,9 +413,15 @@ test("desktop native settings, notification and speech boundaries work with fixt
       /Use the server manager/,
     );
     f.setBackendBuild("old");
-    assert.equal((await f.invoke("getBackendUpdate")).updateRequired, true);
+    assert.equal(
+      record(await f.invoke("getBackendUpdate")).updateRequired,
+      true,
+    );
     f.setBackendBuild("installed");
-    assert.equal((await f.invoke("getBackendUpdate")).updateRequired, false);
+    assert.equal(
+      record(await f.invoke("getBackendUpdate")).updateRequired,
+      false,
+    );
     await assert.rejects(
       f.handler(
         { sender: {}, senderFrame: f.event.senderFrame },
@@ -413,7 +454,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       "ordinary alerts are silent",
     );
     f.notification().emit("click");
-    assert.deepEqual(JSON.parse(JSON.stringify(f.events.slice(1))), [
+    assert.deepEqual(parsedRecord(JSON.stringify(f.events.slice(1))), [
       ["show"],
       ["focus"],
       ["codex-desktop-navigate", target],
@@ -452,47 +493,53 @@ test("desktop native settings, notification and speech boundaries work with fixt
       new URL("./preload.cjs", import.meta.url),
       "utf8",
     );
-    let api;
+    let api: DesktopBridge | undefined;
     const ipc = Object.assign(new EventEmitter(), {
-      invoke: async (...args) => args,
+      invoke: async (...args: unknown[]) => args,
     });
-    const listeners = {};
+    const listeners: Record<string, (event: Pick<Event, "isTrusted">) => void> =
+      {};
     vm.runInNewContext(preload, {
       process: { isMainFrame: true, platform: "darwin", argv: [] },
       URLSearchParams,
       location: { search: "" },
       window: {
-        addEventListener: (name, cb) => {
+        addEventListener: (
+          name: string,
+          cb: (event: Pick<Event, "isTrusted">) => void,
+        ) => {
           listeners[name] = cb;
         },
       },
       performance: { now: () => 10 },
       require: () => ({
         contextBridge: {
-          exposeInMainWorld: (_name, value) => {
+          exposeInMainWorld: (_name: string, value: DesktopBridge) => {
             api = value;
           },
         },
         ipcRenderer: ipc,
       }),
     });
-    const updateCall = await api.getBackendUpdate();
-    assert.equal(updateCall[0], "codex-desktop");
-    assert.equal(updateCall[1].method, "getBackendUpdate");
-    assert.equal(api.getNotifications, undefined);
-    assert.equal(api.setNotifications, undefined);
-    listeners.click({ isTrusted: true });
+    assert(api);
+    const updateCall = await present(api.getBackendUpdate)();
+    assert.equal(record(updateCall)["0"], "codex-desktop");
+    assert.equal(record(record(updateCall)["1"]).method, "getBackendUpdate");
+    assert.equal(Reflect.get(api, "getNotifications"), undefined);
+    assert.equal(Reflect.get(api, "setNotifications"), undefined);
+    present(listeners.click)({ isTrusted: true });
     const cancelCall = await api.cancelTranscription("a");
-    assert.equal(cancelCall[0], "codex-desktop");
-    assert.equal(cancelCall[1].method, "cancelTranscription");
-    const received = [];
+    assert.equal(record(cancelCall)["0"], "codex-desktop");
+    assert.equal(record(record(cancelCall)["1"]).method, "cancelTranscription");
+    const received: Parameters<
+      Parameters<DesktopBridge["onNavigate"]>[0]
+    >[0][] = [];
     const unsubscribe = api.onNavigate((value) => received.push(value));
     ipc.emit("codex-desktop-navigate", {}, target);
     unsubscribe();
     ipc.emit("codex-desktop-navigate", {}, target);
     assert.deepEqual(received, [target]);
 
-    const { transcribe } = require("./speech.cjs");
     const data = new ArrayBuffer(46),
       view = new DataView(data),
       bytes = new Uint8Array(data);
@@ -501,7 +548,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       [8, "WAVE"],
       [12, "fmt "],
       [36, "data"],
-    ])
+    ] as const)
       bytes.set(Buffer.from(text), offset);
     for (const [offset, value] of [
       [4, 38],
@@ -509,22 +556,18 @@ test("desktop native settings, notification and speech boundaries work with fixt
       [24, 16000],
       [28, 32000],
       [40, 2],
-    ])
+    ] as const)
       view.setUint32(offset, value, true);
     for (const [offset, value] of [
       [20, 1],
       [22, 1],
       [32, 2],
       [34, 16],
-    ])
+    ] as const)
       view.setUint16(offset, value, true);
     const helper = join(folder, "helper");
-    await writeFile(
-      helper,
-      '#!/usr/bin/env node\nprocess.stderr.write(\'{"type":"progress","completed":0,"total":2}\\n\');process.stderr.write(\'{"type":"progress","completed":2,"total":2}\\n\');console.log(\'{"text":"ok"}\');',
-      { mode: 0o700 },
-    );
-    const progress = [];
+    await writeFile(helper, nodeFixture("speech-progress"), { mode: 0o700 });
+    const progress: SpeechProgress[] = [];
     assert.equal(
       (
         await transcribe({ audio: data, locale: "en-US" }, helper, {
@@ -537,10 +580,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       { completed: 0, total: 2 },
       { completed: 2, total: 2 },
     ]);
-    await writeFile(
-      helper,
-      '#!/usr/bin/env node\nprocess.stderr.write(\'{"type":"progress","completed":0,"total":1}\\n\');setInterval(()=>{},1000);',
-    );
+    await writeFile(helper, nodeFixture("speech-pending"));
     await mkdir(join(folder, "desktop/native"), { recursive: true });
     await writeFile(
       join(folder, "desktop/native/studio-speech"),
@@ -548,9 +588,20 @@ test("desktop native settings, notification and speech boundaries work with fixt
       { mode: 0o700 },
     );
     const permit = await f.invoke("prepareTranscription");
-    const reported = new Promise((resolve) =>
-      f.event.sender.once("sent", (channel, value) =>
-        resolve({ channel, value }),
+    const reported = new Promise<{
+      channel: string;
+      value: Parameters<
+        Parameters<DesktopBridge["onTranscriptionProgress"]>[0]
+      >[0];
+    }>((resolve) =>
+      f.event.sender.once(
+        "sent",
+        (
+          channel: string,
+          value: Parameters<
+            Parameters<DesktopBridge["onTranscriptionProgress"]>[0]
+          >[0],
+        ) => resolve({ channel, value }),
       ),
     );
     const active = f.invoke("transcribeAudio", {
@@ -580,11 +631,12 @@ test("desktop native settings, notification and speech boundaries work with fixt
     );
     for (const action of ["release", "navigate", "destroy"]) {
       const remoteFrame = {
-        url: `http://${require("./frame-owner.cjs").serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+        url: `http://${serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
         parent: f.event.senderFrame,
+        frames: [],
         processId: 12,
         routingId: 34,
-        send: (...args) => f.event.sender.send(...args),
+        send: (...args: unknown[]) => f.event.sender.send(...args),
         destroyed: false,
         isDestroyed() {
           return this.destroyed;
@@ -592,7 +644,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       };
       f.event.senderFrame.frames = [remoteFrame];
       const remoteEvent = { sender: f.event.sender, senderFrame: remoteFrame };
-      const remoteInvoke = (method, value) =>
+      const remoteInvoke = (method: string, value?: unknown) =>
         f.handler(remoteEvent, { method, value });
       const remotePermit = await remoteInvoke("prepareTranscription");
       const progressReady = new Promise((resolve) =>
