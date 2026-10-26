@@ -235,6 +235,10 @@
     min-block-size: var(--studio-touch-target);
     touch-action: manipulation;
   }
+  /* Keep a summary's text beside its row's icon, not at the top of the target. */
+  summary {
+    align-content: center;
+  }
 }
 
 @media (max-width: 760px) {
