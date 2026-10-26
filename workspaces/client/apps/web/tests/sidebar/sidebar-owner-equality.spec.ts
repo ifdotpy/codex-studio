@@ -1,10 +1,27 @@
+import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
+import type { TestRuntimeView } from "../playwright.ts";
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import assert from "node:assert/strict";
+import type { ServerNavigation } from "../../src/servers/navigation.ts";
+import type { ScreenMessage } from "../../src/servers/screenChannel.ts";
+import type { TestAgent } from "../playwright.ts";
+type SidebarNavigationMessage = ScreenMessage & {
+  navigation: ServerNavigation;
+};
+declare global {
+  interface Window {
+    sidebarOwnerSnapshots: SidebarNavigationMessage[];
+  }
+}
+import type { ServerFixture } from "../servers/browser-fixture.ts";
+import type { Locator } from "playwright";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
 const scope = "/same/state";
 const path = "/same/project";
 const otherPath = "/other/project";
-const folderKey = (id) => JSON.stringify([path, "folder", id]);
+const folderKey = (id: string) => JSON.stringify([path, "folder", id]);
 const teamKey = JSON.stringify([path, "team", "team"]);
 const compactKey = `codex-project-compact:${scope}`;
 const treeKey = `codex-project-tree:${scope}`;
@@ -22,68 +39,115 @@ const order = {
   [JSON.stringify(["chats", path, true, false])]: ["overlap"],
 };
 
-async function organization(sidebar) {
+async function organization(sidebar: Locator) {
   return sidebar.locator("#chat-list").evaluate((list) => {
-    const visible = (element) => element.getClientRects().length > 0;
+    const visible = (element: Element) => element.getClientRects().length > 0;
     return {
-      projects: [...list.querySelectorAll(".sidebar-project")].map(
+      projects: [...list.querySelectorAll<HTMLElement>(".sidebar-project")].map(
         (project) => ({
           path: project.dataset.projectPath,
-          name: project.querySelector(
-            ":scope > .project-tree-heading .project-tree-toggle span",
+          name: (
+            project.querySelector(
+              ":scope > .project-tree-heading .project-tree-toggle span",
+            ) ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
           ).textContent,
-          expanded: project
-            .querySelector(
+          expanded: (
+            project.querySelector(
               ":scope > .project-tree-heading .project-tree-toggle",
-            )
-            .getAttribute("aria-expanded"),
+            ) ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).getAttribute("aria-expanded"),
         }),
       ),
-      folders: [...list.querySelectorAll("[data-folder-id]")]
+      folders: [...list.querySelectorAll<HTMLElement>("[data-folder-id]")]
         .filter(visible)
         .map((folder) => ({
           id: folder.dataset.folderId,
           parent:
-            folder.parentElement.closest("[data-folder-id]")?.dataset
-              .folderId || null,
-          name: folder.querySelector(
-            ":scope > .project-tree-heading .project-tree-toggle span",
+            (
+              folder.parentElement ??
+              (() => {
+                throw new Error("Missing fixture value");
+              })()
+            ).closest<HTMLElement>("[data-folder-id]")?.dataset.folderId ||
+            null,
+          name: (
+            folder.querySelector(
+              ":scope > .project-tree-heading .project-tree-toggle span",
+            ) ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
           ).textContent,
-          expanded: folder
-            .querySelector(
+          expanded: (
+            folder.querySelector(
               ":scope > .project-tree-heading .project-tree-toggle",
-            )
-            .getAttribute("aria-expanded"),
+            ) ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).getAttribute("aria-expanded"),
         })),
-      teams: [...list.querySelectorAll("[data-peer-team]")]
+      teams: [...list.querySelectorAll<HTMLElement>("[data-peer-team]")]
         .filter(visible)
         .map((team) => ({
           id: team.dataset.peerTeam,
-          name: team.querySelector(".peer-team-toggle span").textContent,
-          expanded: team
-            .querySelector(".peer-team-toggle")
-            .getAttribute("aria-expanded"),
+          name: (
+            team.querySelector(".peer-team-toggle span") ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).textContent,
+          expanded: (
+            team.querySelector(".peer-team-toggle") ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).getAttribute("aria-expanded"),
         })),
-      chats: [...list.querySelectorAll(".chat-row")]
+      chats: [...list.querySelectorAll<HTMLElement>(".chat-row")]
         .filter(visible)
         .map((chat) => ({
           id: chat.dataset.chat || null,
-          name: chat.querySelector("strong").textContent,
+          name: (
+            chat.querySelector("strong") ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).textContent,
           pinned: !!chat.querySelector(".chat-pin"),
-          alias: chat.querySelector(".chat-server-line").textContent,
-          folder: chat.closest("[data-folder-id]")?.dataset.folderId || null,
-          team: chat.closest("[data-peer-team]")?.dataset.peerTeam || null,
+          alias: (
+            chat.querySelector(".chat-server-line") ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).textContent,
+          folder:
+            chat.closest<HTMLElement>("[data-folder-id]")?.dataset.folderId ||
+            null,
+          team:
+            chat.closest<HTMLElement>("[data-peer-team]")?.dataset.peerTeam ||
+            null,
         })),
-      compact: [...list.querySelectorAll(".project-show-all")]
+      compact: [...list.querySelectorAll<HTMLElement>(".project-show-all")]
         .filter(visible)
         .map((button) => button.textContent),
     };
   });
 }
 
-function seedFixture(local) {
+function seedFixture(local: ServerFixture) {
   const base = local.snapshot.threads[0];
-  const chat = (id, name, extra = {}) => ({
+  const chat = (
+    id: string,
+    name: string,
+    extra: Partial<TestAgent> = {},
+  ): TestAgent => ({
     ...base,
     id,
     rootId: id,
@@ -107,6 +171,8 @@ function seedFixture(local) {
     chat("member-b", "Team member B"),
     chat("archived-chat", "Archived chat", { archived: true }),
   ]);
+  const baseProject = local.snapshot.runtime.projects[0];
+  assert.ok(baseProject);
   Object.assign(local.snapshot.runtime, {
     projectOrganizationVersion: 1,
     peerTeamsVersion: 1,
@@ -114,7 +180,7 @@ function seedFixture(local) {
     peerTeams: teams,
     projects: [
       {
-        ...local.snapshot.runtime.projects[0],
+        ...baseProject,
         path,
         name: "Project A",
         folders: [
@@ -133,10 +199,10 @@ function seedFixture(local) {
         name: "Saved shared chat",
         projectPath: path,
         members: ["member-a", "member-b"],
-        radio: { direct: true },
+        radio: structuredClone(sidebarFixtureRadio),
       },
     ],
-  });
+  } satisfies Partial<TestRuntimeView>);
 }
 
 test("the owner adapter preserves saved organization in standalone and classic server views", async ({
@@ -160,11 +226,14 @@ test("the owner adapter preserves saved organization in standalone and classic s
         origin,
         destination,
       }) => {
-        window.__sidebarSnapshots = [];
-        window.addEventListener("message", (event) => {
-          if (event.data?.kind === "studio-server-navigation")
-            window.__sidebarSnapshots.push(event.data);
-        });
+        window.sidebarOwnerSnapshots = [];
+        window.addEventListener(
+          "message",
+          (event: MessageEvent<SidebarNavigationMessage>) => {
+            if (event.data?.kind === "studio-server-navigation")
+              window.sidebarOwnerSnapshots.push(event.data);
+          },
+        );
         const server = new URLSearchParams(location.search).get(
           "studio-server",
         );
@@ -173,7 +242,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
             [compactKey, compact],
             [treeKey, tree],
             [orderKey, order],
-          ]) {
+          ] as const) {
             localStorage.setItem(key, JSON.stringify(value));
           }
         }
@@ -219,7 +288,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
       "Project B",
       "Project A",
     ]);
-    expect(before.projects[0].expanded).toBe("true");
+    expect(requiredFixtureValue(before.projects[0]).expanded).toBe("true");
     expect(before.folders).toEqual([
       { id: "parent", parent: null, name: "Parent", expanded: "true" },
       { id: "nested", parent: "parent", name: "Nested", expanded: "false" },
@@ -231,7 +300,10 @@ test("the owner adapter preserves saved organization in standalone and classic s
       "Saved shared chat",
       "Saved pin",
     ]);
-    expect(before.chats.find((row) => row.id === "overlap").pinned).toBe(true);
+    expect(
+      requiredFixtureValue(before.chats.find((row) => row.id === "overlap"))
+        .pinned,
+    ).toBe(true);
     expect(before.compact).toEqual(["Hide old"]);
     await standalone.screenshot({
       path: testInfo.outputPath("standalone-saved-sidebar.png"),
@@ -252,29 +324,36 @@ test("the owner adapter preserves saved organization in standalone and classic s
     const frameSnapshot = () =>
       page.evaluate(
         () =>
-          window.__sidebarSnapshots.findLast(
+          window.sidebarOwnerSnapshots.findLast(
             (message) =>
               message.serverId === "local" && message.navigation?.sidebar,
           )?.navigation.sidebar || null,
       );
     await expect.poll(frameSnapshot).not.toBeNull();
     const published = await frameSnapshot();
+    assert.ok(published);
     expect(published.stateDir).toBe(scope);
     expect(published.compact).toEqual(compact);
     expect(published.collapsed).toEqual(tree);
     expect(published.sidebarOrder).toEqual({ revision: 3, groups: order });
     expect(
-      published.projects.find((project) => project.path === path).folders,
+      requiredFixtureValue(
+        published.projects.find((project) => project.path === path),
+      ).folders,
     ).toEqual([
       { id: "parent", name: "Parent", parentId: null },
       { id: "nested", name: "Nested", parentId: "parent" },
     ]);
     expect(published.peerTeams.map((team) => team.id)).toEqual(["team"]);
-    expect(published.threads.find((chat) => chat.id === "overlap").pinned).toBe(
-      true,
-    );
     expect(
-      published.threads.find((chat) => chat.id === "archived-chat").archived,
+      requiredFixtureValue(
+        published.threads.find((chat) => chat.id === "overlap"),
+      ).pinned,
+    ).toBe(true);
+    expect(
+      requiredFixtureValue(
+        published.threads.find((chat) => chat.id === "archived-chat"),
+      ).archived,
     ).toBe(true);
     expect(published).not.toHaveProperty("token");
     await classic.screenshot({
@@ -287,18 +366,23 @@ test("the owner adapter preserves saved organization in standalone and classic s
     await expect(classic.locator('[data-chat="archived-chat"]')).toBeVisible();
     await expect(classic.locator('[data-chat="overlap"]')).toHaveCount(0);
     expect(
-      await localFrame
-        .locator("body")
-        .evaluate(
-          ({ ownerDocument }, keys) =>
-            Object.fromEntries(
-              keys.map((key) => [
-                key,
-                JSON.parse(ownerDocument.defaultView.localStorage.getItem(key)),
-              ]),
-            ),
-          [compactKey, treeKey, orderKey],
-        ),
+      await localFrame.locator("body").evaluate(
+        ({ ownerDocument }, keys) =>
+          Object.fromEntries(
+            keys.map((key) => [
+              key,
+              JSON.parse(
+                (
+                  ownerDocument.defaultView ??
+                  (() => {
+                    throw new Error("Missing fixture value");
+                  })()
+                ).localStorage.getItem(key) ?? "null",
+              ),
+            ]),
+          ),
+        [compactKey, treeKey, orderKey],
+      ),
     ).toEqual({ [compactKey]: compact, [treeKey]: tree, [orderKey]: order });
     expect(local.writes).toEqual([]);
     expect(remote.writes).toEqual([]);

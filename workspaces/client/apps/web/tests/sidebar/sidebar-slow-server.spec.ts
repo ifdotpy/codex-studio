@@ -1,20 +1,37 @@
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import assert from "node:assert/strict";
+import type {
+  HeldRequest,
+  Hold,
+  SidebarParityFixture,
+} from "./sidebar-parity-fixture.ts";
+declare global {
+  interface Window {
+    sidebarSlowHistory: string[];
+  }
+}
+import type { BrowserContext, Page, Locator } from "playwright";
 import { test, expect } from "../playwright.ts";
-import { sidebarParityFixture, sourcePath } from "./sidebar-parity-fixture.mjs";
+import { sidebarParityFixture, sourcePath } from "./sidebar-parity-fixture.ts";
 
 // A loaded backend answers late, and its answers can arrive out of order. The window
 // must keep each change of the user until the server confirms it, must never show an
 // older state after a newer one, and must not report a slow answer as a failure.
 
 const delays = [2000, 10000, 30000];
-const button = (scope, name) =>
+const button = (scope: Locator, name: string) =>
   scope.getByRole("button", { name, exact: true });
 
 // While `state.slow` is set, the chosen writes wait `delay` milliseconds before the
 // server reads them. Entity pulls are answered at once but delivered late in turn, so
 // an older answer can arrive after a newer one.
-function slowServer(state, delay, write = () => false) {
+function slowServer(
+  state: { slow: boolean },
+  delay: number,
+  write: (request: HeldRequest) => boolean = () => false,
+): Hold {
   let pulls = 0;
-  return (request) => {
+  return (request: HeldRequest) => {
     if (!state.slow) return 0;
     if (
       request.method === "GET" &&
@@ -26,7 +43,7 @@ function slowServer(state, delay, write = () => false) {
   };
 }
 
-async function setup(context, page, hold) {
+async function setup(context: BrowserContext, page: Page, hold?: Hold) {
   test.setTimeout(300000);
   await page.setViewportSize({ width: 1440, height: 1100 });
   return sidebarParityFixture(context, { hold });
@@ -35,17 +52,22 @@ async function setup(context, page, hold) {
 // Another chat changes on the server. Each change sends a new sidebar snapshot from the
 // server frame to the window.
 let changes = 0;
-function changeOtherChats(fixture) {
+function changeOtherChats(fixture: SidebarParityFixture) {
   changes++;
-  for (const server of [fixture.local, fixture.remote]) {
+  for (const server of [fixture.local, fixture.remote] as const) {
     const row = server.snapshot.threads.find((chat) => chat.id === "root-a");
+    assert.ok(row);
     row.tail = `Unrelated change ${changes}`;
     row.updated = Date.now() / 1000;
     server.complete(`unrelated-${changes}`);
   }
 }
 
-async function keepChanging(page, fixture, until) {
+async function keepChanging(
+  page: Page,
+  fixture: SidebarParityFixture,
+  until: number,
+) {
   while (Date.now() < until) {
     await page.waitForTimeout(1500);
     changeOtherChats(fixture);
@@ -53,9 +75,9 @@ async function keepChanging(page, fixture, until) {
 }
 
 // Record each distinct value that the page shows, at short intervals.
-async function recordExpanded(page, text) {
+async function recordExpanded(page: Page, text: string) {
   await page.evaluate((text) => {
-    const history = [];
+    const history: string[] = [];
     const read = () =>
       [...document.querySelectorAll("#sidebar [aria-expanded]")]
         .find((element) => element.textContent?.includes(text))
@@ -65,27 +87,29 @@ async function recordExpanded(page, text) {
       if (history.at(-1) !== value) history.push(value);
     };
     tick();
-    window.studioTestHistory = history;
+    window.sidebarSlowHistory = history;
     setInterval(tick, 20);
   }, text);
 }
 
-async function recordProjectOrder(page) {
+async function recordProjectOrder(page: Page) {
   await page.evaluate(() => {
-    const history = [];
+    const history: string[] = [];
     const tick = () => {
-      const value = [...document.querySelectorAll("#sidebar .sidebar-project")]
+      const value = [
+        ...document.querySelectorAll<HTMLElement>("#sidebar .sidebar-project"),
+      ]
         .map((row) => row.dataset.projectPath)
         .join(" ");
       if (history.at(-1) !== value) history.push(value);
     };
     tick();
-    window.studioTestHistory = history;
+    window.sidebarSlowHistory = history;
     setInterval(tick, 20);
   });
 }
 
-const history = (page) => page.evaluate(() => window.studioTestHistory);
+const history = (page: Page) => page.evaluate(() => window.sidebarSlowHistory);
 
 for (const delay of delays) {
   test(`a folder collapse never moves back while the server answers after ${delay} ms`, async ({
@@ -161,9 +185,12 @@ for (const delay of delays) {
       folders: [],
       peerTeams: [],
     });
-    fixture.local.snapshot.runtime.sidebarOrder.groups.projects.push(
-      "/same/other",
-    );
+    requiredFixtureValue(
+      requiredFixtureValue(
+        requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
+          .groups,
+      ).projects,
+    ).push("/same/other");
     try {
       const sidebar = await fixture.open(page);
       const otherProject = sidebar.locator(".project-tree-toggle", {
@@ -185,7 +212,11 @@ for (const delay of delays) {
       await keepChanging(page, fixture, Date.now() + delay + 3000);
       await expect
         .poll(
-          () => fixture.local.snapshot.runtime.sidebarOrder.groups.projects,
+          () =>
+            requiredFixtureValue(
+              requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
+                .groups,
+            ).projects,
           { timeout: 2 * delay + 10000 },
         )
         .toEqual(["/same/other", sourcePath("local")]);
@@ -393,7 +424,9 @@ test("a lost chat creation answer still keeps its request for a retry", async ({
       (call) => call.path === "/api/leads",
     );
     expect(requests).toHaveLength(2);
-    expect(requests[1].body).toEqual(requests[0].body);
+    expect(requiredFixtureValue(requests[1]).body).toEqual(
+      requiredFixtureValue(requests[0]).body,
+    );
   } finally {
     await fixture.close();
   }

@@ -1,10 +1,13 @@
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import assert from "node:assert/strict";
+import { remoteNetwork } from "../servers/browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
-]) {
+] as const) {
   test(`paired servers keep the full sidebar at ${viewport.width}px`, async ({
     page,
     context,
@@ -16,30 +19,11 @@ for (const viewport of [
     await page.emulateMedia({ colorScheme });
     const local = await fixture("Local");
     const remote = await fixture("Remote", true);
-    local.snapshot.threads[0].pinned = true;
-    remote.snapshot.threads[0].pinned = true;
+    requiredFixtureValue(local.snapshot.threads[0]).pinned = true;
+    requiredFixtureValue(remote.snapshot.threads[0]).pinned = true;
     local.discoverPeer(remote);
     try {
-      await context.addInitScript(
-        ({ origin, destination }) => {
-          const nativeFetch = window.fetch.bind(window);
-          window.fetch = async (input, init) => {
-            const request = new Request(input, init);
-            const url = new URL(request.url);
-            if (url.origin !== origin) return nativeFetch(request);
-            const body = await request.clone().arrayBuffer();
-            return nativeFetch(destination + url.pathname + url.search, {
-              method: request.method,
-              headers: request.headers,
-              ...(body.byteLength ? { body } : {}),
-              signal: request.signal,
-              redirect: "error",
-              credentials: "omit",
-            });
-          };
-        },
-        { origin: remote.invitation.origin, destination: remote.origin },
-      );
+      await remoteNetwork(context, remote);
       await page.goto(local.origin + "/?studio-navigation=classic");
       await expect(page.getByLabel("Studio server")).toHaveValue("local");
       await expect(page.locator(".server-sidebar")).toHaveCount(0);
@@ -108,7 +92,9 @@ for (const viewport of [
       await expect(remoteFrame.locator(".chat-pin")).toBeVisible();
       const ownedFrame = page.locator('iframe[title="Studio on Remote"]');
       const before = await ownedFrame.getAttribute("src");
-      const brandURL = new URL(await remoteBrand.getAttribute("href"), before);
+      const href = await remoteBrand.getAttribute("href");
+      assert.ok(href && before);
+      const brandURL = new URL(href, before);
       expect(brandURL.href).toBe(before);
       await remoteBrand.click();
       await expect(remoteFrame.locator("html")).toHaveAttribute(

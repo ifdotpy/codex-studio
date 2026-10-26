@@ -1,17 +1,22 @@
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import { fixturePostBody } from "../servers/browser-fixture.ts";
+import assert from "node:assert/strict";
+import type { SidebarParityFixture } from "./sidebar-parity-fixture.ts";
+import type { Locator, Page, BrowserContext } from "playwright";
 import { test, expect } from "../playwright.ts";
-import { sidebarParityFixture, sourcePath } from "./sidebar-parity-fixture.mjs";
+import { sidebarParityFixture, sourcePath } from "./sidebar-parity-fixture.ts";
 
-const chat = (sidebar, name) =>
+const chat = (sidebar: Locator, name: string) =>
   sidebar.locator(".sidebar-row").filter({ hasText: name });
-const button = (sidebar, name) =>
+const button = (sidebar: Locator, name: string) =>
   sidebar.getByRole("button", { name, exact: true });
-async function menu(page, sidebar, name, item) {
+async function menu(page: Page, sidebar: Locator, name: string, item: string) {
   const row = chat(sidebar, name);
   await row.hover();
   await button(row, `Actions for ${name}`).click();
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
-async function projectMenu(page, sidebar, item) {
+async function projectMenu(page: Page, sidebar: Locator, item: string) {
   await sidebar
     .locator(".project-tree-toggle", { hasText: "Home project" })
     .hover();
@@ -23,11 +28,16 @@ async function projectMenu(page, sidebar, item) {
     })
     .click();
 }
-async function listMenu(page, sidebar, item) {
+async function listMenu(page: Page, sidebar: Locator, item: string) {
   await button(sidebar, "Project list options").click();
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
-async function teamMenu(page, sidebar, name, item) {
+async function teamMenu(
+  page: Page,
+  sidebar: Locator,
+  name: string,
+  item: string,
+) {
   const toggle = sidebar
     .getByRole("button", { name: new RegExp(name) })
     .first();
@@ -35,7 +45,12 @@ async function teamMenu(page, sidebar, name, item) {
   await button(sidebar, `Options for team ${name}`).click();
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
-async function folderMenu(page, sidebar, name, item) {
+async function folderMenu(
+  page: Page,
+  sidebar: Locator,
+  name: string,
+  item: string,
+) {
   await sidebar
     .getByRole("button", { name: new RegExp(name) })
     .first()
@@ -44,7 +59,7 @@ async function folderMenu(page, sidebar, name, item) {
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
 // New chat asks for the workspace and models before it creates the chat.
-async function startNewChat(page, fixture) {
+async function startNewChat(page: Page, fixture: SidebarParityFixture) {
   const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
   const start = dialog.getByRole("button", { name: "Start chat", exact: true });
   await expect(start).toBeEnabled();
@@ -53,24 +68,34 @@ async function startNewChat(page, fixture) {
   );
   await start.click();
 }
-async function drag(page, from, to, edge = 0.5) {
-  let a;
+async function drag(
+  page: Page,
+  from: Locator,
+  to: Locator,
+  edge: number = 0.5,
+) {
+  const bounds: { value: Awaited<ReturnType<Locator["boundingBox"]>> } = {
+    value: null,
+  };
   await expect(async () => {
     await from.scrollIntoViewIfNeeded();
-    a = await from.boundingBox();
-    expect(a).not.toBeNull();
+    bounds.value = await from.boundingBox();
+    expect(bounds.value).not.toBeNull();
   }).toPass({ timeout: 5000 });
+  const a = bounds.value;
+  assert.ok(a);
   await page.mouse.move(a.x + 18, a.y + a.height / 2);
   await page.mouse.down();
   await page.mouse.move(a.x + 22, a.y + a.height / 2 + 9, { steps: 6 });
   await to.scrollIntoViewIfNeeded();
   const b = await to.boundingBox();
   expect(b).not.toBeNull();
+  assert.ok(b);
   await page.mouse.move(b.x + 18, b.y + b.height * edge, { steps: 20 });
   await page.mouse.move(b.x + 20, b.y + b.height * edge, { steps: 3 });
   await page.mouse.up();
 }
-async function setup(context, page) {
+async function setup(context: BrowserContext, page: Page) {
   test.setTimeout(90000);
   await page.setViewportSize({ width: 1440, height: 1100 });
   const fixture = await sidebarParityFixture(context);
@@ -80,7 +105,7 @@ async function setup(context, page) {
   await expect(button(sidebar, "Actions for Remote Saved pin")).toBeEnabled();
   return { fixture, sidebar };
 }
-const waitForOrderReceipt = (page) =>
+const waitForOrderReceipt = (page: Page) =>
   expect
     .poll(() =>
       page.evaluate(
@@ -102,7 +127,7 @@ test("saved folders, nested folders, order, pins, teams, compact and collapse re
   try {
     await expect(sidebar.locator(".sidebar-project")).toHaveCount(1);
     await expect(sidebar.locator(".chat-pin")).toHaveCount(2);
-    for (const owner of ["Local", "Remote"]) {
+    for (const owner of ["Local", "Remote"] as const) {
       const folder = sidebar
         .getByRole("button", { name: new RegExp(`${owner} Nested`) })
         .first();
@@ -144,7 +169,7 @@ test("saved folders, nested folders, order, pins, teams, compact and collapse re
       ["Remote Saved team", "Remote Team A"],
       ["Remote tail needle", "Remote Old 0"],
       ["/remote/project", "Remote Root A"],
-    ]) {
+    ] as const) {
       await sidebar.getByLabel("Filter projects and chats").fill(query);
       await expect(chat(sidebar, name)).toBeVisible();
       await expect(chat(sidebar, "Local Root A")).toHaveCount(0);
@@ -205,24 +230,28 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     await expect
       .poll(
         () =>
-          fixture.calls.remote.filter((call) => call.body.action === "reorder")
-            .length,
+          fixture.calls.remote.filter(
+            (call) => "action" in call.body && call.body.action === "reorder",
+          ).length,
       )
       .toBe(1);
     // The fixture records the request before its client receipt updates the
     // revision used for the next write. Wait for the durable pending marker.
     await waitForOrderReceipt(page);
-    expect(fixture.calls.remote[0].body.groups.unknown).toEqual([
-      "unknown-saved-id",
-    ]);
+    const reorder = fixturePostBody<"/api/projects">(
+      fixture.calls.remote[0]?.body,
+    );
+    assert.ok(reorder.action === "reorder");
+    expect(reorder.groups.unknown).toEqual(["unknown-saved-id"]);
     const before = await member.getAttribute("data-sidebar-group");
     await member.focus();
     await page.keyboard.press("Alt+ArrowUp");
     await expect
       .poll(
         () =>
-          fixture.calls.remote.filter((call) => call.body.action === "reorder")
-            .length,
+          fixture.calls.remote.filter(
+            (call) => "action" in call.body && call.body.action === "reorder",
+          ).length,
       )
       .toBe(2);
     await waitForOrderReceipt(page);
@@ -237,7 +266,10 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     );
     await expect
       .poll(() =>
-        fixture.remote.snapshot.runtime.peerTeams[0].members.includes("root-a"),
+        requiredFixtureValue(
+          requiredFixtureValue(fixture.remote.snapshot.runtime.peerTeams[0])
+            .members,
+        ).includes("root-a"),
       )
       .toBe(true);
     await expect(
@@ -252,12 +284,15 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     );
     await expect
       .poll(() =>
-        fixture.remote.snapshot.runtime.peerTeams[0].members.includes("root-a"),
+        requiredFixtureValue(
+          requiredFixtureValue(fixture.remote.snapshot.runtime.peerTeams[0])
+            .members,
+        ).includes("root-a"),
       )
       .toBe(false);
     expect(
       fixture.calls.remote
-        .filter((call) => call.body.action === "move")
+        .filter((call) => "action" in call.body && call.body.action === "move")
         .map((call) => call.body),
     ).toEqual([
       expect.objectContaining({
@@ -282,8 +317,9 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     await expect
       .poll(
         () =>
-          fixture.remote.snapshot.threads.find((row) => row.id === "root-b")
-            .projectFolder,
+          requiredFixtureValue(
+            fixture.remote.snapshot.threads.find((row) => row.id === "root-b"),
+          ).projectFolder,
       )
       .toBe("empty");
     await drag(
@@ -294,13 +330,18 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     await expect
       .poll(
         () =>
-          fixture.remote.snapshot.threads.find((row) => row.id === "root-b")
-            .projectFolder,
+          requiredFixtureValue(
+            fixture.remote.snapshot.threads.find((row) => row.id === "root-b"),
+          ).projectFolder,
       )
       .toBe(null);
     expect(
       fixture.calls.remote
-        .filter((call) => call.body.project_folder !== undefined)
+        .filter(
+          (call) =>
+            "project_folder" in call.body &&
+            call.body.project_folder !== undefined,
+        )
         .map((call) => call.body),
     ).toEqual([
       expect.objectContaining({
@@ -328,13 +369,17 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     await expect
       .poll(
         () =>
-          fixture.calls.local.filter((call) => call.body.action === "reorder")
-            .length,
+          fixture.calls.local.filter(
+            (call) => "action" in call.body && call.body.action === "reorder",
+          ).length,
       )
       .toBe(1);
-    expect(fixture.local.snapshot.runtime.sidebarOrder.groups.unknown).toEqual([
-      "unknown-saved-id",
-    ]);
+    expect(
+      requiredFixtureValue(
+        requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
+          .groups,
+      ).unknown,
+    ).toEqual(["unknown-saved-id"]);
     await page.reload();
     await expect(
       chat(page.locator("#sidebar"), "Remote Saved pin"),
@@ -357,7 +402,7 @@ test("peer teams retain members and allow create, edit, dissolve and shared chat
     await expect(
       sidebar.getByRole("button", { name: /Remote Team renamed/ }).first(),
     ).toBeVisible();
-    expect(fixture.calls.remote[0].body).toMatchObject({
+    expect(requiredFixtureValue(fixture.calls.remote[0]).body).toMatchObject({
       action: "save",
       path: sourcePath("remote"),
       team_id: "team",
@@ -367,7 +412,9 @@ test("peer teams retain members and allow create, edit, dissolve and shared chat
     await teamMenu(page, sidebar, "Remote Team renamed", "Open shared chat");
     await expect
       .poll(() =>
-        fixture.calls.remote.some((call) => call.body.action === "radio"),
+        fixture.calls.remote.some(
+          (call) => "action" in call.body && call.body.action === "radio",
+        ),
       )
       .toBe(true);
     await expect(page.locator(".server-views .workspace")).toBeVisible();
@@ -393,7 +440,7 @@ test("peer teams retain members and allow create, edit, dissolve and shared chat
     await expect(
       sidebar.getByRole("button", { name: "Home New team", exact: true }),
     ).toBeVisible();
-    expect(fixture.calls.local[0].body).toMatchObject({
+    expect(requiredFixtureValue(fixture.calls.local[0]).body).toMatchObject({
       action: "save",
       path: sourcePath("local"),
       members: ["root-a", "root-b"],
@@ -427,7 +474,7 @@ test("conversion from a peer team to a subagent keeps the owner and asks for con
       .getByRole("button", { name: "Make subagent", exact: true })
       .click();
     await expect(chat(sidebar, "Remote Team A")).toHaveCount(0);
-    expect(fixture.calls.remote[0].body).toMatchObject({
+    expect(requiredFixtureValue(fixture.calls.remote[0]).body).toMatchObject({
       action: "convert",
       path: sourcePath("remote"),
       member: "member-a",
@@ -435,8 +482,9 @@ test("conversion from a peer team to a subagent keeps the owner and asks for con
       expected_revision: 8,
     });
     expect(
-      fixture.local.snapshot.threads.find((row) => row.id === "member-a")
-        .isLead,
+      requiredFixtureValue(
+        fixture.local.snapshot.threads.find((row) => row.id === "member-a"),
+      ).isLead,
     ).toBe(true);
     await chat(sidebar, "Remote Root A").locator("[data-chat]").click();
     await expect(page.locator(".server-views .workspace")).toBeVisible();
@@ -459,7 +507,7 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
       .fill("Home Renamed");
     await page.getByRole("button", { name: "Save name", exact: true }).click();
     await expect(button(sidebar, "Home Renamed")).toBeVisible();
-    expect(fixture.calls.local[0].body).toMatchObject({
+    expect(requiredFixtureValue(fixture.calls.local[0]).body).toMatchObject({
       action: "rename",
       path: sourcePath("local"),
       expected_revision: 3,
@@ -498,11 +546,16 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
     await expect
-      .poll(() => fixture.local.snapshot.runtime.projects[0].accountKey)
+      .poll(
+        () =>
+          requiredFixtureValue(fixture.local.snapshot.runtime.projects[0])
+            .accountKey,
+      )
       .toBe("secondary");
-    expect(fixture.remote.snapshot.runtime.projects[0].accountKey).toBe(
-      "default",
-    );
+    expect(
+      requiredFixtureValue(fixture.remote.snapshot.runtime.projects[0])
+        .accountKey,
+    ).toBe("default");
     await sidebar
       .getByRole("button", { name: /^Remote Empty/ })
       .first()
@@ -515,7 +568,9 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
       )
       .toBe(true);
     expect(
-      fixture.calls.remote.find((call) => call.path === "/api/leads").body,
+      requiredFixtureValue(
+        fixture.calls.remote.find((call) => call.path === "/api/leads"),
+      ).body,
     ).toMatchObject({ cwd: sourcePath("remote"), project_folder: "empty" });
     await expect(page.locator(".server-views .workspace")).toBeVisible();
     await menu(page, sidebar, "Remote Root B", "Change project directory");
@@ -533,8 +588,9 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
     await expect
       .poll(
         () =>
-          fixture.remote.snapshot.threads.find((row) => row.id === "root-b")
-            .cwd,
+          requiredFixtureValue(
+            fixture.remote.snapshot.threads.find((row) => row.id === "root-b"),
+          ).cwd,
       )
       .toBe("/remote/new-directory");
     await button(sidebar, "Home Renamed").hover();
@@ -551,7 +607,10 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
     await local.getByRole("button", { name: "Create", exact: true }).click();
     await expect
       .poll(() =>
-        fixture.calls.local.some((call) => call.body.radio_action === "create"),
+        fixture.calls.local.some(
+          (call) =>
+            "radio_action" in call.body && call.body.radio_action === "create",
+        ),
       )
       .toBe(true);
     await expect(
@@ -613,7 +672,9 @@ test("chat pin, rename, archive, restore, delete, mark unread and prefetch use t
       "/api/organization",
       "/api/conversation/delete",
     ]);
-    expect(mutations.map((call) => call.body.id)).toEqual([
+    expect(
+      mutations.map((call) => ("id" in call.body ? call.body.id : undefined)),
+    ).toEqual([
       "root-a",
       "root-a",
       "root-a",
@@ -643,7 +704,7 @@ test("folder create, nested create, rename, remove and chat membership use origi
     await expect(
       sidebar.getByRole("button", { name: /Remote New nested/ }).first(),
     ).toBeVisible();
-    expect(fixture.calls.remote[0].body).toMatchObject({
+    expect(requiredFixtureValue(fixture.calls.remote[0]).body).toMatchObject({
       action: "add_folder",
       path: sourcePath("remote"),
       parent_id: "parent",
@@ -692,14 +753,17 @@ test("folder create, nested create, rename, remove and chat membership use origi
       sidebar.getByRole("button", { name: "Home New folder", exact: true }),
     ).toBeVisible();
     expect(fixture.calls.local).toHaveLength(1);
-    expect(fixture.calls.local[0].body).toMatchObject({
+    expect(requiredFixtureValue(fixture.calls.local[0]).body).toMatchObject({
       action: "add_folder",
       path: sourcePath("local"),
       expected_revision: 3,
     });
     expect(
-      fixture.local.snapshot.runtime.projects[0].folders.find(
-        (folder) => folder.id === "parent",
+      requiredFixtureValue(
+        requiredFixtureValue(
+          requiredFixtureValue(fixture.local.snapshot.runtime.projects[0])
+            .folders,
+        ).find((folder) => folder.id === "parent"),
       ).name,
     ).toBe("Local Parent");
   } finally {
@@ -723,9 +787,11 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
     folders: [],
     peerTeams: [],
   });
-  fixture.local.snapshot.runtime.sidebarOrder.groups.projects.push(
-    "/same/other",
-  );
+  requiredFixtureValue(
+    requiredFixtureValue(
+      requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder).groups,
+    ).projects,
+  ).push("/same/other");
   const remoteOrder = structuredClone(
     fixture.remote.snapshot.runtime.sidebarOrder,
   );
@@ -745,13 +811,20 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
     await otherProject.focus();
     await page.keyboard.press("Alt+ArrowUp");
     await expect
-      .poll(() => fixture.local.snapshot.runtime.sidebarOrder.groups.projects)
+      .poll(
+        () =>
+          requiredFixtureValue(
+            requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
+              .groups,
+          ).projects,
+      )
       .toEqual(["/same/other", sourcePath("local")]);
     await expect
       .poll(
         () =>
-          fixture.calls.local.filter((call) => call.body.action === "reorder")
-            .length,
+          fixture.calls.local.filter(
+            (call) => "action" in call.body && call.body.action === "reorder",
+          ).length,
       )
       .toBe(1);
     // Snapshot mutation precedes the POST receipt; wait until the pending write clears.
@@ -768,13 +841,20 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
       ]);
     await drag(page, homeProject, otherProject, 0.1);
     await expect
-      .poll(() => fixture.local.snapshot.runtime.sidebarOrder.groups.projects)
+      .poll(
+        () =>
+          requiredFixtureValue(
+            requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
+              .groups,
+          ).projects,
+      )
       .toEqual([sourcePath("local"), "/same/other"]);
     await expect
       .poll(
         () =>
-          fixture.calls.local.filter((call) => call.body.action === "reorder")
-            .length,
+          fixture.calls.local.filter(
+            (call) => "action" in call.body && call.body.action === "reorder",
+          ).length,
       )
       .toBe(2);
     await waitForOrderReceipt(page);
@@ -800,8 +880,9 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
     await expect
       .poll(
         () =>
-          fixture.calls.local.filter((call) => call.body.action === "reorder")
-            .length,
+          fixture.calls.local.filter(
+            (call) => "action" in call.body && call.body.action === "reorder",
+          ).length,
       )
       .toBe(3);
     await waitForOrderReceipt(page);
@@ -813,16 +894,19 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
     await expect
       .poll(
         () =>
-          fixture.calls.local.filter((call) => call.body.action === "reorder")
-            .length,
+          fixture.calls.local.filter(
+            (call) => "action" in call.body && call.body.action === "reorder",
+          ).length,
       )
       .toBe(4);
     await waitForOrderReceipt(page);
     const key = JSON.stringify(["chats", sourcePath("local"), true, false]);
-    expect(fixture.local.snapshot.runtime.sidebarOrder.groups[key]).toEqual([
-      "root-a",
-      "overlap",
-    ]);
+    expect(
+      requiredFixtureValue(
+        requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
+          .groups,
+      )[key],
+    ).toEqual(["root-a", "overlap"]);
     expect(fixture.remote.snapshot.runtime.sidebarOrder).toEqual(remoteOrder);
     expect(fixture.calls.remote).toEqual([]);
     await page.reload();
@@ -872,7 +956,7 @@ test("global search opens its source chat, and toolbar actions use the active se
     await search.getByLabel("Search all messages").fill("saved history");
     await search.getByRole("button", { name: "Search", exact: true }).click();
     await expect(search.locator(".server-search-result")).toHaveCount(2);
-    for (const owner of ["local", "remote"])
+    for (const owner of ["local", "remote"] as const)
       expect(
         fixture.reads[owner].some((path) =>
           path.includes("/api/search?q=saved"),
@@ -899,7 +983,9 @@ test("global search opens its source chat, and toolbar actions use the active se
       )
       .toBe(true);
     expect(
-      fixture.calls.remote.find((call) => call.path === "/api/leads").body,
+      requiredFixtureValue(
+        fixture.calls.remote.find((call) => call.path === "/api/leads"),
+      ).body,
     ).toMatchObject({ cwd: sourcePath("remote") });
     expect(fixture.calls.local).toEqual([]);
   } finally {

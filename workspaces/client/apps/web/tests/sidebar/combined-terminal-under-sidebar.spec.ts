@@ -1,5 +1,5 @@
 import { test, expect } from "../playwright.ts";
-import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
+import { sidebarParityFixture } from "./sidebar-parity-fixture.ts";
 
 // In the combined window the terminal panel of the selected server view sits under the shell
 // sidebar while closed, and uses the whole window width while open.
@@ -20,12 +20,20 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     // The view's own closed bar gives way to the shell's.
     await expect(frame.locator(".terminal-dock")).toBeHidden();
     const closed = await page.evaluate(() => ({
-      bar: document
-        .querySelector(".shell-terminal-bar")
+      bar: (
+        document.querySelector(".shell-terminal-bar") ??
+        (() => {
+          throw new Error("Missing fixture value");
+        })()
+      )
         .getBoundingClientRect()
         .toJSON(),
-      sidebar: document
-        .querySelector(".multi-server-shell > #sidebar")
+      sidebar: (
+        document.querySelector(".multi-server-shell > #sidebar") ??
+        (() => {
+          throw new Error("Missing fixture value");
+        })()
+      )
         .getBoundingClientRect()
         .toJSON(),
       height: innerHeight,
@@ -45,12 +53,18 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     await expect
       .poll(() =>
         page.evaluate(() => {
-          const views = document
-            .querySelector(".server-views")
-            .getBoundingClientRect();
-          const side = document
-            .querySelector(".multi-server-shell > #sidebar")
-            .getBoundingClientRect();
+          const views = (
+            document.querySelector(".server-views") ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).getBoundingClientRect();
+          const side = (
+            document.querySelector(".multi-server-shell > #sidebar") ??
+            (() => {
+              throw new Error("Missing fixture value");
+            })()
+          ).getBoundingClientRect();
           return {
             left: views.left,
             width: views.width,
@@ -61,7 +75,12 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
       .toMatchObject({ left: 0, width: 1440 });
     const open = await dock.evaluate((node) => ({
       dock: node.getBoundingClientRect().toJSON(),
-      padding: getComputedStyle(document.querySelector("#root")).paddingLeft,
+      padding: getComputedStyle(
+        document.querySelector("#root") ??
+          (() => {
+            throw new Error("Missing fixture root");
+          })(),
+      ).paddingLeft,
       width: innerWidth,
       height: innerHeight,
     }));
@@ -73,9 +92,12 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     );
     const sideBottom = await page.evaluate(() =>
       Math.round(
-        document
-          .querySelector(".multi-server-shell > #sidebar")
-          .getBoundingClientRect().bottom,
+        (
+          document.querySelector(".multi-server-shell > #sidebar") ??
+          (() => {
+            throw new Error("Missing fixture value");
+          })()
+        ).getBoundingClientRect().bottom,
       ),
     );
     expect(sideBottom).toBe(Math.round(open.dock.top));

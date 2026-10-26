@@ -1,15 +1,25 @@
+import type { PostBody } from "../../src/apiTypes.ts";
+import type { ResourceRef } from "../playwright.ts";
+import { fixturePostBody } from "../servers/browser-fixture.ts";
+function subscribedResources(url: URL): ResourceRef[] {
+  // Requests were produced by the renderer's generated resource contract.
+  return JSON.parse(url.searchParams.get("resources") || "[]") as ResourceRef[];
+}
 import { expect, test } from "../playwright.ts";
 import {
   fixture,
   fixtureWorkspaceId,
 } from "../servers/multi-server-fixture.ts";
 
-for (const entry of ["/?studio-server=local", "/"]) {
+for (const entry of ["/?studio-server=local", "/"] as const) {
   test(`server projection at ${entry} reads preferences without a second sync client`, async ({
     page,
   }) => {
     const server = await fixture("Local");
-    const requests = { pulls: [], streams: [] };
+    const requests: { pulls: URL[]; streams: URL[] } = {
+      pulls: [],
+      streams: [],
+    };
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (
@@ -26,7 +36,7 @@ for (const entry of ["/?studio-server=local", "/"]) {
       await expect
         .poll(() =>
           requests.streams.some((url) =>
-            JSON.parse(url.searchParams.get("resources") || "[]").some(
+            subscribedResources(url).some(
               (resource) => resource.kind === "drafts",
             ),
           ),
@@ -53,10 +63,8 @@ for (const entry of ["/?studio-server=local", "/"]) {
       ).toHaveLength(0);
       expect(
         requests.streams.filter((url) => {
-          const resources = JSON.parse(
-            url.searchParams.get("resources") || "[]",
-          );
-          return resources.length === 1 && resources[0].kind === "state";
+          const resources = subscribedResources(url);
+          return resources.length === 1 && resources[0]?.kind === "state";
         }),
       ).toHaveLength(0);
     } finally {
@@ -71,11 +79,15 @@ test("paired screen preference writes keep their server API and storage", async 
 }) => {
   const local = await fixture("Local");
   const remote = await fixture("Remote", true);
-  const posts = [];
+  const posts: { origin: string; body: PostBody<"/api/sync/preferences"> }[] =
+    [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname === "/api/sync/preferences" && request.method() === "POST")
-      posts.push({ origin: url.origin, body: request.postDataJSON() });
+      posts.push({
+        origin: url.origin,
+        body: fixturePostBody<"/api/sync/preferences">(request.postDataJSON()),
+      });
   });
   try {
     await context.addInitScript(
@@ -131,14 +143,14 @@ test("paired screen preference writes keep their server API and storage", async 
     for (const [origin, value] of [
       [local.origin, "local-folder"],
       [remote.origin, "remote-folder"],
-    ]) {
+    ] as const) {
       await expect
         .poll(() =>
           posts.some(
             (post) =>
               post.origin === origin &&
               post.body.scope === "server" &&
-              post.body.fields[field]?.value === value,
+              post.body.fields?.[field]?.value === value,
           ),
         )
         .toBe(true);
@@ -147,7 +159,7 @@ test("paired screen preference writes keep their server API and storage", async 
           (post) =>
             post.origin !== origin &&
             post.body.scope === "server" &&
-            post.body.fields[field]?.value === value,
+            post.body.fields?.[field]?.value === value,
         ),
       ).toBe(false);
     }

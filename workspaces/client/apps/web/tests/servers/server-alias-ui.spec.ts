@@ -1,13 +1,9 @@
+import type { PostBody } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "./browser-fixture.ts";
+import { remoteNetwork } from "./browser-fixture.ts";
+import { settings } from "./browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
-
-async function settings(page) {
-  await page
-    .getByRole("button", { name: "Studio settings", exact: true })
-    .click();
-  await page.getByRole("tab", { name: "Servers", exact: true }).click();
-  return page.getByRole("dialog", { name: "Studio settings", exact: true });
-}
 
 test("a discovered Serve HTTPS port preserves server rows and alias save", async ({
   page,
@@ -18,26 +14,7 @@ test("a discovered Serve HTTPS port preserves server rows and alias save", async
   remote.invitation.origin += ":8443";
   local.discoverPeer(remote);
   try {
-    await context.addInitScript(
-      ({ origin, destination }) => {
-        const native = window.fetch.bind(window);
-        window.fetch = async (input, init) => {
-          const request = new Request(input, init),
-            url = new URL(request.url);
-          if (url.origin !== origin) return native(request);
-          const bytes = await request.clone().arrayBuffer();
-          return native(destination + url.pathname + url.search, {
-            method: request.method,
-            headers: request.headers,
-            ...(bytes.byteLength ? { body: bytes } : {}),
-            signal: request.signal,
-            redirect: "error",
-            credentials: "omit",
-          });
-        };
-      },
-      { origin: remote.invitation.origin, destination: remote.origin },
-    );
+    await remoteNetwork(context, remote);
     await page.goto(local.origin);
     const dialog = await settings(page);
     await expect(dialog.locator("[data-settings-server=remote]")).toContainText(
@@ -70,7 +47,8 @@ test("a confirmed alias save stays confirmed when the following read fails", asy
 }) => {
   let failNextRead = false;
   const local = await fixture("Local", false, {
-    handle({ request, url, body, json }) {
+    handle({ request, url, body: rawBody, json }) {
+      const body = fixturePostBody<"/api/multi-server">(rawBody);
       if (url.pathname !== "/api/multi-server") return false;
       if (body.action === "alias") failNextRead = true;
       if (request.method === "GET" && failNextRead) {
@@ -117,14 +95,15 @@ test("a confirmed alias save stays confirmed when the following read fails", asy
 test("combined server edits retry only the failed alias with its original identity", async ({
   page,
 }) => {
-  const attempts = [];
+  const attempts: PostBody<"/api/multi-server">[] = [];
   let rejected = false;
   const local = await fixture("Local", false, {
-    handle({ request, url, body, json }) {
+    handle({ request, url, body: rawBody, json }) {
+      const body = fixturePostBody<"/api/multi-server">(rawBody);
       if (
         url.pathname !== "/api/multi-server" ||
         request.method !== "POST" ||
-        !["name", "alias"].includes(body.action)
+        !(body.action === "name" || body.action === "alias")
       )
         return false;
       attempts.push(body);
@@ -171,7 +150,7 @@ test("combined server edits retry only the failed alias with its original identi
       "alias",
     ]);
     expect(attempts[1]).toEqual(attempts[2]);
-    expect(attempts[0].requestId).not.toBe(attempts[1].requestId);
+    expect(attempts[0]?.requestId).not.toBe(attempts[1]?.requestId);
     expect(local.aliases.local).toBe("REL");
   } finally {
     await local.close();

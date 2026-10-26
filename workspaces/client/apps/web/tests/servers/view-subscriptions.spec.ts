@@ -1,3 +1,8 @@
+import assert from "node:assert/strict";
+import type { ResourceRef } from "../playwright.ts";
+import { remoteNetwork } from "./browser-fixture.ts";
+import { fixtureOrigin } from "./browser-fixture.ts";
+import type { ServerFixture } from "./browser-fixture.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +18,9 @@ test("hidden server screens release chat details and prefetch while keeping list
   const state = await mkdtemp(join(tmpdir(), "studio-view-subscriptions-"));
   const local = await fixture("Local", false, { resourceBaseline: true });
   const remote = await fixture("Remote", true, { resourceBaseline: true });
-  for (const server of [local, remote]) {
+  for (const server of [local, remote] as const) {
     const lead = server.snapshot.threads[0];
+    assert.ok(lead);
     server.setChats([
       lead,
       {
@@ -33,34 +39,21 @@ test("hidden server screens release chat details and prefetch while keeping list
     server: { host: "127.0.0.1", port: 0, proxy: { "/api": local.origin } },
   });
   await vite.listen();
-  const origin = `http://127.0.0.1:${vite.httpServer.address().port}`;
-  const resources = (server) => [...server.subscriptions.values()].flat();
-  const has = (server, kind, agentId) =>
+  const origin = fixtureOrigin(vite);
+  const resources = (server: ServerFixture) =>
+    [...server.subscriptions.values()].flat();
+  const has = (
+    server: ServerFixture,
+    kind: ResourceRef["kind"],
+    agentId?: string,
+  ) =>
     resources(server).some(
       (resource) =>
-        resource.kind === kind && (!agentId || resource.agentId === agentId),
+        resource.kind === kind &&
+        (!agentId || ("agentId" in resource && resource.agentId === agentId)),
     );
   try {
-    await context.addInitScript(
-      ({ origin, destination }) => {
-        const fetchRequest = window.fetch.bind(window);
-        window.fetch = async (input, init) => {
-          const request = new Request(input, init);
-          const url = new URL(request.url);
-          if (url.origin !== origin) return fetchRequest(request);
-          const bytes = await request.clone().arrayBuffer();
-          return fetchRequest(destination + url.pathname + url.search, {
-            method: request.method,
-            headers: request.headers,
-            ...(bytes.byteLength ? { body: bytes } : {}),
-            signal: request.signal,
-            redirect: "error",
-            credentials: "omit",
-          });
-        };
-      },
-      { origin: remote.invitation.origin, destination: remote.origin },
-    );
+    await remoteNetwork(context, remote);
     await page.goto(origin);
     await expect(page.locator("#message")).toBeVisible();
     await page
@@ -78,22 +71,27 @@ test("hidden server screens release chat details and prefetch while keeping list
     await dialog
       .getByRole("button", { name: "Pair server", exact: true })
       .click();
-    const chat = (alias) =>
+    const chat = (alias: string) =>
       page.locator("#chat-list .chat-row").filter({
         has: page.locator(`.chat-server-line[aria-label$=", ${alias}"]`),
       });
     await expect(chat("REM")).toContainText("Remote chat");
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await chat("LOC").click();
-    for (const kind of ["transcript", "queue", "session-cost"])
+    for (const kind of ["transcript", "queue", "session-cost"] as const)
       await expect.poll(() => has(local, kind, "overlap")).toBe(true);
     await expect.poll(() => has(local, "transcript", "prefetch")).toBe(true);
     await chat("REM").click();
-    for (const kind of ["transcript", "queue", "session-cost", "limits"])
+    for (const kind of [
+      "transcript",
+      "queue",
+      "session-cost",
+      "limits",
+    ] as const)
       await expect.poll(() => has(local, kind)).toBe(false);
     await expect.poll(() => has(local, "state")).toBe(true);
     await expect.poll(() => has(local, "drafts")).toBe(true);
-    for (const kind of ["transcript", "queue", "session-cost"])
+    for (const kind of ["transcript", "queue", "session-cost"] as const)
       await expect.poll(() => has(remote, kind, "overlap")).toBe(true);
     await chat("LOC").click();
     await expect.poll(() => has(local, "transcript", "overlap")).toBe(true);

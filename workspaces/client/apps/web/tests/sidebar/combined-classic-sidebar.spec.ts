@@ -1,3 +1,13 @@
+import type { TestRuntimeView } from "../playwright.ts";
+import type { TestAgent } from "../playwright.ts";
+import type { ProjectEntityDto } from "../../src/generated/api.ts";
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import assert from "node:assert/strict";
+import type { MultiServerFixtureOptions } from "../servers/multi-server-fixture.ts";
+import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
+import type { Owner } from "./sidebar-parity-fixture.ts";
+import { fixturePostBody } from "../servers/browser-fixture.ts";
+import { remoteNetwork } from "../servers/browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
@@ -5,7 +15,7 @@ for (const [theme, viewport] of [
   ["light", { width: 1440, height: 900 }],
   ["dark", { width: 1440, height: 900 }],
   ["mobile", { width: 390, height: 844 }],
-]) {
+] as const) {
   test(`the combined classic sidebar routes actions to their owner: ${theme}`, async ({
     page,
     context,
@@ -16,18 +26,28 @@ for (const [theme, viewport] of [
     await page.emulateMedia({
       colorScheme: theme === "dark" ? "dark" : "light",
     });
-    const calls = { local: [], remote: [] };
-    const syncCalls = [];
-    const secretCalls = [];
+    const calls: Record<
+      Owner,
+      {
+        [Path in ApiPostPath]: { path: Path; body: PostBody<Path> };
+      }[ApiPostPath][]
+    > = { local: [], remote: [] };
+    const syncCalls: PostBody<"/api/mac-sync/resolve">[] = [];
+    const secretCalls: {
+      path: string;
+      body: PostBody<"/api/project-secrets/set">;
+    }[] = [];
     const secretNames = new Set(["EXISTING_KEY"]);
     const handler =
-      (owner) =>
-      ({ url, body, json, snapshot }) => {
+      (owner: Owner): NonNullable<MultiServerFixtureOptions["handle"]> =>
+      ({ url, body: rawBody, json, snapshot }) => {
         if (url.pathname === "/api/organization") {
-          calls[owner].push({ path: url.pathname, body });
+          const body = fixturePostBody<"/api/organization">(rawBody);
+          calls[owner].push({ path: "/api/organization", body });
           const row = snapshot.threads.find((chat) => chat.id === body.id);
           expect(row).toBeTruthy();
-          for (const key of ["pinned", "archived"])
+          assert.ok(row);
+          for (const key of ["pinned", "archived"] as const)
             if (key in body) row[key] = body[key];
           if ("project_folder" in body) {
             row.projectFolder = body.project_folder;
@@ -41,6 +61,7 @@ for (const [theme, viewport] of [
           return true;
         }
         if (url.pathname === "/api/mac-sync/resolve") {
+          const body = fixturePostBody<"/api/mac-sync/resolve">(rawBody);
           expect(owner).toBe("remote");
           syncCalls.push(body);
           json({
@@ -52,6 +73,7 @@ for (const [theme, viewport] of [
           return true;
         }
         if (url.pathname.startsWith("/api/project-secrets/")) {
+          const body = fixturePostBody<"/api/project-secrets/set">(rawBody);
           expect(owner).toBe("remote");
           secretCalls.push({ path: url.pathname, body });
           if (url.pathname.endsWith("/set")) secretNames.add(body.name);
@@ -61,23 +83,39 @@ for (const [theme, viewport] of [
           return true;
         }
         if (url.pathname === "/api/rename") {
+          const body = fixturePostBody<"/api/rename">(rawBody);
           calls[owner].push({ path: url.pathname, body });
           const row = snapshot.threads.find((chat) => chat.id === body.id);
           expect(row).toBeTruthy();
-          row.name = body.name;
+          requiredFixtureValue(row).name = body.name;
           json({ ok: true });
           return true;
         }
         if (url.pathname === "/api/projects") {
+          const body = fixturePostBody<"/api/projects">(rawBody);
           calls[owner].push({ path: url.pathname, body });
+          assert.ok("path" in body);
           const project = snapshot.runtime.projects.find(
             (row) => row.path === body.path,
           );
           expect(project).toBeTruthy();
+          assert.ok(
+            project &&
+              "expected_revision" in body &&
+              "organizationRevision" in project,
+          );
+          assert.ok(
+            project.organizationRevision !== null &&
+              project.organizationRevision !== undefined,
+          );
           expect(body.expected_revision).toBe(project.organizationRevision);
-          if (body.action === "rename_folder")
-            project.folders.find((row) => row.id === body.folder_id).name =
-              body.name;
+          if (body.action === "rename_folder") {
+            const folder = project.folders?.find(
+              (row) => row.id === body.folder_id,
+            );
+            assert.ok(folder && body.name);
+            folder.name = body.name;
+          }
           project.organizationRevision += 1;
           json({ project, revision: project.organizationRevision });
           return true;
@@ -89,8 +127,9 @@ for (const [theme, viewport] of [
     for (const [owner, server] of [
       ["local", local],
       ["remote", remote],
-    ]) {
+    ] as const) {
       const project = server.snapshot.runtime.projects[0];
+      assert.ok(project);
       Object.assign(project, {
         id: owner === "local" ? "logical-project" : "remote-project",
         path: owner === "local" ? "/same/project" : "/remote/project",
@@ -112,44 +151,31 @@ for (const [theme, viewport] of [
               layrReadiness: { state: "ready" },
             }
           : {}),
-      });
-      Object.assign(server.snapshot.threads[0], {
-        cwd: project.path,
-        pinned: true,
-        projectFolderRevision: 2,
-        updated: Date.now() / 1000,
-      });
+      } satisfies Partial<ProjectEntityDto>);
+      Object.assign(
+        server.snapshot.threads[0] ??
+          (() => {
+            throw new Error("Missing fixture chat");
+          })(),
+        {
+          cwd: project.path,
+          pinned: true,
+          projectFolderRevision: 2,
+          updated: Date.now() / 1000,
+        } satisfies Partial<TestAgent>,
+      );
       Object.assign(server.snapshot.runtime, {
         projectOrganizationVersion: 1,
         peerTeamsVersion: 1,
         sidebarOrder: { revision: 1, groups: {} },
-      });
+      } satisfies Partial<TestRuntimeView>);
     }
     local.aliases.remote = "REM";
     local.discoverPeer(remote);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     try {
-      await context.addInitScript(
-        ({ origin, destination }) => {
-          const nativeFetch = window.fetch.bind(window);
-          window.fetch = async (input, init) => {
-            const request = new Request(input, init);
-            const url = new URL(request.url);
-            if (url.origin !== origin) return nativeFetch(request);
-            const body = await request.clone().arrayBuffer();
-            return nativeFetch(destination + url.pathname + url.search, {
-              method: request.method,
-              headers: request.headers,
-              ...(body.byteLength ? { body } : {}),
-              signal: request.signal,
-              redirect: "error",
-              credentials: "omit",
-            });
-          };
-        },
-        { origin: remote.invitation.origin, destination: remote.origin },
-      );
+      await remoteNetwork(context, remote);
       await page.goto(local.origin);
       if (viewport.width < 760)
         await page
@@ -228,7 +254,7 @@ for (const [theme, viewport] of [
         path: "/api/organization",
         body: { id: "overlap", pinned: false },
       });
-      expect(local.snapshot.threads[0].pinned).toBe(true);
+      expect(requiredFixtureValue(local.snapshot.threads[0]).pinned).toBe(true);
 
       await row.hover();
       await row
@@ -243,9 +269,15 @@ for (const [theme, viewport] of [
       await expect(
         row.getByRole("button", { name: /Remote renamed/ }).first(),
       ).toBeVisible();
-      expect(calls.remote[1].body.id).toBe("overlap");
-      expect(calls.remote[1].body.request_id).toBeTruthy();
-      expect(local.snapshot.threads[0].name).toBe("Local chat");
+      expect(fixturePostBody<"/api/rename">(calls.remote[1]?.body).id).toBe(
+        "overlap",
+      );
+      expect(
+        fixturePostBody<"/api/rename">(calls.remote[1]?.body).request_id,
+      ).toBeTruthy();
+      expect(requiredFixtureValue(local.snapshot.threads[0]).name).toBe(
+        "Local chat",
+      );
 
       await row.hover();
       await row
@@ -274,14 +306,16 @@ for (const [theme, viewport] of [
         "data-folder-id",
         JSON.stringify(["folder", "remote", "/remote/project", "folder"]),
       );
-      expect(calls.remote[2].body).toEqual({
+      expect(requiredFixtureValue(calls.remote[2]).body).toEqual({
         id: "overlap",
         project_path: "/remote/project",
         project_folder: "folder",
         expected_folder: null,
         expected_revision: 2,
       });
-      expect(local.snapshot.threads[0].projectFolder).toBeUndefined();
+      expect(
+        requiredFixtureValue(local.snapshot.threads[0]).projectFolder,
+      ).toBeUndefined();
       expect(calls.local).toEqual([]);
 
       await sidebar
@@ -321,15 +355,19 @@ for (const [theme, viewport] of [
           }),
         }),
       ).toHaveCount(0);
-      expect(calls.remote[3].body).toMatchObject({
+      expect(requiredFixtureValue(calls.remote[3]).body).toMatchObject({
         action: "rename_folder",
         path: "/remote/project",
         folder_id: "folder",
         expected_revision: 9,
       });
-      expect(local.snapshot.runtime.projects[0].folders[0].name).toBe(
-        "local folder",
-      );
+      expect(
+        requiredFixtureValue(
+          requiredFixtureValue(
+            requiredFixtureValue(local.snapshot.runtime.projects[0]).folders,
+          )[0],
+        ).name,
+      ).toBe("local folder");
       await expect(
         sidebar.getByRole("button", { name: /Remote folder renamed Codex/ }),
       ).toBeVisible();
@@ -372,9 +410,10 @@ for (const [theme, viewport] of [
 
       // layr shows only where it is active: an import in progress shows nothing.
       remote.offline(false);
-      remote.snapshot.runtime.projects[0].layrReadiness = {
-        state: "importing",
-      };
+      requiredFixtureValue(remote.snapshot.runtime.projects[0]).layrReadiness =
+        {
+          state: "importing",
+        };
       await page.reload();
       if (viewport.width < 760)
         await page
@@ -390,19 +429,25 @@ for (const [theme, viewport] of [
 
       // The remote server now syncs its Mac folder: one chip tells that the project is
       // ready and that one file waits for a choice, and the remote server takes it.
-      Object.assign(remote.snapshot.runtime.projects[0], {
-        layrReadiness: { state: "ready", projectId: "remote-layr" },
-        layrSync: {
-          projectId: "remote-layr",
-          state: "conflict",
-          enabled: true,
-          conflicts: ["src/app.txt"],
-          choices: [],
-          withAgent: [],
-          deletes: 0,
-          reason: null,
-        },
-      });
+      Object.assign(
+        remote.snapshot.runtime.projects[0] ??
+          (() => {
+            throw new Error("Missing fixture project");
+          })(),
+        {
+          layrReadiness: { state: "ready", projectId: "remote-layr" },
+          layrSync: {
+            projectId: "remote-layr",
+            state: "conflict",
+            enabled: true,
+            conflicts: ["src/app.txt"],
+            choices: [],
+            withAgent: [],
+            deletes: 0,
+            reason: null,
+          },
+        } satisfies Partial<ProjectEntityDto>,
+      );
       await page.reload();
       if (viewport.width < 760)
         await page
@@ -492,7 +537,7 @@ for (const [theme, viewport] of [
 
       // The project's vault: the menu tells when it last saved a change and opens its Desk
       // page; the folder belongs to the remote server, so this Mac does not pull it.
-      remote.snapshot.runtime.projects[0].vault = {
+      requiredFixtureValue(remote.snapshot.runtime.projects[0]).vault = {
         projectId: "remote-layr",
         state: "ok",
         prefix: "home project",
@@ -518,7 +563,7 @@ for (const [theme, viewport] of [
         "Choose versions (1) (REM)",
         "Pause sync (REM)",
         "Open in Desk (REM)",
-      ])
+      ] as const)
         await expect(
           page.getByRole("menuitem", { name, exact: true }),
         ).toHaveCount(0);
@@ -605,19 +650,19 @@ for (const [theme, viewport] of [
         "/api/project-secrets/set",
         "/api/project-secrets/remove",
       ]);
-      expect(secretCalls[1].body).toEqual({
+      expect(requiredFixtureValue(secretCalls[1]).body).toEqual({
         projectId: "remote-layr",
         name: "ZULIP_APEIRO_SHOWROOM_API_KEY",
         value: secretValue,
         requestId: expect.any(String),
       });
-      expect(secretCalls[2].body).toEqual({
+      expect(requiredFixtureValue(secretCalls[2]).body).toEqual({
         projectId: "remote-layr",
         name: "EXISTING_KEY",
         requestId: expect.any(String),
       });
-      expect(secretCalls[2].body.requestId).not.toBe(
-        secretCalls[1].body.requestId,
+      expect(requiredFixtureValue(secretCalls[2]).body.requestId).not.toBe(
+        requiredFixtureValue(secretCalls[1]).body.requestId,
       );
       // Escape would also close the mobile sidebar drawer.
       await secretsDialog.getByRole("button", { name: "Close" }).click();
@@ -653,20 +698,32 @@ test("offline folder expansion does not change the saved source state after reco
   const path = "/remote/project";
   const key = ":server:remote:codex-project-tree:/same/state";
   const saved = { [JSON.stringify([path, "folder", "folder"])]: true };
-  Object.assign(remote.snapshot.runtime.projects[0], {
-    path,
-    name: "Remote project",
-    folders: [{ id: "folder", name: "Saved closed folder" }],
-  });
-  Object.assign(remote.snapshot.threads[0], {
-    cwd: path,
-    projectFolder: "folder",
-    updated: Date.now() / 1000,
-  });
+  Object.assign(
+    remote.snapshot.runtime.projects[0] ??
+      (() => {
+        throw new Error("Missing fixture project");
+      })(),
+    {
+      path,
+      name: "Remote project",
+      folders: [{ id: "folder", name: "Saved closed folder" }],
+    } satisfies Partial<ProjectEntityDto>,
+  );
+  Object.assign(
+    remote.snapshot.threads[0] ??
+      (() => {
+        throw new Error("Missing fixture chat");
+      })(),
+    {
+      cwd: path,
+      projectFolder: "folder",
+      updated: Date.now() / 1000,
+    } satisfies Partial<TestAgent>,
+  );
   Object.assign(remote.snapshot.runtime, {
     projectOrganizationVersion: 1,
     sidebarOrder: { revision: 1, groups: {} },
-  });
+  } satisfies Partial<TestRuntimeView>);
   local.discoverPeer(remote);
   try {
     await context.addInitScript(
@@ -709,7 +766,7 @@ test("offline folder expansion does not change the saved source state after reco
     const original = await remoteFrame
       .locator("html")
       .evaluate((_, key) => localStorage.getItem(key), key);
-    expect(JSON.parse(original)).toEqual(saved);
+    expect(JSON.parse(original ?? "null")).toEqual(saved);
     const writesBefore = preferenceWrites.length;
     remote.offline(true);
     const newChat = sidebar.getByRole("button", {

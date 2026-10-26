@@ -1,9 +1,18 @@
+import { fixturePostBody } from "../servers/browser-fixture.ts";
+import { requiredFixtureValue } from "../servers/browser-fixture.ts";
+import type { ScreenMessage } from "../../src/servers/screenChannel.ts";
+declare global {
+  interface Window {
+    sidebarReviewWrites: [string, string][];
+    sidebarReviewReplies: ScreenMessage[];
+  }
+}
 import { test, expect } from "../playwright.ts";
 import {
   sidebarParityFixture,
   sourcePath,
   scope,
-} from "./sidebar-parity-fixture.mjs";
+} from "./sidebar-parity-fixture.ts";
 test("project headings ignore the earlier saved collapse state", async ({
   page,
   context,
@@ -80,11 +89,11 @@ test("selecting a remote chat leaves saved project collapse state untouched", as
       const value = JSON.parse(localStorage.getItem(key) || "{}");
       value[owner === "remote" ? "/remote/project" : "/same/project"] = true;
       localStorage.setItem(key, JSON.stringify(value));
-      window.__reviewWrites = [];
+      window.sidebarReviewWrites = [];
       const original = Storage.prototype.setItem;
       Storage.prototype.setItem = function (k, v) {
         if (k.includes("codex-project-tree:"))
-          window.__reviewWrites.push([k, v]);
+          window.sidebarReviewWrites.push([k, v]);
         return original.call(this, k, v);
       };
     },
@@ -121,7 +130,7 @@ test("selecting a remote chat leaves saved project collapse state untouched", as
       )
       .toBe(true);
     await page.evaluate(() => {
-      window.__reviewWrites = [];
+      window.sidebarReviewWrites = [];
     });
     await sidebar
       .locator(".sidebar-row")
@@ -132,7 +141,7 @@ test("selecting a remote chat leaves saved project collapse state untouched", as
     await expect(group).toHaveAttribute("aria-expanded", "true");
     const result = await page.evaluate(
       ({ scope }) => ({
-        writes: window.__reviewWrites,
+        writes: window.sidebarReviewWrites,
         local: JSON.parse(
           localStorage.getItem("codex-project-tree:" + scope) || "{}",
         ),
@@ -176,14 +185,16 @@ test("a combined RPC reply excludes prompt and answer fields", async ({
   await page.setViewportSize({ width: 1440, height: 1100 });
   const f = await sidebarParityFixture(context);
   await context.addInitScript(() => {
-    window.__reviewReplies = [];
+    window.sidebarReviewReplies = [];
     window.addEventListener("message", (event) => {
       if (event.data?.kind === "studio-sidebar-result")
-        window.__reviewReplies.push(event.data);
+        window.sidebarReviewReplies.push(event.data);
     });
   });
   await context.route("**/api/organization", async (route) => {
-    const body = route.request().postDataJSON();
+    const body = fixturePostBody<"/api/organization">(
+      route.request().postDataJSON(),
+    );
     await route.fulfill({
       json: {
         ...f.remote.snapshot.threads.find((row) => row.id === body.id),
@@ -204,9 +215,9 @@ test("a combined RPC reply excludes prompt and answer fields", async ({
       .click();
     await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
     await expect
-      .poll(() => page.evaluate(() => window.__reviewReplies.length))
+      .poll(() => page.evaluate(() => window.sidebarReviewReplies.length))
       .toBeGreaterThan(0);
-    const replies = await page.evaluate(() => window.__reviewReplies);
+    const replies = await page.evaluate(() => window.sidebarReviewReplies);
     await testInfo.attach("raw-reply", {
       body: JSON.stringify(replies, null, 2),
       contentType: "application/json",
@@ -228,14 +239,22 @@ test("combined frames do not mount sidebars or migrate null groups", async ({
   f.remote.snapshot.runtime.sidebarOrder = { revision: 0, groups: null };
   try {
     await f.open(page);
-    for (const title of ["Local", "Remote"])
+    for (const title of ["Local", "Remote"] as const)
       await expect(
         page
           .frameLocator(`iframe[title="Studio on ${title}"]`)
           .locator("#sidebar"),
       ).toHaveCount(0);
-    expect(f.calls.local.filter((call) => call.body.migration)).toEqual([]);
-    expect(f.calls.remote.filter((call) => call.body.migration)).toEqual([]);
+    expect(
+      f.calls.local.filter(
+        (call) => "migration" in call.body && call.body.migration,
+      ),
+    ).toEqual([]);
+    expect(
+      f.calls.remote.filter(
+        (call) => "migration" in call.body && call.body.migration,
+      ),
+    ).toEqual([]);
     await testInfo.attach("read-migrations", {
       body: JSON.stringify(f.calls, null, 2),
       contentType: "application/json",
@@ -285,16 +304,31 @@ test("a pinned chat edge drop cannot join a team in classic", async ({
     const to = sidebar
       .locator(".peer-team-toggle")
       .filter({ hasText: "Local Saved team" });
-    const drop = async (position) => {
+    const drop = async (position: number) => {
       await from.scrollIntoViewIfNeeded();
       const a = await from.boundingBox();
-      await page.mouse.move(a.x + 18, a.y + a.height / 2);
+      await page.mouse.move(
+        requiredFixtureValue(a).x + 18,
+        requiredFixtureValue(a).y + requiredFixtureValue(a).height / 2,
+      );
       await page.mouse.down();
-      await page.mouse.move(a.x + 22, a.y + a.height / 2 + 9, { steps: 6 });
+      await page.mouse.move(
+        requiredFixtureValue(a).x + 22,
+        requiredFixtureValue(a).y + requiredFixtureValue(a).height / 2 + 9,
+        { steps: 6 },
+      );
       await to.scrollIntoViewIfNeeded();
       const b = await to.boundingBox();
-      await page.mouse.move(b.x + 18, b.y + b.height * position, { steps: 20 });
-      await page.mouse.move(b.x + 20, b.y + b.height * position, { steps: 3 });
+      await page.mouse.move(
+        requiredFixtureValue(b).x + 18,
+        requiredFixtureValue(b).y + requiredFixtureValue(b).height * position,
+        { steps: 20 },
+      );
+      await page.mouse.move(
+        requiredFixtureValue(b).x + 20,
+        requiredFixtureValue(b).y + requiredFixtureValue(b).height * position,
+        { steps: 3 },
+      );
       await page.mouse.up();
       await page.evaluate(
         () =>
@@ -303,7 +337,7 @@ test("a pinned chat edge drop cannot join a team in classic", async ({
           ),
       );
     };
-    for (const edge of [0.1, 0.9]) {
+    for (const edge of [0.1, 0.9] as const) {
       await drop(edge);
       expect(
         f.calls.local.filter(
@@ -311,9 +345,9 @@ test("a pinned chat edge drop cannot join a team in classic", async ({
             call.path === "/api/peer-teams" && call.body.action === "move",
         ),
       ).toHaveLength(0);
-      expect(f.local.snapshot.runtime.peerTeams[0].members).not.toContain(
-        "overlap",
-      );
+      expect(
+        requiredFixtureValue(f.local.snapshot.runtime.peerTeams[0]).members,
+      ).not.toContain("overlap");
     }
     await testInfo.attach("edge-mutation", {
       body: JSON.stringify(f.calls.local, null, 2),
@@ -329,7 +363,9 @@ test("a pinned chat edge drop cannot join a team in classic", async ({
           ).length,
       )
       .toBe(1);
-    expect(f.local.snapshot.runtime.peerTeams[0].members).toContain("overlap");
+    expect(
+      requiredFixtureValue(f.local.snapshot.runtime.peerTeams[0]).members,
+    ).toContain("overlap");
   } finally {
     await f.close();
   }
@@ -346,7 +382,12 @@ test("classic null groups keep the existing source migration", async ({
   try {
     await f.open(page, { combined: false });
     await expect
-      .poll(() => f.calls.local.filter((call) => call.body.migration).length)
+      .poll(
+        () =>
+          f.calls.local.filter(
+            (call) => "migration" in call.body && call.body.migration,
+          ).length,
+      )
       .toBe(1);
   } finally {
     await f.close();

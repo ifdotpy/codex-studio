@@ -1,11 +1,24 @@
+import type { TestAgent } from "../playwright.ts";
+import { requiredFixtureValue } from "./browser-fixture.ts";
+import type { ProjectEntityDto } from "../../src/generated/api.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "./browser-fixture.ts";
+import type { ServerFixture } from "./browser-fixture.ts";
+import type { Page, BrowserContext } from "playwright";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
 
 async function projectFixtures(offline = false) {
-  const leads = [];
-  const browses = [];
-  const registrations = [];
-  const project = {
+  const leads: (PostBody<"/api/leads"> & {
+    server?: string;
+    token: string | string[] | undefined;
+  })[] = [];
+  const browses: Record<string, string>[] = [];
+  const registrations: Exclude<
+    PostBody<"/api/projects">,
+    { action: "reorder" }
+  >[] = [];
+  const project: ProjectEntityDto = {
     id: "project:logical",
     path: "project:logical",
     name: "attar",
@@ -24,8 +37,9 @@ async function projectFixtures(offline = false) {
     ],
   };
   const remote = await fixture("Remote", true, {
-    handle({ url, body, request, json, snapshot }) {
+    handle({ url, body: rawBody, request, json, snapshot }) {
       if (url.pathname !== "/api/leads") return false;
+      const body = fixturePostBody<"/api/leads">(rawBody);
       leads.push({ ...body, token: request.headers["x-canvas-token"] });
       json({
         ...snapshot.threads[0],
@@ -38,8 +52,9 @@ async function projectFixtures(offline = false) {
     },
   });
   const local = await fixture("Local", false, {
-    handle({ url, body, request, json, snapshot }) {
+    handle({ url, body: rawBody, request, json, snapshot }) {
       if (url.pathname === "/api/leads") {
+        const body = fixturePostBody<"/api/leads">(rawBody);
         leads.push({
           ...body,
           server: "local",
@@ -56,6 +71,8 @@ async function projectFixtures(offline = false) {
         return true;
       }
       if (url.pathname === "/api/projects") {
+        const body = fixturePostBody<"/api/projects">(rawBody);
+        if (!("path" in body)) return false;
         if (body.path) {
           registrations.push(body);
           json({
@@ -107,12 +124,18 @@ async function projectFixtures(offline = false) {
       ],
     },
   ];
-  Object.assign(local.snapshot.threads[0], {
-    cwd: "/Projects/chrompile",
-    projectId: project.id,
-    projectServerId: "local",
-    updated: Date.now() / 1000 - 1,
-  });
+  Object.assign(
+    local.snapshot.threads[0] ??
+      (() => {
+        throw new Error("Missing fixture chat");
+      })(),
+    {
+      cwd: "/Projects/chrompile",
+      projectId: project.id,
+      projectServerId: "local",
+      updated: Date.now() / 1000 - 1,
+    } satisfies Partial<TestAgent>,
+  );
   remote.snapshot.runtime.projects = [
     {
       id: "/Projects/attar",
@@ -131,17 +154,28 @@ async function projectFixtures(offline = false) {
       ],
     },
   ];
-  Object.assign(remote.snapshot.threads[0], {
-    cwd: "/Projects/attar",
-    projectId: project.id,
-    projectServerId: "local",
-    updated: Date.now() / 1000,
-  });
+  Object.assign(
+    remote.snapshot.threads[0] ??
+      (() => {
+        throw new Error("Missing fixture chat");
+      })(),
+    {
+      cwd: "/Projects/attar",
+      projectId: project.id,
+      projectServerId: "local",
+      updated: Date.now() / 1000,
+    } satisfies Partial<TestAgent>,
+  );
   local.discoverPeer(remote, "paired", offline ? "unreachable" : "reachable");
   return { leads, browses, registrations, project, local, remote };
 }
 
-async function openFixtures(page, context, local, remote) {
+async function openFixtures(
+  page: Page,
+  context: BrowserContext,
+  local: ServerFixture,
+  remote: ServerFixture,
+) {
   await context.addInitScript(
     ({ destination, source }) => {
       const native = window.fetch.bind(window);
@@ -165,7 +199,7 @@ async function openFixtures(page, context, local, remote) {
   await page.goto(local.origin + "/?studio-navigation=combined");
 }
 
-function logicalProjectGroup(page) {
+function logicalProjectGroup(page: Page) {
   return page.locator(".sidebar-project").filter({
     has: page.locator(".project-tree-toggle", { hasText: "attar" }),
   });
@@ -177,7 +211,7 @@ test("project folders, remote browse, and New chat server choice", async ({
 }, testInfo) => {
   const { leads, browses, registrations, project, local, remote } =
     await projectFixtures();
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await openFixtures(page, context, local, remote);
@@ -235,10 +269,10 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => leads.length).toBe(1);
-    expect(leads[0].cwd).toBe("/Projects/attar");
-    expect(leads[0].project_id).toBe(project.id);
-    expect(leads[0].project_server_id).toBe("local");
-    expect(leads[0].token).toBeUndefined();
+    expect(requiredFixtureValue(leads[0]).cwd).toBe("/Projects/attar");
+    expect(requiredFixtureValue(leads[0]).project_id).toBe(project.id);
+    expect(requiredFixtureValue(leads[0]).project_server_id).toBe("local");
+    expect(requiredFixtureValue(leads[0]).token).toBeUndefined();
     await group.locator(".project-tree-heading").hover();
     await group
       .getByRole("button", { name: "Options for project attar", exact: true })
@@ -279,13 +313,18 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "Add project", exact: true })
       .boundingBox();
     const frameBounds = await page.locator(".server-views").boundingBox();
-    expect(footer.y + footer.height).toBeLessThanOrEqual(
-      frameBounds.y + frameBounds.height,
+    expect(
+      requiredFixtureValue(footer).y + requiredFixtureValue(footer).height,
+    ).toBeLessThanOrEqual(
+      requiredFixtureValue(frameBounds).y +
+        requiredFixtureValue(frameBounds).height,
     );
     await add.getByRole("button", { name: "Add project", exact: true }).click();
     await expect.poll(() => registrations.length).toBe(1);
-    expect(registrations[0].server).toBe("remote");
-    expect(registrations[0].path).toBe("/remote/home/attar");
+    expect(requiredFixtureValue(registrations[0]).server).toBe("remote");
+    expect(requiredFixtureValue(registrations[0]).path).toBe(
+      "/remote/home/attar",
+    );
     expect(browses.some((row) => row.server === "remote" && !row.path)).toBe(
       true,
     );
@@ -338,8 +377,8 @@ test("bound local New chat lets the logical project choose its account", async (
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => leads.length).toBe(1);
-    expect(leads[0].project_id).toBe("project:logical");
-    expect(leads[0].account_key).toBeUndefined();
+    expect(requiredFixtureValue(leads[0]).project_id).toBe("project:logical");
+    expect(requiredFixtureValue(leads[0]).account_key).toBeUndefined();
   } finally {
     await local.close();
     await remote.close();
@@ -369,8 +408,8 @@ test("project folder menu keeps the SidebarRow icon size", async ({
     });
     await expect(button).toBeVisible();
     const icon = await button.locator("svg").boundingBox();
-    expect(icon.width).toBe(16);
-    expect(icon.height).toBe(16);
+    expect(requiredFixtureValue(icon).width).toBe(16);
+    expect(requiredFixtureValue(icon).height).toBe(16);
   } finally {
     await local.close();
     await remote.close();
@@ -432,7 +471,7 @@ test("offline paired server is disabled in all project choices", async ({
   }
 });
 
-for (const variant of ["light", "dark", "mobile"]) {
+for (const variant of ["light", "dark", "mobile"] as const) {
   test(`project sidebar and New chat cards ${variant}`, async ({
     page,
     context,

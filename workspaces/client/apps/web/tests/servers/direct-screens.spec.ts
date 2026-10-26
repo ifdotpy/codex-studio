@@ -1,3 +1,5 @@
+import { requiredFixtureValue } from "./browser-fixture.ts";
+import { remoteNetwork } from "./browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
 
@@ -7,33 +9,14 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
 }, testInfo) => {
   const local = await fixture("Local");
   const remote = await fixture("Remote", true);
-  const errors = [];
+  const errors: string[] = [];
   let quotaFault = false;
   page.on("pageerror", (error) => {
     if (quotaFault && error.name === "QuotaExceededError") return;
     errors.push(error.message);
   });
   try {
-    await context.addInitScript(
-      ({ origin, destination }) => {
-        const fetchRequest = window.fetch.bind(window);
-        window.fetch = async (input, init) => {
-          const request = new Request(input, init);
-          const url = new URL(request.url);
-          if (url.origin !== origin) return fetchRequest(request);
-          const bytes = await request.clone().arrayBuffer();
-          return fetchRequest(destination + url.pathname + url.search, {
-            method: request.method,
-            headers: request.headers,
-            ...(bytes.byteLength ? { body: bytes } : {}),
-            signal: request.signal,
-            redirect: "error",
-            credentials: "omit",
-          });
-        };
-      },
-      { origin: remote.invitation.origin, destination: remote.origin },
-    );
+    await remoteNetwork(context, remote);
     await page.goto(local.origin);
     await expect(page.locator("#message")).toBeVisible();
     await page
@@ -53,7 +36,7 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
     await dialog
       .getByRole("button", { name: "Pair server", exact: true })
       .click();
-    const chat = (alias) =>
+    const chat = (alias: string) =>
       page.getByRole("navigation", { name: "Chats" }).getByRole("button", {
         name: alias === "REM" ? "Remote chat Server REM" : "Local chat",
         exact: true,
@@ -74,7 +57,7 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
       .getByRole("button", { name: "Send message", exact: true })
       .click();
     await expect.poll(() => remote.writes.length).toBe(1);
-    expect(remote.writes[0].text).toBe("remote draft");
+    expect(remote.writes[0]?.text).toBe("remote draft");
     expect(local.writes).toHaveLength(0);
     quotaFault = true;
     await page.evaluate(() => {
@@ -87,9 +70,12 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
           throw new DOMException("Full fixture storage", "QuotaExceededError");
         original.call(this, key, value);
       };
-      for (const method of ["put", "add"]) {
+      for (const method of ["put", "add"] as const) {
         const originalMethod = IDBObjectStore.prototype[method];
-        IDBObjectStore.prototype[method] = function (...args) {
+        IDBObjectStore.prototype[method] = function (
+          this: IDBObjectStore,
+          ...args: Parameters<IDBObjectStore[typeof method]>
+        ) {
           if (this.transaction.db.name.endsWith("--drafts"))
             throw new DOMException(
               "Full fixture storage",
@@ -143,7 +129,7 @@ test("direct screens automatically include paired servers on phones", async ({
       (origins) => {
         const NativeEventSource = window.EventSource;
         window.EventSource = class extends NativeEventSource {
-          constructor(input, options) {
+          constructor(input: string | URL, options?: EventSourceInit) {
             const url = new URL(input, location.href);
             const destination = origins[url.origin];
             super(
@@ -178,7 +164,7 @@ test("direct screens automatically include paired servers on phones", async ({
       });
       await route.fulfill({ response });
     });
-    const chat = (server) =>
+    const chat = (server: string) =>
       page.locator("#chat-list [data-chat]").filter({
         has: page.getByText(`${server} chat`, { exact: true }),
       });
@@ -210,7 +196,9 @@ test("direct screens automatically include paired servers on phones", async ({
       .getByRole("button", { name: "Send message", exact: true })
       .click();
     await expect.poll(() => remote.writes.length).toBe(1);
-    expect(remote.writes[0].text).toBe("phone message for remote");
+    expect(requiredFixtureValue(remote.writes[0]).text).toBe(
+      "phone message for remote",
+    );
     expect(local.writes).toHaveLength(0);
     await openChats();
     await chat("Local").click();

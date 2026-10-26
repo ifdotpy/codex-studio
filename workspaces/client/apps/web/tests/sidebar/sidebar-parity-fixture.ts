@@ -1,3 +1,14 @@
+import type { GetResult, PostResult, JsonInput } from "../../src/apiTypes.ts";
+import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
+import type { TestRuntimeView } from "../playwright.ts";
+import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
+import type { BrowserContext, Page } from "playwright";
+import type { components } from "../../src/generated/api.ts";
+import type { TestAgent } from "../playwright.ts";
+import type { PreferenceFields } from "../../src/sync/uiPreferenceMerge.ts";
+import type { MultiServerFixtureOptions } from "../servers/multi-server-fixture.ts";
+import { fixturePostBody } from "../servers/browser-fixture.ts";
+import type { ServerFixture } from "../servers/browser-fixture.ts";
 import assert from "node:assert/strict";
 import {
   fixture,
@@ -9,21 +20,71 @@ import {
   validateSyncPullRequest,
 } from "../playwright.ts";
 
+type LegacyDocument = Partial<components["schemas"]["SyncDocument"]> &
+  Pick<components["schemas"]["SyncDocument"], "id">;
+// This fixture still reads the legacy payload format. V4 entities intentionally
+// retain their absent payload here; aligning this stale fixture is separate work.
+function legacyDocument(value: unknown): LegacyDocument {
+  assert.ok(
+    value &&
+      typeof value === "object" &&
+      "id" in value &&
+      typeof value.id === "string",
+  );
+  const payload =
+    "payload" in value && typeof value.payload === "string"
+      ? value.payload
+      : undefined;
+  const deleted =
+    "_deleted" in value && typeof value._deleted === "boolean"
+      ? value._deleted
+      : undefined;
+  const seq =
+    "seq" in value && typeof value.seq === "number" ? value.seq : undefined;
+  return {
+    id: value.id,
+    ...(payload === undefined ? {} : { payload }),
+    ...(deleted === undefined ? {} : { _deleted: deleted }),
+    ...(seq === undefined ? {} : { seq }),
+  };
+}
+
 export const scope = "/same/state";
+export type Owner = "local" | "remote";
+type HandleContext = Parameters<
+  NonNullable<MultiServerFixtureOptions["handle"]>
+>[0];
+export type HeldRequest = Pick<HandleContext, "url" | "body"> & {
+  owner: Owner;
+  method: string | undefined;
+  path: string;
+};
+export type Hold = (
+  request: HeldRequest,
+) => number | { deliver: number } | undefined;
+export type SidebarParityFixture = Awaited<
+  ReturnType<typeof sidebarParityFixture>
+>;
 const workspaceIds = {
   local: fixtureWorkspaceId("Local"),
   remote: "c".repeat(32),
 };
-export const sourcePath = (owner) =>
+export const sourcePath = (owner: Owner) =>
   owner === "local" ? "/same/project" : "/remote/project";
-const treeId = (path, kind, id) => JSON.stringify([path, kind, id]);
+const treeId = (path: string, kind: string, id: string) =>
+  JSON.stringify([path, kind, id]);
 
-function seed(server, owner) {
+function seed(server: ServerFixture, owner: Owner) {
   const path = sourcePath(owner);
   const label = owner === "local" ? "Local" : "Remote";
   const base = server.snapshot.threads[0];
+  assert.ok(base);
   const now = Date.now() / 1000;
-  const chat = (id, name, extra = {}) => ({
+  const chat = (
+    id: string,
+    name: string,
+    extra: Partial<TestAgent> = {},
+  ): TestAgent => ({
     ...base,
     id,
     rootId: id,
@@ -165,32 +226,47 @@ function seed(server, owner) {
         name: `${label} Saved shared chat`,
         projectPath: path,
         members: ["member-a", "member-b"],
-        radio: { direct: true },
+        radio: structuredClone(sidebarFixtureRadio),
       },
     ],
-  });
+  } satisfies Partial<TestRuntimeView>);
   return prefs;
 }
 
 export async function sidebarParityFixture(
-  context,
-  { paired = true, remoteEmpty = false, hold } = {},
+  context: BrowserContext,
+  {
+    paired = true,
+    remoteEmpty = false,
+    hold,
+  }: { paired?: boolean; remoteEmpty?: boolean; hold?: Hold | undefined } = {},
 ) {
-  const calls = { local: [], remote: [] };
-  const reads = { local: [], remote: [] };
-  const preferences = {
+  const calls: Record<
+    Owner,
+    {
+      [Path in ApiPostPath]: { path: Path; body: PostBody<Path> };
+    }[ApiPostPath][]
+  > = { local: [], remote: [] };
+  const reads: Record<Owner, string[]> = { local: [], remote: [] };
+  const preferences: Record<
+    Owner,
+    Record<"user" | "server", PreferenceFields>
+  > = {
     local: { user: {}, server: {} },
     remote: { user: {}, server: {} },
   };
-  const documents = { local: new Map(), remote: new Map() };
+  const documents: Record<
+    Owner,
+    Map<string, components["schemas"]["SyncDocument"]>
+  > = { local: new Map(), remote: new Map() };
   const sequences = { local: 0, remote: 0 };
-  const servers = {};
+  const servers: Partial<Record<Owner, ServerFixture>> = {};
   // `hold` makes a server slow. It returns a delay in milliseconds before the server reads
   // and changes its state, or `{ deliver }` to compute the answer at once and deliver it
   // late, so that a later request can be answered before an earlier one.
-  const handler = (owner) => {
+  const handler = (owner: Owner) => {
     const respond = serve(owner);
-    return (value) => {
+    return (value: HandleContext) => {
       const delay = hold?.({
         owner,
         method: value.request.method,
@@ -211,20 +287,23 @@ export async function sidebarParityFixture(
       return true;
     };
   };
-  const receipts = { local: new Map(), remote: new Map() };
+  const receipts: Record<
+    Owner,
+    Map<string, components["schemas"]["SidebarOrderDto"]>
+  > = { local: new Map(), remote: new Map() };
   const serve =
-    (owner) =>
-    ({ request, url, body, json, snapshot }) => {
+    (owner: Owner) =>
+    ({ request, url, body: rawBody, json, snapshot }: HandleContext) => {
       const path = url.pathname;
       if (request.method === "GET") reads[owner].push(path + url.search);
-      const project = () =>
-        snapshot.runtime.projects.find((row) => row.path === body.path);
-      const row = (id) => {
+      const project = (path: string) =>
+        snapshot.runtime.projects.find((row) => row.path === path);
+      const row = (id: string) => {
         const value = snapshot.threads.find((chat) => chat.id === id);
         assert.ok(value, `Unknown ${owner} chat: ${id}`);
         return value;
       };
-      const reply = (value) => {
+      const reply = (value: unknown) => {
         if (request.method === "POST" && path !== "/api/sync/preferences")
           servers[owner]?.complete("sidebar-changed");
         json(value);
@@ -234,7 +313,9 @@ export async function sidebarParityFixture(
       if (path === "/api/sync/identity")
         return reply(syncIdentityFixture(workspaceId));
       if (path === "/api/sync/preferences") {
+        const body = fixturePostBody<"/api/sync/preferences">(rawBody);
         const target = preferences[owner][body.scope];
+        assert.ok(body.fields);
         for (const [name, field] of Object.entries(body.fields)) {
           const old = target[name];
           if (
@@ -251,8 +332,10 @@ export async function sidebarParityFixture(
         path === "/api/sync/pull" &&
         url.searchParams.get("scope") === "state:entities:v1"
       ) {
-        const next = entityPullFixture(snapshot).documents;
-        for (const kind of ["user", "server"])
+        const pull = entityPullFixture(snapshot);
+        assert.ok("documents" in pull);
+        const next: LegacyDocument[] = pull.documents.map(legacyDocument);
+        for (const kind of ["user", "server"] as const)
           next.push({
             id: `entity:uiPreferences:${kind}`,
             payload: JSON.stringify({
@@ -265,7 +348,7 @@ export async function sidebarParityFixture(
         const saved = documents[owner];
         const ids = new Set(next.map((value) => value.id));
         for (const [id, value] of saved)
-          if (!ids.has(id) && !value._deleted)
+          if (!ids.has(id) && !("_deleted" in value && value._deleted))
             saved.set(id, {
               ...value,
               _deleted: true,
@@ -273,19 +356,48 @@ export async function sidebarParityFixture(
             });
         for (const value of next)
           if (
-            saved.get(value.id)?.payload !== value.payload ||
+            saved.get(value.id)?.payload !==
+              ("payload" in value ? value.payload : undefined) ||
             saved.get(value.id)?._deleted
-          )
-            saved.set(value.id, { ...value, seq: ++sequences[owner] });
+          ) {
+            assert.ok(
+              value.payload !== undefined && value._deleted !== undefined,
+            );
+            saved.set(value.id, {
+              id: value.id,
+              payload: value.payload,
+              _deleted: value._deleted,
+              seq: ++sequences[owner],
+            });
+          }
         const parsed = validateSyncPullRequest(url);
         assert.ok(parsed.ok);
+        // Preserve legacy paging; the shared v4 helper accepts structured entities.
+        const {
+          after,
+          limit,
+          fresh,
+          initialHigh: requestedHigh,
+        } = parsed.params;
+        const high = sequences[owner];
+        const initialHigh = fresh
+          ? requestedHigh > 0
+            ? Math.min(high, requestedHigh)
+            : high
+          : 0;
+        const eligible = [...saved.values()]
+          .sort((a, b) => a.seq - b.seq)
+          .filter((document) => document.seq > after);
+        const page = eligible.slice(0, limit);
         return reply({
           workspaceId,
-          ...entityPullFixture(snapshot, {
-            ...parsed.params,
-            documents: [...saved.values()],
-            maxSeq: sequences[owner],
-          }),
+          generation: 1,
+          documents: page,
+          checkpoint: {
+            seq: page.length === limit ? (page.at(-1)?.seq ?? 0) : high,
+          },
+          maxSeq: high,
+          initialHigh,
         });
       }
       if (path === "/api/models")
@@ -298,9 +410,12 @@ export async function sidebarParityFixture(
               supportedReasoningEfforts: [],
             },
           ],
-        });
+        } satisfies GetResult<"/api/models">);
       if (request.method === "GET" && path === "/api/projects")
-        return reply({ items: snapshot.runtime.projects });
+        return reply({
+          items: snapshot.runtime
+            .projects satisfies components["schemas"]["ProjectEntityDto"][],
+        });
       if (path === "/api/directories")
         return reply({
           path: url.searchParams.get("path") || sourcePath(owner),
@@ -309,7 +424,7 @@ export async function sidebarParityFixture(
             { name: "New directory", path: `/${owner}/new-directory` },
           ],
           files: [],
-        });
+        } satisfies GetResult<"/api/directories"> & { files: string[] });
       if (path === "/api/project-servers")
         return reply({
           servers: [
@@ -320,9 +435,14 @@ export async function sidebarParityFixture(
               reachability: "online",
             },
           ],
-        });
+        } satisfies JsonInput);
       if (path === "/api/project-locations" && request.method === "GET")
-        return reply({ items: [], matches: [] });
+        return reply({
+          items: [],
+          matches: [],
+        } satisfies GetResult<"/api/project-locations"> & {
+          items: JsonInput[];
+        });
       if (request.method !== "POST") return false;
       if (
         ![
@@ -335,20 +455,29 @@ export async function sidebarParityFixture(
         ].some((pattern) => pattern.test(path))
       )
         return false;
-      calls[owner].push({ path, body: structuredClone(body) });
       if (path === "/api/organization") {
+        const body = fixturePostBody<"/api/organization">(rawBody);
+        calls[owner].push({
+          path: "/api/organization",
+          body: structuredClone(body),
+        });
         const chat = row(body.id);
-        for (const key of ["pinned", "archived"])
+        for (const key of ["pinned", "archived"] as const)
           if (key in body) chat[key] = body[key];
         if ("project_folder" in body) {
           assert.equal(body.project_path, chat.cwd);
           assert.equal(body.expected_revision, chat.projectFolderRevision);
           chat.projectFolder = body.project_folder;
+          assert.ok(
+            chat.projectFolderRevision !== null &&
+              chat.projectFolderRevision !== undefined,
+          );
           chat.projectFolderRevision++;
         }
         if (body.read_state) {
           assert.equal(body.read_state.thread_id, chat.threadId);
           assert.equal(body.read_state.turn_id, chat.lastCompletedTurn);
+          assert.ok(chat.threadId && chat.lastCompletedTurn);
           chat.readState = {
             threadId: chat.threadId,
             turnId: chat.lastCompletedTurn,
@@ -362,25 +491,47 @@ export async function sidebarParityFixture(
           pinned: !!chat.pinned,
           archived: !!chat.archived,
           readState: chat.readState,
-        });
+        } satisfies Pick<
+          components["schemas"]["AgentEntityDto"],
+          "id" | "projectFolder" | "pinned" | "archived" | "readState"
+        >);
       }
       if (path === "/api/rename") {
+        const body = fixturePostBody<"/api/rename">(rawBody);
+        calls[owner].push({ path: "/api/rename", body: structuredClone(body) });
         row(body.id).name = body.name;
-        return reply({ ok: true });
+        // The legacy fixture acknowledges renames without the current receipt.
+        return reply({ ok: true } satisfies JsonInput);
       }
       if (path === "/api/conversation/delete") {
+        const body = fixturePostBody<"/api/conversation/delete">(rawBody);
+        calls[owner].push({
+          path: "/api/conversation/delete",
+          body: structuredClone(body),
+        });
         row(body.id).deletedAt = Date.now() / 1000;
-        return reply({ deleted: [body.id] });
+        return reply({
+          deleted: [body.id],
+        } satisfies PostResult<"/api/conversation/delete">);
       }
       if (path === "/api/conversation") {
+        const body = fixturePostBody<"/api/conversation">(rawBody);
+        calls[owner].push({
+          path: "/api/conversation",
+          body: structuredClone(body),
+        });
         row(body.id).cwd = body.cwd;
         return reply(row(body.id));
       }
       if (path === "/api/leads") {
+        const body = fixturePostBody<"/api/leads">(rawBody);
+        calls[owner].push({ path: "/api/leads", body: structuredClone(body) });
         // The server keeps one chat for each creation identity.
+        assert.ok(body.id);
         const existing = snapshot.threads.find((row) => row.id === body.id);
         if (existing) return reply(existing);
         const base = snapshot.threads[0];
+        assert.ok(base);
         const chat = {
           ...base,
           id: body.id,
@@ -396,10 +547,16 @@ export async function sidebarParityFixture(
         return reply(chat);
       }
       if (path === "/api/projects") {
+        const body = fixturePostBody<"/api/projects">(rawBody);
+        calls[owner].push({
+          path: "/api/projects",
+          body: structuredClone(body),
+        });
         if (body.action === "reorder") {
           // A repeated request ID returns the first receipt, as the server does.
           const receipt = receipts[owner].get(body.request_id);
           if (receipt) return reply(receipt);
+          assert.ok(snapshot.runtime.sidebarOrder);
           assert.equal(
             body.expected_revision,
             snapshot.runtime.sidebarOrder.revision,
@@ -411,24 +568,38 @@ export async function sidebarParityFixture(
           receipts[owner].set(body.request_id, snapshot.runtime.sidebarOrder);
           return reply(snapshot.runtime.sidebarOrder);
         }
-        const value = project();
+        assert.ok(body.path);
+        const value = project(body.path);
         assert.ok(value, `Unknown ${owner} project: ${body.path}`);
         if (
+          "expected_revision" in body &&
+          body.action &&
           ["rename", "rename_folder", "add_folder", "remove_folder"].includes(
             body.action,
           )
         ) {
+          assert.ok(
+            value.folders &&
+              value.organizationRevision !== null &&
+              value.organizationRevision !== undefined,
+          );
           assert.equal(body.expected_revision, value.organizationRevision);
           if (body.action === "rename") value.name = body.name;
-          if (body.action === "rename_folder")
-            value.folders.find((folder) => folder.id === body.folder_id).name =
-              body.name;
-          if (body.action === "add_folder")
+          if (body.action === "rename_folder") {
+            const folder = value.folders.find(
+              (folder) => folder.id === body.folder_id,
+            );
+            assert.ok(folder && body.name);
+            folder.name = body.name;
+          }
+          if (body.action === "add_folder") {
+            assert.ok(body.folder_id && body.name);
             value.folders.push({
               id: body.folder_id,
               name: body.name,
               parentId: body.parent_id,
             });
+          }
           if (body.action === "remove_folder")
             value.folders = value.folders.filter(
               (folder) => folder.id !== body.folder_id,
@@ -438,18 +609,31 @@ export async function sidebarParityFixture(
         if (body.action === "set_accounts") {
           value.accountKeys = body.account_keys;
           value.accountKey = body.account_key;
+          assert.ok(
+            value.accountRevision !== null &&
+              value.accountRevision !== undefined,
+          );
           value.accountRevision++;
         }
-        return reply({ project: value, revision: value.organizationRevision });
+        return reply({
+          project: value,
+          revision: value.organizationRevision,
+        } satisfies JsonInput);
       }
       if (path === "/api/peer-teams") {
-        const value = project();
+        const body = fixturePostBody<"/api/peer-teams">(rawBody);
+        calls[owner].push({
+          path: "/api/peer-teams",
+          body: structuredClone(body),
+        });
+        const value = project(body.path);
         assert.ok(value, `Unknown ${owner} team project: ${body.path}`);
         if (body.action !== "radio")
           assert.equal(body.expected_revision, value.peerTeamsRevision);
         const teams = snapshot.runtime.peerTeams;
         if (body.action === "save") {
           const existing = teams.find((team) => team.id === body.team_id);
+          assert.ok(body.team_id);
           const next = {
             id: body.team_id,
             name: body.name,
@@ -466,14 +650,17 @@ export async function sidebarParityFixture(
           );
         if (body.action === "move" || body.action === "convert") {
           row(body.member);
-          for (const team of teams)
+          for (const team of teams) {
+            assert.ok(team.members);
             team.members = team.members.filter((id) => id !== body.member);
-          if (body.team_id)
-            teams
-              .find((team) => team.id === body.team_id)
-              .members.push(body.member);
+          }
+          if ("team_id" in body && body.team_id) {
+            const team = teams.find((team) => team.id === body.team_id);
+            assert.ok(team?.members);
+            team.members.push(body.member);
+          }
           snapshot.runtime.peerTeams = teams.filter(
-            (team) => team.members.length >= 2,
+            (team) => (team.members?.length ?? 0) >= 2,
           );
           if (body.action === "convert") {
             row(body.target);
@@ -483,36 +670,54 @@ export async function sidebarParityFixture(
               parentId: body.target,
               status: "paused",
               autoWake: false,
-            });
+            } satisfies Partial<TestAgent>);
           }
         }
         if (body.action === "radio") {
-          const room = {
+          const room: components["schemas"]["RoomEntityDto"] = {
             id: `room-${body.request_id}`,
-            name: body.name || `${owner} Team shared chat`,
+            name: ("name" in body && body.name) || `${owner} Team shared chat`,
             projectPath: body.path,
             members:
-              body.participants?.map((_, index) => `radio-${index}`) ||
-              teams.find((team) => team.id === body.team_id)?.members ||
+              ("participants" in body
+                ? body.participants.map((_, index) => `radio-${index}`)
+                : undefined) ||
+              teams.find(
+                (team) =>
+                  team.id === ("team_id" in body ? body.team_id : undefined),
+              )?.members ||
               [],
             radio: {
+              active: null,
+              error: null,
+              next: [],
+              revision: 0,
+              speaker: "",
+              status: "idle",
               direct: body.radio_action === "create",
-              teamId: body.team_id || null,
+              teamId: ("team_id" in body ? body.team_id : undefined) || "",
             },
           };
           snapshot.runtime.rooms.push(room);
-          return reply({ room, peerTeams: teams });
+          return reply({ room, peerTeams: teams } satisfies JsonInput);
         }
-        value.peerTeams = snapshot.runtime.peerTeams;
+        value.peerTeams = snapshot.runtime.peerTeams.map((team) => {
+          assert.ok(team.name && team.members);
+          return { id: team.id, name: team.name, members: team.members };
+        });
+        assert.ok(
+          value.peerTeamsRevision !== null &&
+            value.peerTeamsRevision !== undefined,
+        );
         value.peerTeamsRevision++;
         return reply({
           peerTeams: value.peerTeams,
           revision: value.peerTeamsRevision,
-        });
+        } satisfies JsonInput);
       }
       return false;
     };
-  const accounts = [
+  const accounts: NonNullable<MultiServerFixtureOptions["accounts"]> = [
     { id: "default", label: "Fixture", provider: "codex", status: "ready" },
     { id: "secondary", label: "Second", provider: "codex", status: "ready" },
   ];
@@ -537,20 +742,20 @@ export async function sidebarParityFixture(
       rooms: [],
       peerTeams: [],
       requests: [],
-    });
+    } satisfies Partial<TestRuntimeView>);
   }
   local.aliases.remote = "REM";
   if (paired) local.discoverPeer(remote);
   await context.addInitScript(
     ({ origin, destination, prefs, scope }) => {
       // Both owner scopes now share the shell document instead of iframes.
-      for (const owner of ["local", "remote"]) {
+      for (const owner of ["local", "remote"] as const) {
         const prefix = owner === "remote" ? ":server:remote:" : "";
         for (const [kind, value] of [
           ["compact", prefs[owner].compact],
           ["tree", prefs[owner].collapsed],
           ["sidebar-order", prefs[owner].order],
-        ]) {
+        ] as const) {
           const key =
             kind === "sidebar-order"
               ? `codex-sidebar-order:${scope}`
@@ -589,7 +794,13 @@ export async function sidebarParityFixture(
     reads,
     prefs,
     preferences,
-    async open(page, { combined = true, owner = "local" } = {}) {
+    async open(
+      page: Page,
+      {
+        combined = true,
+        owner = "local",
+      }: { combined?: boolean; owner?: Owner } = {},
+    ) {
       await page.goto(
         local.origin + (combined ? "/" : "/?studio-navigation=classic"),
       );

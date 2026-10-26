@@ -1,18 +1,19 @@
+import { fixturePostBody } from "./browser-fixture.ts";
+import { fixtureBarrier } from "./browser-fixture.ts";
+import assert from "node:assert/strict";
+import type { AutomaticAccessAttempt } from "../../src/servers/automaticUiAccess.ts";
+import { settings, remoteNetwork } from "./browser-fixture.ts";
+import type { ServerFixture } from "./browser-fixture.ts";
+import type { Page } from "playwright";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
-async function settings(page) {
-  await page
-    .getByRole("button", { name: "Studio settings", exact: true })
-    .click();
-  await page.getByRole("tab", { name: "Servers", exact: true }).click();
-  return page.getByRole("dialog", { name: "Studio settings", exact: true });
-}
-async function showFixtureChats(page) {
+
+async function showFixtureChats(page: Page) {
   await page
     .getByLabel("Filter projects and chats", { exact: true })
     .fill("chat");
 }
-async function expectOverlappingChats(page) {
+async function expectOverlappingChats(page: Page) {
   const rows = page.locator("#chat-list [data-chat]");
   await expect(rows).toHaveCount(2);
   expect(
@@ -32,10 +33,7 @@ test("revoke cancels an automatic invitation whose reply is still in flight", as
 }) => {
   const local = await fixture("Local"),
     remote = await fixture("Remote", true);
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
+  const { promise: held, resolve: release } = fixtureBarrier();
   let invited = false;
   try {
     await context.addInitScript(
@@ -53,7 +51,10 @@ test("revoke cancels an automatic invitation whose reply is still in flight", as
       { origin: remote.invitation.origin, destination: remote.origin },
     );
     await page.route(local.origin + "/api/multi-server", async (route) => {
-      if (route.request().postDataJSON()?.action !== "ui_invite")
+      if (
+        fixturePostBody<"/api/multi-server">(route.request().postDataJSON())
+          .action !== "ui_invite"
+      )
         return route.continue();
       const response = await route.fetch();
       invited = true;
@@ -69,7 +70,7 @@ test("revoke cancels an automatic invitation whose reply is still in flight", as
     );
     await page.goto(local.origin + "/legacy-seed");
     await page.evaluate(async (invitation) => {
-      const db = await new Promise((resolve, reject) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("studio-automatic-ui-access-v1", 1);
         request.onupgradeneeded = () =>
           request.result.createObjectStore("attempts");
@@ -120,24 +121,29 @@ test("revoke cancels an automatic invitation whose reply is still in flight", as
     await expect
       .poll(async () => {
         const value = await page.evaluate(async () => {
-          const db = await new Promise((resolve, reject) => {
+          const db = await new Promise<IDBDatabase>((resolve, reject) => {
             const request = indexedDB.open("studio-automatic-ui-access-v1");
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
           });
-          const rows = await new Promise((resolve) => {
-            const request = db
-              .transaction("attempts")
-              .objectStore("attempts")
-              .getAll();
-            request.onsuccess = () => resolve(request.result);
-          });
+          const rows = await new Promise<AutomaticAccessAttempt[]>(
+            (resolve) => {
+              const request = db
+                .transaction("attempts")
+                .objectStore("attempts")
+                .getAll();
+              request.onsuccess = () => resolve(request.result);
+            },
+          );
           db.close();
           return rows;
         });
         expect(JSON.stringify(value)).not.toContain('"token"');
         expect(JSON.stringify(value)).not.toContain("secret-remote");
-        return value.some((row) => row.generation !== "old" && row.invitation);
+        return value.some(
+          (row) =>
+            row.generation !== "old" && "invitation" in row && row.invitation,
+        );
       })
       .toBe(true);
     expect(remote.pairs).toHaveLength(0);
@@ -228,9 +234,9 @@ test("another tab cannot clear an uncertain management identity", async ({
   }
 });
 async function seedLegacy(
-  page,
-  local,
-  remote,
+  page: Page,
+  local: ServerFixture,
+  remote: ServerFixture,
   expired = false,
   excluded = false,
   receipt = false,
@@ -244,7 +250,7 @@ async function seedLegacy(
   await page.goto(local.origin + "/legacy-startup");
   await page.evaluate(
     async ({ localId, invitation, expired, excluded, receipt }) => {
-      const db = await new Promise((resolve, reject) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const request = indexedDB.open("studio-automatic-ui-access-v1", 1);
         request.onupgradeneeded = () =>
           request.result.createObjectStore("attempts");
@@ -281,7 +287,7 @@ async function seedLegacy(
       });
       db.close();
       if (receipt) {
-        const credentials = await new Promise((resolve) => {
+        const credentials = await new Promise<IDBDatabase>((resolve) => {
           const request = indexedDB.open("studio-server-credentials-v1", 1);
           request.onupgradeneeded = () =>
             request.result.createObjectStore("credentials", { keyPath: "id" });
@@ -320,13 +326,13 @@ async function seedLegacy(
     },
   );
 }
-async function attempts(page) {
+async function attempts(page: Page) {
   return page.evaluate(async () => {
-    const db = await new Promise((resolve) => {
+    const db = await new Promise<IDBDatabase>((resolve) => {
       const request = indexedDB.open("studio-automatic-ui-access-v1");
       request.onsuccess = () => resolve(request.result);
     });
-    const rows = await new Promise((resolve) => {
+    const rows = await new Promise<AutomaticAccessAttempt[]>((resolve) => {
       const request = db
         .transaction("attempts")
         .objectStore("attempts")
@@ -338,28 +344,7 @@ async function attempts(page) {
     return { version, rows };
   });
 }
-async function remoteNetwork(context, remote) {
-  await context.addInitScript(
-    ({ origin, destination }) => {
-      const native = window.fetch.bind(window);
-      window.fetch = async (input, init) => {
-        const request = new Request(input, init),
-          url = new URL(request.url);
-        if (url.origin !== origin) return native(request);
-        const bytes = await request.clone().arrayBuffer();
-        return native(destination + url.pathname + url.search, {
-          method: request.method,
-          headers: request.headers,
-          ...(bytes.byteLength ? { body: bytes } : {}),
-          signal: request.signal,
-          redirect: "error",
-          credentials: "omit",
-        });
-      };
-    },
-    { origin: remote.invitation.origin, destination: remote.origin },
-  );
-}
+
 test("startup migration removes a legacy token even when every peer is revoked", async ({
   page,
 }) => {
@@ -400,9 +385,12 @@ test("an unused legacy invitation expires into a new attempt without a credentia
     const request = local.accessRequests.find(
       (row) => row.action === "ui_invite",
     );
+    assert.ok(request);
     expect(request.requestId).not.toBe("legacy-invite");
     expect(remote.pairs).toHaveLength(1);
-    expect(JSON.parse(remote.pairs[0]).requestId).not.toBe("legacy-pair");
+    expect(JSON.parse(remote.pairs[0] ?? "null").requestId).not.toBe(
+      "legacy-pair",
+    );
   } finally {
     await local.close();
     await remote.close();
@@ -494,8 +482,8 @@ test("startup migration preserves a saved pair receipt without keeping its legac
       .toBe(true);
     const state = await attempts(page);
     expect(JSON.stringify(state.rows)).not.toContain('"token"');
-    expect(state.rows[0].pairRequestId).toBe("legacy-pair");
-    expect(state.rows[0].needsPairCheck).toBeUndefined();
+    expect(state.rows[0]?.pairRequestId).toBe("legacy-pair");
+    expect(state.rows[0]?.needsPairCheck).toBeUndefined();
     expect(
       local.accessRequests.filter((row) => row.action === "ui_invite"),
     ).toHaveLength(0);

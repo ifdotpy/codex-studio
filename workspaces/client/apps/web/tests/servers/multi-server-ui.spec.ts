@@ -1,3 +1,13 @@
+import { requiredFixtureValue } from "./browser-fixture.ts";
+declare global {
+  interface Window {
+    multiServerNotifications: (Pick<Notification, "title"> & {
+      options?: NotificationOptions | undefined;
+    })[];
+    restoreMultiServerDraftStorage: () => void;
+  }
+}
+import type { ServerFixture } from "./browser-fixture.ts";
 import {
   test,
   expect,
@@ -13,21 +23,30 @@ test("one UI routes overlapping chats to two and three signed servers without re
 }, testInfo) => {
   test.setTimeout(180000);
   page.setDefaultTimeout(15000);
-  const chatByServer = (id, root = page) => {
-    const alias = { local: "LOC", remote: "REM", third: "THI" }[id];
+  const chatByServer = (id: string, root = page) => {
+    const alias = new Map([
+      ["local", "LOC"],
+      ["remote", "REM"],
+      ["third", "THI"],
+    ]).get(id);
     if (!alias) throw new Error(`Unknown fixture server ${id}`);
     return root.locator("#chat-list .chat-row").filter({
       has: root.locator(`.chat-server-line[aria-label$=", ${alias}"]`),
     });
   };
-  const clickServerChat = async (id) => {
+  const clickServerChat = async (id: string) => {
     const chat = chatByServer(id);
     await chat.evaluate((element) =>
       element.scrollIntoView({ block: "center" }),
     );
     const position = await chat.evaluate((element) => {
       const row = element.getBoundingClientRect();
-      const root = document.querySelector("#root").getBoundingClientRect();
+      const root = (
+        document.querySelector("#root") ??
+        (() => {
+          throw new Error("Missing fixture value");
+        })()
+      ).getBoundingClientRect();
       const visibleHeight = Math.min(row.bottom, root.bottom) - row.top;
       if (visibleHeight <= 0) throw new Error("server chat row is not visible");
       return {
@@ -40,7 +59,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
   const local = await fixture("Local");
   const remote = await fixture("Remote", true);
   const third = await fixture("Third", true);
-  const errors = [];
+  const errors: string[] = [];
   let draftQuotaFault = false;
   page.on("pageerror", (error) => {
     // The storage adapter also reports the deliberate quota fault globally.
@@ -50,13 +69,34 @@ test("one UI routes overlapping chats to two and three signed servers without re
   try {
     await context.addInitScript(
       ({ destinations }) => {
-        window.__studioNotifications = [];
-        window.Notification = class {
-          static permission = "granted";
-          constructor(title, options) {
+        window.multiServerNotifications = [];
+        window.Notification = class
+          extends EventTarget
+          implements Notification
+        {
+          static permission: NotificationPermission = "granted";
+          static requestPermission =
+            async (): Promise<NotificationPermission> => "granted";
+          title: string;
+          options: NotificationOptions | undefined;
+          body = "";
+          dir: NotificationDirection = "auto";
+          lang = "";
+          tag = "";
+          icon = "";
+          badge = "";
+          data: unknown = null;
+          requireInteraction = false;
+          silent = null;
+          onclick: Notification["onclick"] = null;
+          onclose: Notification["onclose"] = null;
+          onerror: Notification["onerror"] = null;
+          onshow: Notification["onshow"] = null;
+          constructor(title: string, options?: NotificationOptions) {
+            super();
             this.title = title;
             this.options = options;
-            window.__studioNotifications.push(this);
+            window.multiServerNotifications.push(this);
           }
           close() {}
         };
@@ -134,7 +174,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       })
       .getByRole("button", { name: "Close", exact: true })
       .click();
-    const pair = async (server) => {
+    const pair = async (server: ServerFixture) => {
       const dialog = page.getByRole("dialog", { name: "Studio settings" });
       await expect(dialog).toBeVisible();
       await dialog
@@ -181,11 +221,19 @@ test("one UI routes overlapping chats to two and three signed servers without re
     expect(remote.pairs[0]).toBe(remote.pairs[1]);
     const cdp = await context.newCDPSession(page);
     await cdp.send("Performance.enable");
-    const browserCdp = await context.browser().newBrowserCDPSession();
+    const browserCdp = await requiredFixtureValue(
+      context.browser(),
+    ).newBrowserCDPSession();
     const measurements = [];
-    const measure = async (servers, stage, startupMs) => {
-      let heap = (await cdp.send("Performance.getMetrics")).metrics.find(
-        (row) => row.name === "JSHeapUsedSize",
+    const measure = async (
+      servers: number,
+      stage: string,
+      startupMs: number,
+    ) => {
+      let heap = requiredFixtureValue(
+        (await cdp.send("Performance.getMetrics")).metrics.find(
+          (row) => row.name === "JSHeapUsedSize",
+        ),
       ).value;
       for (const frame of page
         .frames()
@@ -194,13 +242,18 @@ test("one UI routes overlapping chats to two and three signed servers without re
         try {
           frameCdp = await context.newCDPSession(frame);
         } catch (error) {
-          if (error.message.includes("part of the parent frame's session"))
+          if (
+            error instanceof Error &&
+            error.message.includes("part of the parent frame's session")
+          )
             continue;
           throw error;
         }
         await frameCdp.send("Performance.enable");
-        heap += (await frameCdp.send("Performance.getMetrics")).metrics.find(
-          (row) => row.name === "JSHeapUsedSize",
+        heap += requiredFixtureValue(
+          (await frameCdp.send("Performance.getMetrics")).metrics.find(
+            (row) => row.name === "JSHeapUsedSize",
+          ),
         ).value;
         await frameCdp.detach();
       }
@@ -225,18 +278,18 @@ test("one UI routes overlapping chats to two and three signed servers without re
       };
     };
     await page.clock.install();
-    for (const count of [2, 3]) {
+    for (const count of [2, 3] as const) {
       if (count === 3) local.discoverPeer(third);
       const start = Date.now();
       const concurrent = count === 3 ? await context.newPage() : null;
       await Promise.all([page.reload(), concurrent?.goto(local.origin)]);
-      for (const serverId of ["local", "remote", "third"]) {
+      for (const serverId of ["local", "remote", "third"] as const) {
         await expect(chatByServer(serverId)).toHaveCount(
           serverId === "third" && count === 2 ? 0 : 1,
         );
       }
       if (concurrent) {
-        for (const serverId of ["local", "remote", "third"]) {
+        for (const serverId of ["local", "remote", "third"] as const) {
           await expect(chatByServer(serverId, concurrent)).toHaveCount(1);
         }
         await concurrent.close();
@@ -486,7 +539,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       await expect
         .poll(() =>
           page.evaluate(() =>
-            window.__studioNotifications.some((row) =>
+            window.multiServerNotifications.some((row) =>
               row.title.includes("Local chat: Reply ready"),
             ),
           ),
@@ -522,7 +575,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       .click();
     await expect.poll(() => remote.writes.length).toBe(1);
     expect(local.writes).toHaveLength(0);
-    expect(remote.writes[0].text).toBe("remote draft");
+    expect(requiredFixtureValue(remote.writes[0]).text).toBe("remote draft");
     await page
       .getByRole("button", { name: "Search chats", exact: true })
       .click();
@@ -539,7 +592,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     remote.offline(false);
     await expect(chatByServer("remote")).toBeVisible();
     await page.evaluate(() => {
-      window.__studioNotifications = [];
+      window.multiServerNotifications = [];
     });
     local.complete();
     third.complete();
@@ -547,11 +600,11 @@ test("one UI routes overlapping chats to two and three signed servers without re
       page.getByLabel("2 unread chats", { exact: true }),
     ).toHaveCount(0);
     await expect
-      .poll(() => page.evaluate(() => window.__studioNotifications.length))
+      .poll(() => page.evaluate(() => window.multiServerNotifications.length))
       .toBe(2);
     expect(
       await page.evaluate(() =>
-        window.__studioNotifications.map((notice) => notice.title).sort(),
+        window.multiServerNotifications.map((notice) => notice.title).sort(),
       ),
     ).toEqual([
       "Local: Local chat: Reply ready",
@@ -573,7 +626,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       await page
         .getByRole("button", {
           name:
-            page.viewportSize().width <= 760
+            requiredFixtureValue(page.viewportSize()).width <= 760
               ? "Back to chats"
               : "Toggle conversations",
           exact: true,
@@ -630,7 +683,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await remoteFrame
       .getByRole("button", {
         name:
-          page.viewportSize().width <= 760
+          requiredFixtureValue(page.viewportSize()).width <= 760
             ? "Back to chats"
             : "Toggle conversations",
         exact: true,
@@ -649,14 +702,17 @@ test("one UI routes overlapping chats to two and three signed servers without re
       const original = Storage.prototype.setItem;
       const put = IDBObjectStore.prototype.put,
         add = IDBObjectStore.prototype.add;
-      window.__restoreDraftStorage = () => {
+      window.restoreMultiServerDraftStorage = () => {
         Storage.prototype.setItem = original;
         IDBObjectStore.prototype.put = put;
         IDBObjectStore.prototype.add = add;
       };
-      for (const method of ["put", "add"]) {
+      for (const method of ["put", "add"] as const) {
         const originalMethod = IDBObjectStore.prototype[method];
-        IDBObjectStore.prototype[method] = function (...args) {
+        IDBObjectStore.prototype[method] = function (
+          this: IDBObjectStore,
+          ...args: Parameters<IDBObjectStore[typeof method]>
+        ) {
           if (this.transaction.db.name.endsWith("--drafts"))
             throw new DOMException(
               "Full fixture storage",
@@ -685,7 +741,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await expect(remoteFrame.locator("#message")).toHaveValue(
       "unsaved draft must stay open",
     );
-    await remoteWindow.evaluate(() => window.__restoreDraftStorage());
+    await remoteWindow.evaluate(() => window.restoreMultiServerDraftStorage());
     draftQuotaFault = false;
     await remoteWindow.evaluate(async () => {
       const registration =
@@ -755,7 +811,9 @@ test("phone HTTPS Serve route opens the normal App and its local session", async
       return response.status;
     });
     expect(sent).toBe(200);
-    expect(local.writes[0]._canvasToken).toBe("local-only");
+    expect(requiredFixtureValue(local.writes[0])._canvasToken).toBe(
+      "local-only",
+    );
   } finally {
     await page.goto("about:blank").catch(() => {});
     await local.close();
