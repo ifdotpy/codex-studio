@@ -2049,6 +2049,24 @@
       "key": "legacy_main_style.tasksDrawerHeaderMin",
       "plannedOwner": "main visual component",
       "purpose": "Existing compact tasks drawer header minimum height"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "query",
+      "signature": "@container chat-list (max-width: 280px) {",
+      "count": 1,
+      "key": "legacy_duo_components_sidebar_projects.query280px",
+      "plannedOwner": "main visual component",
+      "purpose": "Duo shell sidebar container query; migrate to a layout owner"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "query",
+      "signature": "@container sidebar-header (max-width: 240px) {",
+      "count": 1,
+      "key": "legacy_duo_components_sidebar_projects.query240px",
+      "plannedOwner": "main visual component",
+      "purpose": "Duo shell sidebar container query; migrate to a layout owner"
     }
   ],
   "witnessViewports": [
