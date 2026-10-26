@@ -1181,7 +1181,10 @@ export type TestStateView = {
   runtime: TestRuntimeView;
   threads: TestAgent[];
 };
-export type EntityFixtureState = Omit<TestStateView, "token" | "threads">;
+export type EntityFixtureState = Omit<
+  TestStateView,
+  "token" | "threads" | "runtime"
+> & { runtime: Partial<TestRuntimeView> };
 
 export type JsonObject = Json;
 export type EntityEnvelope = {
@@ -1883,10 +1886,9 @@ export function updateEntitySyncFixture(
  * current client and leaves the entity-pull fixture at the same state.
  * Mutate the snapshot before calling this helper.
  */
-export function entityMutationFixtureResponse(
-  snapshot: EntityFixtureState,
-  response: Record<string, unknown>,
-): Record<string, unknown> {
+export function entityMutationFixtureResponse<
+  T extends Record<string, unknown>,
+>(snapshot: EntityFixtureState, response: T) {
   return {
     ...response,
     _syncEntities: updateEntitySyncFixture(snapshot),
