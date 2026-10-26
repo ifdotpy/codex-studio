@@ -32,7 +32,7 @@
     "const delayedRemoteReveal = () => remote.revealPath(\"/tmp/remote-path\");"
   ],
   "workspaces/client/apps/web/src/sync/entityProjection.test.ts": [
-    "entityRow(\"workspace\", \"current\", { stateDir: \"/tmp/state\" }, 14),"
+    "value: { stateDir: \"/tmp/state\" },"
   ],
   "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.mjs": [
     "id: \"/tmp/fixture\",",

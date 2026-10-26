@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
-import { SYNC_PROTOCOL_VERSION } from "../src/generated/api.ts";
+import {
+  SYNC_IDENTITY_PROTOCOL_VERSION,
+  SYNC_PROTOCOL_VERSION,
+} from "../src/generated/api.ts";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../src/generated/subscriptionEntities.ts";
 import {
   SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
@@ -1723,7 +1726,7 @@ export function syncIdentityFixture(
     throw new Error(
       "Sync fixture workspaceId must match the server's 32-hex identity",
     );
-  return { workspaceId, syncProtocol: 2 };
+  return { workspaceId, syncProtocol: SYNC_IDENTITY_PROTOCOL_VERSION };
 }
 
 export function syncProtocolFixture({
@@ -1778,7 +1781,7 @@ export async function readFixtureSyncContract(
   const protocol = await readJson(protocolResponse, "/api/sync/protocol");
   if (
     !/^[a-f0-9]{32}$/.test(identity.workspaceId) ||
-    identity.syncProtocol !== 2 ||
+    identity.syncProtocol !== SYNC_IDENTITY_PROTOCOL_VERSION ||
     protocol.protocolVersion !== SYNC_PROTOCOL_VERSION
   )
     throw new Error("Fixture server returned an invalid sync contract");
@@ -2503,7 +2506,7 @@ export async function stubEntityState(
   const { identity: identityResponse, protocol: protocolResponse } = contract;
   if (
     !/^[a-f0-9]{32}$/.test(identityResponse.workspaceId) ||
-    identityResponse.syncProtocol !== 2 ||
+    identityResponse.syncProtocol !== SYNC_IDENTITY_PROTOCOL_VERSION ||
     protocolResponse.protocolVersion !== SYNC_PROTOCOL_VERSION
   )
     throw new Error(

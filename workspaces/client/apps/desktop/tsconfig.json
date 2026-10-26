@@ -2,7 +2,6 @@
   "extends": "../../../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["node", "electron"],
-    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "allowJs": true,
     "checkJs": false
   },

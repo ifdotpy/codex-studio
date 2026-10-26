@@ -238,8 +238,9 @@ export function claudeEditPatch(args: unknown): string | null {
 export function fileChanges(value: unknown, args?: unknown): FileDiff[] {
   if (!Array.isArray(value)) return [];
   const edit = value.length === 1 ? claudeEditPatch(args) : null;
+  const first: unknown = value[0];
   const entries: unknown[] = edit
-    ? [Object.assign({}, value[0], { diff: edit })]
+    ? [{ ...(first && typeof first === "object" ? first : {}), diff: edit }]
     : value;
   return entries.flatMap((entry): FileDiff[] => {
     if (!entry || typeof entry !== "object") return [];
