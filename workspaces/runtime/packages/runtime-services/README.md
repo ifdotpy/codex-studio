@@ -635,6 +635,11 @@ interest joins the existing refresh. Cache ages in `usage.rs` decide whether an
 explicit interest needs work and bound failed attempts; they do not schedule a
 timer. Saved scan results continue to notify the bounded entity publisher.
 
+Saved snapshots report expired caches as stale. Daily totals require a matching
+local `sourceDay`; older caches without that evidence retain their saved
+30-day totals and report unknown daily values until refreshed. Snapshot reads
+never start a scan or provider request.
+
 ## Usage reconciliation
 
 [`costs::usage_reconciliation`](src/costs.rs) compares one agent's recorded

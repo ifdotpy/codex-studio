@@ -99,17 +99,11 @@ pub fn account_cost_snapshot(
         .get("checkedAt")
         .and_then(Value::as_f64)
         .or_else(|| state.get("at").and_then(Value::as_f64));
-    let mut stale = checked_at.is_none_or(|at| now - at >= CODEX_COST_CACHE_MAX_AGE_SECONDS)
-        || state.get("error").is_some_and(|error| !error.is_null());
-    let refreshing = cost_refresh_active(&account_refresh_key(state_dir, account_key));
     let refresh_due = checked_at.is_none_or(|at| now - at >= CODEX_COST_CACHE_MAX_AGE_SECONDS);
+    let mut stale = refresh_due || state.get("error").is_some_and(|error| !error.is_null());
+    let refreshing = cost_refresh_active(&account_refresh_key(state_dir, account_key));
     if let Some(data) = state.get_mut("data").and_then(Value::as_object_mut) {
-        let current_day = local_day(now);
-        if data.get("sourceDay").and_then(Value::as_str) != Some(&current_day) {
-            data.insert("todayUSD".to_owned(), Value::Null);
-            data.insert("todayTokens".to_owned(), Value::Null);
-            stale = true;
-        }
+        stale |= clear_unproven_daily_costs(data, now);
         data.insert("accountId".to_owned(), account_id);
         data.insert(
             "source".to_owned(),
@@ -670,7 +664,7 @@ where
         }
     }
     let has_rows = !rows.is_empty();
-    let today = if today_priced || (has_rows && unknown.is_empty()) {
+    let today_usd = if today_priced || (has_rows && unknown.is_empty()) {
         Value::from(today_cost)
     } else {
         Value::Null
@@ -687,7 +681,8 @@ where
     };
     Ok(
         json!({"source":"Claude Code local logs","scope":"account","kind":"api_estimate",
-        "currency":"USD","billedUSD":null,"todayUSD":today,"last30DaysUSD":month,
+        "currency":"USD","billedUSD":null,"todayUSD":today_usd,"last30DaysUSD":month,
+        "sourceDay":today,
         "coverage":coverage,"unknownModels":unknown,"modelBreakdown":groups,
         "note":"API-rate estimate. Uses base rates when request size is unavailable."}),
     )
@@ -1157,7 +1152,7 @@ fn claude_cost_snapshot(
         .join(digest(&identity))
         .join("claude-costs.json");
     let saved = read_json(&path);
-    let data = saved
+    let mut data = saved
         .as_ref()
         .filter(|saved| {
             saved.get("config").and_then(Value::as_str) == Some(home.to_string_lossy().as_ref())
@@ -1170,15 +1165,19 @@ fn claude_cost_snapshot(
         .and_then(|saved| saved.get("checked"))
         .cloned()
         .unwrap_or(Value::Null);
-    let stale = data.is_none()
+    let refresh_due = checked
+        .as_f64()
+        .is_none_or(|checked| now - checked >= CLAUDE_COST_CACHE_MAX_AGE_SECONDS);
+    let mut stale = refresh_due
+        || data.is_none()
         || saved
             .as_ref()
             .and_then(|saved| saved.get("error"))
             .is_some_and(|error| !error.is_null());
     let refreshing = cost_refresh_active(&account_refresh_key(state_dir, account_key));
-    let refresh_due = checked
-        .as_f64()
-        .is_none_or(|checked| now - checked >= CLAUDE_COST_CACHE_MAX_AGE_SECONDS);
+    if let Some(data) = data.as_mut().and_then(Value::as_object_mut) {
+        stale |= clear_unproven_daily_costs(data, now);
+    }
     let error = saved
         .as_ref()
         .and_then(|saved| saved.get("error"))
@@ -1226,6 +1225,16 @@ fn local_day(timestamp: f64) -> String {
         .unwrap_or_default()
 }
 
+/// Daily totals are usable only for the local day identified by the scan.
+fn clear_unproven_daily_costs(data: &mut serde_json::Map<String, Value>, now: f64) -> bool {
+    if data.get("sourceDay").and_then(Value::as_str) == Some(&local_day(now)) {
+        return false;
+    }
+    data.insert("todayUSD".to_owned(), Value::Null);
+    data.insert("todayTokens".to_owned(), Value::Null);
+    true
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -1233,6 +1242,15 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
+
+    fn fixed_local_midnight() -> f64 {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(2026, 10, 16, 0, 0, 0)
+            .earliest()
+            .expect("fixed local midnight")
+            .timestamp() as f64
+    }
 
     #[test]
     fn concurrent_refresh_for_same_account_is_rejected_until_guard_drops() {
@@ -1417,6 +1435,110 @@ mod tests {
         assert_eq!(response["stale"], true);
         assert_eq!(response["data"]["todayUSD"], Value::Null);
         assert_eq!(response["data"]["todayTokens"], Value::Null);
+    }
+
+    #[test]
+    fn claude_cost_snapshot_checks_age_day_and_failed_or_cancelled_refreshes() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let state = directory.path().join("state");
+        // No profile exists: snapshot reads must not scan logs or fetch pricing.
+        let home = directory.path().join("profile");
+        let key = "claude-snapshot";
+        let account = json!({"provider":"claude","home":home,"status":"ready"});
+        let identity = format!("{key}{}", home.to_string_lossy());
+        let cache = state
+            .join("account-costs/claude")
+            .join(super::digest(&identity))
+            .join("claude-costs.json");
+        std::fs::create_dir_all(cache.parent().expect("cache parent"))
+            .expect("fixture cache directory");
+        let midnight = fixed_local_midnight();
+        let checked = midnight - 600.0;
+        let data = json!({"todayUSD":2.5,"todayTokens":7,"last30DaysUSD":12.5,
+            "sourceDay":super::local_day(checked)});
+        let saved = json!({"config":home,"checked":checked,"at":checked,"error":null,
+            "data":data});
+        std::fs::write(&cache, saved.to_string()).expect("fixture cache");
+
+        for (age, stale) in [(299.0, false), (300.0, true)] {
+            let snapshot = account_cost_snapshot(&state, key, &account, checked + age)
+                .expect("cached snapshot");
+            assert_eq!(snapshot["stale"], stale, "age {age}");
+            assert_eq!(snapshot["_refreshDue"], stale, "age {age}");
+            assert_eq!(snapshot["data"]["todayUSD"], 2.5);
+            assert_eq!(snapshot["data"]["last30DaysUSD"], 12.5);
+            assert_eq!(snapshot["refreshing"], false);
+        }
+
+        let mut legacy = saved.clone();
+        legacy["data"]
+            .as_object_mut()
+            .expect("data object")
+            .remove("sourceDay");
+        std::fs::write(&cache, legacy.to_string()).expect("legacy cache");
+        let snapshot =
+            account_cost_snapshot(&state, key, &account, checked + 1.0).expect("legacy snapshot");
+        assert_eq!(snapshot["stale"], true);
+        assert_eq!(snapshot["data"]["todayUSD"], Value::Null);
+        assert_eq!(snapshot["data"]["todayTokens"], Value::Null);
+        assert_eq!(snapshot["data"]["last30DaysUSD"], 12.5);
+
+        let mut yesterday = saved.clone();
+        yesterday["checked"] = json!(midnight - 1.0);
+        std::fs::write(&cache, yesterday.to_string()).expect("yesterday cache");
+        let snapshot =
+            account_cost_snapshot(&state, key, &account, midnight).expect("midnight snapshot");
+        assert_eq!(snapshot["stale"], true);
+        assert_eq!(snapshot["_refreshDue"], false);
+        assert_eq!(snapshot["data"]["todayUSD"], Value::Null);
+        assert_eq!(snapshot["data"]["todayTokens"], Value::Null);
+        assert_eq!(snapshot["data"]["last30DaysUSD"], 12.5);
+        assert_eq!(
+            std::fs::read_to_string(&cache).expect("unchanged cache"),
+            yesterday.to_string()
+        );
+
+        super::refresh_claude_costs(
+            &state,
+            key,
+            &home,
+            midnight,
+            &AtomicBool::new(false),
+            || midnight,
+        )
+        .expect("failed scan saves error with previous totals");
+        let snapshot =
+            account_cost_snapshot(&state, key, &account, midnight).expect("failed scan snapshot");
+        assert_eq!(snapshot["stale"], true);
+        assert_eq!(snapshot["checkedAt"], midnight);
+        assert_eq!(snapshot["at"], checked);
+        assert!(snapshot["error"].is_string());
+        assert_eq!(snapshot["data"]["todayUSD"], Value::Null);
+        assert_eq!(snapshot["data"]["last30DaysUSD"], 12.5);
+
+        std::fs::write(&cache, saved.to_string()).expect("restore successful cache");
+        assert_eq!(
+            super::refresh_claude_costs(
+                &state,
+                key,
+                &home,
+                midnight,
+                &AtomicBool::new(true),
+                || midnight
+            ),
+            Err(super::UsageError::ScannerCancelled)
+        );
+        let snapshot = account_cost_snapshot(&state, key, &account, checked + 300.0)
+            .expect("cancelled scan keeps expired cache");
+        assert_eq!(snapshot["stale"], true);
+        assert_eq!(snapshot["checkedAt"], checked);
+        assert_eq!(snapshot["data"]["last30DaysUSD"], 12.5);
+        assert_eq!(
+            std::fs::read_to_string(&cache).expect("unchanged cache"),
+            saved.to_string()
+        );
+        assert!(!home.exists());
+        assert!(!state.join("model-pricing").exists());
     }
 
     #[test]
@@ -1676,6 +1798,10 @@ mod tests {
         assert_eq!(result["todayUSD"], 0.3);
         assert_eq!(result["last30DaysUSD"], 0.3);
         assert_eq!(result["coverage"], "reported");
+        assert_eq!(
+            result["sourceDay"],
+            super::local_day(now.timestamp() as f64)
+        );
         let account = json!({"id":"claude-local","provider":"claude","home":home,
             "status":"ready"});
         let state = root.join("state");
@@ -1815,9 +1941,25 @@ mod tests {
         let home = root.path().join("profile");
         std::fs::create_dir_all(home.join("projects")).expect("fixture projects");
         let state = root.path().join("state");
+        let midnight = fixed_local_midnight();
+        let scan_started = midnight - 1.0;
+        std::fs::create_dir_all(state.join("model-pricing")).expect("fixture pricing directory");
+        std::fs::write(
+            state.join("model-pricing/models-dev-v1.json"),
+            json!({"version":1,"fetchedAtEpoch":scan_started,"catalog":{"providers":{}}})
+                .to_string(),
+        )
+        .expect("fixture pricing avoids a network fetch");
         let cancelled = AtomicBool::new(false);
-        super::refresh_claude_costs(&state, "claude-local", &home, 200.0, &cancelled, || 321.0)
-            .expect("refresh completes");
+        super::refresh_claude_costs(
+            &state,
+            "claude-local",
+            &home,
+            scan_started,
+            &cancelled,
+            || midnight,
+        )
+        .expect("refresh completes after midnight");
         let identity = format!("claude-local{}", home.to_string_lossy());
         let cache = state
             .join("account-costs/claude")
@@ -1825,7 +1967,13 @@ mod tests {
             .join("claude-costs.json");
         let saved: Value = serde_json::from_slice(&std::fs::read(&cache).expect("cache exists"))
             .expect("valid cache");
-        assert_eq!(saved["checked"], 321.0);
+        assert_eq!(saved["checked"], midnight);
+        assert_eq!(saved["data"]["sourceDay"], super::local_day(scan_started));
+        let account = json!({"provider":"claude","home":home,"status":"ready"});
+        let snapshot = account_cost_snapshot(&state, "claude-local", &account, midnight)
+            .expect("snapshot of scan crossing midnight");
+        assert_eq!(snapshot["stale"], true);
+        assert_eq!(snapshot["_refreshDue"], false);
 
         let cancelled_state = root.path().join("cancelled-state");
         let cancelled = AtomicBool::new(true);
