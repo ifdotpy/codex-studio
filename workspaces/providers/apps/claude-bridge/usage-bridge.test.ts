@@ -12,8 +12,8 @@ import {
   zeroResult,
   assistant,
   interruptedDelta,
-} from "./usage-fixtures.mjs";
-const bridges = [];
+} from "./usage-fixtures.ts";
+const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const b of bridges.splice(0)) await b.close();
 });
@@ -174,7 +174,7 @@ async function setup(thread = {}, env = {}) {
   bridges.push(b);
   return b;
 }
-async function start(b, text) {
+async function start(b: Awaited<ReturnType<typeof startBridge>>, text: string) {
   return (
     await b.call("turn/start", {
       threadId: b.thread,
@@ -182,10 +182,10 @@ async function start(b, text) {
     })
   ).turn.id;
 }
-async function done(b, id) {
+async function done(b: Awaited<ReturnType<typeof startBridge>>, id: string) {
   await b.note((n) => n.method === "turn/completed" && n.params.turn.id === id);
 }
-function observations(b) {
+function observations(b: Awaited<ReturnType<typeof startBridge>>) {
   return b.notes
     .filter((n) => n.method === "thread/tokenUsage/updated")
     .map((n) => n.params.studioUsage);

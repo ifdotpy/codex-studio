@@ -1,21 +1,24 @@
-// @ts-check
-/** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKPartialAssistantMessage} StreamMessage */
-/** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKAssistantMessage} AssistantMessage */
-/** @typedef {Extract<StreamEvent, {type: 'message_delta'}>['delta']['stop_reason']} StopReason */
-/** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKResultMessage} ResultMessage */
-/** @typedef {import('@anthropic-ai/claude-agent-sdk').ModelUsage} ModelUsage */
-/** @typedef {StreamMessage['event']} StreamEvent */
-/** @typedef {Extract<StreamEvent, {type: 'message_start'}>['message']} Message */
-/** @typedef {Extract<StreamEvent, {type: 'message_delta'}>['usage']} DeltaUsage */
-/** @typedef {import('./usage-contract.generated.d.mts').UsageTokens} UsageTokens */
-/** @typedef {import('./usage-contract.generated.d.mts').UsageObservation} UsageObservation */
-/** @typedef {Extract<UsageObservation, {kind: 'gap'}>['reason']} GapReason */
+import type {
+  SDKPartialAssistantMessage as StreamMessage,
+  SDKAssistantMessage as AssistantMessage,
+  SDKResultMessage as ResultMessage,
+  ModelUsage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type {
+  UsageTokens,
+  UsageObservation,
+  UsageGapReason as GapReason,
+} from "./usage-contract.generated.ts";
+type StopReason = Extract<
+  StreamEvent,
+  { type: "message_delta" }
+>["delta"]["stop_reason"];
+type StreamEvent = StreamMessage["event"];
+type Message = Extract<StreamEvent, { type: "message_start" }>["message"];
+type DeltaUsage = Extract<StreamEvent, { type: "message_delta" }>["usage"];
 
-/** Claude input excludes cache; thinking is already included in output.
- * @param {Message['usage']} usage
- * @returns {UsageTokens}
- */
-export function responseTokens(usage) {
+/** Claude input excludes cache; thinking is already included in output. */
+export function responseTokens(usage: Message["usage"]): UsageTokens {
   return {
     uncachedInput: usage.input_tokens,
     cacheReadInput: usage.cache_read_input_tokens ?? 0,
@@ -31,8 +34,7 @@ export function responseTokens(usage) {
   };
 }
 
-/** @param {ModelUsage} usage @returns {UsageTokens} */
-export function modelTokens(usage) {
+export function modelTokens(usage: ModelUsage): UsageTokens {
   return {
     uncachedInput: usage.inputTokens,
     cacheReadInput: usage.cacheReadInputTokens,
@@ -44,12 +46,11 @@ export function modelTokens(usage) {
   };
 }
 
-/** Every present cumulative field replaces the earlier value; null means unknown.
- * @param {Message['usage']} initial
- * @param {DeltaUsage} delta
- * @returns {Message['usage']}
- */
-function mergeUsage(initial, delta) {
+/** Every present cumulative field replaces the earlier value; null means unknown. */
+function mergeUsage(
+  initial: Message["usage"],
+  delta: DeltaUsage,
+): Message["usage"] {
   return {
     ...initial,
     ...delta,
@@ -65,35 +66,34 @@ function mergeUsage(initial, delta) {
 
 /** One stream per parent tool (null is the main loop). SDK deltas carry no response id. */
 export class ResponseUsage {
-  /** @type {Map<StreamMessage['parent_tool_use_id'], {message: Message, stopReason: StopReason, turnId: string | undefined}>} */
-  pending = new Map();
-  /** @type {Map<string, string>} */
-  parentTurns = new Map();
-  /** @type {Map<string, number>} */
-  modelWindows = new Map();
+  pending: Map<
+    StreamMessage["parent_tool_use_id"],
+    { message: Message; stopReason: StopReason; turnId: string | undefined }
+  > = new Map();
+
+  parentTurns: Map<string, string> = new Map();
+
+  modelWindows: Map<string, number> = new Map();
   // Pricing aliases are candidates, never identities for exact model windows.
-  /** @type {Map<string, Map<string, number>>} */
-  aliasWindows = new Map();
+
+  aliasWindows: Map<string, Map<string, number>> = new Map();
   // Query-scoped identities survive pending-stream removal and turn changes.
-  /** @type {Set<string>} */
-  started = new Set();
-  /** @type {Set<string>} */
-  gapped = new Set();
+
+  started: Set<string> = new Set();
+
+  gapped: Set<string> = new Set();
   closed = false;
 
-  /** @param {string | null | undefined} parent @param {string | undefined} turnId */
-  turnFor(parent, turnId) {
+  turnFor(parent: string | null | undefined, turnId: string | undefined) {
     return parent == null ? turnId : (this.parentTurns.get(parent) ?? turnId);
   }
 
-  /** @param {string} toolId @param {string | undefined} turnId */
-  registerTool(toolId, turnId) {
+  registerTool(toolId: string, turnId: string | undefined) {
     if (turnId !== undefined && !this.parentTurns.has(toolId))
       this.parentTurns.set(toolId, turnId);
   }
 
-  /** @param {ResultMessage['modelUsage']} models */
-  recordModels(models) {
+  recordModels(models: ResultMessage["modelUsage"]) {
     for (const [model, usage] of Object.entries(models ?? {})) {
       if (usage.contextWindow > 0) {
         this.modelWindows.set(model, usage.contextWindow);
@@ -109,23 +109,22 @@ export class ResponseUsage {
     }
   }
 
-  /** @param {Message['model']} model */
-  contextWindowFor(model) {
+  contextWindowFor(model: Message["model"]) {
     const exact = this.modelWindows.get(model);
     if (exact !== undefined) return exact;
     const candidates = new Set(this.aliasWindows.get(model)?.values());
     return candidates.size === 1 ? candidates.values().next().value : undefined;
   }
 
-  /** @param {StreamMessage} frame @param {string | undefined} turnId
-   * @returns {UsageObservation[]}
-   */
-  observe(frame, turnId) {
+  observe(
+    frame: StreamMessage,
+    turnId: string | undefined,
+  ): UsageObservation[] {
     if (this.closed) return [];
     const parent = frame.parent_tool_use_id ?? null;
     const event = frame.event;
-    /** @type {UsageObservation[]} */
-    const observations = [];
+
+    const observations: UsageObservation[] = [];
     if (event.type === "message_start") {
       const previous = this.pending.get(parent);
       if (previous)
@@ -169,22 +168,24 @@ export class ResponseUsage {
   }
 
   /** Assistant usage is provisional even when no stream was delivered.
-   * The SDK exposes no general typed marker proving local-only assistant messages.
-   * @param {AssistantMessage} frame @param {string | undefined} turnId
-   * @returns {UsageObservation[]}
-   */
-  observeAssistant(frame, turnId) {
+   * The SDK exposes no general typed marker proving local-only assistant messages. */
+  observeAssistant(
+    frame: AssistantMessage,
+    turnId: string | undefined,
+  ): UsageObservation[] {
     const { id, model } = frame.message;
     if (this.closed || this.started.has(id)) return [];
     const ownerTurn = this.turnFor(frame.parent_tool_use_id, turnId);
     return this.gap({ message: { id, model }, turnId: ownerTurn }, "noStream");
   }
 
-  /** @param {{message:Pick<Message, 'id' | 'model'>,turnId:string | undefined}} current
-   * @param {GapReason} reason
-   * @returns {UsageObservation[]}
-   */
-  gap(current, reason) {
+  gap(
+    current: {
+      message: Pick<Message, "id" | "model">;
+      turnId: string | undefined;
+    },
+    reason: GapReason,
+  ): UsageObservation[] {
     const { id, model } = current.message;
     // All gap paths share identity: keep the first diagnostic even if a later
     // stream for this response also ends unfinished. Final responses remain allowed.
@@ -201,14 +202,10 @@ export class ResponseUsage {
     ];
   }
 
-  /** @param {GapReason} reason
-   * @param {string | undefined} [turnId]
-   * @returns {UsageObservation[]}
-   */
-  finish(reason, turnId) {
+  finish(reason: GapReason, turnId?: string): UsageObservation[] {
     if (reason === "queryClosed") this.closed = true;
-    /** @type {UsageObservation[]} */
-    const observations = [];
+
+    const observations: UsageObservation[] = [];
     for (const [parent, current] of this.pending) {
       // Background subagents may continue beyond the main Studio turn.
       if (reason === "streamInterrupted" && parent !== null) continue;
@@ -220,11 +217,11 @@ export class ResponseUsage {
   }
 }
 
-/** Query-wide totals include subagents and auxiliary pipeline calls.
- * @param {Pick<ResultMessage, 'modelUsage' | 'is_error'>} result @param {string | undefined} turnId
- * @returns {UsageObservation | null}
- */
-export function cumulativeUsage(result, turnId) {
+/** Query-wide totals include subagents and auxiliary pipeline calls. */
+export function cumulativeUsage(
+  result: Pick<ResultMessage, "modelUsage" | "is_error">,
+  turnId: string | undefined,
+): UsageObservation | null {
   const models = Object.entries(result.modelUsage ?? {}).map(
     ([model, usage]) => ({
       model,
@@ -232,8 +229,8 @@ export function cumulativeUsage(result, turnId) {
       providerCostUsd: usage.costUSD,
     }),
   );
-  /** @type {UsageTokens} */
-  const total = {
+
+  const total: UsageTokens = {
     uncachedInput: 0,
     cacheReadInput: 0,
     cacheWriteInput: 0,

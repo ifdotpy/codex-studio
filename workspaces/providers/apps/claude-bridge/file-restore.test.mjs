@@ -9,7 +9,7 @@ import {
   verifyFileRestore,
   MAX_BEFORE_RESTORE_BYTES,
 } from "./file-restore.mjs";
-import { rollbackSession } from "./controls.mjs";
+import { rollbackSession } from "./controls.ts";
 
 async function fixture(run) {
   const root = await fs.realpath(

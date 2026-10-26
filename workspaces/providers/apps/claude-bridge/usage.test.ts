@@ -1,21 +1,24 @@
-// @ts-check
 import { expect, test } from "vitest";
 import {
   ResponseUsage,
   cumulativeUsage,
   modelTokens,
   responseTokens,
-} from "./usage.mjs";
+} from "./usage.ts";
 import {
   events,
   modelUsage,
   interruptedDelta,
   assistant,
-} from "./usage-fixtures.mjs";
-/** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKPartialAssistantMessage} StreamMessage */
-/** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKResultMessage} ResultMessage */
-/** @param {StreamMessage['event']} event @param {string | null} [parent] @returns {StreamMessage} */
-const frame = (event, parent = null) => ({
+} from "./usage-fixtures.ts";
+type StreamMessage =
+  import("@anthropic-ai/claude-agent-sdk").SDKPartialAssistantMessage;
+type ResultMessage = import("@anthropic-ai/claude-agent-sdk").SDKResultMessage;
+
+const frame = (
+  event: StreamMessage["event"],
+  parent: string | null = null,
+): StreamMessage => ({
   type: "stream_event",
   event,
   parent_tool_use_id: parent,
@@ -23,13 +26,20 @@ const frame = (event, parent = null) => ({
   session_id: "session",
 });
 // The type is SDK-owned even for a deliberately partial fixture of result metadata.
-/** @param {ResultMessage['modelUsage']} models @param {boolean} [is_error] @returns {Pick<ResultMessage, 'modelUsage' | 'is_error'>} */
-const result = (models, is_error = false) => ({ modelUsage: models, is_error });
+
+const result = (
+  models: ResultMessage["modelUsage"],
+  is_error: boolean = false,
+): Pick<ResultMessage, "modelUsage" | "is_error"> => ({
+  modelUsage: models,
+  is_error,
+});
 
 test("message deltas replace input, cache and output categories; stop finalizes once", () => {
   const usage = new ResponseUsage();
-  /** @type {import('./usage-contract.generated.d.mts').UsageObservation[]} */
-  const observations = [];
+
+  const observations: import("./usage-contract.generated.ts").UsageObservation[] =
+    [];
   for (const event of events)
     observations.push(...usage.observe(frame(event), "turn"));
   expect(observations).toEqual([
@@ -308,7 +318,7 @@ test("one-hour writes are clamped against final stream write totals", () => {
   });
 });
 
-for (const stop of ["end_turn", "tool_use"]) {
+for (const stop of ["end_turn", "tool_use"] as const) {
   test(`provider ${stop} proves finality with final usage`, () => {
     const usage = new ResponseUsage();
     for (const event of events) {
@@ -318,7 +328,7 @@ for (const stop of ["end_turn", "tool_use"]) {
               ...event,
               delta: {
                 ...event.delta,
-                stop_reason: /** @type {"end_turn" | "tool_use"} */ (stop),
+                stop_reason: stop,
               },
             }
           : event;

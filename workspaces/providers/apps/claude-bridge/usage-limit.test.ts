@@ -59,12 +59,12 @@ export function query({prompt,options}){
 }
 `;
 
-const bridges = [];
+const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-async function start(text) {
+async function start(text: string) {
   const bridge = await startBridge(FAKE_SDK, "claude-usage-limit-");
   bridges.push(bridge);
   const turn = (

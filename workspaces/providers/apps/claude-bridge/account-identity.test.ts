@@ -7,11 +7,11 @@ import {
   acceptsIdentity,
   createAccountCheck,
   credentialIdentity,
-} from "./account-identity.mjs";
+} from "./account-identity.ts";
 import { startBridge } from "./testing/bridge-harness.mjs";
 
-const roots = [];
-const bridges = [];
+const roots: string[] = [];
+const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
   for (const root of roots.splice(0))
@@ -25,7 +25,7 @@ const account = (organizationUuid = "org-a", accountUuid = "account-a") => ({
   apiProvider: "firstParty",
   subscriptionType: "max",
 });
-function fixture(expectedIdentity) {
+function fixture(expectedIdentity?: string) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-identity-"));
   roots.push(root);
   const options = {
@@ -36,14 +36,25 @@ function fixture(expectedIdentity) {
   };
   return { options, check: createAccountCheck(options) };
 }
-const refuses = (fn) =>
-  assert.throws(
-    fn,
-    (error) =>
-      error.claudeAccountValidationFailed &&
+const refuses = (fn: () => unknown) =>
+  assert.throws(fn, (error) => {
+    assert.ok(
+      error instanceof Error &&
+        "claudeAccountValidationFailed" in error &&
+        "data" in error,
+    );
+    assert.ok(
+      error.data &&
+        typeof error.data === "object" &&
+        "claudeAccountFailure" in error.data &&
+        "turnStartOutcome" in error.data,
+    );
+    return (
+      error.claudeAccountValidationFailed === true &&
       error.data.claudeAccountFailure === "identity_mismatch" &&
-      error.data.turnStartOutcome === "not_applied",
-  );
+      error.data.turnStartOutcome === "not_applied"
+    );
+  });
 
 test("shared Claude credential identity contract matches the Rust owner", () => {
   const cases = JSON.parse(
@@ -122,7 +133,10 @@ test("checkAccount preserves email provider and subscription refusal", () => {
   ])
     assert.throws(
       () => check(invalid),
-      (error) => error.claudeAccountValidationFailed,
+      (error) =>
+        error instanceof Error &&
+        "claudeAccountValidationFailed" in error &&
+        error.claudeAccountValidationFailed === true,
     );
 });
 
@@ -149,7 +163,7 @@ test("the real bridge reports native UUIDs and refuses input after an organizati
   bridges.push(bridge);
   const directory = path.join(bridge.root, "native-config");
   fs.mkdirSync(directory, { recursive: true });
-  const profile = (organizationUuid) =>
+  const profile = (organizationUuid: string) =>
     fs.writeFileSync(
       path.join(directory, ".claude.json"),
       JSON.stringify({

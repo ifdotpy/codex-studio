@@ -12,7 +12,7 @@ import {
   readHistoryIndex,
   verifiedHistoryMessages,
 } from "../history-index.mjs";
-import { forkAtTurn, rollbackSession } from "../controls.mjs";
+import { forkAtTurn, rollbackSession } from "../controls.ts";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { InputQueue } from "../features.mjs";
 import {

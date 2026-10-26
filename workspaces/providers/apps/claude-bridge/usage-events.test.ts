@@ -2,11 +2,11 @@ import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { startBridge } from "./testing/bridge-harness.mjs";
 
-const bridges = [];
+const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
-function sdk(events) {
+function sdk(events: readonly unknown[]) {
   return `
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
@@ -31,7 +31,7 @@ export function query({prompt,options}) {
  };
 }`;
 }
-async function run(events, model = "sonnet") {
+async function run(events: readonly unknown[], model = "sonnet") {
   const bridge = await startBridge(sdk(events), "claude-usage-");
   bridges.push(bridge);
   await bridge.call("turn/start", {

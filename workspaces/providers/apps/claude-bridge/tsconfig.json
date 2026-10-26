@@ -6,9 +6,9 @@
   },
   "include": [
     "**/*.ts",
-    "usage.mjs",
-    "usage.test.mjs",
-    "usage-fixtures.mjs",
+    "usage.ts",
+    "usage.test.ts",
+    "usage-fixtures.ts",
     "history-index.mjs",
     "session-identity.mjs"
   ]
