@@ -1232,8 +1232,6 @@ async function flags(
   live = false,
 ): Promise<Parameters<Query["applyFlagSettings"]>[0]> {
   const native = await catalog();
-  const autoCompactWindow =
-    s.claude?.autoCompactWindow || providerOptions.autoCompactWindow;
   return {
     // Studio owns the durable idle timer. Disable the CLI's private timer.
     idleCompaction: false,
@@ -1245,7 +1243,12 @@ async function flags(
       s.claude?.thinking,
       live,
     ),
-    ...(autoCompactWindow ? { autoCompactWindow } : {}),
+    ...(s.claude?.autoCompactWindow || providerOptions.autoCompactWindow
+      ? {
+          autoCompactWindow:
+            s.claude?.autoCompactWindow || providerOptions.autoCompactWindow,
+        }
+      : {}),
   };
 }
 // A turn whose end is being recorded. active.turn still names it until
@@ -1456,21 +1459,21 @@ async function finalizeTurn(
               "account_validation"
                 ? {
                     claudePreparationFailure: "account_validation",
-                    claudeAccountFailure: (error as BridgeFailure)?.data
-                      ?.claudeAccountFailure,
+                    claudeAccountFailure: (error as BridgeFailure).data!
+                      .claudeAccountFailure,
                   }
                 : {}),
               ...((error as BridgeFailure)?.preparationTimedOut === true &&
-              typeof (error as BridgeFailure)?.data?.claudePreparationPhase ===
+              typeof (error as BridgeFailure).data!.claudePreparationPhase ===
                 "string" &&
               Number.isFinite(
-                (error as BridgeFailure)?.data?.claudePreparationElapsedMs,
+                (error as BridgeFailure).data!.claudePreparationElapsedMs,
               )
                 ? {
-                    claudePreparationPhase: (error as BridgeFailure)?.data
-                      ?.claudePreparationPhase,
-                    claudePreparationElapsedMs: (error as BridgeFailure)?.data
-                      ?.claudePreparationElapsedMs,
+                    claudePreparationPhase: (error as BridgeFailure).data!
+                      .claudePreparationPhase,
+                    claudePreparationElapsedMs: (error as BridgeFailure).data!
+                      .claudePreparationElapsedMs,
                   }
                 : {}),
             },
@@ -1842,9 +1845,9 @@ async function startSession(
               threadId: s.id,
               turnId: active.turn?.id,
               request: value,
-              ...value,
               serverName: (value as typeof value & { serverName?: string })
                 .serverName,
+              ...value,
             },
             options.signal,
           ),

@@ -102,7 +102,7 @@ export function createCommandTransport({
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EPERM")
         child.kill("SIGKILL");
-      else if (!((error as NodeJS.ErrnoException).code === "ESRCH"))
+      else if ((error as NodeJS.ErrnoException).code !== "ESRCH")
         stderr(String(error) + "\n");
     }
   }
@@ -138,7 +138,7 @@ export function createCommandTransport({
             ),
           );
           reject(closed);
-        } else resolve(undefined);
+        } else resolve();
       };
       try {
         child!.stdin.write(JSON.stringify(value) + "\n", complete);
@@ -151,7 +151,7 @@ export function createCommandTransport({
   function call(method: string, params: CommandParams) {
     if (closed) return Promise.reject(closed);
     const id = "studio-command:" + randomUUID();
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       pending.set(id, { resolve, reject });
       write({ id, method, params }).catch(() => {});
     });

@@ -84,9 +84,12 @@ async function receipts(
       (row.type === "system" && row.subtype === "compact_boundary")
     )
       return [];
-    const message = row.message as { content?: unknown[] } | undefined;
-    if (Array.isArray(message?.content)) {
-      const blocks = message.content.filter(
+    if (
+      Array.isArray(
+        (row.message as { content?: unknown[] } | undefined)?.content,
+      )
+    ) {
+      const blocks = (row.message as { content: unknown[] }).content.filter(
         (block: unknown): block is Record<string, unknown> =>
           object(block) &&
           ((block.type === "tool_use" && ids.has(block.id)) ||

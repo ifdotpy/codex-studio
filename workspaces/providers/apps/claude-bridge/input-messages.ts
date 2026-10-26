@@ -87,10 +87,10 @@ export function nativeInputIds(
   if (
     !Array.isArray(ids) ||
     !ids.length ||
-    !ids.every((id): id is string => typeof id === "string" && !!id) ||
+    ids.some((id) => typeof id !== "string" || !id) ||
     new Set(ids).size !== ids.length ||
     (item?.nativeId && ids.at(-1) !== item.nativeId)
   )
     return null;
-  return ids;
+  return ids as string[];
 }
