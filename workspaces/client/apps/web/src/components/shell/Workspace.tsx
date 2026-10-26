@@ -47,7 +47,7 @@ import {
   type PostBody,
   type PostResult,
 } from "../../api";
-import type { Agent, Json, JsonValue, Snapshot } from "../../types";
+import type { Agent, Json, JsonInput, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelField } from "../models/ModelField";
 import {
@@ -1712,7 +1712,7 @@ export function parseRuleDraft(value: Json | null): RuleDraft | null {
   )
     return null;
   const asNumberOrString = (
-    candidate: JsonValue | undefined,
+    candidate: JsonInput | undefined,
     fallback: number,
   ) =>
     typeof candidate === "number" || typeof candidate === "string"
