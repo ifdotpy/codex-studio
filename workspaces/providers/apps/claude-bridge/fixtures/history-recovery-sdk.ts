@@ -22,7 +22,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
     sessionId = options.sessionId || options.resume,
     cwd = options.cwd;
   const file = path.join(
-    process.env.CLAUDE_CONFIG_DIR || "",
+    process.env.CLAUDE_CONFIG_DIR!,
     "projects",
     cwd.replace(/[^a-zA-Z0-9]/g, "-"),
     sessionId + ".jsonl",
@@ -71,13 +71,10 @@ export function query({ prompt, options }: SessionFixtureQuery) {
         const next = await prompt.next();
         if (next.done) return;
         parts.push(next.value);
-      } while (parts.at(-1)?.shouldQuery === false);
+      } while (parts.at(-1)!.shouldQuery === false);
       const damage = process.env.HISTORY_DAMAGE;
       if (damage === "all") for (const part of parts) record(part);
-      if (damage === "partial") {
-        const first = parts[0];
-        if (first) record(first);
-      }
+      if (damage === "partial") record(parts[0]);
       if (damage === "malformed uuid" || damage === "unknown record")
         fs.appendFileSync(
           file,

@@ -23,7 +23,7 @@ async function openFixture(page: Page) {
     write: false,
   });
   const output = bundle.outputFiles[0];
-  if (!output) throw new Error("Missing schema header fixture bundle");
+
   await page.addScriptTag({ content: output.text });
 }
 
@@ -99,9 +99,7 @@ test("duplicate spec fulfill calls delegate to one Route fulfillment", async ({
 test("deferred route fulfillment keeps the schema decorator until handled", async ({
   page,
 }) => {
-  let captureRoute: (route: Route) => void = () => {
-    throw new Error("Route capture not initialized");
-  };
+  let captureRoute!: (route: Route) => void;
   const routeCaptured = new Promise<Route>((resolve) => {
     captureRoute = resolve;
   });

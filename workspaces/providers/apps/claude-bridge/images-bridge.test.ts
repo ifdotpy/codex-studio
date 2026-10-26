@@ -1,3 +1,18 @@
+import type { BridgeNote } from "./testing/bridge-harness.ts";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+type FixtureMessage = SDKUserMessage["message"];
+type FixtureImage = Extract<
+  Exclude<FixtureMessage["content"], string>[number],
+  { type: "image" }
+> & {
+  source: Extract<
+    Extract<
+      Exclude<FixtureMessage["content"], string>[number],
+      { type: "image" }
+    >["source"],
+    { type: "base64" }
+  >;
+};
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -67,9 +82,10 @@ test("missing native codecs refuse images while the bridge can still accept text
       threadId: bridge.thread,
       input: [{ type: "text", text: "hello" }],
     });
-    const input = await bridge.note("fixture/input");
-    assert.ok("content" in input.params);
-    assert.deepEqual(input.params.content, [{ type: "text", text: "hello" }]);
+    const input = await bridge.note((note) => note.method === "fixture/input");
+    assert.deepEqual((input.params as FixtureMessage).content, [
+      { type: "text", text: "hello" },
+    ]);
   } finally {
     await bridge.close();
   }
@@ -88,13 +104,8 @@ test("the real image caller sends a bounded base64 image with its actual MIME ty
       threadId: bridge.thread,
       input: [{ type: "localImage", path: file }],
     });
-    const input = await bridge.note(
-      "fixture/input",
-      (note) => note.method === "fixture/input",
-    );
-    assert.ok("content" in input.params && Array.isArray(input.params.content));
-    const [block] = input.params.content;
-    assert.ok(block?.type === "image" && block.source.type === "base64");
+    const input = await bridge.note((note) => note.method === "fixture/input");
+    const [block] = (input.params as FixtureMessage).content as FixtureImage[];
     assert.equal(block.type, "image");
     assert.equal(block.source.media_type, "image/png");
     assert.ok(block.source.data.length <= MAX_IMAGE_BASE64_BYTES);
@@ -103,7 +114,6 @@ test("the real image caller sends a bounded base64 image with its actual MIME ty
     ).metadata();
     assert.equal(metadata.width, MAX_IMAGE_SIDE);
     await bridge.note(
-      "turn/completed",
       (note) =>
         note.method === "turn/completed" &&
         note.params.turn.id === result.turn.id,
@@ -120,10 +130,7 @@ test("a refused image steer leaves the active turn unchanged", async () => {
       threadId: bridge.thread,
       input: [{ type: "text", text: "hold" }],
     });
-    await bridge.note(
-      "fixture/input",
-      (note) => note.method === "fixture/input",
-    );
+    await bridge.note((note) => note.method === "fixture/input");
     const file = path.join(bridge.root, "broken.gif");
     await fs.writeFile(file, "broken");
     await assert.rejects(
@@ -139,7 +146,6 @@ test("a refused image steer leaves the active turn unchanged", async () => {
       threadId: bridge.thread,
       includeTurns: true,
     });
-    assert.ok(saved.thread.turns[0]);
     assert.equal(saved.thread.turns[0].status, "inProgress");
     assert.equal(
       saved.thread.turns[0].items.some((item) => item.id === "refused-steer"),
@@ -147,8 +153,7 @@ test("a refused image steer leaves the active turn unchanged", async () => {
     );
     await bridge.writeSignal("release");
     const finished = await bridge.note(
-      "turn/completed",
-      (note) =>
+      (note): note is Extract<BridgeNote, { method: "turn/completed" }> =>
         note.method === "turn/completed" && note.params.turn.id === turn.id,
     );
     assert.equal(finished.params.turn.status, "completed");

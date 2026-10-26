@@ -226,15 +226,15 @@ export async function startBridge(
     predicate: (note: BridgeNote) => note is N,
   ): Promise<N>;
   function advanceUntil(
-    predicate: (note: BridgeNote) => boolean,
+    predicate: (note: BridgeNote) => unknown,
   ): Promise<BridgeNote>;
   function advanceUntil<M extends BridgeNote["method"]>(
     method: M,
-    predicate?: (note: BridgeNoteFor<M>) => boolean,
+    predicate?: (note: BridgeNoteFor<M>) => unknown,
   ): Promise<BridgeNoteFor<M>>;
   async function advanceUntil<M extends BridgeNote["method"]>(
-    methodOrPredicate: M | ((note: BridgeNote) => boolean),
-    filter?: (note: BridgeNoteFor<M>) => boolean,
+    methodOrPredicate: M | ((note: BridgeNote) => unknown),
+    filter?: (note: BridgeNoteFor<M>) => unknown,
   ): Promise<BridgeNote> {
     const predicate =
       typeof methodOrPredicate === "function"
@@ -256,14 +256,14 @@ export async function startBridge(
   function note<N extends BridgeNote>(
     predicate: (note: BridgeNote) => note is N,
   ): Promise<N>;
-  function note(predicate: (note: BridgeNote) => boolean): Promise<BridgeNote>;
+  function note(predicate: (note: BridgeNote) => unknown): Promise<BridgeNote>;
   function note<M extends BridgeNote["method"]>(
     method: M,
-    predicate?: (note: BridgeNoteFor<M>) => boolean,
+    predicate?: (note: BridgeNoteFor<M>) => unknown,
   ): Promise<BridgeNoteFor<M>>;
   async function note<M extends BridgeNote["method"]>(
-    methodOrPredicate: M | ((note: BridgeNote) => boolean),
-    filter?: (note: BridgeNoteFor<M>) => boolean,
+    methodOrPredicate: M | ((note: BridgeNote) => unknown),
+    filter?: (note: BridgeNoteFor<M>) => unknown,
   ): Promise<BridgeNote> {
     const predicate =
       typeof methodOrPredicate === "function"

@@ -307,7 +307,7 @@ export function AccountTiles(p: AccountTilesProps) {
           fullWidth
           aria-label={`${p.label} provider`}
           value={provider}
-          disabled={!!p.disabled}
+          disabled={p.disabled}
           onChange={(value) => {
             setLocalProvider(value);
             p.onProvider?.(value);

@@ -103,7 +103,7 @@ test("combined server edits retry only the failed alias with its original identi
       if (
         url.pathname !== "/api/multi-server" ||
         request.method !== "POST" ||
-        !(body.action === "name" || body.action === "alias")
+        !["name", "alias"].includes(body.action)
       )
         return false;
       attempts.push(body);
@@ -150,7 +150,7 @@ test("combined server edits retry only the failed alias with its original identi
       "alias",
     ]);
     expect(attempts[1]).toEqual(attempts[2]);
-    expect(attempts[0]?.requestId).not.toBe(attempts[1]?.requestId);
+    expect(attempts[0].requestId).not.toBe(attempts[1].requestId);
     expect(local.aliases.local).toBe("REL");
   } finally {
     await local.close();

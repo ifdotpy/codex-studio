@@ -73,7 +73,7 @@ function parseArgs(argv: string[]) {
       options.help = true;
       continue;
     }
-    if (!value?.startsWith("--"))
+    if (!value.startsWith("--"))
       throw new Error(`Unexpected argument: ${value}`);
     const key = value.slice(2);
     if (
@@ -90,15 +90,7 @@ function parseArgs(argv: string[]) {
     const next = argv[index + 1];
     if (!next || next.startsWith("--"))
       throw new Error(`Missing value for ${value}`);
-    if (
-      key === "url" ||
-      key === "pid" ||
-      key === "evidence-dir" ||
-      key === "chromium" ||
-      key === "duration-ms" ||
-      key === "settle-ms"
-    )
-      options[key] = next;
+    options[key as keyof Omit<Options, "help">] = next;
     index += 1;
   }
   return options;
@@ -183,29 +175,20 @@ function processSnapshot(pid: number) {
       .split("\n")
       .map((line) => {
         const [key, value] = line.split(":");
-        assert.ok(key && value);
         return [key, BigInt(value.trim())];
       }),
   );
   for (const key of ["rchar", "read_bytes", "syscr"])
     assert.ok(io.has(key), `Linux process IO record is missing ${key}.`);
-  const rchar = io.get("rchar");
-  const physicalReadBytes = io.get("read_bytes");
-  const readSyscalls = io.get("syscr");
-  assert.ok(
-    rchar !== undefined &&
-      physicalReadBytes !== undefined &&
-      readSyscalls !== undefined,
-  );
   return {
     capturedAt: new Date().toISOString(),
     monotonicMs: performance.now(),
-    userTicks: BigInt(fields[11] ?? ""),
-    systemTicks: BigInt(fields[12] ?? ""),
-    startTicks: BigInt(fields[19] ?? ""),
-    rchar,
-    physicalReadBytes,
-    readSyscalls,
+    userTicks: BigInt(fields[11]),
+    systemTicks: BigInt(fields[12]),
+    startTicks: BigInt(fields[19]),
+    rchar: io.get("rchar")!,
+    physicalReadBytes: io.get("read_bytes")!,
+    readSyscalls: io.get("syscr")!,
   };
 }
 
@@ -291,7 +274,7 @@ function recordApiRequest(observation: Observation, request: Request) {
   const path = safePath(request.url());
   const key = `${request.method()} ${path}`;
   const counts = observation.api.counts;
-  if (Object.hasOwn(counts, key)) counts[key] = (counts[key] ?? 0) + 1;
+  if (Object.hasOwn(counts, key)) counts[key] += 1;
   else if (Object.keys(counts).length < MAX_API_ENDPOINTS) counts[key] = 1;
   else observation.api.omittedEndpointCounts += 1;
   observation.api.requestCount += 1;
@@ -354,10 +337,7 @@ function addListeners(
     observation.errors.pageErrorCount += 1;
     boundedPush(
       observation.errors.pageErrors,
-      String(error instanceof Error ? error.message : error).slice(
-        0,
-        MAX_ERROR_TEXT,
-      ),
+      String((error as Error)?.message || error).slice(0, MAX_ERROR_TEXT),
       MAX_ERROR_SAMPLES,
       "omittedPageErrors",
       observation.errors,
@@ -375,7 +355,7 @@ function writeArtifact(path: string, result: Evidence) {
 }
 
 async function main() {
-  let options: Options = {};
+  let options: Options;
   let artifactPath;
   let result: Evidence = {
     version: 1,
@@ -450,12 +430,15 @@ async function main() {
         CLEANUP_TIMEOUT_MS,
     );
 
-    const executablePath =
-      options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
     const run = async () => {
       context = await chromium.launchPersistentContext(profileDir, {
         headless: true,
-        ...(executablePath ? { executablePath } : {}),
+        ...(options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+          ? {
+              executablePath:
+                options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+            }
+          : {}),
         viewport: { width: 1440, height: 1000 },
         acceptDownloads: false,
         timeout: BROWSER_LAUNCH_TIMEOUT_MS,
@@ -562,7 +545,7 @@ async function main() {
     recording = false;
     result.status = "failed";
     result.failure = {
-      message: String(error instanceof Error ? error.message : error).slice(
+      message: String((error as Error)?.message || error).slice(
         0,
         MAX_ERROR_TEXT,
       ),
@@ -605,7 +588,7 @@ async function main() {
         );
       } catch (error) {
         process.stderr.write(
-          `Could not write evidence artifact: ${error instanceof Error ? error.message : error}\n`,
+          `Could not write evidence artifact: ${(error as Error).message}\n`,
         );
         result.status = "failed";
       }

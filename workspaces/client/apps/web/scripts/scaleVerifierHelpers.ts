@@ -34,12 +34,13 @@ export function decodeLegacyAgentDocument(
 ): Extract<Schema["SyncEntityPayload"], { collection: "agent" }> | null {
   if (
     !document ||
-    !("payload" in document) ||
-    document._deleted ||
-    typeof document.payload !== "string"
+    (document as Schema["SyncDocument"])._deleted ||
+    typeof (document as Schema["SyncDocument"]).payload !== "string"
   )
     return null;
-  const entity: Schema["SyncEntityPayload"] = JSON.parse(document.payload);
+  const entity: Schema["SyncEntityPayload"] = JSON.parse(
+    (document as Schema["SyncDocument"]).payload,
+  );
   return entity.collection === "agent" ? entity : null;
 }
 
@@ -60,9 +61,6 @@ export type WatchDirectory = (
   path: string,
   listener: WatchListener<string>,
 ) => Pick<EventEmitter, "on"> & Pick<ReturnType<typeof watch>, "close">;
-export function errorCode(error: unknown) {
-  return error instanceof Error && "code" in error ? error.code : undefined;
-}
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -142,9 +140,7 @@ export function showsUpstreamLimit(text: unknown) {
 }
 
 export function scaleProfile(name: string): ScaleProfile {
-  const profile = Object.entries(SCALE_PROFILES).find(
-    ([key]) => key === name,
-  )?.[1];
+  const profile = SCALE_PROFILES[name as keyof typeof SCALE_PROFILES];
   assert.ok(
     profile,
     `Profile must be one of ${Object.keys(SCALE_PROFILES).join(", ")}.`,
@@ -182,9 +178,7 @@ export function scaleWorkerDefaults(
   accountKeys: string[],
 ): Schema["WorkerDefaults"] {
   return {
-    ...(accountKeys.length === 1
-      ? { account_key: accountKeys.at(0) ?? null }
-      : {}),
+    ...(accountKeys.length === 1 ? { account_key: accountKeys[0] } : {}),
     model,
     effort: profile.effort,
     fast_mode: profile.fastMode,
@@ -249,14 +243,11 @@ export function requireScaleModel(
     `The paid-test model must resolve to ${profile.servedModelPrefix}*; no agents were created.`,
   );
   assert.ok(
-    Array.isArray(candidate.supportedReasoningEfforts) &&
-      candidate.supportedReasoningEfforts.some(
-        (row) =>
-          typeof row === "object" &&
-          row !== null &&
-          !Array.isArray(row) &&
-          row.reasoningEffort === profile.effort,
-      ),
+    (
+      candidate.supportedReasoningEfforts as
+        | Schema["JsonObjectResponse"][]
+        | undefined
+    )?.some((row) => row.reasoningEffort === profile.effort),
     `${profile.model} does not expose ${profile.effort} effort.`,
   );
   return candidate;
@@ -282,7 +273,7 @@ export function parseProviderStdinJournalMessage(
   message: string,
 ): StdinTimingDiagnostic | null {
   if (!message.startsWith(PROVIDER_STDIN_JOURNAL_PREFIX)) return null;
-  const entry: Record<string, unknown> = JSON.parse(
+  const entry: StdinTimingDiagnostic = JSON.parse(
     message.slice(PROVIDER_STDIN_JOURNAL_PREFIX.length),
   );
   assert.deepEqual(
@@ -302,9 +293,7 @@ export function parseProviderStdinJournalMessage(
     "Provider stdin journal record has no provider handle.",
   );
   assert.ok(
-    typeof entry.generation === "number" &&
-      Number.isSafeInteger(entry.generation) &&
-      entry.generation > 0,
+    Number.isSafeInteger(entry.generation) && entry.generation > 0,
     "Provider stdin journal record has an invalid generation.",
   );
   assert.ok(
@@ -313,9 +302,8 @@ export function parseProviderStdinJournalMessage(
   );
   assert.ok(
     (typeof entry.requestId === "string" && entry.requestId.length > 0) ||
-      (typeof entry.requestId === "number" &&
-        Number.isSafeInteger(entry.requestId) &&
-        entry.requestId >= 0),
+      (Number.isSafeInteger(entry.requestId) &&
+        (entry.requestId as number) >= 0),
     "Provider stdin journal record has an invalid request ID.",
   );
   assert.ok(
@@ -323,26 +311,17 @@ export function parseProviderStdinJournalMessage(
     "Provider stdin journal record has no method.",
   );
   assert.ok(
-    typeof entry.stdinFlushedAtNs === "number" &&
-      Number.isSafeInteger(entry.stdinFlushedAtNs) &&
-      entry.stdinFlushedAtNs >= 0,
+    Number.isSafeInteger(entry.stdinFlushedAtNs) && entry.stdinFlushedAtNs >= 0,
     "Provider stdin journal record has an invalid flush timestamp.",
   );
-  return {
-    providerHandle: entry.providerHandle,
-    generation: entry.generation,
-    operationId: entry.operationId,
-    requestId: entry.requestId,
-    method: entry.method,
-    stdinFlushedAtNs: entry.stdinFlushedAtNs,
-  };
+  return entry;
 }
 
 export function parseProviderReplyJournalMessage(
   message: string,
 ): ReplyTimingDiagnostic | null {
   if (!message.startsWith(PROVIDER_REPLY_JOURNAL_PREFIX)) return null;
-  const entry: Record<string, unknown> = JSON.parse(
+  const entry: ReplyTimingDiagnostic = JSON.parse(
     message.slice(PROVIDER_REPLY_JOURNAL_PREFIX.length),
   );
   assert.deepEqual(
@@ -362,26 +341,15 @@ export function parseProviderReplyJournalMessage(
     typeof entry.providerHandle === "string" &&
       typeof entry.operationId === "string" &&
       typeof entry.method === "string" &&
-      typeof entry.generation === "number" &&
       Number.isSafeInteger(entry.generation) &&
       (typeof entry.requestId === "string" ||
-        (typeof entry.requestId === "number" &&
-          Number.isSafeInteger(entry.requestId))) &&
-      typeof entry.replyAtNs === "number" &&
+        Number.isSafeInteger(entry.requestId)) &&
       Number.isSafeInteger(entry.replyAtNs) &&
       entry.replyAtNs >= 0 &&
       (entry.outcome === "result" || entry.outcome === "error"),
     "Provider reply journal record has an invalid field.",
   );
-  return {
-    providerHandle: entry.providerHandle,
-    generation: entry.generation,
-    operationId: entry.operationId,
-    requestId: entry.requestId,
-    method: entry.method,
-    replyAtNs: entry.replyAtNs,
-    outcome: entry.outcome,
-  };
+  return entry;
 }
 
 export async function forEachBounded<T>(
@@ -415,8 +383,7 @@ export function createEntityCursorPuller(
     const latestById = new Map<string, StateDocument>();
     while (cursor < targetSequence || force) {
       force = false;
-      const page = await pullPage(cursor);
-      assert.ok(page);
+      const page = (await pullPage(cursor))!;
       assert.equal(page.workspaceId, workspaceId, "Sync workspace changed.");
       assert.notEqual(
         page.reset,
@@ -479,7 +446,7 @@ export function createStateResourceAdapter(
   ) {
     const version = stateResourceVersion(frame);
     assert.ok(
-      version && Number.isSafeInteger(version.revision),
+      Number.isSafeInteger(version?.revision),
       "State resource event omitted its entity-sequence revision.",
     );
     assert.equal(frame.workspaceId, workspaceId, "Sync workspace changed.");
@@ -489,7 +456,7 @@ export function createStateResourceAdapter(
         "initial",
         "State stream began without its initial baseline.",
       );
-      sequence = version.revision;
+      sequence = version!.revision;
       pullThrough = createEntityCursorPuller(sequence, workspaceId, pullPage);
     } else {
       assert.notEqual(
@@ -498,26 +465,25 @@ export function createStateResourceAdapter(
         "State stream repeated its initial baseline.",
       );
       assert.ok(
-        lastFrameSequence !== null && version.revision >= lastFrameSequence,
-        `Sync entity sequence moved backwards: ${version.revision} < ${lastFrameSequence}.`,
+        version!.revision >= lastFrameSequence!,
+        `Sync entity sequence moved backwards: ${version!.revision} < ${lastFrameSequence}.`,
       );
     }
-    lastFrameSequence = version.revision;
+    lastFrameSequence = version!.revision;
     // Rust also emits entitySequenceReset for a broad post-commit invalidation.
     // Pull through the durable cursor; an actual pull reset still fails closed
     // in createEntityCursorPuller instead of treating every hint as data loss.
     const target = Math.max(
       sequence,
-      pendingSequence ?? version.revision,
-      version.revision,
+      pendingSequence ?? version!.revision,
+      version!.revision,
     );
-    assert.ok(pullThrough);
-    const batch = await pullThrough(target, { force: true });
+    const batch = await pullThrough!(target, { force: true });
     sequence = batch.through;
     const latestById = new Map<string, StateDocument>();
     for (const document of batch.documents) {
       const match = /^entity:agent:(.+)$/.exec(document.id);
-      if (match && observedAgentIds.has(match[1] ?? ""))
+      if (match && observedAgentIds.has(match[1]))
         latestById.set(document.id, document);
     }
     return {
@@ -645,7 +611,7 @@ export async function waitForServedModelEvidence({
 // Anything else has no identity and returns null, which never joins.
 export function requestIdentityKey(value: unknown) {
   if (typeof value === "string") return value.length ? value : null;
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+  return Number.isSafeInteger(value) && (value as number) >= 0
     ? String(value)
     : null;
 }
@@ -666,7 +632,7 @@ export function finishedWorkspaceCleanupIds(
   return new Set(
     [...expectedIds].filter((id) => {
       const row = byId.get(id);
-      return Boolean(row?.deletedAt) && !row?.workspaceCleanupIntent;
+      return Boolean(row?.deletedAt) && !row!.workspaceCleanupIntent;
     }),
   );
 }
@@ -706,7 +672,7 @@ function isKnownQueueKey(key: string) {
 }
 
 function isCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 // Stage-end drain of the non-durable dispatch, callback, clock, and recovery
@@ -897,7 +863,7 @@ export async function acquireRunLock(path: string, runId: string) {
         await unlink(path);
       };
     } catch (error) {
-      if (errorCode(error) !== "EEXIST") throw error;
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
     }
     let current: typeof owner;
     try {
@@ -916,7 +882,7 @@ export async function acquireRunLock(path: string, runId: string) {
     try {
       process.kill(current.pid, 0);
     } catch (error) {
-      if (errorCode(error) === "ESRCH") alive = false;
+      if ((error as NodeJS.ErrnoException)?.code === "ESRCH") alive = false;
       else throw error;
     }
     assert.ok(
@@ -927,7 +893,7 @@ export async function acquireRunLock(path: string, runId: string) {
     try {
       await rename(path, stalePath);
     } catch (error) {
-      if (errorCode(error) === "ENOENT") continue;
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
       throw error;
     }
   }
@@ -1024,7 +990,7 @@ export function assertOwnedEntry(
   assert.ok(!info.isSymbolicLink(), `${path} is a symbolic link.`);
   assert.equal(
     info.uid,
-    process.getuid?.(),
+    process.getuid!(),
     `${path} is not owned by the verifier.`,
   );
   assert.equal(info.mode & 0o777, mode, `${path} has unexpected permissions.`);
@@ -1071,7 +1037,7 @@ export async function watchReadinessMarkers(
     if (seen.has(index)) return;
     const path = join(directory, readinessMarkerName(index));
     const info = await lstat(path).catch((error) => {
-      if (errorCode(error) === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
       throw error;
     });
     if (!info) return;
@@ -1111,7 +1077,10 @@ export async function watchReadinessMarkers(
     if (name === ownName) {
       return lstat(join(directory, name)).then(
         () => fail(new Error(`Unknown readiness marker name: ${name}`)),
-        (error) => (errorCode(error) === "ENOENT" ? checkAll() : fail(error)),
+        (error) =>
+          (error as NodeJS.ErrnoException)?.code === "ENOENT"
+            ? checkAll()
+            : fail(error),
       );
     }
     // A rename notification may retain the temporary name. Inspect only the
@@ -1130,7 +1099,7 @@ export async function watchReadinessMarkers(
   });
   watcher.on("error", fail);
   const onAbort = () =>
-    fail(signal?.reason ?? new Error("Readiness wait was aborted."));
+    fail(signal!.reason ?? new Error("Readiness wait was aborted."));
   signal?.addEventListener("abort", onAbort, { once: true });
   checkAll();
   return {
@@ -1188,7 +1157,10 @@ export function releaseBarriersNow(entries: Barrier[]) {
       writeSync(fd, `${token}\n`);
       return { path, outcome: "released" };
     } catch (error) {
-      if (errorCode(error) === "ENXIO" || errorCode(error) === "ENOENT")
+      if (
+        (error as NodeJS.ErrnoException)?.code === "ENXIO" ||
+        (error as NodeJS.ErrnoException)?.code === "ENOENT"
+      )
         return { path, outcome: "gone" };
       throw error;
     } finally {
@@ -1216,7 +1188,7 @@ export function callbackProcessRetirementDelayMs({
     assert.ok(Number.isFinite(releasedMs), "Invalid callback release time.");
     return Math.max(0, releasedMs + CALLBACK_EXIT_AFTER_RELEASE_MS - nowMs);
   }
-  const startMs = Date.parse(readinessObservedAt ?? "");
+  const startMs = Date.parse(readinessObservedAt!);
   assert.ok(
     Number.isFinite(startMs),
     "Owned callback has no verified readiness bound; worktree retirement is unproven.",
@@ -1257,7 +1229,10 @@ export function readProcessTable(procRoot = "/proc") {
         rssBytes: Number(statm[1]) * PAGE_SIZE_BYTES,
       });
     } catch (error) {
-      if (errorCode(error) !== "ENOENT" && errorCode(error) !== "ESRCH")
+      if (
+        (error as NodeJS.ErrnoException)?.code !== "ENOENT" &&
+        (error as NodeJS.ErrnoException)?.code !== "ESRCH"
+      )
         throw error;
     }
   }
@@ -1275,8 +1250,7 @@ export function sampleProviderProcesses(
   const tree: ProcessSample[] = [];
   const queue = [...(children.get(rootPid) || [])];
   while (queue.length) {
-    const item = queue.pop();
-    if (!item) continue;
+    const item = queue.pop()!;
     tree.push(item);
     queue.push(...(children.get(item.pid) || []));
   }
@@ -1316,18 +1290,12 @@ export function sampleProviderProcesses(
 export const WORKER_WORKSPACES = Object.freeze(["shared", "worktree"] as const);
 export const DEFAULT_WORKER_WORKSPACE = "shared";
 
-function isWorkerWorkspace(
-  value: string,
-): value is (typeof WORKER_WORKSPACES)[number] {
-  return WORKER_WORKSPACES.some((workspace) => workspace === value);
-}
-
 export function parseWorkerWorkspace(value: string = DEFAULT_WORKER_WORKSPACE) {
   assert.ok(
-    isWorkerWorkspace(value),
+    WORKER_WORKSPACES.includes(value as (typeof WORKER_WORKSPACES)[number]),
     `--worker-workspace must be one of ${WORKER_WORKSPACES.join(", ")}.`,
   );
-  return value;
+  return value as (typeof WORKER_WORKSPACES)[number];
 }
 
 // Per-worker release FIFO of a shared-workspace stage. It lives under the
@@ -1360,7 +1328,7 @@ export function findFifoHolders(paths: string[], procRoot = "/proc") {
     try {
       real = realpathSync(path);
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
     }
     wanted.set(real, path);
   }
@@ -1372,8 +1340,8 @@ export function findFifoHolders(paths: string[], procRoot = "/proc") {
       fds = readdirSync(`${procRoot}/${entry}/fd`);
     } catch (error) {
       if (
-        ["ENOENT", "ESRCH", "EACCES", "EPERM"].some(
-          (code) => code === errorCode(error),
+        ["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(
+          (error as NodeJS.ErrnoException)?.code as string,
         )
       )
         continue;
@@ -1385,8 +1353,8 @@ export function findFifoHolders(paths: string[], procRoot = "/proc") {
         target = readlinkSync(`${procRoot}/${entry}/fd/${fd}`);
       } catch (error) {
         if (
-          ["ENOENT", "ESRCH", "EACCES", "EPERM"].some(
-            (code) => code === errorCode(error),
+          ["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(
+            (error as NodeJS.ErrnoException)?.code as string,
           )
         )
           continue;
@@ -1395,7 +1363,7 @@ export function findFifoHolders(paths: string[], procRoot = "/proc") {
       const original = wanted.get(target);
       if (original !== undefined) {
         const pids = holders.get(original);
-        if (pids && !pids.includes(Number(entry))) pids.push(Number(entry));
+        if (!pids!.includes(Number(entry))) pids!.push(Number(entry));
       }
     }
   }

@@ -169,7 +169,7 @@ const ACCEPTED_MESSAGE_RECEIPT_STATUSES = new Set([
 export function isAcceptedMessageReceiptStatus(
   status: string | null | undefined,
 ) {
-  return ACCEPTED_MESSAGE_RECEIPT_STATUSES.has(status ?? "");
+  return ACCEPTED_MESSAGE_RECEIPT_STATUSES.has(status as string);
 }
 
 function argumentsFrom(argv: string[]) {
@@ -184,7 +184,7 @@ function argumentsFrom(argv: string[]) {
       options.help = true;
       continue;
     }
-    if (!value?.startsWith("--"))
+    if (!value.startsWith("--"))
       throw new Error(`Unexpected argument: ${value}`);
     const key = value.slice(2);
     const next = argv[index + 1];
@@ -215,11 +215,8 @@ function readJournal(path: string): Journal | null {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      return null;
-    throw new Error(
-      `Cannot read journal ${path}: ${error instanceof Error ? error.message : error}`,
-    );
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw new Error(`Cannot read journal ${path}: ${(error as Error).message}`);
   }
 }
 
@@ -252,9 +249,8 @@ function routePath(request: Request) {
 }
 
 function chatSelector(id: string | undefined) {
-  assert.ok(typeof id === "string", "Chat ID is missing.");
   assert.match(
-    id,
+    id!,
     /^[A-Za-z0-9_-]+$/,
     "Chat ID contains unsafe selector characters.",
   );
@@ -277,7 +273,8 @@ function redactUrl(url: string) {
 function redactValue(value: JsonInput): JsonInput;
 function redactValue(value: JsonInput | undefined): JsonInput | undefined;
 function redactValue(value: JsonInput | undefined): JsonInput | undefined {
-  if (Array.isArray(value)) return value.map((item) => redactValue(item));
+  if (Array.isArray(value))
+    return value.map(redactValue as (value: JsonInput) => JsonInput);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
@@ -397,15 +394,8 @@ export function readPendingCreationIds() {
     if (!key?.startsWith("codex-pending-creation:")) continue;
     const raw = localStorage.getItem(key);
     if (!raw) continue;
-    const request: unknown = JSON.parse(raw);
-    if (
-      request &&
-      typeof request === "object" &&
-      "id" in request &&
-      typeof request.id === "string" &&
-      request.id
-    )
-      ids.push(request.id);
+    const request = JSON.parse(raw) as { id?: ApiSchemas["JsonValue"] } | null;
+    if (typeof request?.id === "string" && request.id) ids.push(request.id);
   }
   return ids;
 }
@@ -457,16 +447,14 @@ async function recordCreateNavigation(
 ) {
   const selectedRow = page.locator(selectedChatRowSelector(journal.chatId));
   await selectedRow.waitFor({ timeout: CHAT_ROW_TIMEOUT_MS });
-  assert.ok(journal.stages.create);
-  journal.stages.create.navigation ||= {
+  journal.stages.create!.navigation ||= {
     signal: "selected-chat-row",
     previousAgentId:
-      (journal.stages.create.request &&
-      typeof journal.stages.create.request === "object" &&
-      !Array.isArray(journal.stages.create.request) &&
-      "previous" in journal.stages.create.request
-        ? journal.stages.create.request.previous
-        : null) || null,
+      (
+        journal.stages.create!.request as
+          | ApiSchemas["CreateLeadRequest"]
+          | undefined
+      )?.previous || null,
     chatId: journal.chatId,
     observedAt: new Date().toISOString(),
   };
@@ -475,19 +463,20 @@ async function recordCreateNavigation(
 
 async function pageMetrics(page: Page) {
   return page.evaluate((maxRecordedResources) => {
-    const entries = performance
-      .getEntriesByType("resource")
-      .filter(
-        (entry): entry is PerformanceResourceTiming =>
-          entry.entryType === "resource",
-      );
+    const entries = performance.getEntriesByType(
+      "resource",
+    ) as PerformanceResourceTiming[];
     const resources = entries.slice(-maxRecordedResources).map((entry) => ({
       name: new URL(entry.name, location.href).pathname,
       initiatorType: entry.initiatorType,
       durationMs: Math.round(entry.duration),
       transferSize: entry.transferSize || 0,
     }));
-    const memory = "memory" in performance ? performance.memory : null;
+    const memory = (
+      performance as Performance & {
+        memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number };
+      }
+    ).memory;
     return {
       resourceCount: resources.length,
       totalResourceCount: entries.length,
@@ -495,14 +484,8 @@ async function pageMetrics(page: Page) {
         (total, resource) => total + resource.transferSize,
         0,
       ),
-      jsHeapUsedBytes:
-        (memory && typeof memory === "object" && "usedJSHeapSize" in memory
-          ? memory.usedJSHeapSize
-          : null) ?? null,
-      jsHeapLimitBytes:
-        (memory && typeof memory === "object" && "jsHeapSizeLimit" in memory
-          ? memory.jsHeapSizeLimit
-          : null) ?? null,
+      jsHeapUsedBytes: memory?.usedJSHeapSize ?? null,
+      jsHeapLimitBytes: memory?.jsHeapSizeLimit ?? null,
       domNodeCount: document.getElementsByTagName("*").length,
       resources,
     };
@@ -561,7 +544,7 @@ async function main() {
     options.resume &&
     (!journal.chatId ||
       !journal.stages.create ||
-      !["sent", "confirmed"].includes(journal.stages.create.state ?? ""))
+      !["sent", "confirmed"].includes(journal.stages.create.state!))
   )
     throw new Error(
       "Resume requires a journaled create request for the exact chat ID; an ID alone does not prove ownership.",
@@ -942,7 +925,7 @@ async function main() {
         projectPath,
         `Project ${options.project} was not found in the UI or has no project path.`,
       );
-      if (options.project && isAbsolute(options.project))
+      if (isAbsolute(options.project!))
         assert.equal(
           projectPath,
           options.project,
@@ -1114,21 +1097,20 @@ async function main() {
         journal.messageId,
         "Message receipt did not confirm the exact submitted ID.",
       );
-      assert.ok(body, "Message response has no body.");
       assert.ok(
-        !body.room || body.room === journal.chatId,
+        !body!.room || body!.room === journal.chatId,
         "Message receipt belongs to another room.",
       );
       assert.ok(
-        !body.agent || body.agent === journal.chatId,
+        !body!.agent || body!.agent === journal.chatId,
         "Message receipt belongs to another chat.",
       );
       assert.ok(
-        isAcceptedMessageReceiptStatus(body.status),
-        `Message receipt did not confirm acceptance (status ${body.status}).`,
+        isAcceptedMessageReceiptStatus(body!.status),
+        `Message receipt did not confirm acceptance (status ${body!.status}).`,
       );
       journal.stages.prompt = {
-        ...Object.assign<Stage, Stage | undefined>({}, journal.stages.prompt),
+        ...(journal.stages.prompt as Stage | undefined),
         state: "accepted",
         receipt: body,
         ackElapsedMs: elapsed(promptStarted),
@@ -1177,7 +1159,7 @@ async function main() {
     let terminalState = latestAgentState();
     while (
       (!terminalState ||
-        !["idle", "completed"].includes(terminalState.status ?? "") ||
+        !["idle", "completed"].includes(terminalState.status!) ||
         terminalState.inFlight !== false ||
         terminalState.at < promptSentAt) &&
       elapsed(terminalStarted) < TERMINAL_STATE_TIMEOUT_MS
@@ -1187,7 +1169,7 @@ async function main() {
     }
     assert.ok(
       terminalState &&
-        ["idle", "completed"].includes(terminalState.status ?? "") &&
+        ["idle", "completed"].includes(terminalState.status!) &&
         terminalState.inFlight === false &&
         terminalState.at >= promptSentAt,
       "No post-prompt sync state confirmed the agent idle or completed with inFlight=false.",
@@ -1262,7 +1244,7 @@ async function main() {
           ? [body.deleted]
           : body?.deleted || [];
       assert.ok(
-        deleted.some((id) => id === journal.chatId),
+        deleted.includes(journal.chatId!),
         "Delete response did not confirm this chat ID.",
       );
       await page.locator(chatSelector(journal.chatId)).waitFor({
@@ -1337,7 +1319,7 @@ async function main() {
     journal.failure = {
       at: new Date().toISOString(),
       stage: traffic.stage,
-      message: String(error instanceof Error ? error.stack : error),
+      message: String((error as Error)?.stack || error),
       requestCount: traffic.requests.length,
       failures: traffic.failures,
       pageErrors: traffic.pageErrors,
@@ -1360,7 +1342,7 @@ async function main() {
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.stack : error}\n`);
+    process.stderr.write(`${(error as Error)?.stack || error}\n`);
     process.exitCode = 1;
   });
 }

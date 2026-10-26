@@ -12,7 +12,6 @@ import type {
   StateFrame,
   Barrier,
 } from "./scaleVerifierHelpers.ts";
-import { errorCode } from "./scaleVerifierHelpers.ts";
 import { runScaleVerifier } from "./scaleVerifierTeardown.ts";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -107,6 +106,9 @@ type TeamChild = {
 };
 type Schema = components["schemas"];
 type FilesystemSnapshot = Awaited<ReturnType<typeof readFilesystemSnapshot>>;
+type RequestFailure = Error & { unknown?: boolean; status?: number };
+type ScaleAgentSnapshot = Schema["AgentEntityDto"] &
+  Pick<Schema["AgentRecordResponse"], "worktreeReady" | "branch">;
 type Client = Awaited<ReturnType<typeof createClient>>;
 type CleanupClient = Pick<
   Client,
@@ -364,7 +366,7 @@ type Journal = {
   projectHead?: string;
   ownerBaseline?: {
     at: string;
-    workspaceId: string;
+    workspaceId: string | null;
     generation: number | null;
     checkpoint: Schema["SyncCheckpoint"] | null;
     documentsObserved: number;
@@ -492,7 +494,7 @@ function parseArgs(argv: string[]) {
       result.help = true;
       continue;
     }
-    assert.ok(arg);
+
     if (!arg.startsWith("--")) throw new Error(`Unexpected argument: ${arg}`);
     const key = arg.slice(2);
     const value = argv[i + 1];
@@ -535,7 +537,7 @@ async function readJournal(path: string): Promise<Journal | null> {
     // This verifier reads the versioned ownership journal it wrote itself.
     return JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
     throw error;
   }
 }
@@ -566,7 +568,7 @@ function deadlineSignal(ms: number, parentSignal: AbortSignal | null = null) {
     ms,
   );
   timer.unref?.();
-  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  const abortFromParent = () => controller.abort(parentSignal!.reason);
   if (parentSignal?.aborted) abortFromParent();
   else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   return {
@@ -582,7 +584,7 @@ function deadlineSignal(ms: number, parentSignal: AbortSignal | null = null) {
 function percentile(values: number[], p: number) {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.ceil(p * sorted.length) - 1] ?? null;
+  return sorted[Math.ceil(p * sorted.length) - 1];
 }
 
 function summary(values: number[]) {
@@ -665,7 +667,7 @@ async function verifyDiskPreflight(project: string) {
   );
   assert.ok(
     !tree.error && tree.status === 0,
-    `Could not estimate tracked worktree size: ${String((tree.error instanceof Error ? tree.error.message : undefined) || tree.stderr || tree.status).slice(0, 300)}`,
+    `Could not estimate tracked worktree size: ${String(tree.error?.message || tree.stderr || tree.status).slice(0, 300)}`,
   );
   const head = spawnSync("git", ["-C", project, "rev-parse", "HEAD"], {
     encoding: "utf8",
@@ -675,7 +677,7 @@ async function verifyDiskPreflight(project: string) {
     !head.error &&
       head.status === 0 &&
       /^[0-9a-f]{40,64}$/i.test(head.stdout.trim()),
-    `Could not freeze selected project HEAD: ${String((head.error instanceof Error ? head.error.message : undefined) || head.stderr || head.status).slice(0, 300)}`,
+    `Could not freeze selected project HEAD: ${String(head.error?.message || head.stderr || head.status).slice(0, 300)}`,
   );
   const trackedBytes = tree.stdout
     .trim()
@@ -745,9 +747,8 @@ async function verifyOwnedWorktreeDisk({
     "A stage worker is missing its durable journal owner.",
   );
   const worktreeOwners = owners.filter(
-    (owner): owner is OwnedAgent & { worktree: Worktree } =>
-      Boolean(owner.worktree?.cwd),
-  );
+    (owner) => owner.worktree?.cwd,
+  ) as (OwnedAgent & { worktree: Worktree })[];
   const paths = worktreeOwners.map((owner) => owner.worktree.cwd);
   assert.equal(
     new Set(paths).size,
@@ -806,9 +807,10 @@ async function verifyOwnedWorktreeDisk({
 
 function parseStateEntity(
   document: Schema["SyncPullResponse"]["documents"][number] | undefined,
-) {
+): ScaleAgentSnapshot | null {
   try {
-    return decodeLegacyAgentDocument(document)?.value ?? null;
+    const entity = decodeLegacyAgentDocument(document);
+    return entity === null ? null : entity.value;
   } catch {
     return null;
   }
@@ -837,11 +839,10 @@ async function waitForCallbackReadiness(
   // A verified marker proves the FIFO shell opened its release FIFO, so the
   // barrier path is checked before the worker is accepted for release.
   while (ready.size < ids.length) {
-    const index = await markers.next(deadlineAt);
-    assert.ok(index !== undefined);
+    const index = (await markers.next(deadlineAt))!;
+
     const agentId = ids[index];
-    const token = tokens[index];
-    assert.ok(agentId && token);
+
     const owner = journal.ownedAgents.find((item) => item.id === agentId);
     assert.ok(owner, `Worker ${agentId} is not journal-owned.`);
     assert.ok(
@@ -876,7 +877,7 @@ async function waitForCallbackReadiness(
       cwd,
       directory,
       path,
-      token,
+      token: tokens[index],
     });
     const barrier = {
       barrierDirectory: directory,
@@ -893,11 +894,7 @@ async function waitForCallbackReadiness(
       new Set([...ready.values()].map((item) => item.cwd)).size === ids.length,
     "Managed workers do not have unique worktree paths.",
   );
-  return ids.map((id) => {
-    const item = ready.get(id);
-    assert.ok(item);
-    return item;
-  });
+  return ids.map((id) => ready.get(id)!);
 }
 
 async function main({
@@ -910,19 +907,13 @@ async function main({
   }
   assert.ok(options.url, "--url is required.");
   LEAD = scaleProfile(
-    typeof options["lead-profile"] === "string"
-      ? options["lead-profile"]
-      : DEFAULT_LEAD_PROFILE,
+    (options["lead-profile"] as string | undefined) ?? DEFAULT_LEAD_PROFILE,
   );
   WORKER = scaleProfile(
-    typeof options["worker-profile"] === "string"
-      ? options["worker-profile"]
-      : DEFAULT_WORKER_PROFILE,
+    (options["worker-profile"] as string | undefined) ?? DEFAULT_WORKER_PROFILE,
   );
   WORKER_WORKSPACE = parseWorkerWorkspace(
-    typeof options["worker-workspace"] === "string"
-      ? options["worker-workspace"]
-      : undefined,
+    options["worker-workspace"] as string | undefined,
   );
   if (options.stages) {
     STAGES = parseStages(options.stages);
@@ -931,10 +922,9 @@ async function main({
   assert.ok(options["evidence-dir"], "--evidence-dir is required.");
   if (!options.resume)
     assert.ok(options.project, "--project is required for a new live run.");
-  assert.ok(typeof options.url === "string");
-  assert.ok(typeof options["evidence-dir"] === "string");
-  const origin = safeOrigin(options.url);
-  const evidenceDir = resolve(options["evidence-dir"]);
+
+  const origin = safeOrigin(options.url as string);
+  const evidenceDir = resolve(options["evidence-dir"] as string);
   const journalPath = join(evidenceDir, "rust-chat-scale.json");
   if (!options.resume) {
     await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
@@ -971,8 +961,8 @@ async function main({
         "Evidence belongs to another backend.",
       );
       prior = lockedJournal;
-      const resumedJournal = prior;
-      setRemaining(() => remainingOwnership(journalPath, resumedJournal));
+
+      setRemaining(() => remainingOwnership(journalPath, prior!));
       await resumeCleanup(origin, journalPath, prior);
     } finally {
       await releaseLock();
@@ -984,8 +974,8 @@ async function main({
     null,
     "Evidence directory already has an attempt; inspect it or use --resume.",
   );
-  assert.ok(typeof options.project === "string");
-  const project = await realpath(resolve(options.project));
+
+  const project = await realpath(resolve(options.project as string));
   const projectInfo = await lstat(project);
   assert.ok(
     projectInfo.isDirectory(),
@@ -1074,21 +1064,17 @@ async function main({
         );
         const candidate = requireScaleModel(catalog, profile);
         // Pin paid requests to the catalog's resolved model identity.
-        const model = candidate.resolvedModel ?? candidate.model;
-        assert.ok(typeof model === "string");
-        modelByAccount.set(key, model);
+        modelByAccount.set(
+          key,
+          (candidate.resolvedModel ?? candidate.model) as string,
+        );
       }
       return { profile, accountKeys, modelByAccount };
     };
     const leadRole = await resolveRole(LEAD);
     const workerRole = await resolveRole(WORKER);
-    const leadAccount = leadRole.accountKeys[0];
-    const workerDefaultAccount = workerRole.accountKeys[0];
-    assert.ok(leadAccount && workerDefaultAccount);
-    const leadModel = leadRole.modelByAccount.get(leadAccount);
-    const workerDefaultModel =
-      workerRole.modelByAccount.get(workerDefaultAccount);
-    assert.ok(leadModel && workerDefaultModel);
+    const leadModel = leadRole.modelByAccount.get(leadRole.accountKeys[0]);
+
     assert.equal(
       process.platform,
       "linux",
@@ -1132,7 +1118,7 @@ async function main({
     );
     const desktop = await client.get<Schema["DesktopResponse"]>("/api/desktop");
     assert.equal(
-      "backendKind" in desktop ? desktop.backendKind : undefined,
+      desktop.backendKind,
       "rust",
       "The target is not the shared Rust backend required by this verifier.",
     );
@@ -1147,13 +1133,10 @@ async function main({
     journal.backendIdentity = {
       pid: desktop.pid,
       stateDir: resolve(desktop.stateDir),
-      backendKind:
-        "backendKind" in desktop && typeof desktop.backendKind === "string"
-          ? desktop.backendKind
-          : null,
+      backendKind: desktop.backendKind || null,
       backendBuild: desktop.backendBuild || null,
     };
-    journal.backendIdentity.bootId = canonicalJournalBootId(
+    journal.backendIdentity!.bootId = canonicalJournalBootId(
       (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
     );
     const backendEnvironment = await readFile(`/proc/${desktop.pid}/environ`);
@@ -1172,7 +1155,7 @@ async function main({
         "backend /proc environment checked without recording other variables",
       journalPrefix: "studio_provider_stdin_write ",
       pid: desktop.pid,
-      bootId: journal.backendIdentity.bootId,
+      bootId: journal.backendIdentity!.bootId,
     };
     const baseline = await client.get<Schema["SyncPullResponse"]>(
       ENTITY_BASELINE_PULL_PATH,
@@ -1183,7 +1166,7 @@ async function main({
     );
     journal.ownerBaseline = {
       at: new Date().toISOString(),
-      workspaceId: baseline.workspaceId,
+      workspaceId: baseline.workspaceId || null,
       generation: baseline.generation || null,
       checkpoint: baseline.checkpoint || null,
       documentsObserved: (baseline.documents || []).length,
@@ -1193,7 +1176,7 @@ async function main({
       await client.get<Schema["SyncIdentityResponse"]>("/api/sync/identity");
     assert.equal(
       syncIdentity.workspaceId,
-      journal.ownerBaseline.workspaceId,
+      journal.ownerBaseline!.workspaceId!,
       "Sync identity changed while establishing the ownership baseline.",
     );
     // Foreign retained inputs are fixed before any verifier write. Identities,
@@ -1202,8 +1185,8 @@ async function main({
       at: new Date().toISOString(),
       statuses: RETAINED_INPUT_STATUSES,
       identities: readRetainedInputRows(
-        journal.backendIdentity.stateDir,
-        journal.ownerBaseline.workspaceId,
+        journal.backendIdentity!.stateDir,
+        journal.ownerBaseline!.workspaceId!,
         performance.now() + REQUEST_DEADLINE_MS,
       ),
     };
@@ -1227,30 +1210,24 @@ async function main({
       stage.toolBarrierTokens = barrierTokens;
       const stageBackend =
         await client.get<Schema["DesktopResponse"]>("/api/desktop");
-      assert.equal(
-        "backendKind" in stageBackend ? stageBackend.backendKind : undefined,
-        "rust",
-      );
+      assert.equal(stageBackend.backendKind, "rust");
       assert.equal(
         resolve(stageBackend.stateDir),
-        journal.backendIdentity.stateDir,
+        journal.backendIdentity!.stateDir,
         "The backend state directory changed during the staircase.",
       );
       const stageIdentity =
         await client.get<Schema["SyncIdentityResponse"]>("/api/sync/identity");
       assert.equal(
         stageIdentity.workspaceId,
-        journal.ownerBaseline.workspaceId,
+        journal.ownerBaseline!.workspaceId!,
         "The backend workspace identity changed during the staircase.",
       );
       stage.backendPid = stageBackend.pid;
       stage.diagnosticsBefore = await diagnostics(client);
-      if (
-        stage.diagnosticsBefore.processTree &&
-        Number.isSafeInteger(stage.diagnosticsBefore.processTree.rootPid)
-      )
+      if (Number.isSafeInteger(stage.diagnosticsBefore.processTree?.rootPid))
         assert.equal(
-          stage.diagnosticsBefore.processTree.rootPid,
+          stage.diagnosticsBefore.processTree!.rootPid,
           stage.backendPid,
           "Diagnostics and /api/desktop identified different backend processes.",
         );
@@ -1311,11 +1288,11 @@ async function main({
             effort: LEAD.effort,
             fast_mode: LEAD.fastMode,
             yolo_mode: true,
-            account_key: leadAccount,
+            account_key: leadRole.accountKeys[0],
             concurrency: workers,
             maxAgents: workers + 1,
             worker_defaults: scaleWorkerDefaults(
-              workerDefaultModel,
+              workerRole.modelByAccount.get(workerRole.accountKeys[0])!,
               WORKER,
               workerRole.accountKeys,
             ),
@@ -1349,11 +1326,7 @@ async function main({
           1,
           stageDeadline,
         );
-        if (
-          leadState &&
-          "worktreeReady" in leadState &&
-          leadState.worktreeReady === true
-        ) {
+        if (leadState?.worktreeReady === true) {
           assert.equal(leadState.workspaceMode, "worktree");
           assert.ok(
             typeof leadState.cwd === "string" &&
@@ -1367,10 +1340,7 @@ async function main({
           assert.ok(leadOwner, "Orchestrator is not journal-owned.");
           leadOwner.worktree = {
             cwd: resolve(leadState.cwd),
-            branch:
-              "branch" in leadState && typeof leadState.branch === "string"
-                ? leadState.branch
-                : undefined,
+            branch: leadState.branch,
             cleanup: "pending",
           };
           await saveJournal(journalPath, journal);
@@ -1378,9 +1348,7 @@ async function main({
         stage.leadExchangeCompleted = true;
       } catch (error) {
         if (leadCreated)
-          stage.leadExchangeError = String(
-            (error instanceof Error ? error.message : undefined) || error,
-          );
+          stage.leadExchangeError = String((error as Error)?.message || error);
         else createResults.push({ status: "rejected", reason: error });
       }
       if (
@@ -1393,9 +1361,9 @@ async function main({
               // Workers are spread round-robin over the profile's ready accounts.
               const workerAccount =
                 workerRole.accountKeys[index % workerRole.accountKeys.length];
-              assert.ok(workerAccount);
+
               const workerModel = workerRole.modelByAccount.get(workerAccount);
-              assert.ok(workerModel);
+
               const tag = `STUDIO_SCALE_${runId.slice(0, 8)}_${workers}_${index}`;
               const shared = WORKER_WORKSPACE === "shared";
               const barrier = shared
@@ -1405,15 +1373,15 @@ async function main({
                     path: `.codex-scale-${runId}-${index}/release.fifo`,
                   };
               const token = barrierTokens[index];
-              assert.ok(readinessWatch && stage.workerScriptDirectory);
-              const markerPath = readinessWatch.path(index);
+
+              const markerPath = readinessWatch!.path(index);
               const markerTemp = `${markerPath}.tmp`;
               // The marker is renamed into place only after the FIFO is open.
               const inner = `set -eu; (umask 077; mkdir ${shellQuote(barrier.directory)}); mkfifo -m 600 ${shellQuote(barrier.path)}; exec 3<>${shellQuote(barrier.path)}; (umask 077; printf '%s\\n' ${shellQuote(readinessTokens[index])} > ${shellQuote(markerTemp)}; mv -f ${shellQuote(markerTemp)} ${shellQuote(markerPath)}); IFS= read -r release <&3; [ "$release" = ${shellQuote(token)} ]; exec 3>&-; rm ${shellQuote(barrier.path)}; rmdir ${shellQuote(barrier.directory)}; printf '%s\\n' ${shellQuote(`${tag}_TOOL_OK`)}`;
               // The model gets one short command to run unchanged: the
               // script lives in an owned file, so there is little to rewrite.
               const scriptPath = join(
-                stage.workerScriptDirectory,
+                stage.workerScriptDirectory!,
                 `worker-${index}.sh`,
               );
               await writeFile(scriptPath, `${inner}\n`, { mode: 0o600 });
@@ -1466,11 +1434,10 @@ async function main({
         state: item.status,
         error:
           item.status === "rejected"
-            ? String(
-                (item.reason instanceof Error
-                  ? item.reason.message
-                  : undefined) || item.reason,
-              ).slice(0, 500)
+            ? String((item.reason as Error)?.message || item.reason).slice(
+                0,
+                500,
+              )
             : null,
       }));
       await saveJournal(journalPath, journal);
@@ -1622,7 +1589,8 @@ async function main({
               `Worker callback left a run-owned barrier path behind: ${path}`,
             );
           } catch (error) {
-            if (errorCode(error) !== "ENOENT") throw error;
+            if ((error as NodeJS.ErrnoException)?.code !== "ENOENT")
+              throw error;
           }
         }
       }
@@ -1630,13 +1598,12 @@ async function main({
       await saveJournal(journalPath, journal);
       stage.firstExchangeCount = workers;
       stage.secondExchangeLatenciesMs = [];
-      const secondExchangeIds = ids.map(() => randomUUID());
-      stage.secondExchangeIds = secondExchangeIds;
+      stage.secondExchangeIds = ids.map(() => randomUUID());
       stage.state = "sending-second-exchanges";
       const secondResults = await Promise.allSettled(
         ids.map(async (agentId, index) => {
-          const messageId = secondExchangeIds[index];
-          assert.ok(messageId);
+          const messageId = stage.secondExchangeIds![index];
+
           const before = await client.receipt(agentId, messageId);
           assert.equal(
             before,
@@ -1658,15 +1625,14 @@ async function main({
         }),
       );
       stage.secondExchangeResults = secondResults.map((item, index) => ({
-        id: secondExchangeIds[index],
+        id: stage.secondExchangeIds![index],
         state: item.status,
         error:
           item.status === "rejected"
-            ? String(
-                (item.reason instanceof Error
-                  ? item.reason.message
-                  : undefined) || item.reason,
-              ).slice(0, 500)
+            ? String((item.reason as Error)?.message || item.reason).slice(
+                0,
+                500,
+              )
             : null,
       }));
       await saveJournal(journalPath, journal);
@@ -1697,8 +1663,8 @@ async function main({
       );
       stage.secondExchangeCount = workers;
       stage.eventEvidence = await readEventEvidence(
-        journal.backendIdentity.stateDir,
-        journal.ownerBaseline.workspaceId,
+        journal.backendIdentity!.stateDir,
+        journal.ownerBaseline!.workspaceId!,
         stage,
         stageDeadline,
       );
@@ -1707,7 +1673,7 @@ async function main({
       );
       assert.equal(
         journalBootId,
-        canonicalJournalBootId(journal.backendIdentity.bootId),
+        canonicalJournalBootId(journal.backendIdentity!.bootId),
         "Kernel boot identity changed while collecting provider stdin timing.",
       );
       stage.providerStdinJournal = readProviderStdinJournal(
@@ -1732,12 +1698,9 @@ async function main({
         1,
         `Stage ${workers} lead durably completed an unexpected number of native turns.`,
       );
-      const toolCallbacksVerified: Awaited<
-        ReturnType<typeof verifyToolCallback>
-      >[] = Array(ids.length);
-      stage.toolCallbacksVerified = toolCallbacksVerified;
+      stage.toolCallbacksVerified = Array(ids.length);
       await forEachBounded(ids, 32, async (agentId, index) => {
-        toolCallbacksVerified[index] = await verifyToolCallback(
+        stage.toolCallbacksVerified![index] = await verifyToolCallback(
           client,
           agentId,
           runId,
@@ -1815,9 +1778,7 @@ async function main({
         rows: stage.eventEvidence.retainedInputs,
         baseline: journal.foreignRetainedInputBaseline.identities,
         ownedAgentIds: new Set(journal.ownedAgents.map((owner) => owner.id)),
-        parentAgentIds: new Set(
-          journal.stages.flatMap((item) => (item.leadId ? [item.leadId] : [])),
-        ),
+        parentAgentIds: new Set(journal.stages.map((item) => item.leadId!)),
         phase: "beforeCleanup",
       });
       if (queueClass.state === "unavailable")
@@ -1849,7 +1810,7 @@ async function main({
         );
       if (
         stage.timingEvidence.readyToProviderStdinMs.state === "measured" &&
-        (stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms ?? 0) >
+        stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms! >
           stage.timingEvidence.readyToProviderStdinMs.requiredP95LimitMs
       )
         throw new Error(
@@ -1873,18 +1834,16 @@ async function main({
       stage.apiLatencyPass =
         Number.isFinite(stage.apiLatencyMs.create.p95Ms) &&
         Number.isFinite(stage.apiLatencyMs.message.p95Ms) &&
-        (stage.apiLatencyMs.create.p95Ms ?? 0) <= API_P95_LIMIT_MS &&
-        (stage.apiLatencyMs.message.p95Ms ?? 0) <= API_P95_LIMIT_MS;
+        stage.apiLatencyMs.create.p95Ms! <= API_P95_LIMIT_MS &&
+        stage.apiLatencyMs.message.p95Ms! <= API_P95_LIMIT_MS;
       stage.providerStdinLatencyPass =
         stage.timingEvidence.readyToProviderStdinMs.state === "measured" &&
-        (stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms ?? 0) <=
+        stage.timingEvidence.readyToProviderStdinMs.samples.p95Ms! <=
           stage.timingEvidence.readyToProviderStdinMs.requiredP95LimitMs;
       stage.completeTurnDeliveryLatencyMs = summary(
         stage.turnIntervals
           .filter((interval) => Number.isFinite(interval.endedAtMs))
-          .map(
-            (interval) => (interval.endedAtMs ?? NaN) - interval.startedAtMs,
-          ),
+          .map((interval) => interval.endedAtMs! - interval.startedAtMs),
       );
       await saveJournal(journalPath, journal);
       process.stdout.write(
@@ -1919,18 +1878,12 @@ async function main({
     if (failedStage && !failedStage.diagnosticsAfter)
       failedStage.diagnosticsAfter = await diagnostics(client).catch(
         (diagnosticError) => ({
-          error: String(
-            diagnosticError instanceof Error
-              ? diagnosticError.message
-              : undefined,
-          ),
+          error: String((diagnosticError as Error)?.message),
         }),
       );
     journal.result = {
       state: "failed",
-      error: String(
-        (error instanceof Error ? error.message : undefined) || error,
-      ),
+      error: String((error as Error)?.message || error),
       at: new Date().toISOString(),
     };
   } finally {
@@ -1944,7 +1897,7 @@ async function main({
     try {
       await saveJournal(journalPath, journal).catch((error) => {
         journal.cleanup.evidenceError = String(
-          (error instanceof Error ? error.message : undefined) || error,
+          (error as Error)?.message || error,
         );
       });
       readinessWatch?.close();
@@ -1996,9 +1949,7 @@ async function main({
       );
     } catch (error) {
       journal.cleanup.state = "incomplete";
-      journal.cleanup.error = String(
-        (error instanceof Error ? error.message : undefined) || error,
-      );
+      journal.cleanup.error = String((error as Error)?.message || error);
       resultError ||= error;
     }
     if (stream) await stream.close();
@@ -2020,7 +1971,7 @@ async function main({
     const stopLatencyExceeded = (journal.stages || []).some(
       (stage) =>
         Number.isFinite(stage.workerStopApiLatencyMs?.p95Ms) &&
-        (stage.workerStopApiLatencyMs?.p95Ms ?? 0) > API_P95_LIMIT_MS,
+        stage.workerStopApiLatencyMs!.p95Ms! > API_P95_LIMIT_MS,
     );
     const sqliteLockErrorsGap = (journal.stages || []).some(
       (stage) => !Number.isSafeInteger(stage.sqliteLockErrorDelta),
@@ -2174,17 +2125,14 @@ async function createClient(
           ),
           { status: response.status, body: value, elapsedMs },
         );
-      assert.ok(value !== null && typeof value === "object");
-      return { value: value as T, elapsedMs, at };
+
+      return { value, elapsedMs, at } as {
+        value: T;
+        elapsedMs: number;
+        at: string;
+      };
     } catch (error) {
-      if (
-        !(
-          typeof error === "object" &&
-          error !== null &&
-          "status" in error &&
-          error.status
-        )
-      ) {
+      if (!(error as RequestFailure)?.status) {
         const record = {
           at,
           method,
@@ -2192,9 +2140,7 @@ async function createClient(
           status: null,
           elapsedMs: Math.round(performance.now() - startedAt),
           outcome: "unknown",
-          error: String(
-            (error instanceof Error ? error.message : undefined) || error,
-          ).slice(0, 500),
+          error: String((error as Error)?.message || error).slice(0, 500),
         };
         journal.http.push(record);
         await saveJournal(journalPath, journal);
@@ -2242,9 +2188,7 @@ async function createClient(
         parentId: identity.parentId || null,
         isLead: identity.isLead === true,
         stageWorkers: identity.stageWorkers,
-        ...(identity.stageIndex === undefined
-          ? {}
-          : { stageIndex: identity.stageIndex }),
+        stageIndex: identity.stageIndex,
         create: intent,
         exchanges: [],
         cleanup: { state: "pending" },
@@ -2271,16 +2215,8 @@ async function createClient(
         | Schema["studio_api__work__models__MessageReceipt"]
       >(method, path, body);
     } catch (error) {
-      intent.state =
-        typeof error === "object" &&
-        error !== null &&
-        "unknown" in error &&
-        error.unknown
-          ? "unknown"
-          : "failed";
-      intent.error = String(
-        (error instanceof Error ? error.message : undefined) || error,
-      ).slice(0, 500);
+      intent.state = (error as RequestFailure)?.unknown ? "unknown" : "failed";
+      intent.error = String((error as Error)?.message || error).slice(0, 500);
       await saveJournal(journalPath, journal);
       throw error;
     }
@@ -2288,9 +2224,7 @@ async function createClient(
     intent.responseAt = result.at;
     intent.elapsedMs = result.elapsedMs;
     intent.receipt =
-      "status" in result.value && typeof result.value.status === "string"
-        ? result.value.status
-        : null;
+      (result.value as Partial<Pick<Intent, "status">>)?.status || null;
     await saveJournal(journalPath, journal);
     return { ...result, elapsedMs: result.elapsedMs };
   };
@@ -2341,7 +2275,7 @@ async function createClient(
       const document = (result.documents || []).find(
         (item) => parseStateEntity(item)?.id === id,
       );
-      if (!document || ("_deleted" in document && document._deleted))
+      if (!document || (document as Schema["SyncDocument"])._deleted)
         return null;
       return parseStateEntity(document);
     },
@@ -2357,6 +2291,7 @@ async function createClient(
     },
   };
 
+  (request as typeof request & { origin: string }).origin = origin;
   return client;
 }
 
@@ -2383,8 +2318,6 @@ async function startSyncResourceStream(
   interruptible = true,
   resources: Schema["ResourceRef"][] = [{ kind: "state" }],
 ) {
-  assert.ok(journal.backendIdentity && journal.ownerBaseline);
-
   const resource = encodeURIComponent(JSON.stringify(resources));
   const url = new URL(
     `/api/sync/stream?protocol=3&resources=${resource}`,
@@ -2442,9 +2375,7 @@ async function startSyncResourceStream(
       elapsedMs: Math.round(performance.now() - startedAt),
       eventStream: true,
       outcome: "unknown",
-      error: String(
-        (error instanceof Error ? error.message : undefined) || error,
-      ).slice(0, 500),
+      error: String((error as Error)?.message || error).slice(0, 500),
     });
     await saveJournal(journalPath, journal);
     throw error;
@@ -2477,10 +2408,10 @@ async function startSyncResourceStream(
   const pushEvent = (value: StreamEvent) => {
     if (value.name === "resources") {
       const version = stateResourceVersion(value.value);
-      if (version && Number.isSafeInteger(version.revision))
+      if (Number.isSafeInteger(version?.revision))
         pendingStateSequence = Math.max(
-          pendingStateSequence ?? version.revision,
-          version.revision,
+          pendingStateSequence ?? version!.revision,
+          version!.revision,
         );
     }
     events.push(value);
@@ -2557,9 +2488,7 @@ async function startSyncResourceStream(
       });
     }
     if (failure) throw failure;
-    const event = events.shift();
-    assert.ok(event);
-    return event;
+    return events.shift()!;
   };
   const next = async (timeoutAt: number) => {
     const received = await nextRaw(timeoutAt);
@@ -2570,7 +2499,7 @@ async function startSyncResourceStream(
       throw new Error("State SSE frame omitted its entity-sequence revision.");
     if (!observeStateResource) {
       observeStateResource = createStateResourceAdapter(
-        journal.ownerBaseline?.workspaceId ?? "",
+        journal.ownerBaseline?.workspaceId as string,
         client.observedAgentIds,
         async (after) => {
           const url = new URL("/api/sync/pull", client.origin);
@@ -2581,9 +2510,9 @@ async function startSyncResourceStream(
         },
       );
     }
-    assert.ok(received.value);
+
     const observation = await observeStateResource(
-      received.value,
+      received.value!,
       pendingStateSequence,
     );
     stateSequence = observation.sequence;
@@ -2625,7 +2554,7 @@ async function observeWorkerTurns(
   journalPath: string,
 ) {
   const expected = new Set(ids);
-  assert.ok(stage.leadId);
+
   const monitored = new Set([...ids, stage.leadId]);
   const active = new Map<string, string>();
   let max = 0;
@@ -2635,9 +2564,9 @@ async function observeWorkerTurns(
     if (event.name !== "resources") continue;
     for (const document of event.stateDocuments || []) {
       const entity = parseStateEntity(document);
-      if (!entity || !entity.id || !monitored.has(entity.id)) continue;
-      const at = event.receivedAt;
-      assert.ok(at !== undefined);
+      if (!entity || !monitored.has(entity.id!)) continue;
+      const at = event.receivedAt!;
+
       if (entity.id === stage.leadId) {
         const open = stage.turnIntervals.findLast(
           (row) => row.agentId === stage.leadId && row.endedAtMs === undefined,
@@ -2714,9 +2643,7 @@ async function waitForStageSettled(
   const state = new Map<string, Schema["AgentEntityDto"]>();
   const isSettled = (entity: Schema["AgentEntityDto"]) =>
     !entity.inFlight &&
-    ["completed", "failed", "interrupted", "paused"].some(
-      (status) => status === entity.status,
-    );
+    ["completed", "failed", "interrupted", "paused"].includes(entity.status!);
   while (
     (state.size < expected.size ||
       [...state.values()].some((entity) => !isSettled(entity))) &&
@@ -2726,7 +2653,7 @@ async function waitForStageSettled(
     if (event.name !== "resources") continue;
     for (const document of event.stateDocuments || []) {
       const entity = parseStateEntity(document);
-      if (!entity || !entity.id || !expected.has(entity.id)) continue;
+      if (!entity || !expected.has(entity.id!)) continue;
       state.set(entity.id, entity);
       if (
         entity.inFlight &&
@@ -2743,7 +2670,7 @@ async function waitForStageSettled(
           stage.turnIntervals.push({
             agentId: entity.id,
             turnId: entity.turnId,
-            startedAtMs: event.receivedAt ?? performance.now(),
+            startedAtMs: event.receivedAt!,
             observedAt: new Date().toISOString(),
           });
           stage.maxConcurrentTurns = Math.max(
@@ -2760,8 +2687,7 @@ async function waitForStageSettled(
             (!entity.turnId || row.turnId === entity.turnId) &&
             row.endedAtMs === undefined,
         );
-        if (interval)
-          interval.endedAtMs = event.receivedAt ?? performance.now();
+        if (interval) interval.endedAtMs = event.receivedAt!;
       }
     }
     stage.settledCount = [...state.values()].filter(isSettled).length;
@@ -2909,9 +2835,7 @@ async function diagnostics(client: Client) {
   } catch (error) {
     return {
       at: new Date().toISOString(),
-      unavailable: String(
-        (error instanceof Error ? error.message : undefined) || error,
-      ),
+      unavailable: String((error as Error)?.message || error),
     };
   }
 }
@@ -2920,9 +2844,7 @@ function observedSqliteLockErrors(
   value: DiagnosticSnapshot | null | undefined,
 ) {
   const count = value?.sqliteContention?.lockError?.lockErrors;
-  return typeof count === "number" && Number.isSafeInteger(count) && count >= 0
-    ? count
-    : null;
+  return Number.isSafeInteger(count) && count! >= 0 ? count! : null;
 }
 
 // Every evidence reader shares one read-only transaction and workspace fence.
@@ -2990,19 +2912,14 @@ export function readServedModelRecords(
           (usageSource ? "=" : "!=") +
           "? END ORDER BY seq",
       )
-      .all(...agentIds, usageSource || "claudeResponse");
+      .all(
+        ...agentIds,
+        usageSource || "claudeResponse",
+      ) as (ServedModelRecord & { agentId: string })[];
     const records = new Map<string, ServedModelRecord[]>();
     for (const { agentId, ...row } of rows) {
-      assert.ok(typeof agentId === "string");
-      assert.ok(typeof row.model === "string" || row.model === null);
-      assert.ok(typeof row.turnId === "string" || row.turnId === null);
-      assert.ok(typeof row.responseId === "string" || row.responseId === null);
       const list = records.get(agentId) || [];
-      list.push({
-        model: row.model,
-        turnId: row.turnId,
-        responseId: row.responseId,
-      });
+      list.push(row);
       records.set(agentId, list);
     }
     return records;
@@ -3020,17 +2937,14 @@ async function verifyServedModel(
   minimumResponses: number,
   deadlineAt: number,
 ) {
-  assert.ok(journal.backendIdentity && journal.ownerBaseline);
-
-  const { backendIdentity, ownerBaseline } = journal;
   const records = await waitForServedModelEvidence({
     profile,
     agentIds,
     minimumResponses,
     readRecords: () =>
       readServedModelRecords(
-        backendIdentity.stateDir,
-        ownerBaseline.workspaceId,
+        journal.backendIdentity!.stateDir,
+        journal.ownerBaseline!.workspaceId!,
         agentIds,
         deadlineAt,
         profile.usageSource,
@@ -3066,7 +2980,12 @@ export function runEventEvidenceQuery(
         .prepare(
           "SELECT e.id,e.agent AS agentId,e.kind,e.status,e.error,m.record FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=? AND e.agent=?",
         )
-        .get(item.id, item.agentId);
+        .get(item.id, item.agentId) as
+        | (Pick<
+            EvidenceEvent,
+            "id" | "agentId" | "kind" | "status" | "error"
+          > & { record: string | null })
+        | undefined;
       if (!row)
         return {
           id: item.id,
@@ -3074,48 +2993,24 @@ export function runEventEvidenceQuery(
           exchange: item.exchange,
           missing: true,
         };
-      assert.ok(row.record === null || typeof row.record === "string");
-      assert.ok(
-        typeof row.id === "string" &&
-          typeof row.agentId === "string" &&
-          typeof row.kind === "string" &&
-          typeof row.status === "string" &&
-          (row.error === null || typeof row.error === "string"),
-      );
-      const metadata: unknown = row.record ? JSON.parse(row.record) : {};
-      const timing =
-        typeof metadata === "object" &&
-        metadata !== null &&
-        "timing" in metadata
-          ? metadata.timing
-          : undefined;
+      const metadata: { timing?: EvidenceEvent["timing"] } = row.record
+        ? JSON.parse(row.record as string)
+        : {};
+      const timing = metadata?.timing;
       const attempts = database
         .prepare(
           "SELECT a.id,json_extract(a.record,'$.requestTicket') AS requestTicket,json_extract(a.record,'$.connectionGeneration') AS connectionGeneration,json_extract(a.record,'$.accountKey') AS accountKey,json_extract(a.record,'$.events') AS events,r.account AS runAccountKey FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run JOIN runtime_execution_attempts a ON a.run=i.run WHERE i.event=? AND r.agent=? ORDER BY a.id",
         )
         .all(item.id, item.agentId)
-        .map((attempt): AttemptEvidence => {
-          assert.ok(
-            typeof attempt.id === "string" &&
-              (attempt.accountKey === null ||
-                typeof attempt.accountKey === "string") &&
-              (attempt.events === null || typeof attempt.events === "string") &&
-              (attempt.requestTicket === null ||
-                typeof attempt.requestTicket === "string") &&
-              (attempt.connectionGeneration === null ||
-                typeof attempt.connectionGeneration === "number") &&
-              (attempt.runAccountKey === null ||
-                typeof attempt.runAccountKey === "string"),
-          );
-          return {
-            id: attempt.id,
-            accountKey: attempt.accountKey,
-            requestTicket: attempt.requestTicket,
-            connectionGeneration: attempt.connectionGeneration,
-            runAccountKey: attempt.runAccountKey,
-            events: attempt.events ? JSON.parse(attempt.events) : [],
-          };
-        });
+        .map(
+          (attempt) =>
+            ({
+              ...attempt,
+              events: attempt.events
+                ? JSON.parse(attempt.events as string)
+                : [],
+            }) as AttemptEvidence,
+        );
       return {
         id: row.id,
         agentId: row.agentId,
@@ -3124,9 +3019,7 @@ export function runEventEvidenceQuery(
         exchange: item.exchange,
         error: (row.error || "").slice(0, 500),
         timing:
-          typeof timing === "object" &&
-          timing !== null &&
-          "enqueuedAt" in timing
+          timing && Object.hasOwn(timing, "enqueuedAt")
             ? { enqueuedAt: timing.enqueuedAt }
             : {},
         attempts,
@@ -3139,30 +3032,16 @@ export function runEventEvidenceQuery(
           ") ORDER BY id",
       )
       .all(...RETAINED_INPUT_STATUSES)
-      .map((row): RetainedInput => {
-        assert.ok(
-          typeof row.id === "string" &&
-            typeof row.agent === "string" &&
-            typeof row.kind === "string" &&
-            typeof row.status === "string",
-        );
-        return {
-          id: row.id,
-          agent: row.agent,
-          kind: row.kind,
-          status: row.status,
-        };
-      });
-    const nativeTurnCounts = Object.fromEntries(
-      agentIds.map((agentId) => {
-        const count = database
+      .map((row) => ({ ...row }) as RetainedInput);
+    const nativeTurnCounts: Record<string, number> = Object.fromEntries(
+      agentIds.map((agentId) => [
+        agentId,
+        database
           .prepare(
             "SELECT count(*) AS count FROM runtime_completed_turns WHERE id>=? AND id<?",
           )
-          .get(agentId + ":", agentId + ";")?.count;
-        assert.ok(typeof count === "number");
-        return [agentId, count];
-      }),
+          .get(agentId + ":", agentId + ";")!.count as number,
+      ]),
     );
     return {
       workspaceId,
@@ -3191,12 +3070,10 @@ async function readEventEvidence(
   stage: Stage,
   deadlineAt: number,
 ) {
-  assert.ok(stage.secondExchangeIds && stage.leadId);
-  const secondIds = stage.secondExchangeIds;
   const eventIds = stage.agentIds.flatMap((agentId, index) => [
     { id: `${agentId}:initial`, agentId, exchange: 1 },
     {
-      id: secondIds[index] ?? "",
+      id: stage.secondExchangeIds![index],
       agentId,
       exchange: 2,
     },
@@ -3205,7 +3082,7 @@ async function readEventEvidence(
     stateDir,
     workspaceId,
     eventIds,
-    [stage.leadId, ...stage.agentIds],
+    [stage.leadId!, ...stage.agentIds],
     deadlineAt,
   );
   return {
@@ -3262,7 +3139,7 @@ export function readProviderStdinJournal(
   );
   if (result.error || result.status !== 0)
     throw new Error(
-      `Could not read the PID-, boot-, and stage-bounded provider stdin journal: ${String((result.error instanceof Error ? result.error.message : undefined) || result.stderr || result.status).slice(0, 800)}`,
+      `Could not read the PID-, boot-, and stage-bounded provider stdin journal: ${String(result.error?.message || result.stderr || result.status).slice(0, 800)}`,
     );
   const startedAtUs = Date.parse(window.startedAt) * 1_000;
   const finishedAtUs = Date.parse(window.finishedAt) * 1_000;
@@ -3288,11 +3165,11 @@ export function readProviderStdinJournal(
         "Journal returned a row outside the stage wall-clock window.",
       );
     const entry = parseProviderStdinJournalMessage(
-      typeof envelope.MESSAGE === "string" ? envelope.MESSAGE : "",
+      (envelope.MESSAGE || "") as string,
     );
     if (entry) entries.push({ ...entry, journalTimeUs });
     const reply = parseProviderReplyJournalMessage(
-      typeof envelope.MESSAGE === "string" ? envelope.MESSAGE : "",
+      (envelope.MESSAGE || "") as string,
     );
     if (reply) replies.push({ ...reply, journalTimeUs });
   }
@@ -3326,10 +3203,9 @@ export async function readCurrentTeamChildren(
             "SELECT id,record FROM runtime_agents WHERE id=? OR json_extract(record,'$.rootId')=? ORDER BY id",
           )
           .all(leadId, leadId);
-    return rows.map(({ id, record: raw }): TeamChild => {
-      assert.ok(typeof id === "string" && typeof raw === "string");
+    return rows.map(({ id, record: raw }) => {
       const record: Schema["AgentRecordResponse"] & Record<string, unknown> =
-        JSON.parse(raw);
+        JSON.parse(raw as string);
       const item = Object.fromEntries(
         [
           "deletedAt",
@@ -3356,21 +3232,9 @@ export async function readCurrentTeamChildren(
             "SELECT count(*) AS total,coalesce(sum(id=? AND status='cancelled'),0) AS cancelled FROM runtime_events WHERE agent=?",
           )
           .get(initial, id);
-        initialInputNotSent = counts?.total === 1 && counts.cancelled === 1;
+        initialInputNotSent = counts!.total === 1 && counts!.cancelled === 1;
       }
-      return {
-        id,
-        initialInputNotSent,
-        workspaceCleanupIntent: item.workspaceCleanupIntent,
-        deletedAt: record.deletedAt ?? null,
-        cwd: record.cwd ?? null,
-        branch: record.branch ?? null,
-        workspaceMode: record.workspaceMode ?? null,
-        worktreeReady: record.worktreeReady ?? null,
-        cleanedWorktree: record.cleanedWorktree ?? null,
-        rootId: record.rootId ?? null,
-        parentId: record.parentId ?? null,
-      };
+      return { ...item, id, initialInputNotSent } as TeamChild;
     });
   });
 }
@@ -3491,9 +3355,7 @@ export function summarizeEventTiming(
       });
       continue;
     }
-    const match = attemptMatches[0];
-    assert.ok(match);
-    const { entry, attempt } = match;
+    const { entry, attempt } = attemptMatches[0]!;
     if (operationCounts.get(entry.operationId) !== 1) {
       timingGaps.push({
         eventId: event.id,
@@ -3512,11 +3374,12 @@ export function summarizeEventTiming(
       });
       continue;
     }
-    if (typeof enqueuedAt !== "number" || !Number.isSafeInteger(enqueuedAt)) {
+    if (!Number.isSafeInteger(enqueuedAt)) {
       timingGaps.push({ eventId: event.id, reason: "missing enqueuedAt" });
       continue;
     }
-    const latency = (entry.stdinFlushedAtNs - enqueuedAt) / 1_000_000;
+    const latency =
+      (entry.stdinFlushedAtNs - (enqueuedAt as number)) / 1_000_000;
     if (!Number.isFinite(latency) || latency < 0) {
       timingGaps.push({
         eventId: event.id,
@@ -3670,18 +3533,11 @@ function releaseUnfinishedCallbacks(owners: OwnedAgent[], journal: Journal) {
             proof.callbackProcessesRetired === true,
         ),
   );
-  const entries = pending.map((owner) => {
-    const path = ownerBarrierPath(owner);
-    const stage = journal.stages.find(
-      (stage) => stage.workers === owner.stageWorkers,
-    );
-    assert.ok(
-      path && stage?.toolBarrierTokens && owner.stageIndex !== undefined,
-    );
-    const token = stage.toolBarrierTokens[owner.stageIndex];
-    assert.ok(token);
-    return { path, token };
-  });
+  const entries = pending.map((owner) => ({
+    path: ownerBarrierPath(owner)!,
+    token: journal.stages.find((stage) => stage.workers === owner.stageWorkers)!
+      .toolBarrierTokens![owner.stageIndex!],
+  }));
   releaseBarriersNow(entries);
   const releasedAt = new Date().toISOString();
   for (const owner of pending) owner.callbackReleasedAt = releasedAt;
@@ -3691,11 +3547,10 @@ function releaseUnfinishedCallbacks(owners: OwnedAgent[], journal: Journal) {
 // find them even when the stage failed before its readiness was journaled.
 async function sharedBarrierRecord(journalPath: string, owner: OwnedAgent) {
   const evidenceDir = await realpath(dirname(journalPath));
-  assert.ok(owner.stageIndex !== undefined);
   const { directory, path } = sharedBarrierPaths(
     evidenceDir,
     owner.stageWorkers,
-    owner.stageIndex,
+    owner.stageIndex!,
   );
   return {
     barrierDirectory: directory,
@@ -3703,7 +3558,7 @@ async function sharedBarrierRecord(journalPath: string, owner: OwnedAgent) {
     readinessMarkerPath: join(
       evidenceDir,
       `readiness-markers-${owner.stageWorkers}`,
-      readinessMarkerName(owner.stageIndex),
+      readinessMarkerName(owner.stageIndex!),
     ),
   };
 }
@@ -3712,19 +3567,14 @@ async function sharedBarrierRecord(journalPath: string, owner: OwnedAgent) {
 // workers after their tool processes retired. A FIFO that a process still
 // holds open is not removed: that retirement is unproven.
 async function removeSharedBarriers(owners: OwnedAgent[]) {
-  const paths = owners.map((owner) => {
-    assert.ok(owner.sharedBarrier);
-    return owner.sharedBarrier.barrierPath;
-  });
+  const paths = owners.map((owner) => owner.sharedBarrier!.barrierPath);
   const holders = findFifoHolders(paths);
   const stageDirectories = new Set<string>();
   for (const owner of owners) {
-    assert.ok(owner.sharedBarrier);
     const { barrierDirectory, barrierPath, readinessMarkerPath } =
-      owner.sharedBarrier;
-    assert.ok(readinessMarkerPath);
+      owner.sharedBarrier!;
     assert.equal(
-      holders.get(barrierPath)?.length,
+      holders.get(barrierPath)!.length,
       0,
       `Owned tool process still holds the release FIFO of ${owner.id}.`,
     );
@@ -3734,20 +3584,19 @@ async function removeSharedBarriers(owners: OwnedAgent[]) {
       [readinessMarkerPath, unlink],
     ] as const) {
       try {
-        assert.ok(path);
-        await remove(path);
+        await remove(path!);
       } catch (error) {
-        if (errorCode(error) !== "ENOENT") throw error;
+        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
       }
     }
     stageDirectories.add(dirname(barrierDirectory));
-    stageDirectories.add(dirname(readinessMarkerPath));
+    stageDirectories.add(dirname(readinessMarkerPath!));
   }
   for (const directory of stageDirectories) {
     try {
       await rmdir(directory);
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
     }
   }
 }
@@ -3762,9 +3611,8 @@ async function verifyOwnedWorktreesRemoved(
   journalPath: string,
 ) {
   const worktrees = owners.filter(
-    (owner): owner is OwnedAgent & { worktree: Worktree } =>
-      Boolean(owner.worktree?.cwd),
-  );
+    (owner) => owner.worktree?.cwd,
+  ) as (OwnedAgent & { worktree: Worktree })[];
   const sharedWorkers = owners.filter(
     (owner) => !owner.isLead && journal.workerWorkspace === "shared",
   );
@@ -3865,16 +3713,19 @@ async function verifyOwnedWorktreesRemoved(
     if (result.error || result.status !== 0)
       throw Object.assign(
         new Error(
-          `Owned worktree Git command failed: ${String((result.error instanceof Error ? result.error.message : undefined) || result.stderr || result.status).slice(0, 500)}`,
+          `Owned worktree Git command failed: ${String(result.error?.message || result.stderr || result.status).slice(0, 500)}`,
         ),
         {
           unknown:
-            errorCode(result.error) === "ETIMEDOUT" || result.signal != null,
+            (result.error as NodeJS.ErrnoException)?.code === "ETIMEDOUT" ||
+            result.signal != null,
         },
       );
     return result.stdout;
   };
-  const parseRegistrations = (text: string) =>
+  const parseRegistrations = (
+    text: string,
+  ): { path: string; branch: string | null }[] =>
     text
       .split(/\n\n+/)
       .filter(Boolean)
@@ -3883,7 +3734,7 @@ async function verifyOwnedWorktreesRemoved(
         const branch = block.match(/^branch (.+)$/m)?.[1] || null;
         return path ? { path: resolve(path), branch } : null;
       })
-      .filter((row) => row !== null);
+      .filter(Boolean) as { path: string; branch: string | null }[];
   let registered = parseRegistrations(
     runGit(project, ["worktree", "list", "--porcelain"]),
   );
@@ -3938,11 +3789,10 @@ async function verifyOwnedWorktreesRemoved(
     );
     await saveJournal(journalPath, journal);
     try {
-      assert.ok(intent.args);
-      runGit(project, intent.args);
-      if (intent.args[0] === "worktree" && intent.args[1] === "remove") {
+      runGit(project, intent.args!);
+      if (intent.args![0] === "worktree" && intent.args![1] === "remove") {
         registered = registered.filter(
-          (item) => item.path !== resolve(args.at(-1) ?? ""),
+          (item) => item.path !== resolve(intent.args!.at(-1)!),
         );
       }
       intent.state = "confirmed";
@@ -3953,16 +3803,8 @@ async function verifyOwnedWorktreesRemoved(
         `Owned worktree ${key} did not verify for ${owner.id}.`,
       );
     } catch (error) {
-      intent.state =
-        typeof error === "object" &&
-        error !== null &&
-        "unknown" in error &&
-        error.unknown
-          ? "unknown"
-          : "failed";
-      intent.error = String(
-        (error instanceof Error ? error.message : undefined) || error,
-      ).slice(0, 500);
+      intent.state = (error as RequestFailure)?.unknown ? "unknown" : "failed";
+      intent.error = String((error as Error)?.message || error).slice(0, 500);
       await saveJournal(journalPath, journal);
       throw error;
     }
@@ -3987,19 +3829,17 @@ async function verifyOwnedWorktreesRemoved(
         1,
         `Could not identify exactly one verifier-owned registered worktree for ${owner.id}.`,
       );
-      const registration = owned[0];
-      assert.ok(registration);
-      owner.worktree.registeredRoot = registration.path;
+      owner.worktree.registeredRoot = owned[0].path;
       await saveJournal(journalPath, journal);
     }
-    const root = resolve(owner.worktree.registeredRoot);
+    const root = resolve(owner.worktree.registeredRoot!);
     if (owned.length) {
       assert.ok(
-        owned.length === 1 && owned[0]?.path === root,
+        owned.length === 1 && owned[0].path === root,
         `Owned worktree registration changed for ${owner.id}.`,
       );
       assert.equal(
-        owned[0]?.branch,
+        owned[0].branch,
         `refs/heads/${owner.worktree.branch}`,
         `Owned worktree branch identity changed for ${owner.id}.`,
       );
@@ -4016,7 +3856,7 @@ async function verifyOwnedWorktreesRemoved(
         await lstat(root);
         return true;
       } catch (error) {
-        if (errorCode(error) === "ENOENT") return false;
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return false;
         throw error;
       }
     };
@@ -4079,7 +3919,7 @@ async function verifyOwnedWorktreesRemoved(
           }
           await rmdir(barrierDirectory);
         } catch (error) {
-          if (errorCode(error) !== "ENOENT") throw error;
+          if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
         }
       }
       assert.equal(
@@ -4121,12 +3961,9 @@ async function verifyOwnedWorktreesRemoved(
           timeout: timeout(),
         },
       );
-      if (
-        result.error ||
-        !([0, 1] as const).some((code) => code === result.status)
-      )
+      if (result.error || ![0, 1].includes(result.status!))
         throw new Error(
-          `Could not inspect owned branch ${branchRef}: ${String((result.error instanceof Error ? result.error.message : undefined) || result.stderr || result.status)}`,
+          `Could not inspect owned branch ${branchRef}: ${String(result.error?.message || result.stderr || result.status)}`,
         );
       return result.status === 0;
     };
@@ -4153,7 +3990,7 @@ async function verifyOwnedWorktreesRemoved(
   );
   const survivors = worktrees.filter((owner) =>
     finalRegistered.some(
-      (item) => item.path === resolve(owner.worktree.registeredRoot ?? ""),
+      (item) => item.path === resolve(owner.worktree.registeredRoot!),
     ),
   );
   assert.equal(
@@ -4163,13 +4000,12 @@ async function verifyOwnedWorktreesRemoved(
   );
   for (const owner of worktrees) {
     try {
-      assert.ok(owner.worktree.registeredRoot);
-      await lstat(owner.worktree.registeredRoot);
+      await lstat(owner.worktree.registeredRoot!);
       throw new Error(
         `Owned worktree path still exists after retirement: ${owner.worktree.registeredRoot}`,
       );
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
     }
   }
 }
@@ -4189,7 +4025,7 @@ async function verifyBackendIdentity(
   const sync =
     await client.get<Schema["SyncIdentityResponse"]>("/api/sync/identity");
   assert.equal(
-    "backendKind" in desktop ? desktop.backendKind : undefined,
+    desktop.backendKind,
     "rust",
     "Cleanup target is not the Rust backend.",
   );
@@ -4224,13 +4060,11 @@ export async function cleanupOwned(
   const deadlineAt = performance.now() + budgetMs;
   client.setDeadline(deadlineAt);
   const owners = journal.ownedAgents || [];
-  if (owners.length) {
-    assert.ok(journal.backendIdentity && journal.ownerBaseline);
+  if (owners.length)
     journal.cleanup.backendIdentity = await verifyBackendIdentity(
       client,
       journal,
     );
-  }
   const byId = new Map(owners.map((owner) => [owner.id, owner]));
   const stages = onlyStage ? [onlyStage] : journal.stages || [];
   for (const stage of stages) {
@@ -4239,16 +4073,15 @@ export async function cleanupOwned(
         "Cleanup deadline elapsed before every stage was audited.",
       );
     const stageOwners = [stage.leadId, ...(stage.agentIds || [])]
-      .map((id) => (id === undefined ? undefined : byId.get(id)))
-      .filter((owner) => owner !== undefined);
+      .map((id) => byId.get(id!))
+      .filter(Boolean) as OwnedAgent[];
     if (!stageOwners.length) continue;
-    assert.ok(stage.leadId && journal.backendIdentity && journal.ownerBaseline);
     const cleanup = (stage.cleanup ||= { state: "pending" });
-    const lead = byId.get(stage.leadId);
+    const lead = byId.get(stage.leadId!);
     const initialRows = await readCurrentTeamChildren(
-      journal.backendIdentity.stateDir,
-      journal.ownerBaseline.workspaceId,
-      stage.leadId,
+      journal.backendIdentity!.stateDir,
+      journal.ownerBaseline!.workspaceId!,
+      stage.leadId!,
       deadlineAt,
     );
     const initialById = new Map(initialRows.map((row) => [row.id, row]));
@@ -4267,7 +4100,7 @@ export async function cleanupOwned(
       }
       assert.equal(
         row.rootId,
-        stage.leadId,
+        stage.leadId!,
         `Owned agent ${owner.id} changed team identity.`,
       );
       persistedOwners.push(owner);
@@ -4296,7 +4129,6 @@ export async function cleanupOwned(
             cleanup: "pending",
           };
         if (!owner.isLead) {
-          assert.ok(owner.worktree);
           owner.worktree.barrierDirectory = join(
             resolve(row.cwd),
             `.codex-scale-${journal.runId}-${owner.stageIndex}`,
@@ -4317,7 +4149,7 @@ export async function cleanupOwned(
     stage.cleanup.foreignChildrenObserved = foreignChildren.map(
       (row) => row.id,
     );
-    const snapshot = new Map<string, Schema["AgentEntityDto"] | null>();
+    const snapshot = new Map();
     await forEachBounded(persistedOwners, 32, async (owner) => {
       const row = initialById.get(owner.id);
       snapshot.set(
@@ -4339,9 +4171,9 @@ export async function cleanupOwned(
           stream,
           pendingCleanupIds,
           deadlineAt,
-          journal.backendIdentity.stateDir,
-          journal.ownerBaseline.workspaceId,
-          stage.leadId,
+          journal.backendIdentity!.stateDir,
+          journal.ownerBaseline!.workspaceId!,
+          stage.leadId!,
         );
       }
       await assertNoForeignTeamChildren(
@@ -4352,9 +4184,9 @@ export async function cleanupOwned(
         "beforeMutation",
       );
       const rows = await readCurrentTeamChildren(
-        journal.backendIdentity.stateDir,
-        journal.ownerBaseline.workspaceId,
-        stage.leadId,
+        journal.backendIdentity!.stateDir,
+        journal.ownerBaseline!.workspaceId!,
+        stage.leadId!,
         deadlineAt,
       );
       await verifyOwnedWorktreesRemoved(
@@ -4415,30 +4247,23 @@ export async function cleanupOwned(
         )
           workerStopLatencies.push({
             agentId: owner.id,
-            elapsedMs: intent.elapsedMs ?? 0,
+            elapsedMs: intent.elapsedMs!,
           });
         else if (intent.state === "prepared") send.push(owner);
       }
       await saveJournal(journalPath, journal);
       const results = await Promise.allSettled(
         send.map(async (owner) => {
-          const intent = owner.cleanup.stop;
-          assert.ok(intent);
+          const intent = owner.cleanup.stop!;
           try {
-            const stopped = await client.request<Schema["StopResponse"]>(
-              "POST",
-              "/api/stop",
-              {
-                id: owner.id,
-                descendants: false,
-              },
-            );
+            const stopped = await client.request("POST", "/api/stop", {
+              id: owner.id,
+              descendants: false,
+            });
             intent.state = "confirmed";
             intent.status =
-              "status" in stopped.value &&
-              typeof stopped.value.status === "string"
-                ? stopped.value.status
-                : null;
+              (stopped.value as Partial<Pick<Intent, "status">>)?.status ||
+              null;
             intent.elapsedMs = stopped.elapsedMs;
             if (measureWorkerStops && !owner.isLead)
               workerStopLatencies.push({
@@ -4446,16 +4271,13 @@ export async function cleanupOwned(
                 elapsedMs: stopped.elapsedMs,
               });
           } catch (error) {
-            intent.state =
-              typeof error === "object" &&
-              error !== null &&
-              "unknown" in error &&
-              error.unknown
-                ? "unknown"
-                : "failed";
-            intent.error = String(
-              (error instanceof Error ? error.message : undefined) || error,
-            ).slice(0, 500);
+            intent.state = (error as RequestFailure).unknown
+              ? "unknown"
+              : "failed";
+            intent.error = String((error as Error)?.message || error).slice(
+              0,
+              500,
+            );
           }
         }),
       );
@@ -4484,7 +4306,7 @@ export async function cleanupOwned(
         Math.min(deadlineAt, performance.now() + 10_000),
       ).catch((error) => {
         cleanup.workerStopObservationError = String(
-          (error instanceof Error ? error.message : undefined) || error,
+          (error as Error)?.message || error,
         ).slice(0, 500);
       });
       await forEachBounded(stageOwners, 32, async (owner) => {
@@ -4521,11 +4343,10 @@ export async function cleanupOwned(
 
     const deleteTarget =
       lead && verifiedStopped.get(lead.id) ? lead : present[0];
-    assert.ok(deleteTarget);
     const existingDeleteIntent = cleanup.delete;
     const deleteIntent = (cleanup.delete ||= {
       state: "prepared",
-      targetId: deleteTarget.id,
+      targetId: deleteTarget!.id,
       preparedAt: new Date().toISOString(),
     });
     Object.assign(
@@ -4549,16 +4370,13 @@ export async function cleanupOwned(
         deleteIntent.state = "confirmed";
         deleteIntent.elapsedMs = deleted.elapsedMs;
       } catch (error) {
-        deleteIntent.state =
-          typeof error === "object" &&
-          error !== null &&
-          "unknown" in error &&
-          error.unknown
-            ? "unknown"
-            : "failed";
-        deleteIntent.error = String(
-          (error instanceof Error ? error.message : undefined) || error,
-        ).slice(0, 500);
+        deleteIntent.state = (error as RequestFailure).unknown
+          ? "unknown"
+          : "failed";
+        deleteIntent.error = String((error as Error)?.message || error).slice(
+          0,
+          500,
+        );
         await saveJournal(journalPath, journal);
         throw error;
       }
@@ -4580,15 +4398,15 @@ export async function cleanupOwned(
         stream,
         cleanupWorkerIds,
         deadlineAt,
-        journal.backendIdentity.stateDir,
-        journal.ownerBaseline.workspaceId,
-        stage.leadId,
+        journal.backendIdentity!.stateDir,
+        journal.ownerBaseline!.workspaceId!,
+        stage.leadId!,
       );
     }
     const cleanupRows = await readCurrentTeamChildren(
-      journal.backendIdentity.stateDir,
-      journal.ownerBaseline.workspaceId,
-      stage.leadId,
+      journal.backendIdentity!.stateDir,
+      journal.ownerBaseline!.workspaceId!,
+      stage.leadId!,
       deadlineAt,
     );
     const cleanupById = new Map(cleanupRows.map((row) => [row.id, row]));
@@ -4656,23 +4474,19 @@ function verifyRetainedInputsAfterCleanup(
   journal: Journal,
   deadlineAt: number,
 ) {
-  assert.ok(journal.backendIdentity && journal.ownerBaseline);
-
   assert.ok(
     journal.foreignRetainedInputBaseline,
     "No pre-write foreign retained-input baseline exists; post-cleanup inputs are unproven.",
   );
   const classification = classifyRetainedInputs({
     rows: readRetainedInputRows(
-      journal.backendIdentity.stateDir,
-      journal.ownerBaseline.workspaceId,
+      journal.backendIdentity!.stateDir,
+      journal.ownerBaseline!.workspaceId!,
       deadlineAt,
     ),
     baseline: journal.foreignRetainedInputBaseline.identities,
     ownedAgentIds: new Set(journal.ownedAgents.map((owner) => owner.id)),
-    parentAgentIds: new Set(
-      journal.stages.flatMap((stage) => (stage.leadId ? [stage.leadId] : [])),
-    ),
+    parentAgentIds: new Set(journal.stages.map((stage) => stage.leadId!)),
     phase: "afterCleanup",
   });
   return { at: new Date().toISOString(), ...classification };
@@ -4687,13 +4501,10 @@ async function assertNoForeignTeamChildren(
   deadlineAt: number,
   auditKey: "beforeMutation" | "afterCleanup",
 ) {
-  assert.ok(journal.backendIdentity && journal.ownerBaseline);
-
-  assert.ok(stage.leadId);
   const rows = await readCurrentTeamChildren(
-    journal.backendIdentity.stateDir,
-    journal.ownerBaseline.workspaceId,
-    stage.leadId,
+    journal.backendIdentity!.stateDir,
+    journal.ownerBaseline!.workspaceId!,
+    stage.leadId!,
     deadlineAt,
   );
   const owned = new Set(owners.map((owner) => owner.id));
@@ -4721,8 +4532,6 @@ async function resumeCleanup(
   journalPath: string,
   journal: Journal,
 ) {
-  assert.ok(journal.backendIdentity && journal.ownerBaseline);
-
   assert.ok(
     journal.ownedAgents?.length,
     "Journal contains no verifier-owned agent identities.",

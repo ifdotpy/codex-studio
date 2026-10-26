@@ -18,16 +18,8 @@ export const tool = (
 export const createSdkMcpServer = (value: unknown) => value;
 export const forkSession = async () => ({ sessionId: "unused" });
 export const getSessionMessages = async () => [];
-const newId =
-  process.env.IDENTITY_NEW_SESSION_ID ||
-  (() => {
-    throw new Error("Expected fixture session identity");
-  })();
-const conversationId =
-  process.env.IDENTITY_CONVERSATION_ID ||
-  (() => {
-    throw new Error("Expected fixture conversation identity");
-  })();
+const newId = process.env.IDENTITY_NEW_SESSION_ID!;
+const conversationId = process.env.IDENTITY_CONVERSATION_ID!;
 const phase = process.env.IDENTITY_PHASE;
 let fixtureCwd: string | undefined;
 if (phase) {
@@ -44,7 +36,6 @@ if (phase) {
       !fs.existsSync(fixtureCwd + "/.crashed") &&
       (phase !== "committed" || text.includes('"nativeId"'));
     const kill = async () => {
-      if (!fixtureCwd) throw new Error("Expected fixture project folder");
       fs.writeFileSync(fixtureCwd + "/.crashed", phase);
       await new Promise<void>((resolve) =>
         process.stdout.write(
@@ -59,9 +50,9 @@ if (phase) {
     if (crash && phase !== "before") {
       if (phase === "missing target") {
         const directory = path.join(
-          process.env.CLAUDE_CONFIG_DIR || "",
+          process.env.CLAUDE_CONFIG_DIR!,
           "projects",
-          (fixtureCwd || "").replace(/[^a-zA-Z0-9]/g, "-"),
+          fixtureCwd!.replace(/[^a-zA-Z0-9]/g, "-"),
         );
         fs.rmSync(path.join(directory, newId + ".jsonl"), { force: true });
       }
@@ -74,10 +65,8 @@ export function query({ prompt, options }: SessionFixtureQuery) {
   const abort = new AbortController();
   fixtureCwd = options.cwd;
   const record: IdentityQueryRecord = {
-    ...(options.resume !== undefined ? { resume: options.resume } : {}),
-    ...(options.sessionId !== undefined
-      ? { sessionId: options.sessionId }
-      : {}),
+    resume: options.resume,
+    sessionId: options.sessionId,
   };
   fs.appendFileSync(options.cwd + "/.queries", JSON.stringify(record) + "\n");
   process.stdout.write(
@@ -104,7 +93,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
           session_id: options.resume || options.sessionId,
         };
         const file = path.join(
-          process.env.CLAUDE_CONFIG_DIR || "",
+          process.env.CLAUDE_CONFIG_DIR!,
           "projects",
           options.cwd.replace(/[^a-zA-Z0-9]/g, "-"),
           newId + ".jsonl",
@@ -145,15 +134,14 @@ export function query({ prompt, options }: SessionFixtureQuery) {
       ) {
         for (const group of options.hooks.SessionStart)
           for (const hook of group.hooks)
+            // The scripted hook input omits cwd/transcript_path, as in the source fixture.
             await hook(
               {
                 hook_event_name: "SessionStart",
                 source:
                   process.env.IDENTITY_SOURCE === "fork" ? "fork" : "clear",
                 session_id: newId,
-                cwd: options.cwd,
-                transcript_path: "fixture.jsonl",
-              },
+              } as Parameters<typeof hook>[0],
               undefined,
               { signal: abort.signal },
             );

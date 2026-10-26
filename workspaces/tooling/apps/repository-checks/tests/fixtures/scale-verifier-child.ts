@@ -17,18 +17,16 @@ const gates = new Map<string, () => void>();
 const wait = (stage: string) =>
   new Promise<void>((resolve) => {
     gates.set(stage, resolve);
-    process.send?.({ stage });
+    process.send!({ stage });
   });
-process.on("message", (message: FixtureMessage) => {
-  if (message.stage) gates.get(message.stage)?.();
-});
+process.on("message", ({ stage }: FixtureMessage) => gates.get(stage!)?.());
 // The lifecycle must keep unresolved work and teardown alive without I/O.
-process.channel?.unref();
+process.channel!.unref();
 let interrupted = false;
 let remaining = ["lead-1", "worker-1"];
 let deletes = 0;
 const api = async (method: string, path: string, body?: { id: string }) => {
-  process.send?.({ method, path, body });
+  process.send!({ method, path, body });
   if (method === "GET") {
     await wait("audit");
     if (mode === "audit-error") throw new Error("audit failed");
@@ -49,7 +47,7 @@ await runScaleVerifier(
       } finally {
         await api("POST", "/api/conversation/delete", { id: "lead-1" });
       }
-      process.send?.({ stage: "cleaned", remaining, deletes });
+      process.send!({ stage: "cleaned", remaining, deletes });
     });
     await wait("work");
     if (mode === "error") throw new Error("work failed");
@@ -64,9 +62,7 @@ await runScaleVerifier(
     },
   },
 ).catch((error: unknown) => {
-  process.stderr.write(
-    (error instanceof Error ? error.message : String(error)) + "\n",
-  );
+  process.stderr.write((error as Error).message + "\n");
   process.exitCode ||= 1;
 });
-process.disconnect?.();
+process.disconnect!();
