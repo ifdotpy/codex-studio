@@ -94,17 +94,27 @@ export class ResourceEntityDelivery {
     }
   }
 
+  private readonly persist: (
+    event: ResourceChangeEvent,
+    isCurrent: () => boolean,
+  ) => Promise<void>;
+  private readonly dispatch: (event: ResourceChangeEvent) => void;
+  private readonly failed?: (
+    event: ResourceChangeEvent,
+    error: unknown,
+  ) => boolean | void;
   constructor(
-    private readonly persist: (
+    persist: (
       event: ResourceChangeEvent,
       isCurrent: () => boolean,
     ) => Promise<void>,
-    private readonly dispatch: (event: ResourceChangeEvent) => void,
-    private readonly failed?: (
-      event: ResourceChangeEvent,
-      error: unknown,
-    ) => boolean | void,
-  ) {}
+    dispatch: (event: ResourceChangeEvent) => void,
+    failed?: (event: ResourceChangeEvent, error: unknown) => boolean | void,
+  ) {
+    this.persist = persist;
+    this.dispatch = dispatch;
+    this.failed = failed;
+  }
 
   /** Cancel reads from an earlier subscription set and retain active pull hints. */
   invalidate(recover = false) {
