@@ -257,7 +257,8 @@ test("entity fixture contract matches the real sync backend", async () => {
       scope: "state:entities:v1",
       after: realMaxSeq,
       limit: 500,
-      documents: entityRows(capturedServerHead.documents),
+      documents:
+        capturedServerHead.documents as import("../playwright.ts").EntityPullFixtureOptions["documents"],
     }),
   );
   assert.deepEqual(stubHead.documents, []);

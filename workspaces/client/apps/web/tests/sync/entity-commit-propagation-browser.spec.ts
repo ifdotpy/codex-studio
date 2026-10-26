@@ -5,7 +5,7 @@ import {
   entityRows,
 } from "./entity-fixture-protocol.ts";
 import type { Page, Request } from "@playwright/test";
-import type { SyncPullResponse, SyncEntity } from "../playwright.ts";
+import type { SyncPullResponse } from "../playwright.ts";
 
 import type { PostResult } from "../../src/apiTypes.ts";
 // Real renderer tabs exercise every direct sync entity writer through the
@@ -34,7 +34,7 @@ type PullRecord = {
   after: string | null | undefined;
   reset: boolean;
   fresh: boolean;
-  documents: SyncEntity[];
+  documents: import("./entity-fixture-protocol.ts").FixtureEntity[];
   checkpoint: number | undefined;
   maxSeq: number | null | undefined;
 };
@@ -582,7 +582,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         assert.equal(document.value.name, params.name);
       }
       if (params.operation === "budget") {
-        assert.ok(document.value.tokensUsed >= 13);
+        assert.ok((document.value.tokensUsed as number) >= 13);
       }
       const observedAt = observed.at;
       const changedFrames = await Promise.all(

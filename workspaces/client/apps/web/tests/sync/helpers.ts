@@ -78,5 +78,3 @@ export type FixtureResourceChange = Omit<
   Partial<
     Pick<import("../playwright.ts").ResourceChangeEvent, "resourceVersions">
   >;
-
-export const studioChatSwitchWorkspaceId = "e".repeat(32);

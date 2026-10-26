@@ -1,4 +1,4 @@
-import { studioChatSwitchWorkspaceId as workspaceId } from "./helpers.ts";
+import { studioChatSwitchWorkspaceId as workspaceId } from "./studio-chat-switch-recovery-browser.data.ts";
 import { fixtureElement } from "./browser-helpers.ts";
 
 import React, { useEffect, useState } from "react";
