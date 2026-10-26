@@ -140,6 +140,7 @@ export async function fixture(
     isLead: true,
     rootId: "overlap",
     source: "managed",
+    provider: "codex",
     cwd: "/same/project",
     status: "waiting",
     autoWake: true,
