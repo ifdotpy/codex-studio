@@ -144,9 +144,12 @@ test("Sync push", async ({ context: testContext }) => {
       await page.evaluate(async () => {
         const { db } = await window.client.syncDatabase();
         const row = await db.projections.findOne("entity:agent:lead").exec();
-        if (row?.entity?.collection !== "agent")
-          throw new Error("Missing lead entity");
-        return row.entity.value.name;
+        // This fixture wrote an agent projection under the known entity key.
+        const entity = row!.entity as Extract<
+          import("/src/generated/api.ts").components["schemas"]["SyncEntity"],
+          { collection: "agent"; op: "upsert" }
+        >;
+        return entity.value.name;
       }),
       "Pushed lead",
     );

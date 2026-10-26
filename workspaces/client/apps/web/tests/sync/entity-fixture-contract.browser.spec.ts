@@ -8,7 +8,7 @@ import {
 } from "./entity-fixture-protocol.ts";
 
 import type {
-  TestStateView,
+  EntityFixtureState,
   TranscriptPageResponse,
   SyncPullResponse,
 } from "../playwright.ts";
@@ -41,24 +41,8 @@ test("transcript fixture applies its sequence before the request cursor", async 
     threads: [],
     chats: [],
     edges: [],
-    runtime: {
-      agents: [],
-      rooms: [],
-      tasks: [],
-      monitors: [],
-      complaints: [],
-      projects: [],
-      events: [],
-      peerTeams: [],
-      requests: [],
-      rules: [],
-      work: [],
-      nativeNotices: [],
-      sidebarOrder: { groups: null, revision: 0 },
-      rateLimits: null,
-      rateLimitsByAccount: {},
-    },
-  } satisfies TestStateView;
+    runtime: {},
+  } satisfies EntityFixtureState;
   const transcript = {
     items: [],
     truncated: false,
