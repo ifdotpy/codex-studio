@@ -1,6 +1,5 @@
 import { responseJson } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import type { ComplaintBody } from "./helpers.ts";
 import { assert } from "../chat/assertions.ts";
 import {
@@ -26,46 +25,35 @@ test("Messages Ui", async ({
   });
   let page,
     log = "";
-  required(fixture.stderr).on("data", (data) => {
+  fixture.stderr!.on("data", (data) => {
     log += data;
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      required(fixture.stdout).once("data", (data) =>
+      fixture.stdout!.once("data", (data) =>
         resolve(Number(String(data).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
-    const lead = required(state.threads.find((a) => a.name === "Release lead"));
+    const lead = state.threads.find((a) => a.name === "Release lead")!;
     const records = state.runtime.complaints;
     assert.equal(records.length, 2);
-    assert.equal(
-      required(records.find((c) => c.author === lead.id)).recipient,
-      "user",
-    );
-    assert.equal(
-      required(records.find((c) => c.author !== lead.id)).recipient,
-      "lead",
-    );
-    const leadMessage = required(records.find((c) => c.author === lead.id));
-    const direct = required(
-      state.runtime.rooms.find(
-        (r) => r.kind === "private" && required(r.members).includes(lead.id),
-      ),
-    );
-    const directName = required(
-      state.threads.find(
-        (agent) =>
-          required(direct.members).includes(agent.id) && agent.id !== lead.id,
-      ),
-    ).name;
+    assert.equal(records.find((c) => c.author === lead.id)!.recipient, "user");
+    assert.equal(records.find((c) => c.author !== lead.id)!.recipient, "lead");
+    const leadMessage = records.find((c) => c.author === lead.id)!;
+    const direct = state.runtime.rooms.find(
+      (r) => r.kind === "private" && r.members!.includes(lead.id),
+    )!;
+    const directName = state.threads.find(
+      (agent) => direct.members!.includes(agent.id) && agent.id !== lead.id,
+    )!.name;
     page = testPage;
     await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
     const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.locator("#message").fill("Keep my main conversation draft.");
@@ -88,7 +76,7 @@ test("Messages Ui", async ({
       await drawer.locator(`[data-room="broadcast:${lead.id}"]`).count(),
       1,
     );
-    await roomSearch.fill(required(directName));
+    await roomSearch.fill(directName!);
     await drawer.locator(`[data-room="${direct.id}"]`).waitFor();
     assert.equal(await drawer.locator(`[data-room="${direct.id}"]`).count(), 1);
     assert.equal(
@@ -145,22 +133,19 @@ test("Messages Ui", async ({
       await fetch(origin + "/api/complaint?id=" + leadMessage.id),
     );
     assert.equal(saved.responses.length, 1);
-    assert.equal(
-      required(saved.responses[0]).id,
-      `user:${required(attempts[0]).id}`,
-    );
-    assert.equal(required(saved.responses[0]).author, "user");
+    assert.equal(saved.responses[0].id, `user:${attempts[0].id}`);
+    assert.equal(saved.responses[0].author, "user");
     const delivery = queryFixtureDatabase(
       root,
       "select * from runtime_events where kind='complaint_response'",
     );
     assert.equal(delivery.length, 1);
     assert.equal(
-      required(delivery[0]).agent,
+      delivery[0].agent,
       leadMessage.author,
       "response reaches the lead who sent the message",
     );
-    await roomSearch.fill(required(directName));
+    await roomSearch.fill(directName!);
     await drawer.locator(`[data-room="${direct.id}"]`).click();
     await drawer
       .locator(".team-message")

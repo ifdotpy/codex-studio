@@ -1,7 +1,6 @@
 import { requestBody } from "./helpers.ts";
-import { listeningPort } from "./helpers.ts";
+import type { AddressInfo } from "node:net";
 import type {} from "./message-retry-http-browser.fixture.tsx";
-import { required } from "./helpers.ts";
 import type { ComplaintBody } from "./helpers.ts";
 import {
   readTestState,
@@ -27,21 +26,21 @@ test("message retry http browser", async ({ page: runnerPage }) => {
   let server,
     release = () => {},
     log = "";
-  required(fixture.stderr).on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      required(fixture.stdout).once("data", (chunk) =>
+      fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));
     });
     const target = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(target);
-    const lead = required(
-      snapshot.runtime.agents.find((agent) => agent.name === "Other project"),
-    );
+    const lead = snapshot.runtime.agents.find(
+      (agent) => agent.name === "Other project",
+    )!;
     server = await createFixtureViteServer({
       configFile: false,
       root: join(root, "workspaces/client/apps/web"),
@@ -62,12 +61,12 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       },
     });
     await server.listen();
-    const origin = `http://127.0.0.1:${listeningPort(required(server.httpServer))}`;
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
     const page = runnerPage;
     page.setDefaultTimeout(20000);
     const errors: string[] = [],
       attempts: ComplaintBody[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -77,7 +76,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    let markCommitted = () => {};
+    let markCommitted!: () => void;
     const committed = new Promise<void>((resolve) => {
       markCommitted = resolve;
     });
@@ -140,20 +139,16 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       "Every attempt keeps its original identity and content",
     );
     const counts = [
-      required(
-        queryFixtureDatabase(
-          state,
-          "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
-          id,
-        )[0],
-      ).n,
-      required(
-        queryFixtureDatabase(
-          state,
-          "SELECT COUNT(*) AS n FROM messages WHERE id=?",
-          id,
-        )[0],
-      ).n,
+      queryFixtureDatabase(
+        state,
+        "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
+        id,
+      )[0].n,
+      queryFixtureDatabase(
+        state,
+        "SELECT COUNT(*) AS n FROM messages WHERE id=?",
+        id,
+      )[0].n,
     ];
     assert.deepEqual(
       counts,
@@ -167,6 +162,6 @@ test("message retry http browser", async ({ page: runnerPage }) => {
   } finally {
     release();
     if (server) await server.close();
-    required(fixture.stdin).end();
+    fixture.stdin!.end();
   }
 });

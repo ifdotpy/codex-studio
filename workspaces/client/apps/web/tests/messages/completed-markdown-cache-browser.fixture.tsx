@@ -1,5 +1,4 @@
 import type { Message } from "../../src/types.ts";
-import { required } from "./browser-helpers.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -82,7 +81,7 @@ function Harness() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Harness />);
+createRoot(document.getElementById("root")!).render(<Harness />);
 declare global {
   interface Window {
     markdownCache: typeof completedMarkdown;

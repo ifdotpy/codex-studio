@@ -1,5 +1,4 @@
-import { listeningPort } from "./helpers.ts";
-import { required } from "./helpers.ts";
+import type { AddressInfo } from "node:net";
 import type {} from "./completed-markdown-cache-browser.fixture.tsx";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -31,8 +30,8 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       requests: Array<{ path: string; agent: string | null; method: string }> =
         [];
     page.on("pageerror", (error) => {
-      errors.push(error.message);
-      console.error("Browser error:", error.message);
+      errors.push((error as Error).message);
+      console.error("Browser error:", (error as Error).message);
     });
     await page.route("**/api/**", (route) => {
       const url = new URL(route.request().url());
@@ -50,7 +49,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       });
     });
     await page.goto(
-      `http://127.0.0.1:${listeningPort(required(server.httpServer))}/check`,
+      `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}/check`,
       { waitUntil: "commit" },
     );
     await expect(page.locator("article a")).toHaveCount(2);
@@ -87,7 +86,7 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
     await page.getByRole("link", { name: "Changed report" }).click();
     await page.getByText("Current workspace file.", { exact: true }).waitFor();
     assert.equal(
-      required(requests.at(-1)).agent,
+      requests.at(-1)!.agent,
       "second",
       "Cached links use the current agent",
     );

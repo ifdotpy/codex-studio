@@ -4,7 +4,6 @@ import type { Page, Route } from "@playwright/test";
 import type { Message } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { MessageRequest } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import type { TestInfo, BrowserContext } from "@playwright/test";
 import {
   readTestState,
@@ -42,16 +41,14 @@ async function setupUncertainRemovePointer(page: Page) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  required(fixture.stderr).on("data", (chunk) => (log += chunk));
+  fixture.stderr!.on("data", (chunk) => (log += chunk));
   const port = await waitForFixturePort(fixture, {
     label: "Message",
     diagnostics: () => log,
   });
   const origin = `http://127.0.0.1:${port}`;
   const state = await readTestState(origin);
-  const lead = required(
-    state.threads.find((agent) => agent.name === "Release lead"),
-  );
+  const lead = state.threads.find((agent) => agent.name === "Release lead")!;
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.route("**/api/messages", (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -86,18 +83,14 @@ async function setupUncertainRemovePointer(page: Page) {
   await remove.scrollIntoViewIfNeeded();
   const messageBox = await message.boundingBox();
   await page.mouse.move(
-    required(messageBox).x + required(messageBox).width / 2,
-    required(messageBox).y + required(messageBox).height / 2,
+    messageBox!.x + messageBox!.width / 2,
+    messageBox!.y + messageBox!.height / 2,
     { steps: 5 },
   );
   const box = await remove.boundingBox();
-  await page.mouse.move(
-    required(box).x + required(box).width / 2,
-    required(box).y + required(box).height / 2,
-    {
-      steps: 5,
-    },
-  );
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, {
+    steps: 5,
+  });
   const hit = await remove.evaluate((button) => {
     const bounds = button.getBoundingClientRect();
     const center = document.elementFromPoint(
@@ -127,14 +120,11 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
   page.setDefaultTimeout(10_000);
   const { message, hit, box } = await setupUncertainRemovePointer(page);
   test.fail(
-    true,
+    // @ts-expect-error The original fixture passes its truthy description as the condition.
     "Known delivery-control overlap; see workspaces/client/apps/web/tests/status/msg-known-failures.md.",
   );
   assert.equal(hit, "Quote message");
-  await page.mouse.click(
-    required(box).x + required(box).width / 2,
-    required(box).y + required(box).height / 2,
-  );
+  await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await message.waitFor({ state: "hidden", timeout: 1000 });
 });
 
@@ -146,7 +136,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
   });
   let log = "",
     browser;
-  required(fixture.stderr).on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   async function until(check: () => boolean | Promise<boolean>, label: string) {
@@ -177,12 +167,8 @@ test("message delivery ui", async ({ browser: _browser }) => {
       })),
       runtime: { ...original.runtime, requests: [] },
     };
-    const a = required(
-      state.threads.find((agent) => agent.name === "Other project"),
-    );
-    const b = required(
-      state.threads.find((agent) => agent.name === "Release lead"),
-    );
+    const a = state.threads.find((agent) => agent.name === "Other project")!;
+    const b = state.threads.find((agent) => agent.name === "Release lead")!;
     browser = _browser;
     {
       const mode = "rxdb";
@@ -211,15 +197,24 @@ test("message delivery ui", async ({ browser: _browser }) => {
           });
       });
       const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("pageerror", (error) => errors.push((error as Error).message));
       await page.addInitScript(
         ({ workspaceId, schemaHandshake }) => {
           window.messageDeliveryStreams = [];
-          const DeliveryEventSource = class extends EventTarget {
-            url: string;
-            constructor(url: string | URL) {
+          (
+            window as {
+              EventSource: new (
+                url: Parameters<
+                  typeof import("../../src/servers/eventSource.ts").openServerEvents
+                >[0],
+              ) => Pick<EventSource, "url" | "close"> &
+                Pick<EventTarget, "addEventListener">;
+            }
+          ).EventSource = class extends EventTarget {
+            declare url: string;
+            constructor(url: string) {
               super();
-              this.url = String(url);
+              this.url = url;
               window.messageDeliveryStreams.push(this);
               queueMicrotask(() => {
                 this.dispatchEvent(
@@ -236,13 +231,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
                   (stream) => stream !== this,
                 );
             }
-          } satisfies new (
-            ...args: ConstructorParameters<typeof EventSource>
-          ) => Pick<EventSource, "url" | "close"> &
-            Pick<EventTarget, "addEventListener">;
-          Object.defineProperty(window, "EventSource", {
-            value: DeliveryEventSource,
-          });
+          };
           let generation = Date.now();
           window.messagePublishDelivery = (_id, _revision) => {
             const revision = ++generation;
@@ -299,11 +288,11 @@ test("message delivery ui", async ({ browser: _browser }) => {
         }
       >(
         [a, b].map((agent) => [
-          required(agent).id,
+          agent.id,
           {
-            agent: required(agent),
+            agent,
             items: Array.from({ length: 36 }, (_, index) => ({
-              id: `${required(agent).id}-history-${index}`,
+              id: `${agent.id}-history-${index}`,
               role: "assistant",
               text: `Saved paragraph ${index}. ${"Existing conversation text. ".repeat(22)}`,
             })),
@@ -322,18 +311,21 @@ test("message delivery ui", async ({ browser: _browser }) => {
       );
       const queuedItems = new Map<
         string,
-        import("../../src/api.ts").QueueItemDto[]
+        Array<
+          Omit<import("../../src/api.ts").QueueItemDto, "created"> &
+            Partial<Pick<import("../../src/api.ts").QueueItemDto, "created">>
+        >
       >();
       await page.route("**/api/queue?*", (route) => {
         const id = new URL(route.request().url()).searchParams.get("agent");
         return route.fulfill({
-          json: { items: queuedItems.get(required(id)) || [] },
+          json: { items: queuedItems.get(id!) || [] },
         });
       });
       await page.route("**/api/transcript?*", (route) =>
         route.fulfill({
           json: history.get(
-            required(new URL(route.request().url()).searchParams.get("id")),
+            new URL(route.request().url()).searchParams.get("id")!,
           ),
         }),
       );
@@ -341,16 +333,16 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await page.route("**/api/sync/pull?*", (route) => {
         const url = new URL(route.request().url());
         const scope = url.searchParams.get("scope");
-        if (!required(scope).startsWith("transcript:")) return route.fallback();
-        const id = required(scope).slice("transcript:".length);
+        if (!scope!.startsWith("transcript:")) return route.fallback();
+        const id = scope!.slice("transcript:".length);
         const seq = revisions.get(id);
         const after = Number(url.searchParams.get("after") || 0);
-        if (required(scope).startsWith("transcript:")) transcriptPulls++;
+        if (scope!.startsWith("transcript:")) transcriptPulls++;
         return route.fulfill({
           json: {
             ...identity,
             documents:
-              after < required(seq)
+              after < seq!
                 ? [
                     {
                       id: scope,
@@ -360,7 +352,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
                     },
                   ]
                 : [],
-            checkpoint: { seq: Math.max(after, required(seq)) },
+            checkpoint: { seq: Math.max(after, seq!) },
           },
         });
       });
@@ -374,16 +366,16 @@ test("message delivery ui", async ({ browser: _browser }) => {
       });
       const publish = async (id: string, items: Message[]) => {
         const payload = {
-          ...required(history.get(id)),
+          ...history.get(id)!,
           items,
           replace: true,
           order: items.map((item) => item.id),
         };
         history.set(id, payload);
-        revisions.set(id, required(revisions.get(id)) + 1);
+        revisions.set(id, revisions.get(id)! + 1);
         await page.evaluate(
           ({ id, revision }) => window.messagePublishDelivery(id, revision),
-          { id, revision: required(revisions.get(id)) },
+          { id, revision: revisions.get(id)! },
         );
       };
       const row = (text: string) =>
@@ -407,7 +399,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
           () => posts.length === count + 1,
           `${mode}: exactly one POST starts`,
         );
-        const sent = required(posts.at(-1));
+        const sent = posts.at(-1)!;
         assert.equal(
           await input.inputValue(),
           "",
@@ -479,16 +471,15 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await accept(first, "accepted", "Next draft typed during delivery");
       const acceptedBox = await row(firstText).boundingBox();
       assert.ok(
-        Math.abs(required(pendingBox).height - required(acceptedBox).height) <=
-          1,
+        Math.abs(pendingBox!.height - acceptedBox!.height) <= 1,
         `${mode}: receipt does not resize the sent message`,
       );
       assert.ok(
-        Math.abs(required(pendingBox).y - required(acceptedBox).y) <= 1,
+        Math.abs(pendingBox!.y - acceptedBox!.y) <= 1,
         `${mode}: receipt does not move the sent message`,
       );
       await input.fill("");
-      const base = required(history.get(a.id)).items;
+      const base = history.get(a.id)!.items;
       await publish(a.id, [...base]);
       await page.waitForTimeout(180);
       assert.equal(
@@ -531,7 +522,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       // The history can acknowledge delivery before the POST response arrives.
       const earlyText = `${mode} history arrives before HTTP acknowledgement`;
       const early = await start(earlyText);
-      const earlyBase = required(history.get(a.id)).items;
+      const earlyBase = history.get(a.id)!.items;
       const earlyEcho = {
         id: `${a.id}:${early.body.id}`,
         clientMessageId: early.body.id,
@@ -571,7 +562,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
         .locator("#messages")
         .evaluate((element) => element.scrollTop);
       await publish(a.id, [
-        ...required(history.get(a.id)).items,
+        ...history.get(a.id)!.items,
         {
           id: `${mode}-stream`,
           role: "assistant",
@@ -596,7 +587,9 @@ test("message delivery ui", async ({ browser: _browser }) => {
         page
           .getByTestId("message-queue")
           .getByText(queuedText, { exact: true });
-      const assertQueueGeometry = async (_label: string) => {
+      const assertQueueGeometry: (
+        ...args: string[]
+      ) => Promise<void> = async () => {
         // After-tool input waits in the chat, never in the after-turn queue.
         await row(queuedText).waitFor();
         assert.equal(await queueRow().count(), 0);
@@ -613,7 +606,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
           (await row(queuedText).innerText()).includes("Waiting for agent"),
         "Server acceptance must stop showing an active network send",
       );
-      const queueBase = required(history.get(a.id)).items;
+      const queueBase = history.get(a.id)!.items;
       const queuedEcho = {
         id: `${a.id}:${queued.body.id}`,
         clientMessageId: queued.body.id,
@@ -672,7 +665,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await attachment.waitFor();
       const failedText = `${mode} rejected message remains editable`;
       const failed = await start(failedText);
-      assert.equal(required(failed.body.assets).length, 1);
+      assert.equal(failed.body.assets!.length, 1);
       await failed.route.fulfill({
         status: 400,
         json: { error: "Fixture rejects this message" },
@@ -692,17 +685,17 @@ test("message delivery ui", async ({ browser: _browser }) => {
       );
       const rejectedRetry = posts.at(-1);
       assert.notEqual(
-        required(rejectedRetry).body.id,
+        rejectedRetry!.body.id,
         failed.body.id,
         `${mode}: retry after HTTP 400 has a fresh request identity`,
       );
-      assert.equal(required(rejectedRetry).body.text, failed.body.text);
+      assert.equal(rejectedRetry!.body.text, failed.body.text);
       assert.deepEqual(
-        required(rejectedRetry).body.assets,
+        rejectedRetry!.body.assets,
         failed.body.assets,
         `${mode}: retry retains the same attachment`,
       );
-      await accept(required(rejectedRetry));
+      await accept(rejectedRetry!);
       await attachment.waitFor({ state: "hidden" });
 
       // Unknown delivery does not become permission to submit a fresh message.
@@ -721,7 +714,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       // queue must not assign a new identity to the same unresolved message.
       Object.assign(a, { status: "completed", inFlight: false, turnId: null });
       await updateEntityState(state);
-      revisions.set(a.id, required(revisions.get(a.id)) + 1);
+      revisions.set(a.id, revisions.get(a.id)! + 1);
       await page.reload();
       await page.locator(`[data-chat="${a.id}"]`).click();
       await until(
@@ -813,7 +806,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       );
       assert.equal(await row(staleText).count(), 1);
       await publish(a.id, [
-        ...required(history.get(a.id)).items,
+        ...history.get(a.id)!.items,
         {
           id: `${a.id}:${stale.body.id}`,
           clientMessageId: stale.body.id,
@@ -831,7 +824,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
           id: materialized.body.id,
           kind: "user",
           text: materializedText,
-          created: 0,
           status: "pending",
           delivery: "current_turn",
         },
@@ -846,9 +838,9 @@ test("message delivery ui", async ({ browser: _browser }) => {
       );
       const silentBase = history.get(a.id);
       history.set(a.id, {
-        ...required(silentBase),
+        ...silentBase!,
         items: [
-          ...required(silentBase).items,
+          ...silentBase!.items,
           {
             id: `${a.id}:${materialized.body.id}`,
             clientMessageId: materialized.body.id,
@@ -860,11 +852,11 @@ test("message delivery ui", async ({ browser: _browser }) => {
           },
         ],
       });
-      revisions.set(a.id, required(revisions.get(a.id)) + 1);
+      revisions.set(a.id, revisions.get(a.id)! + 1);
       queuedItems.set(a.id, []);
       await page.evaluate(
         ({ id, revision }) => window.messagePublishDelivery(id, revision),
-        { id: a.id, revision: required(revisions.get(a.id)) },
+        { id: a.id, revision: revisions.get(a.id)! },
       );
       const postsBeforeReconcile = posts.length;
       await until(
@@ -944,7 +936,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
         clientMessageId: `${mode}-distinct-client-id`,
       };
       await publish(a.id, [
-        ...required(history.get(a.id)).items,
+        ...history.get(a.id)!.items,
         dismissedEcho,
         distinctEcho,
       ]);
@@ -968,7 +960,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       );
 
       // Server-side failures use the same local dismissal as uncertain local sends.
-      const serverBase = [...required(history.get(a.id)).items];
+      const serverBase = [...history.get(a.id)!.items];
       const removable = (
         [
           "uncertain",
@@ -1024,9 +1016,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       ]);
       await page.reload();
       await page.locator(`[data-chat="${a.id}"]`).click();
-      await page
-        .locator(`[data-message="${required(required(retained).at(-1)).id}"]`)
-        .waitFor();
+      await page.locator(`[data-message="${retained.at(-1)!.id}"]`).waitFor();
       for (const message of [...removable, dismissedEcho])
         assert.equal(
           await page.locator(`[data-message="${message.id}"]`).count(),
@@ -1039,7 +1029,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       );
       // Message IDs do not share dismissal state across conversations.
       const otherChatReceipt = {
-        ...required(removable[0]),
+        ...removable[0],
         text: `${mode} same ID in another chat`,
       };
       const refreshedOtherChat =
@@ -1053,10 +1043,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
               );
             })
           : Promise.resolve();
-      await publish(b.id, [
-        ...required(history.get(b.id)).items,
-        otherChatReceipt,
-      ]);
+      await publish(b.id, [...history.get(b.id)!.items, otherChatReceipt]);
       await page.locator(`[data-chat="${b.id}"]`).click();
       await refreshedOtherChat;
       await row(otherChatReceipt.text).waitFor();

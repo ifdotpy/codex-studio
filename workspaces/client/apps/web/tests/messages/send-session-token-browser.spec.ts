@@ -3,7 +3,6 @@ import type { Route } from "@playwright/test";
 import type { PostBody } from "../../src/api.ts";
 import type { MessageRequest } from "./helpers.ts";
 import type { OutboxEntry } from "../../src/sync/send.ts";
-import { required } from "./helpers.ts";
 import { createFixtureViteServer } from "../playwright.ts";
 import { test } from "../playwright.ts";
 // Real RxDB and send callers with controlled session and claim delays.
@@ -44,7 +43,7 @@ test("Send session token browser", async ({
         headers: Record<string, string>;
       }> = [];
     let holdSessions = false;
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -97,7 +96,7 @@ test("Send session token browser", async ({
           : { error: "Old upload token" },
       });
     });
-    await page.goto(required(server.resolvedUrls).local[0] + "check");
+    await page.goto(server.resolvedUrls!.local[0] + "check");
     await page.evaluate(async () => {
       window.tokenSendSend = await import("/src/sync/send.ts");
       window.tokenSendApi = await import("/src/api.ts");
@@ -123,10 +122,9 @@ test("Send session token browser", async ({
             const doc = await window.tokenSendStorage.db.outbox
               .findOne(body.id)
               .exec();
-            if (!doc) throw new Error("Missing saved send");
-            const modify = doc.incrementalModify.bind(doc);
+            const modify = doc!.incrementalModify.bind(doc);
             let hold = true;
-            Object.defineProperty(doc, "incrementalModify", {
+            Object.defineProperty(doc!, "incrementalModify", {
               value: async (update: Parameters<typeof modify>[0]) => {
                 if (hold) {
                   hold = false;
@@ -138,14 +136,15 @@ test("Send session token browser", async ({
             });
           })
           .catch((error: unknown) => {
-            if (!(error instanceof window.tokenSendApi.ApiError)) throw error;
-            window.tokenSendSendError = error.message;
-            return { code: error.status, error: error.message };
+            window.tokenSendSendError = (error as Error).message;
+            return {
+              code: (error as import("../../src/api.ts").ApiError).status,
+              error: (error as Error).message,
+            };
           });
       window.tokenSendRead = async (id) => {
         const doc = await window.tokenSendStorage.db.outbox.findOne(id).exec();
-        if (!doc) throw new Error("Missing saved send");
-        return JSON.parse(doc.getLatest().payload);
+        return JSON.parse(doc!.getLatest().payload);
       };
     });
     const body = (id: string): MessageRequest => ({
@@ -178,7 +177,7 @@ test("Send session token browser", async ({
     }
     assert.equal(sessions.length, 2);
     assert.equal(posts.length, 0);
-    await required(sessions[0]).fulfill({
+    await sessions[0].fulfill({
       json: {
         token: "old-token",
       } satisfies import("../playwright.ts").SessionResponse,
@@ -188,8 +187,8 @@ test("Send session token browser", async ({
       "delivered",
     );
     assert.equal(posts.length, 1);
-    assert.deepEqual(required(posts[0]).body, body("old-session"));
-    assert.equal(required(posts[0]).headers["x-canvas-token"], "new-token");
+    assert.deepEqual(posts[0].body, body("old-session"));
+    assert.equal(posts[0].headers["x-canvas-token"], "new-token");
     await page.evaluate(async (workspaceId) => {
       await window.tokenSendProbe("after-overlap", {
         workspaceId,
@@ -206,9 +205,9 @@ test("Send session token browser", async ({
       "delivered",
     );
     assert.equal(posts.length, 2);
-    assert.deepEqual(required(posts[1]).body, body("current-session"));
-    assert.equal(required(posts[1]).headers["x-canvas-token"], "new-token");
-    assert.equal(required(posts[1]).headers["x-canvas-workspace"], workspaceId);
+    assert.deepEqual(posts[1].body, body("current-session"));
+    assert.equal(posts[1].headers["x-canvas-token"], "new-token");
+    assert.equal(posts[1].headers["x-canvas-workspace"], workspaceId);
     assert.equal(
       (await page.evaluate(() => window.tokenSendRead("current-session")))
         .status,
@@ -253,7 +252,7 @@ test("Send session token browser", async ({
       assert.ok(Date.now() < nextDeadline, "Both session reads must start");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    await required(sessions[2]).fulfill({
+    await sessions[2].fulfill({
       json: {
         token: "early-old-token",
       } satisfies import("../playwright.ts").SessionResponse,
@@ -263,7 +262,7 @@ test("Send session token browser", async ({
     });
     await page.evaluate(() => window.tokenSendProbe("newer-still-pending"));
     assert.equal(tokenProbes.at(-1), "global-token");
-    await required(sessions[3]).fulfill({
+    await sessions[3].fulfill({
       json: {
         token: "latest-confirmed-token",
       } satisfies import("../playwright.ts").SessionResponse,
@@ -280,7 +279,9 @@ test("Send session token browser", async ({
         window.tokenSendOlderRead = window.tokenSendApi.refreshSession();
         window.tokenSendNewerRead = window.tokenSendApi
           .refreshSession()
-          .catch((error) => error.status);
+          .catch(
+            (error) => (error as import("../../src/api.ts").ApiError).status,
+          );
       });
       const failureDeadline = Date.now() + 5000;
       while (sessions.length !== before + 2) {
@@ -291,13 +292,13 @@ test("Send session token browser", async ({
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       const success = () =>
-        required(sessions[before]).fulfill({
+        sessions[before].fulfill({
           json: {
             token: `${order}-valid-token`,
           } satisfies import("../playwright.ts").SessionResponse,
         });
       const failure = () =>
-        required(sessions[before + 1]).fulfill({
+        sessions[before + 1].fulfill({
           status: 503,
           json: { error: "Session unavailable" },
         });
@@ -336,7 +337,7 @@ test("Send session token browser", async ({
       );
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    await required(sessions[beforeManual]).fulfill({
+    await sessions[beforeManual].fulfill({
       json: {
         token: "late-before-initialization",
       } satisfies import("../playwright.ts").SessionResponse,
@@ -349,7 +350,7 @@ test("Send session token browser", async ({
     // Uploads keep their preflight token across the asynchronous local file read.
     await page.evaluate(async (workspaceId) => {
       window.tokenSendUploads = await import("/src/sync/uploads.ts");
-      const [upload] = await window.tokenSendUploads.queueUploads(
+      [window.tokenSendUpload] = await window.tokenSendUploads.queueUploads(
         "token-fixture",
         "upload-chat",
         [
@@ -359,8 +360,6 @@ test("Send session token browser", async ({
         ],
         workspaceId,
       );
-      if (!upload) throw new Error("Missing fixture upload");
-      window.tokenSendUpload = upload;
       const read = FileReader.prototype.readAsDataURL;
       FileReader.prototype.readAsDataURL = function (blob) {
         window.tokenSendFileWaiting = true;
@@ -379,17 +378,14 @@ test("Send session token browser", async ({
       window.tokenSendReleaseFile();
     });
     assert.equal(
-      required(await page.evaluate(() => window.tokenSendUploadResult)).id,
+      (await page.evaluate(() => window.tokenSendUploadResult))!.id,
       await page.evaluate(() => window.tokenSendUpload.id),
     );
     assert.equal(uploads.length, 1);
-    assert.equal(required(uploads[0]).headers["x-canvas-token"], "new-token");
+    assert.equal(uploads[0].headers["x-canvas-token"], "new-token");
+    assert.equal(uploads[0].headers["x-canvas-workspace"], workspaceId);
     assert.equal(
-      required(uploads[0]).headers["x-canvas-workspace"],
-      workspaceId,
-    );
-    assert.equal(
-      required(uploads[0]).body.base64,
+      uploads[0].body.base64,
       Buffer.from("Exact file bytes").toString("base64"),
     );
     assert.deepEqual(errors, []);
