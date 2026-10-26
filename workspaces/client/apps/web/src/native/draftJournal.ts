@@ -12,8 +12,8 @@ export function nativeDraftJournal(workspace: string) {
 export class DraftJournal {
   private prefix: string;
   private sequence = 0;
-  private storage: Storage;
-  private workspace: string;
+  declare private storage: Storage;
+  declare private workspace: string;
   constructor(storage: Storage, workspace: string) {
     this.storage = storage;
     this.workspace = workspace;
