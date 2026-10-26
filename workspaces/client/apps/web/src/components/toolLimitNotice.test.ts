@@ -5,6 +5,8 @@ import { toolLimitNotice } from "./toolLimitNotice.ts";
 it("shows limits only for failed worker results and retains the worker label", () => {
   assert.deepEqual(
     toolLimitNotice({
+      id: "tool",
+      role: "tool",
       text: JSON.stringify({
         status: "failed",
         agent_id: "worker-1",
@@ -25,6 +27,8 @@ it("shows limits only for failed worker results and retains the worker label", (
   );
   assert.equal(
     toolLimitNotice({
+      id: "tool",
+      role: "tool",
       text: JSON.stringify({
         status: "completed",
         error: { codexErrorInfo: "usageLimitExceeded" },
@@ -38,6 +42,8 @@ it("shows limits only for failed worker results and retains the worker label", (
 it("ignores malformed nested provider values without throwing", () => {
   assert.equal(
     toolLimitNotice({
+      id: "tool",
+      role: "tool",
       text: JSON.stringify({
         status: "failed",
         contentItems: [null, [], "text", { text: { unexpected: true } }],
