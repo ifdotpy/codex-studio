@@ -413,18 +413,30 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => body.yolo_mode === false,
     );
+    // Permissions switch live during a turn (unit tests cover the Ask copy).
     await page
       .locator("#chat-settings-permissions")
       .getByText("Ask", { exact: true })
       .click();
+    assert.ok((await yoloSaved).ok());
+    await waitFor(
+      async () =>
+        required((await state()).find((a) => a.id === lead.id)).yoloMode ===
+        false,
+    );
+    const fullSaved = settingsResponse(
+      lead.id,
+      (body) => body.yolo_mode === true,
+    );
     await page
-      .locator("#chat-settings-permissions .execution-error[role=alert]")
-      .filter({ hasText: "Wait for this turn to end" })
-      .waitFor();
-    assert.equal((await yoloSaved).status(), 400);
-    assert.equal(
-      required((await state()).find((a) => a.id === lead.id)).yoloMode,
-      true,
+      .locator("#chat-settings-permissions")
+      .getByText("Full", { exact: true })
+      .click();
+    assert.ok((await fullSaved).ok());
+    await waitFor(
+      async () =>
+        required((await state()).find((a) => a.id === lead.id)).yoloMode ===
+        true,
     );
     await waitFor(() => yolo.isChecked());
     await waitFor(() => yolo.isEnabled());

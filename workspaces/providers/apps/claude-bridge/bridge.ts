@@ -309,7 +309,12 @@ await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
 const queries = new Map<string, ActiveQuery>(),
   pending = new Map<
     BridgeRpcId,
-    { resolve: (line: string) => void; reject: (error: unknown) => void }
+    {
+      method: BridgeServerMethod;
+      params: BridgeServerParams<BridgeServerMethod>;
+      resolve: (line: string) => void;
+      reject: (error: unknown) => void;
+    }
   >();
 const pendingTurnReceipts = new Set<string>();
 const PREPARATION_TIMEOUT_MS = 20_000;
@@ -485,6 +490,8 @@ const request = <M extends BridgeServerMethod>(
       signal?.removeEventListener("abort", abort);
     };
     pending.set(id, {
+      method,
+      params,
       resolve: (line) => {
         cleanup();
         const reply = readBridgeInput<M>(line);
@@ -2891,11 +2898,65 @@ async function handle(
   if (method === "claude/settings") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (active && (active.turn || active.tasks.size || queryHasInput(active)))
-      throw new Error("Pause Claude before changing these settings");
-    discardQuery(s.id, active);
-    s.claude = p.settings;
-    await persist(s);
+    const previous = s.claude;
+    // Only the permission mode has a live SDK control. Other changes still
+    // require an idle query. Missing thinking means the default, enabled.
+    const permissionOnly =
+      Object.hasOwn(p.settings, "permissionMode") &&
+      (p.settings.thinking !== false) === (previous?.thinking !== false) &&
+      (p.settings.autoCompactWindow ?? null) ===
+        (previous?.autoCompactWindow ?? null);
+    if (active && permissionOnly) {
+      const oldMode = permissionMode(s);
+      const nextMode = permissionMode({ ...s, claude: p.settings });
+      await active.ready;
+      try {
+        await active.q!.setPermissionMode(nextMode);
+        s.claude = p.settings;
+        await persist(s);
+      } catch (error) {
+        s.claude = previous;
+        // A confirmed rollback proves the old mode still owns the live query.
+        // Failure to confirm that rollback remains an uncertain control result.
+        await active.q!.setPermissionMode(oldMode);
+        // The journal may have committed before a metadata write failed.
+        // Confirm its inverse before reporting a definite failed apply.
+        await persist(s);
+        // SDK setPermissionMode and the session store throw Error instances.
+        throw Object.assign(error as Error, {
+          data: { settingsOutcome: "not_applied" },
+        });
+      }
+      active.permissionMode = nextMode;
+      if (nextMode === "bypassPermissions") {
+        for (const [id, waiting] of pending) {
+          if (
+            waiting.params?.threadId === s.id &&
+            [
+              "item/commandExecution/requestApproval",
+              "item/fileChange/requestApproval",
+            ].includes(waiting.method)
+          ) {
+            pending.delete(id);
+            waiting.resolve(
+              JSON.stringify({ id, result: { decision: "accept" } }),
+            );
+            emit("serverRequest/resolved", { threadId: s.id, requestId: id });
+          }
+        }
+      }
+    } else {
+      if (active && (active.turn || active.tasks.size || queryHasInput(active)))
+        throw new Error("Pause Claude before changing these settings");
+      discardQuery(s.id, active);
+      s.claude = p.settings;
+      try {
+        await persist(s);
+      } catch (error) {
+        s.claude = previous;
+        throw error;
+      }
+    }
     return { settings: s.claude } satisfies HandlerResult<typeof method>;
   }
   if (method === "thread/rollback") {

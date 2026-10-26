@@ -2030,7 +2030,7 @@ impl Worker {
             // The agent's own data failed its preparation or commit, whose
             // transaction rolled back: nothing was submitted. Hold the agent,
             // and settle its effect so a restart does not run it again.
-            Err(error) if let Some(record) = agent_fault::data_fault(&error) => {
+            Err(error) if let Some(record) = agent_fault::fault_record(&error, Some(&agent_id)) => {
                 let detail = error.to_string();
                 let Some(fault) = self
                     .db("hold_after_fault", move |store| async move {

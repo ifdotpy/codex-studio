@@ -103,6 +103,66 @@ Remaining writes use the catalog's cache-write rate. Rows without the split keep
 their previous price. The aggregate upgrade appends nullable columns to its facts
 and groups without backfilling usage or rebuilding existing groups.
 
+Budget and analytics share the identity and correction policy in the
+[usage ledger owner](../workspaces/runtime/packages/runtime-schema/src/usage/ledger.rs).
+Response and gap identity is the agent and provider response ID; cumulative
+identity is the agent, thread, and counter scope. Typed analytics rows retain
+their first budget receipt key and are restored directly, without recreating a
+provider notification. Legacy response estimates can be replaced by final live
+or recovered evidence. The first final token tuple wins, and a conflicting replay
+records a fault while retaining that tuple. Final evidence resolves its response's
+gap; accounting remains provisional while another gap is unresolved.
+
+The budget upgrade adds a nullable typed receipt column without backfilling old
+rows. An old budget receipt without provenance gets a bounded indexed analytics
+lookup before the capture writer. Only proven provisional evidence can be
+corrected. Missing or ambiguous provenance keeps the old receipt immutable;
+both consumers reject the new final and retain notification metrics. Reconciliation
+lists the response identity and both token totals in `replayConflicts`. When Studio
+never stored the original categories, analytics remains unknown rather than
+creating a typed response from a total alone. Existing cost groups retain their interpretation and price until new
+evidence updates their scope. No startup rebuild of analytics is required.
+
+New cumulative receipts use only accounting identity: agent, thread, scope,
+turn, total and last token counts. Budget and analytics share that identity, so
+metadata enrichment and account changes replay the first accounting row.
+A pre-v5 budget state lazily receives `ledgerSince`, the server migration time
+in Unix seconds, once. This reads and writes one budget row; there is no rebuild
+or backfill. A state created under v5 stores null and has no legacy era.
+Counters before that epoch, and counters with file-modified estimates in a
+migrated ledger, may only replay matching receipts. Supported pre-v5 aliases
+require proven thread and scope ownership. A miss records `unknownUsageReceipt`
+with the stable observation fingerprint: spent, historical notices and notice
+spent do not increase, and accounting remains provisional. Analytics likewise
+checks the old fingerprint id and records an unmatched observation without a
+second accounting row. This deliberately leaves previously unrecorded legacy
+usage unknown. Observations after the epoch use only the canonical key; legacy
+aliases do not apply. Context capacity, model lists and provider cost estimates
+cannot change the accounting identity.
+The journal preserves three epoch states end to end: an absent field marks a
+v4 effect as legacy, explicit null marks a v5-created ledger, and a number is
+the migration time. Projection needs no budget lookup to interpret an old effect.
+Unknown accounting facts receive a durable zero-debit budget receipt under the
+canonical accounting key: kind `unknown`, zero tokens and no fabricated typed
+categories. Replay checks this receipt before legacy ownership checks, including
+a later post-epoch replay. Unknown receipts never enter analytics accounting,
+pricing or response-token aggregates. The unknown-usage fault stays sticky.
+Budget diagnostics retain at most 64 entries and 16 KiB of JSON for each of
+faults, ambiguous notices, unresolved gaps and replay conflicts. Runtime-schema
+owns both limits. Overflow keeps accounting provisional even after the retained
+subset resolves; gap overflow also makes coverage unknown. Replay protection
+lives in receipt rows and is never truncated with diagnostic presentation.
+The read schema accepts older rows; every write normalizes lists and checks the
+stricter generated write schema. This needs no version marker or startup rebuild.
+Native thread ids are bounded at capture ingress by the runtime-schema owner.
+Every prepared capture and decision requires an explicit ledger epoch. History
+commit binds it from the same durable snapshot used to validate the batch.
+Old gap coverage remains explicitly unknown when no authoritative complete
+old-era inventory exists. A bounded search can establish known pre-ledger gap
+identities, but available rows alone cannot prove that no other gap was erased.
+Resolving a known subset or resolving post-upgrade gaps never discharges that
+legacy uncertainty. New v5 gaps with complete identity coverage resolve normally.
+
 ## Checks
 
 The former Python backend command has been removed. See [testing](testing.md)
