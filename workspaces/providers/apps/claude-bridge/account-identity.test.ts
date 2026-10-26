@@ -197,8 +197,10 @@ test("the real bridge reports native UUIDs and refuses input after an organizati
     input: [{ type: "text", text: "Must stay held" }],
   });
   const completed = await bridge.note(
+    "turn/completed",
     (note) => note.method === "turn/completed",
   );
+  assert.ok(completed.params.turn.error?.data);
   assert.equal(completed.params.turn.status, "failed");
   assert.equal(completed.params.turn.startOutcome, "not_applied");
   assert.equal(

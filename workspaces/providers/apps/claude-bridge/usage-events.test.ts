@@ -17,7 +17,10 @@ async function run(events: readonly unknown[], model = "sonnet") {
     model,
     input: [{ type: "text", text: "Continue" }],
   });
-  const done = await bridge.note((n) => n.method === "turn/completed");
+  const done = await bridge.note(
+    "turn/completed",
+    (n) => n.method === "turn/completed",
+  );
   return { bridge, turn: done.params.turn };
 }
 const failed = {
@@ -42,6 +45,7 @@ test("plain 429 without a rate limit event has a typed terminal cause", async ()
     failed,
   ]);
   assert.equal(turn.status, "failed");
+  assert.ok(turn.error);
   assert.equal(turn.error.codexErrorInfo, "rateLimitExceeded");
 });
 
@@ -88,12 +92,14 @@ test("retry and fallback details survive as readable thread items", async () => 
   const items = read.thread.turns.flatMap((turn) => turn.items);
   const retry = items.find((item) => item.id === "retry-1");
   assert.ok(retry, "retry item persisted");
+  assert.ok(retry.text !== undefined);
   assert.match(retry.text, /2.*5/);
   assert.match(retry.text, /1500 ms/);
   assert.match(retry.text, /429/);
   for (const id of ["fallback-1", "consent-1"]) {
     const item = items.find((item) => item.id === id);
     assert.ok(item, id + " persisted");
+    assert.ok(item.text !== undefined);
     assert.match(item.text, /claude-opus-4-6/);
     assert.match(item.text, /claude-sonnet-4-6/);
     assert.ok(
@@ -123,5 +129,5 @@ test("an Opus rejection does not attach its reset to a Sonnet failure", async ()
     },
   ]);
   assert.equal(turn.error.codexErrorInfo, undefined);
-  assert.equal(turn.error.resetsAt, undefined);
+  assert.ok(!("resetsAt" in turn.error) || turn.error.resetsAt === undefined);
 });
