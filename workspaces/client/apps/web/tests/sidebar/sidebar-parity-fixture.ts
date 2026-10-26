@@ -1,12 +1,17 @@
-import type { GetResult, PostResult, JsonInput } from "../../src/apiTypes.ts";
+import type {
+  GetResult,
+  PostResult,
+  JsonInput,
+  JsonInputOf,
+} from "../../src/apiTypes.ts";
 import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
 import type { TestRuntimeView } from "../playwright.ts";
+import type { FixtureRequestFields } from "../servers/browser-fixture.ts";
 import type { BrowserContext, Page } from "playwright";
 import type { components } from "../../src/generated/api.ts";
 import type { TestAgent } from "../playwright.ts";
 import type { PreferenceFields } from "../../src/sync/uiPreferenceMerge.ts";
 import type { MultiServerFixtureOptions } from "../servers/multi-server-fixture.ts";
-import type { FixtureRequestFields } from "../servers/browser-fixture.ts";
 import { fixturePostBody } from "../servers/browser-fixture.ts";
 import type { ServerFixture } from "../servers/browser-fixture.ts";
 import assert from "node:assert/strict";
@@ -20,28 +25,8 @@ import {
   validateSyncPullRequest,
 } from "../playwright.ts";
 
-type LegacyDocument = Partial<components["schemas"]["SyncDocument"]> &
-  Pick<components["schemas"]["SyncDocument"], "id">;
-// The stale fixture expects legacy documents from the shared pull helper.
-// Preserve its original format assumption without changing generated contracts.
-function legacyPull(value: unknown): { documents: LegacyDocument[] } {
-  return value as { documents: LegacyDocument[] };
-}
-
-// This stale room fixture predates the required v4 radio fields and nullable teamId change.
-function legacyRoom(
-  value: Pick<
-    components["schemas"]["RoomEntityDto"],
-    "id" | "name" | "projectPath" | "members"
-  > & {
-    radio: Pick<components["schemas"]["RoomRadio"], "direct"> & {
-      teamId: components["schemas"]["RoomRadio"]["teamId"] | null;
-    };
-  },
-): components["schemas"]["RoomEntityDto"] {
-  return value as components["schemas"]["RoomEntityDto"];
-}
-
+import type { SyncEntity } from "../playwright.ts";
+type FixtureEntity = JsonInputOf<SyncEntity>;
 export const scope = "/same/state";
 export type Owner = "local" | "remote";
 type HandleContext = Parameters<
@@ -71,7 +56,7 @@ function seed(server: ServerFixture, owner: Owner) {
   const path = sourcePath(owner);
   const label = owner === "local" ? "Local" : "Remote";
   const base = server.snapshot.threads[0];
-
+  assert.ok(base);
   const now = Date.now() / 1000;
   const chat = (
     id: string,
@@ -248,10 +233,7 @@ export async function sidebarParityFixture(
         | "/api/leads"
       >;
     }[]
-  > = {
-    local: [],
-    remote: [],
-  };
+  > = { local: [], remote: [] };
   const reads: Record<Owner, string[]> = { local: [], remote: [] };
   const preferences: Record<
     Owner,
@@ -260,10 +242,10 @@ export async function sidebarParityFixture(
     local: { user: {}, server: {} },
     remote: { user: {}, server: {} },
   };
-  const documents: Record<
-    Owner,
-    Map<string, LegacyDocument & { seq: number }>
-  > = { local: new Map(), remote: new Map() };
+  const documents: Record<Owner, Map<string, FixtureEntity>> = {
+    local: new Map(),
+    remote: new Map(),
+  };
   const sequences = { local: 0, remote: 0 };
   const servers: Partial<Record<Owner, ServerFixture>> = {};
   // `hold` makes a server slow. It returns a delay in milliseconds before the server reads
@@ -301,8 +283,8 @@ export async function sidebarParityFixture(
     ({ request, url, body: rawBody, json, snapshot }: HandleContext) => {
       const path = url.pathname;
       if (request.method === "GET") reads[owner].push(path + url.search);
-      const project = () =>
-        snapshot.runtime.projects.find((row) => row.path === rawBody.path);
+      const project = (path: string) =>
+        snapshot.runtime.projects.find((row) => row.path === path);
       const row = (id: string) => {
         const value = snapshot.threads.find((chat) => chat.id === id);
         assert.ok(value, `Unknown ${owner} chat: ${id}`);
@@ -315,13 +297,18 @@ export async function sidebarParityFixture(
         return true;
       };
       const workspaceId = workspaceIds[owner];
+      if (path === "/api/retained-worktrees")
+        return reply({
+          rootId: url.searchParams.get("agent"),
+          retainedWorktrees: [],
+        });
       if (path === "/api/sync/identity")
         return reply(syncIdentityFixture(workspaceId));
       if (path === "/api/sync/preferences") {
         const body = fixturePostBody<"/api/sync/preferences">(rawBody);
         const target = preferences[owner][body.scope];
-
-        for (const [name, field] of Object.entries(body.fields!)) {
+        assert.ok(body.fields);
+        for (const [name, field] of Object.entries(body.fields)) {
           const old = target[name];
           if (
             !old ||
@@ -337,47 +324,72 @@ export async function sidebarParityFixture(
         path === "/api/sync/pull" &&
         url.searchParams.get("scope") === "state:entities:v1"
       ) {
-        const next = legacyPull(entityPullFixture(snapshot)).documents;
+        const pull = entityPullFixture(snapshot);
+        assert.ok("documents" in pull);
+        const next = pull.documents.filter(
+          (value): value is FixtureEntity => "op" in value,
+        );
         for (const kind of ["user", "server"] as const)
           next.push({
-            id: `entity:uiPreferences:${kind}`,
-            payload: JSON.stringify({
-              collection: "uiPreferences",
-              id: kind,
-              value: { scope: kind, fields: preferences[owner][kind] },
-            }),
-            _deleted: false,
+            op: "upsert",
+            seq: 0,
+            collection: "uiPreferences",
+            id: kind,
+            value: { fields: preferences[owner][kind] },
           });
+        const identity = (value: FixtureEntity) =>
+          `${value.collection}:${value.id}`;
         const saved = documents[owner];
-        const ids = new Set(next.map((value) => value.id));
+        const ids = new Set(next.map(identity));
         for (const [id, value] of saved)
-          if (!ids.has(id) && !value._deleted)
+          if (!ids.has(id) && value.op !== "delete")
             saved.set(id, {
-              ...value,
-              _deleted: true,
+              op: "delete",
+              collection: value.collection,
+              id: value.id,
               seq: ++sequences[owner],
             });
-        for (const value of next)
+        for (const value of next) {
+          const id = identity(value);
           if (
-            saved.get(value.id)?.payload !== value.payload ||
-            saved.get(value.id)?._deleted
-          ) {
-            saved.set(value.id, { ...value, seq: ++sequences[owner] });
-          }
-
+            !saved.has(id) ||
+            JSON.stringify(
+              saved.get(id)?.op === "upsert" ? saved.get(id) : undefined,
+            ) !== JSON.stringify({ ...value, seq: saved.get(id)?.seq }) ||
+            saved.get(id)?.op === "delete"
+          )
+            saved.set(id, { ...value, seq: ++sequences[owner] });
+        }
         const parsed = validateSyncPullRequest(url);
         assert.ok(parsed.ok);
+        // Keep stable sequence numbers for the structured entity fixture.
+        const {
+          after,
+          limit,
+          fresh,
+          initialHigh: requestedHigh,
+        } = parsed.params;
+        const high = sequences[owner];
+        const initialHigh = fresh
+          ? requestedHigh > 0
+            ? Math.min(high, requestedHigh)
+            : high
+          : 0;
+        const eligible = [...saved.values()]
+          .sort((a, b) => a.seq - b.seq)
+          .filter((document) => document.seq > after);
+        const page = eligible.slice(0, limit);
         return reply({
           workspaceId,
-          ...entityPullFixture(snapshot, {
-            ...parsed.params,
-            // @ts-expect-error The legacy fixture deliberately supplies payload documents instead of v4 entities.
-            documents: [...saved.values()],
-            maxSeq: sequences[owner],
-          }),
+          generation: 1,
+          documents: page,
+          checkpoint: {
+            seq: page.length === limit ? (page.at(-1)?.seq ?? 0) : high,
+          },
+          maxSeq: high,
+          initialHigh,
         });
       }
-
       if (path === "/api/models")
         return reply({
           data: [
@@ -433,9 +445,12 @@ export async function sidebarParityFixture(
         ].some((pattern) => pattern.test(path))
       )
         return false;
-      calls[owner].push({ path, body: structuredClone(rawBody) });
       if (path === "/api/organization") {
         const body = fixturePostBody<"/api/organization">(rawBody);
+        calls[owner].push({
+          path: "/api/organization",
+          body: structuredClone(body),
+        });
         const chat = row(body.id);
         for (const key of ["pinned", "archived"] as const)
           if (key in body) chat[key] = body[key];
@@ -443,16 +458,19 @@ export async function sidebarParityFixture(
           assert.equal(body.project_path, chat.cwd);
           assert.equal(body.expected_revision, chat.projectFolderRevision);
           chat.projectFolder = body.project_folder;
-
-          chat.projectFolderRevision!++;
+          assert.ok(
+            chat.projectFolderRevision !== null &&
+              chat.projectFolderRevision !== undefined,
+          );
+          chat.projectFolderRevision++;
         }
         if (body.read_state) {
           assert.equal(body.read_state.thread_id, chat.threadId);
           assert.equal(body.read_state.turn_id, chat.lastCompletedTurn);
-
+          assert.ok(chat.threadId && chat.lastCompletedTurn);
           chat.readState = {
-            threadId: chat.threadId!,
-            turnId: chat.lastCompletedTurn!,
+            threadId: chat.threadId,
+            turnId: chat.lastCompletedTurn,
             read: body.read_state.read,
             revision: (chat.readState?.revision || 0) + 1,
           };
@@ -470,12 +488,17 @@ export async function sidebarParityFixture(
       }
       if (path === "/api/rename") {
         const body = fixturePostBody<"/api/rename">(rawBody);
+        calls[owner].push({ path: "/api/rename", body: structuredClone(body) });
         row(body.id).name = body.name;
         // The legacy fixture acknowledges renames without the current receipt.
         return reply({ ok: true } satisfies JsonInput);
       }
       if (path === "/api/conversation/delete") {
         const body = fixturePostBody<"/api/conversation/delete">(rawBody);
+        calls[owner].push({
+          path: "/api/conversation/delete",
+          body: structuredClone(body),
+        });
         row(body.id).deletedAt = Date.now() / 1000;
         return reply({
           deleted: [body.id],
@@ -483,21 +506,26 @@ export async function sidebarParityFixture(
       }
       if (path === "/api/conversation") {
         const body = fixturePostBody<"/api/conversation">(rawBody);
+        calls[owner].push({
+          path: "/api/conversation",
+          body: structuredClone(body),
+        });
         row(body.id).cwd = body.cwd;
         return reply(row(body.id));
       }
       if (path === "/api/leads") {
         const body = fixturePostBody<"/api/leads">(rawBody);
+        calls[owner].push({ path: "/api/leads", body: structuredClone(body) });
         // The server keeps one chat for each creation identity.
-
+        assert.ok(body.id);
         const existing = snapshot.threads.find((row) => row.id === body.id);
         if (existing) return reply(existing);
         const base = snapshot.threads[0];
-
+        assert.ok(base);
         const chat = {
           ...base,
-          id: body.id!,
-          rootId: body.id!,
+          id: body.id,
+          rootId: body.id,
           name: `${owner} new chat`,
           pinned: false,
           cwd: body.cwd || sourcePath(owner),
@@ -510,14 +538,18 @@ export async function sidebarParityFixture(
       }
       if (path === "/api/projects") {
         const body = fixturePostBody<"/api/projects">(rawBody);
+        calls[owner].push({
+          path: "/api/projects",
+          body: structuredClone(body),
+        });
         if (body.action === "reorder") {
           // A repeated request ID returns the first receipt, as the server does.
           const receipt = receipts[owner].get(body.request_id);
           if (receipt) return reply(receipt);
-
+          assert.ok(snapshot.runtime.sidebarOrder);
           assert.equal(
             body.expected_revision,
-            snapshot.runtime.sidebarOrder!.revision,
+            snapshot.runtime.sidebarOrder.revision,
           );
           snapshot.runtime.sidebarOrder = {
             revision: body.expected_revision + 1,
@@ -526,38 +558,52 @@ export async function sidebarParityFixture(
           receipts[owner].set(body.request_id, snapshot.runtime.sidebarOrder);
           return reply(snapshot.runtime.sidebarOrder);
         }
-
-        const value = project();
+        assert.ok(body.path);
+        const value = project(body.path);
         assert.ok(value, `Unknown ${owner} project: ${body.path}`);
         if (
+          "expected_revision" in body &&
+          body.action &&
           ["rename", "rename_folder", "add_folder", "remove_folder"].includes(
-            body.action!,
+            body.action,
           )
         ) {
+          assert.ok(
+            value.folders &&
+              value.organizationRevision !== null &&
+              value.organizationRevision !== undefined,
+          );
           assert.equal(body.expected_revision, value.organizationRevision);
           if (body.action === "rename") value.name = body.name;
-          if (body.action === "rename_folder")
-            value.folders!.find(
+          if (body.action === "rename_folder") {
+            const folder = value.folders.find(
               (folder) => folder.id === body.folder_id,
-            )!.name = body.name!;
+            );
+            assert.ok(folder && body.name);
+            folder.name = body.name;
+          }
           if (body.action === "add_folder") {
-            value.folders!.push({
-              id: body.folder_id!,
-              name: body.name!,
+            assert.ok(body.folder_id && body.name);
+            value.folders.push({
+              id: body.folder_id,
+              name: body.name,
               parentId: body.parent_id,
             });
           }
           if (body.action === "remove_folder")
-            value.folders = value.folders!.filter(
+            value.folders = value.folders.filter(
               (folder) => folder.id !== body.folder_id,
             );
-          value.organizationRevision!++;
+          value.organizationRevision++;
         }
         if (body.action === "set_accounts") {
           value.accountKeys = body.account_keys;
           value.accountKey = body.account_key;
-
-          value.accountRevision!++;
+          assert.ok(
+            value.accountRevision !== null &&
+              value.accountRevision !== undefined,
+          );
+          value.accountRevision++;
         }
         return reply({
           project: value,
@@ -566,17 +612,21 @@ export async function sidebarParityFixture(
       }
       if (path === "/api/peer-teams") {
         const body = fixturePostBody<"/api/peer-teams">(rawBody);
-        const value = project();
+        calls[owner].push({
+          path: "/api/peer-teams",
+          body: structuredClone(body),
+        });
+        const value = project(body.path);
         assert.ok(value, `Unknown ${owner} team project: ${body.path}`);
         if (body.action !== "radio")
           assert.equal(body.expected_revision, value.peerTeamsRevision);
         const teams = snapshot.runtime.peerTeams;
         if (body.action === "save") {
           const existing = teams.find((team) => team.id === body.team_id);
-
+          assert.ok(body.team_id);
           const next = {
-            id: body.team_id!,
-            name: body.name!,
+            id: body.team_id,
+            name: body.name,
             projectPath: body.path,
             members: body.members,
           };
@@ -590,14 +640,17 @@ export async function sidebarParityFixture(
           );
         if (body.action === "move" || body.action === "convert") {
           row(body.member);
-          for (const team of teams)
-            team.members = team.members!.filter((id) => id !== body.member);
-          if (body.team_id)
-            teams
-              .find((team) => team.id === body.team_id)!
-              .members!.push(body.member);
+          for (const team of teams) {
+            assert.ok(team.members);
+            team.members = team.members.filter((id) => id !== body.member);
+          }
+          if ("team_id" in body && body.team_id) {
+            const team = teams.find((team) => team.id === body.team_id);
+            assert.ok(team?.members);
+            team.members.push(body.member);
+          }
           snapshot.runtime.peerTeams = teams.filter(
-            (team) => team.members!.length >= 2,
+            (team) => (team.members?.length ?? 0) >= 2,
           );
           if (body.action === "convert") {
             row(body.target);
@@ -611,27 +664,42 @@ export async function sidebarParityFixture(
           }
         }
         if (body.action === "radio") {
-          const room = legacyRoom({
+          const room: components["schemas"]["RoomEntityDto"] = {
             id: `room-${body.request_id}`,
-            name: body.name || `${owner} Team shared chat`,
+            name: ("name" in body && body.name) || `${owner} Team shared chat`,
             projectPath: body.path,
             members:
-              body.participants?.map((_, index) => `radio-${index}`) ||
-              teams.find((team) => team.id === body.team_id)?.members ||
+              ("participants" in body
+                ? body.participants?.map((_, index) => `radio-${index}`)
+                : undefined) ||
+              teams.find(
+                (team) =>
+                  team.id === ("team_id" in body ? body.team_id : undefined),
+              )?.members ||
               [],
             radio: {
+              active: null,
+              error: null,
+              next: [],
+              revision: 0,
+              speaker: "",
+              status: "idle",
               direct: body.radio_action === "create",
-              teamId: body.team_id || null,
+              teamId: ("team_id" in body ? body.team_id : undefined) || "",
             },
-          });
+          };
           snapshot.runtime.rooms.push(room);
           return reply({ room, peerTeams: teams } satisfies JsonInput);
         }
-        value.peerTeams = snapshot.runtime.peerTeams as NonNullable<
-          typeof value.peerTeams
-        >;
-
-        value.peerTeamsRevision!++;
+        value.peerTeams = snapshot.runtime.peerTeams.map((team) => {
+          assert.ok(team.name && team.members);
+          return { id: team.id, name: team.name, members: team.members };
+        });
+        assert.ok(
+          value.peerTeamsRevision !== null &&
+            value.peerTeamsRevision !== undefined,
+        );
+        value.peerTeamsRevision++;
         return reply({
           peerTeams: value.peerTeams,
           revision: value.peerTeamsRevision,

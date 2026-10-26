@@ -1027,6 +1027,9 @@ export function gateSteps(root: string, name: string): GateStep[] {
           lane: "js",
         }),
       ),
+      nodeTest("layout-contract", "layout contract witnesses", [
+        "workspaces/client/apps/web/scripts/check-layout-contract.test.ts",
+      ]),
       nodeTest("retained-helpers", "retained Python helper boundaries", [
         "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
       ]),
@@ -2384,7 +2387,7 @@ function byWorkspaceDependency(
 }
 
 export function runContractsCheck(root = rootFrom()) {
-  for (const script of ["contracts:check"]) {
+  for (const script of ["contracts:check", "layout:check"]) {
     process.stdout.write(
       `Checking generated contracts without writing files: pnpm run ${script}\n`,
     );

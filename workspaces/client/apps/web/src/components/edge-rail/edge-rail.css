@@ -1,0 +1,95 @@
+.edge-rail {
+  position: fixed;
+  z-index: var(--layout-layers-edge-rail);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  box-sizing: border-box;
+}
+
+.edge-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.edge-rail .edge-rail-button {
+  position: relative;
+  flex: 0 0 var(--edge-rail-target);
+  width: var(--edge-rail-target);
+  height: var(--edge-rail-target);
+  min-width: var(--edge-rail-target);
+  min-height: var(--edge-rail-target);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--raised) 75%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.edge-rail .edge-rail-button:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
+
+.edge-rail-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--mantine-color-body);
+  color: var(--mantine-color-text);
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 1px 3px;
+  pointer-events: none;
+}
+
+/* Paint the pane under the system strip; root padding still bounds its content. */
+html:has(.workspace[data-edge-rail="true"]) body #root,
+html:has(.workspace[data-edge-rail="true"]) .viewport-bottom-band {
+  background-color: var(--surface);
+}
+
+/* Keep the shared sidebar focus target visible outside the header. */
+.edge-rail #sidebar-toggle {
+  display: inline-flex;
+}
+
+/* A workspace drawer keeps its controls in the safe rectangle. Its passive
+   backdrop continues below Home and behind the side rail. */
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-content {
+  box-shadow: none;
+}
+
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-inner::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: calc(-1 * env(safe-area-inset-right, 0px));
+  width: env(safe-area-inset-right, 0px);
+  height: calc(100% + var(--viewport-safe-bottom));
+  background: var(--mantine-color-body);
+  pointer-events: none;
+}
+
+html:has(.workspace[data-edge-rail="true"])
+  .workspace-drawer
+  .mantine-Drawer-inner::before {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: var(--drawer-size);
+  max-width: 100%;
+  height: var(--viewport-safe-bottom);
+  background: var(--mantine-color-body);
+  pointer-events: none;
+}

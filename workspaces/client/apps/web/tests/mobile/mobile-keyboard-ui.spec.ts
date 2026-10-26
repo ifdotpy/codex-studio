@@ -36,7 +36,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
     });
     let context,
       log = "";
-    fixture.stderr!.on("data", (chunk) => {
+    fixture.stderr?.on("data", (chunk) => {
       log += chunk;
     });
     try {
@@ -94,21 +94,19 @@ for (const [platform, userAgent] of mobileBrowsers) {
         .toBeLessThan(1);
       const geometry = () =>
         page.evaluate(() => {
-          const root = document
-            .querySelector<HTMLElement>("#root")!
+          const root = window.mobileKeyboardUi
+            .element("#root")
             .getBoundingClientRect();
-          const composer = document
-            .querySelector<HTMLElement>("#composer")!
+          const composer = window.mobileKeyboardUi
+            .element("#composer")
             .getBoundingClientRect();
-          const footerNode =
-            document.querySelector<HTMLElement>(".usage-footer")!;
+          const footerNode = window.mobileKeyboardUi.element(".usage-footer");
           const footer = footerNode.getBoundingClientRect();
           const footerBottomSpace =
             parseFloat(getComputedStyle(footerNode).marginBottom) +
             parseFloat(
-              getComputedStyle(
-                document.querySelector<HTMLElement>("#conversation")!,
-              ).paddingBottom,
+              getComputedStyle(window.mobileKeyboardUi.element("#conversation"))
+                .paddingBottom,
             );
           return {
             layout: [
@@ -130,7 +128,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
             footerTop: footer.top,
             footerBottom: footer.bottom,
             footerBottomSpace,
-            scrollTop: document.scrollingElement!.scrollTop,
+            scrollTop: window.mobileKeyboardUi.scrollingElement().scrollTop,
             scrollY,
             bodyOverflow: getComputedStyle(document.body).overflow,
             bottomInset: document.documentElement.style.getPropertyValue(
@@ -144,7 +142,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         expectedScrollY = 0,
       ) => {
         // Measure one settled online frame; connection notices are a separate flow.
-        let box!: Awaited<ReturnType<typeof geometry>>;
+        let box: Awaited<ReturnType<typeof geometry>> | undefined;
         await expect
           .poll(async () => {
             box = await geometry();
@@ -155,6 +153,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
             );
           })
           .toBe(true);
+        assert.ok(box);
         assert.equal(box.scrollY, expectedScrollY);
         assert.equal(box.scrollTop, 0);
         assert.equal(box.bodyOverflow, "hidden");
@@ -192,33 +191,30 @@ for (const [platform, userAgent] of mobileBrowsers) {
         label: string,
       ) => {
         const box = await page.evaluate(() => ({
-          composer: document
-            .querySelector<HTMLElement>("#composer")!
+          composer: window.mobileKeyboardUi
+            .element("#composer")
             .getBoundingClientRect().height,
-          input: document
-            .querySelector<HTMLTextAreaElement>("#message")!
-            .getBoundingClientRect().height,
+          input: window.mobileKeyboardUi.input().getBoundingClientRect().height,
           minimumInput: (() => {
-            const input =
-              document.querySelector<HTMLTextAreaElement>("#message")!;
-            const measurement = input.cloneNode() as HTMLTextAreaElement;
+            const input = window.mobileKeyboardUi.input();
+            const measurement = input.cloneNode();
+            if (!(measurement instanceof HTMLTextAreaElement))
+              throw new Error("Textarea clone expected");
             measurement.style.position = "fixed";
             measurement.style.visibility = "hidden";
             measurement.style.left = "-10000px";
             measurement.style.top = "0";
             measurement.style.height = "auto";
             measurement.style.width = `${input.getBoundingClientRect().width}px`;
-            input.parentElement!.append(measurement);
+            if (!input.parentElement)
+              throw new Error("Missing textarea parent");
+            input.parentElement.append(measurement);
             const height = measurement.getBoundingClientRect().height;
             measurement.remove();
             return height;
           })(),
-          scrollHeight:
-            document.querySelector<HTMLTextAreaElement>("#message")!
-              .scrollHeight,
-          clientHeight:
-            document.querySelector<HTMLTextAreaElement>("#message")!
-              .clientHeight,
+          scrollHeight: window.mobileKeyboardUi.input().scrollHeight,
+          clientHeight: window.mobileKeyboardUi.input().clientHeight,
         }));
         assert.ok(
           box.composer <= visibleHeight * 0.6 + 1,
@@ -259,7 +255,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
           insets: { top: 59, bottom: 0, left: 0, right: 0 },
         });
         await page.evaluate(() =>
-          window.setTestViewport({
+          window.mobileKeyboardUi.setTestViewport({
             height: 790,
             offsetTop: 12,
           }),
@@ -286,49 +282,56 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       await composer.evaluate((element: HTMLTextAreaElement) => {
         element.setSelectionRange(8, 16);
-        element.addEventListener("blur", () => window.composerBlurCount++);
-        window.composerTextarea = element;
-        window.composerFocusCalls.focus = 0;
-        window.composerFocusCalls.selection = 0;
+        element.addEventListener(
+          "blur",
+          () => window.mobileKeyboardUi.composerBlurCount++,
+        );
+        window.mobileKeyboardUi.composerTextarea = element;
+        window.mobileKeyboardUi.composerFocusCalls.focus = 0;
+        window.mobileKeyboardUi.composerFocusCalls.selection = 0;
       });
       await page.evaluate(() =>
-        window.setTestViewport({ height: 390, offsetTop: 54 }),
+        window.mobileKeyboardUi.setTestViewport({ height: 390, offsetTop: 54 }),
       );
       assert.equal((await settle(390, 54)).bottomInset, "0px");
       await assertLongPromptFits(390, "keyboard-open viewport");
       await page.evaluate(() => {
-        window.retainTestScroll(0);
-        const messages = document.querySelector<HTMLElement>("#messages")!;
-        window.composerScrollBefore = {
+        window.mobileKeyboardUi.retainTestScroll(0);
+        const messages = window.mobileKeyboardUi.element("#messages");
+        window.mobileKeyboardUi.composerScrollBefore = {
           page: window.scrollY,
-          document: document.scrollingElement!.scrollTop,
+          document: window.mobileKeyboardUi.scrollingElement().scrollTop,
           transcript: messages.scrollTop,
         };
-        window.setTestViewport({ height: 330, offsetTop: 64 }, "scroll");
+        window.mobileKeyboardUi.setTestViewport(
+          { height: 330, offsetTop: 64 },
+          "scroll",
+        );
         window.dispatchEvent(new Event("resize"));
       });
       await settle(330, 64, 0);
       await assertLongPromptFits(330, "language-picker viewport");
       await page.evaluate(() =>
-        window.setTestViewport({ height: 390, offsetTop: 54 }),
+        window.mobileKeyboardUi.setTestViewport({ height: 390, offsetTop: 54 }),
       );
       await settle(390, 54, 0);
       const composerState = await page.evaluate(() => {
-        const element =
-          document.querySelector<HTMLTextAreaElement>("#message")!;
-        const messages = document.querySelector<HTMLElement>("#messages")!;
+        const element = window.mobileKeyboardUi.input();
+        const messages = window.mobileKeyboardUi.element("#messages");
         return {
-          sameNode: element === window.composerTextarea,
-          focused: document.activeElement === window.composerTextarea,
-          blurCount: window.composerBlurCount,
-          calls: { ...window.composerFocusCalls },
+          sameNode: element === window.mobileKeyboardUi.composerTextarea,
+          focused:
+            document.activeElement === window.mobileKeyboardUi.composerTextarea,
+          blurCount: window.mobileKeyboardUi.composerBlurCount,
+          calls: { ...window.mobileKeyboardUi.composerFocusCalls },
           value: element.value,
           selectionStart: element.selectionStart,
           selectionEnd: element.selectionEnd,
           transcriptScrollTop: messages.scrollTop,
-          scrollBefore: window.composerScrollBefore,
+          scrollBefore: window.mobileKeyboardUi.composerScrollBefore,
           pageScrollY: window.scrollY,
-          documentScrollTop: document.scrollingElement!.scrollTop,
+          documentScrollTop:
+            window.mobileKeyboardUi.scrollingElement().scrollTop,
         };
       });
       assert.equal(composerState.sameNode, true, "textarea node stays mounted");
@@ -353,13 +356,13 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await page.setViewportSize({ width: 844, height: 390 });
       await page.waitForFunction(
         () =>
-          !document.documentElement.style.getPropertyValue(
+          document.documentElement.style.getPropertyValue(
             "--mobile-viewport-height",
-          ),
+          ) === "390px",
       );
       assert.deepEqual(
         await composer.evaluate((node: HTMLTextAreaElement) => ({
-          sameNode: node === window.composerTextarea,
+          sameNode: node === window.mobileKeyboardUi.composerTextarea,
           focused: document.activeElement === node,
           start: node.selectionStart,
           end: node.selectionEnd,
@@ -372,19 +375,22 @@ for (const [platform, userAgent] of mobileBrowsers) {
       assert.equal(
         await composer.evaluate(
           (node) =>
-            node === window.composerTextarea && document.activeElement === node,
+            node === window.mobileKeyboardUi.composerTextarea &&
+            document.activeElement === node,
         ),
         true,
       );
-      await page.evaluate(() => window.composerTextarea!.blur());
-      await page.evaluate(() => window.retainTestScroll(0));
+      await page.evaluate(() =>
+        window.mobileKeyboardUi.composerTextarea?.blur(),
+      );
+      await page.evaluate(() => window.mobileKeyboardUi.retainTestScroll(0));
       await page.screenshot({
         path: join(state, "keyboard-open.png"),
         clip: { x: 0, y: 54, width: 390, height: 390 },
       });
       // Pinch zoom must not collapse the application to the magnified viewport.
       await page.evaluate(() =>
-        window.setTestViewport({
+        window.mobileKeyboardUi.setTestViewport({
           scale: 2,
           height: 195,
           offsetTop: 140,
@@ -400,7 +406,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       assert.equal(zoomed.height, 390);
       assert.equal(zoomed.top, 54);
       await page.evaluate(() =>
-        window.setTestViewport({
+        window.mobileKeyboardUi.setTestViewport({
           scale: 1,
           height: 844,
           offsetTop: 0,
@@ -412,7 +418,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       await page.setViewportSize({ width: 640, height: 390 });
       await page.evaluate(() => {
-        window.setTestViewport({
+        window.mobileKeyboardUi.setTestViewport({
           width: 640,
           height: 390,
           offsetTop: 0,
@@ -422,34 +428,56 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await settle(390, 0);
       await page.setViewportSize({ width: 390, height: 844 });
       await page.evaluate(() =>
-        window.setTestViewport({
+        window.mobileKeyboardUi.setTestViewport({
           width: 390,
           height: 844,
           offsetTop: 0,
         }),
       );
       await settle(844, 0);
-      // Desktop must regain its normal document layout and terminal space.
+      // Desktop and fine-primary touch laptops keep their normal document layout.
       await page.setViewportSize({ width: 1440, height: 960 });
-      await page.waitForFunction(
-        () =>
-          getComputedStyle(document.querySelector<HTMLElement>("#root")!)
-            .position !== "fixed" &&
-          !document.documentElement.style.getPropertyValue(
-            "--mobile-viewport-height",
+      for (const touch of [false, true]) {
+        await page.evaluate((touch) => {
+          window.mobileKeyboardUi.setTestPointer(false, touch);
+          window.mobileKeyboardUi.setTestViewport({
+            width: 1440,
+            height: 960,
+            offsetTop: 0,
+          });
+        }, touch);
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              document.documentElement.hasAttribute("data-viewport-surface"),
+            ),
+          )
+          .toBe(false);
+        assert.equal(
+          await page.evaluate(() =>
+            document.documentElement.style.getPropertyValue(
+              "--mobile-viewport-height",
+            ),
           ),
-      );
-      assert.equal(
-        await page.evaluate(() =>
-          document.documentElement.style.getPropertyValue(
-            "--mobile-viewport-height",
-          ),
-        ),
-        "",
+          "",
+          "Desktop must regain its normal document layout",
+        );
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              document.documentElement.hasAttribute(
+                "data-viewport-short-landscape",
+              ),
+            ),
+          )
+          .toBe(false);
+      }
+      await page.evaluate(() =>
+        window.mobileKeyboardUi.setTestPointer(true, true),
       );
       await page.setViewportSize({ width: 390, height: 844 });
       await page.evaluate(() =>
-        window.setTestViewport({
+        window.mobileKeyboardUi.setTestViewport({
           width: 390,
           height: 844,
           offsetTop: 0,
@@ -466,7 +494,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await composer.fill("Short keyboard draft");
       assert.equal((await composer.boundingBox())!.height, twoRowHeight);
       await page.evaluate(() =>
-        window.setTestViewport({ height: 390, offsetTop: 54 }),
+        window.mobileKeyboardUi.setTestViewport({ height: 390, offsetTop: 54 }),
       );
       await settle(390, 54, 0);
       assert.equal((await composer.boundingBox())!.height, twoRowHeight);
@@ -475,7 +503,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         shortDraftComposerHeight,
       );
       await page.evaluate(() =>
-        window.setTestViewport({ height: 330, offsetTop: 64 }),
+        window.mobileKeyboardUi.setTestViewport({ height: 330, offsetTop: 64 }),
       );
       const minimumViewport = await settle(330, 64, 0);
       assert.equal((await composer.boundingBox())!.height, twoRowHeight);
@@ -483,7 +511,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         (await page.locator("#composer").boundingBox())!.height,
         shortDraftComposerHeight,
       );
-      assert.equal(minimumViewport.footerBottom, 378);
+      assert.equal(minimumViewport.footerBottom, 394);
 
       await page.getByLabel("Back to chats").click();
       await page
@@ -496,7 +524,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       const settings = page.locator(".empty-chat-settings");
       await expect(settings).toBeVisible();
       await page.evaluate(() =>
-        window.setTestViewport({ height: 844, offsetTop: 0 }),
+        window.mobileKeyboardUi.setTestViewport({ height: 844, offsetTop: 0 }),
       );
       await settle(844, 0);
       const expandedSettingsHeight = (await settings.boundingBox())!.height;
@@ -504,47 +532,45 @@ for (const [platform, userAgent] of mobileBrowsers) {
       const assertEmptyKeyboard = async (height: number, top: number) => {
         await page.evaluate(
           ({ height, top }) =>
-            window.setTestViewport({ height, offsetTop: top }),
+            window.mobileKeyboardUi.setTestViewport({ height, offsetTop: top }),
           { height, top },
         );
         await expect
           .poll(() =>
             page.evaluate(() => ({
-              height: document
-                .querySelector<HTMLElement>("#root")!
+              height: window.mobileKeyboardUi
+                .element("#root")
                 .getBoundingClientRect().height,
-              bottom: document
-                .querySelector<HTMLElement>("#root")!
+              bottom: window.mobileKeyboardUi
+                .element("#root")
                 .getBoundingClientRect().bottom,
-              footerBottom: document
-                .querySelector<HTMLElement>(".usage-footer")!
+              footerBottom: window.mobileKeyboardUi
+                .element(".usage-footer")
                 .getBoundingClientRect().bottom,
-              composerBottom: document
-                .querySelector<HTMLElement>("#composer")!
+              composerBottom: window.mobileKeyboardUi
+                .element("#composer")
                 .getBoundingClientRect().bottom,
               scrollY,
-              panelHeight: document.querySelector<HTMLElement>(
+              panelHeight: window.mobileKeyboardUi.element(
                 ".empty-chat-settings",
-              )!.clientHeight,
-              panelScrollHeight: document.querySelector<HTMLElement>(
+              ).clientHeight,
+              panelScrollHeight: window.mobileKeyboardUi.element(
                 ".empty-chat-settings",
-              )!.scrollHeight,
+              ).scrollHeight,
             })),
           )
           .toMatchObject({ height });
         const box = await page.evaluate(() => {
-          const root = document
-            .querySelector<HTMLElement>("#root")!
+          const root = window.mobileKeyboardUi
+            .element("#root")
             .getBoundingClientRect();
-          const footer = document
-            .querySelector<HTMLElement>(".usage-footer")!
+          const footer = window.mobileKeyboardUi
+            .element(".usage-footer")
             .getBoundingClientRect();
-          const composer = document
-            .querySelector<HTMLElement>("#composer")!
+          const composer = window.mobileKeyboardUi
+            .element("#composer")
             .getBoundingClientRect();
-          const panel = document.querySelector<HTMLElement>(
-            ".empty-chat-settings",
-          )!;
+          const panel = window.mobileKeyboardUi.element(".empty-chat-settings");
           return {
             bottom: root.bottom,
             footerBottom: footer.bottom,
@@ -581,7 +607,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await assertEmptyKeyboard(390, 54);
       await assertEmptyKeyboard(330, 64);
       await page.evaluate(() =>
-        window.setTestViewport({ height: 844, offsetTop: 0 }),
+        window.mobileKeyboardUi.setTestViewport({ height: 844, offsetTop: 0 }),
       );
       await expect
         .poll(async () => (await settings.boundingBox())!.height)
