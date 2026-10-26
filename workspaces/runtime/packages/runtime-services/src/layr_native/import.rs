@@ -1,6 +1,8 @@
 //! Select and admit the complete tree before writing imported entries.
 use super::{NativeLayrError, private_tree::Directory};
+mod filesystem_ffi;
 use crate::vm_preparation::vm_archive_identity;
+use filesystem_ffi::{case_sensitive, clone_file};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -702,49 +704,6 @@ fn open_source(root: &Path, relative: &Path) -> std::io::Result<File> {
     )?))
 }
 
-#[cfg(target_os = "macos")]
-#[allow(
-    unsafe_code,
-    reason = "APFS clone between pinned file and parent directory descriptors"
-)]
-fn clone_file(
-    source: &File,
-    parent: &std::os::fd::OwnedFd,
-    name: &std::ffi::OsStr,
-) -> std::io::Result<()> {
-    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
-    let name = std::ffi::CString::new(name.as_bytes())?;
-    // SAFETY: both descriptors and the NUL-terminated leaf remain live during this call.
-    if unsafe {
-        libc::fclonefileat(
-            source.as_raw_fd(),
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            0x0002,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-#[cfg(target_os = "linux")]
-fn clone_file(
-    source: &File,
-    parent: &std::os::fd::OwnedFd,
-    name: &std::ffi::OsStr,
-) -> std::io::Result<()> {
-    use rustix::fs::{Mode, OFlags, openat};
-    let copy = File::from(openat(
-        parent,
-        name,
-        OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::from_raw_mode(0o600),
-    )?);
-    rustix::fs::ioctl_ficlone(&copy, source)?;
-    Ok(())
-}
-
 fn volume_id_fd(fd: &std::os::fd::OwnedFd) -> std::io::Result<u64> {
     #[cfg(target_os = "macos")]
     {
@@ -767,27 +726,6 @@ pub(super) fn existing_ancestor(path: &Path) -> std::io::Result<&Path> {
             Err(error) => return Err(error),
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-#[allow(
-    unsafe_code,
-    reason = "read-only filesystem case policy without a probe file"
-)]
-fn case_sensitive(destination: &Path) -> Result<bool> {
-    use std::os::unix::ffi::OsStrExt;
-    let at = existing_ancestor(destination)?;
-    let path = std::ffi::CString::new(at.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
-    // SAFETY: the path is NUL-terminated and lives until pathconf returns.
-    match unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) } {
-        -1 => Err(std::io::Error::last_os_error().into()),
-        0 => Ok(false),
-        _ => Ok(true),
-    }
-}
-#[cfg(not(target_os = "macos"))]
-fn case_sensitive(_destination: &Path) -> Result<bool> {
-    Ok(true)
 }
 
 fn case_key(path: &str) -> String {

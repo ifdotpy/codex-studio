@@ -55,7 +55,7 @@
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
     "\"\\u{200b} file:///tmp/%D0%96%F0%9F%A6%80.rs#L12C2 \\u{200b}\",",
-    "json!({\"path\":\"/tmp/Ж🦀.rs\",\"line\":12}),",
+    "json!({\"path\":\"/tmp/\u0416\ud83e\udd80.rs\",\"line\":12}),",
     "\"sandbox:/tmp/report.md:9:2\",",
     "json!({\"path\":\"/tmp/report.md\",\"line\":9}),",
     "\"file://localhost/tmp/a.md#L4-L8\",",
@@ -93,9 +93,6 @@
   ],
   "workspaces/runtime/apps/runtime-server/src/io_runtime.rs": [
     "\"cwd\": \"/tmp\","
-  ],
-  "workspaces/runtime/apps/runtime-server/src/provider_ports.rs": [
-    "let state = PathBuf::from(\"/tmp/studio-supervisor-test\");"
   ],
   "workspaces/runtime/apps/runtime-server/tests/wave7_p01_registry.rs": [
     "\"/var/tmp\".into(),"

@@ -48,6 +48,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "APFS clonefile(2) for host_exec slot clones.",
   ],
   [
+    "workspaces/runtime/packages/runtime-services/src/layr_native/import/filesystem_ffi.rs",
+    "APFS descriptor clones and read-only filesystem case policy for native import.",
+  ],
+  [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
     "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
   ],
