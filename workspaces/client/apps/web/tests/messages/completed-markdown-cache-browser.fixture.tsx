@@ -84,12 +84,15 @@ function Harness() {
 createRoot(document.getElementById("root")!).render(<Harness />);
 declare global {
   interface Window {
+    // Renamed from cache: chat/chat-prefetch-browser.fixture.ts declares the transcript cache module.
     markdownCache: typeof completedMarkdown;
     compilations: number;
     results: () => void;
     chat: (otherChat: boolean) => void;
     hide: () => void;
+    // Renamed from show: files/file-viewers-browser.fixture.tsx requires a path argument.
     markdownShow: () => void;
+    // Renamed from agent: chat/chat-read-client-browser.fixture.tsx declares an Agent.
     markdownAgent: (id: string) => void;
     text: (text: string, stream?: boolean) => void;
   }

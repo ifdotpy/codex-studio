@@ -3,6 +3,7 @@ import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 declare global {
   interface Window {
     setFixture: React.Dispatch<React.SetStateAction<Snapshot>>;
+    // Renamed from fixture: performance/scroll-restart.fixture.tsx declares scroll fixture controls.
     peerTeamsData: Snapshot;
     failRefresh: boolean;
   }

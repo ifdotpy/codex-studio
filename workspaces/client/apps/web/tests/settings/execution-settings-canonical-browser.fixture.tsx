@@ -32,6 +32,7 @@ export type CanonicalReset = {
 declare global {
   interface Window {
     catalogRequests: string[];
+    // Renamed from calls: chat/chat-read-client-browser.fixture.tsx declares read-state writes.
     settingsCalls: PostBody<"/api/conversation">[];
     transfers: PostBody<"/api/agents/account-transfer">[];
     transferFail: boolean;
@@ -39,6 +40,7 @@ declare global {
     transferReply: Partial<PostResult<"/api/agents/account-transfer">> | null;
     pendingTransferProjection: Agent | null;
     reply: Agent | null;
+    // Renamed from fail: chat/chat-read-client-browser.fixture.tsx declares a boolean.
     canonicalFail: string | null;
     hold: boolean;
     refreshFailure: boolean;
@@ -46,12 +48,15 @@ declare global {
     refreshCount: number;
     catalogHold: boolean;
     catalogRelease: (() => void) | null;
+    // Renamed from release: chat/chat-read-client-browser.fixture.tsx declares a non-null callback.
     canonicalRelease: (() => void) | null;
+    // Renamed from refreshRelease: teams/subagent-concurrency-confirmed-browser.fixture.tsx allows undefined.
     canonicalRefreshRelease: (() => void) | null;
     transferRelease: (() => void) | null;
     serverAccount: string | null;
     agent: Agent;
     setAgent: (value: Agent) => void;
+    // Renamed from reset: settings/daybreak-settings-browser.fixture.tsx takes DaybreakReset options.
     canonicalReset: (options?: CanonicalReset) => void;
   }
 }

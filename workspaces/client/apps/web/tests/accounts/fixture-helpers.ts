@@ -105,7 +105,7 @@ export type NotifyResources = Parameters<
   NonNullable<SyncFixture["onStreamReady"]>
 >[0];
 type UnionKeys<T> = T extends unknown ? keyof T : never;
-type WithAbsentFields<T, All = T> = T extends unknown
+export type WithAbsentFields<T, All = T> = T extends unknown
   ? T & Partial<Record<Exclude<UnionKeys<All>, keyof T>, never>>
   : never;
 export type FixtureRequest = {

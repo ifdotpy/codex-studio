@@ -23,7 +23,9 @@ export type DaybreakReset = {
 
 declare global {
   interface Window {
+    // Renamed from calls: chat/chat-read-client-browser.fixture.tsx declares read-state writes.
     settingsCalls: PostBody<"/api/conversation">[];
+    // Renamed from fail: chat/chat-read-client-browser.fixture.tsx declares a boolean.
     daybreakFail: "network" | "rejected" | null;
     reply: Agent | null;
     refreshCount: number;

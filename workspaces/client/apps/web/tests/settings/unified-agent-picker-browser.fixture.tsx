@@ -25,11 +25,13 @@ export type PickerScene =
 declare global {
   interface Window {
     whitelist: (value: Parameters<typeof writeModelWhitelist>[0]) => void;
+    // Renamed from calls: chat/chat-read-client-browser.fixture.tsx declares read-state writes.
     pickerCalls: PickerCall[];
     agent: Agent;
     updateAgent: (agent: Agent) => void;
     scene: (scene: PickerScene) => void;
     scheme: (scheme: "light" | "dark") => void;
+    // Renamed from reset: settings/daybreak-settings-browser.fixture.tsx takes DaybreakReset options.
     pickerReset: () => void;
     created: string;
   }

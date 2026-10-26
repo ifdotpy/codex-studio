@@ -707,10 +707,9 @@ test("Account Transfer Ui", async ({
     assert.ok(
       bodies.some(
         (b) =>
-          fixtureRequest("/api/agents/account-transfer", b.body).body.action ===
-            "retry" &&
-          fixtureRequest("/api/agents/account-transfer", b.body).body
-            .request_id === "blocked-lead-transfer",
+          b.path === "/api/agents/account-transfer" &&
+          b.body.action === "retry" &&
+          b.body.request_id === "blocked-lead-transfer",
       ),
       "chat settings explicitly retries the saved team transfer receipt",
     );

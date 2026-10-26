@@ -60,6 +60,7 @@ declare global {
     >;
     persistedRecord: ReturnType<Window["read"]>;
     outbox: ReturnType<typeof useOutbox>;
+    // Renamed from reactRoot: terminal/terminal-stub.ts declares it as Root | null.
     mobileSendReactRoot: ReturnType<typeof createRoot>;
   }
 }

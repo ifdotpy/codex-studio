@@ -1,3 +1,4 @@
+import type { WithAbsentFields } from "../accounts/fixture-helpers.ts";
 import type { Server } from "node:http";
 import type { ViteDevServer } from "vite";
 
@@ -41,11 +42,6 @@ export async function fixtureFetchInput(
     },
   };
 }
-
-type UnionKeys<T> = T extends unknown ? keyof T : never;
-type WithAbsentFields<T, All = T> = T extends unknown
-  ? T & Partial<Record<Exclude<UnionKeys<All>, keyof T>, never>>
-  : never;
 
 // The renderer under test writes string bodies using the generated route contract.
 // This one typed parser view covers both that input and its authored JSON document.

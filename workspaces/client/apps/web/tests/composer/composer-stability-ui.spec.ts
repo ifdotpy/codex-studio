@@ -439,7 +439,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         () => !document.querySelector<HTMLTextAreaElement>("#message")!.value,
       );
       await page.waitForFunction(
-        () => !document.querySelector("#send-state")?.textContent,
+        () => !document.querySelector("#send-state")!.textContent,
       );
       await stable("sent and draft cleared");
       for (const next of ["starting", "running", "approval"] as const) {
