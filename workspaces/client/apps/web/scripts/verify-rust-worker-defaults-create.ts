@@ -1,9 +1,64 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
+import type { Page, Response, Locator } from "playwright";
+import type { components, AgentEntityDto } from "../src/generated/api.ts";
+import { mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+import {
+  parseArgs,
+  readJournal,
+  saveJournal,
+  ensureHttps,
+  localClassicViewUrl,
+  assertLocalClassicView,
+  parseApiJson,
+  requireAgentPayload,
+} from "./verify-rust-worker-defaults.ts";
+import type { JournalBase } from "./verify-rust-worker-defaults.ts";
+
+type CreateRequest = components["schemas"]["CreateLeadRequest"];
+type DeleteRequest = components["schemas"]["IdRequest"];
+type DesiredAgent = ReturnType<typeof assertDesiredAgent>;
+type Journal = JournalBase & {
+  projectPath: string;
+  workerAccountKey: string;
+  projectName?: string;
+  baseline?: Awaited<ReturnType<typeof baseline>>;
+  localServer?: Awaited<ReturnType<typeof readLocalServerIdentity>>;
+  ownedCreated?: boolean;
+  create: {
+    state:
+      | "not-sent"
+      | "sent"
+      | "response-received"
+      | "response-error"
+      | "confirmed";
+    id?: string;
+    request?: CreateRequest;
+    sentAt?: string;
+    status?: number;
+    responseAt?: string;
+    canonical?: { [Key in keyof DesiredAgent]: AgentEntityDto[Key] } | null;
+  };
+  deletion: {
+    state: "not-sent" | "sent" | "response-received" | "confirmed";
+    request?: DeleteRequest;
+    sentAt?: string;
+    status?: number;
+    deleted?: string[];
+    at?: string;
+    readbackAt?: string;
+  };
+  readback?: { state: string; seq: number; agent: DesiredAgent; at: string };
+  resumeReadback?: {
+    observed: string;
+    isDesired: boolean;
+    at: string;
+    writeOutcome: string;
+  };
+};
 
 const LEAD_PROVIDER = "claude";
 const LEAD_MODEL = "default";
@@ -14,30 +69,6 @@ const EFFORT = "high";
 const ACTION_TIMEOUT_MS = 15_000;
 const NAVIGATION_TIMEOUT_MS = 45_000;
 const READBACK_TIMEOUT_MS = 30_000;
-
-function argsFrom(argv) {
-  const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index];
-    if (value === "--resume") {
-      options.resume = true;
-      continue;
-    }
-    if (value === "--help" || value === "-h") {
-      options.help = true;
-      continue;
-    }
-    if (!value.startsWith("--"))
-      throw new Error(`Unexpected argument: ${value}`);
-    const key = value.slice(2);
-    const next = argv[index + 1];
-    if (!next || next.startsWith("--"))
-      throw new Error(`Missing value for --${key}`);
-    options[key] = next;
-    index += 1;
-  }
-  return options;
-}
 
 function usage() {
   return [
@@ -51,77 +82,7 @@ function usage() {
   ].join("\n");
 }
 
-function readJournal(path) {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw new Error(`Cannot read evidence journal: ${error.message}`);
-  }
-}
-
-function saveJournal(path, journal) {
-  journal.updatedAt = new Date().toISOString();
-  const temporary = `${path}.next`;
-  writeFileSync(temporary, `${JSON.stringify(journal, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  renameSync(temporary, path);
-}
-
-function ensureHttps(value) {
-  const url = new URL(value);
-  assert.equal(url.protocol, "https:", "The target URL must use HTTPS.");
-  assert.equal(
-    url.username,
-    "",
-    "The target URL must not include credentials.",
-  );
-  assert.equal(
-    url.password,
-    "",
-    "The target URL must not include credentials.",
-  );
-  assert.equal(url.pathname, "/", "The target URL must be an origin only.");
-  assert.equal(url.search, "", "The target URL must not include a query.");
-  assert.equal(url.hash, "", "The target URL must not include a fragment.");
-  return url.origin;
-}
-
-function localClassicViewUrl(origin) {
-  const url = new URL(origin);
-  url.searchParams.set("studio-server", "local");
-  url.searchParams.set("studio-navigation", "classic");
-  return url.toString();
-}
-
-async function assertLocalClassicView(page, origin) {
-  const pageUrl = new URL(page.url());
-  assert.equal(pageUrl.origin, origin, "The target page changed origin.");
-  assert.equal(
-    pageUrl.searchParams.get("studio-server"),
-    "local",
-    "The target page is not the local server view.",
-  );
-  assert.equal(
-    pageUrl.searchParams.get("studio-navigation"),
-    "classic",
-    "The target page is not using classic navigation.",
-  );
-  assert.equal(
-    await page.locator("html").getAttribute("data-server-view"),
-    "true",
-    "The local server view did not mount.",
-  );
-  assert.equal(
-    await page.locator("html").getAttribute("data-server-navigation"),
-    "classic",
-    "Classic navigation did not mount.",
-  );
-}
-
-function uuid(value) {
+function uuid(value: unknown): value is string {
   return (
     typeof value === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -130,7 +91,12 @@ function uuid(value) {
   );
 }
 
-async function readServerAgent(page, id, expectedOrigin, expectedServerId) {
+async function readServerAgent(
+  page: Page,
+  id: string,
+  expectedOrigin: string,
+  expectedServerId: string | undefined,
+) {
   const result = await page.evaluate(
     async ({ agentId, expectedOrigin, expectedServerId, timeoutMs }) => {
       if (location.origin !== expectedOrigin)
@@ -142,10 +108,18 @@ async function readServerAgent(page, id, expectedOrigin, expectedServerId) {
           signal: AbortSignal.timeout(timeoutMs),
         },
       );
-      let identityBody = null;
-      try {
-        identityBody = await identityResponse.json();
-      } catch {}
+      const identityBody = parseIdentity(
+        await identityResponse.text().catch(() => "null"),
+      );
+      function parseIdentity(
+        text: string,
+      ): components["schemas"]["AccessSnapshot"] | null {
+        try {
+          return JSON.parse(text) as components["schemas"]["AccessSnapshot"];
+        } catch {
+          return null;
+        }
+      }
       if (
         identityResponse.status !== 200 ||
         identityBody?.identity?.serverId !== expectedServerId
@@ -160,15 +134,12 @@ async function readServerAgent(page, id, expectedOrigin, expectedServerId) {
         credentials: "same-origin",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      let body = null;
-      try {
-        body = await response.json();
-      } catch {}
+      const body = await response.text().catch(() => "null");
       return {
         origin: url.origin,
-        serverId: identityBody.identity.serverId,
+        serverId: identityBody?.identity.serverId,
         status: response.status,
-        documents: body?.documents || [],
+        body,
       };
     },
     {
@@ -193,28 +164,30 @@ async function readServerAgent(page, id, expectedOrigin, expectedServerId) {
     200,
     `Authoritative sync read returned HTTP ${result.status}.`,
   );
-  const document = result.documents.find((item) => {
+  const body = parseApiJson<"SyncPullResponse">(result.body);
+  const document = body?.documents.find((item) => {
     if (item.id === id || item.id?.endsWith(`:${id}`)) return true;
-    if (typeof item.payload !== "string") return false;
+    if (!("payload" in item) || typeof item.payload !== "string") return false;
     try {
-      const entity = JSON.parse(item.payload);
+      const entity = parseApiJson<"SyncEntityPayload">(item.payload);
       return entity?.collection === "agent" && entity.id === id;
     } catch {
       return false;
     }
   });
   if (!document) return null;
-  if (document._deleted) return { deleted: true, seq: document.seq };
+  assert.ok("payload" in document, "Sync document has no legacy payload.");
+  if (document._deleted) return { deleted: true as const, seq: document.seq };
   assert.equal(
     typeof document.payload,
     "string",
     "Sync document has no payload.",
   );
-  const entity = JSON.parse(document.payload);
-  return { deleted: false, seq: document.seq, agent: entity.value };
+  const entity = requireAgentPayload(document.payload);
+  return { deleted: false as const, seq: document.seq, agent: entity.value };
 }
 
-async function readLocalServerIdentity(page, expectedOrigin) {
+async function readLocalServerIdentity(page: Page, expectedOrigin: string) {
   const result = await page.evaluate(
     async ({ origin, timeoutMs }) => {
       if (location.origin !== origin)
@@ -223,14 +196,11 @@ async function readLocalServerIdentity(page, expectedOrigin) {
         credentials: "same-origin",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      let body = null;
-      try {
-        body = await response.json();
-      } catch {}
+      const body = await response.text().catch(() => "null");
       return {
         origin: location.origin,
         status: response.status,
-        identity: body?.identity,
+        body,
       };
     },
     { origin: expectedOrigin, timeoutMs: READBACK_TIMEOUT_MS },
@@ -241,22 +211,30 @@ async function readLocalServerIdentity(page, expectedOrigin) {
     "Server identity read used another origin.",
   );
   assert.equal(result.status, 200, "Could not read the local server identity.");
+  const body = parseApiJson<"AccessSnapshot">(result.body);
+  const identity = body?.identity;
   assert.ok(
-    typeof result.identity?.serverId === "string" && result.identity.serverId,
+    typeof identity?.serverId === "string" && identity.serverId,
     "Local server identity has no server ID.",
   );
   assert.ok(
-    typeof result.identity?.label === "string" && result.identity.label,
+    typeof identity?.label === "string" && identity.label,
     "Local server identity has no label.",
   );
   return {
     origin: result.origin,
-    serverId: result.identity.serverId,
-    label: result.identity.label,
+    serverId: identity.serverId,
+    label: identity.label,
   };
 }
 
-function recordBlockedAttempt(journalPath, journal, operation, url, reason) {
+function recordBlockedAttempt(
+  journalPath: string,
+  journal: Journal,
+  operation: string,
+  url: string,
+  reason: string,
+) {
   const target = new URL(url);
   journal.blockedAttempts ||= [];
   journal.blockedAttempts.push({
@@ -269,7 +247,12 @@ function recordBlockedAttempt(journalPath, journal, operation, url, reason) {
   saveJournal(journalPath, journal);
 }
 
-async function pinLocalServer(page, origin, expectedServerId) {
+async function pinLocalServer(
+  page: Page,
+  origin: string,
+  expectedServerId: string | undefined,
+) {
+  assert.ok(expectedServerId, "Preflight server identity is missing.");
   const identity = await readLocalServerIdentity(page, origin);
   assert.equal(
     identity.serverId,
@@ -278,7 +261,12 @@ async function pinLocalServer(page, origin, expectedServerId) {
   );
 }
 
-function matchesMutationResponse(response, origin, path, id) {
+function matchesMutationResponse(
+  response: Response,
+  origin: string,
+  path: string,
+  id: string | undefined,
+) {
   try {
     const request = response.request();
     const url = new URL(response.url());
@@ -286,14 +274,21 @@ function matchesMutationResponse(response, origin, path, id) {
       request.method() === "POST" &&
       url.origin === origin &&
       url.pathname === path &&
-      request.postDataJSON()?.id === id
+      parseApiJson<"ConversationRequest">(request.postData() || "null")?.id ===
+        id
     );
   } catch {
     return false;
   }
 }
 
-function assertDesiredAgent(agent, id, leadAccountKey, workerAccountKey) {
+function assertDesiredAgent(
+  agent: AgentEntityDto | null | undefined,
+  id: string,
+  leadAccountKey: string,
+  workerAccountKey: string,
+) {
+  assert.ok(agent, "Server returned no agent.");
   assert.equal(agent?.id, id, "Server returned another chat identity.");
   assert.equal(agent?.isLead, true, "Created chat is not a lead.");
   assert.equal(
@@ -357,7 +352,12 @@ function assertDesiredAgent(agent, id, leadAccountKey, workerAccountKey) {
   };
 }
 
-function assertCreateRequest(body, journal) {
+function assertCreateRequest(
+  body: CreateRequest | null,
+  journal: Journal,
+): asserts body is CreateRequest & { id: string } {
+  assert.ok(body, "New chat request is missing.");
+  assert.ok(journal.baseline, "Missing preflight baseline.");
   assert.ok(uuid(body?.id), "New chat request has no UUID identity.");
   assert.ok(
     !journal.baseline.chatIds.includes(body.id),
@@ -410,23 +410,32 @@ function assertCreateRequest(body, journal) {
     false,
     "Refusing to create a chat with a message.",
   );
-  return body;
 }
 
-async function baseline(page) {
+async function baseline(page: Page) {
   const chatIds = await page
     .locator("[data-chat]")
     .evaluateAll((rows) =>
-      rows.map((row) => row.getAttribute("data-chat")).filter(Boolean),
+      rows
+        .map((row) => row.getAttribute("data-chat"))
+        .filter((id): id is string => Boolean(id)),
     );
   const pendingCreationIds = await page.evaluate(() => {
-    const ids = [];
+    const ids: string[] = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith("codex-pending-creation:")) continue;
       try {
-        const request = JSON.parse(localStorage.getItem(key) || "null");
-        if (typeof request?.id === "string") ids.push(request.id);
+        const request: unknown = JSON.parse(
+          localStorage.getItem(key) || "null",
+        );
+        if (
+          request &&
+          typeof request === "object" &&
+          "id" in request &&
+          typeof request.id === "string"
+        )
+          ids.push(request.id);
       } catch {}
     }
     return ids;
@@ -439,18 +448,18 @@ async function baseline(page) {
 }
 
 async function main() {
-  const options = argsFrom(process.argv.slice(2));
+  const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(`${usage()}\n`);
     return;
   }
-  assert.ok(options.url, "--url is required.");
-  assert.ok(options.project, "--project is required.");
-  assert.ok(options["lead-account"], "--lead-account is required.");
-  assert.ok(options["evidence-dir"], "--evidence-dir is required.");
-  const leadAccountKey = options["lead-account"];
+  assert.ok(options.values.url, "--url is required.");
+  assert.ok(options.values.project, "--project is required.");
+  assert.ok(options.values["lead-account"], "--lead-account is required.");
+  assert.ok(options.values["evidence-dir"], "--evidence-dir is required.");
+  const leadAccountKey = options.values["lead-account"];
   const workerAccountKey =
-    options["worker-account"] || DEFAULT_WORKER_ACCOUNT_KEY;
+    options.values["worker-account"] || DEFAULT_WORKER_ACCOUNT_KEY;
   assert.match(
     leadAccountKey,
     /^[A-Za-z0-9._-]+$/,
@@ -461,14 +470,14 @@ async function main() {
     /^[A-Za-z0-9._-]+$/,
     "--worker-account contains unsupported characters.",
   );
-  const origin = ensureHttps(options.url);
-  const projectPath = resolve(options.project);
-  const evidenceDir = resolve(options["evidence-dir"]);
+  const origin = ensureHttps(options.values.url);
+  const projectPath = resolve(options.values.project);
+  const evidenceDir = resolve(options.values["evidence-dir"]);
   const profileDir = resolve(
-    options["profile-dir"] || join(evidenceDir, "profile"),
+    options.values["profile-dir"] || join(evidenceDir, "profile"),
   );
   const journalPath = join(evidenceDir, "rust-worker-defaults-create.json");
-  const existing = readJournal(journalPath);
+  const existing = readJournal<Journal>(journalPath);
   if (options.resume)
     assert.ok(existing, "Resume requires the saved ownership journal.");
   else
@@ -477,7 +486,7 @@ async function main() {
       null,
       "Evidence already exists; use --resume, which never writes.",
     );
-  const journal = existing || {
+  const journal: Journal = existing || {
     version: 1,
     origin,
     projectPath,
@@ -511,13 +520,10 @@ async function main() {
 
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
-  const webPackage = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    "../package.json",
-  );
-  const { chromium } = createRequire(webPackage)("playwright");
   const executablePath =
-    options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
+    options.values.chromium ||
+    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
+    undefined;
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: true,
     ...(executablePath ? { executablePath } : {}),
@@ -527,7 +533,7 @@ async function main() {
   const page = context.pages()[0] || (await context.newPage());
   page.setDefaultTimeout(ACTION_TIMEOUT_MS);
   page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
-  let blockedWrite = null;
+  let blockedWrite: string | null = null;
 
   await page.route("**/api/leads", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -542,8 +548,11 @@ async function main() {
         origin,
         "Chat creation must target the preflight local server origin.",
       );
-      await pinLocalServer(page, origin, journal.localServer.serverId);
-      const body = assertCreateRequest(route.request().postDataJSON(), journal);
+      await pinLocalServer(page, origin, journal.localServer?.serverId);
+      const body = parseApiJson<"CreateLeadRequest">(
+        route.request().postData() || "null",
+      );
+      assertCreateRequest(body, journal);
       if (journal.create.state !== "not-sent")
         throw new Error("Chat creation was already attempted.");
       journal.create = {
@@ -555,13 +564,13 @@ async function main() {
       saveJournal(journalPath, journal);
       await route.continue();
     } catch (error) {
-      blockedWrite = error.message;
+      blockedWrite = error instanceof Error ? error.message : String(error);
       recordBlockedAttempt(
         journalPath,
         journal,
         "create",
         route.request().url(),
-        error.message,
+        error instanceof Error ? error.message : String(error),
       );
       await route.fulfill({
         status: 409,
@@ -587,13 +596,15 @@ async function main() {
     }
     let body;
     try {
-      body = route.request().postDataJSON();
+      body = parseApiJson<"IdRequest">(route.request().postData() || "null");
+      assert.ok(body, "Delete request is missing.");
+      assert.ok(journal.baseline, "Missing preflight baseline.");
       assert.equal(
         new URL(route.request().url()).origin,
         origin,
         "Chat deletion must target the preflight local server origin.",
       );
-      await pinLocalServer(page, origin, journal.localServer.serverId);
+      await pinLocalServer(page, origin, journal.localServer?.serverId);
       assert.notEqual(options.resume, true, "Resume mode never sends deletes.");
       assert.equal(
         journal.ownedCreated,
@@ -629,13 +640,13 @@ async function main() {
       saveJournal(journalPath, journal);
       await route.continue();
     } catch (error) {
-      blockedWrite = error.message;
+      blockedWrite = error instanceof Error ? error.message : String(error);
       recordBlockedAttempt(
         journalPath,
         journal,
         "delete",
         route.request().url(),
-        error.message,
+        error instanceof Error ? error.message : String(error),
       );
       await route.fulfill({
         status: 409,
@@ -763,7 +774,7 @@ async function main() {
       .getByRole("group", { name: "Chat server", exact: true })
       .getByRole("button");
     const count = await serverCards.count();
-    const matchingLocalCards = [];
+    const matchingLocalCards: Locator[] = [];
     for (let index = 0; index < count; index += 1) {
       const card = serverCards.nth(index);
       const label = await card.locator("strong").innerText();
@@ -775,6 +786,7 @@ async function main() {
       `Expected one local server card labeled ${localServer.label}.`,
     );
     const matchingCard = matchingLocalCards[0];
+    assert.ok(matchingCard, "Missing local server card.");
     const localCardLines = (await matchingCard.innerText())
       .split("\n")
       .map((line) => line.trim());
@@ -951,7 +963,7 @@ async function main() {
         )
         .catch(() => []);
       throw new Error(
-        `${error.message}; Review provider is Codex but Sol is unavailable. ` +
+        `${error instanceof Error ? error.message : String(error)}; Review provider is Codex but Sol is unavailable. ` +
           `Visible review models: ${JSON.stringify(availableModels)}`,
       );
     }
@@ -990,7 +1002,9 @@ async function main() {
       .click();
     const response = await creationResponse;
     assert.equal(blockedWrite, null, blockedWrite || undefined);
-    const canonical = await response.json().catch(() => null);
+    const canonical = parseApiJson<"AgentResponse">(
+      await response.text().catch(() => "null"),
+    );
     journal.create = {
       ...journal.create,
       state: response.status() === 200 ? "response-received" : "response-error",
@@ -1018,6 +1032,7 @@ async function main() {
       journal.create.id,
       "Canonical response identity differs from journaled request.",
     );
+    assert.ok(journal.create.id, "Journal has no created chat identity.");
     assertDesiredAgent(
       canonical,
       journal.create.id,
@@ -1087,7 +1102,9 @@ async function main() {
       .getByRole("button", { name: "Delete chat", exact: true })
       .click();
     const deleteResponse = await deleteResponsePromise;
-    const deleteBody = await deleteResponse.json().catch(() => null);
+    const deleteBody = parseApiJson<"DeletedResponse">(
+      await deleteResponse.text().catch(() => "null"),
+    );
     assert.equal(
       deleteResponse.status(),
       200,
@@ -1098,6 +1115,7 @@ async function main() {
       [journal.create.id],
       "Server did not confirm deletion of exactly the owned chat.",
     );
+    assert.ok(deleteBody, "Delete response is missing.");
     journal.deletion = {
       ...journal.deletion,
       state: "response-received",
@@ -1124,7 +1142,10 @@ async function main() {
       `${JSON.stringify({ state: "passed", projectPath, chatId: journal.create.id, lead: { accountKey: readback.accountKey, provider: readback.provider, model: readback.model }, workerDefaults: readback.workerDefaults, reviewDefaults: readback.reviewDefaults, cleanup: journal.deletion.state }, null, 2)}\n`,
     );
   } catch (error) {
-    journal.failure = { message: error.message, at: new Date().toISOString() };
+    journal.failure = {
+      message: error instanceof Error ? error.message : String(error),
+      at: new Date().toISOString(),
+    };
     saveJournal(journalPath, journal);
     throw error;
   } finally {
@@ -1132,7 +1153,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error}\n`);
+main().catch((error: unknown) => {
+  process.stderr.write(`${error instanceof Error ? error.stack : error}\n`);
   process.exitCode = 1;
 });
