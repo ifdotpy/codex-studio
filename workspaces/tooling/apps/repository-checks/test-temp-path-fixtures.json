@@ -47,7 +47,7 @@
     ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
     "path: \"/tmp/fixture\","
   ],
-  "workspaces/client/apps/web/tests/sync/entity-fixture-contract.browser.spec.mjs": [
+  "workspaces/client/apps/web/tests/sync/entity-fixture-contract.browser.spec.ts": [
     "stateDir: \"/tmp/fixture\","
   ],
   "workspaces/client/apps/web/tests/terminal/current-command-history-ui.spec.ts": [

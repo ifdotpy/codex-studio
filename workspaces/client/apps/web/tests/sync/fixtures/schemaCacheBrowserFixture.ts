@@ -42,11 +42,18 @@ export async function openBuildDatabase(name: string, legacy: boolean) {
 }
 
 export async function openProjectionDatabase(name: string) {
-  const db = await createRxDatabase({
+  const db = await createRxDatabase<Pick<FixtureCollections, "projections">>({
     name,
     storage: getRxStorageDexie(),
     multiInstance: true,
   });
   await db.addCollections({ projections: { schema } });
   return db;
+}
+
+declare global {
+  interface Window {
+    schemaCacheOldBuildDatabase: Awaited<ReturnType<typeof openBuildDatabase>>;
+    schemaCacheNewBuildDatabase: Awaited<ReturnType<typeof openBuildDatabase>>;
+  }
 }
