@@ -124,10 +124,7 @@ export async function startBridge(
     await fs.mkdtemp(path.join(temporaryBase, prefix)),
   );
   for (const name of await fs.readdir(BRIDGE)) {
-    if (
-      (!name.endsWith(".mjs") && !name.endsWith(".ts")) ||
-      /\.test\.(mjs|ts)$/.test(name)
-    )
+    if (!/\.(mjs|mts|ts)$/.test(name) || /\.test\.(mjs|mts|ts)$/.test(name))
       continue;
     const source = await fs.readFile(path.join(BRIDGE, name), "utf8");
     await fs.writeFile(

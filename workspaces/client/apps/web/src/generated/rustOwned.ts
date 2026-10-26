@@ -7,13 +7,22 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    CommandError: {
+      code: string;
+      details?: unknown | undefined;
+      message: string;
+      /** Format: uint16 */
+      status?: number | null | undefined;
+    };
     DraftVersion: {
-      alternatives?: string[];
+      alternatives?: string[] | undefined;
       device: string;
       id: string;
-      seen?: {
-        [key: string]: number;
-      };
+      seen?:
+        | {
+            [key: string]: number;
+          }
+        | undefined;
       session: string;
       text: string;
       /**
@@ -21,6 +30,50 @@ export interface components {
        * @default 0
        */
       updated: number;
+    };
+    DraftView: {
+      conflicts: components["schemas"]["DraftVersion"][];
+      drafts: {
+        [key: string]: string;
+      };
+    };
+    /** @enum {string} */
+    Durability: "sqlite-full-sync-per-request";
+    HealthHandle: {
+      /** Format: uint64 */
+      acknowledged: number;
+      backpressure: boolean;
+      /** Format: uint64 */
+      bufferedBytes: number;
+      id: string;
+      jobIdentity: string | null;
+      persistenceErrors: {
+        [key: string]: string;
+      };
+      /** Format: uint32 */
+      pid: number | null;
+      /** Format: uint64 */
+      sequence: number;
+      signature: string;
+      startTime: string | null;
+      stdoutReaderAlive: boolean;
+      stdoutReaderError: string | null;
+    } & {
+      [key: string]: unknown;
+    };
+    HealthResult: {
+      durability: components["schemas"]["Durability"];
+      handles: components["schemas"]["HealthHandle"][];
+      /** Format: uint64 */
+      journalLimitBytes: number;
+      /** Format: uint64 */
+      outputLimitBytesPerHandle: number;
+      /** Format: uint64 */
+      protocol: number;
+      recovery: components["schemas"]["RecoveryStatus"];
+      stateDir: string;
+    } & {
+      [key: string]: unknown;
     };
     MarkdownBlock:
       | components["schemas"]["MarkdownTree"]
@@ -31,13 +84,15 @@ export interface components {
     /** @enum {string} */
     MarkdownKind: "html" | "mermaid";
     MarkdownNode: {
-      children?: components["schemas"]["MarkdownNode"][];
-      props?: {
-        [key: string]: string;
-      };
-      sentences?: components["schemas"]["MarkdownSentence"][];
-      tag?: string;
-      text?: string;
+      children?: components["schemas"]["MarkdownNode"][] | undefined;
+      props?:
+        | {
+            [key: string]: string;
+          }
+        | undefined;
+      sentences?: components["schemas"]["MarkdownSentence"][] | undefined;
+      tag?: string | undefined;
+      text?: string | undefined;
     };
     MarkdownSentence: {
       /** Format: uint */
@@ -49,6 +104,55 @@ export interface components {
       length: number;
       nodes: components["schemas"]["MarkdownNode"][];
     };
+    RecoveryStatus: {
+      blocked: string | null;
+      degraded: boolean;
+      fallbackReady: boolean;
+    } & {
+      [key: string]: unknown;
+    };
+    ReplyTimingDiagnostic: {
+      /** Format: uint64 */
+      generation: number;
+      method: string;
+      operationId: string;
+      /** @description `result` or `error`. */
+      outcome: string;
+      providerHandle: string;
+      /** Format: uint128 */
+      replyAtNs: number;
+      requestId: components["schemas"]["RequestId"];
+    };
+    Request: {
+      id: string;
+      method: string;
+      /** @default null */
+      params: unknown;
+    };
+    /** @description Numeric Codex IDs and string Claude bridge IDs are distinct on the wire. */
+    RequestId: number | string;
+    Response: {
+      error?: components["schemas"]["CommandError"] | null | undefined;
+      id: string;
+      result?: unknown | undefined;
+    };
+    StdinTimingDiagnostic: {
+      /** Format: uint64 */
+      generation: number;
+      method: string;
+      operationId: string;
+      providerHandle: string;
+      requestId: components["schemas"]["RequestId"];
+      /** Format: uint128 */
+      stdinFlushedAtNs: number;
+    };
+    SupervisorHandshakeV2Result: {
+      error: string | null;
+      /** @default false */
+      ok: boolean;
+      /** Format: uint64 */
+      protocol: number | null;
+    };
   };
   responses: never;
   parameters: never;
@@ -59,9 +163,26 @@ export interface components {
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
+export type CommandError = components["schemas"]["CommandError"];
 export type DraftVersion = components["schemas"]["DraftVersion"];
+export type DraftView = components["schemas"]["DraftView"];
+export type Durability = components["schemas"]["Durability"];
+export type HealthHandle = components["schemas"]["HealthHandle"];
+export type HealthResult = components["schemas"]["HealthResult"];
 export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
 export type MarkdownKind = components["schemas"]["MarkdownKind"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
+export type RecoveryStatus = components["schemas"]["RecoveryStatus"];
+export type ReplyTimingDiagnostic =
+  components["schemas"]["ReplyTimingDiagnostic"];
+export type Request = components["schemas"]["Request"];
+export type RequestId = components["schemas"]["RequestId"];
+export type Response = components["schemas"]["Response"];
+export type StdinTimingDiagnostic =
+  components["schemas"]["StdinTimingDiagnostic"];
+export type SupervisorHandshakeV2Result =
+  components["schemas"]["SupervisorHandshakeV2Result"];
+export const STDIN_TIMING_DIAGNOSTIC_PREFIX = "studio_provider_stdin_write ";
+export const REPLY_TIMING_DIAGNOSTIC_PREFIX = "studio_provider_reply ";
