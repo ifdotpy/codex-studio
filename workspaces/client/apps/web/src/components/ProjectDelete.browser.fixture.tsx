@@ -27,6 +27,7 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import Sidebar from "../components/Sidebar.tsx";
 import ProjectGroupsSidebar from "../servers/ProjectGroupsSidebar.tsx";
+import { navigationSnapshot } from "../servers/navigation.ts";
 import { ProjectDeleteDialog } from "../components/ProjectDeleteDialog.tsx";
 import { useProjectDelete } from "../useProjectDelete.ts";
 import "@mantine/core/styles.css";
@@ -166,6 +167,7 @@ function Fixture() {
       ? React.createElement(ProjectGroupsSidebar, {
           navigation: {
             owner: {
+              ...navigationSnapshot(data, "lead", ""),
               projects: data.runtime.projects.map((project) => ({
                 ...project,
                 ...(location.search.includes("legacy") ? { id: "" } : {}),

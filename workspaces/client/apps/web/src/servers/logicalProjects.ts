@@ -42,6 +42,10 @@ export function logicalProjects(
   for (const [source, view] of Object.entries(navigation)) {
     for (const project of view.projects) {
       const id = project.id || project.path;
+      const registeredTarget =
+        project.id ||
+        view.sidebar?.projects.find((row) => row.path === project.path)?.path ||
+        undefined;
       const home = project.homeServerId || source;
       const aliases = project.projectAliases || [];
       const canonical = aliases[0];
@@ -55,13 +59,13 @@ export function logicalProjects(
         owner,
         canonical?.projectId || project.path,
       );
-      group.deleteTarget ||= canonical?.projectId || id;
+      group.deleteTarget ||= canonical?.projectId || registeredTarget;
       if (!canonical) {
         group.name = project.name;
         group.path = project.path;
         group.owner = source;
         group.compact = project.compact;
-        group.deleteTarget = id;
+        group.deleteTarget = registeredTarget;
       }
       const rows = project.locations || [
         { serverId: source, path: project.path, projectId: id },
