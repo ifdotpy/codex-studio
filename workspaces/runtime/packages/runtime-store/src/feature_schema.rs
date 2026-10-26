@@ -102,7 +102,7 @@ const FEATURE_SCHEMA: &str = r#"
                 ON runtime_rules(json_extract(record,'$.status'))
                 WHERE NOT COALESCE(json_extract(record,'$.inFlight'),0);
             CREATE TABLE IF NOT EXISTS runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT);
+            CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL, breakdown TEXT, details TEXT);
             CREATE INDEX IF NOT EXISTS runtime_budget_usage_agent ON runtime_budget_usage(agent,kind);
             CREATE TABLE IF NOT EXISTS runtime_execution_runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, account TEXT NOT NULL, epoch INTEGER NOT NULL, thread TEXT, turn TEXT, created REAL NOT NULL, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_execution_run_agent ON runtime_execution_runs(agent,created DESC);
@@ -282,6 +282,16 @@ const FEATURE_SCHEMA: &str = r#"
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
     crate::entity_publication::prepare_work_change_journal(transaction)?;
+    let has_terminal_generation: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('user_terminals') WHERE name='output_generation')",
+        [], |row| row.get(0),
+    )?;
+    if !has_terminal_generation {
+        transaction.execute_batch(
+            "ALTER TABLE user_terminals ADD COLUMN output_generation INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+
     let has_breakdown: bool = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='breakdown')",
         [], |row| row.get(0),
@@ -289,6 +299,13 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     if !has_breakdown {
         // NULL preserves total-only replay comparison for every existing response.
         transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN breakdown TEXT")?;
+    }
+    let has_details: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='details')", [], |row| row.get(0),
+    )?;
+    if !has_details {
+        // O(1): old receipts retain their existing interpretation, without a rebuild.
+        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN details TEXT")?;
     }
     transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
     // A deleted row is no longer readable by the writer journal. Its source
@@ -360,6 +377,44 @@ mod tests {
     }
 
     #[test]
+    fn terminal_generation_upgrade_preserves_output_and_counts_resets() {
+        use crate::TerminalsRepository;
+        let mut db = crate::fresh_state::test_canvas();
+        db.execute_batch("ALTER TABLE user_terminals DROP COLUMN output_generation")
+            .expect("legacy schema");
+        let record = serde_json::json!({"id":"terminal","agent":"a","title":"Terminal","cwd":std::env::temp_dir(),"status":"running","created":1});
+        db.execute(
+            "INSERT INTO user_terminals(id,record,output,offset) VALUES('terminal',?1,'a🙂',0)",
+            [record.to_string()],
+        )
+        .expect("legacy output");
+        let tx = db.transaction().expect("upgrade");
+        super::prepare(&tx).expect("additive upgrade");
+        super::prepare(&tx).expect("idempotent upgrade");
+        let row = TerminalsRepository::get(&tx, "terminal")
+            .expect("read")
+            .expect("terminal");
+        assert_eq!(
+            (row.output.as_str(), row.offset, row.output_generation),
+            ("a🙂", 0, 0)
+        );
+        for (text, start, generation) in [
+            ("a🙂中", 0, 0),
+            ("中", 2, 0),
+            ("x", 0, 1),
+            ("", 0, 2),
+            ("y", 0, 2),
+        ] {
+            TerminalsRepository::put(&tx, "terminal", &row.record, text, start).expect("write");
+            let saved = TerminalsRepository::get(&tx, "terminal")
+                .expect("read generation")
+                .expect("row");
+            assert_eq!(saved.output_generation, generation);
+        }
+        tx.commit().expect("persist resets");
+    }
+
+    #[test]
     fn budget_usage_breakdown_upgrade_preserves_legacy_rows_and_is_idempotent() {
         let mut db = crate::fresh_state::test_canvas();
         db.execute_batch("DROP TABLE runtime_budget_usage;
@@ -376,16 +431,16 @@ mod tests {
         let tx = db.transaction().expect("upgrade transaction");
         super::prepare(&tx).expect("additive upgrade");
         tx.commit().expect("commit upgrade");
-        let legacy: (i64, String, i64, Option<String>) = db
+        let legacy: (i64, String, i64, Option<String>, Option<String>) = db
             .query_row(
-                "SELECT rowid,kind,tokens,breakdown FROM runtime_budget_usage WHERE id='legacy'",
+                "SELECT rowid,kind,tokens,breakdown,details FROM runtime_budget_usage WHERE id='legacy'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .expect("new nullable column");
         assert_eq!(
             legacy,
-            (1, "response".into(), 12, None),
+            (1, "response".into(), 12, None, None),
             "no backfill or row rewrite"
         );
         assert_eq!(

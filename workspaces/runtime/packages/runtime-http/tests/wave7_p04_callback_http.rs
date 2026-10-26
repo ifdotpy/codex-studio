@@ -194,3 +194,195 @@ async fn enabled_native_backend_serves_success_and_null_refusal() {
         }
     }
 }
+
+async fn permission_app(
+    root: &std::path::Path,
+    store: Arc<studio_runtime_store::RuntimeStore>,
+    port: Arc<Port>,
+) -> axum::Router {
+    let registry = root.join("permission-accounts.json");
+    tokio::fs::write(&registry, json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root,"label":"Fixture","source":"Fixture","provider":"codex","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).await.unwrap();
+    router(
+        HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            root.to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        )
+        .with_account_driver(Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(&registry).unwrap(),
+        ))
+        .with_callback_runtime(Arc::new(CallbackRuntime::new(store, port))),
+    )
+    .unwrap()
+}
+
+async fn pending_codex_approval(
+    store: &Arc<studio_runtime_store::RuntimeStore>,
+    context: &studio_runtime_services::provider_callbacks::CallbackContext,
+) -> (String, studio_runtime_providers::Frame) {
+    let actor = context.agent.clone();
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.yoloMode',json('false'),'$.inFlight',json('true')) WHERE id=?1", [&actor])?;
+        Ok(())
+    }).await.unwrap();
+    let frame = studio_runtime_providers::Frame::Request(studio_runtime_providers::RequestFrame {
+        id: studio_runtime_providers::RequestId::Number(87),
+        method: studio_runtime_providers::Method::ItemCommandExecutionRequestApproval,
+        params: Some(json!({"threadId":context.thread,"turnId":context.turn,"command":"fixture"})),
+        fields: Default::default(),
+    });
+    let studio_runtime_services::provider_callbacks::NativeAdmission::Card(id) =
+        studio_runtime_services::provider_callbacks::admit_native(
+            store.clone(),
+            context,
+            &frame,
+            1,
+            10.0,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("pending approval")
+    };
+    (id, frame)
+}
+
+#[tokio::test]
+async fn live_permissions_codex_switch_settles_pending_once_and_ask_prompts_again() {
+    use studio_runtime_services::provider_callbacks::*;
+    let (root, store, context) = fixture().await;
+    let (id, frame) = pending_codex_approval(&store, &context).await;
+    let port = Arc::new(Port::default());
+    let app = permission_app(root.path(), store.clone(), port.clone()).await;
+    let body = json!({"id":context.agent,"yolo_mode":true,"request_id":"live-full","expected_account_key":"default"});
+    assert_eq!(
+        call(&app, "/api/conversation", body.clone(), "wrong")
+            .await
+            .0,
+        403
+    );
+    let (status, value) = call(&app, "/api/conversation", body.clone(), "token").await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["yoloMode"], true);
+    assert_eq!(stored(&store, &id)["status"], "answered");
+    assert_eq!(port.calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        call(&app, "/api/conversation", body.clone(), "token")
+            .await
+            .0,
+        200
+    );
+    assert_eq!(port.calls.lock().unwrap().len(), 1);
+    let mut later = frame.clone();
+    if let studio_runtime_providers::Frame::Request(ref mut request) = later {
+        request.id = studio_runtime_providers::RequestId::Number(88);
+    }
+    assert!(matches!(
+        admit_native(store.clone(), &context, &later, 2, 11.0)
+            .await
+            .unwrap(),
+        NativeAdmission::Answer(_)
+    ));
+    let ask = json!({"id":context.agent,"yolo_mode":false,"request_id":"live-ask","expected_account_key":"default"});
+    assert_eq!(call(&app, "/api/conversation", ask, "token").await.0, 200);
+    // Replaying the old Full save must not override the later Ask save.
+    assert_eq!(
+        call(&app, "/api/conversation", body, "token").await.1["yoloMode"],
+        false
+    );
+    if let studio_runtime_providers::Frame::Request(ref mut request) = later {
+        request.id = studio_runtime_providers::RequestId::Number(89);
+    }
+    assert!(matches!(
+        admit_native(store.clone(), &context, &later, 3, 12.0)
+            .await
+            .unwrap(),
+        NativeAdmission::Card(_)
+    ));
+    assert_eq!(port.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn live_permissions_archived_previous_uses_new_chat_defaults() {
+    let (root, store, context) = fixture().await;
+    let actor = context.agent.clone();
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.agentArchive',json('{\"at\":10,\"epoch\":3}'),'$.deletedAt',10,'$.yoloMode',json('false'),'$.approvalPolicy','on-request') WHERE id=?1", [&actor])?;
+        Ok(())
+    }).await.unwrap();
+    let app = permission_app(root.path(), store, Arc::new(Port::default())).await;
+    let (status, value) = call(
+        &app,
+        "/api/leads",
+        json!({"previous":context.agent,"cwd":root.path(),"reuse_empty":false}),
+        "token",
+    )
+    .await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["yoloMode"], true);
+    assert_ne!(value["approvalPolicy"], "on-request");
+}
+
+#[tokio::test]
+async fn live_permissions_live_previous_still_donates_settings() {
+    let (root, store, context) = fixture().await;
+    let actor = context.agent.clone();
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.yoloMode',json('false')) WHERE id=?1", [&actor])?;
+        Ok(())
+    }).await.unwrap();
+    let app = permission_app(root.path(), store, Arc::new(Port::default())).await;
+    let (status, value) = call(
+        &app,
+        "/api/leads",
+        json!({"previous":context.agent,"cwd":root.path(),"reuse_empty":false}),
+        "token",
+    )
+    .await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["yoloMode"], false);
+}
+
+#[tokio::test]
+async fn live_permissions_failed_auto_answer_stays_pending_for_the_user() {
+    let (root, store, context) = fixture().await;
+    let (id, _) = pending_codex_approval(&store, &context).await;
+    let port = Arc::new(Port::default());
+    *port.next.lock().unwrap() = Some(ReplyOutcome::NotSent);
+    let app = permission_app(root.path(), store.clone(), port.clone()).await;
+    let full = json!({"id":context.agent,"yolo_mode":true,"request_id":"pending-full","expected_account_key":"default"});
+    let (status, value) = call(&app, "/api/conversation", full, "token").await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["yoloMode"], true);
+    assert_eq!(stored(&store, &id)["status"], "pending");
+    assert_eq!(port.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn live_permissions_receipt_distinguishes_omitted_effort_from_null() {
+    let (root, store, context) = fixture().await;
+    let actor = context.agent.clone();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.effort','high') WHERE id=?1",
+                [&actor],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let app = permission_app(root.path(), store, Arc::new(Port::default())).await;
+    let mut body = json!({"id":context.agent,"yolo_mode":true,"request_id":"presence"});
+    let (status, value) = call(&app, "/api/conversation", body.clone(), "token").await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["effort"], "high");
+    body["effort"] = Value::Null;
+    let (status, value) = call(&app, "/api/conversation", body, "token").await;
+    assert_eq!(status, 400, "changed content must conflict: {value}");
+    assert_eq!(value["error"], "This request id has different content");
+}

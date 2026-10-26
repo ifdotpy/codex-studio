@@ -153,6 +153,16 @@ pub enum NotificationPostCommit {
     Analytics {
         observation: NotificationObservation,
         budget_capture_value: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage_conflict: Option<Box<studio_runtime_schema::usage::ledger::UsageReplayConflict>>,
+        /// Budget migration epoch bound when this effect is durably logged.
+        #[serde(
+            default,
+            skip_serializing_if = "studio_runtime_schema::usage::ledger::LedgerEpoch::is_legacy"
+        )]
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
+        #[serde(default)]
+        usage_unknown: bool,
     },
     AnalyticsStream {
         observation: NotificationObservation,
